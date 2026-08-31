@@ -74,6 +74,13 @@ def _register_typed_schemas(monkeypatch):
 # Maps event_type -> minimal valid payload (all required fields present)
 _CANONICAL_PAYLOADS: dict[str, dict] = {
     # Task lifecycle
+    "task.updated": {"task_id": "t-1", "project_id": "proj-1", "title": "Task", "seq": 1},
+    "task.deleted": {"task_id": "t-1", "project_id": "proj-1", "title": "Task", "seq": 1},
+    "task.archived": {"task_id": "t-1", "project_id": "proj-1", "title": "Task", "seq": 1},
+    # Durable global agent definition changes.
+    "agent.created": {"agent_id": "agent-1"},
+    "agent.updated": {"agent_id": "agent-1"},
+    "agent.deleted": {"agent_id": "agent-1"},
     "task.created": {
         "task_id": "t-1",
         "project_id": "proj-1",

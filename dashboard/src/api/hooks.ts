@@ -549,6 +549,7 @@ function useTaskMutationCallbacks() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["tasks"] });
       queryClient.invalidateQueries({ queryKey: ["task"] });
+      queryClient.invalidateQueries({ queryKey: ["projectGraph"] });
     },
   };
 }

@@ -1,46 +1,43 @@
-import { useReactFlow, useStore } from "@xyflow/react";
+import { useNodes, ViewportPortal } from "@xyflow/react";
 import { NODE_WIDTH, type GraphAgent } from "./types";
 
 interface Props {
   agents: GraphAgent[];
+  visibleTaskById?: ReadonlyMap<string, string>;
 }
 
-/** Docks each agent avatar to its current task node in screen space.
- *  On current_task_id change, the div's `transform` transitions to the new
- *  projected coordinate — CSS handles the motion. */
-export default function AgentAvatarLayer({ agents }: Props) {
-  const rf = useReactFlow();
-  // Subscribing to the store's transform already triggers a rerender on
-  // every pan/zoom, which recomputes screen coords below from the fresh
-  // transform — no separate RAF/force-render mechanism needed.
-  useStore((s) => s.transform);
+/** Flow-space positioning follows pan/zoom without adding the browser's
+ *  page offset twice. Workers on collapsed descendants dock at their parent. */
+export default function AgentAvatarLayer({ agents, visibleTaskById }: Props) {
+  const nodes = useNodes();
+  const nodesById = new Map(nodes.map((node) => [node.id, node]));
+  const docked = new Map<string, GraphAgent[]>();
+  for (const agent of agents) {
+    if (!agent.current_task_id) continue;
+    const target = visibleTaskById ? visibleTaskById.get(agent.current_task_id) : agent.current_task_id;
+    if (target && nodesById.has(target)) docked.set(target, [...(docked.get(target) ?? []), agent]);
+  }
 
   return (
-    <div className="pointer-events-none absolute inset-0 z-30">
-      {agents.map((a) => {
-        if (!a.current_task_id) return null;
-        const node = rf.getNode(a.current_task_id);
-        if (!node) return null;
-        const screen = rf.flowToScreenPosition({
-          x: node.position.x + NODE_WIDTH - 8, // NODE_WIDTH - inset
-          y: node.position.y - 8,
-        });
+    <ViewportPortal>
+      {[...docked].map(([id, workers]) => {
+        const node = nodesById.get(id)!;
+        const names = workers.map((worker) => worker.name).join(", ");
+        const label = `${names}${workers.some((worker) => worker.current_task_id !== id) ? " (working in collapsed tasks)" : ""}`;
         return (
           <div
-            key={a.id}
-            className="absolute -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white bg-indigo-500 px-1 text-[10px] font-bold text-white shadow"
-            style={{
-              left: 0,
-              top: 0,
-              transform: `translate(${screen.x}px, ${screen.y}px)`,
-              transition: "transform 600ms cubic-bezier(0.4, 0, 0.2, 1)",
-            }}
-            title={`${a.name} — ${a.profile_id ?? ""}`}
+            key={id}
+            role="img"
+            aria-label={label}
+            title={label}
+            className="pointer-events-none absolute z-30 flex items-center gap-1 rounded-full border-2 border-white bg-indigo-500 px-1.5 py-0.5 text-[10px] font-bold text-white shadow"
+            style={{ left: node.position.x + NODE_WIDTH - 20, top: node.position.y - 12 }}
           >
-            {a.name.slice(0, 2).toUpperCase()}
+            {workers[0]!.name.slice(0, 2).toUpperCase()}
+            {workers.length > 1 && <span>+{workers.length - 1}</span>}
           </div>
         );
       })}
-    </div>
+    </ViewportPortal>
   );
 }

@@ -13,8 +13,9 @@ import type { Task, Agent } from "../api/hooks";
 interface BaseEvent {
   _event_type: string;
   event_type: string;
-  severity: string;
-  category: string;
+  severity?: string;
+  category?: string;
+  seq?: number | null;
   project_id?: string | null;
 }
 
@@ -327,6 +328,22 @@ export interface TaskUnblockedEvent extends BaseEvent {
   reason?: string;
 }
 
+// --- Task graph changes and global agent definitions ---
+
+/** Live bus frames and persisted replay both identify the affected task. */
+export interface TaskGraphChangedEvent extends BaseEvent {
+  event_type: "task.created" | "task.reparented" | "task.updated" | "task.deleted" | "task.archived" | "task.ready" | "task.claimed";
+  task_id: string;
+  title?: string;
+  old_parent?: string | null;
+  new_parent?: string | null;
+}
+
+export interface AgentChangedEvent extends BaseEvent {
+  event_type: "agent.created" | "agent.updated" | "agent.deleted";
+  agent_id: string;
+}
+
 // --- Command dispatch (Phase 5 follow-up) ---
 
 /**
@@ -399,5 +416,7 @@ export type NotifyEvent =
   | SessionAdoptedEvent
   | TaskBlockedGraphEvent
   | TaskUnblockedEvent
+  | TaskGraphChangedEvent
+  | AgentChangedEvent
   | CommandInvokedEvent
   | ProposalStatusChangedEvent;

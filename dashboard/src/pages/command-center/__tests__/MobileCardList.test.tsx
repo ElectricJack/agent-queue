@@ -1,0 +1,44 @@
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import MobileCardList from "../MobileCardList";
+import { edge, graph, task } from "./fixtures";
+
+afterEach(cleanup);
+
+describe("mobile task hierarchy", () => {
+  it("includes waiting tasks and keeps expand controls separate from task selection", () => {
+    const open = vi.fn();
+    render(<MobileCardList graph={graph(
+      [task("parent", { status: "AWAITING_PLAN_APPROVAL" }), task("child", { status: "WAITING_INPUT" })],
+      [edge("child", "parent")],
+    )} onTaskClick={open} selectedTaskId="child" />);
+    expect(screen.getByText("Task parent")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Expand children of Task parent" }));
+    expect(open).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByText("Task child"));
+    expect(open).toHaveBeenCalledExactlyOnceWith("child");
+    expect(screen.getByRole("button", { name: "Open task Task child" })).toHaveAttribute("aria-pressed", "true");
+    for (const button of screen.getAllByRole("button")) {
+      expect(button.querySelector("button")).toBeNull();
+    }
+  });
+
+  it("scrolls inside the bounded workspace instead of growing beyond the viewport", () => {
+    render(<MobileCardList graph={graph(Array.from({ length: 20 }, (_, index) => task(String(index))))} onTaskClick={vi.fn()} />);
+    expect(screen.getByRole("region", { name: "Task list" })).toHaveClass("h-full", "overflow-y-auto");
+  });
+
+  it("preserves filtered ancestors and clears only from blank list space or Escape", () => {
+    const clear = vi.fn();
+    render(<MobileCardList graph={graph(
+      [task("parent"), task("child")], [edge("child", "parent")],
+    )} onTaskClick={vi.fn()} onBackgroundClick={clear} matchingTaskIds={new Set(["child"])} filtering />);
+    expect(screen.getByText("Task parent")).toBeInTheDocument();
+    expect(screen.getByText("Task child")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Task child"));
+    expect(clear).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("region", { name: "Task list" }));
+    fireEvent.keyDown(screen.getByRole("region", { name: "Task list" }), { key: "Escape" });
+    expect(clear).toHaveBeenCalledTimes(2);
+  });
+});

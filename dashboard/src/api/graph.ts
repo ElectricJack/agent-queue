@@ -19,9 +19,10 @@ export function useProjectGraphs(projectIds: string[]) {
   const results = useQueries({
     queries: projectIds.map((pid) => ({
       queryKey: projectGraphKey(pid),
-      queryFn: async (): Promise<ProjectGraphResponse> => {
+      queryFn: async ({ signal }: { signal: AbortSignal }): Promise<ProjectGraphResponse> => {
         const r = await getProjectGraphApiProjectsProjectIdGraphGet({
           client,
+          signal,
           path: { project_id: pid },
           throwOnError: true,
         });

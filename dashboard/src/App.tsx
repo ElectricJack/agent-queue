@@ -1,13 +1,13 @@
-import { lazy, Suspense } from "react";
-import { Routes, Route, Navigate, useParams } from "react-router-dom";
-import { ShellPaneProvider } from "./panes/store";
+import { lazy, Suspense, useEffect, useRef } from "react";
+import { Routes, Route, Navigate, useLocation, useParams } from "react-router-dom";
+import { ShellPaneProvider, useShellPaneStore } from "./panes/store";
+import { projectNavigation, workspaceHref } from "./shell/projectNavigation";
 
 const AppShellV2 = lazy(() => import("./shell/AppShellV2"));
 const AgentWorkspace = lazy(() => import("./pages/agents/AgentWorkspace"));
 const CommandCenterGraph = lazy(() => import("./pages/command-center/Graph"));
 const CommandCenterTasks = lazy(() => import("./pages/command-center/Tasks"));
 
-const ChatConversation = lazy(() => import("./pages/chat/ChatConversation"));
 const CommandCenter = lazy(() => import("./pages/CommandCenter"));
 
 const SettingsLayout = lazy(() => import("./pages/settings/SettingsLayout"));
@@ -16,9 +16,7 @@ const SystemProfiles = lazy(() => import("./pages/system/Profiles"));
 const SystemConfig = lazy(() => import("./pages/system/Config"));
 const IntelligenceClassesStub = lazy(() => import("./pages/settings/IntelligenceClassesStub"));
 
-const ProjectLayout = lazy(() => import("./pages/project/ProjectLayout"));
 const ProjectOverview = lazy(() => import("./pages/project/Overview"));
-const ProjectTasks = lazy(() => import("./pages/project/Tasks"));
 const ProjectWorkspaces = lazy(() => import("./pages/project/Workspaces"));
 const ProjectProfiles = lazy(() => import("./pages/project/Profiles"));
 const ProjectPlaybooks = lazy(() => import("./pages/project/Playbooks"));
@@ -30,9 +28,26 @@ const PlaybookDetail = lazy(() => import("./pages/PlaybookDetail"));
 const SessionDetail = lazy(() => import("./pages/SessionDetail"));
 const TaskFiles = lazy(() => import("./pages/TaskFiles"));
 
-function ProjectChatRedirect() {
-  const { projectId = "" } = useParams();
-  return <Navigate to={`/chat/${projectId}`} replace />;
+/** Index redirects must retain the shared URL-backed task filters. */
+function WorkspaceIndexRedirect() {
+  const { projectId } = useParams();
+  const { search } = useLocation();
+  return <Navigate to={workspaceHref(projectId, "graph", search)} replace />;
+}
+
+/** Spans both route families so switching to All projects also clears selection. */
+function ProjectScopePaneSync() {
+  const { pathname } = useLocation();
+  const { projectId } = projectNavigation(pathname);
+  const previousProject = useRef(projectId);
+  const pane = useShellPaneStore();
+  useEffect(() => {
+    if (previousProject.current !== projectId) {
+      previousProject.current = projectId;
+      if (pane.state.kind === "open" && pane.state.view === "task-detail") pane.close();
+    }
+  }, [projectId, pane]);
+  return null;
 }
 
 function RouteFallback() {
@@ -46,15 +61,16 @@ function RouteFallback() {
 export default function App() {
   return (
     <ShellPaneProvider>
+      <ProjectScopePaneSync />
       <Suspense fallback={<RouteFallback />}>
         <Routes>
           <Route element={<AppShellV2 />}>
             <Route index element={<Navigate to="/command-center" replace />} />
             <Route path="agents" element={<AgentWorkspace />} />
-            <Route path="chat/:projectId" element={<ChatConversation />} />
+            <Route path="chat/:projectId" element={<Navigate to="/agents" replace />} />
 
             <Route path="command-center" element={<CommandCenter />}>
-              <Route index element={<Navigate to="graph" replace />} />
+              <Route index element={<WorkspaceIndexRedirect />} />
               <Route path="graph" element={<CommandCenterGraph />} />
               <Route path="tasks" element={<CommandCenterTasks />} />
               <Route path="agents" element={<Navigate to="/agents" replace />} />
@@ -82,11 +98,13 @@ export default function App() {
               <Route path="config" element={<SystemConfig />} />
             </Route>
 
-            <Route path="projects/:projectId" element={<ProjectLayout />}>
-              <Route index element={<ProjectOverview />} />
-              <Route path="tasks" element={<ProjectTasks />} />
+            <Route path="projects/:projectId" element={<CommandCenter />}>
+              <Route index element={<WorkspaceIndexRedirect />} />
+              <Route path="graph" element={<CommandCenterGraph />} />
+              <Route path="tasks" element={<CommandCenterTasks />} />
+              <Route path="overview" element={<ProjectOverview />} />
               <Route path="sessions" element={<ProjectSessions />} />
-              <Route path="chat" element={<ProjectChatRedirect />} />
+              <Route path="chat" element={<Navigate to="/agents" replace />} />
               <Route path="workspaces" element={<ProjectWorkspaces />} />
               <Route path="profiles" element={<ProjectProfiles />} />
               <Route path="playbooks" element={<ProjectPlaybooks />} />

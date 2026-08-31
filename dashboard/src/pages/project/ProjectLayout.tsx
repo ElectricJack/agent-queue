@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { NavLink, Outlet, useNavigate, useParams } from "react-router-dom";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
+import { projectNavigation, workspaceHref } from "../../shell/projectNavigation";
 import {
   ExclamationTriangleIcon,
   PauseIcon,
@@ -14,20 +15,11 @@ import {
   useResumeProject,
 } from "../../api/hooks";
 
-const tabs: Array<{ to: string; label: string; end?: boolean }> = [
-  { to: ".", label: "Overview", end: true },
-  { to: "tasks", label: "Tasks" },
-  { to: "sessions", label: "Sessions" },
-  { to: "chat", label: "Chat" },
-  { to: "workspaces", label: "Workspaces" },
-  { to: "profiles", label: "Profiles" },
-  { to: "playbooks", label: "Playbooks" },
-  { to: "config", label: "Config" },
-];
-
-export default function ProjectLayout() {
+/** Project identity and actions; the shared CommandCenter owns tabs and content. */
+export default function ProjectHeader() {
   const { projectId = "" } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const { data: project, isLoading } = useProject(projectId);
   const pause = usePauseProject();
   const resume = useResumeProject();
@@ -47,18 +39,18 @@ export default function ProjectLayout() {
     try {
       await del.mutateAsync({ project_id: projectId });
       setConfirmOpen(false);
-      navigate("/");
+      navigate(workspaceHref(null, projectNavigation(location.pathname).tab, location.search));
     } catch (err) {
       setDeleteError(err instanceof Error ? err.message : String(err));
     }
   };
 
   return (
-    <div className="h-full overflow-y-auto p-6 space-y-6">
+    <div className="shrink-0 px-4 py-3">
       <header className="space-y-1">
         <p className="text-xs uppercase tracking-wider text-gray-500">Project</p>
         <div className="flex items-center gap-3">
-          <h1 className="text-2xl font-bold">
+          <h1 className="text-lg font-semibold">
             {isLoading ? projectId : project?.name || projectId}
           </h1>
           {project && (
@@ -101,27 +93,6 @@ export default function ProjectLayout() {
           <p className="font-mono text-xs text-gray-500">{project.repo_url}</p>
         )}
       </header>
-
-      <div className="flex gap-1 overflow-x-auto border-b border-gray-800">
-        {tabs.map(({ to, label, end }) => (
-          <NavLink
-            key={to}
-            to={to}
-            end={end}
-            className={({ isActive }) =>
-              `whitespace-nowrap px-4 py-2 text-sm font-medium transition-colors ${
-                isActive
-                  ? "border-b-2 border-indigo-400 text-indigo-400"
-                  : "text-gray-400 hover:text-gray-200"
-              }`
-            }
-          >
-            {label}
-          </NavLink>
-        ))}
-      </div>
-
-      <Outlet />
 
       <Modal
         open={confirmOpen}

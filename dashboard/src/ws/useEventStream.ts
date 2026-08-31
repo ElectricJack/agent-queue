@@ -126,8 +126,15 @@ function connect() {
         }
         return;
       }
+      // Ordinary bus events and replay use _event_type; notify payloads also
+      // carry event_type. Give every subscriber the same discriminator while
+      // retaining unknown event payloads for forward-compatible consumers.
+      const type = typeof frame._event_type === "string" && frame._event_type
+        ? frame._event_type : frame.event_type;
+      if (typeof type !== "string" || !type) return;
+      const event = { ...frame, _event_type: type, event_type: type } as NotifyEvent;
       if (typeof frame.seq === "number") saveLastSeq(frame.seq);
-      for (const fn of eventListeners) fn(frame);
+      for (const fn of eventListeners) fn(event);
     } catch {
       // ignore
     }
@@ -211,7 +218,7 @@ export function useEventStream(options: UseEventStreamOptions = {}) {
         if (sid) queryClient.invalidateQueries({ queryKey: ["session", sid] });
         return;
       }
-      if (type === "task.blocked" || type === "task.unblocked") {
+      if (type.startsWith("task.")) {
         const tid = (event as { task_id?: string }).task_id;
         queryClient.invalidateQueries({ queryKey: ["tasks"] });
         if (tid) {

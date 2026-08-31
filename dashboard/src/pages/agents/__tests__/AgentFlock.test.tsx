@@ -109,7 +109,7 @@ describe("Agent flock sidebar", () => {
   it("keeps Command Center navigation and removes Home", async () => {
     renderFlock();
     await screen.findByRole("button", { name: "Open Supervisor" });
-    expect(screen.getByRole("link", { name: "Command Center" })).toHaveAttribute("href", "/command-center");
+    expect(screen.getByRole("link", { name: "Command Center" })).toHaveAttribute("href", "/command-center/graph");
     expect(screen.queryByRole("link", { name: "Home" })).not.toBeInTheDocument();
   });
 

@@ -1,37 +1,67 @@
-import type { MergedGraph } from "./types";
+import { useState } from "react";
+import { TaskCard } from "./TaskNode";
+import { useGraphHierarchy } from "./useGraphHierarchy";
+import type { GraphViewProps } from "./types";
 
-interface Props {
-  graph: MergedGraph;
-  onTaskClick: (taskId: string) => void;
-}
+export default function MobileCardList(props: GraphViewProps) {
+  const { graph, onTaskClick, onBackgroundClick, selectedTaskId } = props;
+  const { projection, toggleExpanded } = useGraphHierarchy(props);
+  const [localSelectedId, setLocalSelectedId] = useState<string | null>(null);
+  const selectedId = selectedTaskId === undefined ? localSelectedId : selectedTaskId;
+  function openTask(id: string) {
+    setLocalSelectedId(id);
+    onTaskClick(id);
+  }
+  function clearSelection() {
+    setLocalSelectedId(null);
+    onBackgroundClick?.();
+  }
 
-const BUCKETS = ["IN_PROGRESS", "READY", "BLOCKED", "DEFINED", "FAILED", "COMPLETED"];
-
-export default function MobileCardList({ graph, onTaskClick }: Props) {
   return (
-    <div className="space-y-4 p-2">
-      {BUCKETS.map((status) => {
-        const tasks = graph.tasks.filter((t) => t.status === status);
-        if (tasks.length === 0) return null;
+    <div
+      role="region"
+      aria-label="Task list"
+      tabIndex={0}
+      className="h-full overflow-y-auto space-y-3 p-3 outline-none"
+      onClick={(event) => {
+        if (!(event.target as HTMLElement).closest("[data-task-card], button, a")) clearSelection();
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          event.stopPropagation();
+          clearSelection();
+        }
+      }}
+    >
+      {projection.tasks.length === 0 && <p className="py-6 text-center text-sm text-gray-500">No tasks match these filters.</p>}
+      {projection.tasks.map((task) => {
+        const hierarchy = projection.details.get(task.id)!;
+        const dependencies = projection.edges.filter((edge) => edge.from === task.id && edge.dep_type !== "parent-child");
         return (
-          <section key={status}>
-            <h3 className="mb-1 text-xs uppercase text-gray-400">
-              {status} ({tasks.length})
-            </h3>
-            <ul className="space-y-1">
-              {tasks.map((t) => (
-                <li key={t.id}>
-                  <button
-                    type="button"
-                    onClick={() => onTaskClick(t.id)}
-                    className="w-full rounded border border-gray-800 bg-gray-900 p-2 text-left text-sm"
-                  >
-                    <div className="truncate">{t.title}</div>
-                    <div className="text-xs text-gray-500">{t.profile_id ?? "—"}</div>
-                  </button>
-                </li>
-              ))}
-            </ul>
+          <section key={task.id} style={{ marginLeft: Math.min(hierarchy.depth, 3) * 12 }}>
+            <TaskCard
+              fluid
+              selected={selectedId === task.id}
+              data={{
+                task, hierarchy,
+                gates: graph.gates.filter((gate) => gate.task_ids?.includes(task.id)),
+                projectId: graph.taskProject[task.id] ?? "",
+                onOpenTask: openTask, onToggleChildren: toggleExpanded,
+              }}
+            />
+            {dependencies.length > 0 && (
+              <ul className="mt-1 space-y-0.5 text-[10px] text-gray-400">
+                {dependencies.map((edge) => (
+                  <li key={JSON.stringify([edge.to, edge.dep_type])}>
+                    <button type="button" className="text-left hover:text-indigo-300" onClick={() => openTask(edge.to)}>
+                      {edge.dep_type} ← {projection.tasks.find((candidate) => candidate.id === edge.to)?.title ?? edge.to}
+                      {edge.count > 1 ? ` ×${edge.count}` : ""}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
           </section>
         );
       })}

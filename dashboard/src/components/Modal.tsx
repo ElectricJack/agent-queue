@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useId, useRef, type ReactNode } from "react";
 import { XMarkIcon } from "@heroicons/react/24/outline";
 
 interface ModalProps {
@@ -10,6 +10,7 @@ interface ModalProps {
 
 export default function Modal({ open, onClose, title, children }: ModalProps) {
   const overlayRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
 
   useEffect(() => {
     if (!open) return;
@@ -27,13 +28,16 @@ export default function Modal({ open, onClose, title, children }: ModalProps) {
       ref={overlayRef}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
       onClick={(e) => {
+        e.stopPropagation();
         if (e.target === overlayRef.current) onClose();
       }}
     >
-      <div className="w-full max-w-lg rounded-lg border border-gray-700 bg-gray-900 shadow-xl">
+      <div role="dialog" aria-modal="true" aria-labelledby={titleId} className="mx-3 max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-lg border border-gray-700 bg-gray-900 shadow-xl">
         <div className="flex items-center justify-between border-b border-gray-700 px-5 py-3">
-          <h2 className="text-lg font-semibold">{title}</h2>
+          <h2 id={titleId} className="text-lg font-semibold">{title}</h2>
           <button
+            type="button"
+            aria-label="Close dialog"
             onClick={onClose}
             className="rounded p-1 text-gray-400 hover:bg-gray-800 hover:text-gray-200"
           >

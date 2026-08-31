@@ -1,0 +1,172 @@
+import type { ComponentType, MouseEvent, ReactNode } from "react";
+import type { Edge, Node } from "@xyflow/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import GraphCanvas from "../GraphCanvas";
+import type { TaskNodeData } from "../types";
+import { edge, graph, task } from "./fixtures";
+
+interface FlowProps {
+  nodes: Node<TaskNodeData>[];
+  edges: Edge[];
+  nodeTypes: { task: ComponentType<{ id: string; data: TaskNodeData; selected: boolean }> };
+  children: ReactNode;
+  onNodeClick: (event: MouseEvent, node: Node<TaskNodeData>) => void;
+  onPaneClick?: (event: MouseEvent) => void;
+  nodesDraggable?: boolean;
+  nodesConnectable?: boolean;
+  deleteKeyCode?: string | null;
+  fitView?: boolean;
+  defaultViewport?: { x: number; y: number; zoom: number };
+}
+
+const flow = vi.hoisted(() => ({ current: null as FlowProps | null }));
+vi.mock("@xyflow/react", () => ({
+  MarkerType: { ArrowClosed: "arrowclosed" },
+  Position: { Top: "top", Bottom: "bottom", Left: "left", Right: "right" },
+  ReactFlowProvider: ({ children }: { children: ReactNode }) => children,
+  ReactFlow: (props: FlowProps) => {
+    flow.current = props;
+    const NodeView = props.nodeTypes.task;
+    return <div>
+      <button type="button" aria-label="Blank canvas" onClick={(event) => props.onPaneClick?.(event)} />
+      {props.nodes.map((node) => (
+        <div key={node.id} data-testid={`node-${node.id}`} onClick={(event) => props.onNodeClick(event, node)}>
+          <NodeView id={node.id} data={node.data} selected={Boolean(node.selected)} />
+        </div>
+      ))}
+      {props.children}
+    </div>;
+  },
+  Background: () => null,
+  Handle: () => null,
+  Controls: () => <div>Zoom controls</div>,
+  Panel: ({ children }: { children: ReactNode }) => <aside>{children}</aside>,
+}));
+vi.mock("../AgentAvatarLayer", () => ({ default: () => null }));
+
+beforeEach(() => { flow.current = null; });
+afterEach(cleanup);
+
+describe("GraphCanvas interactions", () => {
+  it("opens a task from title, metadata, and card padding without draggable nodes or duplicate clicks", () => {
+    const open = vi.fn();
+    render(<GraphCanvas graph={graph([task("one", {
+      title: "Investigate queue", profile_id: "coder", intelligence_class: "standard-high",
+    })])} onTaskClick={open} selectedTaskId="one" />);
+    fireEvent.click(screen.getByText("Investigate queue"));
+    fireEvent.click(screen.getByText("coder"));
+    fireEvent.click(screen.getByText("standard-high"));
+    fireEvent.click(screen.getByTestId("node-one"));
+    expect(open.mock.calls).toEqual([["one"], ["one"], ["one"], ["one"]]);
+    expect(screen.getByRole("button", { name: "Open task Investigate queue" })).toHaveAttribute("aria-pressed", "true");
+    expect(flow.current).toMatchObject({ nodesDraggable: false, nodesConnectable: false, deleteKeyCode: null });
+  });
+
+  it("expands and collapses children independently from opening their task pane", () => {
+    const open = vi.fn();
+    const data = graph([task("parent"), task("child", { status: "IN_PROGRESS" })], [edge("child", "parent")]);
+    render(<GraphCanvas graph={data} onTaskClick={open} />);
+    expect(screen.queryByText("Task child")).not.toBeInTheDocument();
+    expect(screen.getByText("0/1 descendants completed")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Expand children of Task parent" }));
+    expect(screen.getByText("Task child")).toBeInTheDocument();
+    expect(open).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByText("Task child"));
+    expect(open).toHaveBeenCalledExactlyOnceWith("child");
+    fireEvent.click(screen.getByRole("button", { name: "Collapse children of Task parent" }));
+    expect(screen.queryByText("Task child")).not.toBeInTheDocument();
+    expect(open).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears selection on blank canvas or Escape without automatically selecting the first task again", () => {
+    const clear = vi.fn();
+    const data = graph([task("one"), task("two")]);
+    const { rerender } = render(<GraphCanvas graph={data} onTaskClick={vi.fn()} onBackgroundClick={clear} />);
+    fireEvent.click(screen.getByText("Task one"));
+    expect(screen.getByRole("button", { name: "Open task Task one" })).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(screen.getByRole("button", { name: "Blank canvas" }));
+    expect(clear).toHaveBeenCalledTimes(1);
+    rerender(<GraphCanvas graph={{ ...data }} onTaskClick={vi.fn()} onBackgroundClick={clear} />);
+    expect(flow.current?.nodes.every((node) => !node.selected && !node.className?.includes("aq-focused"))).toBe(true);
+    fireEvent.keyDown(screen.getByRole("region", { name: "Task graph" }), { key: "Escape" });
+    expect(clear).toHaveBeenCalledTimes(2);
+  });
+
+  it("clears the focus outline when selection is cleared outside the canvas", () => {
+    const data = graph([task("one")]);
+    const { rerender } = render(<GraphCanvas graph={data} onTaskClick={vi.fn()} selectedTaskId="one" />);
+    fireEvent.click(screen.getByText("Task one"));
+    expect(flow.current!.nodes[0]!.className).toBe("aq-focused");
+    rerender(<GraphCanvas graph={data} onTaskClick={vi.fn()} selectedTaskId={null} />);
+    expect(flow.current!.nodes[0]!.selected).toBe(false);
+    expect(flow.current!.nodes[0]!.className).not.toBe("aq-focused");
+  });
+
+  it("keeps the actual running state visible when new dependencies block a task", () => {
+    render(<GraphCanvas graph={graph([task("one", { status: "IN_PROGRESS", is_blocked: true })])} onTaskClick={vi.fn()} />);
+    expect(screen.getByText("IN PROGRESS")).toBeInTheDocument();
+    expect(screen.getByLabelText("Blocked by dependencies or gates")).toBeInTheDocument();
+  });
+
+  it("keeps terminal colors and labels despite stale blocked flags", () => {
+    render(<GraphCanvas graph={graph([
+      task("done", { status: "COMPLETED", is_blocked: true }),
+      task("failed", { status: "FAILED", is_blocked: true }),
+    ])} onTaskClick={vi.fn()} />);
+    expect(screen.getByText("COMPLETED")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open task Task done" }).closest("[data-task-card]")).toHaveClass("border-emerald-500");
+    expect(screen.getByRole("button", { name: "Open task Task failed" }).closest("[data-task-card]")).toHaveClass("border-red-500");
+    expect(screen.queryByLabelText("Blocked by dependencies or gates")).not.toBeInTheDocument();
+  });
+
+  it("supports arrow navigation and Enter", () => {
+    const open = vi.fn();
+    render(<GraphCanvas graph={graph([task("one"), task("two")])} onTaskClick={open} />);
+    fireEvent.click(screen.getByText("Task one"));
+    fireEvent.keyDown(screen.getByRole("region", { name: "Task graph" }), { key: "ArrowRight" });
+    fireEvent.keyDown(screen.getByRole("region", { name: "Task graph" }), { key: "Enter" });
+    expect(open.mock.calls).toEqual([["one"], ["two"]]);
+  });
+
+  it("keeps native Enter activation separate for expansion and task buttons", async () => {
+    const user = userEvent.setup();
+    const open = vi.fn();
+    render(<GraphCanvas graph={graph([task("parent"), task("child")], [edge("child", "parent")])} onTaskClick={open} />);
+    screen.getByRole("button", { name: "Expand children of Task parent" }).focus();
+    await user.keyboard("{Enter}");
+    expect(screen.getByText("Task child")).toBeInTheDocument();
+    expect(open).not.toHaveBeenCalled();
+    screen.getByRole("button", { name: "Open task Task parent" }).focus();
+    await user.keyboard("{Enter}");
+    expect(open).toHaveBeenCalledExactlyOnceWith("parent");
+  });
+
+  it("retains expansion, card positions, and the camera policy through live status changes and arrivals", () => {
+    const data = graph([task("parent"), task("child"), task("other")], [edge("child", "parent")]);
+    const { rerender } = render(<GraphCanvas graph={data} onTaskClick={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Expand children of Task parent" }));
+    const positions = flow.current!.nodes.map(({ id, position }) => ({ id, position }));
+    const viewport = flow.current!.defaultViewport;
+    rerender(<GraphCanvas graph={{
+      ...data, tasks: [task("new", { priority: 1 }), task("other"), task("child", { status: "COMPLETED" }), task("parent")],
+    }} onTaskClick={vi.fn()} />);
+    expect(screen.getByText("1/1 descendants completed")).toBeInTheDocument();
+    for (const node of positions) {
+      expect(flow.current!.nodes.find((candidate) => candidate.id === node.id)?.position).toEqual(node.position);
+    }
+    expect(flow.current!.fitView).not.toBe(true);
+    expect(flow.current!.defaultViewport).toEqual(viewport);
+    expect(screen.getByText("Zoom controls")).toBeInTheDocument();
+  });
+
+  it("reveals a filtered child with its ancestors while leaving the saved collapse state intact", () => {
+    const data = graph([task("parent"), task("child")], [edge("child", "parent")]);
+    const { rerender } = render(<GraphCanvas graph={data} onTaskClick={vi.fn()} matchingTaskIds={new Set(["child"])} filtering />);
+    expect(screen.getByText("Task child")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Collapse children of Task parent" })).toBeDisabled();
+    rerender(<GraphCanvas graph={data} onTaskClick={vi.fn()} />);
+    expect(screen.queryByText("Task child")).not.toBeInTheDocument();
+  });
+});

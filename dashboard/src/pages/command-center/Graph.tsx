@@ -1,113 +1,54 @@
-import { useEffect, useState } from "react";
-import { useProjects } from "../../api/hooks";
+import { useEffect, useMemo, useState } from "react";
 import { useProjectGraphs } from "../../api/graph";
 import GraphCanvas from "./GraphCanvas";
-import ProjectStrip from "./ProjectStrip";
-import GhostOverlay from "./GhostOverlay";
 import MobileCardList from "./MobileCardList";
-import { useGraphLive } from "./useGraphLive";
-import { useShellPaneStore } from "../../panes/store";
+import { useTaskWorkspace } from "./TaskWorkspace";
+import { matchesTask } from "./taskFilters";
+import { useTaskSelection } from "./useTaskSelection";
 
-const SELECTED_KEY = "aq:command-center:selected";
-
-function useIsMobile() {
-  const [m, setM] = useState(() => window.matchMedia("(max-width: 768px)").matches);
+function usePortraitMobile() {
+  const query = "(max-width: 768px) and (orientation: portrait)";
+  const [matches, setMatches] = useState(() => window.matchMedia(query).matches);
   useEffect(() => {
-    const mq = window.matchMedia("(max-width: 768px)");
-    const onC = (e: MediaQueryListEvent) => setM(e.matches);
-    mq.addEventListener("change", onC);
-    return () => mq.removeEventListener("change", onC);
+    const mq = window.matchMedia(query);
+    const changed = (event: MediaQueryListEvent) => setMatches(event.matches);
+    mq.addEventListener("change", changed);
+    return () => mq.removeEventListener("change", changed);
   }, []);
-  return m;
-}
-
-function useIsLandscape() {
-  const [l, setL] = useState(() =>
-    window.matchMedia("(orientation: landscape)").matches,
-  );
-  useEffect(() => {
-    const mq = window.matchMedia("(orientation: landscape)");
-    const onC = (e: MediaQueryListEvent) => setL(e.matches);
-    mq.addEventListener("change", onC);
-    return () => mq.removeEventListener("change", onC);
-  }, []);
-  return l;
+  return matches;
 }
 
 export default function CommandCenterGraph() {
-  const { data: projects = [] } = useProjects();
-  const [selected, setSelected] = useState<string[]>(() => {
-    try {
-      return JSON.parse(localStorage.getItem(SELECTED_KEY) ?? "[]");
-    } catch {
-      return [];
-    }
-  });
-  useEffect(() => {
-    try {
-      localStorage.setItem(SELECTED_KEY, JSON.stringify(selected));
-    } catch {
-      /* ignore */
-    }
-  }, [selected]);
-  // Drop persisted ids for projects that no longer exist. Without this a
-  // deleted project stays in localStorage forever, and every visit pays a
-  // failed graph fetch for it. Only prunes once the project list has actually
-  // loaded, so an empty list mid-fetch can't wipe a valid selection.
-  useEffect(() => {
-    if (projects.length === 0) return;
-    const live = new Set(projects.map((p) => p.id));
-    setSelected((prev) => {
-      const kept = prev.filter((id) => live.has(id));
-      return kept.length === prev.length ? prev : kept;
-    });
-  }, [projects]);
-
-  useEffect(() => {
-    if (selected.length === 0 && projects.length > 0 && projects[0]) {
-      setSelected([projects[0].id]);
-    }
-  }, [projects, selected.length]);
-
-  const { data: graph, isLoading } = useProjectGraphs(selected);
-  useGraphLive(selected);
-
-  const isMobile = useIsMobile();
-  const isLandscape = useIsLandscape();
-  const showCanvas = !isMobile || isLandscape;
-
-  const pane = useShellPaneStore();
-
-  const toggle = (pid: string) =>
-    setSelected((prev) =>
-      prev.includes(pid) ? prev.filter((x) => x !== pid) : [...prev, pid],
-    );
+  const { projectId, projectIds, projects, filters, isLoadingProjects, projectsError } = useTaskWorkspace();
+  const { data: graph, isLoading, errors } = useProjectGraphs(projectIds);
+  const { selectedTaskId, selectTask, clearTask } = useTaskSelection();
+  const mobile = usePortraitMobile();
+  const matchingTaskIds = useMemo(() => {
+    const names = new Map(projects.map((p) => [p.id, p.name || p.id]));
+    return new Set(graph.tasks.filter((task) => {
+      const pid = graph.taskProject[task.id];
+      return matchesTask(task, filters, `${pid ?? ""} ${names.get(pid ?? "") ?? ""}`);
+    }).map((task) => task.id));
+  }, [graph, filters, projects]);
+  const failures = errors.filter(Boolean);
+  const loading = isLoading || (!projectId && isLoadingProjects);
+  const View = mobile ? MobileCardList : GraphCanvas;
 
   return (
-    <div className="flex h-full flex-col">
-      <ProjectStrip
-        projects={projects}
-        graph={graph}
-        selected={selected}
-        onToggle={toggle}
-      />
-      <div className="relative flex-1 overflow-hidden">
-        {isLoading ? (
-          <p className="p-4 text-sm text-gray-400">Loading graph…</p>
-        ) : showCanvas ? (
-          <>
-            <GraphCanvas
-              graph={graph}
-              onTaskClick={(taskId) => pane.open("task-detail", { taskId })}
-            />
-            <GhostOverlay proposalId={null} />
-          </>
-        ) : (
-          <MobileCardList
-            graph={graph}
-            onTaskClick={(taskId) => pane.open("task-detail", { taskId })}
-          />
-        )}
+    <div className="flex h-full min-h-0 flex-col" onClick={(event) => { if (event.target === event.currentTarget) clearTask(); }}>
+      {(projectsError || failures.length > 0) && <p role="alert" className="shrink-0 border-b border-amber-800/50 bg-amber-950/30 px-4 py-2 text-sm text-amber-200">
+        {graph.tasks.length ? "Some projects could not be loaded. Showing available tasks." : "Could not load tasks. Check the backend connection and try again."}
+      </p>}
+      <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2 text-xs text-gray-500" onClick={clearTask}>
+        <span>{matchingTaskIds.size} matching {matchingTaskIds.size === 1 ? "task" : "tasks"} · {graph.tasks.length} total</span>
+        <span className="inline-flex items-center gap-1.5"><span className="w-5 border-t-2 border-indigo-400" /> Dependency</span>
+        <span className="inline-flex items-center gap-1.5"><span className="w-5 border-t border-dashed border-gray-400" /> Child task</span>
+        {loading && <span role="status">Loading tasks…</span>}
+      </div>
+      <div className="relative min-h-0 flex-1" aria-busy={loading}>
+        <View graph={graph} matchingTaskIds={matchingTaskIds} filtering={!!(filters.query.trim() || filters.status)}
+          selectedTaskId={selectedTaskId} onTaskClick={selectTask} onBackgroundClick={clearTask} />
+        {loading && graph.tasks.length === 0 && <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-gray-950 text-sm text-gray-400">Loading tasks…</div>}
       </div>
     </div>
   );

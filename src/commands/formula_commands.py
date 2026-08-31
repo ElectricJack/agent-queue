@@ -317,6 +317,9 @@ class FormulaCommandsMixin:
         )
 
         if not dry_run:
+            container = await self.db.get_task(report["parent_id"])
+            if container is not None:
+                await self._emit_task_graph_change("task.updated", container)
             event = {
                 "container_id": report["parent_id"],
                 "project_id": project_id,

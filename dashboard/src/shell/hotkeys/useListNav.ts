@@ -19,6 +19,11 @@ export function useListNav<T extends HTMLElement>(opts: Opts = {}) {
     const next = axis === "vertical" ? "ArrowDown" : "ArrowRight";
     const prev = axis === "vertical" ? "ArrowUp" : "ArrowLeft";
     const onKey = (e: KeyboardEvent) => {
+      const origin = e.target as HTMLElement | null;
+      // Editable controls and modal dialogs own their caret/option keys.
+      if (e.altKey || e.ctrlKey || e.metaKey || origin?.closest(
+        'input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="dialog"]',
+      )) return;
       const items = Array.from(
         el.querySelectorAll<HTMLElement>('[data-listnav="1"]'),
       );

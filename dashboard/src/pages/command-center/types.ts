@@ -1,10 +1,8 @@
 import type { ProjectGraphResponse } from "@aq/ts-client";
 
-/** Shared task-node dimensions — used by both the dagre layout pass
- *  (layout.ts) and the avatar-docking projection (AgentAvatarLayer.tsx).
- *  Keep these in sync with the actual TaskNode.tsx rendered size. */
-export const NODE_WIDTH = 220;
-export const NODE_HEIGHT = 88;
+/** Fixed card dimensions keep wrapped rows and connection handles aligned. */
+export const NODE_WIDTH = 240;
+export const NODE_HEIGHT = 156;
 
 export type GraphTaskNode = NonNullable<ProjectGraphResponse["tasks"]>[number];
 export type GraphEdge = NonNullable<ProjectGraphResponse["edges"]>[number];
@@ -16,6 +14,38 @@ export interface MergedGraph {
   edges: GraphEdge[];
   gates: GraphGate[];
   agents: GraphAgent[];
-  /** projectId a task belongs to — filled by the merger, keyed by task.id */
   taskProject: Record<string, string>;
+}
+
+export interface GraphViewProps {
+  graph: MergedGraph;
+  onTaskClick: (taskId: string) => void;
+  selectedTaskId?: string | null;
+  onBackgroundClick?: () => void;
+  matchingTaskIds?: ReadonlySet<string>;
+  filtering?: boolean;
+}
+
+export interface TaskHierarchy {
+  parentId: string | null;
+  parentTitle: string | null;
+  depth: number;
+  childCount: number;
+  visibleChildCount: number;
+  descendantCount: number;
+  completedCount: number;
+  runningCount: number;
+  blockedCount: number;
+  expanded: boolean;
+  autoExpanded: boolean;
+  contextOnly: boolean;
+}
+
+export interface TaskNodeData extends Record<string, unknown> {
+  task: GraphTaskNode;
+  gates: GraphGate[];
+  projectId: string;
+  hierarchy: TaskHierarchy;
+  onOpenTask?: (taskId: string) => void;
+  onToggleChildren?: (taskId: string) => void;
 }

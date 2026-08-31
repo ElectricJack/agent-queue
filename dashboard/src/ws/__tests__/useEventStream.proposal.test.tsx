@@ -1,9 +1,21 @@
-import { describe, it, expect, vi } from "vitest";
-import { renderHook } from "@testing-library/react";
+import { afterAll, afterEach, describe, it, expect, vi } from "vitest";
+import { cleanup, renderHook } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { useEventStream, __dispatchEventForTests } from "../useEventStream";
 import type { ProposalStatusChangedEvent } from "../types";
+
+// The singleton connects on import; keep this test off the real network.
+vi.hoisted(() => {
+  vi.stubGlobal("WebSocket", class {
+    static OPEN = 1;
+    static CONNECTING = 0;
+    readyState = 0;
+    close() {}
+  });
+});
+afterEach(cleanup);
+afterAll(() => vi.unstubAllGlobals());
 
 function makeWrapper(client: QueryClient) {
   return function Wrapper({ children }: { children: ReactNode }) {
@@ -29,5 +41,6 @@ describe("useEventStream — proposal.status_changed", () => {
     __dispatchEventForTests(event);
 
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["proposal", "prop-abc"] });
+    client.clear();
   });
 });

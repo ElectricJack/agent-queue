@@ -2,7 +2,6 @@ import { useState } from "react";
 import { Link, useLocation, useParams } from "react-router-dom";
 import {
   BriefcaseIcon,
-  ChatBubbleLeftRightIcon,
   CircleStackIcon,
   ClipboardDocumentIcon,
   ClipboardDocumentListIcon,
@@ -22,6 +21,7 @@ import {
   type Task,
 } from "../../api/hooks";
 import StatusBadge from "../../components/StatusBadge";
+import { workspaceHref } from "../../shell/projectNavigation";
 
 const TERMINAL = new Set(["COMPLETED", "FAILED", "SKIPPED", "CANCELED"]);
 
@@ -131,7 +131,7 @@ export default function ProjectOverview() {
             <p className="mt-2 text-xs text-gray-500">
               {workspaceList.length - 1} more worktree
               {workspaceList.length - 1 === 1 ? "" : "s"} — see{" "}
-              <Link to="workspaces" className="text-indigo-400 hover:underline">
+              <Link to={workspaceHref(projectId, "workspaces", location.search)} className="text-indigo-400 hover:underline">
                 Workspaces tab
               </Link>
               .
@@ -142,14 +142,14 @@ export default function ProjectOverview() {
         {/* Launch */}
         <Card title="Launch" icon={<ArrowTopRightOnSquareIcon className="h-4 w-4" />}>
           <ActionButton
-            to={`/chat/${projectId}`}
-            icon={<ChatBubbleLeftRightIcon className="h-4 w-4" />}
-            label="Chat with supervisor"
+            to="/agents"
+            icon={<UsersIcon className="h-4 w-4" />}
+            label="Open agent flock"
           />
           <ActionButton
-            to="/command-center"
+            to={workspaceHref(projectId, "graph", location.search)}
             icon={<Squares2X2Icon className="h-4 w-4" />}
-            label="Open in Command Center"
+            label="Open task graph"
           />
           {discordChannelId && (
             <ExternalLink
@@ -214,7 +214,7 @@ export default function ProjectOverview() {
                 <ExclamationTriangleIcon className="h-4 w-4" />
                 <span>
                   {failed} task{failed === 1 ? "" : "s"} failed —{" "}
-                  <Link to="tasks" className="underline hover:text-red-300">
+                  <Link to={workspaceHref(projectId, "tasks", location.search)} className="underline hover:text-red-300">
                     review
                   </Link>
                 </span>
@@ -227,7 +227,7 @@ export default function ProjectOverview() {
         <section className="lg:col-span-2">
           <div className="mb-3 flex items-center justify-between">
             <h2 className="text-sm font-semibold uppercase text-gray-500">Active tasks</h2>
-            <Link to="tasks" className="text-xs text-indigo-400 hover:underline">
+            <Link to={workspaceHref(projectId, "tasks", location.search)} className="text-xs text-indigo-400 hover:underline">
               View all →
             </Link>
           </div>
@@ -242,7 +242,7 @@ export default function ProjectOverview() {
                 <Link
                   key={task.id}
                   to={`/tasks/${task.id}`}
-                  state={{ from: location.pathname }}
+                  state={{ from: location.pathname + location.search }}
                   className="flex items-center justify-between gap-3 rounded-lg border border-gray-800 bg-gray-900 px-4 py-3 transition-colors hover:border-indigo-500/50"
                 >
                   <div className="min-w-0 flex-1">
@@ -258,7 +258,7 @@ export default function ProjectOverview() {
               {activeTasks.length > 8 && (
                 <p className="text-xs text-gray-500">
                   +{activeTasks.length - 8} more · see{" "}
-                  <Link to="tasks" className="text-indigo-400 hover:underline">
+                  <Link to={workspaceHref(projectId, "tasks", location.search)} className="text-indigo-400 hover:underline">
                     Tasks tab
                   </Link>
                 </p>

@@ -1,116 +1,115 @@
 import type { CSSProperties } from "react";
-import dagre from "@dagrejs/dagre";
-import type { Edge, Node } from "@xyflow/react";
-import { NODE_WIDTH, NODE_HEIGHT, type GraphTaskNode, type MergedGraph } from "./types";
+import { MarkerType, type Edge, type Node } from "@xyflow/react";
+import { projectHierarchy, type HierarchyOptions, type HierarchyProjection, type ProjectedEdge } from "./hierarchy";
+import { NODE_WIDTH, NODE_HEIGHT, type GraphTaskNode, type MergedGraph, type TaskNodeData } from "./types";
 
-/**
- * Rank ordering for statuses — lower = higher up in the canvas.
- * Completed & terminal work floats to the top; active work sits in the
- * middle; pending/new work drifts toward the bottom. Dagre's DAG rank
- * dominates when edges exist; this only breaks ties for isolated tasks
- * and biases the within-rank order of same-depth siblings.
- */
-const STATUS_ORDER: Record<string, number> = {
-  COMPLETED: 0,
-  FAILED: 0,
-  CANCELED: 0,
-  BLOCKED: 1,
-  IN_PROGRESS: 2,
-  AWAITING_APPROVAL: 2,
-  AWAITING_PLAN_APPROVAL: 2,
-  WAITING_INPUT: 2,
-  READY: 3,
-  PENDING: 4,
-};
+const COLUMN_GAP = 48;
+const ROW_GAP = 64;
+const PADDING = 32;
 
-function statusRank(t: GraphTaskNode): number {
-  return STATUS_ORDER[(t.status ?? "PENDING").toUpperCase()] ?? 5;
+export function columnsForWidth(width: number): number {
+  if (width <= 0) return 3;
+  return Math.max(1, Math.min(4, Math.floor((width - PADDING * 2 + COLUMN_GAP) / (NODE_WIDTH + COLUMN_GAP))));
 }
 
-function priorityRank(t: GraphTaskNode): number {
-  // Higher priority (bigger number) sorts first — dagre uses insertion
-  // order to break ties in the barycenter heuristic, so higher-priority
-  // nodes end up on the left within their rank.
-  return -(t.priority ?? 0);
+const ORDERED_RELATIONS = new Set(["blocks", "parent-child", "waits-for", "conditional-blocks", "discovered-from"]);
+
+/** Stable dependency traversal: metadata/status changes cannot reshuffle
+ *  cards. Independent arrivals append in the server's creation/priority order. */
+function dependencyOrder(tasks: GraphTaskNode[], edges: ProjectedEdge[]): GraphTaskNode[] {
+  const byId = new Map(tasks.map((task) => [task.id, task]));
+  const rank = new Map(tasks.map((task, i) => [task.id, i]));
+  const prerequisites = new Map<string, Set<string>>();
+  for (const edge of edges) {
+    if (!ORDERED_RELATIONS.has(edge.dep_type)) continue;
+    if (!prerequisites.has(edge.from)) prerequisites.set(edge.from, new Set());
+    prerequisites.get(edge.from)!.add(edge.to);
+  }
+  const seen = new Set<string>();
+  const result: GraphTaskNode[] = [];
+  function visit(id: string) {
+    if (seen.has(id)) return;
+    seen.add(id);
+    const dependencies = [...(prerequisites.get(id) ?? [])]
+      .sort((a, b) => (rank.get(a) ?? 0) - (rank.get(b) ?? 0));
+    for (const dependency of dependencies) visit(dependency);
+    const task = byId.get(id);
+    if (task) result.push(task);
+  }
+  for (const task of tasks) visit(task.id);
+  return result;
 }
 
-export function layoutGraph(g: MergedGraph): { nodes: Node[]; edges: Edge[] } {
-  const dg = new dagre.graphlib.Graph();
-  dg.setDefaultEdgeLabel(() => ({}));
-  // Top-to-bottom flow: completed dependencies rank at the top, dependents
-  // rank below them, and new work added to the graph naturally lands at
-  // the bottom because it has more inbound "depends on" chains above it.
-  dg.setGraph({ rankdir: "TB", nodesep: 40, ranksep: 100 });
+interface LayoutOptions extends HierarchyOptions {
+  columns?: number;
+  projection?: HierarchyProjection;
+}
 
-  // Feed nodes in an order that biases dagre's within-rank sort:
-  // completed first, then in-progress, then pending; ties broken by
-  // priority DESC, then task id for determinism across renders.
-  const orderedTasks = [...g.tasks].sort((a, b) => {
-    const s = statusRank(a) - statusRank(b);
-    if (s !== 0) return s;
-    const p = priorityRank(a) - priorityRank(b);
-    if (p !== 0) return p;
-    return a.id.localeCompare(b.id);
-  });
-
-  for (const t of orderedTasks) {
-    dg.setNode(t.id, { width: NODE_WIDTH, height: NODE_HEIGHT });
+export function layoutGraph(
+  graph: MergedGraph,
+  options: LayoutOptions = {},
+): { nodes: Node<TaskNodeData>[]; edges: Edge[] } {
+  const projection = options.projection ?? projectHierarchy(graph, options);
+  const columns = Math.max(1, Math.min(4, Math.floor(options.columns ?? 3)));
+  const orderedTasks = dependencyOrder(projection.tasks, projection.edges);
+  const gatesByTask = new Map<string, MergedGraph["gates"]>();
+  for (const gate of graph.gates) {
+    for (const id of gate.task_ids ?? []) {
+      gatesByTask.set(id, [...(gatesByTask.get(id) ?? []), gate]);
+    }
   }
-
-  // Only render edges whose BOTH endpoints are loaded (spec §9.2 cross-project rule).
-  const loaded = new Set(g.tasks.map((t) => t.id));
-  const edges = g.edges.filter((e) => loaded.has(e.from) && loaded.has(e.to));
-
-  // Backend edges are stored as {from: dependent, to: dependency}. We
-  // want the visual flow to go dependency (top) → dependent (bottom) so
-  // completed prerequisites float up and new work hooks in below them.
-  // Feed dagre — and later React Flow — the reversed direction so arrows
-  // point downward from prerequisite to dependent.
-  for (const e of edges) {
-    dg.setEdge(e.to, e.from);
-  }
-
-  dagre.layout(dg);
-
-  const nodes: Node[] = g.tasks.map((t) => {
-    const pos = dg.node(t.id);
-    const nodeGates = g.gates.filter((gate) => (gate.task_ids ?? []).includes(t.id));
+  const nodes: Node<TaskNodeData>[] = orderedTasks.map((task, index) => ({
+    id: task.id,
+    type: "task",
+    position: {
+      x: PADDING + (index % columns) * (NODE_WIDTH + COLUMN_GAP),
+      y: PADDING + Math.floor(index / columns) * (NODE_HEIGHT + ROW_GAP),
+    },
+    width: NODE_WIDTH,
+    height: NODE_HEIGHT,
+    draggable: false,
+    connectable: false,
+    ariaRole: "group",
+    ariaLabel: task.title,
+    data: {
+      task, gates: gatesByTask.get(task.id) ?? [],
+      projectId: graph.taskProject[task.id] ?? "",
+      hierarchy: projection.details.get(task.id)!,
+    },
+  }));
+  const positions = new Map(nodes.map((node) => [node.id, node.position]));
+  const edges: Edge[] = projection.edges.map((edge) => {
+    const sourcePosition = positions.get(edge.to)!;
+    const targetPosition = positions.get(edge.from)!;
+    const vertical = sourcePosition.y !== targetPosition.y;
+    const style = edgeStyleForType(edge.dep_type);
     return {
-      id: t.id,
-      type: "task",
-      position: { x: (pos?.x ?? 0) - NODE_WIDTH / 2, y: (pos?.y ?? 0) - NODE_HEIGHT / 2 },
-      data: { task: t, gates: nodeGates, projectId: g.taskProject[t.id] },
+      id: JSON.stringify([edge.to, edge.from, edge.dep_type]),
+      source: edge.to,
+      target: edge.from,
+      sourceHandle: vertical ? "out-bottom" : "out-right",
+      targetHandle: vertical ? "in-top" : "in-left",
+      type: "smoothstep",
+      markerEnd: { type: MarkerType.ArrowClosed, color: String(style.stroke), width: 18, height: 18 },
+      label: edge.dep_type + (edge.count > 1 ? ` ×${edge.count}` : ""),
+      labelStyle: { fill: "#d1d5db", fontSize: 9 },
+      labelBgStyle: { fill: "#111827", fillOpacity: 0.95 },
+      labelBgPadding: [4, 2],
+      style,
+      data: { depType: edge.dep_type, count: edge.count, remapped: edge.remapped },
+      ariaLabel: `${edge.dep_type}: ${edge.to} to ${edge.from}${edge.remapped ? " (collapsed tasks)" : ""}`,
     };
   });
-
-  const rfEdges: Edge[] = edges.map((e) => ({
-    // React Flow edge: source at top (dependency), target at bottom (dependent).
-    // The arrow points from the completed prerequisite down to whatever
-    // depends on it — matches the "work flows down" reading of the graph.
-    id: `${e.to}->${e.from}:${e.dep_type}`,
-    source: e.to,
-    target: e.from,
-    type: e.dep_type === "blocks" ? "smoothstep" : "default",
-    animated: e.dep_type === "waits_for",
-    style: edgeStyleForType(e.dep_type),
-  }));
-
-  return { nodes, edges: rfEdges };
+  return { nodes, edges };
 }
 
-function edgeStyleForType(depType: string): CSSProperties {
+export function edgeStyleForType(depType: string): CSSProperties {
   switch (depType) {
-    case "blocks":
-      return { stroke: "#818cf8", strokeWidth: 2 };
-    case "parent_child":
-      return { stroke: "#a3a3a3", strokeDasharray: "4 4" };
-    case "waits_for":
-      return { stroke: "#fbbf24", strokeWidth: 2 };
-    case "conditional_blocks":
-      return { stroke: "#fb923c", strokeDasharray: "6 3" };
-    case "discovered_from":
-      return { stroke: "#6b7280", strokeDasharray: "2 4" };
-    default:
-      return { stroke: "#4b5563" };
+    case "blocks": return { stroke: "#818cf8", strokeWidth: 2 };
+    case "parent-child": return { stroke: "#a3a3a3", strokeWidth: 1.5, strokeDasharray: "4 4" };
+    case "waits-for": return { stroke: "#fbbf24", strokeWidth: 2 };
+    case "conditional-blocks": return { stroke: "#fb923c", strokeWidth: 1.5, strokeDasharray: "6 3" };
+    case "discovered-from": return { stroke: "#6b7280", strokeWidth: 1.5, strokeDasharray: "2 4" };
+    default: return { stroke: "#9ca3af", strokeWidth: 1 };
   }
 }

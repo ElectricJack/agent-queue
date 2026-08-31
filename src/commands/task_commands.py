@@ -611,6 +611,30 @@ class TaskCommandsMixin:
 
     # -- shared helpers ------------------------------------------------------
 
+    async def _emit_task_graph_change(
+        self, event_type: str, task: Task, *, project_id: str | None = None
+    ) -> None:
+        """Publish a committed graph edit; subscriber failures cannot undo it.
+
+        Persist the small identity-only audit row for reconnect replay. The bus
+        uses the usual task base fields (never description or command arguments).
+        This intentionally does not emit task.created, which triggers routing.
+        """
+        pid = project_id or task.project_id
+        seq = None
+        try:
+            seq = await self.db.log_event(event_type, project_id=pid, task_id=task.id)
+        except Exception:
+            logger.warning(
+                "Could not persist graph change %s for %s", event_type, task.id, exc_info=True
+            )
+        try:
+            await self.orchestrator._emit_task_event(event_type, task, project_id=pid, seq=seq)
+        except Exception:
+            logger.warning(
+                "Could not publish graph change %s for %s", event_type, task.id, exc_info=True
+            )
+
     def _apply_completion_filter(
         self,
         tasks: list[Task],
@@ -1685,6 +1709,10 @@ class TaskCommandsMixin:
         report = await create_graph(
             self, graph, project_id=project_id, dry_run=dry_run, parent_id=parent_id
         )
+        if not dry_run:
+            container = await self.db.get_task(report["parent_id"])
+            if container is not None:
+                await self._emit_task_graph_change("task.updated", container)
         report["project_id"] = project_id
         report["warnings"] = [w.to_dict() for w in warnings]
         if parent_id:
@@ -1953,6 +1981,7 @@ class TaskCommandsMixin:
             task_id=task_id,
             payload=f"{dep_type} -> {depends_on}",
         )
+        await self._emit_task_graph_change("task.updated", task)
 
         return {
             "ok": True,
@@ -2010,6 +2039,7 @@ class TaskCommandsMixin:
             task_id=task_id,
             payload=f"{','.join(sorted(matching))} -> {depends_on}",
         )
+        await self._emit_task_graph_change("task.updated", task)
 
         return {
             "ok": True,
@@ -2145,6 +2175,11 @@ class TaskCommandsMixin:
                 "The task will fail at execution time. This mode is reserved for future "
                 "monorepo support. Use 'exclusive' instead ('branch-isolated' is "
                 "deprecated and now behaves identically to 'exclusive')."
+            )
+        await self._emit_task_graph_change("task.updated", task)
+        if updates.get("project_id", task.project_id) != task.project_id:
+            await self._emit_task_graph_change(
+                "task.updated", task, project_id=updates["project_id"]
             )
         return result
 
@@ -2347,6 +2382,7 @@ class TaskCommandsMixin:
                     "error": f"hierarchy.{exc.code}: {exc.detail}",
                     "code": f"hierarchy.{exc.code}",
                 }
+        await self._emit_task_graph_change("task.deleted", task)
         return {"deleted": task_id, "title": task.title}
 
     # -- Archive commands -----------------------------------------------------
@@ -2409,6 +2445,7 @@ class TaskCommandsMixin:
                 project_id=task.project_id,
                 task_id=task_id,
             )
+            await self._emit_task_graph_change("task.archived", task)
             return {
                 "archived": task_id,
                 "title": task.title,
@@ -2469,6 +2506,7 @@ class TaskCommandsMixin:
                 project_id=task.project_id,
                 task_id=task.id,
             )
+            await self._emit_task_graph_change("task.archived", task)
             archived.append(
                 {
                     "id": task.id,
@@ -3863,6 +3901,9 @@ class TaskCommandsMixin:
         result = await self._cmd_create_task(create_args)
         if "error" in result:
             return {"success": False, "error": result["error"]}
+        created_task = await self.db.get_task(result["created"])
+        if created_task is not None:
+            await self._emit_task_graph_change("task.updated", created_task)
         return {"success": True, "task_id": result["created"], "created": True}
 
     async def _cmd_get_downstream_tasks(self, args: dict) -> dict:

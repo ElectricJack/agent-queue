@@ -138,6 +138,19 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
         "required": ["task_id", "project_id", "title"],
         "optional": ["old_parent", "new_parent"],
     },
+    # Committed command edits: refresh dashboard snapshots without re-routing.
+    "task.updated": {
+        "required": ["task_id", "project_id", "title"],
+        "optional": ["seq"],
+    },
+    "task.deleted": {
+        "required": ["task_id", "project_id", "title"],
+        "optional": ["seq"],
+    },
+    "task.archived": {
+        "required": ["task_id", "project_id", "title"],
+        "optional": ["seq"],
+    },
 }
 
 # ---------------------------------------------------------------------------
