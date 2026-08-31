@@ -790,6 +790,9 @@ from .task_progress_request import TaskProgressRequest
 from .task_progress_response import TaskProgressResponse
 from .task_progress_response_422 import TaskProgressResponse422
 from .task_ref import TaskRef
+from .task_recover_request import TaskRecoverRequest
+from .task_recover_response_422 import TaskRecoverResponse422
+from .task_recovery_response import TaskRecoveryResponse
 from .task_route_request import TaskRouteRequest
 from .task_route_response import TaskRouteResponse
 from .task_route_response_422 import TaskRouteResponse422

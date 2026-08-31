@@ -11545,6 +11545,53 @@
         }
       }
     },
+    "/api/task/recover": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Decide a supervisor recovery incident: retry safely within existing budgets or hold with a recorded diagnosis. Never bypass a rejection using restart_task or status edits.",
+        "description": "Decide a supervisor recovery incident: retry safely within existing budgets or hold with a recorded diagnosis. Never bypass a rejection using restart_task or status edits.",
+        "operationId": "task_recover",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskRecoverRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskRecoveryResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/task/route": {
       "post": {
         "tags": [
@@ -30486,6 +30533,66 @@
           "depth"
         ],
         "title": "TaskProgressResponse"
+      },
+      "TaskRecoverRequest": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id",
+            "description": "Task ID"
+          },
+          "incident_id": {
+            "type": "string",
+            "title": "Incident Id",
+            "description": "Exact recovery incident ID from the supervisor notification"
+          },
+          "decision": {
+            "type": "string",
+            "title": "Decision",
+            "description": ""
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": "Diagnosis and rationale for this decision"
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "incident_id",
+          "decision",
+          "reason"
+        ],
+        "title": "TaskRecoverRequest"
+      },
+      "TaskRecoveryResponse": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "incident_id": {
+            "type": "string",
+            "title": "Incident Id"
+          },
+          "decision": {
+            "type": "string",
+            "title": "Decision"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "incident_id",
+          "decision",
+          "status"
+        ],
+        "title": "TaskRecoveryResponse"
       },
       "TaskRef": {
         "properties": {
