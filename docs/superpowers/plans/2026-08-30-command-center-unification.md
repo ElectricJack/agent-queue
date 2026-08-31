@@ -52,6 +52,8 @@ Files: command-center/useGraphLive.ts, api/graph.ts, api/hooks.ts, existing grap
 
 - [x] Review all slices together; run focused tests, edited-file lint, typecheck, and production build.
 - [x] Browser-test sidebar scope, all/project tabs, graph selection/blank deselection, filters, hierarchy, and Add task with Cancel. Do not create real tasks or interrupt sessions.
-- [ ] Integrate once unrelated main merge is clear; otherwise apply only verified dashboard changes without touching its merge state. Verify dashboard and API health, report actual limitations.
+- [x] Integrate the verified feature with current main, preserving unrelated changes. Verify dashboard and API health and report actual limitations.
 
 Validation notes: direct browser checks used existing task reads and an isolated local graph fixture; no real tasks were created. Main’s unrelated merge completed before integration. Full-suite test isolation required explicit shared DOM cleanup and a scoped API-mock reset; application typecheck and production build passed.
+
+Final verification: merged backend checks passed (533 passed, 1 skipped); frontend suite passed 521/524 with the same three existing shortcut/palette failures. Strict TypeScript and production builds passed in the integrated worktree and main. AQ was restarted from main with `--keep-sessions`; `/health` is healthy, all four agents remain idle/stopped, and no test tasks were created. Browser checks on the live main dashboard confirmed full-card selection, blank-click deselection, shared sidebar scope, preserved filters, and scoped creation defaults. Existing main edits were preserved.
