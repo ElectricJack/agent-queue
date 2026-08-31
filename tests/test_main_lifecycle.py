@@ -126,10 +126,9 @@ async def test_run_initializes_before_adapter_and_runs_degraded_after_login_fail
     degrades messaging instead of tearing the daemon down; shutdown closes
     the adapter and the orchestrator."""
     config = _sqlite_config(tmp_path)
-    adapter = _FakeAdapter(events := [])
+    adapter = _FakeAdapter([])
     events_ref, state = _install_run_env(monkeypatch, config, adapter)
-    # _install_run_env allocates its own list; share the adapter's.
-    adapter.events = events_ref
+    adapter.events = events_ref  # share the recorder installed by the env
     state["on_first_cycle"] = lambda: os.kill(os.getpid(), signal.SIGTERM)
 
     async with asyncio.timeout(30):
