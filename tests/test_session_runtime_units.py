@@ -8,10 +8,13 @@ cache semantics, and the fenced-kill primitives in proctable.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import signal
 import subprocess
 import sys
+import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -19,6 +22,7 @@ from src.sessions import proctable
 from src.sessions.dialogs import DialogBudget, run_dialog_dismissal
 from src.sessions.provider import DialogRule
 from src.sessions.state_cache import TmuxStateCache, TmuxUnavailable
+from src.sessions.transcripts.watcher import TranscriptWatcher
 
 # ---------------------------------------------------------------------------
 # dialogs
@@ -199,6 +203,82 @@ class TestStateCache:
         me = procs[os.getpid()]
         subtree = cache.descendants(procs, me.ppid)
         assert any(p.pid == os.getpid() for p in subtree)
+
+
+# ---------------------------------------------------------------------------
+# transcript watcher recovery
+# ---------------------------------------------------------------------------
+
+
+class _RecoveryDB:
+    def __init__(self, row):
+        self.row = row
+        self.activity: list[tuple[str, float]] = []
+
+    async def list_sessions(self, *, live_only=False):
+        assert live_only
+        return [self.row]
+
+    async def get_session(self, session_id):
+        return self.row if session_id == self.row.id else None
+
+    async def touch_session_activity(self, session_id, timestamp):
+        self.activity.append((session_id, timestamp))
+
+
+class _RecoveryBus:
+    def __init__(self):
+        self.events: list[tuple[str, dict]] = []
+
+    async def emit(self, event_type, payload=None):
+        self.events.append((event_type, dict(payload or {})))
+
+
+class TestTranscriptWatcherRecovery:
+    async def test_malformed_then_valid_append_recovers_and_emits_only_valid_entry(self, tmp_path):
+        work_dir = "/work/recovery"
+        transcript_dir = (
+            tmp_path / ".claude" / "projects" / work_dir.replace("/", "-").replace(".", "-")
+        )
+        transcript_dir.mkdir(parents=True)
+        path = transcript_dir / "recovery-key.jsonl"
+        path.write_text('{"type":')  # writer was observed between writes
+
+        row = SimpleNamespace(
+            id="recovery-session",
+            harness="claude",
+            session_key="recovery-key",
+            work_dir=work_dir,
+            task_id=None,
+            project_id="p1",
+        )
+        db = _RecoveryDB(row)
+        bus = _RecoveryBus()
+        watcher = TranscriptWatcher(db=db, bus=bus, base_dir=tmp_path)
+
+        await watcher.tick()
+        assert bus.events == []
+        assert watcher._states[row.id].offset == 0
+
+        valid = {
+            "type": "user",
+            "uuid": "valid-entry",
+            "parentUuid": None,
+            "timestamp": time.time(),
+            "message": {"role": "user", "content": "recovered"},
+        }
+        with path.open("a") as transcript:
+            transcript.write("\n" + json.dumps(valid) + "\n")
+
+        await watcher.tick()
+        await watcher.tick()  # the recovered line is consumed exactly once
+
+        messages = [
+            payload for event_type, payload in bus.events if event_type == "notify.task_message"
+        ]
+        assert [message["message"] for message in messages] == ["recovered"]
+        assert watcher._states[row.id].offset == path.stat().st_size
+        assert db.activity == [(row.id, valid["timestamp"])]
 
 
 # ---------------------------------------------------------------------------

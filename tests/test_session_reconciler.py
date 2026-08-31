@@ -10,6 +10,8 @@ See docs/specs/implementation/session-runtime.md §3.6, §8, §9.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from src.config import AppConfig
@@ -27,7 +29,7 @@ from src.models import (
 from src.sessions import SessionProviderRegistry
 from src.sessions.exit_classifier import Verdict, classify_exit
 from src.sessions.fake import FakeProvider
-from src.sessions.provider import SessionSpec
+from src.sessions.provider import SessionHandle, SessionSpec
 from src.sessions.reconciler import (
     DRAIN_ACK_KEY,
     META_STALL_LAST_ACTION,
@@ -142,6 +144,57 @@ def releasing_reconciler(db, config, registry, bus):
     return rec
 
 
+class _PoolOrchestrator:
+    """Production-shaped pool teardown with observable call boundaries."""
+
+    def __init__(self, db, provider):
+        self.db = db
+        self.provider = provider
+        self.claim_waiters: dict[tuple[str, int], asyncio.Future] = {}
+        self._pool_quarantine: dict[tuple[str, str], float] = {}
+        self.terminations: list[tuple[str, str]] = []
+        self.generic_releases: list[str] = []
+
+    async def _terminate_pool_session(self, session, *, reason, task_status=TaskStatus.READY):
+        current = await self.db.get_session(session.id)
+        if current is None or current.state == "stopped":
+            return
+        self.terminations.append((current.id, reason))
+        await self.provider.stop(
+            SessionHandle(current.name, current.provider, current.instance_token)
+        )
+        await self.db.terminate_pool_session(current.id, reason=reason, task_status=task_status)
+        await self.db.update_session(
+            current.id,
+            state="stopped",
+            desired_state="stopped",
+            end_reason=reason,
+        )
+        if current.agent_id:
+            await self.db.update_agent(
+                current.agent_id, state=AgentState.IDLE, current_task_id=None
+            )
+
+    async def release_session_task_resources(self, task_id, **_kwargs):
+        self.generic_releases.append(task_id)
+
+
+@pytest.fixture
+def pool_reconciler(db, config, registry, bus, provider):
+    config.swarm.enabled = True
+    orch = _PoolOrchestrator(db, provider)
+    rec = SessionReconciler(
+        db,
+        config,
+        registry,
+        bus=bus,
+        orchestrator=orch,
+        epoch="epoch-new",
+    )
+    rec.test_orch = orch
+    return rec
+
+
 async def _busy_agent_and_workspace(db, tmp_dir, *, task_id="t1"):
     """An agent BUSY on *task_id* holding a workspace lock, in the database."""
     await db.create_agent(
@@ -205,6 +258,40 @@ async def _session(
     )
     await db.create_session(row)
     return row
+
+
+async def _claimed_pool_session(
+    db,
+    provider,
+    tmp_path,
+    *,
+    phase="active",
+    phase_at=NOW,
+    started_at=NOW - 5000,
+    last_activity=NOW,
+):
+    await _task(db)
+    await _busy_agent_and_workspace(db, tmp_path)
+    await db.transition_task(
+        "t1",
+        TaskStatus.IN_PROGRESS,
+        context="pool_test_claim",
+        assigned_agent_id="a1",
+        force=True,
+    )
+    task = await db.get_task("t1")
+    return await _session(
+        db,
+        provider,
+        name="p-worker",
+        lifecycle="pool",
+        agent_id="a1",
+        claim_phase=phase,
+        claim_phase_at=phase_at,
+        last_claim_epoch=task.claim_epoch,
+        started_at=started_at,
+        last_activity=last_activity,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -519,6 +606,209 @@ class TestExitHandling:
         await reconciler.tick(now=NOW)
         assert (await db.get_session("s1")).state == "running"
         assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+
+
+# ---------------------------------------------------------------------------
+# Pool lifecycle
+# ---------------------------------------------------------------------------
+
+
+class TestPoolPrepareTimeout:
+    async def test_claiming_pool_releases_expired_claim_and_wakes_waiter(
+        self, db, provider, pool_reconciler, bus, tmp_path
+    ):
+        row = await _claimed_pool_session(
+            db,
+            provider,
+            tmp_path,
+            phase="claiming",
+            phase_at=NOW - 1000,
+        )
+        task = await db.get_task("t1")
+        waiter = asyncio.get_running_loop().create_future()
+        pool_reconciler.test_orch.claim_waiters[(row.id, task.claim_epoch)] = waiter
+
+        await pool_reconciler._step_prepare_timeout([row], NOW)
+
+        current = await db.get_session(row.id)
+        task = await db.get_task("t1")
+        agent = await db.get_agent("a1")
+        workspace = await db.get_workspace("ws1")
+        assert (current.task_id, current.claim_phase, current.claim_phase_at) == (
+            None,
+            None,
+            None,
+        )
+        assert current.last_claim_result == "prepare_failed"
+        assert (task.status, task.assigned_agent_id) == (TaskStatus.READY, None)
+        assert agent.state is AgentState.IDLE and agent.current_task_id is None
+        assert workspace.locked_by_agent_id == "a1"
+        assert workspace.locked_by_task_id is None
+        assert waiter.result() == "prepare_failed"
+        assert pool_reconciler.test_orch.claim_waiters == {}
+        assert bus.payload("session.claim_timeout") == {
+            "session_id": row.id,
+            "task_id": "t1",
+        }
+
+    async def test_preparing_pool_without_task_clears_only_phase(
+        self, db, provider, pool_reconciler
+    ):
+        row = await _session(
+            db,
+            provider,
+            sid="pool-idle",
+            task_id=None,
+            name="p-idle",
+            lifecycle="pool",
+            claim_phase="preparing",
+            claim_phase_at=NOW - 1000,
+        )
+
+        await pool_reconciler._step_prepare_timeout([row], NOW)
+
+        current = await db.get_session(row.id)
+        assert current.state == "running"
+        assert current.task_id is None
+        assert current.claim_phase is None and current.claim_phase_at is None
+        assert len(provider.starts) == 1
+        assert pool_reconciler.test_orch.terminations == []
+        assert await db.list_tasks() == []
+
+    async def test_prepare_timeout_is_disabled_when_swarm_is_disabled(
+        self, db, provider, pool_reconciler, bus, tmp_path
+    ):
+        row = await _claimed_pool_session(
+            db,
+            provider,
+            tmp_path,
+            phase="claiming",
+            phase_at=NOW - 1000,
+        )
+        pool_reconciler.config.swarm.enabled = False
+
+        await pool_reconciler._step_prepare_timeout([row], NOW)
+
+        current = await db.get_session(row.id)
+        task = await db.get_task("t1")
+        assert current.task_id == "t1" and current.claim_phase == "claiming"
+        assert task.status is TaskStatus.IN_PROGRESS
+        assert "session.claim_timeout" not in bus.types()
+
+
+class TestPoolLifecycle:
+    async def test_pool_exit_terminates_pool_and_returns_held_task_ready(
+        self, db, provider, pool_reconciler, tmp_path
+    ):
+        row = await _claimed_pool_session(db, provider, tmp_path)
+        provider.script_death(row.name)
+
+        await pool_reconciler.tick(now=NOW)
+
+        current = await db.get_session(row.id)
+        task = await db.get_task("t1")
+        assert pool_reconciler.test_orch.terminations == [(row.id, "productive_death")]
+        assert current.state == "stopped" and current.restarts == 0
+        assert (task.status, task.assigned_agent_id) == (TaskStatus.READY, None)
+        assert len(await db.list_sessions()) == 1
+        assert len(provider.starts) == 1
+        assert pool_reconciler.test_orch.generic_releases == []
+
+    async def test_rate_limited_pool_quarantines_pool_key_but_not_task(
+        self, db, provider, pool_reconciler, tmp_path
+    ):
+        row = await _claimed_pool_session(db, provider, tmp_path)
+        provider.feed_output(row.name, "rate limit exceeded", activity=False)
+        provider.script_death(row.name)
+
+        await pool_reconciler.tick(now=NOW)
+
+        current = await db.get_session(row.id)
+        task = await db.get_task("t1")
+        assert current.sleep_reason == "rate_limit"
+        assert (task.status, task.assigned_agent_id) == (TaskStatus.READY, None)
+        assert pool_reconciler.test_orch._pool_quarantine[("p1", "claude-opus")] > NOW
+        assert task.status not in (TaskStatus.PAUSED, TaskStatus.BLOCKED)
+        assert pool_reconciler.test_orch.terminations == [(row.id, "rate_limit")]
+
+    async def test_orphaned_pool_closed_task_uses_pool_termination_not_generic_release(
+        self, db, provider, pool_reconciler, tmp_path
+    ):
+        row = await _claimed_pool_session(db, provider, tmp_path)
+        await db.transition_task("t1", TaskStatus.COMPLETED, context="test", force=True)
+
+        await pool_reconciler._step_orphans([row], NOW)
+
+        assert pool_reconciler.test_orch.terminations == [(row.id, "orphaned")]
+        assert pool_reconciler.test_orch.generic_releases == []
+        assert (await db.get_session(row.id)).state == "stopped"
+        assert (await db.get_task("t1")).status is TaskStatus.COMPLETED
+
+    async def test_mid_prepare_pool_is_excluded_from_stall_ladder(
+        self, db, provider, pool_reconciler, tmp_path
+    ):
+        row = await _claimed_pool_session(
+            db,
+            provider,
+            tmp_path,
+            phase="preparing",
+            phase_at=NOW,
+            last_activity=NOW - 1000,
+        )
+        await db.set_task_meta("t1", META_STALL_NUDGES, "99")
+
+        await pool_reconciler._step_stall_ladder([row], NOW)
+
+        assert provider.sent_nudges == []
+        assert pool_reconciler.test_orch.terminations == []
+        assert (await db.get_session(row.id)).state == "running"
+        assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+
+    async def test_stalled_active_pool_interrupts_then_terminates_without_resume(
+        self, db, provider, pool_reconciler, config, tmp_path
+    ):
+        row = await _claimed_pool_session(
+            db,
+            provider,
+            tmp_path,
+            last_activity=NOW - 1000,
+        )
+        process = provider.sessions[row.name]
+        await db.set_task_meta("t1", META_STALL_NUDGES, str(config.sessions.stall_max_nudges))
+        await db.set_task_meta("t1", META_STALL_LAST_ACTION, "0")
+
+        await pool_reconciler._step_stall_ladder([row], NOW)
+
+        current = await db.get_session(row.id)
+        task = await db.get_task("t1")
+        assert process.interrupts == 1
+        assert pool_reconciler.test_orch.terminations == [(row.id, "stalled")]
+        assert current.state == "stopped" and current.restarts == 0
+        assert task.status is TaskStatus.READY
+        assert len(provider.starts) == 1
+        assert await db.get_task_meta("t1", "session_resume_key") is None
+
+    async def test_backstop_uses_last_activity_for_pool_not_started_at(
+        self, db, provider, pool_reconciler, config, tmp_path
+    ):
+        config.agents_config.stuck_timeout_seconds = 300
+        row = await _claimed_pool_session(
+            db,
+            provider,
+            tmp_path,
+            started_at=NOW - 10_000,
+            last_activity=NOW - 10,
+        )
+
+        await pool_reconciler._step_backstop([row], NOW)
+        assert pool_reconciler.test_orch.terminations == []
+        assert (await db.get_session(row.id)).state == "running"
+
+        await db.update_session(row.id, last_activity=NOW - 1000)
+        stale = await db.get_session(row.id)
+        await pool_reconciler._step_backstop([stale], NOW)
+        assert pool_reconciler.test_orch.terminations == [(row.id, "stuck_timeout")]
+        assert (await db.get_task("t1")).status is TaskStatus.READY
 
 
 # ---------------------------------------------------------------------------

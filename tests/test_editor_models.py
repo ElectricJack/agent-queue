@@ -16,9 +16,10 @@ def test_model_invariants_for_bounds_duplicate_slots_and_clone_independence():
         layer.add_page("page-2", 2, 3)
 
     level = Level(layers=[layer])
-    # SES-1: the current API silently accepts an unknown layer id.  This
-    # preserves the observed no-op until the desired error contract is chosen.
-    level.reorder_layer("missing", 4)
+    # SES-1: a missing id is a caller error, not a successful no-op.  Failing
+    # explicitly keeps misspelled/stale ids from hiding an unapplied edit.
+    with pytest.raises(ValueError, match="Layer 'missing' not found"):
+        level.reorder_layer("missing", 4)
     assert layer.z_depth == 0
 
     page = Page(name="source", content={"nested": [1]})

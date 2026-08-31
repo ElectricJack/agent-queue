@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from src.agents.terminals import TerminalStartError, start_agent_terminal
 from src.api.auth import SessionTokenStore
 from src.commands.handler import CommandHandler
 from src.config import AppConfig, DiscordConfig
@@ -118,7 +119,7 @@ async def test_worker_starts_private_named_terminal_with_scoped_token(handler):
     assert (await handler.db.get_agent("worker-a")).state == AgentState.IDLE
 
 
-async def test_concurrent_starts_reuse_the_same_live_terminal(handler):
+async def test_repeated_terminal_start_returns_one_row_and_one_provider_launch(handler):
     first, second = await asyncio.gather(start(handler), start(handler))
     assert "error" not in first and "error" not in second, (first, second)
     assert first["session_id"] == second["session_id"]
@@ -168,7 +169,7 @@ async def test_unsupported_interactive_provider_is_rejected(handler):
     assert provider(handler).starts == []
 
 
-async def test_start_failure_stops_only_own_launch_and_revokes_token(handler, monkeypatch):
+async def test_terminal_provider_start_failure_releases_agent_reservation(handler, monkeypatch):
     fake = provider(handler)
     original = fake.start
     attempted = []
@@ -281,6 +282,55 @@ async def test_active_task_session_is_reused_without_new_launch(handler):
     assert len(provider(handler).starts) == 1
 
 
+async def test_existing_terminal_rejects_claim_epoch_mismatch(handler):
+    await handler.db.create_project(Project(id="p", name="P"))
+    await handler.db.create_task(
+        Task(
+            id="t-epoch",
+            project_id="p",
+            title="Task",
+            description="",
+            status=TaskStatus.IN_PROGRESS,
+            assigned_agent_id="worker-a",
+            claim_epoch=2,
+        )
+    )
+    await handler.db.update_agent("worker-a", state=AgentState.BUSY, current_task_id="t-epoch")
+    profile = await handler.db.get_profile("coder")
+    spec = handler.orchestrator.session_spec_builder.build_task_spec(
+        task=await handler.db.get_task("t-epoch"),
+        profile=profile,
+        harness=handler.orchestrator.harness_registry.get("claude"),
+        work_dir="/tmp/test-epoch",
+        session_id="task-session-epoch",
+        instance_token="task-instance-epoch",
+    )
+    await provider(handler).start(spec)
+    await handler.db.create_session(
+        SessionRecord(
+            id="task-session-epoch",
+            agent_id="worker-a",
+            task_id="t-epoch",
+            project_id="p",
+            profile_id="coder",
+            harness="claude",
+            provider="fake",
+            name=spec.session_name,
+            state="running",
+            instance_token="task-instance-epoch",
+            work_dir="/tmp/test-epoch",
+            epoch="",
+            lifecycle="task",
+            started_at=1,
+            last_claim_epoch=1,
+        )
+    )
+
+    with pytest.raises(TerminalStartError, match="different task assignment"):
+        await start_agent_terminal(handler.orchestrator, "worker-a")
+    assert len(provider(handler).starts) == 1
+
+
 async def test_supervisor_button_and_message_wake_share_one_start_and_resume(handler):
     await handler.db.create_agent(
         Agent(
@@ -375,7 +425,7 @@ async def test_supervisor_token_mint_failure_never_launches(handler):
     assert provider(handler).starts == []
 
 
-async def test_private_terminal_root_cannot_redirect_outside_data_dir(handler, tmp_path):
+async def test_terminal_refuses_symlinked_agent_terminal_root(handler, tmp_path):
     root = Path(handler.config.data_dir) / "agent-terminals"
     root.parent.mkdir(parents=True, exist_ok=True)
     outside = tmp_path / "outside"
@@ -485,6 +535,7 @@ async def test_runtime_pause_blocks_new_terminal_start(handler, paused):
 async def test_typed_terminal_start_enforces_scope_and_returns_flock_summary(handler):
     import httpx
     from fastapi import FastAPI
+
     from src.api.auth import LOCAL_SCOPE, RequestScope
     from src.api.codegen import build_category_routers
     from src.api.dependencies import get_command_handler

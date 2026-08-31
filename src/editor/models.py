@@ -186,12 +186,12 @@ class Level:
 
     def reorder_layer(self, layer_id: str, new_z_depth: float) -> None:
         """Move a layer to a new z-depth."""
+        target = next((layer for layer in self.layers if layer.id == layer_id), None)
+        if target is None:
+            raise ValueError(f"Layer {layer_id!r} not found")
         if any(lay.z_depth == new_z_depth and lay.id != layer_id for lay in self.layers):
             raise ValueError(f"z_depth {new_z_depth} already in use")
-        for layer in self.layers:
-            if layer.id == layer_id:
-                layer.z_depth = new_z_depth
-                break
+        target.z_depth = new_z_depth
         self._sort_layers()
 
     def _next_z_depth(self) -> float:
