@@ -689,9 +689,7 @@ class DiscordNotificationHandler:
         )
 
     async def _on_playbook_run_completed(self, data: dict) -> None:
-        event = PlaybookRunCompletedEvent(
-            **{k: v for k, v in data.items() if k != "_event_type"}
-        )
+        event = PlaybookRunCompletedEvent(**{k: v for k, v in data.items() if k != "_event_type"})
 
         from src.discord.notifications import (
             format_playbook_completed,
@@ -754,9 +752,10 @@ class DiscordNotificationHandler:
         """
         if not task_id:
             return None
-        cached = self._task_threads.get(task_id)
-        if cached is not None:
-            return cached
+        # Membership, rather than ``get(...) is not None``, deliberately
+        # distinguishes a cached missing/deleted thread from an uncached one.
+        if task_id in self._task_threads:
+            return self._task_threads[task_id]
         getter = getattr(self.bot, "thread_callbacks_for_task", None)
         if getter is None:
             return None
@@ -766,6 +765,7 @@ class DiscordNotificationHandler:
             logger.debug("thread rebuild failed for %s", task_id, exc_info=True)
             return None
         if rebuilt is None:
+            self._task_threads[task_id] = None
             return None
         self._task_threads[task_id] = rebuilt
         logger.info("Recovered Discord thread callbacks for task %s", task_id)
@@ -1026,8 +1026,7 @@ class DiscordNotificationHandler:
                         new_msg = await thread.send(body or "…")
                 except Exception:
                     logger.exception(
-                        "Stream %s: Discord I/O failed for task %s — will retry "
-                        "on next update",
+                        "Stream %s: Discord I/O failed for task %s — will retry on next update",
                         stream_id,
                         task_id,
                     )
@@ -1167,9 +1166,7 @@ class DiscordNotificationHandler:
                 else:
                     await self.bot._send_message(msg.body, project_id=project_id)
         except Exception:
-            logger.exception(
-                "message.sent: failed to post reply for project %s", project_id
-            )
+            logger.exception("message.sent: failed to post reply for project %s", project_id)
 
     # ------------------------------------------------------------------
     # Work-graph gates (Wave 4)
@@ -1210,8 +1207,7 @@ class DiscordNotificationHandler:
         gate_type = str(data.get("gate_type") or "")
         if gate_type in self.MACHINE_RESOLVED_GATE_TYPES:
             logger.debug(
-                "gate.created: not posting %s gate %s — resolved by the system, "
-                "not by a person",
+                "gate.created: not posting %s gate %s — resolved by the system, not by a person",
                 gate_type or "<unknown>",
                 gate_id,
             )

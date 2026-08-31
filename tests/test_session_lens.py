@@ -77,6 +77,7 @@ def config():
         vault_root = "/tmp/vault"
         mcp_server = None
         sessions = _Sessions()
+
     return _Cfg()
 
 
@@ -158,6 +159,31 @@ def test_activity_type_literal():
 
 
 class TestActivity:
+    async def test_running_db_row_with_missing_provider_handle_is_absent(self, db, lens):
+        await db.create_session(
+            SessionRecord(
+                id="missing-handle",
+                project_id="proj1",
+                profile_id="supervisor",
+                harness="claude",
+                provider="fake",
+                name=_supervisor_runtime_name("proj1"),
+                lifecycle="named",
+                work_dir="/tmp/vault",
+                instance_token="token",
+                epoch=TEST_EPOCH,
+                started_at=time.time(),
+                state="running",
+            )
+        )
+
+        assert (
+            await lens.activity(
+                kind="session", target_id=_supervisor_address("proj1"), project_id="proj1"
+            )
+            == "sleeping"
+        )
+
     async def test_task_with_no_session_row_is_absent(self, lens):
         got = await lens.activity(kind="task", target_id="task-missing", project_id="proj1")
         assert got == "absent"
@@ -165,15 +191,11 @@ class TestActivity:
     async def test_session_plain_name_with_no_row_is_absent(self, lens):
         # A plain (non-supervisor) session name has no wake-on-demand path;
         # the messenger must not spawn one.
-        got = await lens.activity(
-            kind="session", target_id="s-task-missing", project_id="proj1"
-        )
+        got = await lens.activity(kind="session", target_id="s-task-missing", project_id="proj1")
         assert got == "absent"
 
     async def test_session_supervisor_name_with_no_row_is_sleeping(self, lens):
-        got = await lens.activity(
-            kind="session", target_id="supervisor-proj1", project_id="proj1"
-        )
+        got = await lens.activity(kind="session", target_id="supervisor-proj1", project_id="proj1")
         assert got == "sleeping"
 
     async def test_running_task_with_recent_activity_is_busy(self, db, providers, lens):
@@ -205,17 +227,13 @@ class TestActivity:
         )
         assert got == "busy"
 
-    async def test_session_kind_resolves_task_session_by_name(
-        self, db, providers, lens
-    ):
+    async def test_session_kind_resolves_task_session_by_name(self, db, providers, lens):
         # A ``to_kind="session"`` with a task session's name should resolve
         # the same row that ``kind="task"`` would.
         row, handle = await _seed_running_task(db, providers)
         s = providers.create("fake").sessions[handle.name]
         s.activity = time.time() - 300
-        got = await lens.activity(
-            kind="session", target_id=row.name, project_id="proj1"
-        )
+        got = await lens.activity(kind="session", target_id=row.name, project_id="proj1")
         assert got == "idle"
 
 
@@ -226,26 +244,28 @@ class TestActivity:
 
 class TestEnsureStarted:
     async def test_refuses_task_kind(self, lens):
-        assert await lens.ensure_started(
-            kind="task", target_id="t1", project_id="proj1"
-        ) is False
+        assert await lens.ensure_started(kind="task", target_id="t1", project_id="proj1") is False
 
     async def test_refuses_plain_session_name(self, lens):
         # Only ``supervisor-<pid>`` names are wake-on-demand.
-        assert await lens.ensure_started(
-            kind="session", target_id="s-task-1", project_id="proj1"
-        ) is False
+        assert (
+            await lens.ensure_started(kind="session", target_id="s-task-1", project_id="proj1")
+            is False
+        )
 
     async def test_supervisor_already_running_returns_true(self, db, providers, lens):
         # ensure_started is addressed with the messaging address
         # (``supervisor-<pid>``); the row it finds is
         # ``n-supervisor--<pid>``.
         await _seed_running_supervisor(db, providers, project_id="proj1")
-        assert await lens.ensure_started(
-            kind="session",
-            target_id=_supervisor_address("proj1"),
-            project_id="proj1",
-        ) is True
+        assert (
+            await lens.ensure_started(
+                kind="session",
+                target_id=_supervisor_address("proj1"),
+                project_id="proj1",
+            )
+            is True
+        )
 
     async def test_supervisor_cold_start_spawns_via_provider(self, providers, lens):
         # The messaging *address* is ``supervisor-proj1``; the runtime
@@ -255,9 +275,9 @@ class TestEnsureStarted:
         # prefixes — see src/sessions/reconciler.py adopt_on_start).
         address = _supervisor_address("proj1")
         runtime_name = _supervisor_runtime_name("proj1")
-        assert await lens.ensure_started(
-            kind="session", target_id=address, project_id="proj1"
-        ) is True
+        assert (
+            await lens.ensure_started(kind="session", target_id=address, project_id="proj1") is True
+        )
         fake = providers.create("fake")
         assert len(fake.starts) == 1
         assert fake.starts[0].session_name == runtime_name
@@ -287,22 +307,16 @@ class TestEnsureStarted:
         # A bare ``supervisor-`` address (empty suffix) with no project_id
         # fallback means we can't identify the project. Refuse before we
         # start anything, so we never insert a phantom ``project_id=""`` row.
-        ok = await lens.ensure_started(
-            kind="session", target_id="supervisor-", project_id=None
-        )
+        ok = await lens.ensure_started(kind="session", target_id="supervisor-", project_id=None)
         assert ok is False
         assert providers.create("fake").starts == []
 
-    async def test_supervisor_cold_start_derives_project_from_name(
-        self, providers, lens
-    ):
+    async def test_supervisor_cold_start_derives_project_from_name(self, providers, lens):
         # ``project_id=None`` but the address carries the project id —
         # the lens should derive it rather than skip on empty work_dir.
         address = _supervisor_address("proj1")
         runtime_name = _supervisor_runtime_name("proj1")
-        assert await lens.ensure_started(
-            kind="session", target_id=address, project_id=None
-        ) is True
+        assert await lens.ensure_started(kind="session", target_id=address, project_id=None) is True
         starts = providers.create("fake").starts
         assert len(starts) == 1
         assert starts[0].session_name == runtime_name
@@ -331,9 +345,7 @@ class TestEnsureStarted:
             profiles_loader=profiles_loader,
         )
         name = _supervisor_name("proj1")
-        ok = await lens.ensure_started(
-            kind="session", target_id=name, project_id="proj1"
-        )
+        ok = await lens.ensure_started(kind="session", target_id=name, project_id="proj1")
         assert ok is False
         # No start was recorded on the fake provider.
         assert providers.create("fake").starts == []
@@ -379,9 +391,7 @@ class TestEnsureStarted:
 class TestNudge:
     async def test_nudge_delivers_and_records(self, db, providers, lens):
         row, handle = await _seed_running_task(db, providers)
-        ok = await lens.nudge(
-            kind="task", target_id=row.task_id, project_id="proj1", text="hello"
-        )
+        ok = await lens.nudge(kind="task", target_id=row.task_id, project_id="proj1", text="hello")
         assert ok is True
         fake = providers.create("fake")
         assert fake.sent_nudges == [(handle.name, "hello")]
@@ -389,24 +399,18 @@ class TestNudge:
     async def test_nudge_returns_false_on_notsubmitted(self, db, providers, lens):
         row, handle = await _seed_running_task(db, providers)
         providers.create("fake").swallow_next_nudge(handle.name)
-        ok = await lens.nudge(
-            kind="task", target_id=row.task_id, project_id="proj1", text="hi"
-        )
+        ok = await lens.nudge(kind="task", target_id=row.task_id, project_id="proj1", text="hi")
         assert ok is False
 
     async def test_nudge_returns_false_when_no_session(self, lens):
-        ok = await lens.nudge(
-            kind="task", target_id="never-existed", project_id="proj1", text="hi"
-        )
+        ok = await lens.nudge(kind="task", target_id="never-existed", project_id="proj1", text="hi")
         assert ok is False
 
     async def test_nudge_by_session_name(self, db, providers, lens):
         # Plain (non-supervisor) session names pass through the lens
         # verbatim — they are already real runtime names.
         row, handle = await _seed_running_supervisor(db, providers, project_id="proj1")
-        ok = await lens.nudge(
-            kind="session", target_id=row.name, project_id="proj1", text="wake"
-        )
+        ok = await lens.nudge(kind="session", target_id=row.name, project_id="proj1", text="wake")
         assert ok is True
         assert providers.create("fake").sent_nudges == [(handle.name, "wake")]
 
@@ -442,9 +446,7 @@ class TestTailAssistantTurn:
     """
 
     @staticmethod
-    def _write_transcript(
-        tmp_path, work_dir: str, session_key: str, entries: list[dict]
-    ):
+    def _write_transcript(tmp_path, work_dir: str, session_key: str, entries: list[dict]):
         from src.sessions.transcripts.claude import slug_work_dir
 
         slug = slug_work_dir(work_dir)
@@ -457,17 +459,13 @@ class TestTailAssistantTurn:
                 f.write("\n")
         return path
 
-    async def _seed_task_with_transcript(
-        self, db, providers, work_dir, session_key
-    ):
+    async def _seed_task_with_transcript(self, db, providers, work_dir, session_key):
         """Sessions row wired to the given work_dir + session_key."""
         from src.sessions.provider import SessionSpec
 
         fake = providers.create("fake")
         task_id = "task-T"
-        await db.create_task(
-            Task(id=task_id, project_id="proj1", title="t", description="d")
-        )
+        await db.create_task(Task(id=task_id, project_id="proj1", title="t", description="d"))
         session_name = f"s-{task_id}"
         spec = SessionSpec(
             session_name=session_name,
@@ -535,16 +533,12 @@ class TestTailAssistantTurn:
             },
         ]
         self._write_transcript(tmp_path, work_dir, session_key, entries)
-        row = await self._seed_task_with_transcript(
-            db, providers, work_dir, session_key
-        )
+        row = await self._seed_task_with_transcript(db, providers, work_dir, session_key)
 
         # since = between the two assistant entries (2024 vs 2030).
         import datetime as _dt
 
-        since = _dt.datetime(
-            2025, 1, 1, tzinfo=_dt.timezone.utc
-        ).timestamp()
+        since = _dt.datetime(2025, 1, 1, tzinfo=_dt.timezone.utc).timestamp()
         got = await lens.tail_assistant_turn(
             kind="task", target_id=row.task_id, project_id="proj1", since=since
         )
@@ -570,9 +564,7 @@ class TestTailAssistantTurn:
             },
         ]
         self._write_transcript(tmp_path, work_dir, session_key, entries)
-        row = await self._seed_task_with_transcript(
-            db, providers, work_dir, session_key
-        )
+        row = await self._seed_task_with_transcript(db, providers, work_dir, session_key)
 
         # since = now → the 2020 entry is not newer.
         got = await lens.tail_assistant_turn(
@@ -660,13 +652,18 @@ async def _seed_running_supervisor(
 
 async def test_global_supervisor_uses_canonical_agent_and_launch_settings(lens, db):
     from src.agents.configuration import ensure_supervisor_agent
+
     agent = await ensure_supervisor_agent(db)
     await db.update_agent(agent.id, model="chosen-model", intelligence_class="deep")
     assert await lens.ensure_started(kind="session", target_id="supervisor-global", project_id=None)
     record = await db.get_session_by_name("n-supervisor--global")
     assert record.agent_id == "supervisor-global"
     assert record.project_id is None
-    assert (record.llm_provider, record.model, record.intelligence_class) == ("anthropic", "chosen-model", "deep")
+    assert (record.llm_provider, record.model, record.intelligence_class) == (
+        "anthropic",
+        "chosen-model",
+        "deep",
+    )
     assert len(await db.list_agents()) == 1
     assert await lens.ensure_started(kind="session", target_id="supervisor-global", project_id=None)
     assert len(await db.list_sessions(name="n-supervisor--global")) == 1
@@ -674,7 +671,10 @@ async def test_global_supervisor_uses_canonical_agent_and_launch_settings(lens, 
 
 async def test_disabled_global_supervisor_does_not_cold_start(lens, db):
     from src.agents.configuration import ensure_supervisor_agent
+
     agent = await ensure_supervisor_agent(db)
     await db.update_agent(agent.id, enabled=False)
-    assert not await lens.ensure_started(kind="session", target_id="supervisor-global", project_id=None)
+    assert not await lens.ensure_started(
+        kind="session", target_id="supervisor-global", project_id=None
+    )
     assert await db.list_sessions(name="n-supervisor--global") == []
