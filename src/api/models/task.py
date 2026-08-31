@@ -370,8 +370,11 @@ class ProjectReadyResponse(BaseModel):
 
 class EnsureTaskResponse(BaseModel):
     success: bool = True
-    task_id: str
+    task_id: str | None = None
     created: bool
+    restarted: bool = False
+    skipped: bool = False
+    reason: str | None = None
 
 
 class DownstreamTask(BaseModel):

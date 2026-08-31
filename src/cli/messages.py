@@ -69,6 +69,28 @@ def _split_recipient(to: str | None, to_kind: str | None, to_id: str | None) -> 
     return to_kind, to_id
 
 
+def _resolve_inbox_recipient(
+    to: str | None,
+    to_kind: str | None,
+    to_id: str | None,
+    *,
+    hook_safe: bool = False,
+) -> tuple[str, str] | None:
+    """Resolve explicit recipient, then the current session/task identity."""
+    import os as _os
+    explicit = bool(to or to_kind or to_id)
+    if not explicit:
+        env_session = _os.environ.get("AQ_SESSION_ID")
+        env_task = _os.environ.get("AQ_TASK_ID")
+        if env_session:
+            to_kind, to_id = "session", env_session
+        elif env_task:
+            to_kind, to_id = "task", env_task
+        elif hook_safe:
+            return None
+    return _split_recipient(to, to_kind, to_id)
+
+
 def _render_message_table(rows: list[dict], title: str) -> None:
     from rich.table import Table
 
@@ -279,7 +301,9 @@ def message_inbox(
     limit: int | None,
 ) -> None:
     """Show a recipient's pending (undelivered) messages."""
-    kind, ident = _split_recipient(to, to_kind, to_id)
+    resolved = _resolve_inbox_recipient(to, to_kind, to_id)
+    assert resolved is not None
+    kind, ident = resolved
     api_url = ctx.obj.get("api_url") if ctx.obj else None
 
     params: dict[str, Any] = {"to_kind": kind, "to_id": ident, "inject": inject}
@@ -340,22 +364,20 @@ def inbox(
     from .exceptions import CommandError, DaemonNotRunningError
 
     # Recipient resolution.  Explicit --to / --to-kind+--to-id wins; when
-    # neither is given the hook path derives ``task:<AQ_TASK_ID>`` from the
-    # session env (``src/sessions/env.py``) so the harness's
-    # ``UserPromptSubmit`` hook just works without shell-injection tricks.
+    # neither is given the hook path derives the current session or task
+    # identity from the session env (``src/sessions/env.py``); the
+    # ``UserPromptSubmit`` hook works without shell-injection tricks.
     # No recipient AND no env → silent no-op (hook safety).
-    import os as _os
-
     if not (to or (to_kind and to_id)):
-        env_task = _os.environ.get("AQ_TASK_ID")
-        if env_task:
-            to_kind, to_id = "task", env_task
-        else:
+        resolved = _resolve_inbox_recipient(to, to_kind, to_id, hook_safe=True)
+        if resolved is None:
             return
-    try:
-        kind, ident = _split_recipient(to, to_kind, to_id)
-    except click.UsageError:
-        return
+        kind, ident = resolved
+    else:
+        try:
+            kind, ident = _split_recipient(to, to_kind, to_id)
+        except click.UsageError:
+            return
 
     api_url = ctx.obj.get("api_url") if ctx.obj else None
     params: dict[str, Any] = {"to_kind": kind, "to_id": ident, "inject": inject}

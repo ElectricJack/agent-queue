@@ -4,8 +4,7 @@ When you are done with this task, close it explicitly — do not just stop:
         [--work-outcome shipped|no-op|blocked|abandoned] [--commit <sha>] [--notes "..."]
     aq session drain-ack
 
-An explicit close is what lets the scheduler promote the next task. If you're blocked on a
-human decision, use `aq task ask "<question>"` instead of stopping silently.
+An explicit close is what lets the scheduler promote the next task. If you're blocked on a human decision, report it with aq message send --to user --project "$AQ_PROJECT_ID" --body "Blocked: <question>" instead of stopping silently.
 
 ## Stay visible while you work
 

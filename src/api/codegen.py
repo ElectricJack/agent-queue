@@ -26,7 +26,7 @@ from src.api.auth import LOCAL_SCOPE, RequestScope
 from src.api.dependencies import get_command_handler
 from src.api.models import get_all_response_models
 from src.api.models.system import EditIntelligenceClassConflictResponse
-from src.api.scope import check_command_scope
+from src.api.scope import check_request_scope
 from src.cli.auto_commands import _strip_category_prefix
 from src.tools import (
     CATEGORIES,
@@ -365,7 +365,9 @@ def _make_route_handler(cmd_name: str, input_model: type[BaseModel]):
         scope: RequestScope = (
             getattr(request.state, "scope", LOCAL_SCOPE) if request is not None else LOCAL_SCOPE
         )
-        scope_err = check_command_scope(cmd_name, args, scope)
+        scope_err = await check_request_scope(
+            cmd_name, args, scope, db=getattr(ch, "db", None),
+        )
         if scope_err is not None:
             return JSONResponse({"error": scope_err}, status_code=403)
 

@@ -18,7 +18,7 @@ from pydantic import BaseModel
 
 from src.api.auth import LOCAL_SCOPE, RequestScope
 from src.api.dependencies import get_command_handler
-from src.api.scope import check_command_scope
+from src.api.scope import check_request_scope
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +60,9 @@ async def api_execute(
     scope: RequestScope = (
         getattr(request.state, "scope", LOCAL_SCOPE) if request is not None else LOCAL_SCOPE
     )
-    scope_err = check_command_scope(body.command, args, scope)
+    scope_err = await check_request_scope(
+        body.command, args, scope, db=getattr(ch, "db", None),
+    )
     if scope_err is not None:
         return JSONResponse({"ok": False, "error": scope_err}, status_code=403)
 

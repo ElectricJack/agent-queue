@@ -61,26 +61,41 @@ class PrimeRenderer:
         if task is None:
             raise ValueError(f"Task '{task_id}' not found")
 
-        effective_work_dir = work_dir or await _sections.resolve_work_dir(self.db, task)
-
-        # Best-effort session-name resolution for the messages section:
-        # ``get_session_for_task`` returns the current row (see
-        # ``SessionQueryMixin`` ranking) whose ``name`` is the ``s-…``
-        # form the messaging engine addresses when ``to_kind='session'``.
-        # If the backend does not expose that helper (older adapters used
-        # in narrow tests) or no session exists yet, we silently skip the
-        # session-inbox fetch per the fix spec.
+        # Use the active session for workspace and inbox context. Task metadata
+        # can point at a slot from an earlier attempt that has since been reused.
         session_name: str | None = None
         session_lifecycle: str | None = None
+        sess = None
+        live_states = ("starting", "running", "draining")
+        get_session = getattr(self.db, "get_session", None)
+        if session_id and get_session is not None:
+            try:
+                candidate = await get_session(session_id)
+            except Exception:
+                candidate = None
+            if (
+                candidate is not None
+                and candidate.task_id == task_id
+                and candidate.state in live_states
+            ):
+                sess = candidate
         get_session_for_task = getattr(self.db, "get_session_for_task", None)
-        if get_session_for_task is not None:
+        if sess is None and get_session_for_task is not None:
             try:
                 sess = await get_session_for_task(task_id)
             except Exception:
                 sess = None
-            if sess is not None:
-                session_name = getattr(sess, "name", None)
-                session_lifecycle = getattr(sess, "lifecycle", None)
+        if sess is not None:
+            session_name = getattr(sess, "name", None)
+            session_lifecycle = getattr(sess, "lifecycle", None)
+        session_work_dir = (
+            getattr(sess, "work_dir", None)
+            if getattr(sess, "state", None) in live_states
+            else None
+        )
+        effective_work_dir = (
+            work_dir or session_work_dir or await _sections.resolve_work_dir(self.db, task)
+        )
 
         section_tuple = (
             await _sections.build_role_section(self.config, task.profile_id),

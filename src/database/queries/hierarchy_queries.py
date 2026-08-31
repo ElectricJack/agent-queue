@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Callable
 
 from sqlalchemy import and_, case, delete, exists, func, insert, literal, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -586,7 +587,9 @@ class HierarchyQueryMixin:
 
     # -- creation -------------------------------------------------------
 
-    async def create_task_under(self, task: Task, parent_id: str) -> tuple[str, bool]:
+    async def create_task_under(
+        self, task: Task, parent_id: str, *, routing_policy: Callable[[Task], bool] | None = None
+    ) -> tuple[str, bool]:
         """Insert *task* as a child of *parent_id* in one transaction (spec §6).
 
         Reserves the dotted id, inserts the row, links it via
@@ -608,6 +611,17 @@ class HierarchyQueryMixin:
                 )
             else:
                 await self.set_parent(task_id, parent_id, conn=conn)
+            task.parent_task_id = None if capped else parent_id
+            gated = routing_policy is not None and routing_policy(task)
+            if gated:
+                await self.create_gate(
+                    task.project_id, "routing", "Route task",
+                    question="Assign profile + intelligence class (+ workspace if profile needs one).",
+                    waiter_task_ids=[task_id], conn=conn,
+                )
+                task.is_blocked = True
+        if gated:
+            await self.log_blocked_flips({task_id})
         return task_id, capped
 
     # -- container-close semantics ---------------------------------------

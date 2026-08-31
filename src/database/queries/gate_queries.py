@@ -16,7 +16,7 @@ from typing import Iterable
 from sqlalchemy import and_, insert, select, update
 from sqlalchemy.exc import IntegrityError
 
-from src.database.tables import gates, task_gates
+from src.database.tables import gates, task_gates, tasks
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +62,8 @@ class GateQueriesMixin:
         timeout_at: float | None = None,
         waiter_task_ids: Iterable[str] = (),
         conn=None,
-    ) -> tuple[str, bool]:
+        unrouted_only: bool = False,
+    ) -> tuple[str | None, bool]:
         """Insert a gate + its ``task_gates`` rows and recompute waiters.
 
         Returns ``(gate_id, was_created)``. If an ``open`` gate already
@@ -80,6 +81,34 @@ class GateQueriesMixin:
         :meth:`log_blocked_flips` afterwards. Without ``conn`` this opens
         (and commits) its own transaction as before.
         """
+        if unrouted_only and gate_type == "routing":
+            # Serialize with task_route's guarded UPDATE and with competing
+            # gate creation. Rechecking the profile under this lock prevents
+            # a late pipeline callback from gating an already routed task.
+            async def attach(connection):
+                requested = sorted(set(waiter_task_ids))
+                rows = (await connection.execute(
+                    select(tasks.c.id, tasks.c.profile_id)
+                    .where(tasks.c.id.in_(requested))
+                    .order_by(tasks.c.id).with_for_update()
+                )).fetchall()
+                routed = {row.id for row in rows if (row.profile_id or "").strip()}
+                waiters = [tid for tid in requested if tid not in routed]
+                if requested and not waiters:
+                    return None, False, set()
+                return await self._create_gate_on(
+                    connection, project_id, gate_type, title,
+                    question=question, await_id=await_id, timeout_at=timeout_at,
+                    waiter_task_ids=waiters, caller_owns_conn=True,
+                )
+            if conn is not None:
+                gate_id, was_created, _flipped = await attach(conn)
+            else:
+                async with self.immediate() as owned_conn:
+                    gate_id, was_created, flipped = await attach(owned_conn)
+                await self.log_blocked_flips(flipped)
+            return gate_id, was_created
+
         if conn is not None:
             gate_id, was_created, _flipped = await self._create_gate_on(
                 conn,

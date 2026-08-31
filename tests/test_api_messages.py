@@ -124,6 +124,16 @@ class TestPostMessage:
         resp = client.post("/api/sessions/supervisor-agent-queue/message", json={"body": "hello"})
         assert resp.status_code == 200
 
+    def test_generic_recipient_route_queues_a_user_message(self, client, handler):
+        resp = client.post(
+            "/api/messages/send",
+            json={"project_id": "agent-queue", "to_kind": "user", "to_id": "agent-queue", "body": "blocked"},
+        )
+        assert resp.status_code == 200, resp.text
+        payload = resp.json()
+        assert payload["success"] is True
+        assert payload["message"]["project_id"] == "agent-queue"
+
     def test_unknown_session_is_404(self, client):
         resp = client.post("/api/sessions/supervisor-ghost/message", json={"body": "hi"})
         assert resp.status_code == 404
@@ -228,6 +238,26 @@ async def _seed_messages_app(tmp_path):
 
 class TestMessageRouteScopeEnforcement:
     """Session-scoped tokens must not be able to send/list messages for out-of-scope projects."""
+
+    async def test_generic_send_route_rejects_project_mismatch(self, tmp_path):
+        db, store, ch, app = await _seed_messages_app(tmp_path)
+        try:
+            tok = await store.mint(session_id="s-a", task_id=None, project_id="proj-a")
+            with TestClient(app) as c:
+                r = c.post(
+                    "/api/messages/send",
+                    headers={"Authorization": f"Bearer {tok}"},
+                    json={"project_id": "proj-b", "to_kind": "user", "to_id": "u", "body": "infiltrate"},
+                )
+            assert r.status_code == 403, r.text
+            assert "project_id mismatch" in r.json()["error"]
+            assert await db.list_messages() == []
+        finally:
+            _deps._orchestrator = None
+            _deps._command_handler = None
+            _deps._token_store = None
+            _deps._require_session_token = False
+            await db.close()
 
     async def test_session_token_scoped_to_project_a_blocked_on_project_b_send(self, tmp_path):
         """Token scoped to proj-a gets 403 when posting a message to a proj-b session."""

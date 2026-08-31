@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from collections.abc import Callable
 
 from src.models import (
     BLOCKING_DEP_TYPES,
@@ -937,6 +938,7 @@ class TaskCommandsMixin:
         parent_id: str | None,
         discovered_from: str | None,
         edges: list[tuple[str, str]],
+        routing_policy: Callable[[Task], bool] | None = None,
     ) -> tuple[str, str | None, str | None, bool]:
         """Write a worker-filed task + its edges in one ``immediate()`` txn.
 
@@ -947,7 +949,7 @@ class TaskCommandsMixin:
         exception rolls the whole transaction back untouched.
 
         Returns ``(task_id, gate_id, discovered_from_origin, depth_cap_fallback)``.
-        ``gate_id`` is only set for root-level filings (no ``parent_id``);
+        ``gate_id`` is set for root filings and policy-gated child filings;
         ``discovered_from_origin`` is set whenever a ``discovered-from`` edge
         was written — root filings (origin = ``discovered_from`` or the held
         task) and depth-cap-fallback child filings alike (origin = the
@@ -1012,6 +1014,15 @@ class TaskCommandsMixin:
                     caller_owns_conn=True,
                 )
                 flipped |= gate_flipped
+            task.parent_task_id = parent_id if parent_id and not depth_cap_fallback else None
+            if parent_id and routing_policy is not None and routing_policy(task):
+                gate_id, _created, gate_flipped = await self.db._create_gate_on(
+                    conn, task.project_id, "routing", "Route task",
+                    question="Assign profile + intelligence class (+ workspace if profile needs one).",
+                    await_id=None, timeout_at=None, waiter_task_ids=[task.id], caller_owns_conn=True,
+                )
+                flipped |= gate_flipped
+                task.is_blocked = True
             for dep_id, dep_type in edges:
                 flipped |= (
                     await self.db.add_dependency(task.id, dep_id, dep_type, conn=conn) or set()
@@ -1358,6 +1369,19 @@ class TaskCommandsMixin:
             created_by_kind="session" if creator_session_id else None,
             created_by_id=creator_session_id,
         )
+        from src.playbooks.routing import requires_routing_gate
+        manager = getattr(self.orchestrator, "playbook_manager", None)
+        routing_policy = None
+        if manager is not None and not profile_id and not args.get("_suppress_created_event"):
+            def routing_policy(created_task: Task) -> bool:
+                # Evaluate after IDs/parent edges are allocated, inside the
+                # creation transaction, against the same fields as task.created.
+                return requires_routing_gate(manager, created_task, {
+                    "parent_task_id": created_task.parent_task_id,
+                    "created_by_kind": created_task.created_by_kind if filing_session is not None else None,
+                    "created_by_id": created_task.created_by_id if filing_session is not None else None,
+                    "filed_by_profile_id": filing_session.profile_id if filing_session is not None else None,
+                })
         gate_id: str | None = None
         discovered_from_origin: str | None = None
         depth_cap_fallback = False
@@ -1374,6 +1398,7 @@ class TaskCommandsMixin:
                     parent_id=parent_id,
                     discovered_from=args.get("discovered_from"),
                     edges=edges,
+                    routing_policy=routing_policy,
                 )
             except _FilingQuota:
                 return {
@@ -1399,7 +1424,9 @@ class TaskCommandsMixin:
                 }
         elif parent_id:
             try:
-                task_id, depth_cap_fallback = await self.db.create_task_under(task, parent_id)
+                task_id, depth_cap_fallback = await self.db.create_task_under(
+                    task, parent_id, **({"routing_policy": routing_policy} if routing_policy is not None else {})
+                )
             except HierarchyError as exc:
                 return {
                     "error": f"hierarchy.{exc.code}: {exc.detail}",
@@ -1408,7 +1435,7 @@ class TaskCommandsMixin:
         else:
             task_id = await generate_task_id(self.db)
             task.id = task_id
-            await self.db.create_task(task)
+            await self.db.create_task(task, **({"routing_policy": routing_policy} if routing_policy is not None else {}))
 
         # Persist requires_kinds rows now that the FK target exists.
         if normalized_requirements:
@@ -1459,6 +1486,9 @@ class TaskCommandsMixin:
                 label="Conversation Thread Context",
                 content=self._current_conversation_context,
             )
+
+        if routing_policy is not None or gate_id is not None:
+            await self._emit_admitted_routing_gates(task_id)
 
         # dv2 phase 1 — emit ``task.created`` on the EventBus so the default
         # pipeline playbook (and any other subscribers) can fire the routing
@@ -3441,6 +3471,20 @@ class TaskCommandsMixin:
         title = args.get("title")
         if not title:
             return {"success": False, "error": "title is required"}
+
+        if args.get("profile_id") == "triage" and dedup_key == "triage-open":
+            from src.database.queries.triage_queries import ensure_triage_task
+
+            result = await ensure_triage_task(
+                self.db, str(project_id), title=str(title),
+                description=str(args.get("description") or ""),
+                priority=args.get("priority", 1),
+            )
+            if result.get("created") or result.get("restarted"):
+                task = await self.db.get_task(result["task_id"])
+                if task is not None:
+                    await self._emit_task_graph_change("task.updated", task)
+            return result
 
         existing = await self.db.find_task_by_dedup_key(str(project_id), str(dedup_key))
         if existing is not None:

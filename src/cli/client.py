@@ -221,6 +221,8 @@ class CLIClient:
         Raises ``CommandError`` if the command returns an error.
         Raises ``DaemonNotRunningError`` on connection failure.
         """
+        if command == "message_send":
+            return await self.send_message(args or {})
         return await self._execute_generic(command, args or {})
 
     async def _execute_typed(
@@ -282,6 +284,22 @@ class CLIClient:
                 details=data.get("details"),
             )
         return data.get("result", {})
+
+    async def send_message(self, args: dict[str, Any]) -> dict:
+        """POST a general message through the explicit message API route."""
+        assert self._http is not None, "CLIClient not connected"
+        try:
+            resp = await self._http.post("/api/messages/send", json=args, timeout=_DEFAULT_TIMEOUT)
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            raise DaemonNotRunningError(self._base_url, cause=exc) from exc
+        if resp.status_code in (401, 403):
+            raise ScopeDeniedError("message_send", _relay_error(resp))
+        if resp.status_code >= 400:
+            raise CommandError("message_send", _relay_error(resp))
+        data = resp.json()
+        if not isinstance(data, dict):
+            raise CommandError("message_send", "invalid response from message API")
+        return data.get("result", data)
 
     # -- Chat relay (supervisor-agent §6.2) ---------------------------------
     # These two hit the explicit ``/api/sessions/{name}/message[s]`` router

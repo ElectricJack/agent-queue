@@ -28,6 +28,14 @@ class ProfileCommandsMixin:
 
     async def _cmd_list_profiles(self, args: dict) -> dict:
         profiles = await self.db.list_profiles()
+        scope = getattr(self, "_current_scope", None) or {}
+        if scope.get("kind") == "session" and not scope.get("elevated"):
+            project_id = scope.get("project_id")
+            profiles = [
+                profile for profile in profiles
+                if not profile.id.startswith("project:")
+                or (project_id and profile.id.startswith(f"project:{project_id}:"))
+            ]
         if not profiles:
             return {"profiles": [], "count": 0}
         return {

@@ -79,10 +79,18 @@ class GateCommandsMixin:
                 await_id=args.get("await_id"),
                 timeout_at=args.get("timeout_at"),
                 waiter_task_ids=[str(w) for w in waiters],
+                **({"unrouted_only": True} if str(gate_type) == "routing" and waiters else {}),
             )
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("gate_create: could not create gate")
             return {"success": False, "error": str(exc)}
+
+        if gate_id is None:
+            return {
+                "success": True, "skipped": True,
+                "reason": "all waiter tasks are already routed",
+                "gate_id": None, "created": False,
+            }
 
         # Audit + bus emit — payload matches ``gate.created`` schema.
         payload = {
@@ -99,18 +107,7 @@ class GateCommandsMixin:
         # dedup returned an existing open gate, downstream subscribers
         # already saw the original create event.
         if was_created:
-            try:
-                await self.orchestrator.bus.emit("gate.created", payload)
-            except Exception:
-                logger.debug("gate_create: bus emit failed", exc_info=True)
-            try:
-                await self.db.log_event(
-                    "gate.created",
-                    project_id=str(project_id),
-                    payload=gate_id,
-                )
-            except Exception:
-                logger.debug("gate_create: log_event failed", exc_info=True)
+            await self._emit_gate_created(payload)
 
         return {
             "success": True,
@@ -118,6 +115,32 @@ class GateCommandsMixin:
             "gate": payload,
             "was_created": was_created,
         }
+
+    async def _emit_gate_created(self, payload: dict) -> None:
+        """Publish only after the gate and blocked projection have committed."""
+        try:
+            await self.orchestrator.bus.emit("gate.created", payload)
+        except Exception:
+            logger.debug("gate_create: bus emit failed", exc_info=True)
+        try:
+            await self.db.log_event(
+                "gate.created", project_id=payload["project_id"], payload=payload["gate_id"],
+            )
+        except Exception:
+            logger.debug("gate_create: log_event failed", exc_info=True)
+
+    async def _emit_admitted_routing_gates(self, task_id: str) -> None:
+        """Initial task admission owns the event; pipeline dedup will not emit it."""
+        for gate in await self.db.get_gates_for_task(task_id):
+            if gate["gate_type"] != "routing":
+                continue
+            await self._emit_gate_created({
+                "gate_id": gate["id"], "gate_type": gate["gate_type"],
+                "project_id": gate["project_id"], "title": gate["title"],
+                "question": gate["question"], "await_id": gate["await_id"],
+                "timeout_at": gate["timeout_at"],
+                "waiter_task_ids": sorted(await self.db.get_gate_waiters(gate["id"])),
+            })
 
     async def _cmd_gate_list(self, args: dict) -> dict:
         """List gates, optionally filtered by project/status/type."""

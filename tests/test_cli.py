@@ -444,6 +444,17 @@ class TestCLIClient:
             await client.close()
 
     @pytest.mark.asyncio
+    async def test_message_send_uses_explicit_message_route(self):
+        mock_http = self._mock_httpx_for_typed(200, {"message_id": "msg-1", "state": "queued"})
+        with patch("src.cli.client.httpx.AsyncClient", return_value=mock_http):
+            client = CLIClient(base_url="http://localhost:8081")
+            await client.connect()
+            result = await client.execute("message_send", {"to_kind": "user", "to_id": "agent-queue", "body": "hi"})
+            assert result["message_id"] == "msg-1"
+            assert mock_http.post.call_args.args[0] == "/api/messages/send"
+            await client.close()
+
+    @pytest.mark.asyncio
     async def test_execute_error(self):
         """Execute raises CommandError when server returns error."""
         import httpx

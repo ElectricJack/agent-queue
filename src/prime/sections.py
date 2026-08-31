@@ -186,7 +186,16 @@ async def build_task_context_section(db: Any, config: Any, task: Any) -> PrimeSe
         if not content:
             continue
         label = row.get("label") or ctype or "context"
-        blocks.append(f"**{label}:**\n{content}")
+        if ctype == "worktree_salvage":
+            blocks.append(
+                f"**{label}:**\n"
+                "Historical recovery snapshot from an earlier attempt. Check the "
+                "active session's work_dir and `git status` for current state "
+                "before applying these saved changes.\n\n"
+                f"{content}"
+            )
+        else:
+            blocks.append(f"**{label}:**\n{content}")
 
     attachments = getattr(task, "attachments", None) or []
     if attachments:

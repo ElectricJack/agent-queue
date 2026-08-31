@@ -51,7 +51,7 @@ if "--dialog" in sys.argv:
     print("Do you trust the files in this folder?", flush=True)
     os.read(fd, 64)  # any key dismisses
 
-print("❯ ", flush=True)
+print("❯ ", end="", flush=True)
 buf = b""
 while True:
     chunk = os.read(fd, 65536)
@@ -75,7 +75,7 @@ while True:
             # Claude-style: repaint the submitted prompt into the transcript.
             print(f"❯ {text}", flush=True)
         print(f"len={len(text)}", flush=True)
-        print("❯ ", flush=True)
+        print("❯ ", end="", flush=True)
 """
 
 
@@ -204,6 +204,30 @@ class TestStartupReadiness:
 
 
 class TestNudge:
+    async def test_draft_is_not_submitted_by_background_nudge(
+        self, provider, tmp_path, stub_path
+    ):
+        from src.sessions.provider import NudgeDeferred
+
+        handle = await provider.start(_spec(tmp_path, stub_path))
+        try:
+            draft = "Please work on fresh-horizon"
+            await provider.send_input(handle, text=draft)
+            # Wait only for the stub to paint the user's manual typing.
+            for _ in range(20):
+                if draft in await provider.peek(handle, 20):
+                    break
+                await asyncio.sleep(0.05)
+            with pytest.raises(NudgeDeferred):
+                await provider.nudge(handle, "No progress for 8 min.")
+            assert await _received(tmp_path, tries=2) == ""
+            # Manual Enter remains the user's decision and submits exactly
+            # their original text, without clearing or appending anything.
+            await provider.send_input(handle, key="Enter")
+            assert (await _received(tmp_path)).splitlines() == [draft]
+        finally:
+            await provider.stop(handle)
+
     async def test_short_nudge_is_delivered_and_submitted(self, provider, tmp_path, stub_path):
         handle = await provider.start(_spec(tmp_path, stub_path))
         try:

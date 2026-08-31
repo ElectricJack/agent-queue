@@ -604,6 +604,36 @@ class TestStallLadder:
         # ...but it is not reported as delivered.
         assert "task.nudged" not in bus.types()
 
+    async def test_a_draft_defers_without_consuming_restart_attempts(
+        self, db, provider, reconciler, bus, monkeypatch
+    ):
+        from src.sessions.provider import NudgeDeferred
+
+        await self._stalled(db, provider)
+        send = provider.nudge
+
+        async def draft_present(handle, text):
+            raise NudgeDeferred("existing user draft")
+
+        monkeypatch.setattr(provider, "nudge", draft_present)
+        for tick in range(5):
+            await reconciler.tick(now=NOW + 400 * tick)
+            assert await db.get_task_meta("t1", META_STALL_NUDGES) is None
+            assert await db.get_task_meta("t1", META_STALL_LAST_ACTION) is None
+            assert (await db.get_session("s1")).state == "running"
+            assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+        assert "task.nudged" not in bus.types()
+        assert "task.restarted" not in bus.types()
+        assert "task.stalled" not in bus.types()
+
+        # When the user clears/submits their own draft, the first actual
+        # reminder consumes exactly one rung.
+        monkeypatch.setattr(provider, "nudge", send)
+        await reconciler.tick(now=NOW + 400 * 5)
+        assert len(provider.sent_nudges) == 1
+        assert await db.get_task_meta("t1", META_STALL_NUDGES) == "1"
+        assert bus.types().count("task.stalled") == 1
+
     async def test_lease_ttl_zero_disables_the_ladder(self, db, provider, reconciler, config):
         config.sessions.lease_ttl_seconds = 0
         await self._stalled(db, provider)

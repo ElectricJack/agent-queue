@@ -221,6 +221,11 @@ class ArchiveQueryMixin:
         stmt = select(tasks.c.id).where(
             and_(
                 tasks.c.status.in_(statuses),
+                # Reusable project triage keeps one identity and its run history.
+                ~and_(
+                    func.coalesce(tasks.c.profile_id, "") == "triage",
+                    func.coalesce(tasks.c.dedup_key, "") == "triage-open",
+                ),
                 tasks.c.updated_at <= cutoff,
                 tasks.c.parent_task_id.is_(None),
                 ~exists(

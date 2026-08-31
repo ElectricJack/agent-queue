@@ -10,6 +10,7 @@ import ActivityDrawer from "./shell/ActivityDrawer";
 
 const actions = vi.hoisted(() => ({ pause: vi.fn(), resume: vi.fn(), remove: vi.fn() }));
 const projects = [{ id: "p1", name: "First project" }, { id: "p2", name: "Second project" }];
+const initialProjects = projects.map((project) => ({ ...project }));
 vi.mock("./panes/registry", () => ({ PANE_REGISTRY: {
   "task-detail": { manifest: {} }, "contextual-settings": { manifest: {} },
 } }));
@@ -72,20 +73,29 @@ function renderApp(path: string) {
   return render(<MemoryRouter initialEntries={[path]}><App /><Location /></MemoryRouter>);
 }
 
-beforeEach(() => { vi.clearAllMocks(); actions.remove.mockResolvedValue({ success: true }); });
+beforeEach(() => {
+  vi.clearAllMocks();
+  projects.splice(0, projects.length, ...initialProjects.map((project) => ({ ...project })));
+  window.localStorage.clear();
+  actions.remove.mockImplementation(async ({ project_id }: { project_id: string }) => {
+    const index = projects.findIndex((project) => project.id === project_id);
+    if (index >= 0) projects.splice(index, 1);
+    return { success: true };
+  });
+});
 afterEach(cleanup);
 
 describe("Dashboard navigation", () => {
   it.each([
-    ["/system", "/command-center/graph"],
-    ["/tasks", "/command-center/tasks"],
+    ["/system", "/projects/p1/graph"],
+    ["/tasks", "/projects/p1/tasks"],
     ["/playbooks", "/settings/playbooks"],
     ["/system/playbooks", "/settings/playbooks"],
     ["/system/profiles", "/settings/profiles"],
     ["/system/config", "/settings/config"],
     ["/system/intelligence-classes", "/settings/intelligence-classes"],
-    ["/work", "/command-center/tasks"],
-    ["/work/tasks", "/command-center/tasks"],
+    ["/work", "/projects/p1/tasks"],
+    ["/work/tasks", "/projects/p1/tasks"],
     ["/work/agents", "/agents"],
     ["/work/sessions", "/agents"],
   ])("redirects legacy route %s to %s while preserving filters", async (from, to) => {
@@ -109,16 +119,54 @@ describe("Dashboard navigation", () => {
   ])("routes legacy %s to tasks and opens the requested activity tab", async (path, content) => {
     renderApp(path + "?q=needle");
     await screen.findByRole("heading", { name: "Command Center tasks" });
-    expect(screen.getByLabelText("Current location")).toHaveTextContent("/command-center/tasks?q=needle");
+    expect(screen.getByLabelText("Current location")).toHaveTextContent("/projects/p1/tasks?q=needle");
     expect(screen.getByLabelText("Current surface")).toHaveTextContent("drawer");
     expect(await screen.findByText(content)).toBeInTheDocument();
+  });
+
+  it("requires a project for bare Command Center routes and preserves filters", async () => {
+    renderApp("/projects/p1/tasks?q=needle&status=READY");
+    await screen.findByRole("heading", { name: "Command Center tasks" });
+    expect(screen.getByLabelText("Current location")).toHaveTextContent(
+      "/projects/p1/tasks?q=needle&status=READY",
+    );
+    expect(screen.queryByRole("link", { name: "All projects" })).not.toBeInTheDocument();
+  });
+
+  it("remembers the last valid project when returning to Command Center", async () => {
+    renderApp("/projects/p2/graph");
+    await screen.findByRole("heading", { name: "Command Center graph" });
+    await userEvent.click(screen.getByRole("link", { name: "Settings" }));
+    await screen.findByRole("heading", { name: "Settings playbooks" });
+    await userEvent.click(screen.getByRole("link", { name: "Command Center" }));
+    await screen.findByRole("heading", { name: "Command Center graph" });
+    expect(screen.getByLabelText("Current location")).toHaveTextContent("/projects/p2/graph");
+  });
+
+  it("collapses the project list directly beneath Command Center", async () => {
+    renderApp("/projects/p1/graph");
+    await screen.findByRole("heading", { name: "Command Center graph" });
+    const projectsToggle = screen.getByRole("button", { name: "Projects" });
+    expect(projectsToggle).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("link", { name: "First project" })).toBeInTheDocument();
+    await userEvent.click(projectsToggle);
+    expect(projectsToggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("link", { name: "First project" })).not.toBeInTheDocument();
+  });
+
+  it("shows an add-project empty state when no projects are available", async () => {
+    projects.splice(0);
+    renderApp("/command-center");
+    expect(await screen.findByRole("heading", { name: "No projects yet" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Add project" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "All projects" })).not.toBeInTheDocument();
   });
 
   it("keeps only Graph and Tasks in Command Center navigation", async () => {
     renderApp("/command-center/graph");
     await screen.findByRole("heading", { name: "Command Center graph" });
-    expect(screen.getByRole("link", { name: "Graph" })).toHaveAttribute("href", "/command-center/graph");
-    expect(screen.getByRole("link", { name: "Tasks" })).toHaveAttribute("href", "/command-center/tasks");
+    expect(screen.getByRole("link", { name: "Graph" })).toHaveAttribute("href", "/projects/p1/graph");
+    expect(screen.getByRole("link", { name: "Tasks" })).toHaveAttribute("href", "/projects/p1/tasks");
     expect(screen.queryByRole("link", { name: "Agents" })).not.toBeInTheDocument();
   });
 
@@ -133,7 +181,7 @@ describe("Dashboard navigation", () => {
   it.each(["/", "/old-missing-page"])("lands on Command Center from %s", async (path) => {
     renderApp(path);
     expect(await screen.findByRole("heading", { name: "Command Center graph" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Current location")).toHaveTextContent("/command-center/graph");
+    expect(screen.getByLabelText("Current location")).toHaveTextContent("/projects/p1/graph");
     expect(screen.queryByRole("heading", { name: "Former Home chat" })).not.toBeInTheDocument();
   });
 
@@ -172,12 +220,9 @@ describe("Shared project workspace navigation", () => {
     await userEvent.click(screen.getByRole("link", { name: "Second project" }));
     expect(screen.getByLabelText("Workspace project")).toHaveTextContent("p2");
     expect(screen.getByLabelText("Current location")).toHaveTextContent("/projects/p2/tasks?q=needle&status=READY&completed=1");
-    await userEvent.click(screen.getByRole("link", { name: "All projects" }));
-    expect(screen.getByLabelText("Workspace project")).toHaveTextContent("all");
-    expect(screen.getByLabelText("Current location")).toHaveTextContent("/command-center/tasks?q=needle&status=READY&completed=1");
   });
 
-  it("keeps resource tabs scoped, resets their drafts, and falls back to Graph for All projects", async () => {
+  it("keeps resource tabs scoped and returns to the selected project tab", async () => {
     renderApp("/projects/p1/workspaces?q=keep");
     await screen.findByRole("heading", { name: "Project workspaces" });
     expect(screen.getByRole("link", { name: "Graph" })).toHaveAttribute("href", "/projects/p1/graph?q=keep");
@@ -187,15 +232,15 @@ describe("Shared project workspace navigation", () => {
     await userEvent.click(screen.getByRole("link", { name: "Second project" }));
     expect(screen.getByLabelText("Current location")).toHaveTextContent("/projects/p2/workspaces?q=keep");
     expect(screen.getByRole("textbox", { name: "Resource draft" })).toHaveValue("");
-    await userEvent.click(screen.getByRole("link", { name: "All projects" }));
-    await screen.findByRole("heading", { name: "Command Center graph" });
-    expect(screen.getByLabelText("Current location")).toHaveTextContent("/command-center/graph?q=keep");
+    await userEvent.click(screen.getByRole("link", { name: "Command Center" }));
+    await screen.findByRole("heading", { name: "Project workspaces" });
+    expect(screen.getByLabelText("Current location")).toHaveTextContent("/projects/p2/workspaces?q=keep");
   });
 
-  it.each(["/projects/p1", "/command-center"])("preserves filters on the default Graph redirect from %s", async (path) => {
+  it.each([["/projects/p1", "/projects/p1/graph"], ["/command-center", "/projects/p1/graph"]])("preserves filters on the default Graph redirect from %s", async (path, expected) => {
     renderApp(path + "?q=keep&completed=1");
     await screen.findByRole("heading", { name: "Command Center graph" });
-    expect(screen.getByLabelText("Current location")).toHaveTextContent(path + "/graph?q=keep&completed=1");
+    expect(screen.getByLabelText("Current location")).toHaveTextContent(expected + "?q=keep&completed=1");
   });
 
   it("retains the former project overview as a resource tab", async () => {
@@ -223,11 +268,11 @@ describe("Shared project workspace navigation", () => {
     await userEvent.click(screen.getByRole("link", { name: "First project" }));
     expect(screen.getByLabelText("Current pane")).toHaveTextContent("contextual-settings");
     expect(screen.getByLabelText("Current pane")).toHaveTextContent('"subjectId":"p1"');
-    await userEvent.click(screen.getByRole("link", { name: "All projects" }));
+    await userEvent.click(screen.getByRole("link", { name: "Second project" }));
     expect(screen.getByLabelText("Current pane")).toHaveTextContent("contextual-settings");
     await userEvent.click(screen.getByRole("link", { name: "First project" }));
     await userEvent.click(screen.getByRole("button", { name: "Open task pane" }));
-    await userEvent.click(screen.getByRole("link", { name: "All projects" }));
+    await userEvent.click(screen.getByRole("link", { name: "Second project" }));
     expect(screen.getByLabelText("Current pane")).toHaveTextContent('"kind":"closed"');
   });
 
@@ -244,6 +289,6 @@ describe("Shared project workspace navigation", () => {
     const deleteButtons = screen.getAllByRole("button", { name: "Delete project" });
     await userEvent.click(deleteButtons[deleteButtons.length - 1]!);
     expect(actions.remove).toHaveBeenCalledWith({ project_id: "p2" });
-    expect(screen.getByLabelText("Current location")).toHaveTextContent("/command-center/graph");
+    await waitFor(() => expect(screen.getByLabelText("Current location")).toHaveTextContent("/projects/p1/graph"));
   });
 });

@@ -1,7 +1,8 @@
 import { lazy, Suspense, useEffect, useRef } from "react";
-import { Routes, Route, Navigate, useLocation, useParams, type Params } from "react-router-dom";
+import { Routes, Route, Navigate, Link, useLocation, useParams, type Params } from "react-router-dom";
 import { ShellPaneProvider, useShellPaneStore } from "./panes/store";
 import { projectNavigation, workspaceHref } from "./shell/projectNavigation";
+import { useProjects } from "./api/hooks";
 
 const AppShellV2 = lazy(() => import("./shell/AppShellV2"));
 const AgentWorkspace = lazy(() => import("./pages/agents/AgentWorkspace"));
@@ -35,13 +36,16 @@ function WorkspaceIndexRedirect() {
   return <Navigate to={workspaceHref(projectId, "graph", search)} replace />;
 }
 
-/** Spans both route families so switching to All projects also clears selection. */
+/** Tracks project scope and clears task panes when switching projects. */
 function ProjectScopePaneSync() {
   const { pathname } = useLocation();
   const { projectId } = projectNavigation(pathname);
   const previousProject = useRef(projectId);
   const pane = useShellPaneStore();
   useEffect(() => {
+    if (projectId) {
+      try { window.localStorage.setItem(LAST_PROJECT_STORAGE_KEY, projectId); } catch { /* Storage may be unavailable. */ }
+    }
     if (previousProject.current !== projectId) {
       previousProject.current = projectId;
       if (pane.state.kind === "open" && pane.state.view === "task-detail") pane.close();
@@ -71,6 +75,52 @@ function encodePlaybookParam(params: Readonly<Params<string>>): string {
   return "/playbooks/" + encodeURIComponent(params.playbookId ?? "");
 }
 
+const LAST_PROJECT_STORAGE_KEY = "aq.dashboard.lastProjectId";
+
+function readRememberedProjectId(): string | null {
+  try {
+    return window.localStorage.getItem(LAST_PROJECT_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function NoProjectsState() {
+  return (
+    <div className="flex h-full min-h-[40vh] items-center justify-center p-6">
+      <div className="max-w-md rounded-xl border border-gray-800 bg-gray-900/70 p-8 text-center">
+        <h1 className="text-xl font-semibold text-gray-100">No projects yet</h1>
+        <p className="mt-2 text-sm text-gray-400">
+          Add a project to start using Command Center.
+        </p>
+        <Link
+          to="/settings"
+          className="mt-5 inline-flex rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500"
+        >
+          Add project
+        </Link>
+      </div>
+    </div>
+  );
+}
+
+function CommandCenterRedirect() {
+  const { data: projects, isLoading } = useProjects();
+  const location = useLocation();
+  if (isLoading || !projects) return <RouteFallback />;
+  if (projects.length === 0) return <NoProjectsState />;
+
+  const requestedTab = location.pathname
+    .slice("/command-center".length)
+    .split("/")
+    .filter(Boolean)[0];
+  const tab = requestedTab === "tasks" ? "tasks" : "graph";
+  const remembered = readRememberedProjectId();
+  const project = projects.find((candidate) => candidate.id === remembered) ?? projects[0];
+  if (!project) return <NoProjectsState />;
+  return <Navigate to={workspaceHref(project.id, tab, location.search)} replace />;
+}
+
 function RouteFallback() {
   return (
     <div className="flex h-full min-h-[40vh] items-center justify-center text-sm text-gray-500">
@@ -90,12 +140,8 @@ export default function App() {
             <Route path="agents" element={<AgentWorkspace />} />
             <Route path="chat/:projectId" element={<Navigate to="/agents" replace />} />
 
-            <Route path="command-center" element={<CommandCenter />}>
-              <Route index element={<WorkspaceIndexRedirect />} />
-              <Route path="graph" element={<CommandCenterGraph />} />
-              <Route path="tasks" element={<CommandCenterTasks />} />
-              <Route path="agents" element={<Navigate to="/agents" replace />} />
-            </Route>
+            <Route path="command-center/agents" element={<Navigate to="/agents" replace />} />
+            <Route path="command-center/*" element={<CommandCenterRedirect />} />
 
             {/* Legacy deep-links retain their filters while moving to current surfaces. */}
             <Route path="system" element={<LegacyRedirect to="/command-center/graph" />} />

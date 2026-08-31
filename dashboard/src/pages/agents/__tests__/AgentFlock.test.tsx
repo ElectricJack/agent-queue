@@ -122,9 +122,9 @@ describe("Agent flock sidebar", () => {
     expect(screen.getByLabelText("Current location")).toHaveTextContent(destination);
   });
 
-  it("keeps All projects and graph filters selected through a task detail", async () => {
+  it("keeps graph filters selected through a task detail without an All projects option", async () => {
     renderFlock({ pathname: "/tasks/task-1", state: { from: "/command-center/graph?q=review&completed=1" } });
-    expect(screen.getByRole("link", { name: "All projects" })).toHaveAttribute("aria-current", "page");
+    expect(screen.queryByRole("link", { name: "All projects" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("link", { name: "Command Center" }));
     expect(screen.getByLabelText("Current location")).toHaveTextContent("/command-center/graph?q=review&completed=1");
   });
