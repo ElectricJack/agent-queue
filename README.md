@@ -1,193 +1,196 @@
 # Agent Queue
 
-**A self-improving orchestration platform for AI coding agents.**
+**A local control plane for running a software factory of coding agents.**
 
-Agent Queue manages task queues across multiple projects, coordinates multi-agent workflows through executable playbooks, accumulates knowledge via a 4-tier memory architecture, and continuously improves through automated reflection. Every completed task feeds insights back into the system — the longer it runs, the better it gets.
+Agent Queue is a long-running daemon that turns durable work into isolated agent
+sessions, routes that work across a shared worker fleet, and carries it through review.
+Tasks, dependencies, gates, sessions, and outcomes live outside any one model context,
+so a crashed or exhausted session does not have to be the end of the job.
 
-Manage everything from Discord, your terminal, or any MCP-compatible client. Queue up a week's worth of tasks, come back to completed PRs and a system that knows more about your codebase than it did yesterday.
+The closest category reference is [Gas City](https://github.com/gastownhall/gascity):
+in both cases, the interesting unit is not a chat with one agent but an operational
+system that expresses work, assigns it to a fleet, observes it, and keeps it moving.
+Agent Queue is an independent implementation, not a Gas City distribution or compatible
+SDK. It uses its own daemon, database, task graph, markdown vault, pipeline policy, and
+API. The comparison is about the kind of system this is—a local software factory—not a
+claim that the internals or scale are the same.
 
-<table>
-<tr>
-<td><img src="docs/img/project-chat-00.png" alt="Chatting with the bot — status, suggestions, agent management" width="450"></td>
-<td><img src="docs/img/project-chat-01.png" alt="Task started and completed — token usage, change summary" width="450"></td>
-</tr>
-</table>
+Agent Queue is under active development. It is currently best suited to operators who
+are comfortable running coding-agent CLIs and inspecting the work they produce.
 
-## Key Capabilities
+## How work moves through the system
 
-### Self-Improvement Loop
-The core value proposition: **the system gets better with use.**
-- **Reflection engine.** Post-task review extracts generalizable insights — what worked, what failed, what to remember. Configurable depth tiers (deep/standard/light) with circuit breaker protection.
-- **Continuous learning.** Every task leaves the system better prepared for the next one. Error patterns, successful strategies, and project conventions accumulate in scoped memory.
-- **Knowledge consolidation.** Periodic consolidation distills raw task memories into structured knowledge bases, project factsheets, and agent-type wisdom.
-- **Autonomous operation.** The improvement loop requires no manual intervention — reflection playbooks run automatically, write insights, and feed them to future agents.
+1. **Work enters as durable records.** Create a task from the dashboard, `aq` CLI,
+   Discord, REST API, or MCP. A task can stand alone or sit in a typed dependency graph.
+   Reusable formulas can materialize graph templates. Approved specs can be handed to a
+   spec-ingest agent, which proposes a task batch for human approval before anything is
+   committed to the graph.
+2. **Routing chooses capabilities, not a hard-coded model.** An unrouted task receives a
+   routing gate. The default pipeline coalesces open gates into a reusable triage task,
+   and triage pins a profile, intelligence class, and workspace requirement. Profiles
+   describe the role and allowed tools; intelligence classes map a level such as
+   `standard-medium` to provider-specific model and reasoning settings.
+3. **A shared worker runs the task.** Durable, global worker identities are reused across
+   projects. For each assignment, the daemon launches the profile's harness in an
+   observable tmux session. The shipped harness definitions cover Claude Code, OpenAI
+   Codex, and Gemini CLI.
+4. **Git work is isolated.** Repository tasks run in reusable worktree slots, normally on
+   an `aq/<task-id>` branch. The worktree is disposable execution space; the branch,
+   task history, comments, and session attempts are the durable artifacts. Project caps,
+   workspace locks, leases, heartbeats, and recovery logic bound concurrency and make
+   stalled work visible.
+5. **Review is part of the graph.** A workspace task must close explicitly with a
+   summary. The default pipeline creates a read-only reviewer for each completed task
+   with a branch, gates downstream work on that verdict, and coalesces the branch into a
+   final review. The final-reviewer profile is the only shipped profile with merge
+   authority. Rejection reopens the original task with actionable feedback.
+6. **Humans steer the running factory.** The Command Center shows the live task graph,
+   task list, gates, files, diffs, playbook runs, and session history. The Agent Flock
+   view exposes shared workers and attachable live terminals. The same command layer is
+   available through the dashboard, CLI, Discord, REST, and MCP rather than being
+   reimplemented per interface.
 
-### Orchestration & Scheduling
-- **Multi-agent, multi-project.** Run parallel Claude Code agents across all your projects, each in isolated workspaces with your existing environment.
-- **Proportional scheduling.** Deficit-based fair-share algorithm distributes agent time across projects — the most under-served project gets the next agent slot. Zero LLM calls for orchestration.
-- **Smart cascade.** Each 5-second orchestration cycle runs a deterministic promotion cascade: check approvals, resume paused tasks, promote dependency-satisfied tasks, and monitor for stuck work.
-- **Rate limit recovery.** Auto-pause on throttle, auto-resume when the window resets. While one agent is paused, others keep working.
-- **Full task lifecycle.** DEFINED → READY → ASSIGNED → IN_PROGRESS → COMPLETED, with retry, escalation, dependency management, and plan-based subtask generation.
+## The pieces
 
-### Playbooks — Workflow Automation
-- **DAG-based workflows.** Author multi-step automation as markdown files; an LLM compiles them into executable directed graphs with conditional branching and context accumulation.
-- **Human-in-the-loop.** Pause playbook execution at checkpoints for human review before proceeding. Resume with input that flows into the conversation context.
-- **Event-driven composition.** Playbooks trigger on system events (`task.completed`, `git.push`, `timer.24h`) and chain together via event-driven composition.
-- **Scoped automation.** System-wide, project-specific, or agent-type playbooks — each runs only where it applies. Replaces the older single-shot hook/rule systems with multi-step reasoning.
+### Daemon and API
 
-### Agent Coordination
-- **Playbook-driven workflows.** Coordination playbooks define multi-agent pipelines — feature development, review cycles, parallel exploration — as readable markdown.
-- **Agent affinity.** Prefer agents with context continuity from earlier workflow stages. Advisory with bounded wait — falls back gracefully when the preferred agent is busy.
-- **Workspace strategies.** Exclusive locks for safety, branch-isolated for parallel work on the same repo, directory-isolated for monorepos.
-- **Temporary constraints.** Exclusive project access for migrations, per-type concurrency limits, release-on-completion semantics.
+The Python daemon owns scheduling, task state, workspace acquisition, session
+reconciliation, event delivery, and pipeline dispatch. A FastAPI application exposes
+the command surface, health endpoints, generated resource routes, and WebSocket streams
+used by the dashboard. SQLite is available for a local install; PostgreSQL is supported
+for the more concurrent path.
 
-### Memory & Knowledge Management
-- **4-tier memory architecture.** L0 Identity, L1 Critical Facts, L2 Topic Context, L3 Deep Search — each tier loaded at the right time to minimize token usage and maximize relevance.
-- **Semantic search + KV store + temporal facts.** Milvus-backed unified storage with vector search, exact key-value lookups, and time-windowed facts with full history.
-- **Scoped knowledge.** System → Agent-Type → Project hierarchy. Knowledge flows from broad to specific, with overrides at each level.
-- **Automatic deduplication & merging.** New memories are compared against existing ones; near-duplicates are merged via LLM to prevent knowledge sprawl.
+The control path is deliberately mostly deterministic. Scheduling, dependency and gate
+resolution, task assignment, pipeline actions, and recovery do not need an LLM call.
+Models do the work that requires judgment: triage, implementation, review, spec
+decomposition, and user-defined reasoning steps.
 
-### Plugin System
-- **Extensible architecture.** 5 internal plugins ship by default (files, git, memory, notes, vibecop). Install third-party plugins from git repos.
-- **Full integration.** Plugins register tools, subscribe to events, add CLI and Discord commands, and run cron-scheduled functions.
-- **Circuit breaker protection.** Failing plugins are auto-disabled to prevent cascading failures.
+### Work graph and gates
 
-### Developer Experience
-- **Discord + CLI + MCP.** Manage from your phone via Discord, your terminal via the CLI, or any MCP client via the auto-exposed tool server (~150 tools).
-- **Vault & Obsidian integration.** All knowledge, playbooks, and profiles stored as markdown in `~/.agent-queue/vault/` — browse and edit with Obsidian or any text editor.
-- **Agent profiles.** Configure agent behavior, tools, and MCP servers via markdown profiles. Assign profiles per-project or per-task.
-- **Live streaming.** Each task gets a Discord thread. Watch agents work in real time. Reply to unblock them.
-- **Multi-provider LLM support.** Anthropic direct, AWS Bedrock, Google Vertex AI, Gemini, or Ollama for LLM calls.
+Tasks form a graph with typed relationships such as `blocks`, `parent-child`,
+`waits-for`, `discovered-from`, and `related`. Gates represent conditions outside the
+ordinary task-status enum: routing decisions, human approval, another task, a timer, a
+merged PR, CI, or an event. This keeps “why is this not running?” queryable instead of
+hiding it in an agent transcript.
 
-## Getting Started
+### Markdown vault
 
-**Prerequisites:** Python 3.12+, a [Discord bot token](https://discord.com/developers/applications), Claude Code installed.
+Operator-editable policy and configuration live under `~/.agent-queue/vault/` and are
+watched by the daemon. Important paths include:
+
+```text
+vault/
+├── agent-types/<profile>/profile.md
+├── harnesses/{claude,codex,gemini}.md
+├── intelligence-classes/<class>.md
+├── workspace-kinds/<kind>.md
+├── system/playbooks/*.md
+├── formulas/*.md
+└── projects/<project>/
+    ├── agent-types/      # project overrides
+    ├── playbooks/
+    ├── formulas/
+    ├── specs/
+    ├── notes/
+    └── memory/
+```
+
+Markdown is the editable source; database rows and compiled artifacts are runtime
+projections. The vault is compatible with ordinary editors and Obsidian, but neither is
+required.
+
+### Pipelines and playbooks
+
+The shipped `default-pipeline.md` reacts to task, spec, proposal, and gate events. Its
+routing, review, and spec-ingest actions are declared in markdown and dispatched through
+a strict command allowlist. Project-scoped policy can shadow system policy by role.
+
+General playbooks are also markdown workflow graphs. They can be compiled, validated,
+dry-run, inspected, triggered by events, and paused at human gates. Playbooks remain an
+actively evolving subsystem; use `aq playbook health` and `aq doctor` to inspect the
+capabilities enabled in a particular installation.
+
+### Optional memory and plugins
+
+Memory is not the core scheduling model and Agent Queue does not promise that every
+completed task automatically makes the system smarter. The Milvus-backed `aq-memory`
+integration is an optional plugin, installed separately. Other plugins can contribute
+commands, event handlers, services, and health checks. Inspect a live installation with
+`aq plugin list`; the README intentionally does not promise a fixed plugin or tool count.
+
+## Getting started
+
+The source setup currently targets Linux and macOS. You need Python 3.12+, Git, tmux,
+and at least one authenticated agent CLI (`claude`, `codex`, or `gemini`). Node.js/npm
+is needed for the dashboard, and the GitHub CLI (`gh`) is needed for the automated PR
+and merge path. The setup wizard is currently Claude-first even though the session
+runtime supports all three shipped harnesses.
 
 ```bash
 git clone https://github.com/ElectricJack/agent-queue.git
 cd agent-queue
 ./setup.sh
+aq start
 ```
 
-The setup script handles dependencies, Discord config, API keys, and first agent creation.
+`setup.sh` creates the virtual environment, installs the Python and dashboard packages,
+links the CLI entry points, creates `~/.agent-queue/config.yaml`, and runs the interactive
+setup wizard. The daemon seeds the vault on first startup. `aq start` starts the daemon
+and can start the local dashboard. Discord is the supported chat transport; set
+`messaging_platform: none` if you only want the dashboard, CLI, API, and MCP surfaces.
 
-To remove everything and return the repo to a fresh-clone state, run `./uninstall.sh` (it'll prompt before removing your `~/.agent-queue/` config directory; pass `-y` to skip prompts).
-
-Once running, talk to the bot in your Discord channel:
-
-```
-You:  link ~/code/my-app as my-app
-You:  create a project called my-app
-You:  create agent claude-1 and assign it to my-app
-You:  add a task to add rate limiting to the API
-```
-
-Or use the CLI:
+Create a project and put work on the queue:
 
 ```bash
-aq status                              # system overview
-aq task add "Add rate limiting" -p my-app  # create a task
-aq task list                           # see all tasks
+aq project create --name my-app --repo-url https://github.com/you/my-app.git
+aq agent create --name worker-1 --profile-id worker-standard
+aq task create --project my-app --title "Add rate limiting to the API"
+
+aq status
+aq task list --project my-app
+aq task explain <task-id>
 ```
 
-Or connect via MCP from Claude Code, Cursor, or any MCP-compatible client.
+`aq task create --graph <file>` creates a dependency graph from JSON or YAML.
+`aq task create --from-spec <path>` creates one from a fenced `aq-graph` block. Use
+`--dry-run` with either form to validate without writing. Run `aq --help-all` for the
+complete CLI surface and `aq doctor` when an installation is not behaving as expected.
 
-## Architecture at a Glance
+To run the dashboard separately during development:
 
-```
-asyncio event loop
-├── Discord Bot / MCP Server     — control planes (human + machine)
-├── Supervisor                   — LLM-powered conversation, tool dispatch, reflection
-│   ├── PromptBuilder            — 5-layer context assembly (L0-L3 + tools)
-│   ├── ReflectionEngine         — post-action review with depth tiers
-│   └── ToolRegistry             — tiered tool loading (core + on-demand)
-├── Orchestrator                 — deterministic task lifecycle (zero LLM calls)
-│   ├── Scheduler                — proportional deficit-based assignment
-│   ├── State Machine            — formal task state transitions + DAG validation
-│   ├── Smart Cascade            — promotion pipeline each cycle
-│   ├── Plan Parser              — discovers plans, creates subtask chains
-│   └── Playbook Engine          — event-triggered DAG workflows
-│       ├── PlaybookCompiler     — markdown → JSON graph (LLM-powered, one-shot)
-│       ├── PlaybookRunner       — graph walker with conversation history
-│       └── PlaybookManager      — lifecycle, triggers, cooldown, concurrency
-├── Workflow Coordination        — multi-agent pipeline orchestration
-│   ├── Stage Resume Handler     — auto-resume on stage completion events
-│   ├── Orphan Recovery          — detect & recover stale/crashed workflows
-│   └── Pipeline View            — dashboard-ready visualization
-├── Plugin Registry              — modular tool/event/cron extensibility
-├── Memory V2 Service            — Milvus-backed 4-tier knowledge
-│   ├── Semantic search          — multi-scope weighted vector search
-│   ├── KV store                 — fast scalar lookups per scope
-│   ├── Temporal facts           — validity-windowed facts with history
-│   └── Memory Extractor         — auto-extracts knowledge from events
-├── EventBus                     — async pub/sub with wildcard + payload filtering
-└── Adapters                     — agent backends (Claude Code, extensible)
+```bash
+npm run dev
 ```
 
-**Design philosophy:** Zero LLM calls for orchestration. Structure guides intelligence. Files are the source of truth. The system improves with use. See the [design principles](docs/specs/design/guiding-design-principles.md) for the full philosophy.
-
-## How the Self-Improvement Loop Works
-
-> **Currently paused (framework overhaul).** `memory.enabled` and
-> `playbooks.enabled` both default to `false`, so the memory and playbook
-> subsystems are not constructed at startup and their commands return
-> `memory is paused (memory.enabled=false)` /
-> `playbooks are paused (playbooks.enabled=false)`. The diagram below
-> describes the loop as it works when both flags are `true`.
->
-> **Operator notes while paused:**
-> - **No data is deleted.** `playbook_runs` rows, compiled playbook JSON
->   under `{data_dir}/compiled/`, vault markdown and Milvus collections are
->   all preserved.
-> - Milvus (a server, or the Milvus-Lite file under
->   `~/.agent-queue/memsearch/`) may be stopped while memory is paused — the
->   daemon will not touch it. **Do not delete its data directory**; there is
->   no re-index step on the un-pause path by design.
-> - Re-enabling is a config flip plus a daemon restart. Both flags are
->   restart-required; hot reload will not apply them. No migrations.
->
-> See `docs/specs/design/feature-pauses.md`.
-
-```
-Task Execution
-  └── Agent saves insights during work (memory_save, memory_fact_store)
-        │
-        ▼
-Task Completion
-  └── Reflection engine reviews the task (deep/standard/light)
-        │
-        ▼
-Knowledge Extraction
-  └── Patterns, errors, strategies distilled into scoped memory
-        │
-        ▼
-Memory Consolidation
-  └── Periodic playbooks organize, deduplicate, and merge insights
-        │
-        ▼
-Next Task
-  └── Future agents receive accumulated knowledge via prompt builder
-        └── Better performance, fewer mistakes, learned conventions
-              │
-              ▼
-           (cycle continues — system gets better)
-```
+Vite serves the dashboard on `http://127.0.0.1:5173` and proxies the daemon API at
+`http://127.0.0.1:8081` by default.
 
 ## Development
 
 ```bash
+pip install -e packages/aq-client
 pip install -e ".[dev,cli]"
-pip install -e packages/aq-client      # typed API client (generated)
-pre-commit install                     # ruff formatting on every commit
-pytest tests/                          # run test suite
-./run.sh start                         # start the daemon
+npm install
+
+pytest tests/
+npm test --workspace dashboard
+npm run typecheck
+npm run build
 ```
 
-## Documentation
+Useful starting points:
 
-- **[Full docs](https://electricjack.github.io/agent-queue/)** — architecture, commands, playbooks, adapters
-- **[Design specs](docs/specs/design/)** — guiding principles, playbooks, memory, self-improvement, coordination
-- **[profile.md](profile.md)** — project architecture, conventions, codebase map
+- [AQ surface](docs/specs/design/aq-surface.md) — CLI, API auth, task-scoped commands,
+  and prime documents
+- [Work graph](docs/specs/design/work-graph.md) — typed dependencies, gates, claims,
+  pools, and task hierarchy
+- [Worktree execution](docs/specs/design/worktree-execution.md) — reusable slots,
+  branches, recovery, and integration
+- [Profiles](docs/specs/design/profiles.md) — markdown roles and capabilities
+- [Playbooks](docs/specs/design/playbooks.md) — authored workflow graphs
+- [Agent flock plan](docs/superpowers/plans/2026-08-30-agent-flock.md) and
+  [Command Center plan](docs/superpowers/plans/2026-08-30-command-center-unification.md)
+  — the recent direction of the worker and operator surfaces
 
 ## License
 

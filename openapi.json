@@ -11712,6 +11712,18 @@
             ],
             "title": "Dep Type",
             "description": "Edge kind (default 'blocks'). Blocking kinds gate readiness: 'blocks' waits for completion, 'parent-child' marks a container that withholds its children until released, 'waits-for' fans in over a container's children, 'conditional-blocks' runs only if the dependency terminally failed. The rest are provenance only and never block."
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason",
+            "description": "WHY this edge exists. Always provide this when linking spawned work to the task where it was discovered."
           }
         },
         "type": "object",
@@ -11743,6 +11755,22 @@
           "depends_on_title": {
             "type": "string",
             "title": "Depends On Title"
+          },
+          "dep_type": {
+            "type": "string",
+            "title": "Dep Type",
+            "default": "blocks"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
           }
         },
         "type": "object",
@@ -14489,7 +14517,7 @@
               }
             ],
             "title": "Depends On",
-            "description": "Task IDs this task depends on (optional)."
+            "description": "Task IDs or described dependency edges (optional)."
           },
           "discovered_from": {
             "anyOf": [
@@ -14502,6 +14530,18 @@
             ],
             "title": "Discovered From",
             "description": "Task ID this work was discovered from (provenance, swarm-work-model \u00a79; a worker-filed caller is restricted to the held task's subtree)."
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason",
+            "description": "WHY this task exists: the reason it was spawned, not just what it does. REQUIRED when creating work from inside another task; stored on the parent-child or discovered-from edge back to its origin."
           },
           "dedup_key": {
             "anyOf": [
@@ -14663,6 +14703,26 @@
               }
             ],
             "title": "Status"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "depends_on": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Depends On",
+            "default": []
           }
         },
         "type": "object",
@@ -20641,6 +20701,17 @@
           "dep_type": {
             "type": "string",
             "title": "Dep Type"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
           }
         },
         "type": "object",
@@ -20760,6 +20831,17 @@
               }
             ],
             "title": "Pr Url"
+          },
+          "playbook_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Playbook Run Id"
           }
         },
         "type": "object",
@@ -21120,6 +21202,18 @@
               }
             ],
             "title": "Total Duration Seconds"
+          },
+          "graph": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Graph"
           }
         },
         "type": "object",
@@ -24992,6 +25086,17 @@
             "type": "string",
             "title": "Dep Type",
             "default": ""
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
           }
         },
         "type": "object",
@@ -30396,6 +30501,28 @@
             "type": "string",
             "title": "Status",
             "default": ""
+          },
+          "dep_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dep Type"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
           }
         },
         "type": "object",
@@ -31001,6 +31128,15 @@
             "title": "Labels",
             "default": []
           },
+          "provenance": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Provenance",
+            "default": []
+          },
           "claimed_by": {
             "anyOf": [
               {
@@ -31266,6 +31402,15 @@
             },
             "type": "array",
             "title": "Labels",
+            "default": []
+          },
+          "provenance": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Provenance",
             "default": []
           },
           "claimed_by": {

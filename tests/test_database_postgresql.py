@@ -97,13 +97,96 @@ async def _make_task(db, project_id, tid=None, **kwargs):
     return tid
 
 
-async def test_postgres_head_window_downgrade_reupgrade_preserves_and_transforms_data(db):
-    """Head initialization exposes the schema objects required by the migration window."""
-    from sqlalchemy import inspect
+def _alembic_pg(dsn: str, *args: str):
+    import os
+    import subprocess
+    import sys
 
-    async with db._engine.connect() as conn:
-        tables = await conn.run_sync(lambda sync: set(inspect(sync).get_table_names()))
-    assert {"tasks", "agents", "task_completion_records"} <= tables
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    env = dict(os.environ, AGENT_QUEUE_DB_URL=dsn)
+    return subprocess.run(
+        [sys.executable, "-m", "alembic", *args],
+        cwd=root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+async def test_postgres_head_window_downgrade_reupgrade_preserves_and_transforms_data():
+    """head -> below the hierarchy pair -> head on a real PostgreSQL database.
+
+    Runs the actual alembic chain on a scratch database of this worker's
+    own: the downgrade must remove the swarm DDL, and data seeded at the
+    old schema (a column-only parent pointer) must survive the re-upgrade
+    and come out canonicalised (edge row, container flag, partial unique
+    index) — the same contract the SQLite twin asserts, but on the dialect
+    whose DDL paths (no batch_alter rebuild) actually differ.
+    """
+    import asyncpg
+
+    from tests.pg_dsn import create_scratch_database
+
+    dsn = await create_scratch_database("window")
+    plain_dsn = dsn.replace("postgresql+asyncpg://", "postgresql://")
+    assert _alembic_pg(dsn, "upgrade", "head").returncode == 0
+    res = _alembic_pg(dsn, "downgrade", "4e925610d7a6")
+    assert res.returncode == 0, res.stderr
+
+    conn = await asyncpg.connect(plain_dsn)
+    try:
+        assert (
+            await conn.fetchval(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_name='tasks' AND column_name='claim_epoch'"
+            )
+            is None
+        )
+        assert await conn.fetchval("SELECT to_regclass('hierarchy_migration_rejects')") is None
+        await conn.execute("INSERT INTO projects (id, name, created_at) VALUES ('x','x',0)")
+        await conn.execute(
+            "INSERT INTO tasks (id, project_id, parent_task_id, title, description, "
+            "status, created_at, updated_at) VALUES "
+            "('p','x',NULL,'p','p','IN_PROGRESS',0,0), "
+            "('c','x','p','c','c','READY',0,0)"
+        )
+    finally:
+        await conn.close()
+
+    res = _alembic_pg(dsn, "upgrade", "head")
+    assert res.returncode == 0, res.stderr
+    conn = await asyncpg.connect(plain_dsn)
+    try:
+        assert (
+            await conn.fetchval("SELECT parent_task_id FROM tasks WHERE id='c'") == "p"
+        )
+        assert (
+            await conn.fetchval(
+                "SELECT depends_on_task_id FROM task_dependencies "
+                "WHERE task_id='c' AND dep_type='parent-child'"
+            )
+            == "p"
+        )
+        assert (
+            await conn.fetchval(
+                "SELECT value FROM task_metadata WHERE task_id='p' AND key='container'"
+            )
+            == "true"
+        )
+        assert (
+            await conn.fetchval("SELECT to_regclass('uq_task_deps_single_parent')")
+            is not None
+        )
+        assert (
+            await conn.fetchval(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_name='tasks' AND column_name='claim_epoch'"
+            )
+            == 1
+        )
+    finally:
+        await conn.close()
 
 
 @pytest.mark.parametrize("backend", ["sqlite", "postgres"])

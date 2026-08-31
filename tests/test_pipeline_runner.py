@@ -49,6 +49,25 @@ async def test_walks_success_chain(handler, graph):
     assert calls[1][0] == "ensure_task"
 
 
+async def test_persists_current_node_for_live_graph_highlight(handler, graph):
+    db = MagicMock()
+    db.update_playbook_run = AsyncMock()
+    runner = PipelineRunner(
+        graph,
+        event={"project_id": "P1", "task_id": "T1"},
+        handler=handler,
+        db=db,
+    )
+
+    await runner.run()
+
+    assert [call.kwargs["current_node"] for call in db.update_playbook_run.await_args_list] == [
+        "a",
+        "b",
+        "done",
+    ]
+
+
 async def test_takes_on_failure_branch(graph):
     h = MagicMock()
     h.execute = AsyncMock(return_value={"success": False, "error": "boom"})

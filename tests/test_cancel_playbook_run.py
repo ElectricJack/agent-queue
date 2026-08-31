@@ -5,7 +5,7 @@ once Task 2 lands, the command itself.
 """
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -151,6 +151,32 @@ async def test_cancel_playbook_run_marks_paused_run_cancelled():
     assert result["status"] == "cancelled"
 
 
+async def test_cancel_playbook_run_marks_root_task_failed():
+    handler = _make_handler()
+    running_run = PlaybookRun(
+        run_id="r-root",
+        playbook_id="pb",
+        playbook_version=1,
+        trigger_event='{"project_id": "demo"}',
+        status="running",
+        started_at=1.0,
+    )
+    handler.db.get_playbook_run = AsyncMock(return_value=running_run)
+    handler.db.update_playbook_run = AsyncMock()
+    sync = AsyncMock(return_value="root-task")
+
+    with patch("src.commands.playbook_commands.sync_playbook_run_task", sync):
+        await handler._cmd_cancel_playbook_run({"run_id": "r-root"})
+
+    sync.assert_awaited_once_with(
+        handler,
+        project_id="demo",
+        playbook_id="pb",
+        run_id="r-root",
+        status="cancelled",
+    )
+
+
 async def test_cancel_playbook_run_emits_notify_event():
     handler = _make_handler()
     running_run = PlaybookRun(
@@ -166,7 +192,11 @@ async def test_cancel_playbook_run_emits_notify_event():
     handler.db.update_playbook_run = AsyncMock()
     handler.orchestrator.bus = AsyncMock()
 
-    await handler._cmd_cancel_playbook_run({"run_id": "r4"})
+    with patch(
+        "src.commands.playbook_commands.sync_playbook_run_task",
+        new_callable=AsyncMock,
+    ):
+        await handler._cmd_cancel_playbook_run({"run_id": "r4"})
 
     handler.orchestrator.bus.emit.assert_awaited_once()
     event_type, payload = handler.orchestrator.bus.emit.await_args.args

@@ -875,3 +875,170 @@ class TestDiffAndMergeBase:
     async def test_ahas_remote(self, clone, mgr):
         assert await mgr.ahas_remote(clone) is True
         assert await mgr.ahas_remote(clone, "no-such-remote") is False
+
+
+# ------------------------------------------------------------------
+# Platform plan 16-20: recovery semantics against real repository
+# state (16-18) and external-tool parsing/error paths (19-20)
+# ------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_async_staged_patch_preserves_trailing_newline_and_binary_flag(
+    tmp_path, bare_repo, clone, mgr
+):
+    """The salvage patch keeps its terminating newline and binary hunks so
+    ``git apply`` accepts it on a fresh checkout."""
+    pathlib.Path(clone, "README.md").write_text("edited for salvage\n")
+    pathlib.Path(clone, "blob.bin").write_bytes(b"\x00\x01\x02\xfe\xff")
+    _git(["add", "README.md", "blob.bin"], cwd=clone)
+
+    patch = await mgr.astaged_patch(clone)
+
+    assert patch.endswith("\n"), "stripped trailing newline corrupts the patch"
+    assert "GIT binary patch" in patch, "--binary hunk missing; bytes unrecoverable"
+
+    # The archived text must actually apply on a clean clone of the same base.
+    fresh = str(tmp_path / "fresh-checkout")
+    subprocess.run(["git", "clone", bare_repo, fresh], check=True, capture_output=True)
+    patch_file = tmp_path / "salvage.patch"
+    patch_file.write_text(patch)
+    subprocess.run(["git", "apply", str(patch_file)], cwd=fresh, check=True, capture_output=True)
+    assert pathlib.Path(fresh, "README.md").read_text() == "edited for salvage\n"
+    assert pathlib.Path(fresh, "blob.bin").read_bytes() == b"\x00\x01\x02\xfe\xff"
+
+
+@pytest.mark.asyncio
+async def test_async_abort_operations_removes_linked_worktree_lock(tmp_path, clone, mgr, monkeypatch):
+    """For a linked worktree the stale ``index.lock`` lives under the base
+    repo's ``.git/worktrees/<name>/`` — the resolved location must be
+    cleaned, not a fictitious ``<worktree>/.git/index.lock``."""
+    wt_path = str(tmp_path / "linked-wt")
+    _git(["worktree", "add", "--detach", wt_path, "HEAD"], cwd=clone)
+    assert pathlib.Path(wt_path, ".git").is_file()  # gitdir pointer, not a dir
+
+    resolved_git_dir = pathlib.Path(clone, ".git", "worktrees", "linked-wt")
+    stale_lock = resolved_git_dir / "index.lock"
+    stale_lock.write_text("stale")
+
+    async def harmless_abort(args, cwd=None, **kwargs):
+        raise GitError(f"no {args[0]} in progress")
+
+    monkeypatch.setattr(mgr, "_arun", harmless_abort)
+
+    await mgr.aabort_in_progress_operations(wt_path)
+
+    assert not stale_lock.exists()
+    # The worktree's gitdir pointer file itself is untouched.
+    assert pathlib.Path(wt_path, ".git").is_file()
+
+
+@pytest.mark.asyncio
+async def test_async_force_clean_workspace_removes_ignored_and_reports_clean(clone, mgr):
+    """Nuclear cleanup drops staged, untracked, and gitignored artifacts and
+    reports the workspace clean."""
+    _commit_file(clone, ".gitignore", "ignored.txt\n", "add gitignore")
+
+    pathlib.Path(clone, "README.md").write_text("staged edit")
+    _git(["add", "README.md"], cwd=clone)
+    pathlib.Path(clone, "untracked.txt").write_text("scratch")
+    pathlib.Path(clone, "ignored.txt").write_text("cache artifact")
+
+    assert await mgr.aforce_clean_workspace(clone) is True
+
+    assert pathlib.Path(clone, "README.md").read_text() == "init"
+    assert not pathlib.Path(clone, "untracked.txt").exists()
+    assert not pathlib.Path(clone, "ignored.txt").exists()
+    assert await mgr.ahas_uncommitted_changes(clone) is False
+
+
+@pytest.mark.asyncio
+async def test_async_worktree_list_parses_branch_detached_and_locked_entries(mgr, monkeypatch):
+    """Porcelain parsing strips the refs/heads/ prefix, keeps flag values,
+    and does not drop the final entry when no trailing blank line follows."""
+    porcelain = (
+        "worktree /repo/main\n"
+        "HEAD " + "1" * 40 + "\n"
+        "branch refs/heads/main\n"
+        "\n"
+        "worktree /repo/detached\n"
+        "HEAD " + "2" * 40 + "\n"
+        "detached\n"
+        "\n"
+        "worktree /repo/locked\n"
+        "HEAD " + "3" * 40 + "\n"
+        "branch refs/heads/aq/task-1\n"
+        "locked reason: agent crashed\n"
+        "\n"
+        "worktree /repo/last\n"
+        "HEAD " + "4" * 40 + "\n"
+        "prunable gitdir file points to non-existent location"
+    )
+
+    async def fake_arun(args, cwd=None, **kwargs):
+        assert args == ["worktree", "list", "--porcelain"]
+        return porcelain
+
+    monkeypatch.setattr(mgr, "_arun", fake_arun)
+
+    entries = await mgr.aworktree_list("/repo/main")
+
+    assert entries == [
+        {"path": "/repo/main", "head": "1" * 40, "branch": "main"},
+        {"path": "/repo/detached", "head": "2" * 40, "detached": True},
+        {
+            "path": "/repo/locked",
+            "head": "3" * 40,
+            "branch": "aq/task-1",
+            "locked": "reason: agent crashed",
+        },
+        {
+            "path": "/repo/last",
+            "head": "4" * 40,
+            "prunable": "gitdir file points to non-existent location",
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_async_merge_pr_handles_invalid_method_timeout_and_sha(mgr, monkeypatch):
+    """Each amerge_pr failure mode returns its specified payload; an invalid
+    method never reaches gh; a successful merge parses the printed SHA."""
+    from types import SimpleNamespace
+
+    calls: list[list[str]] = []
+    behaviors: list = []
+
+    async def fake_subprocess(args, cwd=None, timeout=None, **kwargs):
+        calls.append(args)
+        behavior = behaviors.pop(0)
+        if isinstance(behavior, Exception):
+            raise behavior
+        return behavior
+
+    monkeypatch.setattr(mgr, "_arun_subprocess", fake_subprocess)
+    pr_url = "https://github.com/org/repo/pull/42"
+
+    # Invalid method: rejected before any gh invocation.
+    result = await mgr.amerge_pr("/repo", pr_url, method="octopus")
+    assert result == {"success": False, "sha": None, "error": "invalid method: octopus"}
+    assert calls == []
+
+    # Timeout: TimeoutExpired becomes the specified error payload.
+    behaviors.append(subprocess.TimeoutExpired(cmd="gh", timeout=300))
+    result = await mgr.amerge_pr("/repo", pr_url)
+    assert result == {"success": False, "sha": None, "error": "gh pr merge timed out"}
+
+    # Nonzero exit: stderr surfaces as the error.
+    behaviors.append(SimpleNamespace(returncode=1, stdout="", stderr="merge conflict\n"))
+    result = await mgr.amerge_pr("/repo", pr_url)
+    assert result == {"success": False, "sha": None, "error": "merge conflict"}
+
+    # Success: SHA is parsed out of gh's punctuation-wrapped output.
+    sha = "0123456789abcdef0123456789abcdef01234567"
+    behaviors.append(
+        SimpleNamespace(returncode=0, stdout=f"Merged pull request #42 ({sha}).\n", stderr="")
+    )
+    result = await mgr.amerge_pr("/repo", pr_url, method="rebase")
+    assert result == {"success": True, "sha": sha, "error": None}
+    assert calls[-1] == ["gh", "pr", "merge", pr_url, "--rebase", "--delete-branch"]

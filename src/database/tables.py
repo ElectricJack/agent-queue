@@ -173,6 +173,10 @@ task_dependencies = Table(
     # can carry several edge kinds (e.g. ``blocks`` + ``discovered-from``).
     # Existing rows read back as ``'blocks'`` — zero behavior change.
     Column("dep_type", Text, nullable=False, server_default="blocks", primary_key=True),
+    # Human explanation of why the edge exists.  Spawn/provenance writers
+    # populate this with the reason the follow-up was created; nullable keeps
+    # legacy and purely structural edges valid.
+    Column("description", Text, nullable=True),
     CheckConstraint("task_id != depends_on_task_id"),
     CheckConstraint(_TASK_DEP_TYPE_CHECK, name="ck_task_deps_dep_type"),
     # Composite indexes replace the former single-column pair: the leading

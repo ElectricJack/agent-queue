@@ -31,6 +31,7 @@ class DependencyQueryMixin:
         depends_on: str,
         dep_type: str = DepType.BLOCKS.value,
         *,
+        description: str | None = None,
         conn=None,
     ) -> set[str] | None:
         """Add a typed dependency edge between two tasks.
@@ -57,10 +58,14 @@ class DependencyQueryMixin:
         """
         if dep_type == DepType.PARENT_CHILD.value:
             if conn is not None:
-                result = await self.set_parent(task_id, depends_on, conn=conn)
+                result = await self.set_parent(
+                    task_id, depends_on, conn=conn, description=description
+                )
                 return result.flipped
             async with self._engine.begin() as owned_conn:
-                result = await self.set_parent(task_id, depends_on, conn=owned_conn)
+                result = await self.set_parent(
+                    task_id, depends_on, conn=owned_conn, description=description
+                )
             await self.log_blocked_flips(result.flipped)
             await self._notify_settled(result.settled)
             await self._notify_ready(result.ready)
@@ -74,6 +79,7 @@ class DependencyQueryMixin:
                     task_id=task_id,
                     depends_on_task_id=depends_on,
                     dep_type=dep_type,
+                    description=description,
                 )
                 .on_conflict_do_nothing()
             )
@@ -86,6 +92,7 @@ class DependencyQueryMixin:
                     task_id=task_id,
                     depends_on_task_id=depends_on,
                     dep_type=dep_type,
+                    description=description,
                 )
                 .on_conflict_do_nothing()
             )
@@ -133,6 +140,30 @@ class DependencyQueryMixin:
                 )
             )
             return [(r[0], r[1]) for r in result.fetchall()]
+
+    async def get_typed_dependencies_detailed(self, task_id: str) -> list[dict]:
+        """Return every outgoing edge, including its human-readable why."""
+        async with self._engine.begin() as conn:
+            result = await conn.execute(
+                select(
+                    task_dependencies.c.depends_on_task_id,
+                    task_dependencies.c.dep_type,
+                    task_dependencies.c.description,
+                )
+                .where(task_dependencies.c.task_id == task_id)
+                .order_by(
+                    task_dependencies.c.dep_type.asc(),
+                    task_dependencies.c.depends_on_task_id.asc(),
+                )
+            )
+            return [
+                {
+                    "depends_on_task_id": row[0],
+                    "dep_type": row[1],
+                    "description": row[2],
+                }
+                for row in result.fetchall()
+            ]
 
     async def get_all_dependencies(
         self,

@@ -17,6 +17,7 @@ import {
 import { useEventStream } from "../../ws/useEventStream";
 import type { PaneViewProps } from "../types";
 import type { PlaybookRunInspectorArgs } from "./manifest";
+import RunGraph, { type CompiledRunGraph } from "./RunGraph";
 
 interface NodeTraceEntry {
   node_id: string;
@@ -115,6 +116,7 @@ export default function PlaybookRunInspectorPane({
   const from = (location.state as { from?: string } | null)?.from ?? `${location.pathname}${location.search}`;
   const { data: run, isLoading, isError, error, refetch } = useInspectPlaybookRun(args.runId);
   const trace = (run?.node_trace ?? []) as unknown as NodeTraceEntry[];
+  const pinnedGraph = (run as unknown as { graph?: CompiledRunGraph } | undefined)?.graph;
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
   const [cancelModalOpen, setCancelModalOpen] = useState(false);
 
@@ -257,6 +259,10 @@ export default function PlaybookRunInspectorPane({
           </div>
           <StatusBadge status={run.status} />
         </div>
+
+        {pinnedGraph && (
+          <RunGraph graph={pinnedGraph} currentNode={run.current_node} trace={trace} />
+        )}
 
         <div className="max-h-[40%] overflow-y-auto border-b border-gray-800">
           {trace.map((entry, idx) => (

@@ -46,7 +46,9 @@ async def test_unknown_project_is_404(client_factory):
 async def test_tasks_edges_gates_agents_are_included(db, client_factory):
     await db.create_task(Task(id="t1", project_id="p1", title="One", description=""))
     await db.create_task(Task(id="t2", project_id="p1", title="Two", description=""))
-    await db.add_dependency("t2", "t1")  # t2 blocks-on t1
+    await db.add_dependency(
+        "t2", "t1", description="The second task consumes the first task's schema"
+    )  # t2 blocks-on t1
 
     await db.create_agent(Agent(
         id="a1", name="claude-1", profile_id="claude-agent",
@@ -66,5 +68,26 @@ async def test_tasks_edges_gates_agents_are_included(db, client_factory):
     assert ids == {"t1", "t2"}
     assert {(e["from"], e["to"], e["dep_type"]) for e in body["edges"]} \
         == {("t2", "t1", "blocks")}
+    assert body["edges"][0]["description"] == (
+        "The second task consumes the first task's schema"
+    )
     assert body["gates"][0]["task_ids"] == ["t1"]
     assert body["agents"][0]["current_task_id"] == "t1"
+
+
+async def test_playbook_run_root_exposes_run_identity(db, client_factory):
+    await db.create_task(
+        Task(
+            id="run-root",
+            project_id="p1",
+            title="Playbook run: release",
+            description="",
+            dedup_key="playbook-run:run-123",
+        )
+    )
+
+    async with client_factory() as ac:
+        response = await ac.get("/api/projects/p1/graph")
+
+    assert response.status_code == 200
+    assert response.json()["tasks"][0]["playbook_run_id"] == "run-123"

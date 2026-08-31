@@ -525,7 +525,12 @@ async def test_task_deps_reports_discovered_from_provenance(handler, db):
     """
     await db.create_task(_task("held", title="The task a worker was holding"))
     await db.create_task(_task("filed", title="Work discovered along the way"))
-    await db.add_dependency("filed", "held", "discovered-from")
+    await db.add_dependency(
+        "filed",
+        "held",
+        "discovered-from",
+        description="A failing integration test revealed this follow-up",
+    )
 
     result = await handler.execute("task_deps", {"task_id": "filed"})
     assert result["depends_on"] == []  # not a blocking edge
@@ -535,6 +540,7 @@ async def test_task_deps_reports_discovered_from_provenance(handler, db):
             "title": "The task a worker was holding",
             "status": "DEFINED",
             "dep_type": "discovered-from",
+            "reason": "A failing integration test revealed this follow-up",
         }
     ]
 
@@ -548,4 +554,5 @@ async def test_task_deps_provenance_excludes_blocking_edges(handler, db):
 
     result = await handler.execute("task_deps", {"task_id": "downstream"})
     assert [d["id"] for d in result["depends_on"]] == ["upstream"]
+    assert result["depends_on"][0]["reason"] is None
     assert result["provenance"] == []

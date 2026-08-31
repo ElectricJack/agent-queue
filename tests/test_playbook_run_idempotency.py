@@ -267,8 +267,35 @@ async def test_pipeline_run_row_marked_completed():
     assert len(dispatched) == 1
     await dispatched[0]  # run the pipeline to completion
 
-    db_mock.update_playbook_run.assert_awaited_once()
-    kwargs = db_mock.update_playbook_run.await_args.kwargs
+    updates = db_mock.update_playbook_run.await_args_list
+    assert any(call.kwargs.get("current_node") == "done" for call in updates)
+    terminal_updates = [call for call in updates if "status" in call.kwargs]
+    assert len(terminal_updates) == 1
+    kwargs = terminal_updates[0].kwargs
     assert kwargs["status"] == "completed"
     assert kwargs["error"] is None
     assert kwargs["completed_at"] > 0
+
+
+async def test_pipeline_run_syncs_root_task_at_start_and_completion():
+    db_mock = MagicMock()
+    db_mock.get_playbook_run_by_event = AsyncMock(return_value=None)
+    db_mock.create_playbook_run = AsyncMock(return_value=None)
+    db_mock.update_playbook_run = AsyncMock(return_value=None)
+
+    orch = _make_orchestrator_stub(db_mock)
+    playbook = _make_pipeline_playbook()
+    event_data = {"type": "task.completed", "event_id": "evt-root", "project_id": "P"}
+
+    dispatched: list[object] = []
+    sync = AsyncMock(return_value="run-root")
+    with (
+        patch("asyncio.create_task", side_effect=lambda coro, **kw: dispatched.append(coro)),
+        patch("src.orchestrator.core.sync_playbook_run_task", sync),
+    ):
+        await orch._on_playbook_trigger(playbook, event_data)
+        await dispatched[0]
+
+    assert [call.kwargs["status"] for call in sync.await_args_list] == ["running", "completed"]
+    created_run = db_mock.create_playbook_run.await_args.args[0]
+    assert created_run.pinned_graph is not None

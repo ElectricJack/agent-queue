@@ -4,8 +4,8 @@ export function task(id: string, patch: Partial<GraphTaskNode> = {}): GraphTaskN
   return { id, title: `Task ${id}`, status: "READY", priority: 100, ...patch };
 }
 
-export function edge(from: string, to: string, dep_type = "parent-child"): GraphEdge {
-  return { from, to, dep_type };
+export function edge(from: string, to: string, dep_type = "parent-child", description?: string): GraphEdge {
+  return { from, to, dep_type, description: description ?? null };
 }
 
 export function graph(tasks: GraphTaskNode[], edges: GraphEdge[] = []): MergedGraph {

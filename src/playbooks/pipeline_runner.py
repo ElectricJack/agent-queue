@@ -97,6 +97,10 @@ class PipelineRunner:
                 return nid
         return None
 
+    async def _set_current_node(self, node_id: str) -> None:
+        if self.db is not None:
+            await self.db.update_playbook_run(self.run_id, current_node=node_id)
+
     async def run(self) -> RunResult:
         current = self._entry()
         if current is None:
@@ -110,6 +114,7 @@ class PipelineRunner:
             raw_node = self.graph["nodes"].get(current)
             if raw_node is None:
                 return RunResult(self.run_id, "failed", f"Node '{current}' missing")
+            await self._set_current_node(current)
             if raw_node.get("terminal"):
                 return RunResult(self.run_id, "completed", outputs=self.outputs)
             # Compiled pipeline nodes carry action data nested under ``action``

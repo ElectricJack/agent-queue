@@ -26,35 +26,146 @@ PROJECT_ID = "proj"
 POSTGRES_DSN = ensure_worker_postgres_dsn()
 
 
+def _alembic_pg(dsn: str, *args: str, home: str | None = None) -> subprocess.CompletedProcess:
+    env = dict(os.environ, AGENT_QUEUE_DB_URL=dsn)
+    if home:
+        env["HOME"] = home  # keep the revision-B report out of the real ~
+    return subprocess.run(
+        [sys.executable, "-m", "alembic", *args],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+async def _pg_conn(dsn: str):
+    import asyncpg
+
+    return await asyncpg.connect(dsn.replace("postgresql+asyncpg://", "postgresql://"))
+
+
 async def test_hierarchy_revision_pair_round_trips_on_postgres():
+    """base -> A (full history below the pair) -> down -> A -> B on real PG.
+
+    Proves the whole migration history below revision A applies on
+    PostgreSQL, that revision A's DDL downgrade is reversible there (no
+    SQLite batch rebuild on this dialect), and that revision B
+    canonicalises seeded drift data on the way up.
+    """
     if not POSTGRES_DSN:
         pytest.skip("POSTGRES_TEST_DSN not set")
-    from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
+    from tests.pg_dsn import create_scratch_database
 
-    db = PostgreSQLDatabaseAdapter(POSTGRES_DSN)
-    await db.initialize()
+    dsn = await create_scratch_database("hierpair")
+    res = _alembic_pg(dsn, "upgrade", "a1b2c3d4e5f6")
+    assert res.returncode == 0, res.stderr
+
+    conn = await _pg_conn(dsn)
     try:
-        assert db._engine.dialect.name == "postgresql"
+        assert await conn.fetchval(
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_name='tasks' AND column_name='claim_epoch'"
+        ) == 1
+        assert (
+            await conn.fetchval("SELECT to_regclass('hierarchy_migration_rejects')")
+            is not None
+        )
     finally:
-        await db.close()
+        await conn.close()
 
-
-async def test_hierarchy_revision_b_postgres_reject_report_is_committed_before_failure():
-    if not POSTGRES_DSN:
-        pytest.skip("POSTGRES_TEST_DSN not set")
-    # The migration owns the durable reject report table at revision A.
-    from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
-
-    db = PostgreSQLDatabaseAdapter(POSTGRES_DSN)
-    await db.initialize()
+    res = _alembic_pg(dsn, "downgrade", "-1")
+    assert res.returncode == 0, res.stderr
+    conn = await _pg_conn(dsn)
     try:
-        async with db._engine.connect() as conn:
-            result = await conn.execute(
-                sqltext("SELECT to_regclass('hierarchy_migration_rejects')")
+        assert (
+            await conn.fetchval(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_name='tasks' AND column_name='claim_epoch'"
             )
-            assert result.scalar() == "hierarchy_migration_rejects"
+            is None
+        )
+        assert await conn.fetchval("SELECT to_regclass('hierarchy_migration_rejects')") is None
     finally:
-        await db.close()
+        await conn.close()
+
+    assert _alembic_pg(dsn, "upgrade", "a1b2c3d4e5f6").returncode == 0
+    conn = await _pg_conn(dsn)
+    try:
+        await conn.execute("INSERT INTO projects (id, name, created_at) VALUES ('x','x',0)")
+        await conn.execute(
+            "INSERT INTO tasks (id, project_id, parent_task_id, title, description, "
+            "status, created_at, updated_at) VALUES "
+            "('p','x',NULL,'p','p','IN_PROGRESS',0,0), ('c','x','p','c','c','READY',0,0)"
+        )
+    finally:
+        await conn.close()
+    res = _alembic_pg(dsn, "upgrade", "b2c3d4e5f6a7")
+    assert res.returncode == 0, res.stderr
+    conn = await _pg_conn(dsn)
+    try:
+        assert (
+            await conn.fetchval(
+                "SELECT depends_on_task_id FROM task_dependencies "
+                "WHERE task_id='c' AND dep_type='parent-child'"
+            )
+            == "p"
+        )
+        assert (
+            await conn.fetchval("SELECT to_regclass('uq_task_deps_single_parent')")
+            is not None
+        )
+    finally:
+        await conn.close()
+
+
+async def test_hierarchy_revision_b_postgres_reject_report_is_committed_before_failure(tmp_path):
+    """DB-1 on PostgreSQL: the abort still commits the rejects, nothing else.
+
+    Revision B's preflight runs on a genuinely separate connection on this
+    dialect, so its commit must survive the migration transaction's
+    rollback: after the failed upgrade the rejects rows are durable while
+    ``alembic_version`` still says revision A, the drifted pointer is
+    untouched and the single-parent index was never created — the
+    partial-migration commit window contains exactly the reject report.
+    """
+    if not POSTGRES_DSN:
+        pytest.skip("POSTGRES_TEST_DSN not set")
+    from tests.pg_dsn import create_scratch_database
+
+    dsn = await create_scratch_database("rejwin")
+    assert _alembic_pg(dsn, "upgrade", "a1b2c3d4e5f6").returncode == 0
+    conn = await _pg_conn(dsn)
+    try:
+        await conn.execute(
+            "INSERT INTO projects (id, name, created_at) VALUES ('x','x',0), ('y','y',0)"
+        )
+        # Cross-project drift: c's column points at a parent in another project.
+        await conn.execute(
+            "INSERT INTO tasks (id, project_id, parent_task_id, title, description, "
+            "status, created_at, updated_at) VALUES "
+            "('p','x',NULL,'p','p','IN_PROGRESS',0,0), ('c','y','p','c','c','READY',0,0)"
+        )
+    finally:
+        await conn.close()
+
+    res = _alembic_pg(dsn, "upgrade", "b2c3d4e5f6a7", home=str(tmp_path))
+    assert res.returncode != 0
+    assert "reject" in (res.stderr + res.stdout).lower()
+
+    conn = await _pg_conn(dsn)
+    try:
+        rows = await conn.fetch("SELECT task_id, reason FROM hierarchy_migration_rejects")
+        assert [(r["task_id"], r["reason"]) for r in rows] == [("c", "cross_project")]
+        assert (
+            await conn.fetchval("SELECT version_num FROM alembic_version") == "a1b2c3d4e5f6"
+        )
+        assert await conn.fetchval("SELECT to_regclass('uq_task_deps_single_parent')") is None
+        # apply() never ran: the drifted pointer is exactly as seeded.
+        assert await conn.fetchval("SELECT parent_task_id FROM tasks WHERE id='c'") == "p"
+    finally:
+        await conn.close()
 
 
 def _alembic(db_path: str, *args: str) -> subprocess.CompletedProcess:

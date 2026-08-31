@@ -210,7 +210,12 @@ class HierarchyQueryMixin:
     # -- the single writer ----------------------------------------------
 
     async def set_parent(
-        self, task_id: str, parent_id: str | None, *, conn
+        self,
+        task_id: str,
+        parent_id: str | None,
+        *,
+        conn,
+        description: str | None = None,
     ) -> TransitionResult:
         """Move *task_id* under *parent_id* (``None`` = root).  Spec §5.
 
@@ -296,6 +301,7 @@ class HierarchyQueryMixin:
                     task_id=task_id,
                     depends_on_task_id=parent_id,
                     dep_type=DepType.PARENT_CHILD.value,
+                    description=description,
                 )
             )
             await self.mark_container(parent_id, conn=conn)
@@ -588,7 +594,12 @@ class HierarchyQueryMixin:
     # -- creation -------------------------------------------------------
 
     async def create_task_under(
-        self, task: Task, parent_id: str, *, routing_policy: Callable[[Task], bool] | None = None
+        self,
+        task: Task,
+        parent_id: str,
+        *,
+        routing_policy: Callable[[Task], bool] | None = None,
+        description: str | None = None,
     ) -> tuple[str, bool]:
         """Insert *task* as a child of *parent_id* in one transaction (spec §6).
 
@@ -607,10 +618,13 @@ class HierarchyQueryMixin:
                         task_id=task_id,
                         depends_on_task_id=parent_id,
                         dep_type=DepType.DISCOVERED_FROM.value,
+                        description=description,
                     )
                 )
             else:
-                await self.set_parent(task_id, parent_id, conn=conn)
+                await self.set_parent(
+                    task_id, parent_id, conn=conn, description=description
+                )
             task.parent_task_id = None if capped else parent_id
             gated = routing_policy is not None and routing_policy(task)
             if gated:

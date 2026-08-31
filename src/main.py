@@ -174,6 +174,12 @@ async def run(config_path: str, profile: str | None = None) -> bool:
             )
             for t in pending:
                 t.cancel()
+            if pending:
+                # Await the losers so their cancellation cleanup completes
+                # before scheduling starts — a cancelled-but-unawaited
+                # readiness coroutine can survive as a pending task into
+                # shutdown (PLA-2).
+                await asyncio.gather(*pending, return_exceptions=True)
             if not done:
                 logger.warning(
                     "Messaging adapter not ready after 120s — running in degraded mode "

@@ -80,6 +80,7 @@ class InspectPlaybookRunResponse(BaseModel):
     paused_at: float | None = None
     waiting_for_event: str | None = None
     total_duration_seconds: float | None = None
+    graph: dict[str, Any] | None = None
 
 
 class ResumePlaybookResponse(BaseModel):

@@ -90,6 +90,8 @@ export function layoutGraph(
     const targetPosition = positions.get(edge.from)!;
     const vertical = sourcePosition.y !== targetPosition.y;
     const style = edgeStyleForType(edge.dep_type);
+    const why = edge.description?.trim() ?? "";
+    const whyShort = why.length > 60 ? `${why.slice(0, 57)}…` : why;
     return {
       id: JSON.stringify([edge.to, edge.from, edge.dep_type]),
       source: edge.to,
@@ -98,13 +100,13 @@ export function layoutGraph(
       targetHandle: vertical ? "in-top" : "in-left",
       type: "smoothstep",
       markerEnd: { type: MarkerType.ArrowClosed, color: String(style.stroke), width: 18, height: 18 },
-      label: edge.dep_type + (edge.count > 1 ? ` ×${edge.count}` : ""),
+      label: edge.dep_type + (edge.count > 1 ? ` ×${edge.count}` : "") + (whyShort ? ` — ${whyShort}` : ""),
       labelStyle: { fill: "#d1d5db", fontSize: 9 },
       labelBgStyle: { fill: "#111827", fillOpacity: 0.95 },
       labelBgPadding: [4, 2],
       style,
-      data: { depType: edge.dep_type, count: edge.count, remapped: edge.remapped },
-      ariaLabel: `${edge.dep_type}: ${edge.to} to ${edge.from}${edge.remapped ? " (collapsed tasks)" : ""}`,
+      data: { depType: edge.dep_type, count: edge.count, remapped: edge.remapped, description: edge.description ?? null },
+      ariaLabel: `${edge.dep_type}: ${edge.to} to ${edge.from}${edge.remapped ? " (collapsed tasks)" : ""}${why ? ` — ${why}` : ""}`,
     };
   });
   return { nodes, edges };

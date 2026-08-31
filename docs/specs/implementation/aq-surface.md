@@ -179,6 +179,19 @@ class SessionTokenStore:
 Mint/revoke are called by [[../design/session-runtime]] at session start/end (in-process —
 no HTTP hop). A `revoke_expired()` sweep joins the existing 5s cascade housekeeping.
 
+**Revocation window (decided; was API-1).** `validate()` serves its in-memory
+cache until the row's `expires_at` and does not re-read the database on every
+request. This is a deliberate single-process assumption: exactly one daemon
+process serves the HTTP API, and `create_app()` prefers the orchestrator-owned
+store so the cascade's revocations and per-request validations share one cache —
+they cannot disagree. A revocation written to the database by anything *else*
+(another store instance, a second process) is not observed by plain `validate()`
+until TTL expiry; `validate(refresh=True)` is the escape hatch long-lived
+terminal streams use to force a database read. Pinned by
+`tests/test_api_auth.py::TestSessionTokenStore::test_validate_refresh_observes_other_store_revocation_while_cached_validate_does_not`.
+If the deployment model ever allows a second API-serving process over one
+database, cached `validate()` becomes an authorization hole and must change.
+
 ### 4.2 Migration
 
 `api_session_tokens` (works on SQLite + PostgreSQL; `alembic revision --autogenerate`):

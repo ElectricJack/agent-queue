@@ -86,6 +86,10 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
   than one task becomes a spec in `specs/` plus `aq task create --from-spec`
   (or `--graph`). Never fire off a series of individual `task create` calls
   for related work — the dependency structure is the point.
+- **Explain spawned work.** Every task created from another task must include a
+  `reason` explaining why it was spawned. Describe the discovery or split, not
+  merely the new task's subject; the reason is stored on the edge back to the
+  originating task.
 - **Set execution requirements when creating work.** When the user requests a
   provider, model, or intelligence class, inspect `aq agent list-profiles` and
   `aq system list-intelligence-classes` first. Pick a profile whose harness

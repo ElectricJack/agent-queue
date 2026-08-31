@@ -61,6 +61,7 @@ export default function MobileCardList(props: GraphViewProps) {
                     <button type="button" className="text-left hover:text-indigo-300" onClick={() => openTask(edge.to)}>
                       {edge.dep_type} ← {projection.tasks.find((candidate) => candidate.id === edge.to)?.title ?? edge.to}
                       {edge.count > 1 ? ` ×${edge.count}` : ""}
+                      {edge.description ? ` — ${edge.description}` : ""}
                     </button>
                   </li>
                 ))}

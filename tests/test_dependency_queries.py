@@ -32,6 +32,25 @@ async def _mktask(db, tid):
 
 
 class TestAddDependencyIdempotent:
+    async def test_description_is_persisted_on_the_edge(self, db):
+        await _mktask(db, "spawned")
+        await _mktask(db, "origin")
+
+        await db.add_dependency(
+            "spawned",
+            "origin",
+            DepType.DISCOVERED_FROM.value,
+            description="The parser exposed a separate compatibility fix",
+        )
+
+        assert await db.get_typed_dependencies_detailed("spawned") == [
+            {
+                "depends_on_task_id": "origin",
+                "dep_type": DepType.DISCOVERED_FROM.value,
+                "description": "The parser exposed a separate compatibility fix",
+            }
+        ]
+
     async def test_second_add_is_noop_and_does_not_raise(self, db):
         await _mktask(db, "t1")
         await _mktask(db, "t2")

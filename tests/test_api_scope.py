@@ -105,6 +105,54 @@ class TestCheckCommandScope:
         msg = check_command_scope("session_drain_ack", {"session_id": "sX"}, SESSION)
         assert msg is not None and "session_id mismatch" in msg
 
+    def test_per_project_elevation_injects_matching_project_and_preserves_task_session_fences(
+        self,
+    ):
+        """Plan 8: elevation relaxes the command set and ONLY project identity.
+
+        A per-project supervisor token may run any command, but always inside
+        its own project: an omitted project_id is injected, a matching one
+        passes untouched, a foreign one is rejected.  Elevation must not
+        widen a plain agent token's task/session fences either — those
+        mismatches keep rejecting for non-elevated scopes.
+        """
+        elevated = RequestScope(
+            kind="session", session_id="sup-1", project_id="p1", elevated=True,
+        )
+
+        # Omitted → injected (any command, not just AGENT_COMMAND_SET).
+        args: dict = {}
+        assert check_command_scope("delete_project", args, elevated) is None
+        assert args == {"project_id": "p1"}
+
+        # Matching → allowed and preserved.
+        args = {"project_id": "p1", "name": "renamed"}
+        assert check_command_scope("edit_project", args, elevated) is None
+        assert args["project_id"] == "p1"
+
+        # Foreign → rejected, args untouched beyond the read.
+        args = {"project_id": "p2"}
+        msg = check_command_scope("edit_project", args, elevated)
+        assert msg is not None and "project_id mismatch" in msg
+        assert args == {"project_id": "p2"}
+
+        # Elevation never leaks task/session identity into the args: only
+        # project scope is injected, unlike the plain-session path.
+        args = {}
+        elevated_with_task = RequestScope(
+            kind="session", session_id="sup-1", task_id="t-sup",
+            project_id="p1", elevated=True,
+        )
+        assert check_command_scope("task_show", args, elevated_with_task) is None
+        assert args == {"project_id": "p1"}
+
+        # A plain (non-elevated) token's task/session fences still reject.
+        plain = RequestScope(kind="session", session_id="s1", task_id="t1", project_id="p1")
+        msg = check_command_scope("task_show", {"task_id": "other"}, plain)
+        assert msg is not None and "task_id mismatch" in msg
+        msg = check_command_scope("task_heartbeat", {"session_id": "sX"}, plain)
+        assert msg is not None and "session_id mismatch" in msg
+
     def test_agent_command_set_contents(self):
         expected = {
             "prime",

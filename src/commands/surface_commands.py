@@ -107,6 +107,8 @@ class SurfaceCommandsMixin:
 
         info["context"] = await self.db.get_task_contexts(task_id)
         info["labels"] = await self.db.get_task_labels(task_id)
+        deps = await self._cmd_task_deps({"task_id": task_id})
+        info["provenance"] = deps.get("provenance", [])
 
         parent = None
         parent_id = info.get("parent_task_id")

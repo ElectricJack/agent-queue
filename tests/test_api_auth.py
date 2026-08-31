@@ -167,6 +167,38 @@ class TestSessionTokenStore:
         assert await store.validate(tok) is None
         await db.close()
 
+    async def test_validate_refresh_observes_other_store_revocation_while_cached_validate_does_not(
+        self, tmp_path,
+    ):
+        """API-1 pin: the revocation window is a documented single-process trade.
+
+        A second store (standing in for any other process writing the same
+        database) revokes the session's tokens.  The first store's plain
+        ``validate()`` keeps serving its cache — the deliberate design:
+        exactly one daemon process serves HTTP, and its orchestrator-owned
+        store is the same object revocations flow through, so the cache and
+        the DB cannot disagree in production.  ``validate(refresh=True)``
+        is the escape hatch long-lived terminal streams use to observe
+        external revocation.  If the deployment model ever allows a second
+        API-serving process on one database, this cached-validate behaviour
+        becomes an authorization hole and must change.
+        """
+        db, store_a = await self._store(tmp_path)
+        store_b = SessionTokenStore(db, ttl_hours=72)
+        tok = await store_a.mint(session_id="s1", task_id="t1", project_id="p1")
+        assert (await store_a.validate(tok)) is not None  # cached in A
+
+        assert await store_b.revoke_session("s1") == 1
+
+        # A's cache still answers — the documented stale window.
+        cached = await store_a.validate(tok)
+        assert cached is not None and cached.session_id == "s1"
+        # refresh=True consults the database and sees the revocation.
+        assert await store_a.validate(tok, refresh=True) is None
+        # The refresh also evicted the stale cache entry for good.
+        assert await store_a.validate(tok) is None
+        await db.close()
+
     async def test_validate_expired_returns_none(self, tmp_path):
         db, store = await self._store(tmp_path)
         # Insert directly with an already-expired row keyed by the hash of a
@@ -953,3 +985,207 @@ class TestCodegenRouteScopeEnforcement:
             deps._token_store = None
             deps._require_session_token = False
             await db.close()
+
+
+# ---------------------------------------------------------------------------
+# api-cli plan 4-6 — elevated/unassigned token parity on the REAL typed routes
+# ---------------------------------------------------------------------------
+# The C1 tests above prove the closure logic on a synthetic route; these
+# build the actual codegen routers so category/path/operation drift or a
+# route that skips check_request_scope fails here, not in a dashboard.
+
+import httpx  # noqa: E402
+import pytest as _pytest  # noqa: E402
+
+
+@_pytest.fixture(scope="module")
+def generated_routers():
+    from src.api.codegen import build_category_routers
+
+    return build_category_routers()
+
+
+async def _seed_typed_surface_app(tmp_path, monkeypatch, generated_routers, stub_commands):
+    """App with /api/execute plus every real codegen router.
+
+    ``stub_commands`` are recorded on the CommandHandler so the tests can
+    assert whether (and with which injected args) a handler actually ran.
+    Returns ``(db, store, ch, app, paths)`` where ``paths`` maps
+    operation_id → typed route path.
+    """
+    db = Database(str(tmp_path / "typed-surface.db"))
+    await db.initialize()
+
+    orch = MagicMock()
+    orch.db = db
+    orch._command_handler = None
+    orch.plugin_registry = None
+    config = MagicMock()
+    config.messages = MagicMock(enabled=False)
+    config.playbooks = MagicMock(enabled=True)
+    config.memory = MagicMock(enabled=True)
+    ch = CommandHandler(orch, config)
+
+    ch._recorded = []
+
+    def _make_stub(cmd_name):
+        async def _stub(args):
+            ch._recorded.append((cmd_name, dict(args)))
+            return {"success": True, "command": cmd_name}
+
+        return _stub
+
+    for cmd_name in stub_commands:
+        setattr(ch, f"_cmd_{cmd_name}", _make_stub(cmd_name))
+
+    store = SessionTokenStore(db, ttl_hours=72)
+    monkeypatch.setattr(deps, "_orchestrator", orch)
+    monkeypatch.setattr(deps, "_command_handler", ch)
+    monkeypatch.setattr(deps, "_token_store", store)
+    monkeypatch.setattr(deps, "_require_session_token", False)
+
+    app = FastAPI()
+    app.include_router(execute_router)
+    paths: dict[str, str] = {}
+    for router in generated_routers:
+        app.include_router(router)
+        for route in router.routes:
+            paths[route.operation_id] = route.path
+    app.add_middleware(RequestContextMiddleware)
+    app.add_middleware(TokenAuthMiddleware)
+    return db, store, ch, app, paths
+
+
+async def test_per_project_elevated_token_cannot_cross_project_on_execute_or_typed_route(
+    tmp_path, monkeypatch, generated_routers,
+):
+    """Plan 4: per-project elevation must not cross the project boundary."""
+    db, store, ch, app, paths = await _seed_typed_surface_app(
+        tmp_path, monkeypatch, generated_routers, ["list_tasks", "edit_project"],
+    )
+    try:
+        tok = await store.mint(
+            session_id="sup-a", task_id=None, project_id="proj-a", elevated=True,
+        )
+        headers = {"Authorization": f"Bearer {tok}"}
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+        ) as c:
+            # Project-B read and mutation are rejected on BOTH surfaces,
+            # before any handler runs.
+            for command, args in (
+                ("list_tasks", {"project_id": "proj-b"}),
+                ("edit_project", {"project_id": "proj-b", "name": "hijacked"}),
+            ):
+                r = await c.post(
+                    "/api/execute", headers=headers,
+                    json={"command": command, "args": args},
+                )
+                assert r.status_code == 403, r.text
+                assert "project_id mismatch" in r.json()["error"]
+                r = await c.post(paths[command], headers=headers, json=args)
+                assert r.status_code == 403, r.text
+                assert "project_id mismatch" in r.json()["error"]
+            assert ch._recorded == []
+
+            # An omitted project_id is injected from the token, on both
+            # surfaces — elevation relaxes the command set, not identity.
+            r = await c.post(
+                "/api/execute", headers=headers,
+                json={"command": "list_tasks", "args": {}},
+            )
+            assert r.status_code == 200, r.text
+            r = await c.post(paths["list_tasks"], headers=headers, json={})
+            assert r.status_code == 200, r.text
+        assert [args["project_id"] for _, args in ch._recorded] == ["proj-a", "proj-a"]
+    finally:
+        await db.close()
+
+
+async def test_global_admin_token_is_rejected_from_nonloopback_but_allowed_from_loopback(
+    tmp_path, monkeypatch, generated_routers,
+):
+    """Plan 5: a stolen global-admin token must be useless off-host."""
+    db, store, ch, app, paths = await _seed_typed_surface_app(
+        tmp_path, monkeypatch, generated_routers, ["list_projects"],
+    )
+    try:
+        tok = await store.mint(
+            session_id="sup-global", task_id=None, project_id=None, elevated=True,
+        )
+        headers = {"Authorization": f"Bearer {tok}"}
+
+        remote = httpx.ASGITransport(app=app, client=("203.0.113.9", 40000))
+        async with httpx.AsyncClient(transport=remote, base_url="http://test") as c:
+            r = await c.post(
+                "/api/execute", headers=headers,
+                json={"command": "list_projects", "args": {}},
+            )
+            assert r.status_code == 403, r.text
+            assert "loopback" in r.json()["error"]
+            r = await c.post(paths["list_projects"], headers=headers, json={})
+            assert r.status_code == 403, r.text
+            assert "loopback" in r.json()["error"]
+        assert ch._recorded == []
+
+        loopback = httpx.ASGITransport(app=app, client=("127.0.0.1", 40000))
+        async with httpx.AsyncClient(transport=loopback, base_url="http://test") as c:
+            r = await c.post(
+                "/api/execute", headers=headers,
+                json={"command": "list_projects", "args": {}},
+            )
+            assert r.status_code == 200, r.text
+            assert r.json()["ok"] is True
+            r = await c.post(paths["list_projects"], headers=headers, json={})
+            assert r.status_code == 200, r.text
+        assert [cmd for cmd, _ in ch._recorded] == ["list_projects", "list_projects"]
+    finally:
+        await db.close()
+
+
+async def test_unassigned_session_token_only_allows_prime_and_schema_on_both_surfaces(
+    tmp_path, monkeypatch, generated_routers,
+):
+    """Plan 6: a projectless worker terminal gets orientation commands only."""
+    db, store, ch, app, paths = await _seed_typed_surface_app(
+        tmp_path, monkeypatch, generated_routers, ["prime", "get_schema", "task_show"],
+    )
+    try:
+        tok = await store.mint(session_id="s-manual", task_id=None, project_id=None)
+        headers = {"Authorization": f"Bearer {tok}"}
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+        ) as c:
+            # prime is intentionally absent from the typed surface (no
+            # category) — the generic endpoint is its only route.
+            assert "prime" not in paths
+            r = await c.post(
+                "/api/execute", headers=headers,
+                json={"command": "prime", "args": {}},
+            )
+            assert r.status_code == 200, r.text
+
+            r = await c.post(
+                "/api/execute", headers=headers,
+                json={"command": "get_schema", "args": {}},
+            )
+            assert r.status_code == 200, r.text
+            r = await c.post(paths["get_schema"], headers=headers, json={})
+            assert r.status_code == 200, r.text
+            assert [cmd for cmd, _ in ch._recorded] == ["prime", "get_schema", "get_schema"]
+
+            # Any read outside the orientation pair is refused with no
+            # handler execution — absent project must not mean every project.
+            ch._recorded.clear()
+            r = await c.post(
+                "/api/execute", headers=headers,
+                json={"command": "task_show", "args": {"task_id": "any"}},
+            )
+            assert r.status_code == 403, r.text
+            assert "no assigned project" in r.json()["error"]
+            r = await c.post(paths["task_show"], headers=headers, json={"task_id": "any"})
+            assert r.status_code == 403, r.text
+            assert "no assigned project" in r.json()["error"]
+            assert ch._recorded == []
+    finally:
+        await db.close()

@@ -1056,3 +1056,22 @@ class TestMemoryStoreMCPTool:
         )
         assert data["success"] is True
         assert data["stored"] is True
+
+
+# ---------------------------------------------------------------------------
+# Platform plan 21: resource error paths are JSON, not exceptions
+# ---------------------------------------------------------------------------
+
+
+async def test_registered_resource_invalid_status_and_missing_task_are_json_errors(mcp_server):
+    """An unknown status or missing task id comes back as a JSON error
+    payload from the resource handler — never a serialization exception."""
+    contents = await mcp_server.read_resource("agentqueue://tasks/by-status/NOT_A_STATUS")
+    data = json.loads(contents[0].content)
+    assert "Invalid status: NOT_A_STATUS" in data["error"]
+    # The error names the valid statuses so callers can self-correct.
+    assert "IN_PROGRESS" in data["error"]
+
+    contents = await mcp_server.read_resource("agentqueue://tasks/no-such-task")
+    data = json.loads(contents[0].content)
+    assert data["error"] == "Task not found: no-such-task"

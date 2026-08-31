@@ -2,7 +2,10 @@ import { z } from "zod";
 import { PlayIcon } from "@heroicons/react/24/outline";
 import type { PaneManifest } from "../types";
 
-export const argsSchema = z.object({ runId: z.string().min(1) });
+export const argsSchema = z.object({
+  runId: z.string().min(1),
+  taskId: z.string().min(1).optional(),
+});
 export type PlaybookRunInspectorArgs = z.infer<typeof argsSchema>;
 
 export const manifest: PaneManifest<PlaybookRunInspectorArgs> = {

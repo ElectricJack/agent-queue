@@ -48,11 +48,12 @@ def build_graph_router(*, db) -> APIRouter:
         # peer project's graph is also loaded (spec §9.2).
         edges: list[GraphEdge] = []
         for t in tasks:
-            for depends_on_task_id, dep_type in await db.get_typed_dependencies(t.id):
+            for edge in await db.get_typed_dependencies_detailed(t.id):
                 edges.append(GraphEdge(
                     from_task_id=t.id,
-                    to_task_id=depends_on_task_id,
-                    dep_type=dep_type,
+                    to_task_id=edge["depends_on_task_id"],
+                    dep_type=edge["dep_type"],
+                    description=edge["description"],
                 ))
 
         gate_rows = await db.list_gates(project_id=project_id)
@@ -93,6 +94,11 @@ def build_graph_router(*, db) -> APIRouter:
                     assigned_agent_id=t.assigned_agent_id,
                     branch_name=t.branch_name,
                     pr_url=t.pr_url,
+                    playbook_run_id=(
+                        t.dedup_key.removeprefix("playbook-run:")
+                        if t.dedup_key and t.dedup_key.startswith("playbook-run:")
+                        else None
+                    ),
                 )
                 for t in tasks
             ],

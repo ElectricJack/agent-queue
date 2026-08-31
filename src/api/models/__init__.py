@@ -27,6 +27,8 @@ class TaskRef(BaseModel):
     id: str
     title: str
     status: str = ""
+    dep_type: str | None = None
+    reason: str | None = None
 
 
 class TaskBrief(BaseModel):

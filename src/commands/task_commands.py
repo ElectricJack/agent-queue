@@ -938,7 +938,8 @@ class TaskCommandsMixin:
         held_id: str,
         parent_id: str | None,
         discovered_from: str | None,
-        edges: list[tuple[str, str]],
+        edges: list[tuple[str, str, str | None]],
+        reason: str,
         routing_policy: Callable[[Task], bool] | None = None,
     ) -> tuple[str, str | None, str | None, bool]:
         """Write a worker-filed task + its edges in one ``immediate()`` txn.
@@ -977,7 +978,9 @@ class TaskCommandsMixin:
                 task.id = await fresh_root_id(conn)
             await self.db.create_task(task, conn=conn)
             if parent_id and not depth_cap_fallback:
-                result = await self.db.set_parent(task.id, parent_id, conn=conn)
+                result = await self.db.set_parent(
+                    task.id, parent_id, conn=conn, description=reason
+                )
                 flipped |= result.flipped
             elif parent_id:
                 # Naming-depth cap: child_task_id already minted a root id;
@@ -986,7 +989,11 @@ class TaskCommandsMixin:
                 origin = parent_id
                 flipped |= (
                     await self.db.add_dependency(
-                        task.id, origin, DepType.DISCOVERED_FROM.value, conn=conn
+                        task.id,
+                        origin,
+                        DepType.DISCOVERED_FROM.value,
+                        description=reason,
+                        conn=conn,
                     )
                     or set()
                 )
@@ -994,7 +1001,11 @@ class TaskCommandsMixin:
                 origin = discovered_from or held_id
                 flipped |= (
                     await self.db.add_dependency(
-                        task.id, origin, DepType.DISCOVERED_FROM.value, conn=conn
+                        task.id,
+                        origin,
+                        DepType.DISCOVERED_FROM.value,
+                        description=reason,
+                        conn=conn,
                     )
                     or set()
                 )
@@ -1024,9 +1035,16 @@ class TaskCommandsMixin:
                 )
                 flipped |= gate_flipped
                 task.is_blocked = True
-            for dep_id, dep_type in edges:
+            for dep_id, dep_type, dep_reason in edges:
                 flipped |= (
-                    await self.db.add_dependency(task.id, dep_id, dep_type, conn=conn) or set()
+                    await self.db.add_dependency(
+                        task.id,
+                        dep_id,
+                        dep_type,
+                        description=dep_reason,
+                        conn=conn,
+                    )
+                    or set()
                 )
         await self.db.log_blocked_flips(flipped)
         return task.id, gate_id, origin, depth_cap_fallback
@@ -1098,6 +1116,16 @@ class TaskCommandsMixin:
                 return {
                     "success": False,
                     "error": "parent must be the held task or one of its descendants",
+                }
+            if not str(args.get("reason") or "").strip():
+                return {
+                    "success": False,
+                    "code": "reason_required",
+                    "error": (
+                        "worker-filed tasks must include a reason explaining why the "
+                        "new task was spawned; pass 'reason' (CLI: --reason) so it "
+                        "can be stored on the edge back to the task you hold"
+                    ),
                 }
 
         project_id = args.get("project_id") or self._active_project_id
@@ -1286,13 +1314,19 @@ class TaskCommandsMixin:
         raw_depends_on = args.get("depends_on")
         if isinstance(raw_depends_on, str):
             raw_depends_on = [raw_depends_on]
-        edges: list[tuple[str, str]] = []
+        spawn_reason = str(args.get("reason") or "").strip() or None
+        edges: list[tuple[str, str, str | None]] = []
         for entry in raw_depends_on or []:
+            dep_reason: str | None = None
             if isinstance(entry, str):
                 dep_id, dep_type = entry, DepType.BLOCKS.value
             elif isinstance(entry, dict):
                 dep_id = entry.get("task_id") or entry.get("id") or ""
                 dep_type = entry.get("dep_type") or DepType.BLOCKS.value
+                dep_reason = (
+                    str(entry.get("reason") or entry.get("description") or "").strip()
+                    or None
+                )
             else:
                 return {
                     "error": (
@@ -1321,7 +1355,7 @@ class TaskCommandsMixin:
                 }
             if await self.db.get_task(dep_id) is None:
                 return {"error": f"Dependency task '{dep_id}' not found"}
-            edges.append((dep_id, dep_type))
+            edges.append((dep_id, dep_type, dep_reason))
 
         parent_id = args.get("parent_id")
         if parent_id:
@@ -1336,13 +1370,22 @@ class TaskCommandsMixin:
         # ``create_task_under`` recomputes it against the (possibly-DEFINED)
         # container (work-graph §7).
         has_blocking_edge = bool(parent_id) or any(
-            dep_type in BLOCKING_DEP_TYPES for _, dep_type in edges
+            dep_type in BLOCKING_DEP_TYPES for _, dep_type, _ in edges
         )
-        initial_status = (
-            TaskStatus.DEFINED
-            if (self._plan_subtask_creation_mode or has_blocking_edge or filing_session is not None)
-            else TaskStatus.READY
+        internal_initial_status = (
+            args.get("_initial_status") if filing_session is None else None
         )
+        if internal_initial_status is not None:
+            try:
+                initial_status = TaskStatus(internal_initial_status)
+            except ValueError:
+                return {"error": f"Invalid internal initial status '{internal_initial_status}'"}
+        else:
+            initial_status = (
+                TaskStatus.DEFINED
+                if (self._plan_subtask_creation_mode or has_blocking_edge or filing_session is not None)
+                else TaskStatus.READY
+            )
         auto_approve_plan = args.get("auto_approve_plan", False)
         skip_verification = args.get("skip_verification", False)
         workflow_id = args.get("workflow_id")
@@ -1399,6 +1442,7 @@ class TaskCommandsMixin:
                     parent_id=parent_id,
                     discovered_from=args.get("discovered_from"),
                     edges=edges,
+                    reason=spawn_reason or "",
                     routing_policy=routing_policy,
                 )
             except _FilingQuota:
@@ -1426,7 +1470,10 @@ class TaskCommandsMixin:
         elif parent_id:
             try:
                 task_id, depth_cap_fallback = await self.db.create_task_under(
-                    task, parent_id, **({"routing_policy": routing_policy} if routing_policy is not None else {})
+                    task,
+                    parent_id,
+                    description=spawn_reason,
+                    **({"routing_policy": routing_policy} if routing_policy is not None else {}),
                 )
             except HierarchyError as exc:
                 return {
@@ -1448,10 +1495,12 @@ class TaskCommandsMixin:
         # Worker-filed edges were already written inside
         # ``_create_worker_filed_task``'s transaction above — only log them
         # here so the audit trail is identical either way.
-        for dep_id, dep_type in edges:
+        for dep_id, dep_type, dep_reason in edges:
             if filing_session is None:
                 try:
-                    await self.db.add_dependency(task_id, dep_id, dep_type)
+                    await self.db.add_dependency(
+                        task_id, dep_id, dep_type, description=dep_reason
+                    )
                 except HierarchyError as exc:
                     return {
                         "error": (
@@ -1607,8 +1656,11 @@ class TaskCommandsMixin:
             result["requires_kinds"] = [{"kind": k, "alias": a} for k, a in normalized_requirements]
         if edges:
             result["depends_on"] = [
-                {"task_id": dep_id, "dep_type": dep_type} for dep_id, dep_type in edges
+                {"task_id": dep_id, "dep_type": dep_type, "reason": dep_reason}
+                for dep_id, dep_type, dep_reason in edges
             ]
+        if spawn_reason:
+            result["reason"] = spawn_reason
         if parent_id:
             result["parent_id"] = parent_id
         if labels:
@@ -1847,10 +1899,12 @@ class TaskCommandsMixin:
         info["completion"] = asdict(completion) if completion else None
 
         # Dependency visualization: show what this task depends on and blocks
-        deps = await self.db.get_dependencies(task.id)
-        if deps:
+        typed_edges = await self.db.get_typed_dependencies_detailed(task.id)
+        blocking_edges = [edge for edge in typed_edges if edge["dep_type"] in BLOCKING_DEP_TYPES]
+        if blocking_edges:
             dep_details = []
-            for dep_id in deps:
+            for edge in blocking_edges:
+                dep_id = edge["depends_on_task_id"]
                 dep_task = await self.db.get_task(dep_id)
                 if dep_task:
                     dep_details.append(
@@ -1858,6 +1912,8 @@ class TaskCommandsMixin:
                             "id": dep_task.id,
                             "title": dep_task.title,
                             "status": dep_task.status.value,
+                            "dep_type": edge["dep_type"],
+                            "reason": edge["description"],
                         }
                     )
             info["depends_on"] = dep_details
@@ -1930,9 +1986,12 @@ class TaskCommandsMixin:
             return {"error": f"Task '{task_id}' not found"}
 
         # Upstream: what this task depends on
-        dep_ids = await self.db.get_dependencies(task.id)
         depends_on: list[dict] = []
-        for dep_id in sorted(dep_ids):
+        detailed_edges = await self.db.get_typed_dependencies_detailed(task.id)
+        for edge in detailed_edges:
+            if edge["dep_type"] not in BLOCKING_DEP_TYPES:
+                continue
+            dep_id = edge["depends_on_task_id"]
             dep_task = await self.db.get_task(dep_id)
             if dep_task:
                 depends_on.append(
@@ -1940,6 +1999,8 @@ class TaskCommandsMixin:
                         "id": dep_task.id,
                         "title": dep_task.title,
                         "status": dep_task.status.value,
+                        "dep_type": edge["dep_type"],
+                        "reason": edge["description"],
                     }
                 )
 
@@ -1960,7 +2021,9 @@ class TaskCommandsMixin:
         # Provenance: every non-blocking outgoing edge — today that is
         # ``discovered-from``, written when a worker files work mid-task.
         provenance: list[dict] = []
-        for dep_id, dep_type in await self.db.get_typed_dependencies(task.id):
+        for edge in detailed_edges:
+            dep_id = edge["depends_on_task_id"]
+            dep_type = edge["dep_type"]
             if dep_type in BLOCKING_DEP_TYPES:
                 continue
             origin = await self.db.get_task(dep_id)
@@ -1972,6 +2035,7 @@ class TaskCommandsMixin:
                     "title": origin.title,
                     "status": origin.status.value,
                     "dep_type": dep_type,
+                    "reason": edge["description"],
                 }
             )
 
@@ -2012,6 +2076,7 @@ class TaskCommandsMixin:
             return {"error": "A task cannot depend on itself"}
 
         dep_type = args.get("dep_type") or DepType.BLOCKS.value
+        reason = str(args.get("reason") or "").strip() or None
         if dep_type not in DEP_TYPE_VALUES:
             return {
                 "error": f"Invalid dep_type '{dep_type}'. "
@@ -2059,7 +2124,9 @@ class TaskCommandsMixin:
                 }
 
         try:
-            await self.db.add_dependency(task_id, depends_on, dep_type)
+            await self.db.add_dependency(
+                task_id, depends_on, dep_type, description=reason
+            )
         except HierarchyError as exc:
             return {"error": f"hierarchy.{exc.code}: {exc.detail}", "code": f"hierarchy.{exc.code}"}
         await self.db.log_event(
@@ -2075,6 +2142,7 @@ class TaskCommandsMixin:
             "task_id": task_id,
             "depends_on": depends_on,
             "dep_type": dep_type,
+            "reason": reason,
             "task_title": task.title,
             "depends_on_title": dep_task.title,
         }
@@ -3589,6 +3657,23 @@ class TaskCommandsMixin:
             # ensure_task is the ensuring pipeline's responsibility.
             "_suppress_created_event": True,
         }
+        # Presentation tasks such as playbook-run roots must be born in their
+        # projected state. Creating them READY and editing them afterward
+        # leaves a window where a pull worker can claim control-plane data as
+        # executable work.
+        if args.get("initial_status"):
+            if not str(dedup_key).startswith("playbook-run:"):
+                return {
+                    "success": False,
+                    "error": "initial_status is reserved for playbook-run presentation tasks",
+                }
+            allowed = {"IN_PROGRESS", "PAUSED", "COMPLETED", "FAILED"}
+            if args["initial_status"] not in allowed:
+                return {
+                    "success": False,
+                    "error": f"Invalid playbook-run initial status '{args['initial_status']}'",
+                }
+            create_args["_initial_status"] = args["initial_status"]
         # Optional pre-routing: control-plane tasks skip triage, so the
         # ensuring pipeline may pin the executing profile directly (e.g.
         # the default pipeline pins 'triage' on the triage task).

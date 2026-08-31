@@ -425,8 +425,21 @@ class TestTaskShowSetListDetailsCLI:
                     "status": "IN_PROGRESS",
                     "priority": 100,
                     "description": "d",
-                    "depends_on": [],
+                    "depends_on": [{
+                        "id": "origin",
+                        "title": "Origin",
+                        "status": "COMPLETED",
+                        "dep_type": "blocks",
+                        "reason": "The new task consumes the origin's schema",
+                    }],
                     "blocks": [],
+                    "provenance": [{
+                        "id": "discovery",
+                        "title": "Discovery",
+                        "status": "IN_PROGRESS",
+                        "dep_type": "discovered-from",
+                        "reason": "A failing integration test revealed the follow-up",
+                    }],
                     "context": [],
                     "labels": ["urgent"],
                 }
@@ -451,8 +464,21 @@ class TestTaskShowSetListDetailsCLI:
                     "status": "IN_PROGRESS",
                     "priority": 100,
                     "description": "d",
-                    "depends_on": [],
+                    "depends_on": [{
+                        "id": "origin",
+                        "title": "Origin",
+                        "status": "COMPLETED",
+                        "dep_type": "blocks",
+                        "reason": "The new task consumes the origin's schema",
+                    }],
                     "blocks": [],
+                    "provenance": [{
+                        "id": "discovery",
+                        "title": "Discovery",
+                        "status": "IN_PROGRESS",
+                        "dep_type": "discovered-from",
+                        "reason": "A failing integration test revealed the follow-up",
+                    }],
                     "context": [],
                     "labels": ["urgent"],
                 }
@@ -463,6 +489,8 @@ class TestTaskShowSetListDetailsCLI:
         assert result.exit_code == 0, result.output
         assert "Test task" in result.output
         assert "urgent" in result.output
+        assert "consumes the origin's schema" in result.output
+        assert "failing integration test revealed" in result.output
 
     def test_show_human_mode_renders_completion_story(self, runner):
         """Human task detail must make the durable completion account visible."""

@@ -348,3 +348,55 @@ class TestReloadConfigCommand:
         handler = CommandHandler(orch, config)
         result = await handler.execute("reload_config", {})
         assert "No configuration changes" in result.get("message", "")
+
+
+# ---------------------------------------------------------------------------
+# Platform plan 15: hot/restart split with event shapes
+# ---------------------------------------------------------------------------
+
+
+async def test_reload_applies_only_hot_sections_and_emits_restart_notice(tmp_path):
+    """One reload touching a hot and a restart-required section applies only
+    the hot field in memory and emits each correctly shaped event."""
+    from unittest.mock import AsyncMock
+
+    (tmp_path / "workspaces").mkdir()
+    (tmp_path / "new-workspaces").mkdir()
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "workspace_dir": str(tmp_path / "workspaces"),
+                "database_path": str(tmp_path / "test.db"),
+                "discord": {"bot_token": "test-token", "guild_id": "123"},
+                "scheduling": {"rolling_window_hours": 24},
+            }
+        )
+    )
+
+    config = load_config(str(config_path))
+    original_workspace = config.workspace_dir
+    bus = AsyncMock()
+    watcher = ConfigWatcher(str(config_path), bus, config)
+
+    data = yaml.safe_load(config_path.read_text())
+    data["scheduling"]["rolling_window_hours"] = 48  # hot-reloadable
+    data["workspace_dir"] = str(tmp_path / "new-workspaces")  # restart-required
+    config_path.write_text(yaml.dump(data))
+
+    result = await watcher.reload()
+
+    assert result == {
+        "changed_sections": ["scheduling", "workspace_dir"],
+        "restart_required": ["workspace_dir"],
+        "applied": ["scheduling"],
+    }
+    # Hot field mutated in place; restart-required field kept its old value.
+    assert watcher.config.scheduling.rolling_window_hours == 48
+    assert watcher.config.workspace_dir == original_workspace
+
+    emitted = {call.args[0]: call.args[1] for call in bus.emit.await_args_list}
+    assert set(emitted) == {"config.reloaded", "config.restart_needed"}
+    assert emitted["config.reloaded"]["changed_sections"] == ["scheduling"]
+    assert emitted["config.reloaded"]["config"] is watcher.config
+    assert emitted["config.restart_needed"] == {"changed_sections": ["workspace_dir"]}

@@ -224,11 +224,19 @@ class TestCreateTaskGraph:
     async def test_parent_id_creates_the_container_edge(self, handler, db):
         await mktask(db, "container", status=TaskStatus.DEFINED)
         res = await handler._cmd_create_task(
-            {"project_id": PROJECT_ID, "title": "t", "parent_id": "container"}
+            {
+                "project_id": PROJECT_ID,
+                "title": "t",
+                "parent_id": "container",
+                "reason": "Split out so the container can track delivery",
+            }
         )
         created = await db.get_task(res["created"])
         assert created.parent_task_id == "container"
         assert ("container", "parent-child") in await db.get_typed_dependencies(created.id)
+        assert (await db.get_typed_dependencies_detailed(created.id))[0]["description"] == (
+            "Split out so the container can track delivery"
+        )
         # A DEFINED container withholds its children.
         assert created.is_blocked is True
 
