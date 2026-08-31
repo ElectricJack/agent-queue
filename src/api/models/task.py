@@ -106,6 +106,8 @@ class CreateTaskResponse(BaseModel):
     task_id: str | None = None
     gate_id: str | None = None
     status: str | None = None
+    reason: str | None = None
+    depends_on: list[dict[str, Any]] = []
 
 
 class GetTaskResponse(TaskDetail):
@@ -132,6 +134,7 @@ class TaskShowResponse(TaskDetail):
 
     context: list[dict[str, Any]] = []
     labels: list[str] = []
+    provenance: list[dict[str, Any]] = []
     claimed_by: ClaimedBy | None = None
 
 
@@ -276,6 +279,8 @@ class AddDependencyResponse(BaseModel):
     depends_on: str
     task_title: str
     depends_on_title: str
+    dep_type: str = "blocks"
+    reason: str | None = None
 
 
 class RemoveDependencyResponse(BaseModel):
@@ -298,6 +303,7 @@ class ProvenanceRef(BaseModel):
     title: str = ""
     status: str = ""
     dep_type: str = ""
+    reason: str | None = None
 
 
 class TaskDepsResponse(BaseModel):

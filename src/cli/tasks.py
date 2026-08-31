@@ -194,6 +194,14 @@ def _create_task_graph(
     default=None,
     help="Create under this container (single task or graph)",
 )
+@click.option(
+    "--reason",
+    default=None,
+    help=(
+        "WHY this task was spawned; required for worker-filed tasks and "
+        "stored on the edge back to its origin"
+    ),
+)
 @click.pass_context
 @_handle_errors
 def task_create(
@@ -211,6 +219,7 @@ def task_create(
     from_spec: str | None,
     dry_run: bool,
     parent_id: str | None,
+    reason: str | None,
 ) -> None:
     """Create a new task (interactive wizard or via flags).
 
@@ -278,6 +287,8 @@ def task_create(
 
     if parent_id and "parent_id" not in params:
         params["parent_id"] = parent_id
+    if reason and "reason" not in params:
+        params["reason"] = reason
 
     async def _create():
         async with _get_client(api_url) as client:
@@ -532,6 +543,21 @@ def task_show(ctx: click.Context, task_id: str) -> None:
         dependents = [d.get("id") if isinstance(d, dict) else d for d in blocks_raw]
         panel = format_task_detail(t, deps_on=deps_on, dependents=dependents)
         console.print(panel)
+
+        for edge in deps_raw:
+            if isinstance(edge, dict) and edge.get("reason"):
+                console.print(
+                    f"  [dim]{edge.get('dep_type') or 'dependency'} -> "
+                    f"{edge.get('id')}:[/] {edge['reason']}"
+                )
+
+        for edge in _getval(data, "provenance", []):
+            if not isinstance(edge, dict):
+                continue
+            line = f"[dim]Spawned from:[/] {edge.get('id')} [dim]\\[{edge.get('dep_type')}][/]"
+            if edge.get("reason"):
+                line += f" — {edge['reason']}"
+            console.print(line)
 
         labels = _getval(data, "labels", [])
         if labels:

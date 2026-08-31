@@ -23,6 +23,7 @@ class GraphEdge(BaseModel):
     from_task_id: str = Field(alias="from")
     to_task_id: str = Field(alias="to")
     dep_type: str
+    description: str | None = None
 
 
 class GraphGate(BaseModel):

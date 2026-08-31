@@ -179,7 +179,12 @@ class DatabaseBackend(Protocol):
     ) -> list[Task]: ...
     async def get_children_summary(self, task_id: str) -> dict | None: ...
     async def set_parent(
-        self, task_id: str, parent_id: str | None, *, conn
+        self,
+        task_id: str,
+        parent_id: str | None,
+        *,
+        conn,
+        description: str | None = None,
     ) -> "TransitionResult": ...
     async def set_parent_bulk(
         self, child_ids: list[str], parent_id: str, *, conn
@@ -223,12 +228,19 @@ class DatabaseBackend(Protocol):
     # --- Dependencies ---
 
     async def add_dependency(
-        self, task_id: str, depends_on: str, dep_type: str = "blocks", *, conn=None
+        self,
+        task_id: str,
+        depends_on: str,
+        dep_type: str = "blocks",
+        *,
+        description: str | None = None,
+        conn=None,
     ) -> set[str] | None: ...
     async def get_dependencies(
         self, task_id: str, dep_types: frozenset[str] | None = None
     ) -> set[str]: ...
     async def get_typed_dependencies(self, task_id: str) -> list[tuple[str, str]]: ...
+    async def get_typed_dependencies_detailed(self, task_id: str) -> list[dict]: ...
     async def get_all_dependencies(
         self, dep_types: frozenset[str] | None = None
     ) -> dict[str, set[str]]: ...

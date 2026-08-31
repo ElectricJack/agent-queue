@@ -65,10 +65,24 @@ def created_events(handler):
 
 
 class TestFiling:
+    async def test_reason_is_required_before_worker_filing_mutates_state(self, handler, db):
+        sid = await holding_session(db)
+
+        res = await scoped(handler, sid)._cmd_create_task(
+            {"title": "found a bug", "description": "d"}
+        )
+
+        assert res["success"] is False
+        assert res["code"] == "reason_required"
+        assert "why" in res["error"].lower()
+        assert len(await db.list_tasks(PROJECT_ID)) == 1
+        assert (await db.get_task("held")).filed_count == 0
+
     async def test_root_filing_gets_discovered_from_and_routing_gate(self, handler, db):
         sid = await holding_session(db)
         res = await scoped(handler, sid)._cmd_create_task({"title": "found a bug",
                                                             "description": "d",
+                                                            "reason": "The held task exposed a parser defect",
                                                             "status": "READY"})
         assert res["success"] is True and res["gate_id"]
         new = await db.get_task(res["task_id"])
@@ -79,6 +93,9 @@ class TestFiling:
         assert new.is_blocked is True
         deps = await db.get_typed_dependencies(new.id)
         assert deps == [("held", "discovered-from")]
+        assert (await db.get_typed_dependencies_detailed(new.id))[0]["description"] == (
+            "The held task exposed a parser defect"
+        )
         gates = await db.get_gates_for_task(new.id)
         assert [g["gate_type"] for g in gates] == ["routing"]
         assert (await db.get_task("held")).filed_count == 1
@@ -94,11 +111,15 @@ class TestFiling:
     async def test_child_filing_under_held_task_has_no_gate(self, handler, db):
         sid = await holding_session(db)
         res = await scoped(handler, sid)._cmd_create_task({"title": "sub", "description": "d",
-                                                            "parent_id": "held"})
+                                                            "parent_id": "held",
+                                                            "reason": "This can ship independently"})
         assert res["success"] is True and res.get("gate_id") is None
         assert res["task_id"] == "held.1"
         new = await db.get_task(res["task_id"])
         assert new.parent_task_id == "held" and new.id.startswith("held.")
+        assert (await db.get_typed_dependencies_detailed(new.id))[0]["description"] == (
+            "This can ship independently"
+        )
 
     async def test_project_pin(self, handler, db):
         sid = await holding_session(db)
@@ -128,7 +149,7 @@ class TestFiling:
         await db.create_task(Task(id="elsewhere", project_id=PROJECT_ID, title="e",
                                   description="e", status=TaskStatus.READY))
         res = await scoped(handler, sid)._cmd_create_task({
-            "title": "x", "description": "d",
+            "title": "x", "description": "d", "reason": "Discovered invalid nesting",
             "depends_on": [{"task_id": "elsewhere", "dep_type": "parent-child"}],
         })
         assert res["success"] is False
@@ -140,9 +161,9 @@ class TestFiling:
     async def test_quota_is_enforced_atomically(self, handler, db):
         sid = await holding_session(db)
         h = scoped(handler, sid)
-        assert (await h._cmd_create_task({"title": "a", "description": "d"}))["success"]
-        assert (await h._cmd_create_task({"title": "b", "description": "d"}))["success"]
-        res = await h._cmd_create_task({"title": "c", "description": "d"})
+        assert (await h._cmd_create_task({"title": "a", "description": "d", "reason": "one"}))["success"]
+        assert (await h._cmd_create_task({"title": "b", "description": "d", "reason": "two"}))["success"]
+        res = await h._cmd_create_task({"title": "c", "description": "d", "reason": "three"})
         assert res["success"] is False and res["code"] == "filing_quota_exceeded"
         assert len(await db.list_tasks(PROJECT_ID)) == 3  # held + a + b
 
@@ -158,7 +179,9 @@ class TestFiling:
         # post-commit log — patch that entry point.
         monkeypatch.setattr(db, "_create_gate_on", boom)
         with pytest.raises(RuntimeError):
-            await scoped(handler, sid)._cmd_create_task({"title": "x", "description": "d"})
+            await scoped(handler, sid)._cmd_create_task(
+                {"title": "x", "description": "d", "reason": "The task exposed this"}
+            )
         assert len(await db.list_tasks(PROJECT_ID)) == 1
         assert (await db.get_task("held")).filed_count == 0
 
@@ -169,7 +192,8 @@ class TestFiling:
         sid = await holding_session(db)
         await db.transition_task("held", TaskStatus.COMPLETED)
         res = await scoped(handler, sid)._cmd_create_task({"title": "x", "description": "d",
-                                                            "parent_id": "held"})
+                                                            "parent_id": "held",
+                                                            "reason": "Split before closing"})
         assert res["success"] is False
         assert res["code"] == "hierarchy.container_closed"
         assert "container_closed" in res["error"]

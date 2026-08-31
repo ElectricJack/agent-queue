@@ -67,6 +67,10 @@ any of the three by switching harness.
   that would help a reviewer, restarted worker, or future reader with
   `aq task set <task-id> --note "..."`. Record them while working, not only
   at close; routine command-by-command activity does not need a note.
+- **Explain spawned work.** Every task you file from inside another task must
+  include a `reason` explaining why it exists. Describe the discovery or split,
+  not merely the new task's subject; the reason is stored on the edge back to
+  the task you were working on.
 - **Test what you change.** Run the focused test suite for the code you
   touched; run the broader suite once before closing.
 - **Commit and push.** Every task closes with commits pushed to its

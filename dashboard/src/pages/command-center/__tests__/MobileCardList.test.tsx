@@ -42,6 +42,15 @@ describe("mobile task hierarchy", () => {
     fireEvent.keyDown(screen.getByRole("region", { name: "Task list" }), { key: "Escape" });
     expect(clear).toHaveBeenCalledTimes(2);
   });
+
+  it("shows why a dependency edge exists", () => {
+    render(<MobileCardList graph={graph(
+      [task("spawned"), task("origin")],
+      [edge("spawned", "origin", "discovered-from", "The first task exposed a follow-up")],
+    )} onTaskClick={vi.fn()} />);
+
+    expect(screen.getByText(/The first task exposed a follow-up/)).toBeInTheDocument();
+  });
 });
 
 it("retains the same playbook card when a run finishes, even with all tasks filtered out", () => {

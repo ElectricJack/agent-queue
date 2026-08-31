@@ -79,4 +79,18 @@ describe("bounded task layout", () => {
     ));
     expect(new Set(result.nodes.map((n) => n.id))).toEqual(new Set(["a", "b", "c"]));
   });
+
+  it("carries the edge reason into labels, detail data, and accessibility text", () => {
+    const reason = "The parent task revealed a separate schema migration";
+    const result = layoutGraph(graph(
+      [task("spawned"), task("origin")],
+      [edge("spawned", "origin", "discovered-from", reason)],
+    ));
+
+    expect(result.edges[0]).toMatchObject({
+      label: `discovered-from — ${reason}`,
+      data: { description: reason },
+    });
+    expect(result.edges[0]?.ariaLabel).toContain(reason);
+  });
 });

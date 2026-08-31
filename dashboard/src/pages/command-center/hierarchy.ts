@@ -137,10 +137,12 @@ export function projectHierarchy(
     if (previous) {
       previous.count += 1;
       previous.remapped ||= from !== edge.from || to !== edge.to;
+      previous.description ??= edge.description;
     } else {
       projectedEdges.set(key, {
         from, to, dep_type: edge.dep_type, count: 1,
         remapped: from !== edge.from || to !== edge.to,
+        description: edge.description,
       });
     }
   }

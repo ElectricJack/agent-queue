@@ -860,14 +860,38 @@ _ALL_TOOL_DEFINITIONS = [
                 },
                 "depends_on": {
                     "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Task IDs this task depends on (optional).",
+                    "items": {
+                        "oneOf": [
+                            {"type": "string"},
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "task_id": {"type": "string"},
+                                    "dep_type": {"type": "string"},
+                                    "reason": {
+                                        "type": "string",
+                                        "description": "WHY this dependency edge exists",
+                                    },
+                                },
+                                "required": ["task_id"],
+                            },
+                        ],
+                    },
+                    "description": "Task IDs or described dependency edges (optional).",
                 },
                 "discovered_from": {
                     "type": "string",
                     "description": (
                         "Task ID this work was discovered from (provenance, swarm-work-model "
                         "§9; a worker-filed caller is restricted to the held task's subtree)."
+                    ),
+                },
+                "reason": {
+                    "type": "string",
+                    "description": (
+                        "WHY this task exists: the reason it was spawned, not just what "
+                        "it does. REQUIRED when creating work from inside another task; "
+                        "stored on the parent-child or discovered-from edge back to its origin."
                     ),
                 },
                 "dedup_key": {
@@ -1652,6 +1676,13 @@ _ALL_TOOL_DEFINITIONS = [
                         "container's children, 'conditional-blocks' runs only "
                         "if the dependency terminally failed. The rest are "
                         "provenance only and never block."
+                    ),
+                },
+                "reason": {
+                    "type": "string",
+                    "description": (
+                        "WHY this edge exists. Always provide this when linking spawned "
+                        "work to the task where it was discovered."
                     ),
                 },
             },

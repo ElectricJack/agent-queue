@@ -74,6 +74,8 @@ in-memory MCP registry at task launch time.
 
 ## Rules
 - One action per email (create-task OR note OR ignore — not both).
+- Every task spawned from another task includes a `reason` explaining why the
+  follow-up exists; the reason is stored on its edge back to the origin.
 - Skip duplicates: search memory before creating a task to avoid
   re-creating tasks for emails the triager already processed.
 - Capture sender, subject, and a one-line summary in any task or note
