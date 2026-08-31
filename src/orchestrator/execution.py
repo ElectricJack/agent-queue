@@ -1121,14 +1121,14 @@ class ExecutionMixin:
             logger.info("Task %s: running completion pipeline", task.id)
             pr_url, completed_ok = await self._run_completion_pipeline(pipeline_ctx)
 
-            if pr_url:
-                # PR-based approval workflow
-                await self.db.transition_task(
-                    action.task_id,
-                    TaskStatus.AWAITING_APPROVAL,
-                    context="pr_created",
-                    pr_url=pr_url,
-                )
+            if pr_url and completed_ok:
+                # Pull-request mode: record the PR and notify, then complete
+                # the worker task below.  The review policy (default-pipeline
+                # playbook: reviewer / final-reviewer tasks, ``pr-merged``
+                # gates on downstream work) owns the merge from here — the
+                # task itself never waits on the PR.
+                await self.db.update_task(action.task_id, pr_url=pr_url)
+                task.pr_url = pr_url
                 await self.db.log_event(
                     "pr_created",
                     project_id=action.project_id,
@@ -1146,20 +1146,13 @@ class ExecutionMixin:
                 )
                 brief = f"🔍 PR created for review: {task.title} (`{task.id}`)\n{pr_url}"
                 await _notify_brief(brief)
-            elif task.requires_approval and not pr_url and completed_ok:
-                # Approval required but no PR (e.g. LINK repo)
-                await self.db.transition_task(
-                    action.task_id,
-                    TaskStatus.AWAITING_APPROVAL,
-                    context="approval_required_no_pr",
-                )
-                brief = f"🔍 Awaiting manual approval: {task.title} (`{task.id}`)"
-                await _notify_brief(brief)
-            elif completed_ok:
-                # No approval needed — mark completed
+
+            if completed_ok:
+                # Worker is done — mark completed (in PR mode the branch/PR
+                # stays unmerged; review policy decides when it lands).
                 try:
                     await self.db.transition_task(
-                        action.task_id, TaskStatus.COMPLETED, context="completed_no_approval"
+                        action.task_id, TaskStatus.COMPLETED, context="completed"
                     )
                 except HierarchyError as exc:
                     # Invariant 6 (spec §7): open children hold the container

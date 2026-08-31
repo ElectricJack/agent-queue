@@ -78,7 +78,6 @@ VALID_TASK_TRANSITIONS: dict[tuple[TaskStatus, TaskEvent], TaskStatus] = {
     (TaskStatus.READY, TaskEvent.CLAIMED): TaskStatus.IN_PROGRESS,
     (TaskStatus.ASSIGNED, TaskEvent.AGENT_STARTED): TaskStatus.IN_PROGRESS,
     (TaskStatus.IN_PROGRESS, TaskEvent.AGENT_COMPLETED): TaskStatus.COMPLETED,
-    (TaskStatus.IN_PROGRESS, TaskEvent.PR_CREATED): TaskStatus.AWAITING_APPROVAL,
     (TaskStatus.IN_PROGRESS, TaskEvent.MERGE_FAILED): TaskStatus.BLOCKED,
     (TaskStatus.IN_PROGRESS, TaskEvent.MERGE_SUCCEEDED): TaskStatus.COMPLETED,
     (TaskStatus.IN_PROGRESS, TaskEvent.AGENT_FAILED): TaskStatus.FAILED,
@@ -87,17 +86,7 @@ VALID_TASK_TRANSITIONS: dict[tuple[TaskStatus, TaskEvent], TaskStatus] = {
     (TaskStatus.WAITING_INPUT, TaskEvent.HUMAN_REPLIED): TaskStatus.IN_PROGRESS,
     (TaskStatus.WAITING_INPUT, TaskEvent.INPUT_TIMEOUT): TaskStatus.PAUSED,
     (TaskStatus.PAUSED, TaskEvent.RESUME_TIMER): TaskStatus.READY,
-    (TaskStatus.AWAITING_APPROVAL, TaskEvent.PR_MERGED): TaskStatus.COMPLETED,
-    # --- Plan approval lifecycle ---
-    (TaskStatus.IN_PROGRESS, TaskEvent.PLAN_FOUND): TaskStatus.AWAITING_PLAN_APPROVAL,
-    (
-        TaskStatus.READY,
-        TaskEvent.PLAN_FOUND,
-    ): TaskStatus.AWAITING_PLAN_APPROVAL,  # manual /process-plan
-    (TaskStatus.AWAITING_PLAN_APPROVAL, TaskEvent.PLAN_APPROVED): TaskStatus.IN_PROGRESS,
     (TaskStatus.IN_PROGRESS, TaskEvent.SUBTASKS_COMPLETED): TaskStatus.COMPLETED,
-    (TaskStatus.AWAITING_PLAN_APPROVAL, TaskEvent.PLAN_REJECTED): TaskStatus.READY,
-    (TaskStatus.AWAITING_PLAN_APPROVAL, TaskEvent.PLAN_DELETED): TaskStatus.COMPLETED,
     (TaskStatus.FAILED, TaskEvent.RETRY): TaskStatus.READY,
     (TaskStatus.FAILED, TaskEvent.MAX_RETRIES): TaskStatus.BLOCKED,
     # --- Direct shortcuts (skip intermediate FAILED state) ---
@@ -114,8 +103,6 @@ VALID_TASK_TRANSITIONS: dict[tuple[TaskStatus, TaskEvent], TaskStatus] = {
     (TaskStatus.PAUSED, TaskEvent.ADMIN_RESTART): TaskStatus.READY,
     (TaskStatus.DEFINED, TaskEvent.ADMIN_RESTART): TaskStatus.READY,
     (TaskStatus.ASSIGNED, TaskEvent.ADMIN_RESTART): TaskStatus.READY,
-    (TaskStatus.AWAITING_APPROVAL, TaskEvent.ADMIN_RESTART): TaskStatus.READY,
-    (TaskStatus.AWAITING_PLAN_APPROVAL, TaskEvent.ADMIN_RESTART): TaskStatus.READY,
     (TaskStatus.WAITING_INPUT, TaskEvent.ADMIN_RESTART): TaskStatus.READY,
     # --- Conditional-edge disposal (work-graph design §3.1) ---
     # A contingency task whose `conditional-blocks` dependency COMPLETED can
@@ -127,8 +114,6 @@ VALID_TASK_TRANSITIONS: dict[tuple[TaskStatus, TaskEvent], TaskStatus] = {
     # BLOCKED through its conditional edge anyway (an unsatisfiable edge
     # keeps it DEFINED), and auto-completing a task that was blocked by a
     # failure would erase that failure record.
-    # --- PR lifecycle ---
-    (TaskStatus.AWAITING_APPROVAL, TaskEvent.PR_CLOSED): TaskStatus.BLOCKED,
     # --- Error / timeout ---
     (TaskStatus.IN_PROGRESS, TaskEvent.TIMEOUT): TaskStatus.BLOCKED,
     (TaskStatus.ASSIGNED, TaskEvent.TIMEOUT): TaskStatus.BLOCKED,

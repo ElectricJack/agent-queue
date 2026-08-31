@@ -11,11 +11,13 @@ from src.notifications.events import (
     PushFailedEvent,
 )
 from src.models import (
+    INTEGRATION_MODE_PULL_REQUEST,
     PhaseResult,
     PipelineContext,
     RepoConfig,
     Task,
     TaskStatus,
+    resolve_integration_mode,
 )
 from src.orchestrator.merge_slot import (
     acquire_merge_slot,
@@ -342,6 +344,28 @@ class GitOpsMixin:
     # The completion pipeline runs: commit → verify → integrate.
     # Each phase receives a PipelineContext and returns a PhaseResult.
 
+    async def _effective_integration_mode(self, task: Task) -> str:
+        """Resolve the effective integration mode for *task*.
+
+        Single authority for the policy chain (see
+        :func:`src.models.resolve_integration_mode`): plan-subtask parent's
+        task-level override → task override → project policy → config
+        ``integration.default_mode``.  Every git-pipeline decision that used
+        to read the ``requires_approval`` flag goes through here, so a task
+        in ``pull_request`` mode can never fall into a direct-merge path.
+        """
+        parent_mode: str | None = None
+        if task.is_plan_subtask and task.parent_task_id:
+            parent = await self.db.get_task(task.parent_task_id)
+            parent_mode = parent.integration_mode if parent else None
+        project = await self.db.get_project(task.project_id)
+        return resolve_integration_mode(
+            task.integration_mode,
+            parent_task_mode=parent_mode,
+            project_mode=project.integration_mode if project else None,
+            default_mode=self.config.integration.default_mode,
+        )
+
     async def _run_completion_pipeline(self, ctx: PipelineContext) -> tuple[str | None, bool]:
         """Run the post-completion pipeline. Returns (pr_url, completed_ok).
 
@@ -396,9 +420,9 @@ class GitOpsMixin:
         Verification scenarios:
 
         * **Intermediate subtask** — expect: on task branch, no uncommitted.
-        * **Final task / final subtask, requires_approval** — expect: on task
+        * **Final task / final subtask, pull_request mode** — expect: on task
           branch, branch pushed, PR exists.
-        * **Final task / final subtask, no approval** — expect: on default
+        * **Final task / final subtask, direct mode** — expect: on default
           branch, no uncommitted, in sync with origin.
         * **No-change task** — on default branch with no diff → pass.
         """
@@ -453,11 +477,9 @@ class GitOpsMixin:
 
         # Determine which scenario we're in
         is_intermediate = task.is_plan_subtask and not await self._is_last_subtask(task)
-        if task.is_plan_subtask and task.parent_task_id:
-            parent = await self.db.get_task(task.parent_task_id)
-            requires_approval = parent.requires_approval if parent else task.requires_approval
-        else:
-            requires_approval = task.requires_approval
+        pr_mode = (
+            await self._effective_integration_mode(task) == INTEGRATION_MODE_PULL_REQUEST
+        )
 
         # Worktree-mode tasks integrate via _phase_integrate under the merge
         # slot, not via _phase_verify's auto-merge remediations.  The agent
@@ -501,7 +523,7 @@ class GitOpsMixin:
         if (
             not is_worktree_task
             and not is_intermediate
-            and not requires_approval
+            and not pr_mode
             and not has_uncommitted
             and current_branch != default_branch
             and current_branch == task.branch_name
@@ -571,7 +593,7 @@ class GitOpsMixin:
         if (
             not is_worktree_task
             and not is_intermediate
-            and not requires_approval
+            and not pr_mode
             and not has_uncommitted
             and current_branch != default_branch
             and task.branch_name
@@ -630,7 +652,7 @@ class GitOpsMixin:
         # to push), push to the remote to avoid unnecessary retries.
         if has_remote and not has_uncommitted:
             # Determine the expected branch for this task type
-            if is_intermediate or requires_approval:
+            if is_intermediate or pr_mode:
                 expected_push_branch = task.branch_name
             else:
                 expected_push_branch = default_branch
@@ -705,7 +727,7 @@ class GitOpsMixin:
                         True,  # fixable — agent can switch branches
                     )
                 )
-        elif requires_approval:
+        elif pr_mode:
             # PR workflow: should be on task branch, branch pushed, PR exists
             if has_uncommitted:
                 failures.append(
@@ -1059,7 +1081,6 @@ class GitOpsMixin:
             retry_count=0,
             assigned_agent_id=None,
             pr_url=None,
-            requires_approval=task.requires_approval,
         )
         await self.db.add_task_context(
             task.id,
@@ -1135,7 +1156,7 @@ class GitOpsMixin:
            release the slot, return STOP.
         3. Push the rebased branch (never ``--force`` to *default*).
         4. In the base: merge the task branch into default and push
-           (skipped when ``requires_approval`` — the agent will open a PR
+           (skipped in ``pull_request`` mode — the agent opens a PR
            on the pushed branch).
         5. Emit ``merge.succeeded``, record ``merged_at`` metadata,
            release the slot, return CONTINUE.
@@ -1156,11 +1177,9 @@ class GitOpsMixin:
         if is_intermediate:
             return PhaseResult.CONTINUE
 
-        if task.is_plan_subtask and task.parent_task_id:
-            parent = await self.db.get_task(task.parent_task_id)
-            requires_approval = parent.requires_approval if parent else task.requires_approval
-        else:
-            requires_approval = task.requires_approval
+        pr_mode = (
+            await self._effective_integration_mode(task) == INTEGRATION_MODE_PULL_REQUEST
+        )
 
         ttl = float(self.config.worktrees.merge_slot_ttl_seconds)
         acquired = await acquire_merge_slot(self.db, task.project_id, task.id, ttl)
@@ -1310,7 +1329,7 @@ class GitOpsMixin:
             # ── Step 4: local merge in the base (skip for PR workflow) ─
             merged_at: float | None = None
             pr_url = ctx.pr_url
-            if not requires_approval:
+            if not pr_mode:
                 base_ws = None
                 if ctx.workspace_id:
                     try:

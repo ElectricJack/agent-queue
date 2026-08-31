@@ -182,7 +182,7 @@ class TaskQueryMixin:
                 assigned_agent_id=task.assigned_agent_id,
                 branch_name=task.branch_name,
                 resume_after=task.resume_after,
-                requires_approval=int(task.requires_approval),
+                integration_mode=task.integration_mode,
                 pr_url=task.pr_url,
                 plan_source=task.plan_source,
                 is_plan_subtask=int(task.is_plan_subtask),
@@ -190,7 +190,6 @@ class TaskQueryMixin:
                 profile_id=task.profile_id,
                 preferred_workspace_id=task.preferred_workspace_id,
                 attachments=json.dumps(task.attachments) if task.attachments else "[]",
-                auto_approve_plan=int(task.auto_approve_plan),
                 skip_verification=int(task.skip_verification),
                 workflow_id=task.workflow_id,
                 affinity_agent_id=task.affinity_agent_id,
@@ -403,7 +402,7 @@ class TaskQueryMixin:
                 "claim_epoch": row["claim_epoch"],
                 "cleanup_pending": bool(row["assigned_agent_id"] or owned_sessions or owned_workspaces),
             }
-            if row["status"] in ("DEFINED", "AWAITING_PLAN_APPROVAL"):
+            if row["status"] == "DEFINED":
                 await self._upsert_meta(task_id, "manual_pause_withholds_children", True, conn=conn)
             result = await self._apply_transition(
                 conn, task_id, TaskStatus.PAUSED, context="manual_pause", force=True,
@@ -1432,7 +1431,7 @@ class TaskQueryMixin:
             assigned_agent_id=row["assigned_agent_id"],
             branch_name=row["branch_name"],
             resume_after=row["resume_after"],
-            requires_approval=bool(row["requires_approval"]),
+            integration_mode=row["integration_mode"],
             pr_url=row["pr_url"],
             plan_source=row["plan_source"],
             is_plan_subtask=bool(row["is_plan_subtask"]),
@@ -1440,7 +1439,6 @@ class TaskQueryMixin:
             profile_id=row["profile_id"],
             preferred_workspace_id=row["preferred_workspace_id"],
             attachments=json.loads(row["attachments"]) if row["attachments"] else [],
-            auto_approve_plan=bool(row["auto_approve_plan"]),
             skip_verification=bool(row.get("skip_verification", 0)),
             workflow_id=row.get("workflow_id"),
             affinity_agent_id=row.get("affinity_agent_id"),

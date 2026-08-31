@@ -77,8 +77,8 @@ class MonitoringMixin:
         Conditional-edge disposal runs first so a contingency task that can
         never fire is closed rather than considered for promotion.
 
-        This runs after ``_check_awaiting_approval`` so that freshly-merged
-        PRs can unblock their dependents in the same cycle.
+        This runs after the gate sweep so freshly-resolved gates can
+        unblock their dependents in the same cycle.
         """
         await self._close_dead_conditional_tasks()
 
@@ -135,9 +135,9 @@ class MonitoringMixin:
 
         - DEFINED with no dependencies → READY;
         - DEFINED/BLOCKED whose every blocking dependency is COMPLETED → READY;
-        - plan subtasks whose parent is AWAITING_PLAN_APPROVAL are withheld,
-          and an IN_PROGRESS parent counts as satisfied (the special case the
-          ``parent-child`` edge type generalises away).
+        - plan subtasks with an IN_PROGRESS parent count the parent
+          dependency as satisfied (the special case the ``parent-child``
+          edge type generalises away).
 
         The scan only ever knew two shapes: ``blocks`` edges, and the
         plan-subtask parent edge.  A task carrying an edge kind it predates
@@ -173,8 +173,6 @@ class MonitoringMixin:
             # IN_PROGRESS parent dep as satisfied.
             if task.is_plan_subtask and task.parent_task_id:
                 parent = await self.db.get_task(task.parent_task_id)
-                if parent and parent.status == TaskStatus.AWAITING_PLAN_APPROVAL:
-                    continue
                 if parent and parent.status == TaskStatus.IN_PROGRESS:
                     # Parent plan is approved and active — treat parent dep as met.
                     # Check only non-parent dependencies.

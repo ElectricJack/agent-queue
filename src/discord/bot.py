@@ -988,8 +988,6 @@ class AgentQueueBot(commands.Bot):
             TaskStatus.COMPLETED,
             TaskStatus.FAILED,
             TaskStatus.BLOCKED,
-            TaskStatus.AWAITING_APPROVAL,
-            TaskStatus.AWAITING_PLAN_APPROVAL,
         }
 
         if task.status in terminal_statuses:

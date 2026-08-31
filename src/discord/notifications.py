@@ -9,7 +9,7 @@ rich Discord presentation — color-coded by severity, with structured fields fo
 task metadata.  The orchestrator passes both versions through the notification
 callback so the bot can choose the appropriate format.
 
-**Interactive views** (``TaskFailedView``, ``TaskApprovalView``,
+**Interactive views** (``TaskFailedView``,
 ``AgentQuestionView``) attach action buttons
 to notification embeds so users can retry, skip, approve tasks, or reply to
 agent questions directly from Discord without memorizing slash commands.
@@ -263,8 +263,7 @@ def format_pr_created(task: Task, pr_url: str) -> str:
     return (
         f"**PR Created:** `{task.id}` — {task.title}\n"
         f"Project: `{task.project_id}`\n"
-        f"Review and merge to complete: {pr_url}\n"
-        f"Status: AWAITING_APPROVAL"
+        f"Review pipeline owns the merge: {pr_url}"
     )
 
 
@@ -358,36 +357,6 @@ def format_budget_warning(project_name: str, usage: int, limit: int) -> str:
     )
 
 
-def format_plan_generated(
-    parent_task: Task,
-    generated_tasks: list[Task],
-    *,
-    workspace_path: str | None = None,
-    chained: bool = True,
-) -> str:
-    """Format a plain-text notification for auto-generated plan subtasks.
-
-    Returns a human-readable markdown string listing all tasks created
-    from a plan file, suitable for logging and fallback display.
-    """
-    count = len(generated_tasks)
-    lines = [
-        f"📋 **Plan Generated — {count} Task{'s' if count != 1 else ''} Created**",
-        f"Parent: `{parent_task.id}` — {parent_task.title}",
-        f"Project: `{parent_task.project_id}`",
-    ]
-    if workspace_path:
-        lines.append(f"Workspace: `{workspace_path}`")
-    if chained and count > 1:
-        chain_str = " → ".join(f"`{t.id}`" for t in generated_tasks)
-        lines.append(f"Chain: {chain_str}")
-    lines.append("")
-    for idx, t in enumerate(generated_tasks, 1):
-        type_emoji = ""
-        if t.task_type:
-            type_emoji = TASK_TYPE_EMOJIS.get(t.task_type.value, "") + " "
-        lines.append(f"**{idx}.** {type_emoji}`{t.id}` — {t.title} (priority: {t.priority})")
-    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -526,8 +495,7 @@ def format_pr_created_embed(task: Task, pr_url: str) -> discord.Embed:
     fields: list[tuple[str, str, bool]] = [
         ("Task ID", f"`{task.id}`", True),
         ("Project", f"`{task.project_id}`", True),
-        ("Status", "AWAITING_APPROVAL", True),
-        ("Pull Request", f"[Review and merge to complete]({pr_url})", False),
+        ("Pull Request", f"[Awaiting review pipeline]({pr_url})", False),
     ]
     return info_embed(f"PR Created — {task.title}", fields=fields, url=pr_url)
 
@@ -702,117 +670,6 @@ def format_budget_warning_embed(
     )
 
 
-def format_plan_generated_embed(
-    parent_task: Task,
-    generated_tasks: list[Task],
-    *,
-    workspace_path: str | None = None,
-    chained: bool = True,
-) -> discord.Embed:
-    """Rich embed for auto-generated plan subtasks.
-
-    Builds a visually structured embed that displays all relevant metadata
-    for each auto-generated task: title, priority, project, workspace,
-    task type, and dependency chain — making it easy to scan at a glance.
-
-    Parameters
-    ----------
-    parent_task:
-        The task whose completion produced the plan file.
-    generated_tasks:
-        The list of newly created subtasks from the plan.
-    workspace_path:
-        The workspace directory used by the parent task (shown when available).
-    chained:
-        Whether tasks are chained in a sequential dependency order.
-    """
-    count = len(generated_tasks)
-    plural = "s" if count != 1 else ""
-
-    # --- Description block ---------------------------------------------------
-    desc_lines: list[str] = [
-        f"Task `{parent_task.id}` completed with an implementation plan.",
-        f"**{count}** subtask{plural} {'have' if count != 1 else 'has'} been "
-        f"created{' and chained for sequential execution' if chained and count > 1 else ''}.",
-    ]
-
-    # Show dependency chain as a compact arrow diagram
-    if chained and count > 1:
-        chain_ids = " → ".join(f"`{t.id}`" for t in generated_tasks)
-        desc_lines.append(f"\n**Execution order:** {chain_ids}")
-
-    description = "\n".join(desc_lines)
-
-    # --- Header fields -------------------------------------------------------
-    fields: list[tuple[str, str, bool]] = [
-        ("Parent Task", f"`{parent_task.id}`\n{truncate(parent_task.title, 80)}", True),
-        ("Project", f"`{parent_task.project_id}`", True),
-    ]
-
-    if workspace_path:
-        # Show only the last 2 path components to keep it readable
-        short_path = workspace_path
-        parts = workspace_path.replace("\\", "/").rstrip("/").split("/")
-        if len(parts) > 2:
-            short_path = "…/" + "/".join(parts[-2:])
-        fields.append(("Workspace", f"`{short_path}`", True))
-
-    # --- Separator -----------------------------------------------------------
-    fields.append(("─── Subtasks ───", "\u200b", False))  # zero-width space value
-
-    # --- Per-task fields -----------------------------------------------------
-    for idx, t in enumerate(generated_tasks, 1):
-        # Build the field name with step number and optional type emoji
-        type_emoji = ""
-        if t.task_type:
-            type_emoji = TASK_TYPE_EMOJIS.get(t.task_type.value, "")
-            if type_emoji:
-                type_emoji += " "
-
-        field_name = f"{type_emoji}Step {idx}/{count}: {truncate(t.title, 80)}"
-
-        # Build the field value with key metadata
-        detail_parts: list[str] = [f"**ID:** `{t.id}`"]
-
-        detail_parts.append(f"**Priority:** {t.priority}")
-
-        if t.task_type:
-            detail_parts.append(
-                f"**Type:** {TASK_TYPE_EMOJIS.get(t.task_type.value, '')} `{t.task_type.value}`"
-            )
-
-        if t.requires_approval:
-            detail_parts.append("🔒 **Requires approval**")
-
-        # Show dependency info for chained tasks (except the first)
-        if chained and idx > 1:
-            prev = generated_tasks[idx - 2]
-            detail_parts.append(f"⏳ Depends on `{prev.id}`")
-
-        # Show a snippet of the description if available
-        if t.description:
-            # Extract first meaningful line (skip headers/blanks)
-            snippet = _extract_description_snippet(t.description, max_len=120)
-            if snippet:
-                detail_parts.append(f"*{snippet}*")
-
-        field_value = "\n".join(detail_parts)
-        fields.append((field_name, truncate(field_value, 1024), False))
-
-    # --- Build the embed with plan-generation color (teal/cyan) --------------
-    # Use a distinctive teal color (0x1ABC9C) to stand out from standard
-    # status notifications (success=green, error=red, etc.)
-    _PLAN_GENERATED_COLOR = 0x1ABC9C
-
-    embed = make_embed(
-        EmbedStyle.INFO,
-        f"Plan Generated — {count} New Task{plural}",
-        description=truncate(description, LIMIT_DESCRIPTION),
-        fields=fields,
-        color_override=_PLAN_GENERATED_COLOR,
-    )
-
-    return embed
 
 
 def _extract_description_snippet(description: str, *, max_len: int = 120) -> str:
@@ -1150,71 +1007,6 @@ class TaskFailedView(discord.ui.View):
             )
 
 
-class TaskApprovalView(discord.ui.View):
-    """Action buttons attached to PR-created / awaiting-approval notifications.
-
-    Provides one-click Approve and Restart buttons for tasks in
-    AWAITING_APPROVAL status.
-    """
-
-    def __init__(self, task_id: str, handler=None) -> None:
-        super().__init__(timeout=86400)  # 24 hours
-        self.task_id = task_id
-        self._handler = handler
-
-    @discord.ui.button(
-        label="Approve",
-        style=discord.ButtonStyle.success,
-        emoji="✅",
-    )
-    async def approve_button(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        if not self._handler:
-            await interaction.response.send_message("Handler not available.", ephemeral=True)
-            return
-        await interaction.response.defer(ephemeral=True)
-        result = await self._handler.execute("approve_task", {"task_id": self.task_id})
-        if "error" in result:
-            await interaction.followup.send(f"Could not approve: {result['error']}", ephemeral=True)
-        else:
-            await interaction.followup.send(
-                f"✅ Task `{self.task_id}` approved and completed.",
-                ephemeral=True,
-            )
-            for child in self.children:
-                child.disabled = True
-            try:
-                await interaction.message.edit(view=self)
-            except (discord.NotFound, discord.HTTPException):
-                pass
-
-    @discord.ui.button(
-        label="Restart",
-        style=discord.ButtonStyle.secondary,
-        emoji="🔄",
-    )
-    async def restart_button(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        if not self._handler:
-            await interaction.response.send_message("Handler not available.", ephemeral=True)
-            return
-        await interaction.response.defer(ephemeral=True)
-        result = await self._handler.execute("restart_task", {"task_id": self.task_id})
-        if "error" in result:
-            await interaction.followup.send(f"Could not restart: {result['error']}", ephemeral=True)
-        else:
-            await interaction.followup.send(
-                f"🔄 Task `{self.task_id}` restarted → READY",
-                ephemeral=True,
-            )
-            for child in self.children:
-                child.disabled = True
-            try:
-                await interaction.message.edit(view=self)
-            except (discord.NotFound, discord.HTTPException):
-                pass
 
 
 class TaskBlockedView(discord.ui.View):
@@ -1433,207 +1225,8 @@ class PlanChangesModal(discord.ui.Modal, title="Request Plan Changes"):
                     pass
 
 
-class PlanApprovalView(discord.ui.View):
-    """Action buttons attached to plan-awaiting-approval notifications.
-
-    Provides Approve, Request Changes, and Delete Plan buttons for tasks
-    in AWAITING_PLAN_APPROVAL status.
-    """
-
-    def __init__(self, task_id: str, handler=None) -> None:
-        super().__init__(timeout=86400 * 7)  # 7 days
-        self.task_id = task_id
-        self._handler = handler
-
-    @discord.ui.button(
-        label="Approve Plan",
-        style=discord.ButtonStyle.success,
-        emoji="✅",
-    )
-    async def approve_button(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        if not self._handler:
-            await interaction.response.send_message("Handler not available.", ephemeral=True)
-            return
-        await interaction.response.defer(ephemeral=True)
-
-        # Immediately update the message to remove buttons and show processing
-        # state — this makes the interaction feel responsive even if the
-        # backend work takes a few seconds.
-        embed = interaction.message.embeds[0] if interaction.message.embeds else None
-        if embed is not None:
-            embed.title = "⏳ Approving Plan..."
-            embed.color = 0xF1C40F  # yellow/pending
-        try:
-            await interaction.message.edit(embed=embed, view=None)
-        except Exception:
-            pass  # Best-effort; the final update below will fix it
-
-        result = await self._handler.execute("approve_plan", {"task_id": self.task_id})
-        if "error" in result:
-            await interaction.followup.send(
-                f"Could not approve plan: {result['error']}", ephemeral=True
-            )
-            # Restore the buttons on error so user can retry
-            if embed is not None:
-                embed.title = "📋 Plan Awaiting Approval"
-                embed.color = 0x3498DB  # blue
-            try:
-                await interaction.message.edit(embed=embed, view=self)
-            except Exception:
-                pass
-        else:
-            count = result.get("subtask_count", 0)
-            await interaction.followup.send(
-                f"✅ Plan approved for `{self.task_id}`. {count} subtask(s) created.",
-                ephemeral=True,
-            )
-            # Final update with the actual subtask count
-            if embed is not None:
-                embed.title = f"✅ Plan Approved — {count} Subtask(s) Created"
-                embed.color = 0x2ECC71  # green
-            try:
-                await interaction.message.edit(embed=embed, view=None)
-            except Exception:
-                pass  # Already removed buttons in the immediate update
-
-    @discord.ui.button(
-        label="Request Changes",
-        style=discord.ButtonStyle.primary,
-        emoji="✏️",
-    )
-    async def request_changes_button(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        modal = PlanChangesModal(
-            self.task_id,
-            handler=self._handler,
-            plan_message=interaction.message,
-        )
-        await interaction.response.send_modal(modal)
-
-    @discord.ui.button(
-        label="Delete Plan",
-        style=discord.ButtonStyle.danger,
-        emoji="🗑️",
-    )
-    async def delete_button(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        if not self._handler:
-            await interaction.response.send_message("Handler not available.", ephemeral=True)
-            return
-        await interaction.response.defer(ephemeral=True)
-        result = await self._handler.execute("delete_plan", {"task_id": self.task_id})
-        if "error" in result:
-            await interaction.followup.send(
-                f"Could not delete plan: {result['error']}", ephemeral=True
-            )
-        else:
-            await interaction.followup.send(
-                f"🗑️ Plan deleted for `{self.task_id}`. Task completed without subtasks.",
-                ephemeral=True,
-            )
-            # Delete the plan approval message from the channel
-            try:
-                await interaction.message.delete()
-            except Exception:
-                # Fallback: disable buttons if deletion fails
-                for child in self.children:
-                    child.disabled = True
-                await interaction.message.edit(view=self)
 
 
-def format_plan_approval_embed(
-    task: Task,
-    steps_json: str = "[]",
-    raw_content: str = "",
-    plan_url: str = "",
-    parsed_steps: list[dict] | None = None,
-    thread_url: str = "",
-) -> discord.Embed:
-    """Rich embed showing a plan awaiting user approval.
-
-    Shows a high-level summary with links to the full plan — either a
-    Discord thread jump URL (preferred, since the agent's final messages
-    contain the complete plan summary) or a browser link to the health
-    server's rendered plan page.
-    """
-    # --- Build description: summary + links ---
-    desc_lines = [
-        f"Task `{task.id}` generated a **{len(parsed_steps or [])}-phase implementation plan**.",
-    ]
-
-    # Extract a one-line summary from the plan title (first # heading)
-    if raw_content:
-        import re as _re
-
-        title_match = _re.match(r"^#\s+(.+)$", raw_content.strip(), _re.MULTILINE)
-        if title_match:
-            desc_lines.append(f"> {title_match.group(1).strip()}")
-
-    desc_lines.append("")
-
-    # Link to the thread where the agent posted the full plan summary
-    if thread_url:
-        desc_lines.append(f"\U0001f4ac [**View Plan Summary in Thread**]({thread_url})")
-    if plan_url:
-        desc_lines.append(f"\U0001f4c4 [**View Full Plan**]({plan_url})")
-    if thread_url or plan_url:
-        desc_lines.append("")
-
-    description = "\n".join(desc_lines)
-
-    fields: list[tuple[str, str, bool]] = [
-        ("Task", f"`{task.id}`\n{truncate(task.title, 80)}", True),
-        ("Project", f"`{task.project_id}`", True),
-    ]
-
-    # --- List the tasks that will be generated ---
-    if parsed_steps:
-        task_list_lines = []
-        for i, step in enumerate(parsed_steps, 1):
-            title = step.get("title", "Untitled")
-            # Truncate long titles
-            if len(title) > 80:
-                title = title[:77] + "..."
-            task_list_lines.append(f"`{i}.` {title}")
-
-        task_list = "\n".join(task_list_lines)
-        fields.append(
-            (
-                f"─── Subtasks ({len(parsed_steps)}) ───",
-                truncate(task_list, LIMIT_FIELD_VALUE),
-                False,
-            )
-        )
-    elif not thread_url and raw_content:
-        # Fallback: no thread URL and no parsed steps — show a brief preview
-        preview = raw_content.strip()
-        if len(preview) > 400:
-            cut = preview[:400].rfind("\n")
-            if cut > 200:
-                preview = preview[:cut] + "\n..."
-            else:
-                preview = preview[:400] + "..."
-        fields.append(("Preview", truncate(f"```md\n{preview}\n```", LIMIT_FIELD_VALUE), False))
-
-    # Link to full plan in browser (only if not already in description)
-    if plan_url and not parsed_steps and not thread_url:
-        fields.append(("Full Plan", f"[View in browser]({plan_url})", False))
-
-    _PLAN_APPROVAL_COLOR = 0xF39C12  # amber/orange to indicate "needs attention"
-
-    embed = make_embed(
-        EmbedStyle.INFO,
-        "Plan Awaiting Approval",
-        description=truncate(description, LIMIT_DESCRIPTION),
-        fields=fields,
-        color_override=_PLAN_APPROVAL_COLOR,
-    )
-
-    return embed
 
 
 # ---------------------------------------------------------------------------

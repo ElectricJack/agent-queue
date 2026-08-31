@@ -513,9 +513,8 @@ Please provide:
    - Acceptance criteria
    - Any relevant technical details
 3. Priority (1-1000, default 100)
-4. Whether it requires human approval before completion
 
-Format your response as JSON with keys: title, description, priority, requires_approval"""
+Format your response as JSON with keys: title, description, priority"""
 
     @mcp_server.prompt()
     async def review_task_prompt(task_id: str) -> str:

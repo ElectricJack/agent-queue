@@ -121,7 +121,6 @@ class AgentQueryMixin:
                         TaskStatus.ASSIGNED.value,
                         TaskStatus.IN_PROGRESS.value,
                         TaskStatus.WAITING_INPUT.value,
-                        TaskStatus.AWAITING_PLAN_APPROVAL.value,
                     )
                 ),
             )
@@ -180,7 +179,7 @@ class AgentQueryMixin:
             tasks.c.assigned_agent_id == agent_id,
             tasks.c.status.in_((
                 TaskStatus.ASSIGNED.value, TaskStatus.IN_PROGRESS.value,
-                TaskStatus.WAITING_INPUT.value, TaskStatus.AWAITING_PLAN_APPROVAL.value,
+                TaskStatus.WAITING_INPUT.value,
             )),
         ).exists()
         held_workspace = select(workspaces.c.id).where(

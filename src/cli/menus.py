@@ -237,11 +237,14 @@ def task_creation_wizard(
     console.print(f"  [dim]{type_display}[/]")
     task_type = prompt_choice("Type", task_types, default="feature")
 
-    # Step 6: Approval required
+    # Step 6: Integration policy
     console.print()
-    console.print("[bold cyan]Step 6/6:[/] Require approval before execution?")
-    approval = prompt_choice("Require approval", ["yes", "no"], default="no")
-    requires_approval = approval == "yes"
+    console.print("[bold cyan]Step 6/6:[/] Integration policy?")
+    console.print("  [dim]inherit = project/system policy decides; pull_request = "
+                  "push branch + open PR; direct = merge to default on completion[/]")
+    integration_mode = prompt_choice(
+        "Integration mode", ["inherit", "pull_request", "direct"], default="inherit"
+    )
 
     console.print()
     console.print("[bold green]✅ Task configuration complete![/]")
@@ -252,5 +255,6 @@ def task_creation_wizard(
         "description": description,
         "priority": priority,
         "task_type": task_type,
-        "requires_approval": requires_approval,
     }
+    if integration_mode != "inherit":
+        result["integration_mode"] = integration_mode

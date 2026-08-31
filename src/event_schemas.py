@@ -391,16 +391,6 @@ _NOTIFY_SCHEMAS: dict[str, EventSchema] = {
         "required": [*_NOTIFY_BASE_FIELDS, "task", "agent", "question"],
         "optional": [*_NOTIFY_BASE_OPTIONAL],
     },
-    "notify.plan_awaiting_approval": {
-        "required": [*_NOTIFY_BASE_FIELDS, "task"],
-        "optional": [
-            *_NOTIFY_BASE_OPTIONAL,
-            "subtasks",
-            "plan_url",
-            "raw_content",
-            "thread_url",
-        ],
-    },
     # -- VCS notifications --
     "notify.pr_created": {
         "required": [*_NOTIFY_BASE_FIELDS, "task", "pr_url"],

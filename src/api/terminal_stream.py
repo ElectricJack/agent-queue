@@ -22,7 +22,6 @@ _PROTOCOL = "aq-terminal-v1"
 _LIVE = {"starting", "running", "draining"}
 _ACTIVE_TASKS = {
     TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS, TaskStatus.WAITING_INPUT,
-    TaskStatus.AWAITING_PLAN_APPROVAL,
 }
 _INPUT_FRAME_LIMIT = 64 * 1024
 _INPUT_QUEUE_LIMIT = 128 * 1024
