@@ -1032,10 +1032,16 @@ class TestDaemonCommands:
     def test_stop_not_running(self, runner):
         from src.cli.app import cli
 
-        with patch("src.cli.daemon._find_daemon_pid", return_value=None):
+        # aq stop also reaps sessions when no daemon is running. Keep this
+        # unit test away from the real tmux server (including its own worker).
+        with (
+            patch("src.cli.daemon._find_daemon_pid", return_value=None),
+            patch("src.cli.daemon.stop_agent_sessions", return_value=0) as stop_sessions,
+        ):
             result = runner.invoke(cli, ["stop"])
             assert result.exit_code == 0
             assert "not running" in result.output
+            stop_sessions.assert_called_once_with()
 
 
 # ---------------------------------------------------------------------------
