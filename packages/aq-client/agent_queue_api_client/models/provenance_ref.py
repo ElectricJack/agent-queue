@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
@@ -25,12 +25,14 @@ class ProvenanceRef:
             title (str | Unset):  Default: ''.
             status (str | Unset):  Default: ''.
             dep_type (str | Unset):  Default: ''.
+            reason (None | str | Unset):
     """
 
     id: str
     title: str | Unset = ""
     status: str | Unset = ""
     dep_type: str | Unset = ""
+    reason: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -41,6 +43,12 @@ class ProvenanceRef:
         status = self.status
 
         dep_type = self.dep_type
+
+        reason: None | str | Unset
+        if isinstance(self.reason, Unset):
+            reason = UNSET
+        else:
+            reason = self.reason
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -55,6 +63,8 @@ class ProvenanceRef:
             field_dict["status"] = status
         if dep_type is not UNSET:
             field_dict["dep_type"] = dep_type
+        if reason is not UNSET:
+            field_dict["reason"] = reason
 
         return field_dict
 
@@ -69,11 +79,21 @@ class ProvenanceRef:
 
         dep_type = d.pop("dep_type", UNSET)
 
+        def _parse_reason(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        reason = _parse_reason(d.pop("reason", UNSET))
+
         provenance_ref = cls(
             id=id,
             title=title,
             status=status,
             dep_type=dep_type,
+            reason=reason,
         )
 
         provenance_ref.additional_properties = d

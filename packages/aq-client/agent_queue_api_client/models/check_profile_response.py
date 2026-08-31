@@ -62,7 +62,7 @@ class CheckProfileResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.check_profile_response_manifest import CheckProfileResponseManifest
+        from ..models.check_profile_response_manifest import CheckProfileResponseManifest  # noqa: PLC0415
 
         d = dict(src_dict)
         profile_id = d.pop("profile_id")

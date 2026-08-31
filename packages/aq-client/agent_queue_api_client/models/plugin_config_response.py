@@ -58,7 +58,7 @@ class PluginConfigResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.plugin_config_response_config import PluginConfigResponseConfig
+        from ..models.plugin_config_response_config import PluginConfigResponseConfig  # noqa: PLC0415
 
         d = dict(src_dict)
         name = d.pop("name")

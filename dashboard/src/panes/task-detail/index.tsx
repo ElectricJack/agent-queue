@@ -162,10 +162,15 @@ export default function TaskDetailPane({
             label="Retries"
             value={`${task?.retry_count ?? 0} / ${task?.max_retries ?? 3}`}
           />
-          <MetaField label="Requires approval" value={task?.requires_approval ? "Yes" : "No"} />
           <MetaField
-            label="Auto-approve plan"
-            value={task?.auto_approve_plan ? "Yes" : "No"}
+            label="Integration"
+            value={
+              task?.effective_integration_mode
+                ? task.integration_mode_source === "task"
+                  ? task.effective_integration_mode
+                  : `${task.effective_integration_mode} (${task.integration_mode_source ?? "policy"})`
+                : task?.integration_mode ?? "policy"
+            }
           />
           <MetaField
             label="Skip verification"

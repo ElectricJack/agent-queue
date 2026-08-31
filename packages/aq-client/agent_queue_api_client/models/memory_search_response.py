@@ -69,7 +69,7 @@ class MemorySearchResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.memory_search_result import MemorySearchResult
+        from ..models.memory_search_result import MemorySearchResult  # noqa: PLC0415
 
         d = dict(src_dict)
         project_id = d.pop("project_id")

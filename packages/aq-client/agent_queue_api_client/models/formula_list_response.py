@@ -49,7 +49,7 @@ class FormulaListResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.formula_summary import FormulaSummary
+        from ..models.formula_summary import FormulaSummary  # noqa: PLC0415
 
         d = dict(src_dict)
         success = d.pop("success", UNSET)

@@ -6,9 +6,6 @@ import {
   PlayIcon,
   ArrowPathIcon,
   ForwardIcon,
-  CheckIcon,
-  DocumentCheckIcon,
-  DocumentMinusIcon,
   TrashIcon,
   ChatBubbleLeftIcon,
   ArrowUturnLeftIcon,
@@ -20,10 +17,6 @@ import {
   useResumeTask,
   useRestartTask,
   useSkipTask,
-  useApproveTask,
-  useApprovePlan,
-  useRejectPlan,
-  useDeletePlan,
   useReopenWithFeedback,
   useDeleteTask,
   useProvideInput,
@@ -39,7 +32,7 @@ interface TaskActionsProps {
   onOpenTerminal?: () => void;
 }
 
-type ModalType = "reject-plan" | "reopen" | "answer" | "delete" | null;
+type ModalType = "reopen" | "answer" | "delete" | null;
 
 export default function TaskActions({ task, returnTo, onDeleted, onOpenTerminal }: TaskActionsProps) {
   const navigate = useNavigate();
@@ -52,10 +45,6 @@ export default function TaskActions({ task, returnTo, onDeleted, onOpenTerminal 
   const resumeTask = useResumeTask();
   const restartTask = useRestartTask();
   const skipTask = useSkipTask();
-  const approveTask = useApproveTask();
-  const approvePlan = useApprovePlan();
-  const rejectPlan = useRejectPlan();
-  const deletePlan = useDeletePlan();
   const reopenWithFeedback = useReopenWithFeedback();
   const deleteTask = useDeleteTask();
   const provideInput = useProvideInput();
@@ -65,10 +54,6 @@ export default function TaskActions({ task, returnTo, onDeleted, onOpenTerminal 
     stopTask.isPending ||
     restartTask.isPending ||
     skipTask.isPending ||
-    approveTask.isPending ||
-    approvePlan.isPending ||
-    rejectPlan.isPending ||
-    deletePlan.isPending ||
     reopenWithFeedback.isPending ||
     deleteTask.isPending ||
     provideInput.isPending;
@@ -83,9 +68,7 @@ export default function TaskActions({ task, returnTo, onDeleted, onOpenTerminal 
   const closeModal = () => setModal(null);
 
   const handleSubmitModal = () => {
-    if (modal === "reject-plan") {
-      rejectPlan.mutate({ task_id: task.id, feedback: textInput }, { onSuccess: closeModal });
-    } else if (modal === "reopen") {
+    if (modal === "reopen") {
       reopenWithFeedback.mutate({ task_id: task.id, feedback: textInput }, { onSuccess: closeModal });
     } else if (modal === "answer") {
       provideInput.mutate({ task_id: task.id, input: textInput }, { onSuccess: closeModal });
@@ -108,7 +91,7 @@ export default function TaskActions({ task, returnTo, onDeleted, onOpenTerminal 
       icon: <PauseIcon className="h-3.5 w-3.5" />,
       onClick: () => { resumeTask.reset(); pauseTask.mutate({ task_id: task.id }); },
       variant: "primary",
-      show: ["DEFINED", "READY", "ASSIGNED", "IN_PROGRESS", "BLOCKED", "WAITING_INPUT", "AWAITING_APPROVAL", "AWAITING_PLAN_APPROVAL"].includes(s),
+      show: ["DEFINED", "READY", "ASSIGNED", "IN_PROGRESS", "BLOCKED", "WAITING_INPUT"].includes(s),
     },
     {
       label: resumeTask.isPending ? "Resuming…" : "Resume",
@@ -123,34 +106,6 @@ export default function TaskActions({ task, returnTo, onDeleted, onOpenTerminal 
       onClick: () => stopTask.mutate({ task_id: task.id }),
       variant: "danger",
       show: s === "IN_PROGRESS",
-    },
-    {
-      label: "Approve",
-      icon: <CheckIcon className="h-3.5 w-3.5" />,
-      onClick: () => approveTask.mutate({ task_id: task.id }),
-      variant: "success",
-      show: s === "AWAITING_APPROVAL",
-    },
-    {
-      label: "Approve Plan",
-      icon: <DocumentCheckIcon className="h-3.5 w-3.5" />,
-      onClick: () => approvePlan.mutate({ task_id: task.id }),
-      variant: "success",
-      show: s === "AWAITING_PLAN_APPROVAL",
-    },
-    {
-      label: "Reject Plan",
-      icon: <DocumentMinusIcon className="h-3.5 w-3.5" />,
-      onClick: () => openModal("reject-plan"),
-      variant: "danger",
-      show: s === "AWAITING_PLAN_APPROVAL",
-    },
-    {
-      label: "Delete Plan",
-      icon: <TrashIcon className="h-3.5 w-3.5" />,
-      onClick: () => deletePlan.mutate({ task_id: task.id }),
-      variant: "secondary",
-      show: s === "AWAITING_PLAN_APPROVAL",
     },
     {
       label: "Answer Question",
@@ -200,7 +155,6 @@ export default function TaskActions({ task, returnTo, onDeleted, onOpenTerminal 
   };
 
   const modalTitles: Record<string, string> = {
-    "reject-plan": "Reject Plan",
     reopen: "Reopen with Feedback",
     answer: "Answer Agent Question",
     delete: "Delete Task",

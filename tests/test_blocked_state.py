@@ -105,7 +105,6 @@ class TestSatisfactionTruthTable:
         [
             # Withholding container statuses.
             (TaskStatus.DEFINED, True),
-            (TaskStatus.AWAITING_PLAN_APPROVAL, True),
             # Every other status counts as "released".
             (TaskStatus.READY, False),
             (TaskStatus.IN_PROGRESS, False),
@@ -724,7 +723,7 @@ class TestMigrationPredicateParity:
 
         await mktask(db, "done", status=TaskStatus.COMPLETED)
         await mktask(db, "open", status=TaskStatus.IN_PROGRESS)
-        await mktask(db, "plan", status=TaskStatus.AWAITING_PLAN_APPROVAL)
+        await mktask(db, "plan", status=TaskStatus.DEFINED)
         await mktask(db, "hard-fail", status=TaskStatus.FAILED, retry_count=3, max_retries=3)
         await mktask(db, "b1")
         await mktask(db, "b2")

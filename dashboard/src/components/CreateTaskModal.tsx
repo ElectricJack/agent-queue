@@ -20,8 +20,7 @@ export default function CreateTaskModal({ open, onClose, defaultProjectId, onCre
   const [projectId, setProjectId] = useState(defaultProjectId ?? "");
   const [priority, setPriority] = useState(100);
   const [taskType, setTaskType] = useState("");
-  const [requiresApproval, setRequiresApproval] = useState(false);
-  const [autoApprovePlan, setAutoApprovePlan] = useState(false);
+  const [integrationMode, setIntegrationMode] = useState("");
   const valid = !!title.trim() && !!projectId && Number.isInteger(priority);
   const error: unknown = createTask.error;
   const errorMessage = error instanceof Error ? error.message : error && typeof error === "object" && "error" in error
@@ -34,14 +33,13 @@ export default function CreateTaskModal({ open, onClose, defaultProjectId, onCre
     if (description.trim()) body.description = description.trim();
     if (priority !== 100) body.priority = priority;
     if (taskType) body.task_type = taskType;
-    if (requiresApproval) body.requires_approval = true;
-    if (autoApprovePlan) body.auto_approve_plan = true;
+    if (integrationMode) body.integration_mode = integrationMode;
     createTask.mutate(body, {
       onSuccess: (data) => {
         const taskId = data.task_id || data.created;
         if (taskId) onCreated?.(taskId);
         setTitle(""); setDescription(""); setProjectId(defaultProjectId ?? "");
-        setPriority(100); setTaskType(""); setRequiresApproval(false); setAutoApprovePlan(false);
+        setPriority(100); setTaskType(""); setIntegrationMode("");
         onClose();
       },
     });
@@ -82,11 +80,13 @@ export default function CreateTaskModal({ open, onClose, defaultProjectId, onCre
               {TASK_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}
             </select>
           </div>
-          <div className="flex flex-wrap gap-4">
-            <label className="flex items-center gap-2 text-sm text-gray-300"><input type="checkbox" checked={requiresApproval}
-              onChange={(e) => setRequiresApproval(e.target.checked)} /> Requires approval</label>
-            <label className="flex items-center gap-2 text-sm text-gray-300"><input type="checkbox" checked={autoApprovePlan}
-              onChange={(e) => setAutoApprovePlan(e.target.checked)} /> Auto-approve plan</label>
+          <div>
+            <label htmlFor={`${id}-integration`} className="mb-1 block text-sm text-gray-400">Integration mode</label>
+            <select id={`${id}-integration`} value={integrationMode} onChange={(e) => setIntegrationMode(e.target.value)} className={inputClass}>
+              <option value="">Inherit project/system policy</option>
+              <option value="pull_request">pull_request — push branch + open PR (review pipeline merges)</option>
+              <option value="direct">direct — merge to default branch on completion</option>
+            </select>
           </div>
           {errorMessage && <p role="alert" className="rounded border border-red-500/30 bg-red-500/10 p-2 text-sm text-red-300">{errorMessage}</p>}
           <div className="flex justify-end gap-2 border-t border-gray-800 pt-3">

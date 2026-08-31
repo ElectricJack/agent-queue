@@ -91,7 +91,7 @@ def _pr_task(task_id: str = "t-pr", **kw) -> Task:
         project_id="p-1",
         title="PR task",
         description="pr characterization",
-        requires_approval=True,
+        integration_mode="pull_request",
         **kw,
     )
 
@@ -104,7 +104,7 @@ def _direct_task(task_id: str = "t-direct", **kw) -> Task:
         project_id="p-1",
         title="direct task",
         description="direct characterization",
-        requires_approval=False,
+        integration_mode="direct",
         **kw,
     )
 
@@ -139,7 +139,7 @@ class TestExecutionRulesByMode:
             default_branch="main",
             has_remote=True,
             is_final_subtask=True,
-            requires_approval=True,
+            integration_mode="pull_request",
         )
         assert "gh pr create" in rules
         assert "do NOT merge" in rules
@@ -157,7 +157,7 @@ class TestExecutionRulesByMode:
             default_branch="main",
             has_remote=True,
             is_final_subtask=True,
-            requires_approval=False,
+            integration_mode="direct",
         )
         assert "git merge feature-1" in rules
         assert "gh pr create" not in rules
@@ -256,3 +256,63 @@ class TestSessionCloseCompletion:
 
         result = await orch.complete_session_task(task, outcome="pass", notes="done")
         assert result["status"] == TaskStatus.BLOCKED.value
+
+
+class TestResolveIntegrationMode:
+    """The pure policy chain: parent → task → project → config default."""
+
+    def test_default_is_pull_request(self):
+        from src.models import resolve_integration_mode
+
+        assert resolve_integration_mode(None) == "pull_request"
+
+    def test_chain_precedence(self):
+        from src.models import resolve_integration_mode_with_source
+
+        assert resolve_integration_mode_with_source(
+            "direct", parent_task_mode="pull_request", project_mode="direct"
+        ) == ("pull_request", "parent")
+        assert resolve_integration_mode_with_source(
+            "direct", project_mode="pull_request"
+        ) == ("direct", "task")
+        assert resolve_integration_mode_with_source(
+            None, project_mode="direct"
+        ) == ("direct", "project")
+        assert resolve_integration_mode_with_source(
+            None, default_mode="direct"
+        ) == ("direct", "default")
+
+    def test_unknown_values_fall_through(self):
+        from src.models import resolve_integration_mode
+
+        assert (
+            resolve_integration_mode("bogus", project_mode="???", default_mode="junk")
+            == "pull_request"
+        )
+
+    async def test_effective_mode_uses_project_policy(self, orch):
+        """A task with no override inherits the project's mode."""
+        await orch.db.update_project("p-1", integration_mode="direct")
+        task = Task(
+            id="t-inherit",
+            project_id="p-1",
+            title="inherit",
+            description="",
+            status=TaskStatus.IN_PROGRESS,
+        )
+        await orch.db.create_task(task)
+        assert await orch._effective_integration_mode(task) == "direct"
+
+    async def test_effective_mode_defaults_to_pull_request(self, orch):
+        """No task/project policy → config default (pull_request): worker
+        output is never auto-merged unless direct mode was chosen somewhere
+        explicitly."""
+        task = Task(
+            id="t-default",
+            project_id="p-1",
+            title="default",
+            description="",
+            status=TaskStatus.IN_PROGRESS,
+        )
+        await orch.db.create_task(task)
+        assert await orch._effective_integration_mode(task) == "pull_request"

@@ -77,8 +77,10 @@ class GetTaskTreeResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.get_task_tree_response_root import GetTaskTreeResponseRoot
-        from ..models.get_task_tree_response_subtask_by_status import GetTaskTreeResponseSubtaskByStatus
+        from ..models.get_task_tree_response_root import GetTaskTreeResponseRoot  # noqa: PLC0415
+        from ..models.get_task_tree_response_subtask_by_status import (
+            GetTaskTreeResponseSubtaskByStatus,  # noqa: PLC0415
+        )
 
         d = dict(src_dict)
         _root = d.pop("root", UNSET)

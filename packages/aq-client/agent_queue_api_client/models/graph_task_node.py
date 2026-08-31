@@ -25,6 +25,7 @@ class GraphTaskNode:
         assigned_agent_id (None | str | Unset):
         branch_name (None | str | Unset):
         pr_url (None | str | Unset):
+        playbook_run_id (None | str | Unset):
     """
 
     id: str
@@ -37,6 +38,7 @@ class GraphTaskNode:
     assigned_agent_id: None | str | Unset = UNSET
     branch_name: None | str | Unset = UNSET
     pr_url: None | str | Unset = UNSET
+    playbook_run_id: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -80,6 +82,12 @@ class GraphTaskNode:
         else:
             pr_url = self.pr_url
 
+        playbook_run_id: None | str | Unset
+        if isinstance(self.playbook_run_id, Unset):
+            playbook_run_id = UNSET
+        else:
+            playbook_run_id = self.playbook_run_id
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -103,6 +111,8 @@ class GraphTaskNode:
             field_dict["branch_name"] = branch_name
         if pr_url is not UNSET:
             field_dict["pr_url"] = pr_url
+        if playbook_run_id is not UNSET:
+            field_dict["playbook_run_id"] = playbook_run_id
 
         return field_dict
 
@@ -164,6 +174,15 @@ class GraphTaskNode:
 
         pr_url = _parse_pr_url(d.pop("pr_url", UNSET))
 
+        def _parse_playbook_run_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        playbook_run_id = _parse_playbook_run_id(d.pop("playbook_run_id", UNSET))
+
         graph_task_node = cls(
             id=id,
             title=title,
@@ -175,6 +194,7 @@ class GraphTaskNode:
             assigned_agent_id=assigned_agent_id,
             branch_name=branch_name,
             pr_url=pr_url,
+            playbook_run_id=playbook_run_id,
         )
 
         graph_task_node.additional_properties = d

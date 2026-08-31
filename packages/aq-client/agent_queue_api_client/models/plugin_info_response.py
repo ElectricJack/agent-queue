@@ -40,7 +40,7 @@ class PluginInfoResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.plugin_info_response_plugin import PluginInfoResponsePlugin
+        from ..models.plugin_info_response_plugin import PluginInfoResponsePlugin  # noqa: PLC0415
 
         d = dict(src_dict)
         _plugin = d.pop("plugin", UNSET)

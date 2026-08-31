@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { PauseIcon, PlayIcon, StopIcon, ArrowPathIcon, CheckIcon, DocumentCheckIcon, ChatBubbleLeftIcon, TrashIcon } from "@heroicons/react/24/outline";
-import { usePauseTask, useResumeTask, useStopTask, useRestartTask, useApproveTask, useApprovePlan, useEditTask, type Task } from "../../api/hooks";
+import { PauseIcon, PlayIcon, StopIcon, ArrowPathIcon, ChatBubbleLeftIcon, TrashIcon } from "@heroicons/react/24/outline";
+import { usePauseTask, useResumeTask, useStopTask, useRestartTask, useEditTask, type Task } from "../../api/hooks";
 import DeleteTaskModal from "../../components/DeleteTaskModal";
 import { useShellPaneStore } from "../../panes/store";
 import { TASK_STATUSES } from "./taskFilters";
@@ -39,8 +39,6 @@ export function RowActions({ task }: { task: Task }) {
   const resumeTask = useResumeTask();
   const controlPending = pauseTask.isPending || resumeTask.isPending;
   const restartTask = useRestartTask();
-  const approveTask = useApproveTask();
-  const approvePlan = useApprovePlan();
   const pane = useShellPaneStore();
   const [deleteOpen, setDeleteOpen] = useState(false);
   const s = task.status?.toUpperCase() ?? "";
@@ -48,7 +46,7 @@ export function RowActions({ task }: { task: Task }) {
   return (
     <>
       <div className="flex items-center gap-0.5">
-        {["DEFINED", "READY", "ASSIGNED", "IN_PROGRESS", "BLOCKED", "WAITING_INPUT", "AWAITING_APPROVAL", "AWAITING_PLAN_APPROVAL"].includes(s) && (
+        {["DEFINED", "READY", "ASSIGNED", "IN_PROGRESS", "BLOCKED", "WAITING_INPUT"].includes(s) && (
           <QuickAction icon={<PauseIcon className="h-3.5 w-3.5" />}
             title={pauseTask.isPending ? "Pausing…" : "Pause"} disabled={controlPending}
             onClick={() => { resumeTask.reset(); pauseTask.mutate({ task_id: task.id }); }} />
@@ -64,22 +62,6 @@ export function RowActions({ task }: { task: Task }) {
             title="Stop"
             onClick={() => stopTask.mutate({ task_id: task.id })}
             variant="danger"
-          />
-        )}
-        {s === "AWAITING_APPROVAL" && (
-          <QuickAction
-            icon={<CheckIcon className="h-3.5 w-3.5" />}
-            title="Approve"
-            onClick={() => approveTask.mutate({ task_id: task.id })}
-            variant="success"
-          />
-        )}
-        {s === "AWAITING_PLAN_APPROVAL" && (
-          <QuickAction
-            icon={<DocumentCheckIcon className="h-3.5 w-3.5" />}
-            title="Approve Plan"
-            onClick={() => approvePlan.mutate({ task_id: task.id })}
-            variant="success"
           />
         )}
         {s === "WAITING_INPUT" && (
@@ -193,8 +175,6 @@ function statusTone(status: string): string {
     case "FAILED":
     case "BLOCKED":
       return "bg-red-500/10 text-red-300";
-    case "AWAITING_APPROVAL":
-    case "AWAITING_PLAN_APPROVAL":
     case "WAITING_INPUT":
       return "bg-amber-500/10 text-amber-300";
     case "DEFINED":

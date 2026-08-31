@@ -9297,100 +9297,6 @@
         }
       }
     },
-    "/api/task/approve-plan": {
-      "post": {
-        "tags": [
-          "task"
-        ],
-        "summary": "Approve a plan for a task in AWAITING_PLAN_APPROVAL status. Creates subtasks from the stored plan and marks the task completed.",
-        "description": "Approve a plan for a task in AWAITING_PLAN_APPROVAL status. Creates subtasks from the stored plan and marks the task completed.",
-        "operationId": "approve_plan",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ApprovePlanRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApprovePlanResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Command error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    }
-                  },
-                  "type": "object"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/task/approve": {
-      "post": {
-        "tags": [
-          "task"
-        ],
-        "summary": "Manually approve and complete a task that is AWAITING_APPROVAL. Use for tasks on LINK repos that don't have GitHub PRs.",
-        "description": "Manually approve and complete a task that is AWAITING_APPROVAL. Use for tasks on LINK repos that don't have GitHub PRs.",
-        "operationId": "approve_task",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ApproveTaskRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApproveTaskResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Command error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    }
-                  },
-                  "type": "object"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/task/archive-settings": {
       "post": {
         "tags": [
@@ -9622,53 +9528,6 @@
         }
       }
     },
-    "/api/task/delete-plan": {
-      "post": {
-        "tags": [
-          "task"
-        ],
-        "summary": "Delete a plan for a task in AWAITING_PLAN_APPROVAL status. Completes the task without creating any subtasks.",
-        "description": "Delete a plan for a task in AWAITING_PLAN_APPROVAL status. Completes the task without creating any subtasks.",
-        "operationId": "delete_plan",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/DeletePlanRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DeletePlanResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Command error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    }
-                  },
-                  "type": "object"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/task/delete": {
       "post": {
         "tags": [
@@ -9721,8 +9580,8 @@
         "tags": [
           "task"
         ],
-        "summary": "Edit a task's properties: project_id, title, description, priority, task_type, status, max_retries, verification_type, profile_id, auto_approve_plan, skip_verification, intelligence_class, affinity_agent_id, affinity_reason, or workspace_mode. Use this to move a task to a different project, rename tasks, change priority, override status (admin), assign a profile, adjust retry/verification settings, or set coordination parameters.",
-        "description": "Edit a task's properties: project_id, title, description, priority, task_type, status, max_retries, verification_type, profile_id, auto_approve_plan, skip_verification, intelligence_class, affinity_agent_id, affinity_reason, or workspace_mode. Use this to move a task to a different project, rename tasks, change priority, override status (admin), assign a profile, adjust retry/verification settings, or set coordination parameters.",
+        "summary": "Edit a task's properties: project_id, title, description, priority, task_type, status, max_retries, verification_type, profile_id, integration_mode, skip_verification, intelligence_class, affinity_agent_id, affinity_reason, or workspace_mode. Use this to move a task to a different project, rename tasks, change priority, override status (admin), assign a profile, adjust retry/verification settings, or set coordination parameters.",
+        "description": "Edit a task's properties: project_id, title, description, priority, task_type, status, max_retries, verification_type, profile_id, integration_mode, skip_verification, intelligence_class, affinity_agent_id, affinity_reason, or workspace_mode. Use this to move a task to a different project, rename tasks, change priority, override status (admin), assign a profile, adjust retry/verification settings, or set coordination parameters.",
         "operationId": "edit_task",
         "requestBody": {
           "content": {
@@ -10493,53 +10352,6 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/TaskControlResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Command error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    }
-                  },
-                  "type": "object"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/task/reject-plan": {
-      "post": {
-        "tags": [
-          "task"
-        ],
-        "summary": "Reject a plan for a task in AWAITING_PLAN_APPROVAL status with feedback. Reopens the task so the agent can revise the plan.",
-        "description": "Reject a plan for a task in AWAITING_PLAN_APPROVAL status with feedback. Reopens the task so the agent can revise the plan.",
-        "operationId": "reject_plan",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RejectPlanRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RejectPlanResponse"
                 }
               }
             }
@@ -12480,84 +12292,6 @@
         "type": "object",
         "title": "AppendNoteResponse"
       },
-      "ApprovePlanRequest": {
-        "properties": {
-          "task_id": {
-            "type": "string",
-            "title": "Task Id",
-            "description": "Task ID whose plan to approve"
-          }
-        },
-        "type": "object",
-        "required": [
-          "task_id"
-        ],
-        "title": "ApprovePlanRequest"
-      },
-      "ApprovePlanResponse": {
-        "properties": {
-          "approved": {
-            "type": "string",
-            "title": "Approved"
-          },
-          "title": {
-            "type": "string",
-            "title": "Title"
-          },
-          "subtask_count": {
-            "type": "integer",
-            "title": "Subtask Count",
-            "default": 0
-          },
-          "subtasks": {
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "type": "array",
-            "title": "Subtasks",
-            "default": []
-          }
-        },
-        "type": "object",
-        "required": [
-          "approved",
-          "title"
-        ],
-        "title": "ApprovePlanResponse"
-      },
-      "ApproveTaskRequest": {
-        "properties": {
-          "task_id": {
-            "type": "string",
-            "title": "Task Id",
-            "description": "Task ID to approve"
-          }
-        },
-        "type": "object",
-        "required": [
-          "task_id"
-        ],
-        "title": "ApproveTaskRequest"
-      },
-      "ApproveTaskResponse": {
-        "properties": {
-          "approved": {
-            "type": "string",
-            "title": "Approved"
-          },
-          "title": {
-            "type": "string",
-            "title": "Title"
-          }
-        },
-        "type": "object",
-        "required": [
-          "approved",
-          "title"
-        ],
-        "title": "ApproveTaskResponse"
-      },
       "ArchiveSettingsRequest": {
         "properties": {},
         "type": "object",
@@ -14413,11 +14147,17 @@
             "description": "Priority (lower = higher priority, default 100)",
             "default": 100
           },
-          "requires_approval": {
-            "type": "boolean",
-            "title": "Requires Approval",
-            "description": "If true, agent work creates a PR instead of auto-merging. Human must approve/merge the PR.",
-            "default": false
+          "integration_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Integration Mode",
+            "description": "Integration-policy override: 'pull_request' pushes the task branch and opens a PR (review pipeline owns the merge); 'direct' merges into the default branch on completion. Omit to inherit the project/system policy."
           },
           "task_type": {
             "anyOf": [
@@ -14479,12 +14219,6 @@
             ],
             "title": "Attachments",
             "description": "List of absolute file paths to images or files that the agent should have access to when working on this task. These are typically paths to Discord attachment images that were downloaded locally. The agent will be told to read these files using the Read tool."
-          },
-          "auto_approve_plan": {
-            "type": "boolean",
-            "title": "Auto Approve Plan",
-            "description": "If true, any plan this task generates will be automatically approved without waiting for human review.",
-            "default": false
           },
           "skip_verification": {
             "type": "boolean",
@@ -14623,10 +14357,16 @@
             "type": "string",
             "title": "Project Id"
           },
-          "requires_approval": {
-            "type": "boolean",
-            "title": "Requires Approval",
-            "default": false
+          "integration_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Integration Mode"
           },
           "task_type": {
             "anyOf": [
@@ -14685,11 +14425,6 @@
               }
             ],
             "title": "Attachments"
-          },
-          "auto_approve_plan": {
-            "type": "boolean",
-            "title": "Auto Approve Plan",
-            "default": false
           },
           "skip_verification": {
             "type": "boolean",
@@ -14903,48 +14638,6 @@
           "deleted"
         ],
         "title": "DeleteNoteResponse"
-      },
-      "DeletePlanRequest": {
-        "properties": {
-          "task_id": {
-            "type": "string",
-            "title": "Task Id",
-            "description": "Task ID whose plan to delete"
-          }
-        },
-        "type": "object",
-        "required": [
-          "task_id"
-        ],
-        "title": "DeletePlanRequest"
-      },
-      "DeletePlanResponse": {
-        "properties": {
-          "deleted": {
-            "type": "string",
-            "title": "Deleted"
-          },
-          "title": {
-            "type": "string",
-            "title": "Title"
-          },
-          "status": {
-            "type": "string",
-            "title": "Status",
-            "default": "COMPLETED"
-          },
-          "draft_subtasks_deleted": {
-            "type": "integer",
-            "title": "Draft Subtasks Deleted",
-            "default": 0
-          }
-        },
-        "type": "object",
-        "required": [
-          "deleted",
-          "title"
-        ],
-        "title": "DeletePlanResponse"
       },
       "DeletePlaybookRequest": {
         "properties": {
@@ -16537,17 +16230,17 @@
             "title": "Intelligence Class",
             "description": "Intelligence class id; change only while unassigned. Null clears it."
           },
-          "auto_approve_plan": {
+          "integration_mode": {
             "anyOf": [
               {
-                "type": "boolean"
+                "type": "string"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Auto Approve Plan",
-            "description": "If true, any plan this task generates will be automatically approved without human review (optional)"
+            "title": "Integration Mode",
+            "description": "Integration-policy override ('direct' | 'pull_request'). Null clears the override so the task inherits the project/system policy (optional)"
           },
           "skip_verification": {
             "anyOf": [
@@ -19403,10 +19096,38 @@
             "title": "Max Retries",
             "default": 3
           },
-          "requires_approval": {
-            "type": "boolean",
-            "title": "Requires Approval",
-            "default": false
+          "integration_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Integration Mode"
+          },
+          "effective_integration_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective Integration Mode"
+          },
+          "integration_mode_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Integration Mode Source"
           },
           "is_blocked": {
             "type": "boolean",
@@ -19461,11 +19182,6 @@
               }
             ],
             "title": "Intelligence Class"
-          },
-          "auto_approve_plan": {
-            "type": "boolean",
-            "title": "Auto Approve Plan",
-            "default": false
           },
           "skip_verification": {
             "type": "boolean",
@@ -25985,59 +25701,6 @@
         "title": "RecoverWorkflowResponse",
         "description": "Shape mirrors OrphanWorkflowRecovery.recover_workflow output."
       },
-      "RejectPlanRequest": {
-        "properties": {
-          "task_id": {
-            "type": "string",
-            "title": "Task Id",
-            "description": "Task ID whose plan to reject"
-          },
-          "feedback": {
-            "type": "string",
-            "title": "Feedback",
-            "description": "Feedback describing what changes are needed in the plan"
-          }
-        },
-        "type": "object",
-        "required": [
-          "task_id",
-          "feedback"
-        ],
-        "title": "RejectPlanRequest"
-      },
-      "RejectPlanResponse": {
-        "properties": {
-          "rejected": {
-            "type": "string",
-            "title": "Rejected"
-          },
-          "title": {
-            "type": "string",
-            "title": "Title"
-          },
-          "status": {
-            "type": "string",
-            "title": "Status",
-            "default": "READY"
-          },
-          "feedback_added": {
-            "type": "boolean",
-            "title": "Feedback Added",
-            "default": false
-          },
-          "draft_subtasks_deleted": {
-            "type": "integer",
-            "title": "Draft Subtasks Deleted",
-            "default": 0
-          }
-        },
-        "type": "object",
-        "required": [
-          "rejected",
-          "title"
-        ],
-        "title": "RejectPlanResponse"
-      },
       "ReleaseProjectConstraintRequest": {
         "properties": {
           "project_id": {
@@ -26468,11 +26131,6 @@
           "feedback_added": {
             "type": "boolean",
             "title": "Feedback Added",
-            "default": false
-          },
-          "requires_approval": {
-            "type": "boolean",
-            "title": "Requires Approval",
             "default": false
           }
         },
@@ -30233,10 +29891,38 @@
             "title": "Max Retries",
             "default": 3
           },
-          "requires_approval": {
-            "type": "boolean",
-            "title": "Requires Approval",
-            "default": false
+          "integration_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Integration Mode"
+          },
+          "effective_integration_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective Integration Mode"
+          },
+          "integration_mode_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Integration Mode Source"
           },
           "is_blocked": {
             "type": "boolean",
@@ -30291,11 +29977,6 @@
               }
             ],
             "title": "Intelligence Class"
-          },
-          "auto_approve_plan": {
-            "type": "boolean",
-            "title": "Auto Approve Plan",
-            "default": false
           },
           "skip_verification": {
             "type": "boolean",
@@ -31059,10 +30740,38 @@
             "title": "Max Retries",
             "default": 3
           },
-          "requires_approval": {
-            "type": "boolean",
-            "title": "Requires Approval",
-            "default": false
+          "integration_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Integration Mode"
+          },
+          "effective_integration_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective Integration Mode"
+          },
+          "integration_mode_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Integration Mode Source"
           },
           "is_blocked": {
             "type": "boolean",
@@ -31117,11 +30826,6 @@
               }
             ],
             "title": "Intelligence Class"
-          },
-          "auto_approve_plan": {
-            "type": "boolean",
-            "title": "Auto Approve Plan",
-            "default": false
           },
           "skip_verification": {
             "type": "boolean",
@@ -31335,10 +31039,38 @@
             "title": "Max Retries",
             "default": 3
           },
-          "requires_approval": {
-            "type": "boolean",
-            "title": "Requires Approval",
-            "default": false
+          "integration_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Integration Mode"
+          },
+          "effective_integration_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective Integration Mode"
+          },
+          "integration_mode_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Integration Mode Source"
           },
           "is_blocked": {
             "type": "boolean",
@@ -31393,11 +31125,6 @@
               }
             ],
             "title": "Intelligence Class"
-          },
-          "auto_approve_plan": {
-            "type": "boolean",
-            "title": "Auto Approve Plan",
-            "default": false
           },
           "skip_verification": {
             "type": "boolean",

@@ -29,7 +29,7 @@ class RunPlaybookRequest:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.run_playbook_request_event_type_0 import RunPlaybookRequestEventType0
+        from ..models.run_playbook_request_event_type_0 import RunPlaybookRequestEventType0  # noqa: PLC0415
 
         playbook_id = self.playbook_id
 
@@ -55,7 +55,7 @@ class RunPlaybookRequest:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.run_playbook_request_event_type_0 import RunPlaybookRequestEventType0
+        from ..models.run_playbook_request_event_type_0 import RunPlaybookRequestEventType0  # noqa: PLC0415
 
         d = dict(src_dict)
         playbook_id = d.pop("playbook_id")

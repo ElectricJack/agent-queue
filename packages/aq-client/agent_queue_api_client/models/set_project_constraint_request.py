@@ -41,7 +41,7 @@ class SetProjectConstraintRequest:
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.set_project_constraint_request_max_agents_by_type_type_0 import (
-            SetProjectConstraintRequestMaxAgentsByTypeType0,
+            SetProjectConstraintRequestMaxAgentsByTypeType0,  # noqa: PLC0415
         )
 
         project_id = self.project_id
@@ -93,7 +93,7 @@ class SetProjectConstraintRequest:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.set_project_constraint_request_max_agents_by_type_type_0 import (
-            SetProjectConstraintRequestMaxAgentsByTypeType0,
+            SetProjectConstraintRequestMaxAgentsByTypeType0,  # noqa: PLC0415
         )
 
         d = dict(src_dict)

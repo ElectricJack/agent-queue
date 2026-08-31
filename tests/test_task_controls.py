@@ -75,8 +75,7 @@ async def test_ready_pause_persists_reload_without_affecting_peer_or_artifacts(e
 
 
 @pytest.mark.parametrize("prior", [
-    TaskStatus.DEFINED, TaskStatus.READY, TaskStatus.BLOCKED,
-    TaskStatus.AWAITING_APPROVAL, TaskStatus.AWAITING_PLAN_APPROVAL, TaskStatus.WAITING_INPUT,
+    TaskStatus.DEFINED, TaskStatus.READY, TaskStatus.BLOCKED, TaskStatus.WAITING_INPUT,
 ])
 async def test_resume_restores_state_without_approving_or_resolving_gate(env, prior):
     await env.db.transition_task("t", prior, force=True)
@@ -397,9 +396,9 @@ async def test_pause_does_not_release_workspace_during_inflight_completion(env, 
     assert "COMPLETED" in paused.result().get("error", "")
 
 
-async def test_pausing_unapproved_container_does_not_release_its_children(env):
+async def test_pausing_unreleased_container_does_not_release_its_children(env):
     from src.models import DepType
-    await env.db.transition_task("t", TaskStatus.AWAITING_PLAN_APPROVAL, force=True)
+    await env.db.transition_task("t", TaskStatus.DEFINED, force=True)
     await env.db.add_dependency("peer", "t", dep_type=DepType.PARENT_CHILD.value)
     assert (await env.db.get_task("peer")).is_blocked
     await pause(env)

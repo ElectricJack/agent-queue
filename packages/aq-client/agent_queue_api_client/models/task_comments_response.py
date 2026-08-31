@@ -61,7 +61,7 @@ class TaskCommentsResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.task_comment import TaskComment
+        from ..models.task_comment import TaskComment  # noqa: PLC0415
 
         d = dict(src_dict)
         total = d.pop("total")

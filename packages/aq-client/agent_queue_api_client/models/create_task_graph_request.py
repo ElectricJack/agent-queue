@@ -39,7 +39,7 @@ class CreateTaskGraphRequest:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.create_task_graph_request_graph_type_0 import CreateTaskGraphRequestGraphType0
+        from ..models.create_task_graph_request_graph_type_0 import CreateTaskGraphRequestGraphType0  # noqa: PLC0415
 
         profile_id: None | str | Unset
         if isinstance(self.profile_id, Unset):
@@ -103,7 +103,7 @@ class CreateTaskGraphRequest:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.create_task_graph_request_graph_type_0 import CreateTaskGraphRequestGraphType0
+        from ..models.create_task_graph_request_graph_type_0 import CreateTaskGraphRequestGraphType0  # noqa: PLC0415
 
         d = dict(src_dict)
 

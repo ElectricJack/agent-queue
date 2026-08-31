@@ -77,7 +77,7 @@ class ListTasksResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.task_detail import TaskDetail
+        from ..models.task_detail import TaskDetail  # noqa: PLC0415
 
         d = dict(src_dict)
         display_mode = d.pop("display_mode", UNSET)

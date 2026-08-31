@@ -71,10 +71,10 @@ class ListActiveTasksAllProjectsResponse:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.list_active_tasks_all_projects_response_by_project import (
-            ListActiveTasksAllProjectsResponseByProject,
+            ListActiveTasksAllProjectsResponseByProject,  # noqa: PLC0415
         )
         from ..models.list_active_tasks_all_projects_response_tasks_item import (
-            ListActiveTasksAllProjectsResponseTasksItem,
+            ListActiveTasksAllProjectsResponseTasksItem,  # noqa: PLC0415
         )
 
         d = dict(src_dict)
