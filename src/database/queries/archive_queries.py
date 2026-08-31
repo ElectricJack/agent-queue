@@ -153,6 +153,16 @@ class ArchiveQueryMixin:
             )
         )
 
+        # Legacy allocation could reuse an archived ID in another project.
+        # Never drop the active identity or overwrite that archive's timestamps.
+        archived_project_id = (await conn.execute(
+            select(archived_tasks.c.project_id).where(archived_tasks.c.id == task_id)
+        )).scalar_one()
+        if archived_project_id != task.project_id:
+            from src.database.queries.hierarchy_queries import HierarchyError
+
+            raise HierarchyError("archive_identity_conflict", task_id)
+
         # Copy original timestamps
         result = await conn.execute(
             select(tasks.c.created_at, tasks.c.updated_at).where(tasks.c.id == task_id)
@@ -299,9 +309,10 @@ class ArchiveQueryMixin:
         """Permanently delete an archived task. Returns *True* if deleted."""
         async with self._engine.begin() as conn:
             result = await conn.execute(
-                select(archived_tasks.c.id).where(archived_tasks.c.id == task_id)
+                select(archived_tasks.c.project_id).where(archived_tasks.c.id == task_id)
             )
-            if not result.fetchone():
+            archived_project_id = result.scalar_one_or_none()
+            if archived_project_id is None:
                 return False
             await conn.execute(
                 delete(task_completion_records).where(
@@ -315,7 +326,10 @@ class ArchiveQueryMixin:
             await conn.execute(
                 delete(task_comments).where(
                     task_comments.c.task_id == task_id,
-                    ~exists(select(tasks.c.id).where(tasks.c.id == task_id)),
+                    task_comments.c.project_id == archived_project_id,
+                    ~exists(select(tasks.c.id).where(
+                        tasks.c.id == task_id, tasks.c.project_id == archived_project_id,
+                    )),
                 )
             )
         return True

@@ -333,6 +333,22 @@ class TaskQueryMixin:
         values = self._coerce_task_values(kwargs)
         values["updated_at"] = time.time()
         async with self._engine.begin() as conn:
+            comment_source_project = None
+            if "project_id" in kwargs:
+                # Serialize moves with comment append and task deletion on both
+                # SQLite and PostgreSQL before reading the old ownership.
+                await conn.execute(update(tasks).where(tasks.c.id == task_id).values(id=tasks.c.id))
+                comment_source_project = (await conn.execute(
+                    select(tasks.c.project_id).where(tasks.c.id == task_id)
+                )).scalar_one_or_none()
+                if comment_source_project and comment_source_project != values["project_id"]:
+                    archived_project = (await conn.execute(
+                        select(archived_tasks.c.project_id).where(archived_tasks.c.id == task_id)
+                    )).scalar_one_or_none()
+                    if archived_project in {comment_source_project, values["project_id"]}:
+                        raise ValueError(
+                            "Cannot move task: its ID is archived in the source or destination project."
+                        )
             stmt = update(tasks).where(tasks.c.id == task_id)
             lifecycle = {"status", "resume_after", "assigned_agent_id", "retry_count", "claim_epoch"}
             if lifecycle & kwargs.keys():
@@ -344,6 +360,13 @@ class TaskQueryMixin:
                 ))).scalar_one_or_none()
                 if paused:
                     raise ManualPauseActive(f"Task {task_id} is manually paused; use resume_task.")
+            if result.rowcount == 1 and comment_source_project is not None:
+                # Unknown legacy ownership and another project's archived
+                # history must never be relabeled by an active task move.
+                await conn.execute(update(task_comments).where(
+                    task_comments.c.task_id == task_id,
+                    task_comments.c.project_id == comment_source_project,
+                ).values(project_id=values["project_id"]))
             flipped: set[str] = set()
             if PROJECTION_INPUT_COLUMNS & kwargs.keys():
                 flipped = await self.recompute_blocked({task_id}, conn=conn)
@@ -1027,6 +1050,9 @@ class TaskQueryMixin:
         for a task that no longer exists.
         """
         await self._assert_pause_cleanup_complete(task_id, conn=conn)
+        comment_project_id = (await conn.execute(
+            select(tasks.c.project_id).where(tasks.c.id == task_id)
+        )).scalar_one_or_none()
         await conn.execute(delete(task_results).where(task_results.c.task_id == task_id))
         if not preserve_completion:
             await conn.execute(
@@ -1102,7 +1128,10 @@ class TaskQueryMixin:
         # The parent DELETE waits for an accepted comment's UPDATE lock.
         # Cleanup afterwards cannot miss a concurrently committed append.
         if not preserve_comments:
-            await conn.execute(delete(task_comments).where(task_comments.c.task_id == task_id))
+            await conn.execute(delete(task_comments).where(
+                task_comments.c.task_id == task_id,
+                task_comments.c.project_id == comment_project_id,
+            ))
 
     async def get_task_updated_at(self, task_id: str) -> float | None:
         """Return the ``updated_at`` timestamp for a task, or *None*."""

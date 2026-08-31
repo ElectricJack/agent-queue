@@ -21,15 +21,7 @@ class TaskFindingsConflict(Exception):
 
 
 def _write_predicates(task_id: str, fence: dict | None):
-    predicates = [
-        tasks.c.id == task_id,
-        ~select(archived_tasks.c.id)
-        .where(
-            archived_tasks.c.id == task_id,
-            archived_tasks.c.project_id != tasks.c.project_id,
-        )
-        .exists(),
-    ]
+    predicates = [tasks.c.id == task_id]
     if fence:
         predicates.append(tasks.c.project_id == fence["project_id"])
         if fence.get("session_id"):
@@ -120,7 +112,10 @@ class TaskCommentQueriesMixin:
             # This UPDATE locks the task, fences a reclaimed claim, and shares
             # the insert transaction so deletion cannot strand a comment.
             await self._write_task_findings(conn, task_id, {}, fence=fence)
-            await conn.execute(insert(task_comments).values(**comment))
+            project_id = (await conn.execute(
+                select(tasks.c.project_id).where(tasks.c.id == task_id)
+            )).scalar_one()
+            await conn.execute(insert(task_comments).values(**comment, project_id=project_id))
         return comment
 
     async def list_task_comments(
@@ -133,20 +128,23 @@ class TaskCommentQueriesMixin:
     ) -> dict:
         if type(limit) is not int or not 1 <= limit <= 200 or type(offset) is not int or offset < 0:
             raise ValueError("limit must be 1..200 and offset must be nonnegative")
-        predicates = [task_comments.c.task_id == task_id]
-        if project_id is not None:
-            # Resolve identity again in SQL, not just at command preflight:
-            # a deleted ID may be recreated in another project meanwhile.
-            active = select(tasks.c.id).where(tasks.c.id == task_id)
-            archived = select(archived_tasks.c.id).where(archived_tasks.c.id == task_id)
-            predicates.extend(
-                [
-                    ~active.where(tasks.c.project_id != project_id).exists(),
-                    ~archived.where(archived_tasks.c.project_id != project_id).exists(),
-                    active.where(tasks.c.project_id == project_id).exists()
-                    | archived.where(archived_tasks.c.project_id == project_id).exists(),
-                ]
-            )
+        # Prefer the current task, falling back to its archive only when no
+        # active task exists. Ownership is stored per comment, so legacy ID
+        # reuse cannot merge two projects' history. Unknown ownership stays hidden.
+        active = select(tasks.c.id).where(tasks.c.id == task_id)
+        archived = select(archived_tasks.c.id).where(archived_tasks.c.id == task_id)
+        identity = project_id if project_id is not None else func.coalesce(
+            select(tasks.c.project_id).where(tasks.c.id == task_id).scalar_subquery(),
+            select(archived_tasks.c.project_id)
+            .where(archived_tasks.c.id == task_id).scalar_subquery(),
+        )
+        predicates = [
+            task_comments.c.task_id == task_id,
+            task_comments.c.project_id == identity,
+            ~active.where(tasks.c.project_id != identity).exists(),
+            active.where(tasks.c.project_id == identity).exists()
+            | archived.where(archived_tasks.c.project_id == identity).exists(),
+        ]
         async with self._engine.connect() as conn:
             total = (
                 await conn.execute(
@@ -159,7 +157,7 @@ class TaskCommentQueriesMixin:
             ).scalar_one()
             rows = (
                 await conn.execute(
-                    select(task_comments)
+                    select(*(c for c in task_comments.c if c.name != "project_id"))
                     .where(
                         *predicates,
                     )

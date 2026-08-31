@@ -209,6 +209,8 @@ task_comments = Table(
     # Stable identity spans active and archived tasks. Hard-delete paths
     # clean up explicitly after deleting the parent to serialize with append.
     Column("task_id", Text, nullable=False),
+    # NULL preserves legacy comments whose project cannot be proven.
+    Column("project_id", Text, nullable=True),
     Column("body", Text, nullable=False),
     Column("author_kind", Text, nullable=False),
     Column("author_id", Text, nullable=False),
@@ -216,6 +218,7 @@ task_comments = Table(
     CheckConstraint("author_kind IN ('user','agent','supervisor')", name="ck_task_comment_author_kind"),
     CheckConstraint("length(body) BETWEEN 1 AND 16000", name="ck_task_comment_body_length"),
     Index("idx_task_comments_task_created", "task_id", "created_at", "id"),
+    Index("idx_task_comments_project_created", "task_id", "project_id", "created_at", "id"),
 )
 
 task_metadata = Table(

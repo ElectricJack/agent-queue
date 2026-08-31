@@ -27,18 +27,8 @@ class TaskCommentCommandsMixin:
                 return {"error": "out of scope: task_id mismatch"}
         return None
 
-    async def _task_findings_identity_error(self, task) -> dict | None:
-        # Older name allocation allowed active/archive ID collisions. New
-        # history must never cross that pre-existing project boundary.
-        archived = await self.db.get_archived_task(task.id)
-        if archived and archived["project_id"] != task.project_id:
-            return {"error": "Task identity conflicts with an archived task in another project"}
-        return None
-
     async def _task_findings_write_fence(self, task, args) -> tuple[dict | None, dict | None]:
-        error = self._task_findings_scope_error(task) or await self._task_findings_identity_error(
-            task
-        )
+        error = self._task_findings_scope_error(task)
         if error:
             return None, error
         scope = self._current_scope or {}
@@ -148,9 +138,7 @@ class TaskCommentCommandsMixin:
             if archived is None:
                 return {"error": f"Task '{task_id}' not found"}
             task = SimpleNamespace(id=task_id, project_id=archived["project_id"])
-        error = self._task_findings_scope_error(task) or await self._task_findings_identity_error(
-            task
-        )
+        error = self._task_findings_scope_error(task)
         if error:
             return error
         return await self.db.list_task_comments(

@@ -406,31 +406,67 @@ async def test_generated_task_ids_reserve_archived_roots_and_children(env, monke
         assert await task_names.child_task_id(conn, "peer") == ("peer.2", False)
 
 
-async def test_existing_cross_project_active_archive_collision_fails_closed(env):
+async def seed_cross_project_collision(env):
     from sqlalchemy import insert
     from src.database.tables import tasks
 
+    await env.db.create_project(Project(id="comment-archive", name="Comment archive"))
+    await env.db.update_task("peer", project_id="comment-archive")
+    original = await run(env, "task_comment", {"task_id": "peer", "body": "Archived project secret"})
     await env.db.update_task("peer", status=TaskStatus.COMPLETED)
     await env.db.archive_task("peer")
-    # Simulate an existing collision from before archived IDs were reserved.
+    # Legacy allocation allowed a different project to reuse archived IDs.
     async with env.db._engine.begin() as conn:
-        await conn.execute(
-            insert(tasks).values(
-                id="peer",
-                project_id="other",
-                title="Collision",
-                description="",
-                status="READY",
-                created_at=1,
-                updated_at=1,
-            )
-        )
-    for command, extra in (
-        ("task_comments", {}),
-        ("task_comment", {"body": "Must not cross project"}),
-        ("task_set", {"description": "No"}),
-    ):
-        assert "error" in await run(env, command, {"task_id": "peer", **extra})
+        await conn.execute(insert(tasks).values(
+            id="peer", project_id="other", title="Collision", description="Active requirements",
+            status="READY", created_at=time.time(), updated_at=time.time(),
+        ))
+    return original["comment"]
+
+
+async def test_existing_collision_supports_comments_and_description_without_leaking(env):
+    original = await seed_cross_project_collision(env)
+    page = await run(env, "task_comments", {"task_id": "peer"})
+    assert page == {"comments": [], "total": 0, "limit": 50, "offset": 0}
+    added = await run(env, "task_comment", {"task_id": "peer", "body": "Active project feedback"})
+    assert "error" not in added, added
+    updated = await run(env, "task_set", {
+        "task_id": "peer", "description": "Corrected requirements",
+        "expected_description": "Active requirements",
+    })
+    assert "error" not in updated, updated
+    page = await run(env, "task_comments", {"task_id": "peer"})
+    assert page["comments"] == [added["comment"]]
+    assert page["total"] == 1
+    assert "error" in await run(env, "task_comments", {"task_id": "peer"}, scope=env.scope)
+    assert (await env.db.get_archived_task("peer"))["description"] == "Original requirements"
+    from sqlalchemy import select
+    from src.database.tables import task_comments
+    async with env.db._engine.connect() as conn:
+        assert (await conn.execute(select(task_comments.c.body).where(
+            task_comments.c.id == original["id"]))).scalar_one() == "Archived project secret"
+
+
+@pytest.mark.parametrize("operation", ["active", "archive", "active_project", "archive_project"])
+async def test_collision_cleanup_preserves_other_projects_comments(env, operation):
+    original = await seed_cross_project_collision(env)
+    result = await run(env, "task_comment", {"task_id": "peer", "body": "Active feedback"})
+    assert "error" not in result, result
+    active = result["comment"]
+    if operation == "active":
+        await env.db.delete_task("peer")
+    elif operation == "archive":
+        await env.db.delete_archived_task("peer")
+    elif operation == "active_project":
+        await env.db.delete_project("other")
+    else:
+        await env.db.delete_project("comment-archive")
+    from sqlalchemy import select
+    from src.database.tables import task_comments
+    async with env.db._engine.connect() as conn:
+        remaining = (await conn.execute(select(task_comments.c.id).where(
+            task_comments.c.task_id == "peer"))).scalars().all()
+    assert remaining == [original["id"] if operation in {"active", "active_project"} else active["id"]]
 
 
 @pytest.mark.parametrize("operation", ["delete", "archive"])
@@ -549,3 +585,86 @@ async def test_project_delete_serializes_task_creation_and_comment_cleanup(env):
         assert (await env.db.list_task_comments("late-created"))["comments"] == []
     finally:
         event.remove(env.db._engine.sync_engine, "after_cursor_execute", after_execute)
+
+
+async def test_collision_archive_refuses_to_discard_active_identity(env):
+    from src.database.queries.hierarchy_queries import HierarchyError
+
+    await seed_cross_project_collision(env)
+    added = await run(env, "task_comment", {"task_id": "peer", "body": "Keep active history"})
+    assert "error" not in added, added
+    await env.db.update_task("peer", status=TaskStatus.COMPLETED)
+    before = await env.db.get_archived_task("peer")
+    with pytest.raises(HierarchyError, match="archive_identity_conflict"):
+        await env.db.archive_task("peer")
+    assert (await env.db.get_task("peer")).project_id == "other"
+    assert await env.db.get_archived_task("peer") == before
+    assert (await run(env, "task_comments", {"task_id": "peer"}))["comments"] == [added["comment"]]
+
+
+async def test_unknown_legacy_comments_stay_hidden_after_collision_removed(env):
+    from sqlalchemy import insert
+    from src.database.tables import task_comments
+
+    await seed_cross_project_collision(env)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(insert(task_comments).values(
+            id="unknown-history", task_id="peer", project_id=None, body="Uncertain owner",
+            author_kind="user", author_id="local", created_at=1,
+        ))
+    assert (await env.db.list_task_comments("peer"))["comments"] == []
+    await env.db.delete_archived_task("peer")
+    assert (await env.db.list_task_comments("peer", project_id="other"))["comments"] == []
+    from sqlalchemy import select
+    async with env.db._engine.connect() as conn:
+        assert (await conn.execute(select(task_comments.c.body).where(
+            task_comments.c.id == "unknown-history"))).scalar_one() == "Uncertain owner"
+
+
+async def test_comments_follow_authorized_project_move(env):
+    await env.db.create_project(Project(id="comment-source", name="Source"))
+    await env.db.update_task("peer", project_id="comment-source")
+    first = await run(env, "task_comment", {"task_id": "peer", "body": "Keep on move"})
+    moved = await run(env, "edit_task", {"task_id": "peer", "project_id": "other"})
+    assert "error" not in moved, moved
+    assert (await run(env, "task_comments", {"task_id": "peer"}))["comments"] == [first["comment"]]
+    assert (await env.db.list_task_comments("peer", project_id="comment-source"))["total"] == 0
+    await env.db.delete_project("comment-source")
+    assert (await run(env, "task_comments", {"task_id": "peer"}))["comments"] == [first["comment"]]
+
+
+async def test_collision_move_keeps_archive_and_unknown_comments_unchanged(env):
+    from sqlalchemy import insert, select
+    from src.database.tables import task_comments
+
+    old = await seed_cross_project_collision(env)
+    active = await run(env, "task_comment", {"task_id": "peer", "body": "Move active only"})
+    async with env.db._engine.begin() as conn:
+        await conn.execute(insert(task_comments).values(
+            id="unknown", task_id="peer", body="Unknown", author_kind="user", author_id="local", created_at=1,
+        ))
+    moved = await run(env, "edit_task", {"task_id": "peer", "project_id": "p"})
+    assert "error" not in moved, moved
+    assert (await run(env, "task_comments", {"task_id": "peer"}))["comments"] == [active["comment"]]
+    async with env.db._engine.connect() as conn:
+        ownership = dict((await conn.execute(select(task_comments.c.id, task_comments.c.project_id))).all())
+    assert ownership == {old["id"]: "comment-archive", active["comment"]["id"]: "p", "unknown": None}
+
+
+@pytest.mark.parametrize("archived_owner", ["source", "destination"])
+async def test_project_move_refuses_merging_archived_comment_identity(env, archived_owner):
+    if archived_owner == "source":
+        old = await run(env, "task_comment", {"task_id": "peer", "body": "Shared snapshot"})
+        await env.db.update_task("peer", status=TaskStatus.COMPLETED)
+        await env.db.archive_task("peer")
+        await env.db.create_task(Task(id="peer", project_id="p", title="Restored", description=""))
+        destination = "other"
+    else:
+        await seed_cross_project_collision(env)
+        old = await run(env, "task_comment", {"task_id": "peer", "body": "Active feedback"})
+        destination = "comment-archive"
+    before = await env.db.get_task("peer")
+    moved = await run(env, "edit_task", {"task_id": "peer", "project_id": destination})
+    assert "error" in moved, moved
+    assert (await env.db.get_task("peer")).project_id == before.project_id
+    assert (await run(env, "task_comments", {"task_id": "peer"}))["comments"] == [old["comment"]]

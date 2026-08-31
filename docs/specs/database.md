@@ -112,18 +112,21 @@ Records successful Discord delivery per AQ message. The message ID is the primar
 
 ### Table: `task_comments`
 
-Append-only authored task feedback. The task ID is a logical reference so comments survive archiving and restoration; permanent task or project deletion removes them. Author identity comes from the authenticated request scope. Bodies must contain 1–16000 characters, and author_kind is user, agent or supervisor.
+Append-only authored task feedback. The task ID plus project ID is a logical reference so comments survive archiving and restoration; permanent task or project deletion removes only that project's comments. Nullable project IDs preserve legacy comments with ambiguous ownership; these rows remain hidden instead of being attributed to either project. Author identity comes from the authenticated request scope. Bodies must contain 1–16000 characters, and author_kind is user, agent or supervisor.
 
 | Column | Type | Constraints |
 |---|---|---|
 | `id` | TEXT | PRIMARY KEY |
 | `task_id` | TEXT | NOT NULL |
+| `project_id` | TEXT | nullable for unresolved legacy ownership; internal only |
 | `body` | TEXT | NOT NULL |
 | `author_kind` | TEXT | NOT NULL |
 | `author_id` | TEXT | NOT NULL |
 | `created_at` | FLOAT | NOT NULL |
 
-Indexes: `idx_task_comments_task_created` (`task_id`, `created_at`, `id`).
+Indexes: `idx_task_comments_task_created` (`task_id`, `created_at`, `id`), `idx_task_comments_project_created` (`task_id`, `project_id`, `created_at`, `id`).
+
+Authorized project moves transfer known active-task comment ownership in the same transaction. Moves that would merge a source or destination archive identity, and archival over a different-project ID, are refused without modifying either history.
 
 ### Table: `projects`
 

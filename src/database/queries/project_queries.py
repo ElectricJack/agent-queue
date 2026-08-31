@@ -9,7 +9,6 @@ from sqlalchemy import delete, insert, select, update
 
 from src.database.tables import (
     chat_analyzer_suggestions,
-    archived_tasks,
     task_comments,
     events,
     project_constraints,
@@ -138,14 +137,7 @@ class ProjectQueryMixin:
             # Delete after active parents so an in-flight append cannot
             # commit between child cleanup and the parent deletion.
             await conn.execute(
-                delete(task_comments).where(
-                    task_comments.c.task_id.in_(task_ids)
-                    | task_comments.c.task_id.in_(
-                        select(archived_tasks.c.id).where(
-                            archived_tasks.c.project_id == project_id,
-                        )
-                    )
-                )
+                delete(task_comments).where(task_comments.c.project_id == project_id)
             )
             await conn.execute(delete(workspaces).where(workspaces.c.project_id == project_id))
             await conn.execute(delete(repos).where(repos.c.project_id == project_id))

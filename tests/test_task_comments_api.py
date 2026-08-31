@@ -167,3 +167,18 @@ async def test_description_http_cas_and_null_validation(api):
         assert not ok, data
         assert (await api.env.db.get_task("t")).description == "Findings"
         assert (await api.env.db.get_task("t")).branch_name is None
+
+
+async def test_collision_http_reads_and_feedback_stay_in_active_project(api):
+    from tests.test_task_comments import seed_cross_project_collision
+
+    await seed_cross_project_collision(api.env)
+    ok, data = await api.post("task_comments", {"task_id": "peer"}, caller="local")
+    assert ok, data
+    assert data["comments"] == [] and data["total"] == 0
+    ok, data = await api.post("task_comment", {"task_id": "peer", "body": "Feedback"}, caller="local")
+    assert ok, data
+    ok, data = await api.post("task_comments", {"task_id": "peer"}, caller="local")
+    assert ok and [c["body"] for c in data["comments"]] == ["Feedback"], data
+    ok, data = await api.post("task_comments", {"task_id": "peer"}, caller="supervisor")
+    assert not ok, data
