@@ -861,7 +861,11 @@ class SessionReconciler:
                         "— skipping", row.id,
                     )
                     continue
-                await self.orchestrator._terminate_pool_session(row, reason="orphaned")
+                await self.orchestrator._terminate_pool_session(
+                    row,
+                    reason="orphaned",
+                    task_status=task.status if task is not None else TaskStatus.READY,
+                )
                 continue
             provider = self._provider_for(row)
             if provider is None:

@@ -57,7 +57,11 @@ class InboxPoller:
         self._task: asyncio.Task | None = None
         self._running = False
         self._history_id: str | None = None
-        self._seen_ids: set[str] = set()
+        # Bounded dedup of processed message ids.  A dict is used as an
+        # insertion-ordered set so the size cap can deterministically evict
+        # the *oldest* ids — slicing a plain set evicted arbitrary ids,
+        # including just-added ones, causing duplicate events (PLG-3).
+        self._seen_ids: dict[str, None] = {}
         self._stats = {
             "polls": 0,
             "emitted_allowlisted": 0,
@@ -156,10 +160,11 @@ class InboxPoller:
                     msg_id,
                 )
                 continue
-            self._seen_ids.add(msg_id)
-            # Cap the set so it doesn't grow unboundedly.
+            self._seen_ids[msg_id] = None
+            # Cap the dedup structure so it doesn't grow unboundedly,
+            # keeping the most recently processed ids (insertion order).
             if len(self._seen_ids) > 10000:
-                self._seen_ids = set(list(self._seen_ids)[-5000:])
+                self._seen_ids = dict.fromkeys(list(self._seen_ids)[-5000:])
 
         if completed:
             self._history_id = new_hid

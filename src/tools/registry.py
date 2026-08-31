@@ -30,6 +30,7 @@ See ``specs/supervisor.md`` for the tool-use loop that drives loading.
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 
@@ -37,6 +38,33 @@ from src.tools.definitions import (
     _ALL_TOOL_DEFINITIONS,
     _TOOL_CATEGORIES,
 )
+
+logger = logging.getLogger(__name__)
+
+# Command names dispatched by a built-in ``CommandHandler._cmd_*`` method.
+# Resolved lazily (and cached) to avoid a circular import at module load.
+_BUILTIN_COMMAND_NAMES: frozenset[str] | None = None
+
+
+def _builtin_command_names() -> frozenset[str]:
+    """Names ``CommandHandler.execute()`` dispatches to a built-in handler.
+
+    A plugin tool with one of these names can never be executed — the
+    built-in wins dispatch — so its definition must not shadow the
+    built-in schema (``docs/specs/tiered-tools.md`` § Invariants: tool
+    names are globally unique).
+    """
+    global _BUILTIN_COMMAND_NAMES
+    if _BUILTIN_COMMAND_NAMES is None:
+        try:
+            from src.commands.handler import CommandHandler
+
+            _BUILTIN_COMMAND_NAMES = frozenset(
+                attr[len("_cmd_") :] for attr in dir(CommandHandler) if attr.startswith("_cmd_")
+            )
+        except Exception:  # pragma: no cover — import failure leaves merge permissive
+            _BUILTIN_COMMAND_NAMES = frozenset()
+    return _BUILTIN_COMMAND_NAMES
 
 
 @dataclass(frozen=True)
@@ -329,12 +357,33 @@ class ToolRegistry:
         """Collect plugin-registered tools (keyed by name).
 
         Plugin tools with ``_category`` are included in category queries.
-        Plugin tools are merged on top of built-in tools (plugin wins on
-        name collision).
+        Plugin tools are merged on top of built-in tools.  A plugin may
+        replace a *static* definition when it is the tool's implementation
+        (e.g. ``memory_search`` from the aq-memory plugin), but it may
+        never shadow a tool that ``CommandHandler`` dispatches to a
+        built-in ``_cmd_*`` handler — the agent would be shown the
+        plugin's schema while the built-in handler executes.  Such
+        collisions are dropped with a warning (PLG-1; tiered-tools.md
+        § "tool names are globally unique").
         """
         if not self._plugin_registry:
             return {}
-        return {t["name"]: t for t in self._plugin_registry.get_all_tool_definitions()}
+        builtin_dispatched = _builtin_command_names()
+        plugin_tools: dict[str, dict] = {}
+        for t in self._plugin_registry.get_all_tool_definitions():
+            name = t.get("name")
+            if not name:
+                continue
+            if name in builtin_dispatched:
+                logger.warning(
+                    "Plugin tool %r (from plugin %r) collides with the built-in "
+                    "command of the same name; ignoring the plugin definition",
+                    name,
+                    t.get("_plugin"),
+                )
+                continue
+            plugin_tools[name] = t
+        return plugin_tools
 
     def _tool_category(self, name: str, tool: dict) -> str | None:
         """Return the category a tool belongs to, or None if core."""

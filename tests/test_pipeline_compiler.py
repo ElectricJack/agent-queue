@@ -1,3 +1,5 @@
+import json
+
 from src.playbooks.pipeline_compiler import compile_pipeline
 
 
@@ -216,19 +218,77 @@ def test_body_without_json_fence_and_with_bad_json_are_rejected():
         assert result.structured_errors[0]["field"] == "body"
 
 
+def _rule(**overrides) -> dict:
+    """A valid multi-rule entry; overrides replace or (value None) drop keys."""
+    rule = {
+        "id": "one",
+        "on": "task.created",
+        "entry": "start",
+        "nodes": {
+            "start": {"command": "list_tasks", "args": {}, "on_success": "done"},
+            "done": {"terminal": True},
+        },
+    }
+    for key, value in overrides.items():
+        if value is None:
+            rule.pop(key, None)
+        else:
+            rule[key] = value
+    return rule
+
+
+def _multi_rule_md(rules: list) -> str:
+    body = json.dumps({"rules": rules}, indent=2)
+    return (
+        "---\n"
+        "id: default-pipeline\n"
+        "kind: pipeline\n"
+        "role: default-pipeline\n"
+        "scope: system\n"
+        "triggers: [task.created]\n"
+        "---\n\n"
+        f"```json\n{body}\n```\n"
+    )
+
+
 def test_multi_rule_errors_are_reported_per_rule():
-    base = VALID.replace(
-        '"entry": "attach_gate",\n  "nodes":',
-        '"rules": [{"id": "one", "on": "task.created", "entry": "attach_gate", "nodes":',
-    ).replace("\n  }\n}\n```", "\n  }}]\n}\n```")
+    """Each per-rule rejection carries the rule-scoped node/field the
+    compiler agent needs to converge on a fix."""
     cases = [
-        base.replace('{"id": "one"', "null", 1),
-        base.replace('"id": "one", ', ""),
-        base.replace('"on": "task.created", ', ""),
-        base.replace('"nodes": {', '"nodes": {}', 1),
-        base.replace('"entry": "attach_gate"', '"entry": "missing"'),
+        # (rules, expected node, expected field)
+        ([_rule(), "bogus"], None, "rules[1]"),
+        ([_rule(id=None)], None, "rules[0].id"),
+        ([_rule(on=None)], "one", "on"),
+        ([_rule(nodes={})], "one", "nodes"),
+        ([_rule(entry="missing")], "one", "entry"),
     ]
-    for markdown in cases:
-        result = compile_pipeline(markdown)
+    for rules, node, field in cases:
+        result = compile_pipeline(_multi_rule_md(rules))
         assert not result.success
-        assert result.structured_errors
+        assert any(
+            e["node"] == node and e["field"] == field for e in result.structured_errors
+        ), (node, field, result.structured_errors)
+
+
+def test_multi_rule_graph_errors_are_prefixed_with_rule_id():
+    """Graph errors inside a rule name the offending node as '<rule>/<node>'."""
+    bad_nodes = {
+        "start": {"command": "list_tasks", "args": {}, "on_success": "nowhere"},
+        "done": {"terminal": True},
+    }
+    result = compile_pipeline(_multi_rule_md([_rule(nodes=bad_nodes)]))
+    assert not result.success
+    assert any(
+        e["node"] == "one/start" and e["field"] == "on_success"
+        for e in result.structured_errors
+    ), result.structured_errors
+
+
+def test_rule_on_values_must_appear_in_frontmatter_triggers():
+    """A rule 'on' event missing from frontmatter triggers is a compile error
+    naming the missing event type."""
+    result = compile_pipeline(_multi_rule_md([_rule(on="task.completed")]))
+    assert not result.success
+    trigger_errs = [e for e in result.structured_errors if e["field"] == "triggers"]
+    assert trigger_errs, result.structured_errors
+    assert "task.completed" in trigger_errs[0]["message"]

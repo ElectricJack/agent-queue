@@ -491,3 +491,317 @@ async def test_transient_get_message_failure_does_not_advance_history_or_seen(tm
     assert poller._history_id == "next-history"
     assert "X" in poller._seen_ids
     assert emitted[0][1]["message_id"] == "X"
+
+
+# ---------------------------------------------------------------------------
+# Allowlist parse-failure paths (coverage plan §plugins items 25-26)
+# ---------------------------------------------------------------------------
+
+
+class TestAllowlistParseFailures:
+    def test_allowlist_survives_corrupt_yaml_without_widening_access(self, tmp_path, caplog):
+        """A corrupted allowlist file keeps the previous in-memory list
+        live (no senders gained, no senders granted) and logs an error."""
+        import logging
+        import os
+
+        f = tmp_path / "allowlist.yaml"
+        _write_allowlist(f, senders=["jack@example.com"])
+        al = Allowlist(f)
+        assert set(al.entries) == {"jack@example.com"}
+
+        f.write_text("allowlist: [unclosed\n", encoding="utf-8")
+        os.utime(f, (time.time() + 10, time.time() + 10))
+
+        with caplog.at_level(logging.ERROR, logger="src.plugins.internal.inbox.allowlist"):
+            entries = al.entries
+
+        assert "parse failed" in caplog.text
+        # No sender gained; the previous list is still what's live.
+        assert set(entries) == {"jack@example.com"}
+        decision = al.classify(
+            from_addr="stranger@evil.org",
+            subject="hi",
+            spf_pass=True,
+            dkim_pass=True,
+            dkim_domain_matches=True,
+        )
+        assert decision.allowlisted is False
+        assert "sender_not_in_allowlist" in decision.reasons
+
+    def test_allowlist_skips_malformed_entries(self, tmp_path, caplog):
+        """Malformed allowlist entries are skipped with warnings and are
+        never treated as allowlisted."""
+        import logging
+
+        f = tmp_path / "allowlist.yaml"
+        f.write_text(
+            "allowlist:\n"
+            "  - just-a-string\n"
+            "  - note: no email key\n"
+            "  - email: not-an-address\n"
+            "  - email: valid@example.com\n",
+            encoding="utf-8",
+        )
+        al = Allowlist(f)
+
+        with caplog.at_level(logging.WARNING, logger="src.plugins.internal.inbox.allowlist"):
+            entries = al.entries
+
+        assert set(entries) == {"valid@example.com"}
+        skip_warnings = [r for r in caplog.records if "skipping" in r.getMessage()]
+        assert len(skip_warnings) == 3
+
+        for sender in ("just-a-string", "not-an-address"):
+            decision = al.classify(
+                from_addr=sender,
+                subject="s",
+                spf_pass=True,
+                dkim_pass=True,
+                dkim_domain_matches=True,
+            )
+            assert decision.allowlisted is False
+
+
+# ---------------------------------------------------------------------------
+# Poller lifecycle (coverage plan §plugins items 27-29 + PLG-3)
+# ---------------------------------------------------------------------------
+
+
+class _ProfileStubGmail:
+    """Minimal Gmail stub whose bootstrap profile call works."""
+
+    _config = type("c", (), {"user_id": "me"})()
+
+    def _ensure_service(self):
+        class _Service:
+            def users(self_s):
+                class _Users:
+                    def getProfile(self_u, userId):
+                        class _Get:
+                            def execute(self_g):
+                                return {"historyId": "0"}
+
+                        return _Get()
+
+                return _Users()
+
+        return _Service()
+
+    def list_new_message_ids(self, *, history_id, query):
+        return [], history_id or "0"
+
+    def get_message(self, msg_id):
+        raise AssertionError("not expected in this test")
+
+    def mark_read(self, msg_id):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_poller_start_stop_is_idempotent_and_cancels_task(tmp_path):
+    """start() twice creates one task; stop() cancels it and a second
+    stop() is a harmless no-op."""
+    from src.plugins.internal.inbox.poller import InboxPoller
+
+    allowlist_path = tmp_path / "allowlist.yaml"
+    _write_allowlist(allowlist_path, senders=[])
+
+    emitted = []
+
+    async def emit(event_type, payload):
+        emitted.append((event_type, payload))
+
+    poller = InboxPoller(
+        project_id="proj",
+        gmail=_ProfileStubGmail(),
+        allowlist=Allowlist(allowlist_path),
+        emit=emit,
+        mark_read_on_emit=False,
+    )
+
+    await poller.start()
+    first_task = poller._task
+    assert first_task is not None
+
+    await poller.start()
+    assert poller._task is first_task, "second start() must not spawn a new task"
+
+    await poller.stop()
+    assert poller._task is None
+    assert poller._running is False
+    assert first_task.done()
+
+    # Second stop() is a no-op and must not raise.
+    await poller.stop()
+    assert poller._task is None
+
+
+@pytest.mark.asyncio
+async def test_poll_failure_is_counted_and_loop_continues(tmp_path, monkeypatch):
+    """A transient Gmail error is counted into stats["errors"] and the
+    loop keeps polling — the next cycle delivers its event."""
+    import asyncio as _asyncio
+
+    from src.plugins.internal.inbox.poller import EVENT_ALLOWLISTED, InboxPoller
+
+    allowlist_path = tmp_path / "allowlist.yaml"
+    _write_allowlist(allowlist_path, senders=["jack@example.com"])
+
+    class FlakyGmail(_ProfileStubGmail):
+        def __init__(self):
+            self.list_calls = 0
+
+        def list_new_message_ids(self, *, history_id, query):
+            self.list_calls += 1
+            if self.list_calls == 1:
+                raise RuntimeError("gmail 500")
+            return ["m1"], "h2"
+
+        def get_message(self, msg_id):
+            return {
+                "threadId": "thr",
+                "internalDate": "0",
+                "payload": {
+                    "headers": [
+                        {"name": "From", "value": "jack@example.com"},
+                        {"name": "Subject", "value": "hello"},
+                        {
+                            "name": "Authentication-Results",
+                            "value": "spf=pass; dkim=pass header.d=example.com",
+                        },
+                    ]
+                },
+            }
+
+    emitted = []
+
+    async def emit(event_type, payload):
+        emitted.append((event_type, payload))
+
+    poller = InboxPoller(
+        project_id="proj",
+        gmail=FlakyGmail(),
+        allowlist=Allowlist(allowlist_path),
+        emit=emit,
+        mark_read_on_emit=False,
+    )
+
+    sleeps = {"count": 0}
+    real_sleep = _asyncio.sleep
+
+    async def fake_sleep(seconds):
+        sleeps["count"] += 1
+        if sleeps["count"] >= 2:
+            poller._running = False
+        await real_sleep(0)
+
+    monkeypatch.setattr("asyncio.sleep", fake_sleep)
+
+    poller._running = True
+    await poller._loop()
+
+    assert poller.stats["errors"] == 1
+    assert poller.stats["polls"] == 2
+    assert len(emitted) == 1
+    assert emitted[0][0] == EVENT_ALLOWLISTED
+    assert emitted[0][1]["message_id"] == "m1"
+
+
+@pytest.mark.asyncio
+async def test_plugin_does_not_start_pollers_when_disabled_or_projectless(monkeypatch):
+    """InboxPlugin.initialize starts nothing (and never touches Gmail
+    credentials) when disabled or when no projects are configured."""
+    from src.plugins.base import PluginContext, TrustLevel
+    from src.plugins.internal.inbox import plugin as inbox_plugin_mod
+    from unittest.mock import AsyncMock, MagicMock
+
+    class ExplodingGmailClient:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("GmailClient must not be constructed")
+
+    monkeypatch.setattr(inbox_plugin_mod, "GmailClient", ExplodingGmailClient)
+
+    def make_ctx(tmp_base, inbox_cfg):
+        config_svc = MagicMock()
+        config_svc.inbox = inbox_cfg
+        config_svc.data_dir = str(tmp_base)
+        db = AsyncMock()
+        bus = MagicMock()
+        bus.emit = AsyncMock()
+        return PluginContext(
+            plugin_name="aq-inbox",
+            install_path=str(tmp_base / "install"),
+            data_path=str(tmp_base / "data"),
+            db=db,
+            bus=bus,
+            command_registry={},
+            tool_registry={},
+            event_type_registry=set(),
+            trust_level=TrustLevel.INTERNAL,
+            services={"config": config_svc},
+        )
+
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp)
+        plugin = inbox_plugin_mod.InboxPlugin()
+        await plugin.initialize(make_ctx(base / "a", {"enabled": False}))
+        assert plugin._pollers == []
+
+        plugin = inbox_plugin_mod.InboxPlugin()
+        await plugin.initialize(make_ctx(base / "b", {"enabled": True, "projects": []}))
+        assert plugin._pollers == []
+
+
+@pytest.mark.asyncio
+async def test_seen_ids_cap_keeps_most_recent_ids(tmp_path):
+    """PLG-3: the bounded dedup structure evicts the *oldest* ids on
+    trim — a just-processed id must survive, so it can never re-emit."""
+    from src.plugins.internal.inbox.poller import InboxPoller
+
+    allowlist_path = tmp_path / "allowlist.yaml"
+    _write_allowlist(allowlist_path, senders=[])
+
+    class OneMessageGmail(_ProfileStubGmail):
+        def list_new_message_ids(self, *, history_id, query):
+            return ["fresh"], "h2"
+
+        def get_message(self, msg_id):
+            return {
+                "threadId": "thr",
+                "internalDate": "0",
+                "payload": {"headers": [{"name": "From", "value": "x@y.z"}]},
+            }
+
+    emitted = []
+
+    async def emit(event_type, payload):
+        emitted.append((event_type, payload))
+
+    poller = InboxPoller(
+        project_id="proj",
+        gmail=OneMessageGmail(),
+        allowlist=Allowlist(allowlist_path),
+        emit=emit,
+        mark_read_on_emit=False,
+    )
+    poller._history_id = "h1"
+    # Simulate a long-running poller: 10,001 previously-seen ids in order.
+    poller._seen_ids = dict.fromkeys(f"m{i}" for i in range(10001))
+
+    await poller._poll_once()
+
+    assert len(poller._seen_ids) == 5000
+    assert "fresh" in poller._seen_ids, "just-processed id was evicted by the cap"
+    # The survivors are exactly the most recently inserted ids.
+    assert "m10000" in poller._seen_ids
+    assert "m5002" in poller._seen_ids
+    assert "m5001" not in poller._seen_ids
+    assert "m0" not in poller._seen_ids
+
+    # And the id keeps deduplicating: a second poll of the same message
+    # emits nothing new.
+    await poller._poll_once()
+    assert len(emitted) == 1

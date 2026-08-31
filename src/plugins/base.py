@@ -223,6 +223,11 @@ class PluginContext:
         # Daemon-wide DoctorRegistry, or None in minimal contexts (tests).
         # register_doctor_check() degrades to a logged no-op when None.
         self._doctor_registry = doctor_registry
+        # Every command key this context registered, with the handler it
+        # registered.  The registry uses this on unload to remove exactly
+        # this plugin's registrations — matching by handler ``id()`` also
+        # removed other plugins' aliases when they shared a callable (PLG-6).
+        self._registered_commands: dict[str, Callable] = {}
 
         self._logger = logging.getLogger(f"plugin.{plugin_name}")
 
@@ -329,9 +334,11 @@ class PluginContext:
         """
         qualified = f"{self._plugin_name}.{name}" if "." not in name else name
         self._command_registry[qualified] = handler
+        self._registered_commands[qualified] = handler
         # Also register short name for convenience
         if "." not in name:
             self._command_registry[name] = handler
+            self._registered_commands[name] = handler
         self._logger.debug("Registered command: %s", name)
 
     # --- Doctor Check Registration ---

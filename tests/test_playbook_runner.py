@@ -8738,6 +8738,220 @@ def test_invalid_transition_never_overwrites_terminal_status(simple_graph, mock_
     assert runner._transition(PlaybookRunEvent.NODE_FAILED) == PlaybookRunStatus.COMPLETED
 
 
+# ---------------------------------------------------------------------------
+# Pause-timeout routing — docs/specs/design/playbooks.md §9
+# ---------------------------------------------------------------------------
+
+
+def _paused_run_for_timeout(graph: dict, current_node: str = "review") -> PlaybookRun:
+    """A persisted paused run whose pause timeout has already expired."""
+    return PlaybookRun(
+        run_id="r-timeout",
+        playbook_id=graph["id"],
+        playbook_version=1,
+        trigger_event=json.dumps({"type": "test"}),
+        status="paused",
+        current_node=current_node,
+        conversation_history=json.dumps(
+            [
+                {"role": "user", "content": "Present your analysis for review."},
+                {"role": "assistant", "content": "Analysis presented."},
+            ]
+        ),
+        node_trace=json.dumps(
+            [
+                {
+                    "node_id": current_node,
+                    "started_at": 100.0,
+                    "completed_at": 101.0,
+                    "status": "completed",
+                }
+            ]
+        ),
+        tokens_used=42,
+        started_at=100.0,
+        paused_at=time.time() - 3600,
+        pinned_graph=json.dumps(graph),
+    )
+
+
+async def test_pause_timeout_routes_to_designated_timeout_node(mock_services, mock_db):
+    """Spec §9: a paused run past its timeout transitions to the node named
+    by ``on_timeout`` and continues to that branch's terminal."""
+    graph = {
+        "id": "timeout-routing",
+        "version": 1,
+        "nodes": {
+            "review": {
+                "prompt": "Wait for review.",
+                "wait_for_human": True,
+                "pause_timeout_seconds": 10,
+                "on_timeout": "cleanup",
+                "goto": "done",
+            },
+            "cleanup": {
+                "prompt": "No human input arrived — clean up and close out.",
+                "goto": "done",
+            },
+            "done": {"terminal": True},
+        },
+    }
+    db_run = _paused_run_for_timeout(graph)
+    _script(mock_services, "Cleaned up.")
+    progress_events: list[tuple[str, str | None]] = []
+
+    async def on_progress(event: str, detail: str | None) -> None:
+        progress_events.append((event, detail))
+
+    result = await PlaybookRunner.handle_timeout(
+        db_run=db_run,
+        graph=graph,
+        services=mock_services,
+        db=mock_db,
+        on_progress=on_progress,
+    )
+
+    assert result.status == "completed"
+    assert result.error is None
+    assert ("playbook_timeout_transition", "cleanup") in progress_events
+    executed = [t["node_id"] for t in result.node_trace]
+    assert "cleanup" in executed
+    # The run really executed the timeout branch, not just relabelled itself.
+    cleanup_prompt = _prompt_of(mock_services.llm.run_tools.call_args)
+    assert "clean up" in cleanup_prompt.lower()
+    statuses = [
+        c.kwargs.get("status")
+        for c in mock_db.update_playbook_run.call_args_list
+        if "status" in c.kwargs
+    ]
+    assert "running" in statuses
+    assert "completed" in statuses
+
+
+async def test_pause_timeout_without_timeout_node_fails_run(mock_services, mock_db):
+    """Spec §9 default arm: with no ``on_timeout`` target the run fails with
+    a timeout error and the node trace is preserved."""
+    graph = {
+        "id": "timeout-default",
+        "version": 1,
+        "nodes": {
+            "review": {
+                "prompt": "Wait for review.",
+                "wait_for_human": True,
+                "pause_timeout_seconds": 10,
+                "goto": "done",
+            },
+            "done": {"terminal": True},
+        },
+    }
+    db_run = _paused_run_for_timeout(graph)
+
+    result = await PlaybookRunner.handle_timeout(
+        db_run=db_run,
+        graph=graph,
+        services=mock_services,
+        db=mock_db,
+    )
+
+    assert result.status == "timed_out"
+    assert "Pause timeout exceeded" in (result.error or "")
+    assert [t["node_id"] for t in result.node_trace] == ["review"]
+    mock_services.llm.run_tools.assert_not_called()
+    timed_out_updates = [
+        c
+        for c in mock_db.update_playbook_run.call_args_list
+        if c.kwargs.get("status") == "timed_out"
+    ]
+    assert len(timed_out_updates) == 1
+    assert "Pause timeout exceeded" in timed_out_updates[0].kwargs["error"]
+
+
+# ---------------------------------------------------------------------------
+# for_each edge cases
+# ---------------------------------------------------------------------------
+
+
+async def test_for_each_non_list_source_is_skipped_not_raised(
+    mock_services, mock_db, event_data, caplog
+):
+    """A for_each source resolving to a non-list skips the node with a
+    warning and the run continues to completion."""
+    graph = {
+        "id": "for-each-skip",
+        "version": 1,
+        "nodes": {
+            "plan": {
+                "entry": True,
+                "prompt": "Produce the work items.",
+                "output": {"extract": "data", "as": "stuff"},
+                "goto": "fanout",
+            },
+            "fanout": {
+                "prompt": "Process {{item}}.",
+                "for_each": {"source": "stuff", "as": "item"},
+                "goto": "done",
+            },
+            "done": {"terminal": True},
+        },
+    }
+    _script(mock_services, '{"data": {"a": 1}}')
+
+    with caplog.at_level(logging.WARNING):
+        runner = PlaybookRunner(graph, event_data, mock_services, db=mock_db)
+        result = await runner.run()
+
+    assert result.status == "completed"
+    fanout_traces = [t for t in result.node_trace if t["node_id"] == "fanout"]
+    assert fanout_traces
+    assert fanout_traces[0]["output"] == "for_each source 'stuff' is not a list — skipped"
+    assert "not a list" in caplog.text
+    # Only the plan node reached the LLM; the fan-out never iterated.
+    assert mock_services.llm.run_tools.call_count == 1
+
+
+async def test_for_each_failure_exit_does_not_leak_loop_variable():
+    """PB-6: a failing for_each iteration routing to on_failure must not
+    leave the loop variable resolvable in the failure branch."""
+    from src.playbooks.pipeline_runner import PipelineRunner
+
+    graph = {
+        "nodes": {
+            "fan": {
+                "entry": True,
+                "command": "do_item",
+                "args": {"payload": "{{outputs.item}}"},
+                "for_each": {"source": "event.items", "as": "item"},
+                "on_success": "done",
+                "on_failure": "report",
+            },
+            "report": {
+                "command": "report_failure",
+                "args": {"leaked": "{{outputs.item}}"},
+                "on_success": "done",
+            },
+            "done": {"terminal": True},
+        },
+    }
+    calls: list[tuple[str, dict]] = []
+
+    async def execute(cmd: str, args: dict) -> dict:
+        calls.append((cmd, args))
+        if cmd == "do_item" and args["payload"] == "b":
+            return {"success": False, "error": "boom"}
+        return {"success": True}
+
+    runner = PipelineRunner(
+        graph, {"items": ["a", "b"]}, SimpleNamespace(execute=execute)
+    )
+    result = await runner.run()
+
+    assert result.status == "completed"
+    report_args = next(args for cmd, args in calls if cmd == "report_failure")
+    # Out-of-scope loop variable resolves to the engine's unresolved value
+    # (None), never to the failing iteration's item.
+    assert report_args["leaked"] is None
+
+
 class TestExtractOutputTextFallback:
     """Fallback to parse JSON from the assistant's text response.
 

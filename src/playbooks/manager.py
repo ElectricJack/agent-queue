@@ -1572,11 +1572,13 @@ class PlaybookManager:
         artifact before calling this — no re-validation happens here.
         """
         old = self._active.get(compiled.id)
+        had_scope_identifier = compiled.id in self._scope_identifiers
+        old_scope_identifier = self._scope_identifiers.get(compiled.id)
         if old is not None:
             self._unindex_triggers(old)
         self._active[compiled.id] = compiled
         self._index_triggers(compiled)
-        if compiled.id not in self._scope_identifiers:
+        if not had_scope_identifier:
             _, type_id = compiled.parse_scope()
             self._scope_identifiers[compiled.id] = type_id
         # Persist via the store when available, otherwise via legacy data_dir.
@@ -1594,10 +1596,30 @@ class PlaybookManager:
                 identifier = type_id or self._scope_identifiers.get(compiled.id)
             try:
                 self._store.save(compiled, scope_str, identifier)  # type: ignore[arg-type]
-            except Exception:
-                logger.warning(
-                    "install_compiled: store.save failed for %s", compiled.id, exc_info=True
+            except Exception as exc:
+                # PB-5: a swallowed save left this process running a version
+                # that vanishes on restart. Roll the in-memory swap back so
+                # memory matches disk, then fail the install loudly so the
+                # caller (playbook_install) reports it and the compiler
+                # agent can retry.
+                self._unindex_triggers(compiled)
+                if old is not None:
+                    self._active[compiled.id] = old
+                    self._index_triggers(old)
+                else:
+                    self._active.pop(compiled.id, None)
+                if had_scope_identifier:
+                    self._scope_identifiers[compiled.id] = old_scope_identifier
+                else:
+                    self._scope_identifiers.pop(compiled.id, None)
+                logger.error(
+                    "install_compiled: store.save failed for %s — install rolled back",
+                    compiled.id,
+                    exc_info=True,
                 )
+                raise RuntimeError(
+                    f"install_compiled: store save failed for playbook '{compiled.id}': {exc}"
+                ) from exc
         else:
             self._persist_compiled(compiled)
         self._refresh_subscriptions()

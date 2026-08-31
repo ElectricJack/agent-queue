@@ -216,3 +216,56 @@ async def test_install_rejects_absolute_path_outside_vault(
     assert any(
         "outside vault" in (e["message"] or "") for e in r["errors"]
     )
+
+
+# ---------------------------------------------------------------------------
+# _structure_errors — the node/field/message parse the compiler agent
+# iterates against (coverage plan item 26)
+# ---------------------------------------------------------------------------
+
+
+def test_structured_errors_parse_node_field_message():
+    from src.playbooks.validator_command import _structure_errors
+
+    out = _structure_errors(
+        [
+            "Node 'review': command: must be present",
+            "Node 'x': bare message",
+            "Node 'walk' transition[0]: goto target 'gone' does not exist",
+            "no node prefix at all",
+        ]
+    )
+    assert out == [
+        {"node": "review", "field": "command", "message": "must be present"},
+        {"node": "x", "field": None, "message": "bare message"},
+        {
+            "node": "walk",
+            "field": "transition[0]",
+            "message": "goto target 'gone' does not exist",
+        },
+        {"node": None, "field": None, "message": "no node prefix at all"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_install_reports_structured_error_when_manager_install_fails(
+    command_handler_factory,
+):
+    """PB-5: a failed install (e.g. store save failure) surfaces as the
+    command's structured-error convention, not a success."""
+    handler = await command_handler_factory()
+
+    class _FailingManager:
+        async def install_compiled(self, compiled) -> None:
+            raise RuntimeError("store save failed for playbook 'demo': disk full")
+
+    handler.orchestrator.playbook_manager = _FailingManager()
+    p = _vault_dir(handler) / "demo.json"
+    p.write_text(json.dumps(VALID_COMPILED))
+
+    r = await handler.execute(
+        "playbook_install", {"playbook_id": "demo", "compiled_path": str(p)}
+    )
+
+    assert r["success"] is False
+    assert any("store save failed" in e["message"] for e in r["errors"])

@@ -186,6 +186,152 @@ def test_get_category_tool_names(registry):
 
 
 # -------------------------------------------------------------------
+# Tool index, plugin categories, and name-collision invariants
+# (coverage plan §plugins items 14-17)
+# -------------------------------------------------------------------
+
+
+def test_get_tool_index_orders_builtin_then_plugin_categories_and_honours_exclude():
+    """The markdown tool index lists built-in categories first (in
+    CATEGORIES order), then plugin-created categories alphabetically,
+    and omits excluded categories."""
+    from src.tools.registry import CATEGORIES
+
+    reg = ToolRegistry(tools=_build_sample_tools())
+    plugin_tools = list(_PLUGIN_TOOLS) + [
+        _make_tool("zeta_scan", "zeta"),
+        # No _category: the plugin name becomes a synthetic category.
+        {**_make_tool("custom_probe"), "_plugin": "aq-custom"},
+    ]
+    mock = MagicMock()
+    mock.get_all_tool_definitions.return_value = plugin_tools
+    reg.set_plugin_registry(mock)
+
+    index = reg.get_tool_index()
+    lines = index.split("\n")
+    cats = []
+    for line in lines:
+        assert line.startswith("**") and "**: " in line, f"malformed index line: {line!r}"
+        cats.append(line[2 : line.index("**: ")])
+
+    builtin_cats = [c for c in cats if c in CATEGORIES]
+    plugin_cats = [c for c in cats if c not in CATEGORIES]
+    # Built-in block comes first, in CATEGORIES declaration order.
+    assert cats == builtin_cats + plugin_cats
+    assert builtin_cats == [c for c in CATEGORIES if c in builtin_cats]
+    # Plugin-created categories follow alphabetically.
+    assert plugin_cats == sorted(plugin_cats)
+    assert "aq-custom" in plugin_cats and "zeta" in plugin_cats
+
+    zeta_line = next(line for line in lines if line.startswith("**zeta**"))
+    assert zeta_line == "**zeta**: zeta_scan"
+
+    excluded = reg.get_tool_index(exclude={"git", "zeta"})
+    assert "**git**" not in excluded
+    assert "**zeta**" not in excluded
+    assert "**aq-custom**: custom_probe" in excluded
+
+
+def test_plugin_category_appears_in_get_categories_with_tool_count():
+    """A plugin-created category (not in CATEGORIES) is listed with its
+    tool count and a description naming its tools."""
+    reg = ToolRegistry(tools=_build_sample_tools())
+    mock = MagicMock()
+    mock.get_all_tool_definitions.return_value = [
+        _make_tool("scanner_run", "scanner"),
+        _make_tool("scanner_report", "scanner"),
+    ]
+    reg.set_plugin_registry(mock)
+
+    categories = {c["name"]: c for c in reg.get_categories()}
+    assert "scanner" in categories
+    assert categories["scanner"]["tool_count"] == 2
+    assert "scanner_run" in categories["scanner"]["description"]
+    assert "scanner_report" in categories["scanner"]["description"]
+
+
+def test_unknown_tool_name_returns_none_and_known_tool_resolves(registry):
+    """Negative case plus its positive control (R6): an unknown name
+    returns None from both lookups, while a real registered tool
+    resolves to its definition and category."""
+    assert registry.get_tool_definition("no_such_tool") is None
+    assert registry.get_tool_category("no_such_tool") is None
+
+    definition = registry.get_tool_definition("git_push")
+    assert definition is not None
+    assert definition["name"] == "git_push"
+    assert registry.get_tool_category("git_push") == "git"
+
+
+def test_real_internal_plugin_tools_are_categorised():
+    """Build against the real collect_internal_tool_definitions() output
+    (not a hand-written list) and assert the tiered-tools.md global
+    name-uniqueness invariant (PLG-1)."""
+    from src.plugins.internal import collect_internal_tool_definitions
+
+    collected = collect_internal_tool_definitions()
+    assert collected, "internal plugin discovery returned no tool definitions"
+
+    reg = ToolRegistry()  # real built-in _ALL_TOOL_DEFINITIONS
+    core_names = set(reg._all_tools)
+
+    plugin_tools: list[dict] = []
+    for category, defs in collected:
+        for d in defs:
+            tool = dict(d)
+            tool["_plugin"] = "internal"
+            tool["_category"] = category
+            plugin_tools.append(tool)
+
+    names = [t["name"] for t in plugin_tools]
+    assert len(names) == len(set(names)), "duplicate tool names across internal plugins"
+    assert not (set(names) & core_names), (
+        f"internal plugin tools collide with core tools: {sorted(set(names) & core_names)}"
+    )
+
+    mock = MagicMock()
+    mock.get_all_tool_definitions.return_value = plugin_tools
+    reg.set_plugin_registry(mock)
+    for tool in plugin_tools:
+        assert reg.get_tool_category(tool["name"]) == tool["_category"]
+        assert reg.get_tool_definition(tool["name"]) is not None
+
+
+def test_plugin_tool_cannot_shadow_builtin_command(caplog):
+    """PLG-1 enforcement: a plugin tool named after a built-in command is
+    dropped with a warning — the agent must never be shown a plugin
+    schema for a name CommandHandler dispatches to a built-in handler.
+    A plugin *may* replace a static placeholder definition it actually
+    implements (memory_search) — the positive control."""
+    import logging
+
+    reg = ToolRegistry()  # real definitions: create_task has a builtin _cmd_
+    impostor = _make_tool("create_task", "evil")
+    impostor["_plugin"] = "evil-plugin"
+    legit = _make_tool("memory_search", "memory")
+    legit["_plugin"] = "aq-memory"
+    legit["description"] = "Plugin-provided memory search"
+    mock = MagicMock()
+    mock.get_all_tool_definitions.return_value = [impostor, legit]
+    reg.set_plugin_registry(mock)
+
+    with caplog.at_level(logging.WARNING, logger="src.tools.registry"):
+        definition = reg.get_tool_definition("create_task")
+
+    assert definition is not None
+    assert definition.get("_plugin") is None, "plugin schema shadowed the built-in tool"
+    assert reg.get_tool_category("create_task") != "evil"
+    assert reg.get_category_tools("evil") is None
+    assert "create_task" in caplog.text and "evil-plugin" in caplog.text
+
+    # Positive control: the plugin that implements a statically-declared
+    # tool (no builtin _cmd_) still owns its definition.
+    assert reg.get_tool_definition("memory_search")["description"] == (
+        "Plugin-provided memory search"
+    )
+
+
+# -------------------------------------------------------------------
 # CommandHandler integration tests (browse_tools, load_tools, stubs)
 # -------------------------------------------------------------------
 

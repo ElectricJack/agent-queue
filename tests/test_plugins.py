@@ -1445,3 +1445,486 @@ class TestRegistryCronJobs:
 
         await registry.unload_plugin("cron-test")
         assert len(registry._cron_jobs) == 0
+
+
+# ---------------------------------------------------------------------------
+# tick_cron scheduling (coverage plan §plugins items 6-8)
+# ---------------------------------------------------------------------------
+
+
+def _install_file_plugin(tmp_path: Path, mock_db, name: str, plugin_body: str) -> Path:
+    """Write a plugin.yaml + plugin.py plugin dir and point mock_db at it."""
+    plugin_dir = tmp_path / "data" / "plugins" / name
+    src = plugin_dir / "src"
+    src.mkdir(parents=True)
+    (src / "plugin.yaml").write_text(f"name: {name}\nversion: '1.0.0'\n")
+    (src / "plugin.py").write_text(textwrap.dedent(plugin_body))
+    mock_db.get_plugin = AsyncMock(
+        return_value={"id": name, "install_path": str(plugin_dir), "status": "installed"}
+    )
+    return plugin_dir
+
+
+class TestTickCron:
+    @pytest.mark.asyncio
+    async def test_tick_cron_runs_due_job_and_honours_config_override(
+        self, tmp_path, mock_db, mock_bus, mock_config
+    ):
+        """A user's config value for a @cron(config_key=...) job overrides
+        the decorator default at tick time."""
+        _install_file_plugin(
+            tmp_path,
+            mock_db,
+            "cron-override",
+            """\
+            from src.plugins.base import Plugin, PluginContext, cron
+
+            class CronPlugin(Plugin):
+                async def initialize(self, ctx: PluginContext) -> None:
+                    self.calls = []
+
+                async def shutdown(self, ctx: PluginContext) -> None:
+                    pass
+
+                # February 31st never exists — the default can never be due.
+                @cron("0 0 31 2 *", config_key="sched")
+                async def job(self, ctx: PluginContext) -> None:
+                    self.calls.append(1)
+            """,
+        )
+        registry = PluginRegistry(db=mock_db, bus=mock_bus, config=mock_config)
+        await registry.load_plugin("cron-override")
+        instance = registry._plugins["cron-override"].instance
+
+        # Without an override the impossible default never fires.
+        await registry.tick_cron()
+        assert registry._cron_tasks == {}
+        assert instance.calls == []
+
+        ctx = registry._plugins["cron-override"].context
+        await ctx.save_config({"sched": "* * * * *"})
+        await registry.tick_cron()
+        assert registry._cron_tasks
+        await asyncio.gather(*registry._cron_tasks.values())
+        assert instance.calls == [1]
+
+    @pytest.mark.asyncio
+    async def test_tick_cron_skips_job_still_running(
+        self, tmp_path, mock_db, mock_bus, mock_config
+    ):
+        """A job still running from the previous tick is skipped, not
+        double-started."""
+        _install_file_plugin(
+            tmp_path,
+            mock_db,
+            "cron-overlap",
+            """\
+            import asyncio
+
+            from src.plugins.base import Plugin, PluginContext, cron
+
+            class CronPlugin(Plugin):
+                async def initialize(self, ctx: PluginContext) -> None:
+                    self.calls = []
+                    self.gate = asyncio.Event()
+
+                async def shutdown(self, ctx: PluginContext) -> None:
+                    pass
+
+                @cron("* * * * *")
+                async def job(self, ctx: PluginContext) -> None:
+                    self.calls.append(1)
+                    await self.gate.wait()
+            """,
+        )
+        registry = PluginRegistry(db=mock_db, bus=mock_bus, config=mock_config)
+        await registry.load_plugin("cron-overlap")
+        instance = registry._plugins["cron-overlap"].instance
+
+        await registry.tick_cron()
+        assert len(registry._cron_tasks) == 1
+        await asyncio.sleep(0)  # let the job start and park on the gate
+        assert instance.calls == [1]
+
+        # Clear the schedule dedup so only the overlap guard can skip.
+        registry._cron_jobs[0].last_run = None
+        await registry.tick_cron()
+        assert len(registry._cron_tasks) == 1
+        assert instance.calls == [1]
+
+        instance.gate.set()
+        await asyncio.gather(*registry._cron_tasks.values())
+
+    @pytest.mark.asyncio
+    async def test_cron_failure_feeds_circuit_breaker(
+        self, tmp_path, mock_db, mock_bus, mock_config, caplog
+    ):
+        """_run_cron_safe routes an exception into record_failure and a
+        success into record_success (spec §9 circuit breaker loop)."""
+        import logging
+
+        _install_file_plugin(
+            tmp_path,
+            mock_db,
+            "cron-breaker",
+            """\
+            from src.plugins.base import Plugin, PluginContext, cron
+
+            class CronPlugin(Plugin):
+                async def initialize(self, ctx: PluginContext) -> None:
+                    self.fail = True
+
+                async def shutdown(self, ctx: PluginContext) -> None:
+                    pass
+
+                @cron("* * * * *")
+                async def job(self, ctx: PluginContext) -> None:
+                    if self.fail:
+                        raise RuntimeError("boom")
+            """,
+        )
+        registry = PluginRegistry(db=mock_db, bus=mock_bus, config=mock_config)
+        await registry.load_plugin("cron-breaker")
+        loaded = registry._plugins["cron-breaker"]
+
+        with caplog.at_level(logging.WARNING, logger="src.plugins.registry"):
+            await registry.tick_cron()
+            await asyncio.gather(*registry._cron_tasks.values())
+        assert loaded.consecutive_failures == 1
+        assert "failed" in caplog.text
+        assert "boom" in caplog.text
+
+        # A subsequent success resets the counter.
+        loaded.instance.fail = False
+        registry._cron_jobs[0].last_run = None
+        await registry.tick_cron()
+        await asyncio.gather(*registry._cron_tasks.values())
+        assert loaded.consecutive_failures == 0
+
+
+# ---------------------------------------------------------------------------
+# remove_plugin data-loss guards (coverage plan §plugins items 20-21)
+# ---------------------------------------------------------------------------
+
+
+class TestRemovePlugin:
+    @pytest.mark.asyncio
+    async def test_remove_plugin_does_not_delete_symlinked_dev_source(
+        self, tmp_path, mock_db, mock_bus, mock_config
+    ):
+        """Removing a dev-mode install (src is a symlink) must delete the
+        install dir but never the developer's source tree."""
+        source = tmp_path / "dev-source"
+        source.mkdir()
+        (source / "plugin.yaml").write_text("name: devplug\nversion: '1.0.0'\n")
+        (source / "plugin.py").write_text(
+            textwrap.dedent("""\
+            from src.plugins.base import Plugin, PluginContext
+
+            class DevPlugin(Plugin):
+                async def initialize(self, ctx: PluginContext) -> None:
+                    pass
+
+                async def shutdown(self, ctx: PluginContext) -> None:
+                    pass
+            """)
+        )
+
+        registry = PluginRegistry(db=mock_db, bus=mock_bus, config=mock_config)
+        name = await registry.install_from_path(str(source))
+        assert name == "devplug"
+        install_path = registry.plugins_dir / "devplug"
+        assert (install_path / "src").is_symlink()
+        assert registry.is_loaded("devplug")
+
+        mock_db.get_plugin = AsyncMock(
+            return_value={"id": "devplug", "install_path": str(install_path)}
+        )
+        mock_db.list_plugins = AsyncMock(return_value=[])
+        await registry.remove_plugin("devplug")
+
+        assert not install_path.exists()
+        assert source.is_dir()
+        assert (source / "plugin.py").is_file()
+        assert (source / "plugin.yaml").is_file()
+
+    @pytest.mark.asyncio
+    async def test_remove_plugin_keeps_directory_shared_by_another_record(
+        self, tmp_path, mock_db, mock_bus, mock_config, caplog
+    ):
+        """Two DB records pointing at one directory: removing one must not
+        delete the shared directory."""
+        import logging
+
+        shared = tmp_path / "shared-install"
+        shared.mkdir()
+        (shared / "keep.txt").write_text("data")
+
+        mock_db.get_plugin = AsyncMock(return_value={"id": "dup-a", "install_path": str(shared)})
+        mock_db.list_plugins = AsyncMock(
+            return_value=[{"id": "dup-b", "install_path": str(shared)}]
+        )
+
+        registry = PluginRegistry(db=mock_db, bus=mock_bus, config=mock_config)
+        with caplog.at_level(logging.WARNING, logger="src.plugins.registry"):
+            await registry.remove_plugin("dup-a")
+
+        assert shared.is_dir()
+        assert (shared / "keep.txt").is_file()
+        assert "shares this path" in caplog.text
+        mock_db.delete_plugin.assert_awaited_once_with("dup-a")
+        mock_db.delete_plugin_data_all.assert_awaited_once_with("dup-a")
+
+
+# ---------------------------------------------------------------------------
+# Internal plugin discovery resilience (coverage plan §plugins item 22)
+# ---------------------------------------------------------------------------
+
+
+class TestInternalDiscoveryResilience:
+    def test_internal_plugin_discovery_survives_a_broken_module(self, monkeypatch, caplog):
+        """One broken internal module must not take down plugin loading:
+        discovery, tool collection, and formatter collection all skip it."""
+        import importlib
+        import logging
+
+        import src.plugins.internal as internal
+
+        baseline_formatters = internal.collect_internal_formatters()
+        assert "read_file" in baseline_formatters  # sanity: files contributes
+
+        real_import = importlib.import_module
+
+        def broken_import(name, *args, **kwargs):
+            if name == "src.plugins.internal.files":
+                raise RuntimeError("broken module")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr("src.plugins.internal.importlib.import_module", broken_import)
+
+        with caplog.at_level(logging.ERROR, logger="src.plugins.internal"):
+            plugins = internal.discover_internal_plugins()
+            tools = internal.collect_internal_tool_definitions()
+            formatters = internal.collect_internal_formatters()
+
+        modnames = {m for m, _ in plugins}
+        assert "src.plugins.internal.files" not in modnames
+        assert any(m.endswith(".git") for m in modnames)
+        assert any(m.endswith(".notes") for m in modnames)
+
+        categories = {c for c, _ in tools}
+        assert "files" not in categories
+        assert {"git", "notes"} <= categories
+
+        assert "read_file" not in formatters
+        assert "list_notes" in formatters
+
+        assert "Failed to import internal plugin" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# PluginContext isolation boundaries (coverage plan §plugins items 23-24)
+# ---------------------------------------------------------------------------
+
+
+class TestContextBoundaries:
+    def test_context_bus_requires_internal_trust(self, plugin_context_factory):
+        from src.plugins.base import TrustLevel
+
+        external = plugin_context_factory(trust_level=TrustLevel.EXTERNAL)
+        with pytest.raises(PermissionError, match="INTERNAL"):
+            _ = external.bus
+
+        internal = plugin_context_factory(trust_level=TrustLevel.INTERNAL)
+        assert internal.bus is internal._bus
+
+    @pytest.mark.asyncio
+    async def test_load_config_falls_back_to_empty_on_corrupt_json(self, plugin_context_factory):
+        """A malformed stored config row must not make the plugin
+        unloadable — load_config falls back to {}."""
+        ctx = plugin_context_factory()
+        ctx._db.get_plugin = AsyncMock(return_value={"config": "{not json"})
+        assert await ctx.load_config() == {}
+        assert ctx.get_config() == {}
+
+        ctx._db.get_plugin = AsyncMock(return_value={"config": None})
+        assert await ctx.load_config() == {}
+
+        ctx._db = None
+        assert await ctx.load_config() == {}
+        assert ctx.get_config() == {}
+
+
+# ---------------------------------------------------------------------------
+# Unload alias removal (PLG-6, FU-10)
+# ---------------------------------------------------------------------------
+
+
+async def _shared_noop_command(args: dict) -> dict:
+    return {"ok": True}
+
+
+class TestUnloadAliasRemoval:
+    @pytest.mark.asyncio
+    async def test_unload_removes_only_own_aliases_when_handler_shared(
+        self, tmp_path, mock_db, mock_bus, mock_config
+    ):
+        """PLG-6: two plugins registering the *same callable* under
+        different names — unloading one must not remove the other's
+        registrations (the old id()-based removal did)."""
+        registry = PluginRegistry(db=mock_db, bus=mock_bus, config=mock_config)
+
+        class AlphaPlugin(Plugin):
+            plugin_name = "alpha"
+
+            async def initialize(self, ctx: PluginContext) -> None:
+                ctx.register_command("scan", _shared_noop_command)
+
+            async def shutdown(self, ctx: PluginContext) -> None:
+                pass
+
+        class BetaPlugin(Plugin):
+            plugin_name = "beta"
+
+            async def initialize(self, ctx: PluginContext) -> None:
+                ctx.register_command("check", _shared_noop_command)
+
+            async def shutdown(self, ctx: PluginContext) -> None:
+                pass
+
+        await registry.register_in_memory_plugin(AlphaPlugin)
+        await registry.register_in_memory_plugin(BetaPlugin)
+        for key in ("alpha.scan", "scan", "beta.check", "check"):
+            assert registry.get_command(key) is _shared_noop_command
+
+        await registry.unload_plugin("alpha")
+
+        assert registry.get_command("alpha.scan") is None
+        assert registry.get_command("scan") is None
+        # beta's registrations of the identical callable survive.
+        assert registry.get_command("beta.check") is _shared_noop_command
+        assert registry.get_command("check") is _shared_noop_command
+
+
+# ---------------------------------------------------------------------------
+# Loader git operations against local throwaway repos (FU-10)
+# ---------------------------------------------------------------------------
+
+
+def _run_git(args: list[str], cwd: Path) -> str:
+    import subprocess
+
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "test",
+        "GIT_AUTHOR_EMAIL": "test@example.com",
+        "GIT_COMMITTER_NAME": "test",
+        "GIT_COMMITTER_EMAIL": "test@example.com",
+    }
+    proc = subprocess.run(
+        ["git", *args], cwd=str(cwd), env=env, capture_output=True, text=True, check=True
+    )
+    return proc.stdout.strip()
+
+
+class TestLoaderGitOperations:
+    """clone/pull/rev helpers driven against real local repos — no network."""
+
+    def _make_origin(self, tmp_path: Path) -> tuple[Path, str]:
+        origin = tmp_path / "origin"
+        origin.mkdir()
+        _run_git(["init", "-b", "main"], origin)
+        (origin / "file.txt").write_text("v1")
+        _run_git(["add", "."], origin)
+        _run_git(["commit", "-m", "first"], origin)
+        return origin, _run_git(["rev-parse", "HEAD"], origin)
+
+    @pytest.mark.asyncio
+    async def test_clone_plugin_repo_clones_into_src_and_returns_head(self, tmp_path):
+        from src.plugins.loader import clone_plugin_repo
+
+        origin, head = self._make_origin(tmp_path)
+        target = tmp_path / "install"
+        target.mkdir()
+
+        rev = await clone_plugin_repo(str(origin), target)
+
+        assert rev == head
+        assert (target / "src" / "file.txt").read_text() == "v1"
+
+    @pytest.mark.asyncio
+    async def test_clone_plugin_repo_checks_out_requested_branch_and_rev(self, tmp_path):
+        from src.plugins.loader import clone_plugin_repo
+
+        origin, first = self._make_origin(tmp_path)
+        _run_git(["checkout", "-b", "feature"], origin)
+        (origin / "feature.txt").write_text("feat")
+        _run_git(["add", "."], origin)
+        _run_git(["commit", "-m", "feature work"], origin)
+        feature_head = _run_git(["rev-parse", "HEAD"], origin)
+        _run_git(["checkout", "main"], origin)
+
+        by_branch = tmp_path / "by-branch"
+        by_branch.mkdir()
+        rev = await clone_plugin_repo(str(origin), by_branch, branch="feature")
+        assert rev == feature_head
+        assert (by_branch / "src" / "feature.txt").is_file()
+
+        # rev checkout (local clones keep full history).
+        by_rev = tmp_path / "by-rev"
+        by_rev.mkdir()
+        rev = await clone_plugin_repo(str(origin), by_rev, rev=first)
+        assert rev == first
+        assert not (by_rev / "src" / "feature.txt").exists()
+
+    @pytest.mark.asyncio
+    async def test_clone_plugin_repo_raises_on_bad_url(self, tmp_path):
+        from src.plugins.loader import clone_plugin_repo
+
+        target = tmp_path / "install"
+        target.mkdir()
+        with pytest.raises(RuntimeError, match="Git clone failed"):
+            await clone_plugin_repo(str(tmp_path / "no-such-repo"), target)
+
+    @pytest.mark.asyncio
+    async def test_pull_plugin_repo_fast_forwards_and_reports_new_head(self, tmp_path):
+        from src.plugins.loader import clone_plugin_repo, pull_plugin_repo
+
+        origin, _ = self._make_origin(tmp_path)
+        install = tmp_path / "install"
+        install.mkdir()
+        await clone_plugin_repo(str(origin), install)
+
+        (origin / "new.txt").write_text("v2")
+        _run_git(["add", "."], origin)
+        _run_git(["commit", "-m", "second"], origin)
+        new_head = _run_git(["rev-parse", "HEAD"], origin)
+
+        rev = await pull_plugin_repo(install)
+
+        assert rev == new_head
+        assert (install / "src" / "new.txt").read_text() == "v2"
+
+    @pytest.mark.asyncio
+    async def test_pull_plugin_repo_raises_when_src_missing(self, tmp_path):
+        from src.plugins.loader import pull_plugin_repo
+
+        with pytest.raises(RuntimeError, match="source directory not found"):
+            await pull_plugin_repo(tmp_path / "not-installed")
+
+    @pytest.mark.asyncio
+    async def test_get_current_rev_returns_sha_or_empty(self, tmp_path):
+        from src.plugins.loader import clone_plugin_repo, get_current_rev
+
+        origin, head = self._make_origin(tmp_path)
+        install = tmp_path / "install"
+        install.mkdir()
+        await clone_plugin_repo(str(origin), install)
+
+        assert get_current_rev(install) == head
+        # No src/ directory → empty string, no exception.
+        assert get_current_rev(tmp_path / "not-installed") == ""
+        # src/ exists but is not a git repo → empty string.
+        plain = tmp_path / "plain"
+        (plain / "src").mkdir(parents=True)
+        assert get_current_rev(plain) == ""

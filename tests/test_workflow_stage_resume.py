@@ -787,6 +787,194 @@ class TestWorkflowStageResumeHandler:
 
 
 # ---------------------------------------------------------------------------
+# Tests: WorkflowStageResumeHandler._resume_run — the resume path itself
+# ---------------------------------------------------------------------------
+
+
+class _UnconfiguredProvider(FakeProvider):
+    """A real provider whose credentials are missing — is_configured is a
+    genuine ``False``, not a truthy ``MagicMock`` attribute."""
+
+    @property
+    def is_configured(self) -> bool:
+        return False
+
+
+class TestResumeRunExecution:
+    """Verify _resume_run actually reaches PlaybookRunner.resume_from_event.
+
+    The TestWorkflowStageResumeHandler class above only exercises the
+    early returns; these tests cover graph resolution, the services /
+    LLM-configuration guards, event-payload cleaning, and the runner call.
+    """
+
+    def _make_handler(
+        self,
+        mock_db,
+        event_bus,
+        *,
+        services=None,
+        services_error: Exception | None = None,
+        playbook_manager=None,
+    ) -> WorkflowStageResumeHandler:
+        orchestrator = MagicMock()
+        if services_error is not None:
+            orchestrator.playbook_services = MagicMock(side_effect=services_error)
+        else:
+            orchestrator.playbook_services = MagicMock(return_value=services)
+        if playbook_manager is None:
+            playbook_manager = MagicMock()
+            playbook_manager._active = {}
+        return WorkflowStageResumeHandler(
+            db=mock_db,
+            event_bus=event_bus,
+            orchestrator=orchestrator,
+            playbook_manager=playbook_manager,
+            config=MagicMock(),
+        )
+
+    @staticmethod
+    def _configured_services() -> PlaybookServices:
+        return PlaybookServices.for_tests(LLMClient.with_provider(FakeProvider()))
+
+    async def test_resume_run_invokes_runner_with_resolved_graph(
+        self, mock_db, event_bus, stage_event_graph, monkeypatch
+    ):
+        """A paused run waiting for the event is resumed through
+        PlaybookRunner.resume_from_event with the pinned graph."""
+        run = _make_paused_run(graph=stage_event_graph)
+        mock_db.get_playbook_run.return_value = run
+        services = self._configured_services()
+        handler = self._make_handler(mock_db, event_bus, services=services)
+
+        from src.playbooks.runner import RunResult
+
+        resume = AsyncMock(
+            return_value=RunResult(
+                run_id="run-1", status="completed", node_trace=[], tokens_used=7
+            )
+        )
+        monkeypatch.setattr(PlaybookRunner, "resume_from_event", resume)
+
+        await handler._resume_run("run-1", {"workflow_id": "wf-1", "stage": "build"})
+
+        resume.assert_awaited_once()
+        kwargs = resume.await_args.kwargs
+        assert kwargs["db_run"] is run
+        assert kwargs["graph"] == stage_event_graph
+        assert kwargs["services"] is services
+        assert kwargs["db"] is mock_db
+        assert kwargs["event_bus"] is event_bus
+
+    async def test_resume_run_strips_underscore_prefixed_event_keys(
+        self, mock_db, event_bus, stage_event_graph, monkeypatch
+    ):
+        """Internal ``_``-prefixed fields never reach the runner's event data."""
+        run = _make_paused_run(graph=stage_event_graph)
+        mock_db.get_playbook_run.return_value = run
+        handler = self._make_handler(
+            mock_db, event_bus, services=self._configured_services()
+        )
+
+        from src.playbooks.runner import RunResult
+
+        resume = AsyncMock(
+            return_value=RunResult(
+                run_id="run-1", status="completed", node_trace=[], tokens_used=0
+            )
+        )
+        monkeypatch.setattr(PlaybookRunner, "resume_from_event", resume)
+
+        await handler._resume_run(
+            "run-1",
+            {
+                "workflow_id": "wf-1",
+                "_event_type": "workflow.stage.completed",
+                "stage": "build",
+            },
+        )
+
+        resume.assert_awaited_once()
+        event_data = resume.await_args.kwargs["event_data"]
+        assert event_data == {"workflow_id": "wf-1", "stage": "build"}
+
+    async def test_resume_run_aborts_when_llm_not_configured(
+        self, mock_db, event_bus, stage_event_graph, monkeypatch
+    ):
+        """A real un-provisioned LLMClient aborts the resume and leaves the
+        run paused (no status update, no runner call)."""
+        run = _make_paused_run(graph=stage_event_graph)
+        mock_db.get_playbook_run.return_value = run
+        services = PlaybookServices.for_tests(
+            LLMClient.with_provider(_UnconfiguredProvider())
+        )
+        assert services.llm.is_configured() is False
+        handler = self._make_handler(mock_db, event_bus, services=services)
+
+        resume = AsyncMock()
+        monkeypatch.setattr(PlaybookRunner, "resume_from_event", resume)
+
+        await handler._resume_run("run-1", {"workflow_id": "wf-1"})
+
+        resume.assert_not_awaited()
+        mock_db.update_playbook_run.assert_not_called()
+
+    async def test_resume_run_aborts_when_playbook_services_unavailable(
+        self, mock_db, event_bus, stage_event_graph, monkeypatch
+    ):
+        """orchestrator.playbook_services() raising RuntimeError leaves the
+        run paused instead of failing it."""
+        run = _make_paused_run(graph=stage_event_graph)
+        mock_db.get_playbook_run.return_value = run
+        handler = self._make_handler(
+            mock_db, event_bus, services_error=RuntimeError("no llm")
+        )
+
+        resume = AsyncMock()
+        monkeypatch.setattr(PlaybookRunner, "resume_from_event", resume)
+
+        await handler._resume_run("run-1", {"workflow_id": "wf-1"})
+
+        resume.assert_not_awaited()
+        mock_db.update_playbook_run.assert_not_called()
+
+    async def test_resolve_graph_prefers_pinned_falls_back_and_returns_none(
+        self, mock_db, event_bus, stage_event_graph
+    ):
+        """_resolve_graph: valid pinned JSON wins; malformed pinned falls
+        back to the manager's active version; neither → None."""
+        from src.playbooks.models import CompiledPlaybook, PlaybookNode
+
+        active_pb = CompiledPlaybook(
+            id="coord-playbook",
+            version=3,
+            source_hash="hash-3",
+            triggers=["task.created"],
+            scope="system",
+            nodes={"done": PlaybookNode(entry=True, terminal=True)},
+        )
+        manager = MagicMock()
+        manager._active = {"coord-playbook": active_pb}
+        handler = self._make_handler(
+            mock_db,
+            event_bus,
+            services=self._configured_services(),
+            playbook_manager=manager,
+        )
+
+        pinned_run = _make_paused_run(graph=stage_event_graph)
+        assert handler._resolve_graph(pinned_run) == stage_event_graph
+
+        malformed_run = _make_paused_run()
+        malformed_run.pinned_graph = "{not json"
+        assert handler._resolve_graph(malformed_run) == active_pb.to_dict()
+
+        manager._active = {}
+        bare_run = _make_paused_run()
+        assert handler._resolve_graph(bare_run) is None
+
+
+# ---------------------------------------------------------------------------
 # Tests: PlaybookRun model — waiting_for_event field
 # ---------------------------------------------------------------------------
 

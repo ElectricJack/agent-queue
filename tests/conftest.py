@@ -148,6 +148,77 @@ def plugin_registry_with_plugin(plugin_registry):
     return _load
 
 
+@pytest.fixture
+async def internal_plugins_handler(tmp_path: Path):
+    """Async factory: CommandHandler with real DB/EventBus and internal plugins loaded.
+
+    Promoted from the module-local ``handler`` fixtures in
+    ``tests/test_file_command_handlers.py`` / ``tests/test_git_command_handlers.py``
+    (FU-13).  Builds a real ``Database``, a real ``EventBus``, a ``PluginRegistry``
+    with ``build_internal_services`` + ``load_internal_plugins()``, and a
+    ``CommandHandler`` wired with ``set_active_project_id_getter``.
+
+    The git manager defaults to ``create_autospec(GitManager, instance=True)``
+    (with a real ``slugify``) so mocked methods track the real ``GitManager``
+    surface; callers may pass their own ``db`` / ``config`` / ``git``.
+
+    The returned handler exposes ``_db``, ``_bus``, ``_git``, and
+    ``_plugin_registry`` attributes for test assertions.
+    """
+    from unittest.mock import create_autospec
+
+    from src.commands.handler import CommandHandler
+    from src.config import AppConfig, DiscordConfig
+    from src.database import Database
+    from src.event_bus import EventBus
+    from src.git.manager import GitManager
+    from src.orchestrator import Orchestrator
+    from src.plugins.registry import PluginRegistry
+    from src.plugins.services import build_internal_services
+
+    created_dbs: list = []
+
+    async def _make(*, db=None, config=None, git=None):
+        if config is None:
+            config = AppConfig(
+                discord=DiscordConfig(bot_token="test-token", guild_id="123"),
+                workspace_dir=str(tmp_path / "workspaces"),
+                database_path=str(tmp_path / "plugins-handler.db"),
+                data_dir=str(tmp_path / "data"),
+            )
+        if db is None:
+            db = Database(config.database_path)
+            await db.initialize()
+            created_dbs.append(db)
+        if git is None:
+            git = create_autospec(GitManager, instance=True)
+            git.slugify.side_effect = GitManager.slugify
+
+        orchestrator = Orchestrator(config)
+        orchestrator.db = db
+        orchestrator.git = git
+
+        bus = EventBus()
+        services = build_internal_services(db=db, git=git, config=config)
+        registry = PluginRegistry(db=db, bus=bus, config=config)
+        registry._internal_services = services
+        await registry.load_internal_plugins()
+        orchestrator.plugin_registry = registry
+
+        handler = CommandHandler(orchestrator, config)
+        registry.set_active_project_id_getter(lambda: handler._active_project_id)
+        handler._db = db
+        handler._bus = bus
+        handler._git = git
+        handler._plugin_registry = registry
+        return handler
+
+    yield _make
+
+    for db in created_dbs:
+        await db.close()
+
+
 # ---------------------------------------------------------------------------
 # Review-pipeline test helpers — shared by test_review_pipeline_rules.py,
 # test_review_pipeline_e2e.py, and test_review_reopen_cascade.py.
