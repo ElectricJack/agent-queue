@@ -438,9 +438,40 @@ class GetDownstreamTasksResponse(BaseModel):
 
 
 class TaskRouteResponse(BaseModel):
-    success: bool = True
-    task_id: str
+    model_config = {"extra": "allow"}
+    success: bool
+    code: str | None = None
+    error: str | None = None
+    task_id: str | None = None
+    decision_id: str | None = None
+    routing_revision: int | None = None
+    execution_type_key: str | None = None
+    profile_id: str | None = None
+    intelligence_class: str | None = None
     resolved_gate_ids: list[str] = []
+
+
+class TriageOptionsResponse(BaseModel):
+    model_config = {"extra": "allow"}
+    success: bool
+    code: str | None = None
+    error: str | None = None
+    project_id: str | None = None
+    catalog_generation: str | None = None
+    types: list[dict[str, Any]] = []
+    diagnostics: list[dict[str, str]] = []
+
+
+class TriageDeferResponse(BaseModel):
+    model_config = {"extra": "allow"}
+    success: bool
+    code: str | None = None
+    error: str | None = None
+    deferral_id: str | None = None
+    task_id: str | None = None
+    routing_revision: int | None = None
+    catalog_generation: str | None = None
+    policy_generation: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -642,6 +673,8 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "ensure_task": EnsureTaskResponse,
     "get_downstream_tasks": GetDownstreamTasksResponse,
     "task_route": TaskRouteResponse,
+    "triage_options": TriageOptionsResponse,
+    "triage_defer": TriageDeferResponse,
     "spec_approve": SpecApproveResponse,
     "task_batch_propose": TaskBatchProposeResponse,
     "task_batch_update": TaskBatchAckResponse,

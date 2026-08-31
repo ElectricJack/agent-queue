@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from types import SimpleNamespace
 
@@ -17,8 +18,11 @@ from src.api.middleware import TokenAuthMiddleware
 from src.commands.handler import CommandHandler
 from src.config import AppConfig, DiscordConfig
 from src.database import Database
-from src.models import Agent, AgentProfile, AgentState, Project, SessionRecord, Task, TaskStatus
+from src.models import (
+    Agent, AgentProfile, AgentState, PlaybookRun, Project, SessionRecord, Task, TaskStatus,
+)
 from src.orchestrator import Orchestrator
+from src.sessions.harness_parser import Harness
 from src.vault import ensure_default_intelligence_classes
 
 
@@ -41,6 +45,9 @@ async def api(tmp_path, monkeypatch, request, generated_routers):
     )
     orch = Orchestrator(config)
     orch.db = db
+    orch.harness_registry.upsert(
+        Harness(id="codex", name="Codex", command="codex", model_flag="--model")
+    )
     handler = CommandHandler(orch, config)
     for pid in ("p", "other"):
         await db.create_project(Project(id=pid, name=pid))
@@ -49,8 +56,14 @@ async def api(tmp_path, monkeypatch, request, generated_routers):
             id=profile_id, name=profile_id, harness="codex", needs_workspace=False,
             default_class="fast-low" if profile_id == "triage" else "deep-high",
         ))
+    await db.create_playbook_run(
+        PlaybookRun("triage-run", "mandatory-triage", 1, project_id="p", role="triage")
+    )
     for worker, role in (("triager", "triage"), ("worker", "coder")):
-        await db.create_agent(Agent(id=worker, name=worker, profile_id=role))
+        await db.create_agent(Agent(
+            id=worker, name=worker, profile_id=role,
+            role="triage" if worker == "triager" else "worker",
+        ))
         await db.create_task(Task(
             id=f"{worker}-job", project_id="p", title=worker, description="Assigned work",
             status=TaskStatus.IN_PROGRESS, profile_id=role, assigned_agent_id=worker,
@@ -61,10 +74,14 @@ async def api(tmp_path, monkeypatch, request, generated_routers):
         await db.create_session(SessionRecord(
             id=f"s-{worker}", task_id=f"{worker}-job", project_id="p",
             agent_id=worker, profile_id=role, harness="codex", provider="fake",
-            name=f"s-{worker}", lifecycle="task", state="running",
+            name=f"s-{worker}", lifecycle="playbook" if worker == "triager" else "task",
+            state="running",
             work_dir=str(tmp_path), epoch="test", instance_token=f"instance-{worker}",
             started_at=time.time(),
+            playbook_run_id="triage-run" if worker == "triager" else None,
+            playbook_node_id="inspect" if worker == "triager" else None,
         ))
+    await db.update_playbook_run("triage-run", owner_session_id="s-triager")
     for tid, pid in (("target", "p"), ("foreign", "other"), ("human-waiter", "p")):
         await db.create_task(Task(
             id=tid, project_id=pid, title=tid, description="Needs routing",
@@ -121,30 +138,88 @@ async def api(tmp_path, monkeypatch, request, generated_routers):
                 return payload["result"]
             return payload
 
+        principal = await handler._triage_service.authenticate({
+            "kind": "session", "session_id": "s-triager", "project_id": "p",
+        })
+        options = await handler._triage_service.options(principal)
+        type_key = options["types"][0]["execution_type_key"]
+
         yield SimpleNamespace(
-            db=db, store=store, tokens=tokens, post=post, result=result,
-            gate=gate, foreign_gate=foreign_gate, human_gate=human_gate,
+            db=db, handler=handler, store=store, tokens=tokens, post=post, result=result,
+            gate=gate, foreign_gate=foreign_gate, human_gate=human_gate, type_key=type_key,
+            surface=request.param,
         )
     await db.close()
 
 
-@pytest.mark.parametrize("lifecycle", ["task", "pool"])
-async def test_authenticated_triage_routes_waiting_task(api, lifecycle, monkeypatch):
-    if lifecycle == "pool":
-        await api.db.update_session("s-triager", lifecycle="pool")
-        api.tokens["triager"] = await api.store.mint(
-            session_id="s-triager", task_id=None, project_id="p",
-        )
+async def test_authenticated_triage_routes_waiting_task(api, monkeypatch):
     # Exercise persistent tokens after a fresh daemon-side store, too.
     monkeypatch.setattr(deps, "_token_store", SessionTokenStore(api.db))
     result = api.result(await api.post("task_route", {
-        "task_id": "target", "profile_id": "coder", "intelligence_class": "deep-high",
+        "task_id": "target", "execution_type_key": api.type_key,
+        "expected_revision": 1, "reason": "Matches the requested work",
     }))
     assert result["resolved_gate_ids"] == [api.gate]
     task = await api.db.get_task("target")
-    assert (task.profile_id, task.intelligence_class) == ("coder", "deep-high")
+    assert (task.profile_id, task.intelligence_class) == ("project:p:coder", "deep-high")
     assert (await api.db.get_gate(api.gate))["status"] == "resolved"
     assert not (await deps._token_store.validate(api.tokens["triager"])).elevated
+
+
+async def test_authenticated_identical_route_retry_returns_existing_decision(api):
+    args = {
+        "task_id": "target",
+        "execution_type_key": api.type_key,
+        "expected_revision": 1,
+        "reason": "Matches the requested work",
+    }
+    first = api.result(await api.post("task_route", args))
+    retried = api.result(await api.post("task_route", args))
+    assert retried["decision_id"] == first["decision_id"]
+
+
+async def test_authenticated_options_and_durable_defer_use_live_scope(api):
+    options = api.result(await api.post("triage_options"))
+    assert options["types"][0]["execution_type_key"] == api.type_key
+    deferred = api.result(await api.post("triage_defer", {
+        "task_id": "target", "expected_revision": 1, "reason": "No safe match yet",
+    }))
+    assert deferred["success"] is True
+    assert (await api.db.get_gate(api.gate))["status"] == "open"
+
+
+async def test_legacy_profile_only_route_returns_migration_error(api):
+    response = await api.post("task_route", {"task_id": "target", "profile_id": "coder"})
+    payload = response.json()
+    if api.surface == "execute":
+        assert response.status_code == 200 and payload["details"]["code"] == "migration_required"
+    else:
+        assert response.status_code == 422 and "profile-only" in payload["error"]
+    assert (await api.db.get_gate(api.gate))["status"] == "open"
+
+
+async def test_direct_local_handler_call_cannot_bypass_triage_auth(api):
+    result = await api.handler.execute("task_route", {
+        "task_id": "target", "execution_type_key": api.type_key,
+        "expected_revision": 1, "reason": "Local bypass",
+    })
+    assert result["success"] is False and result["code"] == "unauthorized"
+    assert (await api.db.get_gate(api.gate))["status"] == "open"
+
+
+async def test_shared_config_editor_lock_precedes_completion_transaction(api):
+    lock = api.handler.orchestrator._intelligence_class_edit_lock
+    assert api.handler._triage_service.config_lock is lock
+    await lock.acquire()
+    operation = asyncio.create_task(api.post("task_route", {
+        "task_id": "target", "execution_type_key": api.type_key,
+        "expected_revision": 1, "reason": "Wait for coherent config",
+    }))
+    await asyncio.sleep(0)
+    assert not operation.done()
+    lock.release()
+    result = api.result(await operation)
+    assert result["success"] is True
 
 
 async def test_triage_lists_only_its_project_tasks(api):
@@ -185,8 +260,8 @@ async def test_triage_reads_intelligence_classes(api):
 @pytest.mark.parametrize("command,args", [
     ("get_task", {"task_id": "foreign"}),
     ("task_show", {"task_id": "foreign"}),
-    ("task_route", {"task_id": "foreign", "profile_id": "coder"}),
-    ("task_route", {"task_id": "target", "profile_id": "project:other:coder"}),
+    ("task_route", {"task_id": "foreign", "execution_type_key": "f" * 64,
+                    "expected_revision": 1, "reason": "Wrong project"}),
     ("list_tasks", {"project_id": "other"}),
 ])
 async def test_triage_cannot_cross_project_boundary(api, command, args):
@@ -205,7 +280,10 @@ async def test_triage_cannot_read_foreign_or_nonrouting_gate(api, which):
 
 async def test_triage_cannot_route_without_open_routing_gate(api):
     await api.db.resolve_gate(api.gate, resolved_by="test", resolution="Already routed")
-    response = await api.post("task_route", {"task_id": "target", "profile_id": "coder"})
+    response = await api.post("task_route", {
+        "task_id": "target", "execution_type_key": api.type_key,
+        "expected_revision": 1, "reason": "Route",
+    })
     assert response.status_code == 403, response.text
     assert (await api.db.get_task("target")).profile_id is None
 
@@ -228,7 +306,8 @@ async def test_triage_does_not_gain_operator_commands(api, command, args):
 
 
 @pytest.mark.parametrize("command,args", [
-    ("task_route", {"task_id": "target", "profile_id": "coder"}),
+    ("task_route", {"task_id": "target", "execution_type_key": "f" * 64,
+                    "expected_revision": 1, "reason": "Impersonation"}),
     ("list_tasks", {}),
 ])
 async def test_worker_cannot_impersonate_triage_through_request_fields(api, command, args):
@@ -242,19 +321,35 @@ async def test_worker_cannot_impersonate_triage_through_request_fields(api, comm
     assert (await api.db.get_task("target")).profile_id is None
 
 
-@pytest.mark.parametrize("change", ["stopped", "sleeping", "wrong-profile", "wrong-agent", "closed-task"])
+@pytest.mark.parametrize("change", ["stopped", "sleeping", "unlinked", "closed-run", "wrong-owner"])
 async def test_stale_or_unassigned_session_cannot_keep_triage_privileges(api, change):
     if change in {"stopped", "sleeping"}:
         await api.db.update_session("s-triager", state=change)
-    elif change == "wrong-profile":
-        await api.db.update_session("s-triager", profile_id="coder")
-    elif change == "wrong-agent":
-        await api.db.update_task("triager-job", assigned_agent_id="worker")
+    elif change == "unlinked":
+        await api.db.update_session("s-triager", playbook_run_id=None)
+    elif change == "closed-run":
+        await api.db.update_playbook_run("triage-run", status="completed")
     else:
-        await api.db.update_task("triager-job", status=TaskStatus.COMPLETED)
-    response = await api.post("task_route", {"task_id": "target", "profile_id": "coder"})
+        await api.db.update_playbook_run("triage-run", owner_session_id=None)
+    response = await api.post("task_route", {
+        "task_id": "target", "execution_type_key": api.type_key,
+        "expected_revision": 1, "reason": "Route",
+    })
     assert response.status_code == 403, response.text
     assert (await api.db.get_task("target")).profile_id is None
+
+
+async def test_request_identity_fields_neither_grant_nor_change_triage_authority(api):
+    result = api.result(await api.post("task_route", {
+        "task_id": "target", "execution_type_key": api.type_key,
+        "expected_revision": 1, "reason": "Authenticated choice",
+        "run_id": "fabricated", "session_id": "s-worker", "role": "supervisor",
+        "principal": {"project_id": "other", "instance_token": "fabricated"},
+    }))
+    assert result["success"] is True
+    decision = await api.db.get_routing_decision(result["decision_id"])
+    assert decision["playbook_run_id"] == "triage-run"
+    assert decision["project_id"] == "p"
 
 
 async def test_triage_ordinary_mutations_stay_pinned_to_its_own_task(api):

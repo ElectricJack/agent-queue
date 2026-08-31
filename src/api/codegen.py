@@ -316,6 +316,10 @@ def _make_input_model(cmd_name: str, input_schema: dict) -> type[BaseModel]:
     fields: dict[str, Any] = {}
     for prop_name, prop_schema in properties.items():
         py_type = _json_schema_type_to_python(prop_schema)
+        if prop_schema.get("strict"):
+            from pydantic import StrictInt, StrictStr
+
+            py_type = {int: StrictInt, str: StrictStr}.get(py_type, py_type)
         description = prop_schema.get("description", "")
         default = prop_schema.get("default")
 

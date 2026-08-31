@@ -979,6 +979,28 @@ task_routing_decisions = Table(
     Index("idx_task_routing_decisions_project", "project_id", "decided_at"),
 )
 
+task_routing_deferrals = Table(
+    "task_routing_deferrals",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, ForeignKey("projects.id"), nullable=False),
+    Column("task_id", Text, ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False),
+    Column("routing_revision", Integer, nullable=False),
+    Column("playbook_run_id", Text, nullable=False),
+    Column("catalog_generation", Text, nullable=False),
+    Column("policy_generation", Text, nullable=False),
+    Column("reason", Text, nullable=False),
+    Column("deferred_at", Float, nullable=False),
+    UniqueConstraint(
+        "task_id",
+        "routing_revision",
+        "catalog_generation",
+        "policy_generation",
+        name="uq_task_routing_deferral_generation",
+    ),
+    Index("idx_task_routing_deferrals_project", "project_id", "deferred_at"),
+)
+
 workflows = Table(
     "workflows",
     metadata,

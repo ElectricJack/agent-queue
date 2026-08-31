@@ -3592,7 +3592,7 @@ class TaskCommandsMixin:
             out.append({"id": t.id, "title": t.title, "status": t.status.value})
         return {"success": True, "tasks": out}
 
-    async def _cmd_task_route(self, args: dict) -> dict:
+    async def _cmd_legacy_task_route(self, args: dict) -> dict:
         """Route a task: assign profile + intelligence class (+ workspace).
 
         dv2 phase 1 — the ONLY resolver for ``routing`` gates.  Writes

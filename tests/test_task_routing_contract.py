@@ -175,7 +175,7 @@ async def test_route_omission_keeps_existing_class(setup):
     await db.create_task(Task(id="t", project_id="p", title="T", description="",
                               intelligence_class="deep-high"))
     result = await handler._cmd_task_route({"task_id": "t", "profile_id": "coder"})
-    assert result["success"]
+    assert result["success"] is False and result["code"] == "unauthorized"
     assert (await db.get_task("t")).intelligence_class == "deep-high"
 
 
@@ -190,7 +190,7 @@ async def test_route_rejects_running_or_claimed_task(setup, status, assigned):
         "task_id": "t", "profile_id": "coder", "intelligence_class": "deep-high",
     })
     assert result["success"] is False
-    assert "stop" in result["error"].lower()
+    assert result["code"] == "unauthorized"
     assert (await db.get_task("t")).profile_id is None
 
 
@@ -299,6 +299,10 @@ async def test_routing_stopped_task_does_not_restart_it(setup, command):
     result = await getattr(handler, command)({
         "task_id": "t", "profile_id": "coder", "intelligence_class": "deep-high",
     })
+    if command == "_cmd_task_route":
+        assert result["success"] is False and result["code"] == "unauthorized"
+        assert (await db.get_task("t")).intelligence_class is None
+        return
     assert "error" not in result
     task = await db.get_task("t")
     assert task.status == TaskStatus.BLOCKED

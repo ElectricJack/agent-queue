@@ -237,7 +237,9 @@ _TOOL_CATEGORIES: dict[str, str] = {
     # control plane — dv2 phase 1
     "ensure_task": "task",
     "get_downstream_tasks": "task",
+    "triage_options": "task",
     "task_route": "task",
+    "triage_defer": "task",
     # review policy — dv2 phase 2
     "pr_merge": "git",
     # worker pools — sizing and bounds (swarm-work-model §11)
@@ -940,36 +942,54 @@ _ALL_TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "triage_options",
+        "description": (
+            "List current project-scoped execution types for a live mandatory-triage run. "
+            "Busy members remain valid and idle capacity is reported separately."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
         "name": "task_route",
         "description": (
-            "Route a task: assign its agent profile, optional intelligence "
-            "class, and optional workspace, then resolve any open 'routing' "
-            "gates on the task. This is the ONLY way to resolve routing gates "
-            "— generic gate_resolve refuses them. Used by the triage agent to "
-            "release work into the scheduler."
+            "Record one immutable mandatory-triage decision for the task's current routing "
+            "revision, pin the exact execution type, and resolve only routing gates."
         ),
         "input_schema": {
             "type": "object",
+            "additionalProperties": False,
             "properties": {
                 "task_id": {"type": "string", "description": "Task ID to route"},
+                "execution_type_key": {
+                    "type": "string",
+                    "strict": True,
+                    "description": "Stable key returned by triage_options",
+                },
+                "expected_revision": {"type": "integer", "minimum": 1, "strict": True},
+                "reason": {"type": "string", "minLength": 1, "strict": True},
                 "profile_id": {
                     "type": "string",
-                    "description": "Agent profile ID that should execute the task",
-                },
-                "intelligence_class": {
-                    "type": "string",
-                    "description": (
-                        "Intelligence class id (e.g. 'fast-low', 'standard-medium', 'deep-high') "
-                        "from vault/intelligence-classes/. Requires a matching worker at "
-                        "launch. Omit to preserve the task's existing class or profile default."
-                    ),
-                },
-                "workspace_id": {
-                    "type": "string",
-                    "description": "Workspace to prefer for execution (optional)",
+                    "description": "Deprecated profile-only routing input",
                 },
             },
-            "required": ["task_id", "profile_id"],
+            "required": ["task_id"],
+        },
+    },
+    {
+        "name": "triage_defer",
+        "description": (
+            "Persist why the live triage run cannot route a task for the current task, catalog, "
+            "and policy generations. The routing gate remains open."
+        ),
+        "input_schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "task_id": {"type": "string"},
+                "expected_revision": {"type": "integer", "minimum": 1, "strict": True},
+                "reason": {"type": "string", "minLength": 1, "strict": True},
+            },
+            "required": ["task_id", "expected_revision", "reason"],
         },
     },
     {

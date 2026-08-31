@@ -5,8 +5,10 @@ See docs/specs/implementation/session-runtime.md §3.5 and design §6.
 
 from __future__ import annotations
 
+import asyncio
 import textwrap
 
+from src.agents.execution_types import execution_catalog_config_lock
 from src.sessions.harness_parser import (
     parse_harness_markdown,
     resolve_base,
@@ -364,6 +366,31 @@ class TestRegistryWatcher:
             on_reload=on_reload,
         )
         assert registry.get("claude").command == "new"
+
+    async def test_watcher_batch_waits_for_shared_execution_catalog_lock(self, tmp_path):
+        registry = HarnessRegistry()
+        path = tmp_path / "harnesses" / "claude.md"
+        path.parent.mkdir()
+        path.write_text(_md('{"command": "old"}'))
+        load_from_vault(registry, str(tmp_path))
+        lock = execution_catalog_config_lock()
+
+        await lock.acquire()
+        try:
+            update = asyncio.create_task(
+                _on_harness_changed(
+                    [VaultChange(str(path), "harnesses/claude.md", "deleted")],
+                    registry=registry,
+                )
+            )
+            await asyncio.sleep(0)
+            assert not update.done()
+            assert registry.get("claude") is not None
+        finally:
+            lock.release()
+
+        await update
+        assert registry.get("claude") is None
 
     def test_missing_vault_root_is_not_an_error(self, tmp_path):
         registry = HarnessRegistry()

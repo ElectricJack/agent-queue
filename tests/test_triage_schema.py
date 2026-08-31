@@ -174,8 +174,9 @@ def migrate(engine, target, *, downgrade=False):
 
 @pytest.mark.parametrize("foreign_keys", [False, True])
 def test_migration_preserves_legacy_rows_and_refuses_audit_loss(tmp_path, foreign_keys):
-    head = ScriptDirectory.from_config(Config("alembic.ini")).get_current_head()
-    revision = ScriptDirectory.from_config(Config("alembic.ini")).get_revision(head)
+    # This assertion belongs to the mandatory-triage persistence revision,
+    # even after later additive triage revisions become the repository head.
+    revision = ScriptDirectory.from_config(Config("alembic.ini")).get_revision("72671cc2b86c")
     engine = sa.create_engine(f"sqlite:///{tmp_path / 'migration.db'}")
     if foreign_keys:
 
@@ -192,7 +193,7 @@ def test_migration_preserves_legacy_rows_and_refuses_audit_loss(tmp_path, foreig
                     "INSERT INTO tasks(id,project_id,title,description,created_at,updated_at) VALUES ('t','p','T','D',1,1)"
                 )
             )
-        migrate(engine, "head")
+        migrate(engine, revision.revision)
         with engine.begin() as conn:
             row = conn.execute(sa.text("SELECT * FROM tasks WHERE id='t'")).mappings().one()
             assert row["routing_revision"] == 1 and row["routing_decision_id"] is None

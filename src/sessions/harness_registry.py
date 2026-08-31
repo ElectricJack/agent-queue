@@ -212,6 +212,22 @@ async def _on_harness_changed(
     on_reload: OnReloadHook | None = None,
 ) -> None:
     """Watcher callback — reparse changed files, update the registry."""
+    from src.agents.execution_types import execution_catalog_config_lock
+
+    async with execution_catalog_config_lock():
+        touched = _apply_harness_changes(changes, registry=registry)
+
+    if touched and on_reload is not None:
+        try:
+            await on_reload(touched)
+        except Exception:
+            logger.exception("Harness registry on_reload hook raised")
+
+
+def _apply_harness_changes(
+    changes: list[VaultChange], *, registry: HarnessRegistry
+) -> list[tuple[str | None, str]]:
+    """Apply one watcher batch while the shared catalog lock is held."""
     touched: list[tuple[str | None, str]] = []
 
     for change in changes:
@@ -253,11 +269,7 @@ async def _on_harness_changed(
             project_id or "system",
         )
 
-    if touched and on_reload is not None:
-        try:
-            await on_reload(touched)
-        except Exception:
-            logger.exception("Harness registry on_reload hook raised")
+    return touched
 
 
 def register_harness_handlers(

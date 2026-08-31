@@ -43,6 +43,7 @@ from src.commands.question_commands import QuestionCommandsMixin
 from src.commands.system_commands import SystemCommandsMixin
 from src.commands.project_commands import ProjectCommandsMixin
 from src.commands.task_commands import TaskCommandsMixin
+from src.commands.triage_commands import TriageCommandsMixin
 from src.commands.task_comment_commands import TaskCommentCommandsMixin
 from src.commands.agent_commands import AgentCommandsMixin
 from src.commands.profile_commands import ProfileCommandsMixin
@@ -303,6 +304,7 @@ def _is_memory_command(name: str) -> bool:
 
 class CommandHandler(
     ClaimCommandsMixin,
+    TriageCommandsMixin,
     QuestionCommandsMixin,
     SystemCommandsMixin,
     ProjectCommandsMixin,
@@ -409,6 +411,29 @@ class CommandHandler(
         # ``self._current_scope`` explicitly; everything else ignores it.
         # Backed by ``_current_scope_var`` — see its docstring.
         self._current_scope = None
+        # Catalog/config lock order is always this lock before ``db.immediate``.
+        # Intelligence-class editing already owns the same orchestrator-wide
+        # lock while saving and publishing the builder's new class map.
+        config_lock = getattr(orchestrator, "_intelligence_class_edit_lock", None)
+        if config_lock is None:
+            from src.agents.execution_types import execution_catalog_config_lock
+
+            config_lock = execution_catalog_config_lock()
+            orchestrator._intelligence_class_edit_lock = config_lock
+        from src.triage.service import TriageService
+
+        async def emit_triage_event(name, payload):
+            bus = getattr(orchestrator, "bus", None)
+            if bus is not None:
+                await bus.emit(name, payload)
+
+        self._triage_service = TriageService(
+            self.db,
+            builder=getattr(orchestrator, "session_spec_builder", None),
+            harness_registry=getattr(orchestrator, "harness_registry", None),
+            config_lock=config_lock,
+            event_callback=emit_triage_event,
+        )
 
     @property
     def _current_scope(self) -> dict | None:

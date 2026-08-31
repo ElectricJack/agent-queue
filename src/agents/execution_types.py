@@ -2,12 +2,26 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import asdict, dataclass
 import hashlib
 import json
 
 from src.agents.configuration import apply_agent_overrides
 from src.models import AgentState
+
+
+_CONFIG_LOCKS: dict[asyncio.AbstractEventLoop, asyncio.Lock] = {}
+
+
+def execution_catalog_config_lock() -> asyncio.Lock:
+    """Return the catalog editor lock for the current daemon/test loop."""
+    loop = asyncio.get_running_loop()
+    lock = _CONFIG_LOCKS.get(loop)
+    if lock is None:
+        lock = asyncio.Lock()
+        _CONFIG_LOCKS[loop] = lock
+    return lock
 
 
 @dataclass(frozen=True)
@@ -34,12 +48,17 @@ class ExecutionCatalog:
 
 
 async def resolve_execution_catalog(
-    db, project_id, *, builder, harness_registry
+    db, project_id, *, builder, harness_registry, conn=None
 ) -> ExecutionCatalog:
     """Resolve every eligible worker exactly once, without a target task."""
-    agents = await db.list_agents(include_deleted=True)
-    profiles = {profile.id: profile for profile in await db.list_profiles()}
-    sessions = await db.list_sessions(live_only=True)
+    if conn is None:
+        agents = await db.list_agents(include_deleted=True)
+        profile_rows = await db.list_profiles()
+        sessions = await db.list_sessions(live_only=True)
+    else:
+        agents, profile_rows, sessions = await db.routing_catalog_inputs_on(conn)
+        sessions = [s for s in sessions if s.state in {"starting", "running", "draining"}]
+    profiles = {profile.id: profile for profile in profile_rows}
     occupied = {session.agent_id for session in sessions if session.agent_id}
     grouped: dict[str, list[str]] = {}
     identities: dict[str, ExecutionIdentity] = {}

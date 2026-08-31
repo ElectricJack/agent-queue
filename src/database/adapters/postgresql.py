@@ -38,6 +38,7 @@ from src.database.queries.message_queries import MessageQueriesMixin
 from src.database.queries.profile_queries import ProfileQueryMixin
 from src.database.queries.project_queries import ProjectQueryMixin
 from src.database.queries.repo_queries import RepoQueryMixin
+from src.database.queries.routing_decision_queries import RoutingDecisionQueriesMixin
 from src.database.queries.result_queries import ResultQueryMixin
 from src.database.queries.session_queries import SessionQueryMixin
 from src.database.queries.task_session_queries import TaskSessionQueryMixin
@@ -61,6 +62,7 @@ class PostgreSQLDatabaseAdapter(
     ProjectQueryMixin,
     ProfileQueryMixin,
     RepoQueryMixin,
+    RoutingDecisionQueriesMixin,
     TaskQueryMixin,
     TaskCommentQueriesMixin,
     DependencyQueryMixin,
