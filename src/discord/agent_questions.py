@@ -268,6 +268,12 @@ class AgentQuestionNotifications:
                         "Discord channel %s not resolvable; falling back to project %s",
                         channel_id, msg.project_id,
                     )
+                elif discord_thread and not channel_id.isdigit():
+                    logger.warning(
+                        "Malformed Discord thread id %r on message %s; "
+                        "falling back to project %s",
+                        thread_id, ident, msg.project_id,
+                    )
                 mentions = discord.AllowedMentions.none()
                 if parked:
                     embed = discord.Embed(
@@ -287,9 +293,23 @@ class AgentQuestionNotifications:
                             project_id=msg.project_id, embed=embed, allowed_mentions=mentions,
                         )
                 elif channel is not None:
-                    message = await self.bot._send_long_message(
-                        channel, msg.body, allowed_mentions=mentions, single_message=True,
-                    )
+                    try:
+                        message = await self.bot._send_long_message(
+                            channel, msg.body, allowed_mentions=mentions, single_message=True,
+                        )
+                    except discord.NotFound:
+                        # The cached thread was deleted between lookup and send.
+                        # Fall back once to the project channel; the receipt
+                        # written below keeps retries from posting again.
+                        logger.warning(
+                            "Discord thread %s deleted for message %s; "
+                            "falling back to project %s",
+                            thread_id, ident, msg.project_id,
+                        )
+                        message = await self.bot._send_message(
+                            msg.body, project_id=msg.project_id,
+                            allowed_mentions=mentions, single_message=True,
+                        )
                 else:
                     message = await self.bot._send_message(
                         msg.body, project_id=msg.project_id,

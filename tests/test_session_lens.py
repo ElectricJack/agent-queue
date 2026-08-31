@@ -10,6 +10,7 @@ LLM.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 
@@ -303,6 +304,117 @@ class TestEnsureStarted:
         assert row.profile_id == "supervisor"
         assert row.state == "running"
 
+    async def test_concurrent_supervisor_alias_wakes_start_once(self, db, providers, lens):
+        """Two concurrent wakes of the same supervisor address (message
+        cascade + button/terminal wake) must serialize on the runtime-name
+        lock: exactly one provider start and one sessions row."""
+        fake = providers.create("fake")
+        gate = asyncio.Event()
+        original_start = fake.start
+
+        async def slow_start(spec):
+            await gate.wait()
+            return await original_start(spec)
+
+        fake.start = slow_start  # registry caches instances; lens sees this
+        first = asyncio.create_task(
+            lens.ensure_started(
+                kind="session", target_id=_supervisor_address("proj1"), project_id="proj1"
+            )
+        )
+        second = asyncio.create_task(
+            lens.ensure_started(
+                kind="session", target_id=_supervisor_address("proj1"), project_id=None
+            )
+        )
+        # Let both callers reach the start lock before releasing the launch.
+        await asyncio.sleep(0.05)
+        gate.set()
+        assert await first is True
+        assert await second is True
+
+        assert len(fake.starts) == 1
+        rows = await db.list_sessions(name=_supervisor_runtime_name("proj1"))
+        assert len(rows) == 1
+
+    async def test_failed_start_stops_owned_handle_and_revokes_minted_token(
+        self, db, providers, spec_builder, harness_registry, config, profiles_loader
+    ):
+        class _TokenStore:
+            def __init__(self):
+                self.minted: list[str] = []
+                self.revoked: list[str] = []
+
+            async def mint(self, *, session_id, task_id, project_id, elevated):
+                self.minted.append(session_id)
+                return "tok-abc"
+
+            async def revoke_session(self, session_id):
+                self.revoked.append(session_id)
+
+        store = _TokenStore()
+        lens = SessionLens(
+            db=db,
+            providers=providers,
+            spec_builder=spec_builder,
+            harness_registry=harness_registry,
+            config=config,
+            profiles_loader=profiles_loader,
+            epoch=TEST_EPOCH,
+            token_store=store,
+        )
+        fake = providers.create("fake")
+        runtime_name = _supervisor_runtime_name("proj1")
+        fake.script_start_error(runtime_name, RuntimeError("launch exploded"))
+        stops: list = []
+        original_stop = fake.stop
+
+        async def recording_stop(handle, **kwargs):
+            stops.append(handle)
+            return await original_stop(handle, **kwargs)
+
+        fake.stop = recording_stop
+
+        ok = await lens.ensure_started(
+            kind="session", target_id=_supervisor_address("proj1"), project_id="proj1"
+        )
+
+        assert ok is False
+        # The fenced handle we precomputed for our own launch was stopped —
+        # name and a real instance token, so a same-named successor started
+        # by adoption would not be touched.
+        assert len(stops) == 1
+        assert stops[0].name == runtime_name
+        assert stops[0].instance_token
+        # The minted token was revoked for exactly the session we tried.
+        assert store.minted and store.revoked == store.minted
+        # No running row was left behind.
+        assert await db.get_session_by_name(runtime_name) is None
+
+    async def test_supervisor_address_project_takes_precedence_over_caller_project(
+        self, db, providers, lens
+    ):
+        """CHAT-1 pin: the ``supervisor-<pid>`` address suffix is the
+        authoritative project identity.  A caller passing a *different*
+        ``project_id`` still reaches (and cold-starts) the supervisor the
+        address names — the argument is only a fallback for an empty
+        suffix.  Callers must therefore never build the address from one
+        project and the argument from another; see the delivery engine,
+        which derives both from the same message row.
+        """
+        await db.create_project(Project(id="proj2", name="Proj2"))
+        ok = await lens.ensure_started(
+            kind="session", target_id=_supervisor_address("proj1"), project_id="proj2"
+        )
+        assert ok is True
+        starts = providers.create("fake").starts
+        assert len(starts) == 1
+        assert starts[0].session_name == _supervisor_runtime_name("proj1")
+        row = await db.get_session_by_name(_supervisor_runtime_name("proj1"))
+        assert row is not None
+        assert row.project_id == "proj1"
+        assert await db.get_session_by_name(_supervisor_runtime_name("proj2")) is None
+
     async def test_refuses_when_project_id_missing(self, providers, lens):
         # A bare ``supervisor-`` address (empty suffix) with no project_id
         # fallback means we can't identify the project. Refuse before we
@@ -572,6 +684,57 @@ class TestTailAssistantTurn:
             target_id=row.task_id,
             project_id="proj1",
             since=time.time(),
+        )
+        assert got is None
+
+    async def test_unsupported_or_missing_transcript_reader_returns_none_without_raising(
+        self, db, providers, lens, tmp_path, monkeypatch
+    ):
+        """A harness with no transcript reader — or a supported harness
+        whose transcript file does not exist — yields ``None`` (no reply
+        fallback), never an exception or a fabricated tail."""
+        from src.sessions.provider import SessionSpec
+
+        # 1. Unsupported harness: resolve_reader() knows claude/codex only.
+        fake = providers.create("fake")
+        name = "s-task-gem"
+        await fake.start(
+            SessionSpec(
+                session_name=name,
+                work_dir="/tmp/wd-gem",
+                command=("gemini",),
+                instance_token="tok-gem",
+            )
+        )
+        await db.create_session(
+            SessionRecord(
+                id="sess-gem",
+                project_id="proj1",
+                profile_id="worker",
+                harness="gemini",
+                provider="fake",
+                name=name,
+                lifecycle="task",
+                work_dir="/tmp/wd-gem",
+                epoch="e1",
+                instance_token="tok-gem",
+                started_at=time.time(),
+                state="running",
+            )
+        )
+        got = await lens.tail_assistant_turn(
+            kind="session", target_id=name, project_id="proj1", since=0.0
+        )
+        assert got is None
+
+        # 2. Supported harness, but no transcript file on disk: the claude
+        # reader resolves under $HOME, which we point at an empty tmp dir.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        row = await self._seed_task_with_transcript(
+            db, providers, "/tmp/wd-no-transcript", "no-such-key"
+        )
+        got = await lens.tail_assistant_turn(
+            kind="task", target_id=row.task_id, project_id="proj1", since=0.0
         )
         assert got is None
 

@@ -1045,6 +1045,19 @@ class TaskFailedView(discord.ui.View):
         super().__init__(timeout=3600)  # 1 hour
         self.task_id = task_id
         self._handler = handler
+        # Set once a retry/skip has been applied.  Discord disables the
+        # buttons on edit, but a second click can still race in before the
+        # edit lands — it must not fire the command a second time.
+        self._resolved = False
+
+    async def _already_resolved(self, interaction: discord.Interaction) -> bool:
+        if self._resolved:
+            await interaction.response.send_message(
+                f"Task `{self.task_id}` was already handled from this notification.",
+                ephemeral=True,
+            )
+            return True
+        return False
 
     @discord.ui.button(
         label="Retry Task",
@@ -1057,11 +1070,14 @@ class TaskFailedView(discord.ui.View):
         if not self._handler:
             await interaction.response.send_message("Handler not available.", ephemeral=True)
             return
+        if await self._already_resolved(interaction):
+            return
         await interaction.response.defer(ephemeral=True)
         result = await self._handler.execute("restart_task", {"task_id": self.task_id})
         if "error" in result:
             await interaction.followup.send(f"Could not restart: {result['error']}", ephemeral=True)
         else:
+            self._resolved = True
             prev = result.get("previous_status", "?")
             await interaction.followup.send(
                 f"🔄 Task `{self.task_id}` restarted ({prev} → READY)",
@@ -1086,11 +1102,14 @@ class TaskFailedView(discord.ui.View):
         if not self._handler:
             await interaction.response.send_message("Handler not available.", ephemeral=True)
             return
+        if await self._already_resolved(interaction):
+            return
         await interaction.response.defer(ephemeral=True)
         result = await self._handler.execute("skip_task", {"task_id": self.task_id})
         if "error" in result:
             await interaction.followup.send(f"Could not skip: {result['error']}", ephemeral=True)
         else:
+            self._resolved = True
             unblocked = result.get("unblocked_count", 0)
             msg = f"⏭️ Task `{self.task_id}` skipped."
             if unblocked:
