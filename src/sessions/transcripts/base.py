@@ -35,9 +35,11 @@ def parse_iso_ts(raw) -> float:
     if isinstance(raw, (int, float)):
         return float(raw)
     try:
-        return datetime.fromisoformat(str(raw).replace("Z", "+00:00")).astimezone(
-            timezone.utc
-        ).timestamp()
+        return (
+            datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+            .astimezone(timezone.utc)
+            .timestamp()
+        )
     except Exception:
         return 0.0
 
@@ -65,6 +67,7 @@ class TranscriptEntry:
     model: str | None
     usage: dict | None
     ts: float
+    turn_complete: bool = False
 
 
 class TranscriptReader(ABC):
@@ -91,15 +94,11 @@ class TranscriptReader(ABC):
         return None
 
     @abstractmethod
-    def resolve_path(
-        self, work_dir: str, session_key: str | None
-    ) -> Path | None:
+    def resolve_path(self, work_dir: str, session_key: str | None) -> Path | None:
         """Locate the transcript file for a session, or ``None``."""
 
     @abstractmethod
-    async def read_new(
-        self, path: Path, offset: int
-    ) -> tuple[list[TranscriptEntry], int]:
+    async def read_new(self, path: Path, offset: int) -> tuple[list[TranscriptEntry], int]:
         """Parse everything after byte *offset*.  Returns (entries, new_offset)."""
 
     def infer_activity(self, tail: list[TranscriptEntry]) -> str:
@@ -114,7 +113,16 @@ class TranscriptReader(ABC):
 
         if not tail:
             return "idle"
-        last = tail[-1]
+        meaningful = [
+            entry
+            for entry in tail
+            if not (entry.type == "assistant" and not entry.text and entry.usage)
+        ]
+        if not meaningful:
+            return "idle"
+        last = meaningful[-1]
+        if last.turn_complete:
+            return "idle"
         if last.type not in ("assistant", "tool_use"):
             return "idle"
         if not last.ts:

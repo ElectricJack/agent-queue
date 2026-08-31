@@ -689,3 +689,16 @@ class TestCascadeWiring:
         # single try/except wraps both, matching the spec §5 policy that a
         # delivery failure is a single logical unit.
         assert engine.timeout_calls == 0
+
+
+async def test_internal_question_handoff_does_not_generate_user_transcript_reply(db):
+    msg = await db.create_message(project_id=None, from_kind="system", from_id="agent-questions",
+        to_kind="session", to_id="n-supervisor--global", body="Untrusted worker question",
+        body_kind="agent_question")
+    await db.mark_delivered(msg.id)
+    async with db._engine.begin() as conn:
+        await conn.execute(sa_update(messages).where(messages.c.id == msg.id).values(delivered_at=1))
+    sessions = FakeSessionManager(tail_map={("session", "n-supervisor--global", None): "A supervisor answer"})
+    engine = make_engine(db, sessions, config=MessagesConfig(transcript_tail_fallback=True, reply_timeout=1))
+    assert await engine.check_reply_timeouts() == 0
+    assert await db.list_messages(to_kind="user") == []

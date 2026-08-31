@@ -53,6 +53,9 @@ class SessionTrackingState:
     #: file (session_key was previously unknown, then the ``--session-id``
     #: pin took effect and a specific jsonl became findable).
     last_path: Path | None = None
+    #: Independent checkpoint: a failed question write must be retried
+    #: without re-emitting transcript output or charging usage twice.
+    question_offset: int = 0
 
 
 class TranscriptWatcher:
@@ -70,12 +73,14 @@ class TranscriptWatcher:
         bus,
         base_dir: Path | None = None,
         tail_size: int = 20,
+        questions=None,
     ) -> None:
         self.db = db
         self.bus = bus
         self.base_dir = base_dir
         self._states: dict[str, SessionTrackingState] = {}
         self._tail_size = tail_size
+        self.questions = questions
 
     async def tick(self, *, now: float | None = None) -> None:
         """One poll pass.  Never raises."""
@@ -135,12 +140,26 @@ class TranscriptWatcher:
             # the *new* file would be re-charged.  We accept that trade to
             # keep bookkeeping bounded per live session.
             state.offset = 0
+            state.question_offset = 0
             state.charged_uuids.clear()
         state.last_path = path
         await self._learn_session_key(row, reader, path)
 
-        entries, new_offset = await reader.read_new(path, state.offset)
+        previous_offset = state.offset
+        entries, new_offset = await reader.read_new(path, previous_offset)
         state.offset = new_offset
+        if self.questions is not None:
+            try:
+                question_entries, question_end = entries, new_offset
+                if state.question_offset != previous_offset:
+                    question_entries, question_end = await reader.read_new(path, state.question_offset)
+                if question_entries:
+                    await self.questions.observe(row, question_entries)
+                state.question_offset = question_end
+            except Exception:
+                # Keep the question checkpoint for retry, while ordinary
+                # output/accounting/activity still consume this batch once.
+                logger.warning("question observation failed for %s", row.id, exc_info=True)
         if not entries:
             return
 

@@ -750,6 +750,26 @@ _SESSION_SCHEMAS: dict[str, EventSchema] = {
     # id: the watcher falls back to the peek-diff path silently on
     # subsequent ticks so a healthy session with a slow-arriving transcript
     # does not spam the bus.
+    "agent.question": {
+        "required": ["id", "session_id", "session_name", "instance_token", "task_id",
+                     "project_id", "agent_id", "turn_id", "question", "requires_human",
+                     "state", "created_at", "updated_at"],
+        "optional": ["answer", "answered_by", "discord_channel_id", "discord_message_id",
+                     "claim_epoch", "source_ts", "supervisor_routed_at", "notification_next_at",
+                     "notification_attempts", "delivery_token", "delivery_lease_until", "delivered_at", "reason"],
+        "types": {"id": str, "session_id": str, "instance_token": str, "task_id": str,
+                  "question": str, "state": str, "requires_human": bool},
+    },
+    "agent.question.updated": {
+        "required": ["id", "session_id", "session_name", "instance_token", "task_id",
+                     "project_id", "agent_id", "turn_id", "question", "requires_human",
+                     "state", "created_at", "updated_at"],
+        "optional": ["answer", "answered_by", "discord_channel_id", "discord_message_id",
+                     "claim_epoch", "source_ts", "supervisor_routed_at", "notification_next_at",
+                     "notification_attempts", "delivery_token", "delivery_lease_until", "delivered_at", "reason"],
+        "types": {"id": str, "session_id": str, "instance_token": str, "task_id": str,
+                  "question": str, "state": str, "requires_human": bool},
+    },
     "session.transcript_missing": {
         "required": ["session_id"],
         "optional": ["task_id", "project_id", "harness", "work_dir"],

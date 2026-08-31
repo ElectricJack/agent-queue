@@ -15,7 +15,7 @@ export function AgentSubagents({ agent }: { agent: FlockAgent }) {
 }
 
 export function AgentState({ agent }: { agent: FlockAgent }) {
-  return agent.state || "Idle";
+  return agent.waiting_question ? "Waiting for input" : agent.state || "Idle";
 }
 
 export function AgentEligibility({ agent }: { agent: FlockAgent }) {
@@ -24,4 +24,18 @@ export function AgentEligibility({ agent }: { agent: FlockAgent }) {
       New work disabled
     </span>
   ) : null;
+}
+
+
+export function AgentWaitingQuestion({ agent }: { agent: FlockAgent }) {
+  const question = agent.waiting_question;
+  if (!question) return null;
+  const label = question.state === "answered" ? "Answer queued"
+    : question.state === "supervisor" ? "Awaiting supervisor" : "Waiting for your reply";
+  return (
+    <span className="block text-amber-300">
+      <span className="block">{label}</span>
+      <span className="block truncate text-gray-400" title={question.question}>{question.question}</span>
+    </span>
+  );
 }

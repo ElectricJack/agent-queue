@@ -120,6 +120,9 @@ class DiscordNotificationHandler:
         self.bot = bot
         self.bus = bus
         self._unsubscribes: list[Any] = []
+        from src.discord.agent_questions import _notifications
+
+        self._questions = _notifications(bot)
 
         # Thread management — maps task_id → (send_to_thread, notify_main)
         self._task_threads: dict[str, tuple[Any, Any]] = {}
@@ -173,6 +176,9 @@ class DiscordNotificationHandler:
             # events with ``to_kind=user``; render them into the originating
             # project channel.
             ("message.sent", self._on_message_sent),
+            ("message.delivered", self._on_message_sent),
+            ("agent.question", self._questions.notify),
+            ("agent.question.updated", self._questions.update),
             # Wave 4 — work-graph gates as interactive Discord embeds.
             ("gate.created", self._on_gate_created),
             ("gate.resolved", self._on_gate_resolved),
@@ -1085,91 +1091,11 @@ class DiscordNotificationHandler:
     # ------------------------------------------------------------------
 
     async def _on_message_sent(self, data: dict) -> None:
-        """Render ``message.sent`` events destined for Discord users.
-
-        Two producer paths land here:
-
-        1. ``from_kind == "session"``: supervisor/agent reply to a user
-           (Phase-4 cutover reply path).  Rendered as plain text via
-           ``_send_long_message``.
-        2. ``from_kind == "system"`` with ``from_id == "delivery-engine"``:
-           a parked-message notification from
-           ``MessageDeliveryEngine._maybe_park`` — the user's original
-           message could not be delivered.  Rendered as a warning embed
-           so the failure is visible instead of silently dropped.
-
-        Scope guards: ``to_kind`` must be ``user``; ``thread_id`` must
-        carry the ``discord:`` prefix set by the cutover send path.  User-
-        authored echoes (``from_kind == "user"``) are dropped.
-        """
-        import discord
-
-        if data.get("to_kind") != "user":
-            return
-        from_kind = data.get("from_kind")
-        if from_kind not in ("session", "system"):
-            return
-        thread_id = data.get("thread_id")
-        if not isinstance(thread_id, str) or not thread_id.startswith("discord:"):
-            return
-        project_id = data.get("project_id")
-        message_id = data.get("message_id")
-        if not project_id or not message_id:
-            return
-        channel_id_str = thread_id.split(":", 1)[1] if ":" in thread_id else ""
+        """Render session replies once, acknowledging actual Discord delivery."""
         try:
-            db = self.bot.orchestrator.db
-            msg = await db.get_message(message_id)
+            await self._questions.send_user_message(data)
         except Exception:
-            logger.exception("message.sent: failed to load message %s", message_id)
-            return
-        if msg is None or not msg.body:
-            return
-
-        channel = None
-        if channel_id_str.isdigit():
-            try:
-                channel = self.bot.get_channel(int(channel_id_str))
-            except Exception:
-                channel = None
-        if channel is None and channel_id_str.isdigit():
-            logger.warning(
-                "message.sent: channel %s not resolvable via bot.get_channel; "
-                "falling back to project channel resolver (project=%s)",
-                channel_id_str,
-                project_id,
-            )
-
-        try:
-            if from_kind == "system":
-                # Parked-message warning — render as an embed so it is
-                # visually distinct from normal supervisor replies.
-                body = msg.body
-                desc = body if len(body) <= 3800 else body[:3800] + "…"
-                embed = discord.Embed(
-                    title="⚠️ Message not delivered",
-                    description=desc,
-                    color=discord.Color.orange(),
-                )
-                brief = "⚠️ A previous message was not delivered — see details."
-                if channel is not None:
-                    await self.bot._safe_api_call(
-                        channel.send(content=brief, embed=embed),
-                        critical=False,
-                        context="message.sent parked warning",
-                    )
-                else:
-                    await self.bot._send_message(brief, project_id=project_id, embed=embed)
-            else:
-                # from_kind == "session" — plain text reply.
-                if channel is not None:
-                    await self.bot._send_long_message(channel, msg.body)
-                else:
-                    await self.bot._send_message(msg.body, project_id=project_id)
-        except Exception:
-            logger.exception(
-                "message.sent: failed to post reply for project %s", project_id
-            )
+            logger.exception("Discord delivery failed for message %s", data.get("message_id"))
 
     # ------------------------------------------------------------------
     # Work-graph gates (Wave 4)

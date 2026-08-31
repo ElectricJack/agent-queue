@@ -11349,6 +11349,141 @@
           }
         }
       }
+    },
+    "/api/message/question-list": {
+      "post": {
+        "tags": [
+          "message"
+        ],
+        "summary": "List pending worker questions visible to the human or live supervisor.",
+        "description": "List pending worker questions visible to the human or live supervisor.",
+        "operationId": "question_list",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QuestionListRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/message/question-answer": {
+      "post": {
+        "tags": [
+          "message"
+        ],
+        "summary": "Answer a pending worker question in its original live session. Human approval cannot be supplied by supervisors.",
+        "description": "Answer a pending worker question in its original live session. Human approval cannot be supplied by supervisors.",
+        "operationId": "question_answer",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QuestionAnswerRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/message/question-escalate": {
+      "post": {
+        "tags": [
+          "message"
+        ],
+        "summary": "Escalate a worker question to the human when a factual answer is not sufficient.",
+        "description": "Escalate a worker question to the human when a factual answer is not sufficient.",
+        "operationId": "question_escalate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QuestionEscalateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -11718,6 +11853,16 @@
               }
             ],
             "title": "Session Provider"
+          },
+          "waiting_question": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentWaitingQuestion"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "active_subagent_count": {
             "anyOf": [
@@ -30454,6 +30599,97 @@
         },
         "type": "object",
         "title": "WriteNoteResponse"
+      },
+      "AgentWaitingQuestion": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "question": {
+            "type": "string",
+            "title": "Question"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "requires_human": {
+            "type": "boolean",
+            "title": "Requires Human"
+          },
+          "created_at": {
+            "type": "number",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "question",
+          "state",
+          "requires_human",
+          "created_at"
+        ],
+        "title": "AgentWaitingQuestion"
+      },
+      "QuestionListRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "title": "QuestionListRequest"
+      },
+      "QuestionAnswerRequest": {
+        "properties": {
+          "question_id": {
+            "type": "string",
+            "title": "Question Id",
+            "description": ""
+          },
+          "body": {
+            "type": "string",
+            "title": "Body",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "question_id",
+          "body"
+        ],
+        "title": "QuestionAnswerRequest"
+      },
+      "QuestionEscalateRequest": {
+        "properties": {
+          "question_id": {
+            "type": "string",
+            "title": "Question Id",
+            "description": ""
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "question_id",
+          "reason"
+        ],
+        "title": "QuestionEscalateRequest"
       }
     }
   }

@@ -186,6 +186,10 @@ class MessageDeliveryEngine:
         resolved = 0
         seen_threads: set[str] = set()
         for msg in candidates:
+            # Internal question handoffs use explicit question commands;
+            # never fabricate a user reply from the supervisor's transcript.
+            if msg.body_kind == "agent_question":
+                continue
             if msg.delivered_at is None or msg.delivered_at > cutoff:
                 continue
             if msg.reply_to_id is not None:

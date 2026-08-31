@@ -235,6 +235,11 @@ def register_command_tools(
         async def handler(**kwargs):
             ctx = server_ref.get_context()
             ch = ctx.request_context.lifespan_context["command_handler"]
+            if cmd_name in {"question_list", "question_answer", "question_escalate"}:
+                # This generic MCP transport has no authenticated session
+                # scope. Never accept a client-supplied local/human identity.
+                # Scoped supervisors use the authenticated HTTP/CLI path.
+                kwargs["_scope"] = {"kind": "mcp"}
             result = await ch.execute(cmd_name, kwargs)
             return json.dumps(result, default=str)
 

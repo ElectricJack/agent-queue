@@ -48,7 +48,7 @@ from typing import Any
 import discord
 import structlog
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 from src.config import AppConfig
 from src.discord.notifications import format_server_started, format_server_started_embed
@@ -351,6 +351,20 @@ class AgentQueueBot(commands.Bot):
                     self.handler._on_project_deleted = self.clear_project_channels
                     self.handler._on_project_created = self._on_project_created
 
+        # Stable custom IDs restore Reply buttons on existing question cards.
+        # Retry only explicitly enrolled outbound messages, never old history.
+        from src.discord.agent_questions import (
+            restore_agent_question_views, retry_discord_user_messages,
+        )
+
+        try:
+            await restore_agent_question_views(self)
+            await retry_discord_user_messages(self)
+        except Exception:
+            logger.exception("Could not restore Discord question notifications")
+        if not self._retry_discord_user_notifications.is_running():
+            self._retry_discord_user_notifications.start()
+
         # RuleManager removed (playbooks spec §13 Phase 3).
         # Playbook compilation is handled by the VaultWatcher.
 
@@ -371,6 +385,19 @@ class AgentQueueBot(commands.Bot):
                 format_server_started(),
                 embed=format_server_started_embed(),
             )
+
+    @tasks.loop(seconds=30)
+    async def _retry_discord_user_notifications(self) -> None:
+        from src.discord.agent_questions import retry_discord_user_messages
+
+        try:
+            await retry_discord_user_messages(self)
+        except Exception:
+            logger.exception("Could not retry pending Discord user messages")
+
+    async def close(self) -> None:
+        self._retry_discord_user_notifications.cancel()
+        await super().close()
 
     async def _safe_api_call(
         self,
@@ -430,30 +457,34 @@ class AgentQueueBot(commands.Bot):
         *,
         reply_to: discord.Message | None = None,
         filename: str = "response.md",
-    ) -> None:
+        allowed_mentions: discord.AllowedMentions | None = None,
+        single_message: bool = False,
+    ) -> discord.Message | None:
         """Send a message, handling Discord's 2000-char limit.
 
         Short messages are sent normally. Long messages are split at line
         boundaries when possible, falling back to a file attachment for
         very long content (>6000 chars).
+        With single_message, attach anything over 2000 characters so a
+        retried notification has exactly one remote delivery to acknowledge.
         """
+        mention_kwargs = {"allowed_mentions": allowed_mentions} if allowed_mentions is not None else {}
         if len(text) <= 2000:
             if reply_to:
-                await self._safe_api_call(
-                    reply_to.reply(text),
+                return await self._safe_api_call(
+                    reply_to.reply(text, **mention_kwargs),
                     critical=False,
                     context="send_long_message reply",
                 )
             else:
-                await self._safe_api_call(
-                    channel.send(text),
+                return await self._safe_api_call(
+                    channel.send(text, **mention_kwargs),
                     critical=False,
                     context="send_long_message",
                 )
-            return
 
         # Very long content → attach as file with a short preview
-        if len(text) > 6000:
+        if len(text) > 6000 or single_message:
             # Find a reasonable preview (first paragraph or first 300 chars)
             preview_end = text.find("\n\n", 0, 500)
             if preview_end == -1:
@@ -466,18 +497,17 @@ class AgentQueueBot(commands.Bot):
             )
             msg = f"{preview}\n\n*Full response attached ({len(text):,} chars)*"
             if reply_to:
-                await self._safe_api_call(
-                    reply_to.reply(msg, file=file),
+                return await self._safe_api_call(
+                    reply_to.reply(msg, file=file, **mention_kwargs),
                     critical=False,
                     context="send_long_message file reply",
                 )
             else:
-                await self._safe_api_call(
-                    channel.send(msg, file=file),
+                return await self._safe_api_call(
+                    channel.send(msg, file=file, **mention_kwargs),
                     critical=False,
                     context="send_long_message file",
                 )
-            return
 
         # Medium-length content → split into multiple messages at line boundaries
         chunks: list[str] = []
@@ -567,6 +597,9 @@ class AgentQueueBot(commands.Bot):
         *,
         embed: discord.Embed | None = None,
         view: discord.ui.View | None = None,
+        file: discord.File | None = None,
+        allowed_mentions: discord.AllowedMentions | None = None,
+        single_message: bool = False,
     ) -> discord.Message | None:
         """Send a message to the project's channel (or the global channel).
 
@@ -598,6 +631,10 @@ class AgentQueueBot(commands.Bot):
             )
             if embed is not None:
                 kwargs = {"embed": embed}
+                if file is not None:
+                    kwargs["file"] = file
+                if allowed_mentions is not None:
+                    kwargs["allowed_mentions"] = allowed_mentions
                 if view is not None:
                     kwargs["view"] = view
                 return await self._safe_api_call(
@@ -606,7 +643,12 @@ class AgentQueueBot(commands.Bot):
                     context="send_message embed",
                 )
             else:
-                return await self._send_long_message(channel, text)
+                kwargs = {}
+                if allowed_mentions is not None:
+                    kwargs["allowed_mentions"] = allowed_mentions
+                if single_message:
+                    kwargs["single_message"] = True
+                return await self._send_long_message(channel, text, **kwargs)
         return None
 
 

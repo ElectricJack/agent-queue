@@ -9,6 +9,7 @@ notifications are streamed here for live UI updates.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from typing import Any
 from uuid import uuid4
@@ -45,6 +46,46 @@ _FORWARDED_PREFIXES: tuple[str, ...] = (
     "session.",
     "task.",
 )
+
+
+_QUESTION_EVENTS = frozenset({"agent.question", "agent.question.updated"})
+_QUESTION_INVALIDATION_FIELDS = ("id", "agent_id", "session_id", "task_id", "project_id", "state")
+
+
+def _question_invalidation(data, scope):
+    """Project only authorized, non-content fields for live and replay WS.
+
+    The internal EventBus keeps the full question for Discord/service routing;
+    the browser only needs identifiers to invalidate its scoped query cache.
+    """
+    nested = data.get("payload")
+    if isinstance(nested, str):
+        try:
+            nested = json.loads(nested)
+        except (ValueError, TypeError):
+            return None
+    nested = nested if isinstance(nested, dict) else {}
+    fields = {key: data.get(key) if data.get(key) is not None else nested.get(key)
+              for key in _QUESTION_INVALIDATION_FIELDS}
+    if not all(isinstance(fields[key], str) and fields[key] for key in ("id", "session_id", "project_id")):
+        return None
+    kind = getattr(scope, "kind", None)
+    if kind == "local":
+        allowed = True
+    elif kind == "session":
+        project = scope.project_id
+        allowed = project is None or project == fields["project_id"]
+        if not scope.elevated:
+            allowed = (allowed and scope.session_id == fields["session_id"]
+                       and (scope.task_id is None or scope.task_id == fields["task_id"]))
+    else:
+        allowed = False
+    if not allowed:
+        return None
+    result = {"_event_type": data["_event_type"], **fields}
+    if "seq" in data:
+        result["seq"] = data["seq"]
+    return result
 
 
 class WebSocketManager:
@@ -84,8 +125,13 @@ class WebSocketManager:
         logger.info("WS forwarding event: %s to %d clients", event_type, len(self._clients))
 
         for ws, queue in list(self._clients.items()):
+            event = data
+            if event_type in _QUESTION_EVENTS:
+                event = _question_invalidation(data, self._client_scope.get(ws))
+                if event is None:
+                    continue
             try:
-                queue.put_nowait(data)
+                queue.put_nowait(event)
             except asyncio.QueueFull:
                 # Drop oldest event to make room
                 try:
@@ -93,7 +139,7 @@ class WebSocketManager:
                 except asyncio.QueueEmpty:
                     pass
                 try:
-                    queue.put_nowait(data)
+                    queue.put_nowait(event)
                 except asyncio.QueueFull:
                     pass
 
@@ -195,6 +241,10 @@ class WebSocketManager:
                             "payload": row.get("payload"),
                             "timestamp": row.get("timestamp"),
                         }
+                        if event_type in _QUESTION_EVENTS:
+                            frame = _question_invalidation(frame, scope)
+                            if frame is None:
+                                continue
                         await websocket.send_json(frame)
                     if len(rows) < _REPLAY_PAGE:
                         break

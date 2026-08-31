@@ -345,6 +345,7 @@ class Orchestrator(
         from src.sessions import default_session_registry
         from src.sessions.harness_registry import HarnessRegistry
         from src.sessions.reconciler import SessionReconciler
+        from src.sessions.questions import AgentQuestionService
         from src.sessions.spec import SessionSpecBuilder
         from src.sessions.transcripts.watcher import TranscriptWatcher
 
@@ -389,7 +390,8 @@ class Orchestrator(
         # ``SessionReconciler.tick`` and every route (SSE, session_logs)
         # shares the same reader state.  Base_dir=None => Path.home()
         # (spec default).
-        self.transcript_watcher = TranscriptWatcher(db=self.db, bus=self.bus)
+        self.agent_questions = AgentQuestionService(self.db, self.bus, self.session_providers, config)
+        self.transcript_watcher = TranscriptWatcher(db=self.db, bus=self.bus, questions=self.agent_questions)
         # ---- Message substrate (supervisor-agent.md §5) ------------------
         # SessionLens is the read-only window from the delivery engine into
         # the session runtime; MessageDeliveryEngine owns the delivery
@@ -2877,7 +2879,7 @@ class Orchestrator(
         """
         if not self.config.sessions.enabled:
             return
-        await self.session_reconciler.tick()
+        # Recover pending questions before any stall/backstop evaluation.
         # Transcript observation runs on the same cadence; the watcher is
         # tolerant of missing transcripts and its own per-session failures,
         # so a wedged reader degrades one session rather than the cycle.
@@ -2885,6 +2887,11 @@ class Orchestrator(
             await self.transcript_watcher.tick()
         except Exception:
             logger.error("TranscriptWatcher tick failed", exc_info=True)
+        try:
+            await self.agent_questions.tick()
+        except Exception:
+            logger.error("AgentQuestionService tick failed", exc_info=True)
+        await self.session_reconciler.tick()
 
     async def _load_profile_for_lens(self, profile_id: str):
         """Async profile lookup used by :class:`SessionLens.ensure_started`.

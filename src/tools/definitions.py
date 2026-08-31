@@ -4458,3 +4458,18 @@ _ALL_TOOL_DEFINITIONS = [
         },
     },
 ]
+
+
+_TOOL_CATEGORIES.update({name: "message" for name in (
+    "question_list", "question_answer", "question_escalate"
+)})
+_ALL_TOOL_DEFINITIONS.extend([
+    {"name": "question_list", "description": "List pending worker questions visible to the human or live supervisor.",
+     "input_schema": {"type": "object", "properties": {"project_id": {"type": "string"}}}},
+    {"name": "question_answer", "description": "Answer a pending worker question in its original live session. Human approval cannot be supplied by supervisors.",
+     "input_schema": {"type": "object", "properties": {"question_id": {"type": "string"},
+         "body": {"type": "string", "minLength": 1, "maxLength": 16000}}, "required": ["question_id", "body"]}},
+    {"name": "question_escalate", "description": "Escalate a worker question to the human when a factual answer is not sufficient.",
+     "input_schema": {"type": "object", "properties": {"question_id": {"type": "string"},
+         "reason": {"type": "string", "minLength": 1, "maxLength": 4000}}, "required": ["question_id", "reason"]}},
+])

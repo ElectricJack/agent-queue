@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { ChevronDownIcon, ChevronRightIcon, UsersIcon, ArrowTopRightOnSquareIcon } from "@heroicons/react/24/outline";
 import { useAgentFlock } from "../api/agents";
 import { useAgentSelection } from "../pages/agents/useAgentSelection";
-import { AgentSubagents, AgentState, AgentEligibility } from "../pages/agents/AgentMetadata";
+import { AgentSubagents, AgentState, AgentEligibility, AgentWaitingQuestion } from "../pages/agents/AgentMetadata";
 
 const COLLAPSED_KEY = "aq:flock:collapsed";
 
@@ -75,7 +75,7 @@ export default function AgentFlock() {
               >
                 <span className="mb-1 flex items-center justify-between gap-2">
                   <span className="truncate text-sm font-medium text-gray-200">{agent.name}</span>
-                  <span className={"shrink-0 text-[10px] capitalize " + (agent.state === "busy" ? "text-emerald-400" : "text-gray-500")}>
+                  <span className={"shrink-0 text-[10px] capitalize " + (agent.waiting_question ? "text-amber-300" : agent.state === "busy" ? "text-emerald-400" : "text-gray-500")}>
                     <AgentState agent={agent} />
                   </span>
                 </span>
@@ -88,6 +88,7 @@ export default function AgentFlock() {
                   </span>
                   <span className="block"><AgentSubagents agent={agent} /></span>
                   <AgentEligibility agent={agent} />
+                  <AgentWaitingQuestion agent={agent} />
                   <span className="block truncate text-gray-400" title={agent.current_task_title || agent.current_task_id || "Idle — no assigned task"}>
                     {agent.current_task_title || agent.current_task_id || "Idle — no assigned task"}
                   </span>

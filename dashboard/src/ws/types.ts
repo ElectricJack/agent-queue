@@ -344,6 +344,16 @@ export interface AgentChangedEvent extends BaseEvent {
   agent_id: string;
 }
 
+/** Durable questions affect the worker badge without changing its busy state. */
+export interface AgentWaitingQuestionEvent extends BaseEvent {
+  event_type: "agent.question" | "agent.question.updated";
+  id: string;
+  agent_id: string;
+  session_id: string;
+  task_id: string;
+  state: "supervisor" | "human" | "answered" | "delivered" | "resolved" | "stale";
+}
+
 // --- Command dispatch (Phase 5 follow-up) ---
 
 /**
@@ -418,5 +428,6 @@ export type NotifyEvent =
   | TaskUnblockedEvent
   | TaskGraphChangedEvent
   | AgentChangedEvent
+  | AgentWaitingQuestionEvent
   | CommandInvokedEvent
   | ProposalStatusChangedEvent;

@@ -54,6 +54,10 @@ HANDCRAFTED_COVERAGE = {
     "message_reply",
     "message_inbox",
     "message_list",
+    # questions.py — exact question identity and the authenticated daemon scope.
+    "question_list",
+    "question_answer",
+    "question_escalate",
     # projects.py — composite/UX-heavy commands only
     "edit_project",
     "set_default_branch",

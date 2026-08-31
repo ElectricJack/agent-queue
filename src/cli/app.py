@@ -318,6 +318,7 @@ from . import agent_surface  # noqa: E402, F401
 from . import formulas as _formulas_cli  # noqa: E402, F401
 from . import sessions as _sessions_cli  # noqa: E402, F401
 from . import messages as _messages_cli  # noqa: E402, F401
+from . import questions as _questions_cli  # noqa: E402, F401
 from . import streams as _streams_cli  # noqa: E402, F401
 from . import playbook as _playbook_cli  # noqa: E402, F401
 

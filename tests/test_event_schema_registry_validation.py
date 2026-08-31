@@ -77,6 +77,18 @@ _CANONICAL_PAYLOADS: dict[str, dict] = {
     "task.updated": {"task_id": "t-1", "project_id": "proj-1", "title": "Task", "seq": 1},
     "task.deleted": {"task_id": "t-1", "project_id": "proj-1", "title": "Task", "seq": 1},
     "task.archived": {"task_id": "t-1", "project_id": "proj-1", "title": "Task", "seq": 1},
+    "agent.question": {
+        "id": "q-1", "session_id": "s-1", "session_name": "p-worker", "instance_token": "token-1",
+        "task_id": "t-1", "project_id": "proj-1", "agent_id": "agent-1", "turn_id": "turn-1",
+        "question": "Where is the test config?", "requires_human": False,
+        "state": "supervisor", "created_at": 1.0, "updated_at": 1.0,
+    },
+    "agent.question.updated": {
+        "id": "q-1", "session_id": "s-1", "session_name": "p-worker", "instance_token": "token-1",
+        "task_id": "t-1", "project_id": "proj-1", "agent_id": "agent-1", "turn_id": "turn-1",
+        "question": "Where is the test config?", "requires_human": False,
+        "state": "supervisor", "created_at": 1.0, "updated_at": 1.0,
+    },
     # Durable global agent definition changes.
     "agent.created": {"agent_id": "agent-1"},
     "agent.updated": {"agent_id": "agent-1"},

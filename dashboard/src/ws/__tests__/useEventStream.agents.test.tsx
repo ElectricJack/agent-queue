@@ -17,7 +17,7 @@ afterAll(() => vi.unstubAllGlobals());
 afterEach(cleanup);
 
 describe("Agent flock live invalidation", () => {
-  it.each(["agent.created", "agent.updated", "session.started", "session.exited", "session.adopted", "task.claimed", "task.blocked", "message.sent", "message.replied"])(
+  it.each(["agent.created", "agent.updated", "agent.question", "agent.question.updated", "session.started", "session.exited", "session.adopted", "task.claimed", "task.blocked", "message.sent", "message.replied"])(
     "refreshes the roster when %s changes assignments, settings, or subagent activity", (eventType) => {
       const client = new QueryClient();
       client.setQueryData(["agents", "flock"], [{ id: "a" }]);

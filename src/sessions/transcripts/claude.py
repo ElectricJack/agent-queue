@@ -78,9 +78,7 @@ def _extract_text(content) -> str:
             parts.append(f"[tool_use: {name}]")
         elif btype == "tool_result":
             inner = block.get("content")
-            parts.append(
-                f"[tool_result] {inner if isinstance(inner, str) else ''}"
-            )
+            parts.append(f"[tool_result] {inner if isinstance(inner, str) else ''}")
     return "".join(parts).strip()
 
 
@@ -108,6 +106,9 @@ def _entry_from_line(raw: dict) -> TranscriptEntry | None:
         model=str(model) if model else None,
         usage=usage if isinstance(usage, dict) else None,
         ts=ts,
+        turn_complete=line_type == "assistant"
+        and message.get("stop_reason") == "end_turn"
+        and bool(text),
     )
 
 
@@ -116,9 +117,7 @@ class ClaudeTranscriptReader(TranscriptReader):
 
     harness: ClassVar[str] = "claude"
 
-    def resolve_path(
-        self, work_dir: str, session_key: str | None
-    ) -> Path | None:
+    def resolve_path(self, work_dir: str, session_key: str | None) -> Path | None:
         slug = slug_work_dir(work_dir)
         proj_dir = self.base_dir / ".claude" / "projects" / slug
         if not proj_dir.is_dir():
@@ -157,9 +156,7 @@ class ClaudeTranscriptReader(TranscriptReader):
         except OSError:
             return None
 
-    async def read_new(
-        self, path: Path, offset: int
-    ) -> tuple[list[TranscriptEntry], int]:
+    async def read_new(self, path: Path, offset: int) -> tuple[list[TranscriptEntry], int]:
         # Run the blocking stat+read off the loop so a slow disk cannot
         # stall the reconciler or a live SSE tail.
         result = await asyncio.to_thread(self._read_sync, path, offset)

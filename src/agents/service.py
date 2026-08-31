@@ -30,6 +30,9 @@ async def list_agent_flock(orchestrator, *, project_id: str | None = None) -> li
     sessions = await db.list_sessions()
     tasks = await db.list_tasks()
     task_by_id = {task.id: task for task in tasks}
+    questions_by_session: dict[str, list[dict]] = {}
+    for question in await db.list_agent_questions(project_id=project_id, pending_only=True):
+        questions_by_session.setdefault(question["session_id"], []).append(question)
     profiles = {profile.id: profile for profile in await db.list_profiles()}
     registry = getattr(orchestrator, "harness_registry", None)
     builder = getattr(orchestrator, "session_spec_builder", None)
@@ -117,6 +120,32 @@ async def list_agent_flock(orchestrator, *, project_id: str | None = None) -> li
                 settings["llm_provider"] = (
                     getattr(harness, "provider", "") or _infer_provider_from_harness(harness) or None
                 )
+        waiting_question = None
+        if (
+            live and task and live.lifecycle in {"task", "pool"}
+            and live.desired_state == "running"
+            and task.status == TaskStatus.IN_PROGRESS
+            and (live.lifecycle != "pool" or live.claim_phase == "active")
+        ):
+            matching = [
+                question for question in questions_by_session.get(live.id, [])
+                if (
+                    question.get("state") in {"supervisor", "human", "answered"}
+                    and question.get("session_name") == live.name
+                    and question.get("instance_token") == live.instance_token
+                    and question.get("task_id") == task.id
+                    and question.get("project_id") == task.project_id
+                    and question.get("agent_id") == agent.id
+                    and question.get("claim_epoch") == task.claim_epoch
+                )
+            ]
+            if matching:
+                current_question = max(matching, key=lambda question: question["created_at"])
+                # Do not expose instance fencing tokens or saved answer content.
+                waiting_question = {
+                    key: current_question[key]
+                    for key in ("id", "question", "state", "requires_human", "created_at")
+                }
         count = await subagent_counts(db, agent.id, sessions, tasks)
         state = agent.state.value.lower()
         if live:
@@ -135,6 +164,7 @@ async def list_agent_flock(orchestrator, *, project_id: str | None = None) -> li
             "current_project_id": current_project, "project_id": current_project,
             "workspace_id": None,
             "session_id": live.id if live else None,
+            "waiting_question": waiting_question,
             "session_state": session.state if session else None,
             "session_provider": session.provider if session else None,
             "settings": configured_settings(agent),

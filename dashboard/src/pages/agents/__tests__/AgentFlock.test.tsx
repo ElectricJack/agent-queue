@@ -107,6 +107,56 @@ afterEach(() => {
 
 describe("Agent flock sidebar", () => {
 
+  it("refreshes the visible waiting badge when question events arrive", async () => {
+    const { useEventStream, __dispatchEventForTests } = await import("../../../ws/useEventStream");
+    function LiveUpdates() { useEventStream(); return null; }
+    roster[1] = { ...roster[1]!, state: "busy", current_task_id: "task-1" };
+    renderFlock();
+    const row = await screen.findByRole("button", { name: "Open Builder" });
+    const client = clients[clients.length - 1]!;
+    render(<QueryClientProvider client={client}><LiveUpdates /></QueryClientProvider>);
+    expect(within(row).queryByText("Waiting for input")).not.toBeInTheDocument();
+    roster = roster.map((agent) => agent.id === "b" ? { ...agent, waiting_question: {
+      id: "q-live", question: "May I deploy?", state: "human", requires_human: true, created_at: 1,
+    } } : agent);
+    act(() => __dispatchEventForTests({
+      _event_type: "agent.question", event_type: "agent.question", id: "q-live", agent_id: "b", task_id: "task-1",
+      session_id: "session-b", state: "human",
+    }));
+    expect(await within(row).findByText("Waiting for your reply")).toBeInTheDocument();
+    roster = roster.map((agent) => agent.id === "b" ? { ...agent, waiting_question: null } : agent);
+    act(() => __dispatchEventForTests({
+      _event_type: "agent.question.updated", event_type: "agent.question.updated", id: "q-live", agent_id: "b", task_id: "task-1",
+      session_id: "session-b", state: "delivered",
+    }));
+    await waitFor(() => expect(within(row).queryByText("Waiting for input")).not.toBeInTheDocument());
+    expect(within(row).getByText("busy")).toBeInTheDocument();
+  });
+
+
+  it.each([
+    ["supervisor", "Awaiting supervisor"],
+    ["human", "Waiting for your reply"],
+    ["answered", "Answer queued"],
+  ] as const)("shows %s questions without losing the assigned task or terminal", async (state, label) => {
+    roster[1] = {
+      ...roster[1]!, state: "busy", current_task_id: "task-1", current_task_title: "Deploy safely",
+      waiting_question: { id: "q-1", question: "May I deploy **these** changes?",
+        state, requires_human: state === "human", created_at: 1 },
+    };
+    renderFlock("/agents", true);
+    const row = await screen.findByRole("button", { name: "Open Builder" });
+    expect(within(row).getByText("Waiting for input")).toBeInTheDocument();
+    expect(within(row).getByText(label)).toBeInTheDocument();
+    expect(within(row).getByText("May I deploy **these** changes?")).toBeInTheDocument();
+    expect(within(row).getByText("Deploy safely")).toBeInTheDocument();
+    fireEvent.click(row);
+    const pane = await screen.findByRole("region", { name: "Builder agent window" });
+    expect(within(pane).getByRole("textbox", { name: "Builder terminal input" })).toBeInTheDocument();
+    expect(api.startAgentTerminal).not.toHaveBeenCalled();
+  });
+
+
   it.each([
     ["/tasks/task-1", "/projects/first/tasks?q=worktree&completed=1", "/projects/second/tasks?q=worktree&completed=1"],
     ["/tasks/task-1/files", "/projects/first/graph?status=READY", "/projects/second/graph?status=READY"],

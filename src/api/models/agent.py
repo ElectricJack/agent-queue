@@ -16,6 +16,14 @@ class AgentSettings(BaseModel):
     enabled: bool = True
 
 
+class AgentWaitingQuestion(BaseModel):
+    id: str
+    question: str
+    state: str
+    requires_human: bool
+    created_at: float
+
+
 class AgentSummary(BaseModel):
     id: str
     name: str
@@ -35,6 +43,7 @@ class AgentSummary(BaseModel):
     session_id: str | None = None
     session_state: str | None = None
     session_provider: str | None = None
+    waiting_question: AgentWaitingQuestion | None = None
     active_subagent_count: int | None = None
     subagent_count_complete: bool = False
     aq_subagent_count: int = 0

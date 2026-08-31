@@ -872,3 +872,47 @@ workflows = Table(
     Index("idx_workflows_status", "status"),
     Index("idx_workflows_playbook_run_id", "playbook_run_id"),
 )
+
+
+# Durable completed-turn questions. Provenance is retained as text instead of
+# cascading foreign keys so stopped/deleted session history stays auditable.
+agent_questions = Table(
+    "agent_questions", metadata,
+    Column("id", Text, primary_key=True),
+    Column("session_id", Text, nullable=False),
+    Column("session_name", Text, nullable=False),
+    Column("instance_token", Text, nullable=False),
+    Column("task_id", Text, nullable=False),
+    Column("project_id", Text, nullable=False),
+    Column("agent_id", Text, nullable=False),
+    Column("turn_id", Text, nullable=False),
+    Column("claim_epoch", Integer, nullable=False),
+    Column("question", Text, nullable=False),
+    Column("requires_human", Boolean, nullable=False),
+    Column("state", Text, nullable=False),
+    Column("answer", Text),
+    Column("answered_by", Text),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    Column("source_ts", Float, nullable=False),
+    Column("discord_channel_id", Text),
+    Column("discord_message_id", Text),
+    Column("supervisor_routed_at", Float),
+    Column("notification_next_at", Float, nullable=False, server_default="0"),
+    Column("notification_attempts", Integer, nullable=False, server_default="0"),
+    Column("delivery_token", Text),
+    Column("delivery_lease_until", Float),
+    Column("delivered_at", Float),
+    Column("reason", Text),
+    UniqueConstraint("session_id", "instance_token", "task_id", "claim_epoch", "turn_id", name="uq_agent_question_turn"),
+    CheckConstraint("state IN ('supervisor','human','answered','delivered','resolved','stale')", name="ck_agent_question_state"),
+    Index("idx_agent_questions_pending", "state", "created_at"),
+    Index("idx_agent_questions_session", "session_id", "instance_token"),
+)
+
+message_discord_receipts = Table(
+    "message_discord_receipts", metadata,
+    Column("message_id", Text, primary_key=True),
+    Column("discord_channel_id", Text),
+    Column("discord_message_id", Text),
+)

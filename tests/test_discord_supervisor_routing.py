@@ -480,8 +480,7 @@ class TestMessageSentRenderer:
         assert bot._send_message.await_count == 0
 
     async def test_skips_non_discord_thread_id(self, db):
-        """A ``message.sent`` from another surface (or with no thread_id)
-        must NOT trigger a Discord post."""
+        """Explicit other-surface threads stay private; missing threads use the project."""
         from src.discord.notification_handler import DiscordNotificationHandler
         from src.event_bus import EventBus
 
@@ -510,7 +509,7 @@ class TestMessageSentRenderer:
                     "thread_id": "slack:C1/T1",
                 },
             )
-            # Also assert absent thread_id is skipped.
+            # A session reply without a thread uses the configured project channel.
             reply2 = await db.create_message(
                 project_id="p1",
                 from_kind="session",
@@ -533,7 +532,9 @@ class TestMessageSentRenderer:
         finally:
             handler.shutdown()
 
-        assert bot._send_message.await_count == 0
+        assert bot._send_message.await_count == 1
+        assert bot._send_message.await_args.args[0] == "no thread"
+        assert bot._send_message.await_args.kwargs["project_id"] == "p1"
         assert bot._send_long_message.await_count == 0
 
     async def test_skips_user_authored_echo(self, db):
@@ -722,7 +723,7 @@ class TestMessageSentRenderer:
         bot = await self._make_bot(db, channel=None)  # get_channel returns None
         handler = DiscordNotificationHandler(bot, bus)
         try:
-            with caplog.at_level(logging.WARNING, logger="src.discord.notification_handler"):
+            with caplog.at_level(logging.WARNING, logger="src.discord.agent_questions"):
                 await bus.emit(
                     "message.sent",
                     {

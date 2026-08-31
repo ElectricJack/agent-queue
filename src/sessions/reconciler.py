@@ -657,6 +657,12 @@ class SessionReconciler:
             )
         await orch._terminate_pool_session(row, reason=verdict.verdict.name.lower())
 
+    async def _waiting_for_question(self, row, now):
+        service = getattr(self.orchestrator, "agent_questions", None)
+        if service is None:
+            return False
+        return await service.is_waiting(row, now=now)
+
     # -- step 4: stall ladder ---------------------------------------------
 
     async def _step_stall_ladder(self, live: list[SessionRecord], now: float) -> None:
@@ -672,6 +678,8 @@ class SessionReconciler:
             if row.lifecycle not in ("task", "pool") or not row.task_id or row.state != "running":
                 continue
             if row.lifecycle == "pool" and row.claim_phase != "active":
+                continue
+            if await self._waiting_for_question(row, now):
                 continue
             last = row.last_activity or row.started_at
             if now - last <= ttl:
@@ -1094,11 +1102,19 @@ class SessionReconciler:
         for row in live:
             if row.lifecycle not in ("task", "pool") or not row.task_id:
                 continue
+            if await self._waiting_for_question(row, now):
+                continue
             if row.lifecycle == "pool":
                 last = row.last_activity if row.last_activity is not None else row.started_at
                 elapsed = now - (last or now)
             else:
-                elapsed = now - (row.started_at or now)
+                baseline = row.started_at
+                questions = getattr(self.orchestrator, "agent_questions", None)
+                if questions is not None:
+                    resumed_at = await questions.backstop_activity_at(row)
+                    if resumed_at is not None:
+                        baseline = resumed_at
+                elapsed = now - (baseline or now)
             if elapsed <= limit:
                 continue
             fresh = await self._still_live(row)
