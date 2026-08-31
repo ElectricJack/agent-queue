@@ -65,6 +65,7 @@ def launch():
             effort_flag="--effort",
         )
     )
+    registry.upsert(Harness(id="codex", name="Codex", command="codex", model_flag="--model"))
     builder = SessionSpecBuilder(
         SimpleNamespace(),
         intelligence_classes={
@@ -74,6 +75,7 @@ def launch():
                 "",
                 {
                     "anthropic": {"model": "fixture-standard"},
+                    "codex": {"model": "fixture-codex-standard"},
                 },
             ),
             "deep": IntelligenceClass(
@@ -82,6 +84,7 @@ def launch():
                 "",
                 {
                     "anthropic": {"model": "fixture-deep"},
+                    "codex": {"model": "fixture-codex-deep"},
                 },
             ),
         },
@@ -161,7 +164,7 @@ async def test_scope_and_saved_overrides_resolve_without_profile_class_cross_pro
         AgentProfile(
             id="project:p:worker",
             name="Scoped",
-            harness="claude",
+            harness="codex",
             default_class="deep",
         )
     )
@@ -177,8 +180,8 @@ async def test_scope_and_saved_overrides_resolve_without_profile_class_cross_pro
     await db.create_agent(Agent("b", "B", "worker", model="fixture-fixed"))
     result = await catalog(db, launch)
     assert {(i.profile_id, i.model, i.intelligence_class) for i in result.types.values()} == {
-        ("project:p:worker", "fixture-deep", "deep"),
-        ("project:p:worker", "fixture-fixed", "standard"),
+        ("project:p:worker", "fixture-codex-deep", "deep"),
+        ("project:p:worker", "fixture-fixed", "deep"),
     }
     assert {
         (i.profile_id, i.model) for i in (await catalog(db, launch, "other")).types.values()
@@ -187,6 +190,43 @@ async def test_scope_and_saved_overrides_resolve_without_profile_class_cross_pro
         ("worker", "fixture-fixed"),
     }
     assert (await db.get_profile("project:p:worker")).model == ""
+
+
+async def test_invalid_codex_reasoning_is_diagnostic_and_launch_omits_it(db, launch):
+    await seed(db)
+    builder, registry = launch
+    builder._intelligence_classes["invalid"] = IntelligenceClass(
+        "invalid",
+        "Invalid",
+        "",
+        {"codex": {"model": "fixture-codex", "reasoning_effort": "turbo"}},
+    )
+    await db.create_agent(
+        Agent("bad", "Bad", "worker", harness="codex", intelligence_class="invalid")
+    )
+
+    result = await catalog(db, launch)
+    assert result.types == {}
+    assert result.diagnostics == (
+        {
+            "agent_id": "bad",
+            "code": "invalid_reasoning_effort",
+            "message": "Codex reasoning effort 'turbo' is unsupported",
+        },
+    )
+
+    from src.agents.configuration import apply_agent_overrides
+
+    profile = apply_agent_overrides(await db.get_profile("worker"), await db.get_agent("bad"))
+    spec = builder.build_named_spec(
+        profile=profile,
+        harness=registry.get("codex"),
+        project_id="p",
+        work_dir="/tmp",
+        session_id="s",
+        instance_token="token",
+    )
+    assert all("model_reasoning_effort" not in arg for arg in spec.command)
 
 
 @pytest.mark.parametrize(

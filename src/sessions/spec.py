@@ -50,6 +50,19 @@ __all__ = [
 ]
 
 _UNSAFE = re.compile(r"[^A-Za-z0-9_-]+")
+_CODEX_REASONING_EFFORTS = frozenset(
+    {"none", "minimal", "low", "medium", "high", "xhigh"}
+)
+
+
+def _resolve_codex_reasoning(class_config: dict) -> tuple[str, str]:
+    """Return the applied Codex effort and any invalid explicit-value error."""
+    raw = class_config.get("reasoning_effort")
+    if raw is None or raw == "":
+        return "", ""
+    if isinstance(raw, str) and raw in _CODEX_REASONING_EFFORTS:
+        return raw, ""
+    return "", f"Codex reasoning effort {raw!r} is unsupported"
 
 #: ``profile.permission_mode`` value that is an explicit opt-in to the
 #: harness's skip-permissions flag outside an isolated worktree.  Same
@@ -516,14 +529,11 @@ class SessionSpecBuilder:
             # Key and values verified against the installed CLI's generated
             # Config/ReasoningEffort schema and its --help configuration syntax.
             # https://developers.openai.com/codex/config-reference/
-            reasoning = class_config.get("reasoning_effort")
-            if reasoning is not None:
-                if isinstance(reasoning, str) and reasoning in {
-                    "none", "minimal", "low", "medium", "high", "xhigh",
-                }:
-                    argv.extend(["-c", f'model_reasoning_effort="{reasoning}"'])
-                else:
-                    logger.warning("Unsupported Codex reasoning effort %r; not applied", reasoning)
+            reasoning, reasoning_error = _resolve_codex_reasoning(class_config)
+            if reasoning:
+                argv.extend(["-c", f'model_reasoning_effort="{reasoning}"'])
+            elif reasoning_error:
+                logger.warning("%s; not applied", reasoning_error)
 
         tools = self._resolve_allowed_tools(profile, harness)
         if tools:
@@ -746,19 +756,24 @@ class SessionSpecBuilder:
             profile, harness, task_intelligence_class, class_config=class_config,
         )
         if _is_codex_cli(harness):
-            reasoning = class_config.get("reasoning_effort", "")
-            reasoning = reasoning if isinstance(reasoning, str) else ""
+            reasoning, reasoning_error = _resolve_codex_reasoning(class_config)
         elif provider == "anthropic" and str(class_config.get("thinking") or "") == "off":
             reasoning = "off"
+            reasoning_error = ""
         else:
             reasoning = self._resolve_effort(profile, harness, class_config)
             if reasoning and not getattr(harness, "effort_flag", None):
                 reasoning = ""
+            reasoning_error = ""
         return {
             "provider": str(provider or ""),
             "model": str(model or ""),
             "intelligence_class": str(class_id),
             "reasoning_effort": str(reasoning or ""),
+            "configuration_error": (
+                "invalid_reasoning_effort" if reasoning_error else ""
+            ),
+            "configuration_error_message": reasoning_error,
         }
 
     def _hook_files(self, harness: Harness) -> list[tuple[str, str]]:

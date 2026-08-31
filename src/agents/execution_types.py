@@ -68,7 +68,7 @@ async def resolve_execution_catalog(
         effective = apply_agent_overrides(
             profile,
             agent,
-            agent_profile=profiles.get(agent.profile_id),
+            agent_profile=profile,
         )
         harness_name = getattr(effective, "harness", None)
         harness = harness_registry.get(harness_name, project_id) if harness_name else None
@@ -92,6 +92,15 @@ async def resolve_execution_catalog(
             )
             continue
         settings = builder.resolve_launch_settings(effective, harness)
+        if settings["configuration_error"]:
+            diagnostics.append(
+                {
+                    "agent_id": agent.id,
+                    "code": settings["configuration_error"],
+                    "message": settings["configuration_error_message"],
+                }
+            )
+            continue
         if not settings["provider"]:
             diagnostics.append(
                 {
