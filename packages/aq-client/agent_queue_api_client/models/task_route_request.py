@@ -17,8 +17,9 @@ class TaskRouteRequest:
     Attributes:
         task_id (str): Task ID to route
         profile_id (str): Agent profile ID that should execute the task
-        intelligence_class (None | str | Unset): Intelligence class id (e.g. 'fast', 'standard', 'deep') from
-            vault/intelligence-classes/. Overrides the profile's model at session launch. Optional.
+        intelligence_class (None | str | Unset): Intelligence class id (e.g. 'fast-low', 'standard-medium', 'deep-high')
+            from vault/intelligence-classes/. Requires a matching worker at launch. Omit to preserve the task's existing
+            class or profile default.
         workspace_id (None | str | Unset): Workspace to prefer for execution (optional)
     """
 

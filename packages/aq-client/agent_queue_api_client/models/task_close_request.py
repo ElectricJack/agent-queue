@@ -21,6 +21,10 @@ class TaskCloseRequest:
         work_outcome (None | str | Unset): What actually happened to the work (optional)
         commit (None | str | Unset): Commit SHA (optional)
         notes (None | str | Unset): Closing notes (optional)
+        changes (None | str | Unset): What changed while completing the task (optional)
+        verification (None | str | Unset): How the completed work was verified (optional)
+        tests (list[Any] | None | Unset): Test commands run while completing the task (optional)
+        commands (list[Any] | None | Unset): Other commands run while completing the task (optional)
         summary (None | str | Unset): Summary of what happened, for the reviewer/dashboard/vault note. Required for
             tasks whose profile has needs_workspace: true (Dv2 Phase 2 §7 close contract).
         abandon_children (bool | Unset):  Default: False.
@@ -38,6 +42,10 @@ class TaskCloseRequest:
     work_outcome: None | str | Unset = UNSET
     commit: None | str | Unset = UNSET
     notes: None | str | Unset = UNSET
+    changes: None | str | Unset = UNSET
+    verification: None | str | Unset = UNSET
+    tests: list[Any] | None | Unset = UNSET
+    commands: list[Any] | None | Unset = UNSET
     summary: None | str | Unset = UNSET
     abandon_children: bool | Unset = False
     claim_epoch: int | None | Unset = UNSET
@@ -73,6 +81,36 @@ class TaskCloseRequest:
             notes = UNSET
         else:
             notes = self.notes
+
+        changes: None | str | Unset
+        if isinstance(self.changes, Unset):
+            changes = UNSET
+        else:
+            changes = self.changes
+
+        verification: None | str | Unset
+        if isinstance(self.verification, Unset):
+            verification = UNSET
+        else:
+            verification = self.verification
+
+        tests: list[Any] | None | Unset
+        if isinstance(self.tests, Unset):
+            tests = UNSET
+        elif isinstance(self.tests, list):
+            tests = self.tests
+
+        else:
+            tests = self.tests
+
+        commands: list[Any] | None | Unset
+        if isinstance(self.commands, Unset):
+            commands = UNSET
+        elif isinstance(self.commands, list):
+            commands = self.commands
+
+        else:
+            commands = self.commands
 
         summary: None | str | Unset
         if isinstance(self.summary, Unset):
@@ -116,6 +154,14 @@ class TaskCloseRequest:
             field_dict["commit"] = commit
         if notes is not UNSET:
             field_dict["notes"] = notes
+        if changes is not UNSET:
+            field_dict["changes"] = changes
+        if verification is not UNSET:
+            field_dict["verification"] = verification
+        if tests is not UNSET:
+            field_dict["tests"] = tests
+        if commands is not UNSET:
+            field_dict["commands"] = commands
         if summary is not UNSET:
             field_dict["summary"] = summary
         if abandon_children is not UNSET:
@@ -172,6 +218,58 @@ class TaskCloseRequest:
 
         notes = _parse_notes(d.pop("notes", UNSET))
 
+        def _parse_changes(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        changes = _parse_changes(d.pop("changes", UNSET))
+
+        def _parse_verification(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        verification = _parse_verification(d.pop("verification", UNSET))
+
+        def _parse_tests(data: object) -> list[Any] | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, list):
+                    raise TypeError()
+                tests_type_0 = cast(list[Any], data)
+
+                return tests_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(list[Any] | None | Unset, data)
+
+        tests = _parse_tests(d.pop("tests", UNSET))
+
+        def _parse_commands(data: object) -> list[Any] | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, list):
+                    raise TypeError()
+                commands_type_0 = cast(list[Any], data)
+
+                return commands_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(list[Any] | None | Unset, data)
+
+        commands = _parse_commands(d.pop("commands", UNSET))
+
         def _parse_summary(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -217,6 +315,10 @@ class TaskCloseRequest:
             work_outcome=work_outcome,
             commit=commit,
             notes=notes,
+            changes=changes,
+            verification=verification,
+            tests=tests,
+            commands=commands,
             summary=summary,
             abandon_children=abandon_children,
             claim_epoch=claim_epoch,

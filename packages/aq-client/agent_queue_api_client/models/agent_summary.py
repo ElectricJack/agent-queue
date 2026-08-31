@@ -10,6 +10,7 @@ from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.agent_settings import AgentSettings
+    from ..models.agent_waiting_question import AgentWaitingQuestion
 
 
 T = TypeVar("T", bound="AgentSummary")
@@ -38,6 +39,7 @@ class AgentSummary:
         session_id (None | str | Unset):
         session_state (None | str | Unset):
         session_provider (None | str | Unset):
+        waiting_question (AgentWaitingQuestion | None | Unset):
         active_subagent_count (int | None | Unset):
         subagent_count_complete (bool | Unset):  Default: False.
         aq_subagent_count (int | Unset):  Default: 0.
@@ -65,6 +67,7 @@ class AgentSummary:
     session_id: None | str | Unset = UNSET
     session_state: None | str | Unset = UNSET
     session_provider: None | str | Unset = UNSET
+    waiting_question: AgentWaitingQuestion | None | Unset = UNSET
     active_subagent_count: int | None | Unset = UNSET
     subagent_count_complete: bool | Unset = False
     aq_subagent_count: int | Unset = 0
@@ -74,6 +77,8 @@ class AgentSummary:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.agent_waiting_question import AgentWaitingQuestion
+
         id = self.id
 
         name = self.name
@@ -160,6 +165,14 @@ class AgentSummary:
         else:
             session_provider = self.session_provider
 
+        waiting_question: dict[str, Any] | None | Unset
+        if isinstance(self.waiting_question, Unset):
+            waiting_question = UNSET
+        elif isinstance(self.waiting_question, AgentWaitingQuestion):
+            waiting_question = self.waiting_question.to_dict()
+        else:
+            waiting_question = self.waiting_question
+
         active_subagent_count: int | None | Unset
         if isinstance(self.active_subagent_count, Unset):
             active_subagent_count = UNSET
@@ -224,6 +237,8 @@ class AgentSummary:
             field_dict["session_state"] = session_state
         if session_provider is not UNSET:
             field_dict["session_provider"] = session_provider
+        if waiting_question is not UNSET:
+            field_dict["waiting_question"] = waiting_question
         if active_subagent_count is not UNSET:
             field_dict["active_subagent_count"] = active_subagent_count
         if subagent_count_complete is not UNSET:
@@ -242,6 +257,7 @@ class AgentSummary:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.agent_settings import AgentSettings
+        from ..models.agent_waiting_question import AgentWaitingQuestion
 
         d = dict(src_dict)
         id = d.pop("id")
@@ -366,6 +382,23 @@ class AgentSummary:
 
         session_provider = _parse_session_provider(d.pop("session_provider", UNSET))
 
+        def _parse_waiting_question(data: object) -> AgentWaitingQuestion | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                waiting_question_type_0 = AgentWaitingQuestion.from_dict(data)
+
+                return waiting_question_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(AgentWaitingQuestion | None | Unset, data)
+
+        waiting_question = _parse_waiting_question(d.pop("waiting_question", UNSET))
+
         def _parse_active_subagent_count(data: object) -> int | None | Unset:
             if data is None:
                 return data
@@ -419,6 +452,7 @@ class AgentSummary:
             session_id=session_id,
             session_state=session_state,
             session_provider=session_provider,
+            waiting_question=waiting_question,
             active_subagent_count=active_subagent_count,
             subagent_count_complete=subagent_count_complete,
             aq_subagent_count=aq_subagent_count,

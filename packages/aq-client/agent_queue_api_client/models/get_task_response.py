@@ -11,6 +11,7 @@ from ..types import UNSET, Unset
 if TYPE_CHECKING:
     from ..models.get_task_response_children_type_0 import GetTaskResponseChildrenType0
     from ..models.get_task_response_parent_type_0 import GetTaskResponseParentType0
+    from ..models.task_completion_detail import TaskCompletionDetail
     from ..models.task_ref import TaskRef
 
 
@@ -36,6 +37,7 @@ class GetTaskResponse:
         task_type (None | str | Unset):
         parent_task_id (None | str | Unset):
         profile_id (None | str | Unset):
+        intelligence_class (None | str | Unset):
         auto_approve_plan (bool | Unset):  Default: False.
         skip_verification (bool | Unset):  Default: False.
         pr_url (None | str | Unset):
@@ -46,6 +48,8 @@ class GetTaskResponse:
         updated_at (float | Unset):  Default: 0.0.
         parent (GetTaskResponseParentType0 | None | Unset):
         children (GetTaskResponseChildrenType0 | None | Unset):
+        completion (None | TaskCompletionDetail | Unset):
+        needs_attention (None | str | Unset):
     """
 
     id: str
@@ -63,6 +67,7 @@ class GetTaskResponse:
     task_type: None | str | Unset = UNSET
     parent_task_id: None | str | Unset = UNSET
     profile_id: None | str | Unset = UNSET
+    intelligence_class: None | str | Unset = UNSET
     auto_approve_plan: bool | Unset = False
     skip_verification: bool | Unset = False
     pr_url: None | str | Unset = UNSET
@@ -73,11 +78,14 @@ class GetTaskResponse:
     updated_at: float | Unset = 0.0
     parent: GetTaskResponseParentType0 | None | Unset = UNSET
     children: GetTaskResponseChildrenType0 | None | Unset = UNSET
+    completion: None | TaskCompletionDetail | Unset = UNSET
+    needs_attention: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.get_task_response_children_type_0 import GetTaskResponseChildrenType0
         from ..models.get_task_response_parent_type_0 import GetTaskResponseParentType0
+        from ..models.task_completion_detail import TaskCompletionDetail
 
         id = self.id
 
@@ -124,6 +132,12 @@ class GetTaskResponse:
             profile_id = UNSET
         else:
             profile_id = self.profile_id
+
+        intelligence_class: None | str | Unset
+        if isinstance(self.intelligence_class, Unset):
+            intelligence_class = UNSET
+        else:
+            intelligence_class = self.intelligence_class
 
         auto_approve_plan = self.auto_approve_plan
 
@@ -176,6 +190,20 @@ class GetTaskResponse:
         else:
             children = self.children
 
+        completion: dict[str, Any] | None | Unset
+        if isinstance(self.completion, Unset):
+            completion = UNSET
+        elif isinstance(self.completion, TaskCompletionDetail):
+            completion = self.completion.to_dict()
+        else:
+            completion = self.completion
+
+        needs_attention: None | str | Unset
+        if isinstance(self.needs_attention, Unset):
+            needs_attention = UNSET
+        else:
+            needs_attention = self.needs_attention
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -209,6 +237,8 @@ class GetTaskResponse:
             field_dict["parent_task_id"] = parent_task_id
         if profile_id is not UNSET:
             field_dict["profile_id"] = profile_id
+        if intelligence_class is not UNSET:
+            field_dict["intelligence_class"] = intelligence_class
         if auto_approve_plan is not UNSET:
             field_dict["auto_approve_plan"] = auto_approve_plan
         if skip_verification is not UNSET:
@@ -229,6 +259,10 @@ class GetTaskResponse:
             field_dict["parent"] = parent
         if children is not UNSET:
             field_dict["children"] = children
+        if completion is not UNSET:
+            field_dict["completion"] = completion
+        if needs_attention is not UNSET:
+            field_dict["needs_attention"] = needs_attention
 
         return field_dict
 
@@ -236,6 +270,7 @@ class GetTaskResponse:
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.get_task_response_children_type_0 import GetTaskResponseChildrenType0
         from ..models.get_task_response_parent_type_0 import GetTaskResponseParentType0
+        from ..models.task_completion_detail import TaskCompletionDetail
         from ..models.task_ref import TaskRef
 
         d = dict(src_dict)
@@ -296,6 +331,15 @@ class GetTaskResponse:
             return cast(None | str | Unset, data)
 
         profile_id = _parse_profile_id(d.pop("profile_id", UNSET))
+
+        def _parse_intelligence_class(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        intelligence_class = _parse_intelligence_class(d.pop("intelligence_class", UNSET))
 
         auto_approve_plan = d.pop("auto_approve_plan", UNSET)
 
@@ -375,6 +419,32 @@ class GetTaskResponse:
 
         children = _parse_children(d.pop("children", UNSET))
 
+        def _parse_completion(data: object) -> None | TaskCompletionDetail | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                completion_type_0 = TaskCompletionDetail.from_dict(data)
+
+                return completion_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(None | TaskCompletionDetail | Unset, data)
+
+        completion = _parse_completion(d.pop("completion", UNSET))
+
+        def _parse_needs_attention(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        needs_attention = _parse_needs_attention(d.pop("needs_attention", UNSET))
+
         get_task_response = cls(
             id=id,
             project_id=project_id,
@@ -391,6 +461,7 @@ class GetTaskResponse:
             task_type=task_type,
             parent_task_id=parent_task_id,
             profile_id=profile_id,
+            intelligence_class=intelligence_class,
             auto_approve_plan=auto_approve_plan,
             skip_verification=skip_verification,
             pr_url=pr_url,
@@ -401,6 +472,8 @@ class GetTaskResponse:
             updated_at=updated_at,
             parent=parent,
             children=children,
+            completion=completion,
+            needs_attention=needs_attention,
         )
 
         get_task_response.additional_properties = d

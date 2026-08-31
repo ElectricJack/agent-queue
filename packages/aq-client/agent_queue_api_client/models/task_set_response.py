@@ -12,52 +12,50 @@ if TYPE_CHECKING:
     from ..models.claimed_by import ClaimedBy
     from ..models.task_completion_detail import TaskCompletionDetail
     from ..models.task_ref import TaskRef
-    from ..models.task_show_response_children_type_0 import TaskShowResponseChildrenType0
-    from ..models.task_show_response_context_item import TaskShowResponseContextItem
-    from ..models.task_show_response_parent_type_0 import TaskShowResponseParentType0
+    from ..models.task_set_response_children_type_0 import TaskSetResponseChildrenType0
+    from ..models.task_set_response_context_item import TaskSetResponseContextItem
+    from ..models.task_set_response_parent_type_0 import TaskSetResponseParentType0
 
 
-T = TypeVar("T", bound="TaskShowResponse")
+T = TypeVar("T", bound="TaskSetResponse")
 
 
 @_attrs_define
-class TaskShowResponse:
-    """``task_show`` — ``get_task`` plus the composed sections.
-
-    ``claimed_by`` is ``None`` when the task is unclaimed.
-
-        Attributes:
-            id (str):
-            project_id (str):
-            title (str):
-            description (str | Unset):  Default: ''.
-            status (str | Unset):  Default: ''.
-            priority (int | Unset):  Default: 0.
-            assigned_agent (None | str | Unset):
-            retry_count (int | Unset):  Default: 0.
-            max_retries (int | Unset):  Default: 3.
-            requires_approval (bool | Unset):  Default: False.
-            is_blocked (bool | Unset):  Default: False.
-            is_plan_subtask (bool | Unset):  Default: False.
-            task_type (None | str | Unset):
-            parent_task_id (None | str | Unset):
-            profile_id (None | str | Unset):
-            intelligence_class (None | str | Unset):
-            auto_approve_plan (bool | Unset):  Default: False.
-            skip_verification (bool | Unset):  Default: False.
-            pr_url (None | str | Unset):
-            depends_on (list[TaskRef] | Unset):
-            blocks (list[TaskRef] | Unset):
-            subtasks (list[TaskRef] | Unset):
-            created_at (float | Unset):  Default: 0.0.
-            updated_at (float | Unset):  Default: 0.0.
-            parent (None | TaskShowResponseParentType0 | Unset):
-            children (None | TaskShowResponseChildrenType0 | Unset):
-            completion (None | TaskCompletionDetail | Unset):
-            needs_attention (None | str | Unset):
-            context (list[TaskShowResponseContextItem] | Unset):
-            labels (list[str] | Unset):
-            claimed_by (ClaimedBy | None | Unset):
+class TaskSetResponse:
+    """
+    Attributes:
+        id (str):
+        project_id (str):
+        title (str):
+        description (str | Unset):  Default: ''.
+        status (str | Unset):  Default: ''.
+        priority (int | Unset):  Default: 0.
+        assigned_agent (None | str | Unset):
+        retry_count (int | Unset):  Default: 0.
+        max_retries (int | Unset):  Default: 3.
+        requires_approval (bool | Unset):  Default: False.
+        is_blocked (bool | Unset):  Default: False.
+        is_plan_subtask (bool | Unset):  Default: False.
+        task_type (None | str | Unset):
+        parent_task_id (None | str | Unset):
+        profile_id (None | str | Unset):
+        intelligence_class (None | str | Unset):
+        auto_approve_plan (bool | Unset):  Default: False.
+        skip_verification (bool | Unset):  Default: False.
+        pr_url (None | str | Unset):
+        depends_on (list[TaskRef] | Unset):
+        blocks (list[TaskRef] | Unset):
+        subtasks (list[TaskRef] | Unset):
+        created_at (float | Unset):  Default: 0.0.
+        updated_at (float | Unset):  Default: 0.0.
+        parent (None | TaskSetResponseParentType0 | Unset):
+        children (None | TaskSetResponseChildrenType0 | Unset):
+        completion (None | TaskCompletionDetail | Unset):
+        needs_attention (None | str | Unset):
+        context (list[TaskSetResponseContextItem] | Unset):
+        labels (list[str] | Unset):
+        claimed_by (ClaimedBy | None | Unset):
+        fields_changed (list[str] | Unset):
     """
 
     id: str
@@ -84,20 +82,21 @@ class TaskShowResponse:
     subtasks: list[TaskRef] | Unset = UNSET
     created_at: float | Unset = 0.0
     updated_at: float | Unset = 0.0
-    parent: None | TaskShowResponseParentType0 | Unset = UNSET
-    children: None | TaskShowResponseChildrenType0 | Unset = UNSET
+    parent: None | TaskSetResponseParentType0 | Unset = UNSET
+    children: None | TaskSetResponseChildrenType0 | Unset = UNSET
     completion: None | TaskCompletionDetail | Unset = UNSET
     needs_attention: None | str | Unset = UNSET
-    context: list[TaskShowResponseContextItem] | Unset = UNSET
+    context: list[TaskSetResponseContextItem] | Unset = UNSET
     labels: list[str] | Unset = UNSET
     claimed_by: ClaimedBy | None | Unset = UNSET
+    fields_changed: list[str] | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.claimed_by import ClaimedBy
         from ..models.task_completion_detail import TaskCompletionDetail
-        from ..models.task_show_response_children_type_0 import TaskShowResponseChildrenType0
-        from ..models.task_show_response_parent_type_0 import TaskShowResponseParentType0
+        from ..models.task_set_response_children_type_0 import TaskSetResponseChildrenType0
+        from ..models.task_set_response_parent_type_0 import TaskSetResponseParentType0
 
         id = self.id
 
@@ -189,7 +188,7 @@ class TaskShowResponse:
         parent: dict[str, Any] | None | Unset
         if isinstance(self.parent, Unset):
             parent = UNSET
-        elif isinstance(self.parent, TaskShowResponseParentType0):
+        elif isinstance(self.parent, TaskSetResponseParentType0):
             parent = self.parent.to_dict()
         else:
             parent = self.parent
@@ -197,7 +196,7 @@ class TaskShowResponse:
         children: dict[str, Any] | None | Unset
         if isinstance(self.children, Unset):
             children = UNSET
-        elif isinstance(self.children, TaskShowResponseChildrenType0):
+        elif isinstance(self.children, TaskSetResponseChildrenType0):
             children = self.children.to_dict()
         else:
             children = self.children
@@ -234,6 +233,10 @@ class TaskShowResponse:
             claimed_by = self.claimed_by.to_dict()
         else:
             claimed_by = self.claimed_by
+
+        fields_changed: list[str] | Unset = UNSET
+        if not isinstance(self.fields_changed, Unset):
+            fields_changed = self.fields_changed
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -300,6 +303,8 @@ class TaskShowResponse:
             field_dict["labels"] = labels
         if claimed_by is not UNSET:
             field_dict["claimed_by"] = claimed_by
+        if fields_changed is not UNSET:
+            field_dict["fields_changed"] = fields_changed
 
         return field_dict
 
@@ -308,9 +313,9 @@ class TaskShowResponse:
         from ..models.claimed_by import ClaimedBy
         from ..models.task_completion_detail import TaskCompletionDetail
         from ..models.task_ref import TaskRef
-        from ..models.task_show_response_children_type_0 import TaskShowResponseChildrenType0
-        from ..models.task_show_response_context_item import TaskShowResponseContextItem
-        from ..models.task_show_response_parent_type_0 import TaskShowResponseParentType0
+        from ..models.task_set_response_children_type_0 import TaskSetResponseChildrenType0
+        from ..models.task_set_response_context_item import TaskSetResponseContextItem
+        from ..models.task_set_response_parent_type_0 import TaskSetResponseParentType0
 
         d = dict(src_dict)
         id = d.pop("id")
@@ -424,7 +429,7 @@ class TaskShowResponse:
 
         updated_at = d.pop("updated_at", UNSET)
 
-        def _parse_parent(data: object) -> None | TaskShowResponseParentType0 | Unset:
+        def _parse_parent(data: object) -> None | TaskSetResponseParentType0 | Unset:
             if data is None:
                 return data
             if isinstance(data, Unset):
@@ -432,16 +437,16 @@ class TaskShowResponse:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                parent_type_0 = TaskShowResponseParentType0.from_dict(data)
+                parent_type_0 = TaskSetResponseParentType0.from_dict(data)
 
                 return parent_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
-            return cast(None | TaskShowResponseParentType0 | Unset, data)
+            return cast(None | TaskSetResponseParentType0 | Unset, data)
 
         parent = _parse_parent(d.pop("parent", UNSET))
 
-        def _parse_children(data: object) -> None | TaskShowResponseChildrenType0 | Unset:
+        def _parse_children(data: object) -> None | TaskSetResponseChildrenType0 | Unset:
             if data is None:
                 return data
             if isinstance(data, Unset):
@@ -449,12 +454,12 @@ class TaskShowResponse:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                children_type_0 = TaskShowResponseChildrenType0.from_dict(data)
+                children_type_0 = TaskSetResponseChildrenType0.from_dict(data)
 
                 return children_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
-            return cast(None | TaskShowResponseChildrenType0 | Unset, data)
+            return cast(None | TaskSetResponseChildrenType0 | Unset, data)
 
         children = _parse_children(d.pop("children", UNSET))
 
@@ -485,11 +490,11 @@ class TaskShowResponse:
         needs_attention = _parse_needs_attention(d.pop("needs_attention", UNSET))
 
         _context = d.pop("context", UNSET)
-        context: list[TaskShowResponseContextItem] | Unset = UNSET
+        context: list[TaskSetResponseContextItem] | Unset = UNSET
         if _context is not UNSET:
             context = []
             for context_item_data in _context:
-                context_item = TaskShowResponseContextItem.from_dict(context_item_data)
+                context_item = TaskSetResponseContextItem.from_dict(context_item_data)
 
                 context.append(context_item)
 
@@ -512,7 +517,9 @@ class TaskShowResponse:
 
         claimed_by = _parse_claimed_by(d.pop("claimed_by", UNSET))
 
-        task_show_response = cls(
+        fields_changed = cast(list[str], d.pop("fields_changed", UNSET))
+
+        task_set_response = cls(
             id=id,
             project_id=project_id,
             title=title,
@@ -544,10 +551,11 @@ class TaskShowResponse:
             context=context,
             labels=labels,
             claimed_by=claimed_by,
+            fields_changed=fields_changed,
         )
 
-        task_show_response.additional_properties = d
-        return task_show_response
+        task_set_response.additional_properties = d
+        return task_set_response
 
     @property
     def additional_keys(self) -> list[str]:

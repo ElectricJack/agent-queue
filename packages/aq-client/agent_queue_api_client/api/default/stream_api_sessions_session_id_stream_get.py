@@ -15,6 +15,7 @@ def _get_kwargs(
     *,
     max_seconds: float | None | Unset = UNSET,
     replay_only: int | Unset = 0,
+    attempt_id: None | str | Unset = UNSET,
 ) -> dict[str, Any]:
 
     params: dict[str, Any] = {}
@@ -27,6 +28,13 @@ def _get_kwargs(
     params["max_seconds"] = json_max_seconds
 
     params["replay_only"] = replay_only
+
+    json_attempt_id: None | str | Unset
+    if isinstance(attempt_id, Unset):
+        json_attempt_id = UNSET
+    else:
+        json_attempt_id = attempt_id
+    params["attempt_id"] = json_attempt_id
 
     params = {k: v for k, v in params.items() if v is not UNSET and v is not None}
 
@@ -76,6 +84,7 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     max_seconds: float | None | Unset = UNSET,
     replay_only: int | Unset = 0,
+    attempt_id: None | str | Unset = UNSET,
 ) -> Response[Any | HTTPValidationError]:
     """Stream
 
@@ -83,6 +92,7 @@ def sync_detailed(
         session_id (str):
         max_seconds (float | None | Unset):
         replay_only (int | Unset):  Default: 0.
+        attempt_id (None | str | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -96,6 +106,7 @@ def sync_detailed(
         session_id=session_id,
         max_seconds=max_seconds,
         replay_only=replay_only,
+        attempt_id=attempt_id,
     )
 
     response = client.get_httpx_client().request(
@@ -111,6 +122,7 @@ def sync(
     client: AuthenticatedClient | Client,
     max_seconds: float | None | Unset = UNSET,
     replay_only: int | Unset = 0,
+    attempt_id: None | str | Unset = UNSET,
 ) -> Any | HTTPValidationError | None:
     """Stream
 
@@ -118,6 +130,7 @@ def sync(
         session_id (str):
         max_seconds (float | None | Unset):
         replay_only (int | Unset):  Default: 0.
+        attempt_id (None | str | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -132,6 +145,7 @@ def sync(
         client=client,
         max_seconds=max_seconds,
         replay_only=replay_only,
+        attempt_id=attempt_id,
     ).parsed
 
 
@@ -141,6 +155,7 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     max_seconds: float | None | Unset = UNSET,
     replay_only: int | Unset = 0,
+    attempt_id: None | str | Unset = UNSET,
 ) -> Response[Any | HTTPValidationError]:
     """Stream
 
@@ -148,6 +163,7 @@ async def asyncio_detailed(
         session_id (str):
         max_seconds (float | None | Unset):
         replay_only (int | Unset):  Default: 0.
+        attempt_id (None | str | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -161,6 +177,7 @@ async def asyncio_detailed(
         session_id=session_id,
         max_seconds=max_seconds,
         replay_only=replay_only,
+        attempt_id=attempt_id,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -174,6 +191,7 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     max_seconds: float | None | Unset = UNSET,
     replay_only: int | Unset = 0,
+    attempt_id: None | str | Unset = UNSET,
 ) -> Any | HTTPValidationError | None:
     """Stream
 
@@ -181,6 +199,7 @@ async def asyncio(
         session_id (str):
         max_seconds (float | None | Unset):
         replay_only (int | Unset):  Default: 0.
+        attempt_id (None | str | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -196,5 +215,6 @@ async def asyncio(
             client=client,
             max_seconds=max_seconds,
             replay_only=replay_only,
+            attempt_id=attempt_id,
         )
     ).parsed

@@ -20,6 +20,10 @@ class TaskSetRequest:
     """
     Attributes:
         task_id (str): Task id to update.
+        description (None | str | Unset): Replace the canonical task description, preserving requirements and adding
+            durable findings.
+        expected_description (None | str | Unset): Exact description previously read; rejects concurrent edits before
+            changing any fields.
         branch (None | str | Unset): Branch name for this task's work (optional).
         pr_url (None | str | Unset): Pull-request URL (optional).
         work_dir (None | str | Unset): Directory the work happens in (optional; recorded as task metadata).
@@ -32,6 +36,8 @@ class TaskSetRequest:
     """
 
     task_id: str
+    description: None | str | Unset = UNSET
+    expected_description: None | str | Unset = UNSET
     branch: None | str | Unset = UNSET
     pr_url: None | str | Unset = UNSET
     work_dir: None | str | Unset = UNSET
@@ -46,6 +52,18 @@ class TaskSetRequest:
         from ..models.task_set_request_meta_type_0 import TaskSetRequestMetaType0
 
         task_id = self.task_id
+
+        description: None | str | Unset
+        if isinstance(self.description, Unset):
+            description = UNSET
+        else:
+            description = self.description
+
+        expected_description: None | str | Unset
+        if isinstance(self.expected_description, Unset):
+            expected_description = UNSET
+        else:
+            expected_description = self.expected_description
 
         branch: None | str | Unset
         if isinstance(self.branch, Unset):
@@ -110,6 +128,10 @@ class TaskSetRequest:
                 "task_id": task_id,
             }
         )
+        if description is not UNSET:
+            field_dict["description"] = description
+        if expected_description is not UNSET:
+            field_dict["expected_description"] = expected_description
         if branch is not UNSET:
             field_dict["branch"] = branch
         if pr_url is not UNSET:
@@ -135,6 +157,24 @@ class TaskSetRequest:
 
         d = dict(src_dict)
         task_id = d.pop("task_id")
+
+        def _parse_description(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        description = _parse_description(d.pop("description", UNSET))
+
+        def _parse_expected_description(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        expected_description = _parse_expected_description(d.pop("expected_description", UNSET))
 
         def _parse_branch(data: object) -> None | str | Unset:
             if data is None:
@@ -234,6 +274,8 @@ class TaskSetRequest:
 
         task_set_request = cls(
             task_id=task_id,
+            description=description,
+            expected_description=expected_description,
             branch=branch,
             pr_url=pr_url,
             work_dir=work_dir,

@@ -26,6 +26,9 @@ class CreateTaskRequest:
         task_type (None | str | Unset): Categorize the task type for display and filtering (optional)
         profile_id (None | str | Unset): Agent profile ID to configure the agent with specific tools/capabilities
             (optional)
+        intelligence_class (None | str | Unset): Execution intelligence class id, e.g. deep-high or standard-medium. Use
+            list_intelligence_classes for current IDs. Set profile_id and this field together at creation to route work
+            atomically.
         preferred_workspace_id (None | str | Unset): Workspace ID to prefer when assigning this task to an agent. Use
             this when the task must run in a specific workspace (e.g. one that contains a merge conflict). Get the ID from
             find_merge_conflict_workspaces or list_workspaces.
@@ -63,6 +66,7 @@ class CreateTaskRequest:
     requires_approval: bool | Unset = False
     task_type: None | str | Unset = UNSET
     profile_id: None | str | Unset = UNSET
+    intelligence_class: None | str | Unset = UNSET
     preferred_workspace_id: None | str | Unset = UNSET
     attachments: list[Any] | None | Unset = UNSET
     auto_approve_plan: bool | Unset = False
@@ -107,6 +111,12 @@ class CreateTaskRequest:
             profile_id = UNSET
         else:
             profile_id = self.profile_id
+
+        intelligence_class: None | str | Unset
+        if isinstance(self.intelligence_class, Unset):
+            intelligence_class = UNSET
+        else:
+            intelligence_class = self.intelligence_class
 
         preferred_workspace_id: None | str | Unset
         if isinstance(self.preferred_workspace_id, Unset):
@@ -200,6 +210,8 @@ class CreateTaskRequest:
             field_dict["task_type"] = task_type
         if profile_id is not UNSET:
             field_dict["profile_id"] = profile_id
+        if intelligence_class is not UNSET:
+            field_dict["intelligence_class"] = intelligence_class
         if preferred_workspace_id is not UNSET:
             field_dict["preferred_workspace_id"] = preferred_workspace_id
         if attachments is not UNSET:
@@ -271,6 +283,15 @@ class CreateTaskRequest:
             return cast(None | str | Unset, data)
 
         profile_id = _parse_profile_id(d.pop("profile_id", UNSET))
+
+        def _parse_intelligence_class(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        intelligence_class = _parse_intelligence_class(d.pop("intelligence_class", UNSET))
 
         def _parse_preferred_workspace_id(data: object) -> None | str | Unset:
             if data is None:
@@ -398,6 +419,7 @@ class CreateTaskRequest:
             requires_approval=requires_approval,
             task_type=task_type,
             profile_id=profile_id,
+            intelligence_class=intelligence_class,
             preferred_workspace_id=preferred_workspace_id,
             attachments=attachments,
             auto_approve_plan=auto_approve_plan,

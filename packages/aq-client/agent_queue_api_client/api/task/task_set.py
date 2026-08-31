@@ -6,6 +6,7 @@ import httpx
 from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.task_set_request import TaskSetRequest
+from ...models.task_set_response import TaskSetResponse
 from ...models.task_set_response_422 import TaskSetResponse422
 from ...types import Response
 
@@ -31,9 +32,10 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Any | TaskSetResponse422 | None:
+) -> TaskSetResponse | TaskSetResponse422 | None:
     if response.status_code == 200:
-        response_200 = response.json()
+        response_200 = TaskSetResponse.from_dict(response.json())
+
         return response_200
 
     if response.status_code == 422:
@@ -49,7 +51,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[Any | TaskSetResponse422]:
+) -> Response[TaskSetResponse | TaskSetResponse422]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -62,18 +64,18 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: TaskSetRequest,
-) -> Response[Any | TaskSetResponse422]:
-    """Write work-state fields on a task and return the updated task: branch, PR URL, work_dir, a note,
-    label add/remove, and arbitrary metadata. Never performs a status transition (the state machine
-    belongs to work-graph's task_close — use the lifecycle commands for that).  Returns 'fields_changed'
-    listing what was written; a call with no recognised field is an error rather than a no-op.  Backs
-    `aq task set`.
+) -> Response[TaskSetResponse | TaskSetResponse422]:
+    """Write work-state fields on a task and return the updated task: description, branch, PR URL,
+    work_dir, a note, label add/remove, and arbitrary metadata. Never performs a status transition (the
+    state machine belongs to work-graph's task_close — use the lifecycle commands for that).  Returns
+    'fields_changed' listing what was written; a call with no recognised field is an error rather than a
+    no-op.  Backs `aq task set`.
 
-     Write work-state fields on a task and return the updated task: branch, PR URL, work_dir, a note,
-    label add/remove, and arbitrary metadata. Never performs a status transition (the state machine
-    belongs to work-graph's task_close — use the lifecycle commands for that).  Returns 'fields_changed'
-    listing what was written; a call with no recognised field is an error rather than a no-op.  Backs
-    `aq task set`.
+     Write work-state fields on a task and return the updated task: description, branch, PR URL,
+    work_dir, a note, label add/remove, and arbitrary metadata. Never performs a status transition (the
+    state machine belongs to work-graph's task_close — use the lifecycle commands for that).  Returns
+    'fields_changed' listing what was written; a call with no recognised field is an error rather than a
+    no-op.  Backs `aq task set`.
 
     Args:
         body (TaskSetRequest):
@@ -83,7 +85,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any | TaskSetResponse422]
+        Response[TaskSetResponse | TaskSetResponse422]
     """
 
     kwargs = _get_kwargs(
@@ -101,18 +103,18 @@ def sync(
     *,
     client: AuthenticatedClient | Client,
     body: TaskSetRequest,
-) -> Any | TaskSetResponse422 | None:
-    """Write work-state fields on a task and return the updated task: branch, PR URL, work_dir, a note,
-    label add/remove, and arbitrary metadata. Never performs a status transition (the state machine
-    belongs to work-graph's task_close — use the lifecycle commands for that).  Returns 'fields_changed'
-    listing what was written; a call with no recognised field is an error rather than a no-op.  Backs
-    `aq task set`.
+) -> TaskSetResponse | TaskSetResponse422 | None:
+    """Write work-state fields on a task and return the updated task: description, branch, PR URL,
+    work_dir, a note, label add/remove, and arbitrary metadata. Never performs a status transition (the
+    state machine belongs to work-graph's task_close — use the lifecycle commands for that).  Returns
+    'fields_changed' listing what was written; a call with no recognised field is an error rather than a
+    no-op.  Backs `aq task set`.
 
-     Write work-state fields on a task and return the updated task: branch, PR URL, work_dir, a note,
-    label add/remove, and arbitrary metadata. Never performs a status transition (the state machine
-    belongs to work-graph's task_close — use the lifecycle commands for that).  Returns 'fields_changed'
-    listing what was written; a call with no recognised field is an error rather than a no-op.  Backs
-    `aq task set`.
+     Write work-state fields on a task and return the updated task: description, branch, PR URL,
+    work_dir, a note, label add/remove, and arbitrary metadata. Never performs a status transition (the
+    state machine belongs to work-graph's task_close — use the lifecycle commands for that).  Returns
+    'fields_changed' listing what was written; a call with no recognised field is an error rather than a
+    no-op.  Backs `aq task set`.
 
     Args:
         body (TaskSetRequest):
@@ -122,7 +124,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Any | TaskSetResponse422
+        TaskSetResponse | TaskSetResponse422
     """
 
     return sync_detailed(
@@ -135,18 +137,18 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: TaskSetRequest,
-) -> Response[Any | TaskSetResponse422]:
-    """Write work-state fields on a task and return the updated task: branch, PR URL, work_dir, a note,
-    label add/remove, and arbitrary metadata. Never performs a status transition (the state machine
-    belongs to work-graph's task_close — use the lifecycle commands for that).  Returns 'fields_changed'
-    listing what was written; a call with no recognised field is an error rather than a no-op.  Backs
-    `aq task set`.
+) -> Response[TaskSetResponse | TaskSetResponse422]:
+    """Write work-state fields on a task and return the updated task: description, branch, PR URL,
+    work_dir, a note, label add/remove, and arbitrary metadata. Never performs a status transition (the
+    state machine belongs to work-graph's task_close — use the lifecycle commands for that).  Returns
+    'fields_changed' listing what was written; a call with no recognised field is an error rather than a
+    no-op.  Backs `aq task set`.
 
-     Write work-state fields on a task and return the updated task: branch, PR URL, work_dir, a note,
-    label add/remove, and arbitrary metadata. Never performs a status transition (the state machine
-    belongs to work-graph's task_close — use the lifecycle commands for that).  Returns 'fields_changed'
-    listing what was written; a call with no recognised field is an error rather than a no-op.  Backs
-    `aq task set`.
+     Write work-state fields on a task and return the updated task: description, branch, PR URL,
+    work_dir, a note, label add/remove, and arbitrary metadata. Never performs a status transition (the
+    state machine belongs to work-graph's task_close — use the lifecycle commands for that).  Returns
+    'fields_changed' listing what was written; a call with no recognised field is an error rather than a
+    no-op.  Backs `aq task set`.
 
     Args:
         body (TaskSetRequest):
@@ -156,7 +158,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any | TaskSetResponse422]
+        Response[TaskSetResponse | TaskSetResponse422]
     """
 
     kwargs = _get_kwargs(
@@ -172,18 +174,18 @@ async def asyncio(
     *,
     client: AuthenticatedClient | Client,
     body: TaskSetRequest,
-) -> Any | TaskSetResponse422 | None:
-    """Write work-state fields on a task and return the updated task: branch, PR URL, work_dir, a note,
-    label add/remove, and arbitrary metadata. Never performs a status transition (the state machine
-    belongs to work-graph's task_close — use the lifecycle commands for that).  Returns 'fields_changed'
-    listing what was written; a call with no recognised field is an error rather than a no-op.  Backs
-    `aq task set`.
+) -> TaskSetResponse | TaskSetResponse422 | None:
+    """Write work-state fields on a task and return the updated task: description, branch, PR URL,
+    work_dir, a note, label add/remove, and arbitrary metadata. Never performs a status transition (the
+    state machine belongs to work-graph's task_close — use the lifecycle commands for that).  Returns
+    'fields_changed' listing what was written; a call with no recognised field is an error rather than a
+    no-op.  Backs `aq task set`.
 
-     Write work-state fields on a task and return the updated task: branch, PR URL, work_dir, a note,
-    label add/remove, and arbitrary metadata. Never performs a status transition (the state machine
-    belongs to work-graph's task_close — use the lifecycle commands for that).  Returns 'fields_changed'
-    listing what was written; a call with no recognised field is an error rather than a no-op.  Backs
-    `aq task set`.
+     Write work-state fields on a task and return the updated task: description, branch, PR URL,
+    work_dir, a note, label add/remove, and arbitrary metadata. Never performs a status transition (the
+    state machine belongs to work-graph's task_close — use the lifecycle commands for that).  Returns
+    'fields_changed' listing what was written; a call with no recognised field is an error rather than a
+    no-op.  Backs `aq task set`.
 
     Args:
         body (TaskSetRequest):
@@ -193,7 +195,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Any | TaskSetResponse422
+        TaskSetResponse | TaskSetResponse422
     """
 
     return (

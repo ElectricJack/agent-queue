@@ -6,8 +6,10 @@ from .add_dependency_response_422 import AddDependencyResponse422
 from .add_workspace_request import AddWorkspaceRequest
 from .add_workspace_response import AddWorkspaceResponse
 from .add_workspace_response_422 import AddWorkspaceResponse422
+from .agent_question_detail import AgentQuestionDetail
 from .agent_settings import AgentSettings
 from .agent_summary import AgentSummary
+from .agent_waiting_question import AgentWaitingQuestion
 from .append_note_request import AppendNoteRequest
 from .append_note_response import AppendNoteResponse
 from .append_note_response_422 import AppendNoteResponse422
@@ -462,6 +464,8 @@ from .message_model_pane_open_type_0 import MessageModelPaneOpenType0
 from .message_reply_request import MessageReplyRequest
 from .message_reply_response import MessageReplyResponse
 from .message_reply_response_422 import MessageReplyResponse422
+from .message_send_request import MessageSendRequest
+from .message_send_request_pane_open_type_0 import MessageSendRequestPaneOpenType0
 from .note_summary import NoteSummary
 from .orchestrator_control_request import OrchestratorControlRequest
 from .orchestrator_control_response import OrchestratorControlResponse
@@ -469,6 +473,8 @@ from .orchestrator_control_response_422 import OrchestratorControlResponse422
 from .pause_project_request import PauseProjectRequest
 from .pause_project_response import PauseProjectResponse
 from .pause_project_response_422 import PauseProjectResponse422
+from .pause_task_request import PauseTaskRequest
+from .pause_task_response_422 import PauseTaskResponse422
 from .playbook_graph_view_request import PlaybookGraphViewRequest
 from .playbook_graph_view_response import PlaybookGraphViewResponse
 from .playbook_graph_view_response_422 import PlaybookGraphViewResponse422
@@ -533,6 +539,9 @@ from .pool_status_request import PoolStatusRequest
 from .pool_status_response import PoolStatusResponse
 from .pool_status_response_422 import PoolStatusResponse422
 from .pool_status_row import PoolStatusRow
+from .post_message_api_messages_send_post_response_post_message_api_messages_send_post import (
+    PostMessageApiMessagesSendPostResponsePostMessageApiMessagesSendPost,
+)
 from .pr_merge_request import PrMergeRequest
 from .pr_merge_response import PrMergeResponse
 from .pr_merge_response_422 import PrMergeResponse422
@@ -541,12 +550,6 @@ from .probe_mcp_server_response import ProbeMcpServerResponse
 from .probe_mcp_server_response_422 import ProbeMcpServerResponse422
 from .probed_tool_model import ProbedToolModel
 from .probed_tool_model_input_schema import ProbedToolModelInputSchema
-from .process_plan_request import ProcessPlanRequest
-from .process_plan_response import ProcessPlanResponse
-from .process_plan_response_422 import ProcessPlanResponse422
-from .process_task_completion_request import ProcessTaskCompletionRequest
-from .process_task_completion_response import ProcessTaskCompletionResponse
-from .process_task_completion_response_422 import ProcessTaskCompletionResponse422
 from .profile_detail import ProfileDetail
 from .profile_detail_install import ProfileDetailInstall
 from .profile_summary import ProfileSummary
@@ -566,6 +569,13 @@ from .provide_input_response_422 import ProvideInputResponse422
 from .push_branch_request import PushBranchRequest
 from .push_branch_response import PushBranchResponse
 from .push_branch_response_422 import PushBranchResponse422
+from .question_answer_request import QuestionAnswerRequest
+from .question_answer_response_422 import QuestionAnswerResponse422
+from .question_escalate_request import QuestionEscalateRequest
+from .question_escalate_response_422 import QuestionEscalateResponse422
+from .question_list_request import QuestionListRequest
+from .question_list_response import QuestionListResponse
+from .question_list_response_422 import QuestionListResponse422
 from .queue_sync_workspaces_request import QueueSyncWorkspacesRequest
 from .queue_sync_workspaces_response import QueueSyncWorkspacesResponse
 from .queue_sync_workspaces_response_422 import QueueSyncWorkspacesResponse422
@@ -632,6 +642,8 @@ from .resume_playbook_response_422 import ResumePlaybookResponse422
 from .resume_project_request import ResumeProjectRequest
 from .resume_project_response import ResumeProjectResponse
 from .resume_project_response_422 import ResumeProjectResponse422
+from .resume_task_request import ResumeTaskRequest
+from .resume_task_response_422 import ResumeTaskResponse422
 from .run_playbook_request import RunPlaybookRequest
 from .run_playbook_request_event_type_0 import RunPlaybookRequestEventType0
 from .run_playbook_response import RunPlaybookResponse
@@ -755,6 +767,16 @@ from .task_claim_response_422 import TaskClaimResponse422
 from .task_claim_response_task_type_0 import TaskClaimResponseTaskType0
 from .task_close_request import TaskCloseRequest
 from .task_close_response_422 import TaskCloseResponse422
+from .task_comment import TaskComment
+from .task_comment_author_kind import TaskCommentAuthorKind
+from .task_comment_request import TaskCommentRequest
+from .task_comment_response import TaskCommentResponse
+from .task_comment_response_422 import TaskCommentResponse422
+from .task_comments_request import TaskCommentsRequest
+from .task_comments_response import TaskCommentsResponse
+from .task_comments_response_422 import TaskCommentsResponse422
+from .task_completion_detail import TaskCompletionDetail
+from .task_control_response import TaskControlResponse
 from .task_deps_request import TaskDepsRequest
 from .task_deps_response import TaskDepsResponse
 from .task_deps_response_422 import TaskDepsResponse422
@@ -771,9 +793,15 @@ from .task_ref import TaskRef
 from .task_route_request import TaskRouteRequest
 from .task_route_response import TaskRouteResponse
 from .task_route_response_422 import TaskRouteResponse422
+from .task_session_attempt import TaskSessionAttempt
+from .task_sessions_response import TaskSessionsResponse
 from .task_set_request import TaskSetRequest
 from .task_set_request_meta_type_0 import TaskSetRequestMetaType0
+from .task_set_response import TaskSetResponse
 from .task_set_response_422 import TaskSetResponse422
+from .task_set_response_children_type_0 import TaskSetResponseChildrenType0
+from .task_set_response_context_item import TaskSetResponseContextItem
+from .task_set_response_parent_type_0 import TaskSetResponseParentType0
 from .task_show_request import TaskShowRequest
 from .task_show_response import TaskShowResponse
 from .task_show_response_422 import TaskShowResponse422
@@ -824,8 +852,10 @@ __all__ = (
     "AddWorkspaceRequest",
     "AddWorkspaceResponse",
     "AddWorkspaceResponse422",
+    "AgentQuestionDetail",
     "AgentSettings",
     "AgentSummary",
+    "AgentWaitingQuestion",
     "AppendNoteRequest",
     "AppendNoteResponse",
     "AppendNoteResponse422",
@@ -1274,6 +1304,8 @@ __all__ = (
     "MessageReplyRequest",
     "MessageReplyResponse",
     "MessageReplyResponse422",
+    "MessageSendRequest",
+    "MessageSendRequestPaneOpenType0",
     "NoteSummary",
     "OrchestratorControlRequest",
     "OrchestratorControlResponse",
@@ -1281,6 +1313,8 @@ __all__ = (
     "PauseProjectRequest",
     "PauseProjectResponse",
     "PauseProjectResponse422",
+    "PauseTaskRequest",
+    "PauseTaskResponse422",
     "PlaybookGraphViewRequest",
     "PlaybookGraphViewResponse",
     "PlaybookGraphViewResponse422",
@@ -1345,6 +1379,7 @@ __all__ = (
     "PoolStatusResponse",
     "PoolStatusResponse422",
     "PoolStatusRow",
+    "PostMessageApiMessagesSendPostResponsePostMessageApiMessagesSendPost",
     "PrMergeRequest",
     "PrMergeResponse",
     "PrMergeResponse422",
@@ -1353,12 +1388,6 @@ __all__ = (
     "ProbeMcpServerRequest",
     "ProbeMcpServerResponse",
     "ProbeMcpServerResponse422",
-    "ProcessPlanRequest",
-    "ProcessPlanResponse",
-    "ProcessPlanResponse422",
-    "ProcessTaskCompletionRequest",
-    "ProcessTaskCompletionResponse",
-    "ProcessTaskCompletionResponse422",
     "ProfileDetail",
     "ProfileDetailInstall",
     "ProfileSummary",
@@ -1378,6 +1407,13 @@ __all__ = (
     "PushBranchRequest",
     "PushBranchResponse",
     "PushBranchResponse422",
+    "QuestionAnswerRequest",
+    "QuestionAnswerResponse422",
+    "QuestionEscalateRequest",
+    "QuestionEscalateResponse422",
+    "QuestionListRequest",
+    "QuestionListResponse",
+    "QuestionListResponse422",
     "QueueSyncWorkspacesRequest",
     "QueueSyncWorkspacesResponse",
     "QueueSyncWorkspacesResponse422",
@@ -1444,6 +1480,8 @@ __all__ = (
     "ResumeProjectRequest",
     "ResumeProjectResponse",
     "ResumeProjectResponse422",
+    "ResumeTaskRequest",
+    "ResumeTaskResponse422",
     "RunPlaybookRequest",
     "RunPlaybookRequestEventType0",
     "RunPlaybookResponse",
@@ -1565,6 +1603,16 @@ __all__ = (
     "TaskClaimResponseTaskType0",
     "TaskCloseRequest",
     "TaskCloseResponse422",
+    "TaskComment",
+    "TaskCommentAuthorKind",
+    "TaskCommentRequest",
+    "TaskCommentResponse",
+    "TaskCommentResponse422",
+    "TaskCommentsRequest",
+    "TaskCommentsResponse",
+    "TaskCommentsResponse422",
+    "TaskCompletionDetail",
+    "TaskControlResponse",
     "TaskDepsRequest",
     "TaskDepsResponse",
     "TaskDepsResponse422",
@@ -1581,9 +1629,15 @@ __all__ = (
     "TaskRouteRequest",
     "TaskRouteResponse",
     "TaskRouteResponse422",
+    "TaskSessionAttempt",
+    "TaskSessionsResponse",
     "TaskSetRequest",
     "TaskSetRequestMetaType0",
+    "TaskSetResponse",
     "TaskSetResponse422",
+    "TaskSetResponseChildrenType0",
+    "TaskSetResponseContextItem",
+    "TaskSetResponseParentType0",
     "TaskShowRequest",
     "TaskShowResponse",
     "TaskShowResponse422",

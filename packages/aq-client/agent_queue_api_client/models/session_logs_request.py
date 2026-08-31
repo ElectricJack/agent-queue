@@ -15,6 +15,7 @@ T = TypeVar("T", bound="SessionLogsRequest")
 class SessionLogsRequest:
     """
     Attributes:
+        attempt_id (None | str | Unset): Read only this task execution attempt
         session_id (None | str | Unset): Session id (uuid4 hex)
         id (None | str | Unset): Alias for session_id
         name (None | str | Unset): Session name
@@ -24,6 +25,7 @@ class SessionLogsRequest:
         n (int | None | Unset): Alias for limit
     """
 
+    attempt_id: None | str | Unset = UNSET
     session_id: None | str | Unset = UNSET
     id: None | str | Unset = UNSET
     name: None | str | Unset = UNSET
@@ -34,6 +36,12 @@ class SessionLogsRequest:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        attempt_id: None | str | Unset
+        if isinstance(self.attempt_id, Unset):
+            attempt_id = UNSET
+        else:
+            attempt_id = self.attempt_id
+
         session_id: None | str | Unset
         if isinstance(self.session_id, Unset):
             session_id = UNSET
@@ -79,6 +87,8 @@ class SessionLogsRequest:
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({})
+        if attempt_id is not UNSET:
+            field_dict["attempt_id"] = attempt_id
         if session_id is not UNSET:
             field_dict["session_id"] = session_id
         if id is not UNSET:
@@ -99,6 +109,15 @@ class SessionLogsRequest:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
+
+        def _parse_attempt_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        attempt_id = _parse_attempt_id(d.pop("attempt_id", UNSET))
 
         def _parse_session_id(data: object) -> None | str | Unset:
             if data is None:
@@ -164,6 +183,7 @@ class SessionLogsRequest:
         n = _parse_n(d.pop("n", UNSET))
 
         session_logs_request = cls(
+            attempt_id=attempt_id,
             session_id=session_id,
             id=id,
             name=name,

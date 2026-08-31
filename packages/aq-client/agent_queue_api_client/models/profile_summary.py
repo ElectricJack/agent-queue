@@ -19,6 +19,7 @@ class ProfileSummary:
         name (str):
         description (str | Unset):  Default: ''.
         model (str | Unset):  Default: ''.
+        harness (None | str | Unset):
         default_class (str | Unset):  Default: ''.
         allowed_tools (list[str] | Unset):
         mcp_servers (list[str] | Unset):
@@ -29,6 +30,7 @@ class ProfileSummary:
     name: str
     description: str | Unset = ""
     model: str | Unset = ""
+    harness: None | str | Unset = UNSET
     default_class: str | Unset = ""
     allowed_tools: list[str] | Unset = UNSET
     mcp_servers: list[str] | Unset = UNSET
@@ -43,6 +45,12 @@ class ProfileSummary:
         description = self.description
 
         model = self.model
+
+        harness: None | str | Unset
+        if isinstance(self.harness, Unset):
+            harness = UNSET
+        else:
+            harness = self.harness
 
         default_class = self.default_class
 
@@ -68,6 +76,8 @@ class ProfileSummary:
             field_dict["description"] = description
         if model is not UNSET:
             field_dict["model"] = model
+        if harness is not UNSET:
+            field_dict["harness"] = harness
         if default_class is not UNSET:
             field_dict["default_class"] = default_class
         if allowed_tools is not UNSET:
@@ -90,6 +100,15 @@ class ProfileSummary:
 
         model = d.pop("model", UNSET)
 
+        def _parse_harness(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        harness = _parse_harness(d.pop("harness", UNSET))
+
         default_class = d.pop("default_class", UNSET)
 
         allowed_tools = cast(list[str], d.pop("allowed_tools", UNSET))
@@ -103,6 +122,7 @@ class ProfileSummary:
             name=name,
             description=description,
             model=model,
+            harness=harness,
             default_class=default_class,
             allowed_tools=allowed_tools,
             mcp_servers=mcp_servers,

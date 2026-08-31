@@ -25,6 +25,7 @@ class EditTaskRequest:
         max_retries (int | None | Unset): Max retry attempts (optional)
         verification_type (None | str | Unset): How to verify task output (optional)
         profile_id (None | str | Unset): Agent profile ID (optional, set to null to clear)
+        intelligence_class (None | str | Unset): Intelligence class id; change only while unassigned. Null clears it.
         auto_approve_plan (bool | None | Unset): If true, any plan this task generates will be automatically approved
             without human review (optional)
         skip_verification (bool | None | Unset): If true, skip git verification on task completion (optional)
@@ -45,6 +46,7 @@ class EditTaskRequest:
     max_retries: int | None | Unset = UNSET
     verification_type: None | str | Unset = UNSET
     profile_id: None | str | Unset = UNSET
+    intelligence_class: None | str | Unset = UNSET
     auto_approve_plan: bool | None | Unset = UNSET
     skip_verification: bool | None | Unset = UNSET
     affinity_agent_id: None | str | Unset = UNSET
@@ -109,6 +111,12 @@ class EditTaskRequest:
         else:
             profile_id = self.profile_id
 
+        intelligence_class: None | str | Unset
+        if isinstance(self.intelligence_class, Unset):
+            intelligence_class = UNSET
+        else:
+            intelligence_class = self.intelligence_class
+
         auto_approve_plan: bool | None | Unset
         if isinstance(self.auto_approve_plan, Unset):
             auto_approve_plan = UNSET
@@ -164,6 +172,8 @@ class EditTaskRequest:
             field_dict["verification_type"] = verification_type
         if profile_id is not UNSET:
             field_dict["profile_id"] = profile_id
+        if intelligence_class is not UNSET:
+            field_dict["intelligence_class"] = intelligence_class
         if auto_approve_plan is not UNSET:
             field_dict["auto_approve_plan"] = auto_approve_plan
         if skip_verification is not UNSET:
@@ -263,6 +273,15 @@ class EditTaskRequest:
 
         profile_id = _parse_profile_id(d.pop("profile_id", UNSET))
 
+        def _parse_intelligence_class(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        intelligence_class = _parse_intelligence_class(d.pop("intelligence_class", UNSET))
+
         def _parse_auto_approve_plan(data: object) -> bool | None | Unset:
             if data is None:
                 return data
@@ -319,6 +338,7 @@ class EditTaskRequest:
             max_retries=max_retries,
             verification_type=verification_type,
             profile_id=profile_id,
+            intelligence_class=intelligence_class,
             auto_approve_plan=auto_approve_plan,
             skip_verification=skip_verification,
             affinity_agent_id=affinity_agent_id,

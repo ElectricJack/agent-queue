@@ -23,6 +23,11 @@ class SessionSummary:
             id (str):
             name (str):
             task_id (None | str | Unset):
+            agent_id (None | str | Unset):
+            model (None | str | Unset):
+            intelligence_class (None | str | Unset):
+            ended_at (float | None | Unset):
+            end_reason (None | str | Unset):
             project_id (None | str | Unset):
             profile_id (None | str | Unset):
             harness (None | str | Unset):
@@ -43,6 +48,11 @@ class SessionSummary:
     id: str
     name: str
     task_id: None | str | Unset = UNSET
+    agent_id: None | str | Unset = UNSET
+    model: None | str | Unset = UNSET
+    intelligence_class: None | str | Unset = UNSET
+    ended_at: float | None | Unset = UNSET
+    end_reason: None | str | Unset = UNSET
     project_id: None | str | Unset = UNSET
     profile_id: None | str | Unset = UNSET
     harness: None | str | Unset = UNSET
@@ -70,6 +80,36 @@ class SessionSummary:
             task_id = UNSET
         else:
             task_id = self.task_id
+
+        agent_id: None | str | Unset
+        if isinstance(self.agent_id, Unset):
+            agent_id = UNSET
+        else:
+            agent_id = self.agent_id
+
+        model: None | str | Unset
+        if isinstance(self.model, Unset):
+            model = UNSET
+        else:
+            model = self.model
+
+        intelligence_class: None | str | Unset
+        if isinstance(self.intelligence_class, Unset):
+            intelligence_class = UNSET
+        else:
+            intelligence_class = self.intelligence_class
+
+        ended_at: float | None | Unset
+        if isinstance(self.ended_at, Unset):
+            ended_at = UNSET
+        else:
+            ended_at = self.ended_at
+
+        end_reason: None | str | Unset
+        if isinstance(self.end_reason, Unset):
+            end_reason = UNSET
+        else:
+            end_reason = self.end_reason
 
         project_id: None | str | Unset
         if isinstance(self.project_id, Unset):
@@ -159,6 +199,16 @@ class SessionSummary:
         )
         if task_id is not UNSET:
             field_dict["task_id"] = task_id
+        if agent_id is not UNSET:
+            field_dict["agent_id"] = agent_id
+        if model is not UNSET:
+            field_dict["model"] = model
+        if intelligence_class is not UNSET:
+            field_dict["intelligence_class"] = intelligence_class
+        if ended_at is not UNSET:
+            field_dict["ended_at"] = ended_at
+        if end_reason is not UNSET:
+            field_dict["end_reason"] = end_reason
         if project_id is not UNSET:
             field_dict["project_id"] = project_id
         if profile_id is not UNSET:
@@ -207,6 +257,51 @@ class SessionSummary:
             return cast(None | str | Unset, data)
 
         task_id = _parse_task_id(d.pop("task_id", UNSET))
+
+        def _parse_agent_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        agent_id = _parse_agent_id(d.pop("agent_id", UNSET))
+
+        def _parse_model(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        model = _parse_model(d.pop("model", UNSET))
+
+        def _parse_intelligence_class(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        intelligence_class = _parse_intelligence_class(d.pop("intelligence_class", UNSET))
+
+        def _parse_ended_at(data: object) -> float | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(float | None | Unset, data)
+
+        ended_at = _parse_ended_at(d.pop("ended_at", UNSET))
+
+        def _parse_end_reason(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        end_reason = _parse_end_reason(d.pop("end_reason", UNSET))
 
         def _parse_project_id(data: object) -> None | str | Unset:
             if data is None:
@@ -326,6 +421,11 @@ class SessionSummary:
             id=id,
             name=name,
             task_id=task_id,
+            agent_id=agent_id,
+            model=model,
+            intelligence_class=intelligence_class,
+            ended_at=ended_at,
+            end_reason=end_reason,
             project_id=project_id,
             profile_id=profile_id,
             harness=harness,
