@@ -51,8 +51,10 @@ def _llm_from(provider) -> LLMClient:
     """Wrap a mock/object exposing ``create_message`` as an ``LLMClient``."""
     from src.config import LLMConfig
 
-    adapted = provider if isinstance(provider, LLMProvider) else _AdaptedLLMProvider(
-        provider.create_message
+    adapted = (
+        provider
+        if isinstance(provider, LLMProvider)
+        else _AdaptedLLMProvider(provider.create_message)
     )
     return LLMClient.with_provider(adapted, config=LLMConfig())
 
@@ -766,9 +768,7 @@ class TestReferenceStubEnricherSummarize:
         assert "Some content here." in messages[0]["content"]
 
     @pytest.mark.asyncio
-    async def test_empty_text_parts_returns_empty_sections(
-        self, fake_bus, vault_dir, fake_config
-    ):
+    async def test_empty_text_parts_returns_empty_sections(self, fake_bus, vault_dir, fake_config):
         provider = AsyncMock()
         provider.create_message = AsyncMock(return_value=FakeChatResponse(content=[]))
         enricher = ReferenceStubEnricher(
@@ -815,8 +815,10 @@ class TestReferenceStubEnricherSummarize:
 
         client = SpyClient.with_provider(fake, config=LLMConfig())
         enricher = ReferenceStubEnricher(
-            bus=AsyncMock(), vault_projects_dir=str(tmp_path),
-            config=MemoryConfig(stub_enrichment_class="fast-low"), llm=client,
+            bus=AsyncMock(),
+            vault_projects_dir=str(tmp_path),
+            config=MemoryConfig(stub_enrichment_class="fast-low"),
+            llm=client,
         )
         out = await enricher._summarize_document("some content")
         assert out["summary"] == "s"
@@ -2270,3 +2272,70 @@ class TestScanStaleStubs:
         assert info.current_hash == ""
         assert info.last_synced == ""
         assert info.is_enriched is False
+
+
+class TestReferenceStubEnricherWriteFailure:
+    """INT-2: a failed write must never destroy the stub it was replacing."""
+
+    @pytest.mark.asyncio
+    async def test_update_failure_preserves_existing_stub(
+        self, enricher, vault_dir, tmp_path, monkeypatch
+    ):
+        project_id = "test-project"
+        stub_name = "spec-orchestrator.md"
+
+        source_path = _create_source_file(tmp_path)
+        stub_path = _create_enriched_stub_file(vault_dir, project_id, stub_name)
+        original = open(stub_path, encoding="utf-8").read()
+
+        real_open = open
+
+        class _FailingWriteHandle:
+            """A real handle whose ``write`` fails mid-stream (disk full)."""
+
+            def __init__(self, handle):
+                self._handle = handle
+
+            def write(self, _data):
+                raise OSError("No space left on device")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self._handle.close()
+                return False
+
+            def __getattr__(self, name):
+                return getattr(self._handle, name)
+
+        refs_dir = os.path.join(vault_dir, project_id, "references")
+
+        def _patched_open(file, mode="r", *args, **kwargs):
+            handle = real_open(file, mode, *args, **kwargs)
+            if "w" in mode and str(file).startswith(refs_dir):
+                return _FailingWriteHandle(handle)
+            return handle
+
+        monkeypatch.setattr("builtins.open", _patched_open)
+
+        result = await enricher.enrich_stub(
+            project_id=project_id,
+            abs_path=source_path,
+            stub_name=stub_name,
+        )
+
+        monkeypatch.undo()
+
+        assert result.success is False
+        assert "Failed to update stub file" in result.error
+        assert enricher.total_failed == 1
+        assert enricher.total_enriched == 0
+
+        # The costly enrichment was lost, but the document was not: the
+        # previous stub is byte-for-byte intact.
+        with open(stub_path, encoding="utf-8") as f:
+            assert f.read() == original
+
+        # No temp file is left behind next to the stub.
+        assert sorted(os.listdir(refs_dir)) == [stub_name]

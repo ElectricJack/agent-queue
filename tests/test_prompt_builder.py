@@ -774,3 +774,106 @@ def test_l1_facts_ordering_in_full_assembly(prompts_dir):
     sys_pos = prompt.index("System Context")
     task_pos = prompt.index("Run tests.")
     assert role_pos < facts_pos < identity_pos < sys_pos < task_pos
+
+
+# ------------------------------------------------------------------
+# Complete pipeline and tier-budget warnings (plan §intelligence 12-13)
+# ------------------------------------------------------------------
+
+
+def test_complete_five_layer_pipeline_and_memory_tier_order(prompts_dir):
+    """Lock the full observable assembly order of build().
+
+    The module docstring still describes four layers while the class and the
+    memory-scoping design require five plus the memory tiers (INT-4).  This
+    test pins the order the implementation actually emits so a documentation
+    fix cannot silently change behaviour.
+    """
+    import asyncio
+
+    from src.prompt_builder import PromptBuilder
+
+    builder = PromptBuilder(project_id="proj", prompts_dir=prompts_dir)
+    builder.set_l0_role("## Role\nYou are a QA agent.")
+    builder.set_override_content("---\nscope: project\n---\n## Override\nPrefer integration tests.")
+    builder.set_l1_facts("## Critical Facts\n- lang: Python")
+    builder.set_l1_guidance("## Guidance\nAlways run ruff.")
+    builder.set_l2_context("## Topic Context\nThe login flow was refactored last week.")
+    builder.set_identity("simple")
+    # ``load_project_context`` is a documented no-op, so the legacy layer has
+    # no public setter; set it directly to prove its slot in the order.
+    builder._project_context = "## Project Context\nThe game project."
+    builder.add_context("task", "## Task\nRun tests.")
+    tools = [{"name": "list_tasks", "input_schema": {"type": "object", "properties": {}}}]
+    builder.set_tools(tools)
+
+    # The removed rules layer must not reappear.
+    asyncio.run(builder.load_relevant_rules("anything"))
+
+    system_prompt, returned_tools = builder.build()
+
+    assert system_prompt == "\n\n---\n\n".join(
+        [
+            "## Role\nYou are a QA agent.",
+            "## Override\nPrefer integration tests.",
+            "## Critical Facts\n- lang: Python",
+            "## Guidance\nAlways run ruff.",
+            "## Topic Context\nThe login flow was refactored last week.",
+            "No variables here.",
+            "## Project Context\nThe game project.",
+            "## Task\nRun tests.",
+        ]
+    )
+    assert "Applicable Rules" not in system_prompt
+
+    # Tools ride alongside the prompt, unchanged and defensively copied.
+    assert returned_tools == tools
+    assert returned_tools is not tools
+
+    # Building twice is idempotent — no layer is consumed.
+    assert builder.build() == (system_prompt, tools)
+
+
+def test_tier_overflow_warns_once_per_content_and_reset_reenables_warning(prompts_dir, caplog):
+    import logging
+
+    from src.prompt_builder import (
+        PromptBuilder,
+        reset_tier_overflow_warnings,
+    )
+
+    reset_tier_overflow_warnings()
+    try:
+        # Each tier warns only above 2x its budget (L0 400, L2 500 tokens,
+        # 4 chars per token).
+        big_role = "R" * (400 * 2 * 4 + 100)
+        big_context = "C" * (500 * 2 * 4 + 100)
+
+        builder = PromptBuilder(prompts_dir=prompts_dir)
+        with caplog.at_level(logging.WARNING, logger="src.prompt_builder"):
+            builder.set_l0_role(big_role)
+            builder.set_l2_context(big_context)
+            # Re-setting the same content (a rebuild) must not warn again.
+            builder.set_l0_role(big_role)
+            builder.set_l2_context(big_context)
+
+        warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        assert sum("L0 role" in w for w in warnings) == 1
+        assert sum("L2 context" in w for w in warnings) == 1
+        assert "budget ~400" in next(w for w in warnings if "L0 role" in w)
+        assert "budget ~500" in next(w for w in warnings if "L2 context" in w)
+
+        # Content within budget never warns, even after the cache is cleared.
+        caplog.clear()
+        reset_tier_overflow_warnings()
+        with caplog.at_level(logging.WARNING, logger="src.prompt_builder"):
+            PromptBuilder(prompts_dir=prompts_dir).set_l0_role("You are a QA agent.")
+        assert [r for r in caplog.records if r.levelno == logging.WARNING] == []
+
+        # After a reset the same oversized content warns again.
+        with caplog.at_level(logging.WARNING, logger="src.prompt_builder"):
+            PromptBuilder(prompts_dir=prompts_dir).set_l0_role(big_role)
+        warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        assert sum("L0 role" in w for w in warnings) == 1
+    finally:
+        reset_tier_overflow_warnings()

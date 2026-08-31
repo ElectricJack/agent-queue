@@ -250,3 +250,148 @@ class TestLLMLoggerCleanup:
         removed = logger.cleanup_old_logs()
         assert removed == 0
         assert os.path.exists(other_dir)
+
+
+class TestLLMLoggerObservabilityContract:
+    """Response summaries, analytics, and per-task copies (plan §intelligence 15-17)."""
+
+    @staticmethod
+    def _read(log_dir, filename):
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        path = os.path.join(log_dir, today, filename)
+        with open(path, encoding="utf-8") as f:
+            return [json.loads(line) for line in f if line.strip()]
+
+    def test_provider_call_records_response_tool_summary_fingerprint_and_estimates(
+        self, logger, log_dir
+    ):
+        from src.llm.types import ChatResponse, TextBlock, ToolUseBlock
+
+        response = ChatResponse(
+            content=[
+                TextBlock(text="a" * 40),
+                ToolUseBlock(id="tu_1", name="list_tasks", input={"project_id": "p"}),
+                ToolUseBlock(id="tu_2", name="close_task", input={"task_id": "t"}),
+            ]
+        )
+        system = "s" * 120
+        messages = [{"role": "user", "content": "u" * 60}]
+        # Tool order differs between the two calls; the fingerprint must not.
+        tools_a = [{"name": "zeta"}, {"name": "alpha"}]
+        tools_b = [{"name": "alpha"}, {"name": "zeta"}]
+
+        for tools in (tools_a, tools_b):
+            logger.log_llm_call(
+                caller="reflection",
+                model="claude-opus-5",
+                provider="AnthropicProvider",
+                messages=messages,
+                system=system,
+                tools=tools,
+                max_tokens=2048,
+                response=response,
+                duration_ms=1234,
+            )
+
+        first, second = self._read(log_dir, "llm.jsonl")
+
+        assert first["output"]["text_parts"] == ["a" * 40]
+        assert first["output"]["tool_uses"] == [
+            {"name": "list_tasks", "input": {"project_id": "p"}},
+            {"name": "close_task", "input": {"task_id": "t"}},
+        ]
+        # Rough 4-chars-per-token estimates over system + message content.
+        assert first["input"]["input_tokens_est"] == (120 + 60) // 4
+        assert first["output"]["output_tokens_est"] == 40 // 4
+        assert first["input"]["tool_names"] == ["zeta", "alpha"]
+        assert first["error"] is None
+        assert first["duration_ms"] == 1234
+
+        # The fingerprint keys on the sorted tool names, so it is stable
+        # across call-order noise — that is what makes A/B comparison work.
+        assert first["prompt_fingerprint"] == second["prompt_fingerprint"]
+        assert len(first["prompt_fingerprint"]) == 12
+
+        # A different system prompt gives a different fingerprint.
+        logger.log_llm_call(
+            caller="reflection",
+            model="claude-opus-5",
+            provider="AnthropicProvider",
+            messages=messages,
+            system="a completely different system prompt",
+            tools=tools_a,
+            response=response,
+        )
+        third = self._read(log_dir, "llm.jsonl")[2]
+        assert third["prompt_fingerprint"] != first["prompt_fingerprint"]
+
+    def test_flush_analytics_writes_rates_and_resets_accumulator(self, logger, log_dir):
+        from src.llm.types import ChatResponse, TextBlock
+
+        common = {
+            "caller": "playbook",
+            "model": "gpt-5",
+            "provider": "OpenAIProvider",
+            "messages": [{"role": "user", "content": "u" * 40}],
+            "system": "s" * 40,
+        }
+        logger.log_llm_call(
+            **common,
+            response=ChatResponse(content=[TextBlock(text="o" * 20)]),
+            duration_ms=100,
+        )
+        logger.log_llm_call(**common, response=None, error="boom", duration_ms=300)
+
+        logger.flush_analytics()
+
+        (entry,) = self._read(log_dir, "prompt_analytics.jsonl")
+        stats = entry["callers"]["playbook:OpenAIProvider:gpt-5"]
+        assert entry["period_type"] == "flush"
+        assert stats["call_count"] == 2
+        assert stats["error_count"] == 1
+        assert stats["error_rate"] == 0.5
+        assert stats["avg_duration_ms"] == 200
+        assert stats["total_input_tokens_est"] == 2 * ((40 + 40) // 4)
+        assert stats["total_output_tokens_est"] == 20 // 4
+        assert stats["token_efficiency"] == pytest.approx(
+            stats["total_output_tokens_est"] / stats["total_input_tokens_est"]
+        )
+
+        # The accumulator resets so the next window starts clean and a second
+        # flush writes nothing.
+        assert logger.get_analytics_summary() == {}
+        logger.flush_analytics()
+        assert len(self._read(log_dir, "prompt_analytics.jsonl")) == 1
+
+    def test_agent_session_writes_per_task_copy_and_truncates_error(self, logger, log_dir):
+        from dataclasses import dataclass, field
+
+        @dataclass
+        class FakeOutput:
+            result: str = "FAILED"
+            summary: str = "did not finish"
+            tokens_used: int = 1234
+            files_changed: list = field(default_factory=list)
+            error_message: str = "E" * 600
+
+        logger.log_agent_session(
+            task_id="noble-stone.24",
+            session_id="sess-1",
+            model="claude-opus-5",
+            prompt="p" * 700,
+            output=FakeOutput(),
+            duration_ms=9000,
+            transcript=[{"type": "assistant", "text": "working"}],
+        )
+
+        (main_entry,) = self._read(log_dir, "claude_agent.jsonl")
+        (task_entry,) = self._read(log_dir, os.path.join("tasks", "noble-stone.24.jsonl"))
+
+        # The per-task copy is byte-identical to the shared log entry.
+        assert task_entry == main_entry
+        assert main_entry["task_id"] == "noble-stone.24"
+        assert main_entry["input"]["prompt_length"] == 700
+        assert main_entry["transcript"] == [{"type": "assistant", "text": "working"}]
+        # Errors are truncated so one runaway traceback cannot dominate a log.
+        assert main_entry["output"]["error"] == "E" * 500
+        assert main_entry["output"]["result"] == "FAILED"
