@@ -19,7 +19,6 @@ const IntelligenceClassesStub = lazy(() => import("./pages/settings/Intelligence
 
 const ProjectOverview = lazy(() => import("./pages/project/Overview"));
 const ProjectWorkspaces = lazy(() => import("./pages/project/Workspaces"));
-const ProjectProfiles = lazy(() => import("./pages/project/Profiles"));
 const ProjectPlaybooks = lazy(() => import("./pages/project/Playbooks"));
 const ProjectConfig = lazy(() => import("./pages/project/Config"));
 const ProjectSessions = lazy(() => import("./pages/project/Sessions"));
@@ -177,7 +176,7 @@ export default function App() {
               <Route path="sessions" element={<ProjectSessions />} />
               <Route path="chat" element={<Navigate to="/agents" replace />} />
               <Route path="workspaces" element={<ProjectWorkspaces />} />
-              <Route path="profiles" element={<ProjectProfiles />} />
+              <Route path="profiles" element={<LegacyRedirect to={(params) => `/projects/${encodeURIComponent(params.projectId ?? "")}/config`} />} />
               <Route path="playbooks" element={<ProjectPlaybooks />} />
               <Route path="config" element={<ProjectConfig />} />
             </Route>

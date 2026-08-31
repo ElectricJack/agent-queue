@@ -15,6 +15,7 @@ import {
   useResumeProject,
 } from "../../api/hooks";
 import DeleteProjectModal from "../../components/DeleteProjectModal";
+import ProjectProfiles from "./Profiles";
 
 export interface FormState {
   name: string;
@@ -263,6 +264,13 @@ export default function ProjectConfig() {
           </div>
         </div>
       )}
+
+      <section aria-labelledby="profile-overrides-heading" className="space-y-3 border-t border-gray-800 pt-6">
+        <h2 id="profile-overrides-heading" className="text-sm font-semibold uppercase text-gray-500">
+          Profile overrides
+        </h2>
+        <ProjectProfiles />
+      </section>
 
       <section className="rounded-lg border border-red-500/30 bg-red-500/5 p-4">
         <div className="flex items-start justify-between gap-4">

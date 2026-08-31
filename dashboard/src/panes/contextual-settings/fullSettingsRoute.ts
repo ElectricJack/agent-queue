@@ -12,7 +12,7 @@ export function fullSettingsRoute(args: ContextualSettingsArgs): string {
     case "profile":
       return "/settings/profiles";
     case "project-profile":
-      return `/projects/${args.projectId}/profiles`;
+      return `/projects/${encodeURIComponent(args.projectId)}/config`;
     case "playbook":
       return `/playbooks/${args.subjectId}`;
     case "intelligence-class":

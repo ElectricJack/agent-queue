@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { projectNavigation, workspaceHref } from "./projectNavigation";
 
 describe("project workspace destinations", () => {
-  it.each(["graph", "tasks", "overview", "sessions", "workspaces", "profiles", "playbooks", "config"])(
+  it.each(["graph", "tasks", "overview", "sessions", "workspaces", "playbooks", "config"])(
     "retains the current %s tab and exact filter query when switching projects", (tab) => {
       const current = projectNavigation(`/projects/first/${tab}`);
       expect(current.isWorkspace).toBe(true);
@@ -10,6 +10,11 @@ describe("project workspace destinations", () => {
         .toBe(`/projects/second/${tab}?q=a%20b&status=READY&completed=1`);
     },
   );
+
+  it("maps legacy project profile selections to Config when changing projects", () => {
+    const current = projectNavigation("/projects/first/profiles");
+    expect(workspaceHref("second", current.tab, "?q=worker")).toBe("/projects/second/config?q=worker");
+  });
 
   it("allows All projects on Tasks but requires a project for resources", () => {
     expect(workspaceHref(null, "tasks", "?q=x")).toBe("/command-center/tasks?q=x");
