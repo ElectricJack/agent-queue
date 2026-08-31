@@ -28,6 +28,9 @@ from src.models import (
     Workspace,
 )
 from src.orchestrator import Orchestrator
+from tests.pg_dsn import ensure_worker_postgres_dsn
+
+POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
 
 
 # ---------------------------------------------------------------------------
@@ -36,9 +39,18 @@ from src.orchestrator import Orchestrator
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(str(tmp_path / "test.db"))
-    await database.initialize()
+async def db(tmp_path, request):
+    if getattr(request, "param", "sqlite") == "postgres":
+        if not POSTGRES_TEST_DSN:
+            pytest.skip("POSTGRES_TEST_DSN not set")
+        from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
+
+        database = PostgreSQLDatabaseAdapter(POSTGRES_TEST_DSN)
+        await database.initialize()
+        await database.reset_for_tests()
+    else:
+        database = Database(str(tmp_path / "test.db"))
+        await database.initialize()
     yield database
     await database.close()
 
@@ -856,3 +868,226 @@ class TestAutoArchive:
 
         # Task should still be active because auto-archive is disabled
         assert await db.get_task("t-1") is not None
+
+
+@pytest.mark.parametrize("db", ["sqlite", "postgres"], indirect=True)
+class TestArchiveReferences:
+    @pytest.mark.parametrize("resolved,shared", [(True, False), (False, False), (False, True)])
+    async def test_archive_unlinks_only_its_gate_waiters(self, db, resolved, shared):
+        from sqlalchemy import update
+        from src.database.tables import gates
+
+        await _seed_project(db)
+        await _seed_task(db, "archiving")
+        await _seed_task(db, "remaining", status=TaskStatus.READY)
+        waiters = ["archiving", "remaining"] if shared else ["archiving"]
+        gate_id, _ = await db.create_gate("p-1", "human", "Review", waiter_task_ids=waiters)
+        if resolved:
+            async with db._engine.begin() as conn:
+                await conn.execute(
+                    update(gates)
+                    .where(gates.c.id == gate_id)
+                    .values(status="resolved", resolution="approved")
+                )
+        assert await db.archive_task("archiving") is True
+        assert await db.get_task("archiving") is None
+        assert await db.get_archived_task("archiving") is not None
+        assert await db.get_gate_waiters(gate_id) == ({"remaining"} if shared else set())
+        gate = await db.get_gate(gate_id)
+        assert gate["status"] == ("resolved" if resolved else "open" if shared else "expired")
+        if resolved:
+            assert gate["resolution"] == "approved"
+        if shared:
+            assert (await db.get_task("remaining")).is_blocked is True
+
+    async def test_archive_preserves_history_and_releases_resource_references(self, db):
+        from sqlalchemy import insert, select
+        from src.database.tables import task_workspace_requirements
+        from src.models import AgentProfile, SessionRecord
+
+        await _seed_project(db)
+        await db.create_profile(AgentProfile(id="worker", name="Worker"))
+        await db.create_agent(Agent(id="history-agent", name="Worker", profile_id="worker"))
+        await _seed_task(db, "history-task", assigned_agent_id="history-agent")
+        await db.create_session(
+            SessionRecord(
+                id="history-session",
+                task_id="history-task",
+                project_id="p-1",
+                agent_id="history-agent",
+                profile_id="worker",
+                harness="codex",
+                provider="fake",
+                name="history-session",
+                lifecycle="task",
+                state="stopped",
+                work_dir="/tmp",
+                epoch="test",
+                instance_token="test",
+                started_at=time.time(),
+            )
+        )
+        await db.create_workspace(
+            Workspace(
+                id="history-workspace",
+                project_id="p-1",
+                workspace_path="/tmp/history-workspace",
+                source_type=RepoSourceType.LINK,
+                locked_by_task_id="history-task",
+                locked_by_agent_id="history-agent",
+                locked_at=time.time(),
+            )
+        )
+        async with db._engine.begin() as conn:
+            await conn.execute(
+                insert(task_workspace_requirements).values(task_id="history-task", kind_id="repo")
+            )
+        comment = await db.add_task_comment(
+            "history-task", "Durable finding", author_kind="user", author_id="local"
+        )
+        assert await db.archive_completed_tasks("p-1") == ["history-task"]
+        session = await db.get_session("history-session")
+        assert session is not None and session.task_id is None and session.state == "stopped"
+        workspace = await db.get_workspace("history-workspace")
+        assert workspace.locked_by_task_id is None
+        assert workspace.locked_by_agent_id is None
+        assert workspace.locked_at is None
+        async with db._engine.connect() as conn:
+            assert (await conn.execute(select(task_workspace_requirements))).first() is None
+        assert (await db.list_task_comments("history-task", project_id="p-1"))["comments"] == [
+            comment
+        ]
+
+
+@pytest.mark.parametrize("db", ["sqlite", "postgres"], indirect=True)
+class TestArchiveLiveSessions:
+    @pytest.mark.parametrize("state", ["starting", "running", "draining"])
+    @pytest.mark.parametrize("subtree", [False, True])
+    async def test_archive_refuses_live_workers_without_mutating_history(self, db, state, subtree):
+        from sqlalchemy import update
+        from src.database.queries.hierarchy_queries import HierarchyError
+        from src.database.tables import tasks
+        from src.models import AgentProfile, SessionRecord
+
+        await _seed_project(db)
+        await db.create_profile(AgentProfile(id="worker", name="Worker"))
+        await _seed_task(db, "root", status=TaskStatus.IN_PROGRESS)
+        target = "root"
+        if subtree:
+            await _seed_task(db, "child", status=TaskStatus.READY)
+            await db.add_dependency("child", "root", "parent-child")
+            target = "child"
+        async with db._engine.begin() as conn:
+            await conn.execute(update(tasks).values(status="COMPLETED"))
+        await db.create_session(
+            SessionRecord(
+                id="live-session",
+                task_id=target,
+                project_id="p-1",
+                profile_id="worker",
+                harness="codex",
+                provider="fake",
+                name="live-session",
+                lifecycle="task",
+                state=state,
+                work_dir="/tmp",
+                epoch="test",
+                instance_token="test",
+                started_at=time.time(),
+            )
+        )
+        await db.create_workspace(
+            Workspace(
+                id="held",
+                project_id="p-1",
+                workspace_path="/tmp/held",
+                source_type=RepoSourceType.LINK,
+                locked_by_task_id=target,
+                locked_at=123.0,
+            )
+        )
+        comment = await db.add_task_comment(
+            target, "Still working", author_kind="user", author_id="local"
+        )
+        gate_id, _ = await db.create_gate("p-1", "human", "Review", waiter_task_ids=[target])
+
+        with pytest.raises(HierarchyError) as exc:
+            await db.archive_task("root")
+        assert exc.value.code == "live_descendants"
+        assert (await db.get_session("live-session")).task_id == target
+        assert (await db.get_workspace("held")).locked_by_task_id == target
+        assert (await db.get_workspace("held")).locked_at == 123.0
+        assert (await db.get_gate(gate_id))["status"] == "open"
+        assert await db.get_gate_waiters(gate_id) == {target}
+        assert (await db.list_task_comments(target, project_id="p-1"))["comments"] == [comment]
+        for tid in {"root", target}:
+            assert await db.get_task(tid) is not None
+            assert await db.get_archived_task(tid) is None
+
+    @pytest.mark.parametrize("aged", [False, True])
+    async def test_bulk_archive_skips_live_worker_and_continues(self, db, aged):
+        from sqlalchemy import update
+        from src.database.tables import tasks
+        from src.models import AgentProfile, SessionRecord
+
+        await _seed_project(db)
+        await db.create_profile(AgentProfile(id="worker", name="Worker"))
+        await _seed_task(db, "busy")
+        await _seed_task(db, "finished")
+        await db.create_session(
+            SessionRecord(
+                id="live-session",
+                task_id="busy",
+                project_id="p-1",
+                profile_id="worker",
+                harness="codex",
+                provider="fake",
+                name="live-session",
+                lifecycle="task",
+                state="draining",
+                work_dir="/tmp",
+                epoch="test",
+                instance_token="test",
+                started_at=time.time(),
+            )
+        )
+        async with db._engine.begin() as conn:
+            await conn.execute(update(tasks).values(updated_at=time.time() - 10000))
+        archived = (
+            await db.archive_old_terminal_tasks(["COMPLETED"], older_than_seconds=1)
+            if aged
+            else await db.archive_completed_tasks("p-1")
+        )
+        assert archived == ["finished"]
+        assert await db.get_task("busy") is not None
+        assert (await db.get_session("live-session")).task_id == "busy"
+
+
+@pytest.mark.parametrize("db", ["sqlite", "postgres"], indirect=True)
+@pytest.mark.parametrize("status", [TaskStatus.READY, TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS])
+@pytest.mark.parametrize("aged", [False, True])
+async def test_bulk_archive_rechecks_root_status_after_selection(db, monkeypatch, status, aged):
+    from sqlalchemy import update
+    from src.database.tables import tasks
+
+    await _seed_project(db)
+    await _seed_task(db, "reopened")
+    await _seed_task(db, "finished")
+    async with db._engine.begin() as conn:
+        await conn.execute(update(tasks).values(updated_at=time.time() - 10000))
+    archive = db.archive_task
+
+    async def reopen_before_archive(task_id):
+        if task_id == "reopened":
+            await db.update_task(task_id, status=status)
+        return await archive(task_id)
+
+    monkeypatch.setattr(db, "archive_task", reopen_before_archive)
+    archived = (
+        await db.archive_old_terminal_tasks(["COMPLETED"], older_than_seconds=1)
+        if aged
+        else await db.archive_completed_tasks("p-1")
+    )
+    assert archived == ["finished"]
+    assert (await db.get_task("reopened")).status == status
+    assert await db.get_archived_task("reopened") is None

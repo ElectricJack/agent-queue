@@ -854,8 +854,15 @@ class TaskQueryMixin:
             ready=ready + list(settle_result.ready),
         )
 
-    async def _delete_one(self, task_id: str, *, conn) -> None:
-        """Delete a single task row and its related child rows.
+    async def _delete_one(
+        self,
+        task_id: str,
+        *,
+        conn,
+        preserve_comments: bool = False,
+        gate_resolution: str = "last waiter task deleted",
+    ) -> None:
+        """Delete an active task and its FK references; archives retain comments.
 
         Gates the task was waiting on are unhooked here too, and any gate
         left with no waiters at all is marked ``expired``. Without this the
@@ -903,7 +910,7 @@ class TaskQueryMixin:
                 await conn.execute(
                     update(gates)
                     .where(and_(gates.c.id == gate_id, gates.c.status == "open"))
-                    .values(status="expired", resolution="last waiter task deleted")
+                    .values(status="expired", resolution=gate_resolution)
                 )
 
         # Remaining FK holders. Without these the delete fails outright
@@ -928,13 +935,14 @@ class TaskQueryMixin:
         await conn.execute(
             update(workspaces)
             .where(workspaces.c.locked_by_task_id == task_id)
-            .values(locked_by_task_id=None, locked_by_agent_id=None)
+            .values(locked_by_task_id=None, locked_by_agent_id=None, locked_at=None)
         )
 
         await conn.execute(delete(tasks).where(tasks.c.id == task_id))
         # The parent DELETE waits for an accepted comment's UPDATE lock.
         # Cleanup afterwards cannot miss a concurrently committed append.
-        await conn.execute(delete(task_comments).where(task_comments.c.task_id == task_id))
+        if not preserve_comments:
+            await conn.execute(delete(task_comments).where(task_comments.c.task_id == task_id))
 
     async def get_task_updated_at(self, task_id: str) -> float | None:
         """Return the ``updated_at`` timestamp for a task, or *None*."""

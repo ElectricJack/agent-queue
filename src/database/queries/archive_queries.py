@@ -13,16 +13,9 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from src.database.tables import (
     agents,
     archived_tasks,
-    task_context,
+    sessions,
     task_comments,
-    task_criteria,
-    task_dependencies,
-    task_labels,
-    task_metadata,
-    task_results,
-    task_tools,
     tasks,
-    workspaces,
 )
 from src.models import TaskStatus
 
@@ -35,19 +28,39 @@ class ArchiveQueryMixin:
     async def archive_task(self, task_id: str) -> bool:
         """Archive *task_id* and its whole subtree atomically (spec §7).
 
-        Refuses unless every descendant is terminal.  Deepest first, root
-        last, so an archived child never points at a live parent.
+        Refuses live sessions or non-terminal tasks anywhere in the subtree.
+        Deepest first, root last, so the subtree moves together.
         """
-        from src.database.queries.hierarchy_queries import HierarchyError
+        from src.database.queries.hierarchy_queries import LIVE_SESSION_STATES, HierarchyError
 
         terminal = (TaskStatus.COMPLETED.value, TaskStatus.FAILED.value, TaskStatus.BLOCKED.value)
-        async with self._engine.begin() as conn:
+        async with self.immediate() as conn:
             ids = await self.subtree_ids(task_id, conn=conn)
             if not ids:
                 return False
-            rows = (
-                await conn.execute(select(tasks.c.id, tasks.c.status).where(tasks.c.id.in_(ids)))
-            ).fetchall()
+            # Follow the existing sessions-before-tasks lock order. A task
+            # can be terminal while its worker is still draining.
+            live = await self.live_descendant_sessions(task_id, conn=conn)
+            if live:
+                raise HierarchyError("live_descendants", ", ".join(sorted(t for _, t in live)))
+            task_rows = select(tasks.c.id, tasks.c.status).where(tasks.c.id.in_(ids))
+            if conn.dialect.name == "postgresql":
+                # A key lock also fences new session FK references. Recheck
+                # after acquiring it to catch a launch that won that race.
+                task_rows = task_rows.order_by(tasks.c.id).with_for_update()
+            rows = (await conn.execute(task_rows)).fetchall()
+            live_ids = (
+                await conn.execute(
+                    select(sessions.c.task_id).where(
+                        sessions.c.task_id.in_(ids),
+                        sessions.c.state.in_(LIVE_SESSION_STATES),
+                    )
+                )
+            ).scalars().all()
+            if live_ids:
+                raise HierarchyError("live_descendants", ", ".join(sorted(set(live_ids))))
+            if any(r[0] == task_id and r[1] not in terminal for r in rows):
+                raise HierarchyError("non_terminal_root", task_id)
             open_ids = [r[0] for r in rows if r[1] not in terminal and r[0] != task_id]
             if open_ids:
                 raise HierarchyError("open_descendants", ", ".join(sorted(open_ids)))
@@ -151,35 +164,17 @@ class ArchiveQueryMixin:
                 .values(created_at=row[0], updated_at=row[1])
             )
 
-        # Clean up child rows, then remove from active table
-        await conn.execute(delete(task_results).where(task_results.c.task_id == task_id))
-        # NOTE: token_ledger rows are deliberately NOT deleted here.
-        # Archiving is the normal end-of-life for a completed task, so
-        # cascading into the ledger erased the spend for every task that
-        # ever finished — which is why `token_audit` reported zero.  The
-        # ledger keeps the task_id as a best-effort attribution string.
-        await conn.execute(
-            delete(task_dependencies).where(
-                (task_dependencies.c.task_id == task_id)
-                | (task_dependencies.c.depends_on_task_id == task_id)
-            )
-        )
-        await conn.execute(delete(task_criteria).where(task_criteria.c.task_id == task_id))
-        await conn.execute(delete(task_context).where(task_context.c.task_id == task_id))
-        await conn.execute(delete(task_metadata).where(task_metadata.c.task_id == task_id))
-        await conn.execute(delete(task_tools).where(task_tools.c.task_id == task_id))
+        # Use the same FK cleanup as permanent deletion, but keep comments
+        # attached to the archived task identity and preserve session history.
         await conn.execute(
             update(agents).where(agents.c.current_task_id == task_id).values(current_task_id=None)
         )
-        await conn.execute(
-            update(workspaces)
-            .where(workspaces.c.locked_by_task_id == task_id)
-            .values(locked_by_task_id=None, locked_at=None)
+        await self._delete_one(
+            task_id,
+            conn=conn,
+            preserve_comments=True,
+            gate_resolution="last waiter task archived",
         )
-        await conn.execute(delete(task_labels).where(task_labels.c.task_id == task_id))
-        # Comments use the stable task identity, so archive retains them.
-        # The parent DELETE serializes with a concurrent comment append.
-        await conn.execute(delete(tasks).where(tasks.c.id == task_id))
 
     async def archive_completed_tasks(
         self,
@@ -207,8 +202,8 @@ class ArchiveQueryMixin:
             try:
                 await self.archive_task(tid)
                 archived.append(tid)
-            except HierarchyError:
-                logger.debug("archive_completed_tasks: skipping %s, open descendant", tid)
+            except HierarchyError as exc:
+                logger.debug("archive_completed_tasks: skipping %s, %s", tid, exc.code)
 
         return archived
 
@@ -268,8 +263,8 @@ class ArchiveQueryMixin:
             try:
                 await self.archive_task(tid)
                 archived.append(tid)
-            except HierarchyError:
-                logger.debug("archive_old_terminal_tasks: skipping %s, open descendant", tid)
+            except HierarchyError as exc:
+                logger.debug("archive_old_terminal_tasks: skipping %s, %s", tid, exc.code)
 
         return archived
 

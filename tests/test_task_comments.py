@@ -365,6 +365,7 @@ async def test_comments_survive_archive_recreation_and_archive_snapshot_cleanup(
 
 async def test_archived_comment_identity_cannot_be_reused_in_another_project(env):
     await run(env, "task_comment", {"task_id": "peer", "body": "Project p history"})
+    await env.db.update_task("peer", status=TaskStatus.COMPLETED)
     await env.db.archive_task("peer")
     with pytest.raises(ValueError, match="archived.*project"):
         await env.db.create_task(
@@ -376,6 +377,7 @@ async def test_archived_comment_identity_cannot_be_reused_in_another_project(env
 
 async def test_permanent_archive_and_project_deletion_clean_history(env):
     await run(env, "task_comment", {"task_id": "peer", "body": "Archive delete"})
+    await env.db.update_task("peer", status=TaskStatus.COMPLETED)
     await env.db.archive_task("peer")
     assert await env.db.delete_archived_task("peer")
     assert (await env.db.list_task_comments("peer"))["total"] == 0
@@ -383,6 +385,7 @@ async def test_permanent_archive_and_project_deletion_clean_history(env):
     for tid in ("active-disposable", "archived-disposable"):
         await env.db.create_task(Task(id=tid, project_id="disposable", title=tid, description=""))
         await run(env, "task_comment", {"task_id": tid, "body": tid})
+    await env.db.update_task("archived-disposable", status=TaskStatus.COMPLETED)
     await env.db.archive_task("archived-disposable")
     await env.db.delete_project("disposable")
     for tid in ("active-disposable", "archived-disposable"):
@@ -394,6 +397,7 @@ async def test_generated_task_ids_reserve_archived_roots_and_children(env, monke
 
     for tid in ("swift-falcon", "peer.1"):
         await env.db.create_task(Task(id=tid, project_id="p", title=tid, description=""))
+        await env.db.update_task(tid, status=TaskStatus.COMPLETED)
         await env.db.archive_task(tid)
     choices = iter(["swift", "falcon", "bright", "horizon"])
     monkeypatch.setattr(task_names.random, "choice", lambda values: next(choices))
@@ -406,6 +410,7 @@ async def test_existing_cross_project_active_archive_collision_fails_closed(env)
     from sqlalchemy import insert
     from src.database.tables import tasks
 
+    await env.db.update_task("peer", status=TaskStatus.COMPLETED)
     await env.db.archive_task("peer")
     # Simulate an existing collision from before archived IDs were reserved.
     async with env.db._engine.begin() as conn:
@@ -430,12 +435,28 @@ async def test_existing_cross_project_active_archive_collision_fails_closed(env)
 
 @pytest.mark.parametrize("operation", ["delete", "archive"])
 async def test_append_race_with_task_removal_is_lossless_or_clean(env, monkeypatch, operation):
+    from contextlib import asynccontextmanager
     from sqlalchemy import event
 
+    if operation == "archive":
+        await env.db.update_task("peer", status=TaskStatus.COMPLETED)
     entered = asyncio.Event()
     release = asyncio.Event()
     removal_started = asyncio.Event()
     original = env.db._write_task_findings
+    immediate = env.db.immediate
+
+    @asynccontextmanager
+    async def observe_immediate():
+        # SQLite now blocks at BEGIN IMMEDIATE (or its in-process lock),
+        # before archive emits its first task UPDATE.
+        if operation == "archive" and entered.is_set():
+            removal_started.set()
+        async with immediate() as conn:
+            yield conn
+
+    if env.db._engine.dialect.name == "sqlite":
+        monkeypatch.setattr(env.db, "immediate", observe_immediate)
 
     async def hold_append(*args, **kwargs):
         await original(*args, **kwargs)
@@ -448,7 +469,7 @@ async def test_append_race_with_task_removal_is_lossless_or_clean(env, monkeypat
         if not entered.is_set():
             return
         if operation == "archive":
-            match = statement.startswith("UPDATE tasks SET updated_at=tasks.updated_at")
+            match = statement.startswith("SELECT tasks.id, tasks.status") and "FOR UPDATE" in statement
         elif env.db._engine.dialect.name == "postgresql":
             match = statement.startswith("DELETE FROM tasks WHERE")
         else:
@@ -466,6 +487,7 @@ async def test_append_race_with_task_removal_is_lossless_or_clean(env, monkeypat
             env.db.archive_task("peer") if operation == "archive" else env.db.delete_task("peer")
         )
         await asyncio.wait_for(removal_started.wait(), 10)
+        assert not remove.done()
         release.set()
         result, _ = await asyncio.gather(append, remove)
         assert "comment" in result, result
