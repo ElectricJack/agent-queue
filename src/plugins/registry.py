@@ -492,11 +492,7 @@ class PluginRegistry:
         # Create context — external plugins get the allowlisted subset of services.
         data_path = str(self._plugin_data_dir / name)
         external_services = (
-            {
-                k: v
-                for k, v in self._internal_services.items()
-                if k in EXTERNAL_ALLOWED_SERVICES
-            }
+            {k: v for k, v in self._internal_services.items() if k in EXTERNAL_ALLOWED_SERVICES}
             if self._internal_services
             else {}
         )
@@ -688,6 +684,19 @@ class PluginRegistry:
 
         plugin_name = result["name"]
         if plugin_name.lower() in RESERVED_PLUGIN_NAMES:
+            # The name can come from plugin metadata, so this validation is
+            # necessarily after cloning.  Do not leave a rejected install
+            # behind for later discovery.
+            install_path = Path(result["install_path"])
+            try:
+                install_path.relative_to(self._plugins_dir)
+            except ValueError:
+                logger.warning("Refusing to clean plugin path outside root: %s", install_path)
+            else:
+                if install_path.exists() and not install_path.is_symlink():
+                    import shutil
+
+                    shutil.rmtree(install_path)
             raise ValueError(
                 f"Plugin name '{plugin_name}' is reserved (conflicts with "
                 f"built-in CLI/Discord commands). Choose a different name."
@@ -950,8 +959,12 @@ class PluginRegistry:
         Args:
             name: Plugin name to enable.
         """
+        try:
+            await self.load_plugin(name)
+        except Exception:
+            await self._db.update_plugin(name, status=PluginStatus.ERROR.value)
+            raise
         await self._db.update_plugin(name, status=PluginStatus.INSTALLED.value)
-        await self.load_plugin(name)
 
     async def disable_plugin(self, name: str) -> None:
         """Disable a plugin (unload but keep installed).
@@ -1094,11 +1107,7 @@ class PluginRegistry:
         """
         if service_name in self._plugin_services:
             existing_owner = next(
-                (
-                    o
-                    for o, names in self._plugin_services_by_owner.items()
-                    if service_name in names
-                ),
+                (o for o, names in self._plugin_services_by_owner.items() if service_name in names),
                 None,
             )
             if existing_owner and existing_owner != plugin_name:
@@ -1150,11 +1159,7 @@ class PluginRegistry:
         name = getattr(plugin_cls, "plugin_name", plugin_cls.__name__)
 
         external_services = (
-            {
-                k: v
-                for k, v in self._internal_services.items()
-                if k in EXTERNAL_ALLOWED_SERVICES
-            }
+            {k: v for k, v in self._internal_services.items() if k in EXTERNAL_ALLOWED_SERVICES}
             if self._internal_services
             else {}
         )
