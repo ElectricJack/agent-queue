@@ -199,6 +199,10 @@ class TaskQueryMixin:
                 dedup_key=task.dedup_key,
                 discord_thread_id=task.discord_thread_id,
                 intelligence_class=task.intelligence_class,
+                routing_revision=task.routing_revision,
+                routing_request=json.dumps(task.routing_request),
+                routing_decision_id=task.routing_decision_id,
+                control_origin=(json.dumps(task.control_origin) if task.control_origin is not None else None),
                 created_by_kind=task.created_by_kind,
                 created_by_id=task.created_by_id,
                 # A brand-new row has no edges yet, so it starts
@@ -313,6 +317,8 @@ class TaskQueryMixin:
         for key, value in kwargs.items():
             if isinstance(value, (TaskStatus, VerificationType, TaskType, WorkspaceMode)):
                 value = value.value
+            elif key in {"routing_request", "control_origin"} and value is not None:
+                value = json.dumps(value)
             values[key] = value
         return values
 
@@ -1454,6 +1460,10 @@ class TaskQueryMixin:
             dedup_key=row.get("dedup_key"),
             discord_thread_id=row.get("discord_thread_id"),
             intelligence_class=row.get("intelligence_class"),
+            routing_revision=int(row.get("routing_revision") or 1),
+            routing_request=json.loads(row.get("routing_request") or "{}"),
+            routing_decision_id=row.get("routing_decision_id"),
+            control_origin=(json.loads(row["control_origin"]) if row.get("control_origin") else None),
             created_by_kind=row.get("created_by_kind"),
             created_by_id=row.get("created_by_id"),
             claim_epoch=int(row.get("claim_epoch") or 0),

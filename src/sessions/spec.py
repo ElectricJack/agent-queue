@@ -684,12 +684,7 @@ class SessionSpecBuilder:
         Worker class > task class > profile default. Unknown classes, providers,
         or model mappings leave the profile fallback intact.
         """
-        class_id = (
-            getattr(profile, "_agent_intelligence_class", None)
-            or task_intelligence_class
-            or getattr(profile, "default_class", "")
-            or ""
-        )
+        class_id = self.resolve_class_id(profile, task_intelligence_class)
         if not class_id:
             return {}
         cls = self._intelligence_classes.get(class_id)
@@ -731,6 +726,40 @@ class SessionSpecBuilder:
             )
             return {}
         return slice_
+
+    @staticmethod
+    def resolve_class_id(profile, task_intelligence_class=None) -> str:
+        """Apply worker, task, and profile class precedence in one place."""
+        return str(
+            getattr(profile, "_agent_intelligence_class", None)
+            or task_intelligence_class
+            or getattr(profile, "default_class", "")
+            or ""
+        )
+
+    def resolve_launch_settings(self, profile, harness, task_intelligence_class=None) -> dict[str, str]:
+        """Return the canonical identity values used by an actual launch."""
+        class_id = self.resolve_class_id(profile, task_intelligence_class)
+        class_config = self._resolve_class_config(profile, harness, task_intelligence_class)
+        provider = getattr(harness, "provider", "") or _infer_provider_from_harness(harness)
+        model = self._resolve_model(
+            profile, harness, task_intelligence_class, class_config=class_config,
+        )
+        if _is_codex_cli(harness):
+            reasoning = class_config.get("reasoning_effort", "")
+            reasoning = reasoning if isinstance(reasoning, str) else ""
+        elif provider == "anthropic" and str(class_config.get("thinking") or "") == "off":
+            reasoning = "off"
+        else:
+            reasoning = self._resolve_effort(profile, harness, class_config)
+            if reasoning and not getattr(harness, "effort_flag", None):
+                reasoning = ""
+        return {
+            "provider": str(provider or ""),
+            "model": str(model or ""),
+            "intelligence_class": str(class_id),
+            "reasoning_effort": str(reasoning or ""),
+        }
 
     def _hook_files(self, harness: Harness) -> list[tuple[str, str]]:
         """Render the harness's declared hook templates.

@@ -7,8 +7,6 @@ from dataclasses import is_dataclass, replace
 from sqlalchemy.exc import IntegrityError
 
 from src.models import Agent
-from src.sessions.spec import _infer_provider_from_harness
-
 SUPERVISOR_AGENT_ID = "supervisor-global"
 
 
@@ -45,18 +43,11 @@ def apply_agent_overrides(profile, agent, *, agent_profile=None):
 
 def resolve_launch_settings(profile, harness, builder, task_class=None) -> dict:
     """The LLM settings actually used by the shared SessionSpecBuilder."""
-    provider = getattr(harness, "provider", "") or _infer_provider_from_harness(harness)
-    class_id = (
-        getattr(profile, "_agent_intelligence_class", None)
-        or task_class
-        or getattr(profile, "default_class", None)
-        or None
-    )
-    model = builder._resolve_model(profile, harness, task_class)
+    settings = builder.resolve_launch_settings(profile, harness, task_class)
     return {
-        "llm_provider": provider or None,
-        "model": model or None,
-        "intelligence_class": class_id,
+        "llm_provider": settings["provider"] or None,
+        "model": settings["model"] or None,
+        "intelligence_class": settings["intelligence_class"] or None,
     }
 
 

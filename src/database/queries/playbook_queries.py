@@ -43,6 +43,9 @@ class PlaybookQueryMixin:
                     paused_at=run.paused_at,
                     waiting_for_event=run.waiting_for_event,
                     event_id=run.event_id,
+                    project_id=run.project_id,
+                    role=run.role,
+                    owner_session_id=run.owner_session_id,
                 )
             )
 
@@ -159,4 +162,7 @@ class PlaybookQueryMixin:
             paused_at=row["paused_at"],
             waiting_for_event=row.get("waiting_for_event"),
             event_id=row.get("event_id"),
+            project_id=row.get("project_id"),
+            role=row.get("role"),
+            owner_session_id=row.get("owner_session_id"),
         )

@@ -141,6 +141,10 @@ class ArchiveQueryMixin:
                 workflow_id=task.workflow_id,
                 affinity_agent_id=task.affinity_agent_id,
                 affinity_reason=task.affinity_reason,
+                routing_revision=task.routing_revision,
+                routing_request=json.dumps(task.routing_request),
+                routing_decision_id=task.routing_decision_id,
+                control_origin=(json.dumps(task.control_origin) if task.control_origin is not None else None),
                 workspace_mode=(task.workspace_mode.value if task.workspace_mode else None),
                 # Carry the blocked-state projection across so archiving
                 # really is lossless (work-graph §2.2).
@@ -373,6 +377,10 @@ class ArchiveQueryMixin:
             "workflow_id": row.get("workflow_id"),
             "affinity_agent_id": row.get("affinity_agent_id"),
             "affinity_reason": row.get("affinity_reason"),
+            "routing_revision": int(row.get("routing_revision") or 1),
+            "routing_request": json.loads(row.get("routing_request") or "{}"),
+            "routing_decision_id": row.get("routing_decision_id"),
+            "control_origin": (json.loads(row["control_origin"]) if row.get("control_origin") else None),
             "workspace_mode": row.get("workspace_mode"),
             "is_blocked": bool(row.get("is_blocked", 0)),
             "created_by_kind": row.get("created_by_kind"),

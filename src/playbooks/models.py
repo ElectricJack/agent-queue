@@ -936,6 +936,9 @@ class PlaybookRun:
     started_at: float = 0.0
     completed_at: float | None = None
     error: str | None = None
+    project_id: str | None = None
+    role: str | None = None
+    owner_session_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -956,6 +959,12 @@ class PlaybookRun:
             d["completed_at"] = self.completed_at
         if self.error is not None:
             d["error"] = self.error
+        if self.project_id is not None:
+            d["project_id"] = self.project_id
+        if self.role is not None:
+            d["role"] = self.role
+        if self.owner_session_id is not None:
+            d["owner_session_id"] = self.owner_session_id
         return d
 
     @classmethod
@@ -973,6 +982,9 @@ class PlaybookRun:
             started_at=data.get("started_at", 0.0),
             completed_at=data.get("completed_at"),
             error=data.get("error"),
+            project_id=data.get("project_id"),
+            role=data.get("role"),
+            owner_session_id=data.get("owner_session_id"),
         )
 
 

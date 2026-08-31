@@ -329,6 +329,7 @@ class Project:
     repo_url: str = ""
     repo_default_branch: str = "main"
     default_profile_id: str | None = None  # fallback profile for tasks in this project
+    triage_playbook_id: str | None = None
 
 
 @dataclass
@@ -408,6 +409,10 @@ class Task:
     dedup_key: str | None = None
     discord_thread_id: str | None = None
     intelligence_class: str | None = None
+    routing_revision: int = 1
+    routing_request: dict = field(default_factory=dict)
+    routing_decision_id: str | None = None
+    control_origin: dict | None = None
     # Provenance and swarm counters (swarm-work-model §9).  ``claim_epoch``
     # and ``filed_count`` are written by Plan 2; they ride on the model so
     # ``_row_to_task`` is complete from the first migration.
@@ -470,6 +475,7 @@ class Agent:
     model: str | None = None
     intelligence_class: str | None = None
     deleted_at: float | None = None
+    last_assigned_at: float | None = None
 
 
 @dataclass
@@ -1193,6 +1199,9 @@ class PlaybookRun:
         None  # Event type the run is waiting for (event-triggered pause)
     )
     event_id: str | None = None  # Stable dedup key from the triggering event
+    project_id: str | None = None
+    role: str | None = None
+    owner_session_id: str | None = None
 
 
 @dataclass
@@ -1311,3 +1320,5 @@ class SessionRecord:
     llm_provider: str | None = None
     model: str | None = None
     intelligence_class: str | None = None
+    playbook_run_id: str | None = None
+    playbook_node_id: str | None = None

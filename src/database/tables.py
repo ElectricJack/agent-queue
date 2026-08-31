@@ -45,6 +45,7 @@ projects = Table(
     Column("repo_url", Text, nullable=True, server_default="''"),
     Column("repo_default_branch", Text, nullable=True, server_default="'main'"),
     Column("default_profile_id", Text, ForeignKey("agent_profiles.id"), nullable=True),
+    Column("triage_playbook_id", Text, nullable=True),
     Column("created_at", Float, nullable=False),
 )
 
@@ -107,6 +108,15 @@ tasks = Table(
     Column("is_blocked", Integer, nullable=False, server_default="0"),
     Column("dedup_key", Text, nullable=True),
     Column("intelligence_class", Text, nullable=True),
+    Column("routing_revision", Integer, nullable=False, server_default="1"),
+    Column("routing_request", Text, nullable=False, server_default="'{}'"),
+    Column(
+        "routing_decision_id", Text,
+        ForeignKey("task_routing_decisions.id", use_alter=True,
+                   name="fk_tasks_routing_decision", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    Column("control_origin", Text, nullable=True),
     # Discord thread opened for this task.  Persisted because the bot's
     # in-memory task->thread map is lost on every daemon restart, which used
     # to make it open a *new* thread for a task it had already threaded.
@@ -373,6 +383,7 @@ agents = Table(
     Column("model", Text, nullable=True),
     Column("intelligence_class", Text, nullable=True),
     Column("deleted_at", Float, nullable=True),
+    Column("last_assigned_at", Float, nullable=True),
     Column("created_at", Float, nullable=False),
 )
 
@@ -672,6 +683,13 @@ sessions = Table(
     Column("llm_provider", Text, nullable=True),
     Column("model", Text, nullable=True),
     Column("intelligence_class", Text, nullable=True),
+    Column(
+        "playbook_run_id", Text,
+        ForeignKey("playbook_runs.run_id", use_alter=True,
+                   name="fk_sessions_playbook_run", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    Column("playbook_node_id", Text, nullable=True),
     Index("idx_sessions_agent", "agent_id", "state"),
     Index("idx_sessions_task_id", "task_id"),
     Index("idx_sessions_state", "state"),
@@ -835,6 +853,10 @@ archived_tasks = Table(
     Column("is_blocked", Integer, nullable=False, server_default="0"),
     Column("dedup_key", Text, nullable=True),
     Column("intelligence_class", Text, nullable=True),
+    Column("routing_revision", Integer, nullable=False, server_default="1"),
+    Column("routing_request", Text, nullable=False, server_default="'{}'"),
+    Column("routing_decision_id", Text, nullable=True),
+    Column("control_origin", Text, nullable=True),
     Column("created_by_kind", Text, nullable=True),
     Column("created_by_id", Text, nullable=True),
     Column("created_at", Float, nullable=False),
@@ -904,6 +926,17 @@ playbook_runs = Table(
     Column("paused_at", Float, nullable=True),
     Column("waiting_for_event", Text, nullable=True),
     Column("event_id", Text, nullable=True),
+    Column(
+        "project_id", Text,
+        ForeignKey("projects.id", name="fk_playbook_runs_project"), nullable=True,
+    ),
+    Column("role", Text, nullable=True),
+    Column(
+        "owner_session_id", Text,
+        ForeignKey("sessions.id", use_alter=True, name="fk_playbook_runs_owner_session",
+                   ondelete="SET NULL"),
+        nullable=True,
+    ),
     Index(
         "uq_playbook_runs_pb_event",
         "playbook_id",
@@ -918,6 +951,32 @@ playbook_runs = Table(
     ),
     Index("idx_playbook_runs_playbook_id", "playbook_id"),
     Index("idx_playbook_runs_status", "status"),
+    Index(
+        "uq_active_triage_run_project", "project_id", unique=True,
+        sqlite_where=text("role = 'triage' AND status IN ('running', 'paused')"),
+        postgresql_where=text("role = 'triage' AND status IN ('running', 'paused')"),
+    ),
+)
+
+task_routing_decisions = Table(
+    "task_routing_decisions",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, ForeignKey("projects.id"), nullable=False),
+    # Historical identifier: intentionally no FK, because decisions outlive tasks.
+    Column("task_id", Text, nullable=False),
+    Column("routing_revision", Integer, nullable=False),
+    Column("playbook_run_id", Text, nullable=False),
+    Column("playbook_id", Text, nullable=False),
+    Column("playbook_version", Integer, nullable=False),
+    Column("execution_type_key", Text, nullable=False),
+    Column("execution_snapshot", Text, nullable=False),
+    Column("profile_id", Text, nullable=False),
+    Column("intelligence_class", Text, nullable=False),
+    Column("reason", Text, nullable=False),
+    Column("decided_at", Float, nullable=False),
+    UniqueConstraint("task_id", "routing_revision", name="uq_task_routing_revision"),
+    Index("idx_task_routing_decisions_project", "project_id", "decided_at"),
 )
 
 workflows = Table(
