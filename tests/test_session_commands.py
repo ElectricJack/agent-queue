@@ -1015,6 +1015,50 @@ class TestEndToEndOnFakeProvider:
         assert (await db.get_agent("a1")).state is AgentState.IDLE
         assert (await db.get_workspace("ws1")).locked_by_task_id is None
 
+    async def test_verification_reopen_returns_ready_and_releases_resources(
+        self, db, real_orch, real_handler, provider, tmp_path, monkeypatch
+    ):
+        """A verification retry must return READY and release its old worker."""
+        import asyncio
+
+        await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+        session = await db.get_session_for_task("t1")
+
+        async def reopen(ctx):
+            await db.transition_task(
+                ctx.task.id,
+                TaskStatus.READY,
+                context="verification_reopen",
+                assigned_agent_id=None,
+            )
+            ctx.verification_reopened = True
+            return None, False
+
+        monkeypatch.setattr(real_orch, "_run_completion_pipeline", reopen)
+        close = await asyncio.wait_for(
+            real_handler.execute(
+                "task_close",
+                {
+                    "task_id": "t1",
+                    "session_id": session.id,
+                    "outcome": "pass",
+                    "work_outcome": "shipped",
+                    "summary": "Work completed; git verification requested a retry.",
+                },
+            ),
+            timeout=2,
+        )
+
+        assert close["success"] is True and close["status"] == "READY"
+        task = await db.get_task("t1")
+        assert task.status is TaskStatus.READY
+        assert task.assigned_agent_id is None
+        agent = await db.get_agent("a1")
+        assert agent.state is AgentState.IDLE and agent.current_task_id is None
+        workspace = await db.get_workspace("ws1")
+        assert workspace.locked_by_task_id is None
+        assert workspace.locked_by_agent_id is None
+
     async def test_transient_failure_retries_instead_of_going_terminal(
         self, db, real_orch, real_handler, provider, tmp_path, monkeypatch
     ):

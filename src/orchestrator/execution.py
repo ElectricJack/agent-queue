@@ -2063,13 +2063,21 @@ class ExecutionMixin:
         # ``retry_count`` is only carried on the transient leg; the other
         # branches are terminal and must not bump the counter.
         new_retry: int | None = None
+        verification_reopened = outcome == "pass" and ctx.verification_reopened
         if outcome == "pass" and completed_ok:
             new_status = TaskStatus.COMPLETED
             context = "session_close"
+        elif verification_reopened:
+            # Git verification already transitioned this exact claim back to
+            # READY with actionable feedback.  Preserve that retry state;
+            # forcing a second READY -> BLOCKED transition races the session
+            # reconciler and can strand the old agent/workspace reservation.
+            new_status = TaskStatus.READY
+            context = "verification_reopen"
         elif outcome == "pass":
-            # Pipeline said stop (verification reopened, uncommitted work,
-            # ...).  BLOCKED, not COMPLETED: the agent's word is the trigger
-            # for the pipeline, not a substitute for it.
+            # The pipeline stopped without arranging a retry.  BLOCKED, not
+            # COMPLETED: the agent's word triggers verification but does not
+            # replace its verdict.
             new_status = TaskStatus.BLOCKED
             context = "session_close_pipeline_stop"
         elif failure_class == "hard":
@@ -2092,7 +2100,11 @@ class ExecutionMixin:
                 context = "retry"
 
         try:
-            if new_retry is not None:
+            if verification_reopened:
+                # _reopen_with_verification_feedback performed the state
+                # transition and recorded its context inside this lock.
+                pass
+            elif new_retry is not None:
                 await self.db.transition_task(
                     task.id,
                     new_status,
