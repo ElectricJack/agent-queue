@@ -46,7 +46,10 @@ vi.mock("@xyflow/react", () => ({
 }));
 vi.mock("../AgentAvatarLayer", () => ({ default: () => null }));
 
-beforeEach(() => { flow.current = null; });
+beforeEach(() => {
+  flow.current = null;
+  localStorage.clear();
+});
 afterEach(cleanup);
 
 describe("GraphCanvas interactions", () => {
@@ -78,6 +81,41 @@ describe("GraphCanvas interactions", () => {
     fireEvent.click(screen.getByRole("button", { name: "Collapse children of Task parent" }));
     expect(screen.queryByText("Task child")).not.toBeInTheDocument();
     expect(open).toHaveBeenCalledTimes(1);
+  });
+
+  it("restores expanded subtrees for the same viewer", () => {
+    const data = graph([task("parent"), task("child")], [edge("child", "parent")]);
+    const first = render(<GraphCanvas graph={data} onTaskClick={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Expand children of Task parent" }));
+    expect(screen.getByText("Task child")).toBeInTheDocument();
+    first.unmount();
+
+    render(<GraphCanvas graph={data} onTaskClick={vi.fn()} />);
+    expect(screen.getByText("Task child")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Collapse children of Task parent" })).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("keeps a collapsed parent closed while live children update its hidden rollup", () => {
+    const data = graph([task("parent"), task("child")], [edge("child", "parent")]);
+    const { rerender } = render(<GraphCanvas graph={data} onTaskClick={vi.fn()} />);
+    expect(screen.getByText("1 hidden")).toBeInTheDocument();
+
+    rerender(<GraphCanvas graph={graph(
+      [task("parent"), task("child"), task("new-child", { status: "IN_PROGRESS" })],
+      [edge("child", "parent"), edge("new-child", "parent")],
+    )} onTaskClick={vi.fn()} />);
+
+    expect(screen.queryByText("Task child")).not.toBeInTheDocument();
+    expect(screen.queryByText("Task new-child")).not.toBeInTheDocument();
+    expect(screen.getByText("2 hidden")).toBeInTheDocument();
+    expect(screen.getByText("1 running")).toBeInTheDocument();
+  });
+
+  it("animates node positions when hierarchy projection changes", () => {
+    const data = graph([task("parent"), task("child"), task("other")], [edge("child", "parent")]);
+    render(<GraphCanvas graph={data} onTaskClick={vi.fn()} />);
+    expect(flow.current!.nodes.every((node) => node.style?.transitionProperty === "transform")).toBe(true);
+    expect(flow.current!.nodes.every((node) => node.style?.transitionDuration === "200ms")).toBe(true);
   });
 
   it("clears selection on blank canvas or Escape without automatically selecting the first task again", () => {

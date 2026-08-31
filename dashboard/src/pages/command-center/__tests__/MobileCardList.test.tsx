@@ -1,9 +1,10 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import MobileCardList from "../MobileCardList";
 import { edge, graph, task } from "./fixtures";
 
 afterEach(cleanup);
+beforeEach(() => localStorage.clear());
 
 describe("mobile task hierarchy", () => {
   it("includes waiting tasks and keeps expand controls separate from task selection", () => {

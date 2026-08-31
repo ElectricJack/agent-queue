@@ -111,7 +111,11 @@ export function TaskCard({ data, selected = false, fluid = false }: CardProps) {
           onKeyDown={(event) => { if (event.key !== "Escape") event.stopPropagation(); }}
         >
           {hierarchy.expanded ? <ChevronDownIcon aria-hidden className="h-3 w-3" /> : <ChevronRightIcon aria-hidden className="h-3 w-3" />}
-          <span>{hierarchy.childCount} {hierarchy.childCount === 1 ? "child" : "children"}</span>
+          <span className="rounded bg-white/10 px-1">
+            {hierarchy.expanded
+              ? `${hierarchy.childCount} ${hierarchy.childCount === 1 ? "child" : "children"}`
+              : `${hierarchy.descendantCount} hidden`}
+          </span>
           {hierarchy.runningCount > 0 && <span className="ml-auto text-indigo-300">{hierarchy.runningCount} running</span>}
           {hierarchy.blockedCount > 0 && <span className="ml-auto text-amber-300">{hierarchy.blockedCount} blocked</span>}
         </button>

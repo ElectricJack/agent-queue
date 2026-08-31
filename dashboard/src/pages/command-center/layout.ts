@@ -67,6 +67,11 @@ export function layoutGraph(
     },
     width: NODE_WIDTH,
     height: NODE_HEIGHT,
+    style: {
+      transitionProperty: "transform",
+      transitionDuration: "200ms",
+      transitionTimingFunction: "ease-out",
+    },
     draggable: false,
     connectable: false,
     ariaRole: "group",
