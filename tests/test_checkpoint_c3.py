@@ -11,8 +11,9 @@ to prove the whole Wave-3 surface at once:
   no ``_phase_integrate`` stub — and each task rebases + pushes onto
   the bare origin's ``main``.  The merge slot serializes the two
   integrations;
-* a ``task``-type gate on task A keeps task B ``is_blocked`` (shadow
-  projection) until ``_sweep_gates`` resolves it after A completes;
+* a ``task``-type gate on task A (created once B is already running —
+  assignment now enforces gates) keeps task B ``is_blocked`` until
+  ``_sweep_gates`` resolves it after A completes;
 * ``explain_task`` returns a ``blocked_gate`` reason while B is
   gate-blocked;
 * the Claude transcript path is exercised end-to-end via
@@ -281,37 +282,8 @@ class TestCheckpointC3:
         o = orch
         await _seed_project_and_tasks(o, base_repo, cap=2)
 
-        # ── task-type gate: B waits for A ─────────────────────────────
         handler = CommandHandler(o, o.config)
         o._command_handler = handler
-        gate_res = await handler.execute(
-            "gate_create",
-            {
-                "project_id": "p1",
-                "gate_type": "task",
-                "title": "await task A",
-                "await_id": "tA",
-                "waiter_task_ids": ["tB"],
-            },
-        )
-        assert gate_res["success"] is True, gate_res
-        gate_id = gate_res["gate_id"]
-
-        # Shadow projection: B is is_blocked=1 while the gate is open.
-        # (blocked_state_authoritative stays False by design — the
-        # projection is recorded, not enforced at scheduling.)
-        tB_row = await o.db.get_task("tB")
-        assert tB_row.is_blocked is True or tB_row.is_blocked == 1
-
-        # ── Explain B: 'blocked_gate' reason must name the gate ───────
-        explain = await handler.execute("explain_task", {"task_id": "tB"})
-        assert explain["success"] is True
-        codes = [r["code"] for r in explain["reasons"]]
-        assert "blocked_gate" in codes
-        blocked_reason = next(
-            r for r in explain["reasons"] if r["code"] == "blocked_gate"
-        )
-        assert blocked_reason["ref"] == gate_id
 
         # ── Spy on acquire_merge_slot to prove serialization ──────────
         # Wrap the module-level symbol imported by git_ops (call site
@@ -377,11 +349,12 @@ class TestCheckpointC3:
             assert _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=slot_a) == "aq/tA"
 
             # ── Launch B into slot 1 ──────────────────────────────────
-            # Even with the gate open (shadow projection), _execute_task
-            # honors the AssignAction — the gate's authoritative
-            # enforcement is out of scope for this checkpoint.  We only
-            # assert that the projection is recorded and reflected in
-            # explain_task.
+            # B's gate on A is created after launch: since the routing-
+            # enforcement change, _execute_task refuses to assign a
+            # blocked task, and this checkpoint needs both sessions live
+            # to drive real merge-slot contention.  Gates never stop an
+            # already-running session, so the shadow projection and
+            # explain_task are asserted below with B running.
             await o._execute_task(AssignAction(
                 task_id="tB", agent_id="a2", project_id="p1"
             ))
@@ -395,6 +368,34 @@ class TestCheckpointC3:
             observer = TmuxProvider(config=o.config)
             found = sorted(h.name for h in await observer.list_running("s-"))
             assert found == ["s-tA", "s-tB"]
+
+            # ── task-type gate: B waits for A ─────────────────────────
+            gate_res = await handler.execute(
+                "gate_create",
+                {
+                    "project_id": "p1",
+                    "gate_type": "task",
+                    "title": "await task A",
+                    "await_id": "tA",
+                    "waiter_task_ids": ["tB"],
+                },
+            )
+            assert gate_res["success"] is True, gate_res
+            gate_id = gate_res["gate_id"]
+
+            # Shadow projection: B is is_blocked=1 while the gate is open.
+            tB_row = await o.db.get_task("tB")
+            assert tB_row.is_blocked is True or tB_row.is_blocked == 1
+
+            # ── Explain B: 'blocked_gate' reason must name the gate ───
+            explain = await handler.execute("explain_task", {"task_id": "tB"})
+            assert explain["success"] is True
+            codes = [r["code"] for r in explain["reasons"]]
+            assert "blocked_gate" in codes
+            blocked_reason = next(
+                r for r in explain["reasons"] if r["code"] == "blocked_gate"
+            )
+            assert blocked_reason["ref"] == gate_id
 
             # ── Drive real commits in each slot (the stub is decor) ───
             (slot_a / "a.txt").write_text("A wrote this\n")
