@@ -124,6 +124,7 @@ async def run_mcp_server(
 
     restart_delay = 1.0
     max_restart_delay = 30.0
+    mcp_mount: Mount | None = None
 
     while not shutdown_event.is_set():
         try:
@@ -134,7 +135,13 @@ async def run_mcp_server(
             # Mount MCP sub-app at root on the FastAPI app.
             # FastAPI's own routes (/api/*, /health, /docs, etc.) take
             # precedence; MCP handles /mcp underneath.
-            fastapi_app.router.routes.append(Mount("/", app=mcp_app))
+            # Replace — never accumulate — the root mount: a supervised
+            # restart would otherwise append another Mount pointing at the
+            # previous iteration's stale session-manager app (PLA-1).
+            if mcp_mount is not None and mcp_mount in fastapi_app.router.routes:
+                fastapi_app.router.routes.remove(mcp_mount)
+            mcp_mount = Mount("/", app=mcp_app)
+            fastapi_app.router.routes.append(mcp_mount)
 
             # The MCP Starlette sub-app defines a lifespan that
             # initialises the StreamableHTTPSessionManager task group.
