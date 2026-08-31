@@ -1234,6 +1234,23 @@ class TestEndToEndOnFakeProvider:
         assert shared.model == profile.model
         assert shared.default_class == profile.default_class
 
+    async def test_resumed_launch_keeps_original_conversation_identity(
+        self, db, real_orch, provider, tmp_path, monkeypatch
+    ):
+        from unittest.mock import AsyncMock
+        wd = await self._setup(db, tmp_path)
+        await db.set_task_meta("t1", "session_resume_key", "original-conversation")
+        monkeypatch.setattr(real_orch, "_validated_resume_key",
+                            AsyncMock(return_value="original-conversation"))
+        task = await db.get_task("t1")
+        await real_orch._launch_session_for_task(
+            AssignAction(task_id="t1", agent_id="a1", project_id="p1"),
+            task, await db.get_profile("claude-opus"), wd,
+        )
+        session = await db.get_session_for_task("t1")
+        assert session.session_key == "original-conversation"
+        assert (await db.list_task_session_attempts("t1"))[0]["session_key"] == "original-conversation"
+
     async def test_launch_failure_pauses_rather_than_fabricating_a_result(
         self, db, real_orch, provider, tmp_path
     ):
@@ -1245,7 +1262,14 @@ class TestEndToEndOnFakeProvider:
         provider.script_startup_death("s-t1")
         await real_orch._launch_session_for_task(action, task, profile, wd)
 
-        assert await db.get_session_for_task("t1") is None
+        session = await db.get_session_for_task("t1")
+        assert session is not None and session.state == "stopped"
+        attempts = await db.list_task_session_attempts("t1")
+        assert len(attempts) == 1
+        assert attempts[0]["end_reason"] == "startup_exit"
+        assert attempts[0]["ended_at"] >= attempts[0]["started_at"]
+        assert attempts[0]["agent_id"] == "a1"
+        assert attempts[0]["outcome"] is None
         task = await db.get_task("t1")
         assert task.status is TaskStatus.PAUSED
         assert (await db.get_agent("a1")).state is AgentState.IDLE

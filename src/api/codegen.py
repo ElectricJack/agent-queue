@@ -217,6 +217,7 @@ _CODEGEN_INPUT_SCHEMAS: dict[str, dict] = {
     "session_logs": {
         "type": "object",
         "properties": {
+            "attempt_id": {"type": "string", "description": "Read only this task execution attempt"},
             "session_id": {"type": "string", "description": "Session id (uuid4 hex)"},
             "id": {"type": "string", "description": "Alias for session_id"},
             "name": {"type": "string", "description": "Session name"},

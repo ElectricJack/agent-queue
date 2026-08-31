@@ -569,7 +569,8 @@ class SessionReconciler:
             if count >= self.sessions_config.max_restarts:
                 await self._quarantine(row, task, reason="rapid_crash", now=now)
                 return
-            await self.db.update_session(row.id, state="stopped", desired_state="stopped")
+            await self.db.update_session(row.id, state="stopped", desired_state="stopped",
+                                         ended_at=now, end_reason="rapid_crash")
             if task is not None:
                 # Return to READY with a backoff so the normal scheduler
                 # relaunches it.  The session row is history; the retry
@@ -597,7 +598,8 @@ class SessionReconciler:
         # PRODUCTIVE_DEATH — the agent worked, then vanished without
         # closing.  Never silently READY: a human (or the supervisor) has
         # to look, because the work may be half-done in the worktree.
-        await self.db.update_session(row.id, state="stopped", desired_state="stopped")
+        await self.db.update_session(row.id, state="stopped", desired_state="stopped",
+                                     ended_at=now, end_reason="session_exited_open")
         if task is not None:
             await self.db.set_task_meta(task.id, "needs_attention", "session_exited_open")
             await self.db.transition_task(
@@ -1240,6 +1242,8 @@ class SessionReconciler:
         """
         if task is None or not row.session_key:
             return
+        if row.harness == "codex" and row.session_key == row.id:
+            return  # Legacy AQ UUID placeholders are not Codex resume identities.
         try:
             await self.db.set_task_meta(task.id, "session_resume_key", row.session_key)
         except Exception:
@@ -1281,7 +1285,7 @@ class SessionReconciler:
         # stale in-memory value let a backstop kill on a RATE_LIMIT-slept
         # session overwrite ``"rate_limit"`` with ``None`` -- destroying the
         # one field that explained what happened.
-        fields = {"state": state, "desired_state": state}
+        fields = {"state": state, "desired_state": state, "end_reason": reason}
         if state == "sleeping":
             fields["sleep_reason"] = reason
         await self.db.update_session(row.id, **fields)
@@ -1299,6 +1303,8 @@ class SessionReconciler:
             state="quarantined",
             desired_state="stopped",
             quarantined_at=now,
+            ended_at=now,
+            end_reason=reason,
             sleep_reason=reason,
         )
         await self._emit(

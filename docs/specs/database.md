@@ -556,7 +556,7 @@ Agent session rows (session-runtime). One row per launched harness session.
 | `lifecycle` | TEXT | NOT NULL | Lifecycle class (e.g. per-task, long-lived) |
 | `state` | TEXT | NOT NULL DEFAULT 'starting' | Observed state — the runtime projection |
 | `desired_state` | TEXT | NOT NULL DEFAULT 'running' | Intent the reconciler converges toward: `running`/`sleeping`/`stopped` |
-| `session_key` | TEXT | nullable | Multiplexer key (e.g. tmux session name) |
+| `session_key` | TEXT | nullable | Exact harness conversation ID used to find or resume its transcript |
 | `work_dir` | TEXT | NOT NULL | Working directory (an isolated worktree for task sessions) |
 | `epoch` | TEXT | NOT NULL | Restart generation marker |
 | `instance_token` | TEXT | NOT NULL | Identifies this process instance |
@@ -565,6 +565,42 @@ Agent session rows (session-runtime). One row per launched harness session.
 | `restarts` | INTEGER | NOT NULL DEFAULT 0 | Restart counter |
 | `quarantined_at` | REAL | nullable | Set when the session is quarantined after repeated failure |
 | `sleep_reason` | TEXT | nullable | Why the session is idle/asleep |
+| `ended_at` | REAL | nullable | Observed end time; unknown for legacy sessions |
+| `end_reason` | TEXT | nullable | Specific exit, stop, quarantine or sleep reason |
+
+### Table: `task_session_attempts`
+
+Durable task/session associations. Created atomically with task-session insertion
+or a pool claim; finished on claim release or an observed session exit. References
+are logical IDs without foreign keys so archival and session or agent deletion do
+not erase execution history. Agent name and launch settings are snapshots.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Attempt ID, distinct across retries and pool claims |
+| `session_id`, `task_id` | TEXT | NOT NULL | Stable logical references |
+| `project_id`, `agent_id`, `agent_name` | TEXT | nullable | Attribution snapshots |
+| `profile_id`, `name`, `lifecycle` | TEXT | NOT NULL | Session launch metadata |
+| `model`, `intelligence_class`, `llm_provider` | TEXT | nullable | Effective launch settings |
+| `harness`, `provider` | TEXT | NOT NULL | Harness and runtime |
+| `state` | TEXT | NOT NULL | Attempt state; released claims are stopped |
+| `work_dir` | TEXT | NOT NULL | Workspace at assignment |
+| `started_at` | REAL | NOT NULL | Launch time for task sessions, assignment time for pool claims |
+| `session_started_at` | REAL | NOT NULL | Original process launch time, used for transcript discovery |
+| `ended_at`, `end_reason` | REAL, TEXT | nullable | Known release/exit time and reason |
+| `outcome` | TEXT | nullable | Accepted task-close outcome |
+| `session_key` | TEXT | nullable | Exact harness conversation ID |
+
+Indexes cover (`task_id`, `started_at`) and (`session_id`, `started_at`). The legacy
+migration imports only associations still present in `sessions` whose project and
+assignment time match the current task incarnation (or archived task if no current
+row exists). Known terminal `sleep_reason` values are retained as `end_reason`; it does not
+invent missing prior pool claims, exit times or task outcomes. Reading a legacy
+ended attempt may compute `transcript_end_at` from the next known launch sharing
+its conversation or workspace. This is a read boundary, not a stored exit time.
+The task history API filters by the resolved task's project and creation time; older
+audit associations stay stored and remain addressable by attempt ID.
+The SQLite-to-PostgreSQL copy inventory includes this audit table.
 
 ### Table: `messages`
 

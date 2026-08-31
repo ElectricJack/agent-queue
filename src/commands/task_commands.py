@@ -1842,6 +1842,7 @@ class TaskCommandsMixin:
         }
         if task.pr_url:
             info["pr_url"] = task.pr_url
+        info["needs_attention"] = await self.db.get_task_meta(task.id, "needs_attention")
         completion = await self.db.get_task_completion(task.id)
         info["completion"] = asdict(completion) if completion else None
 
@@ -3359,7 +3360,15 @@ class TaskCommandsMixin:
         if task is None:
             return {"success": False, "error": f"task '{task_id}' not found"}
 
+        out_of_scope = self._assert_task_in_scope(task)
+        if out_of_scope:
+            return out_of_scope
         reasons: list[Reason] = []
+        needs_attention = await self.db.get_task_meta(str(task_id), "needs_attention")
+        if needs_attention:
+            reasons.append(Reason(
+                code="needs_attention", detail=str(needs_attention), ref=str(task_id),
+            ))
 
         # 1. hold:* labels (task is deliberately withheld).
         try:

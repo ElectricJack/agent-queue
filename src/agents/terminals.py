@@ -236,6 +236,7 @@ async def _start_locked(orchestrator, agent_id, config):
         ):
             raise TerminalStartError("Agent settings or ownership changed during startup")
         launch_attempted = True
+        launched_at = time.time()
         await provider.start(spec)
         row = SessionRecord(
             id=session_id,
@@ -250,7 +251,7 @@ async def _start_locked(orchestrator, agent_id, config):
             work_dir=str(work_dir),
             epoch=getattr(orchestrator, "daemon_epoch", ""),
             instance_token=instance_token,
-            started_at=time.time(),
+            started_at=launched_at,
             session_key=resume_key or (session_id if harness.session_id_flag else None),
             state="running",
             desired_state="running",

@@ -1651,7 +1651,7 @@ class ExecutionMixin:
         Dropping the key starts a fresh session instead, which loses the prior
         conversation but runs. That is strictly better than not running.
 
-        Harnesses without a transcript reader (codex, gemini) are left alone:
+        Harnesses without a transcript reader are left alone:
         no reader means no way to check, and refusing to resume on that basis
         would break resume for them entirely.
         """
@@ -1665,14 +1665,17 @@ class ExecutionMixin:
             return resume_key
 
         try:
-            path = reader.resolve_path(work_dir, resume_key)
+            path = await asyncio.to_thread(reader.resolve_path, work_dir, resume_key)
         except Exception:
             return resume_key
 
-        # resolve_path falls back to the newest transcript when the key's own
-        # file is absent, so an exact match is the only proof it exists.
-        if path is not None and path.stem == resume_key:
-            return resume_key
+        # Codex stores the identity in the rollout suffix, Claude in the
+        # whole basename. Both must prove the exact requested conversation.
+        if path is not None:
+            discover = getattr(reader, "discover_session_key", None)
+            key = discover(path) if discover else None
+            if (key or path.stem) == resume_key:
+                return resume_key
 
         logger.warning(
             "Task %s: resume key %s has no transcript under %s — starting a "
@@ -1838,9 +1841,37 @@ class ExecutionMixin:
             extra_env={"AQ_CLAIM_EPOCH": str(claim_epoch)},
         )
 
+        launched_at = time.time()
+        from dataclasses import replace
+        launch_record = SessionRecord(
+            id=session_id, task_id=task.id, agent_id=action.agent_id,
+            last_claim_epoch=claim_epoch,
+            **resolve_launch_settings(profile, harness, self.session_spec_builder,
+                                      task_class=task.intelligence_class),
+            project_id=task.project_id, profile_id=getattr(profile, "id", "") or "",
+            harness=harness.id, provider=provider.name, name=spec.session_name,
+            lifecycle="task", state="starting",
+            # Only harnesses with a session-id flag accept AQ's UUID.
+            session_key=resume_key or (session_id if harness.session_id_flag else None),
+            work_dir=work_dir, epoch=self.daemon_epoch, instance_token=instance_token,
+            started_at=launched_at, last_activity=launched_at,
+        )
+
+        async def record_failed_launch(reason):
+            try:
+                await self.db.create_session(replace(
+                    launch_record, state="stopped", desired_state="stopped",
+                    ended_at=time.time(), end_reason=reason,
+                ))
+            except Exception:
+                # Recording failure must not prevent the existing resource
+                # cleanup and retry backoff from running.
+                logger.exception("Could not record failed launch for task %s", task.id)
+
         try:
             await provider.start(spec)
         except SessionDiedDuringStartup as exc:
+            await record_failed_launch("startup_exit")
             await self._fail_session_launch(
                 action,
                 task,
@@ -1849,6 +1880,7 @@ class ExecutionMixin:
             )
             return
         except Exception as exc:
+            await record_failed_launch("launch_failed")
             await self._fail_session_launch(action, task, f"session launch failed: {exc}")
             return
 
@@ -1859,33 +1891,7 @@ class ExecutionMixin:
         now = time.time()
         try:
             await self.db.create_session(
-                SessionRecord(
-                    id=session_id,
-                    task_id=task.id,
-                    agent_id=action.agent_id,
-                    last_claim_epoch=claim_epoch,
-                    **resolve_launch_settings(profile, harness, self.session_spec_builder,
-                                              task_class=task.intelligence_class),
-                    project_id=task.project_id,
-                    profile_id=getattr(profile, "id", "") or "",
-                    harness=harness.id,
-                    provider=provider.name,
-                    name=spec.session_name,
-                    lifecycle="task",
-                    state="running",
-                    # ``--session-id`` already pinned the harness's own
-                    # conversation id to ours, so the resume key *is* the
-                    # session id.  Persisting it here is what makes
-                    # restart-with-resume real rather than a checklist tick:
-                    # the reconciler copies it into ``session_resume_key``
-                    # when it kills, and the next launch passes ``--resume``.
-                    session_key=session_id,
-                    work_dir=work_dir,
-                    epoch=self.daemon_epoch,
-                    instance_token=instance_token,
-                    started_at=now,
-                    last_activity=now,
-                )
+                replace(launch_record, state="running", last_activity=now)
             )
         except Exception as exc:
             # The process is already running and now has no row, so nothing

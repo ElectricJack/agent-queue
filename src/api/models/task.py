@@ -61,6 +61,7 @@ class TaskDetail(BaseModel):
     parent: dict | None = None
     children: dict | None = None
     completion: TaskCompletionDetail | None = None
+    needs_attention: str | None = None
 
 
 class TaskDict(BaseModel):
@@ -653,3 +654,28 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "formula_show": FormulaShowResponse,
     "formula_cook": FormulaCookResponse,
 }
+
+
+class TaskSessionAttempt(BaseModel):
+    id: str
+    session_id: str
+    task_id: str
+    agent_id: str | None = None
+    agent_name: str | None = None
+    model: str | None = None
+    intelligence_class: str | None = None
+    harness: str
+    provider: str
+    state: str
+    work_dir: str
+    started_at: float
+    session_started_at: float
+    ended_at: float | None = None
+    end_reason: str | None = None
+    outcome: str | None = None
+    session_key: str | None = None
+
+
+class TaskSessionsResponse(BaseModel):
+    task_id: str
+    sessions: list[TaskSessionAttempt]

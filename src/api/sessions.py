@@ -6,7 +6,7 @@
    :class:`~src.sessions.transcripts.base.TranscriptEntry`, in file order.
 2. Live tail — the endpoint polls the transcript at
    ``sessions.transcript_poll_seconds`` cadence and emits each new entry.
-3. Heartbeat comments (``: heartbeat\\n\\n``) every 15 s so intermediaries
+3. Heartbeat comments (``: heartbeat\n\n``) every 15 s so intermediaries
    do not close the connection during a quiet turn.
 
 When the session's harness has no transcript reader, or the transcript
@@ -22,10 +22,13 @@ import json
 import logging
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
+from src.api.auth import LOCAL_SCOPE
+from src.api.scope import check_command_scope
 from src.sessions.provider import Cap as _Cap
 from src.sessions.transcripts import resolve_reader
 from src.sessions.transcripts.base import TranscriptEntry
@@ -108,100 +111,151 @@ def build_sessions_router(
     @router.get("/api/sessions/{session_id}/stream")
     async def stream(session_id: str, request: Request,
                       max_seconds: float | None = None,
-                      replay_only: int = 0) -> StreamingResponse:
-        session = await db.get_session(session_id)
-        if session is None:
-            session = await db.get_session_by_name(session_id)
-        if session is None:
-            raise HTTPException(status_code=404,
-                                 detail=f"No session '{session_id}'")
+                      replay_only: int = 0,
+                      attempt_id: str | None = None) -> StreamingResponse:
+        current = await db.get_session(session_id)
+        if current is None:
+            current = await db.get_session_by_name(session_id)
+        attempt = await db.get_task_session_attempt(attempt_id) if attempt_id else None
+        if not attempt_id and current is not None and current.task_id and current.state in {"stopped", "sleeping", "quarantined"}:
+            history = await db.list_task_session_attempts(current.task_id)
+            retained = next((item for item in history if item["session_id"] == current.id), None)
+            if retained is not None:
+                attempt = await db.get_task_session_attempt(retained["id"])
+        if attempt_id and (
+            attempt is None
+            or attempt["session_id"] != (current.id if current else session_id)
+        ):
+            raise HTTPException(status_code=404, detail="No attempt for this session")
+        if current is None and attempt is None:
+            raise HTTPException(status_code=404, detail=f"No session '{session_id}'")
+
+        # Historical snapshots remain authoritative after a pool is reassigned
+        # or its original session row is removed.
+        session = current
+        if attempt is not None:
+            session = SimpleNamespace(
+                **{**attempt, "id": attempt["session_id"],
+                   "started_at": attempt["session_started_at"]}
+            )
+        scope = getattr(request.state, "scope", LOCAL_SCOPE)
+        # A resolved projectless record is not an omitted request filter.
+        if scope.kind != "local" and scope.project_id is not None and scope.project_id != session.project_id:
+            raise HTTPException(status_code=403, detail="Session project is out of scope")
+        scope_error = check_command_scope("session_show", {
+            "session_id": session.id,
+            "project_id": session.project_id,
+            "task_id": session.task_id,
+        }, scope)
+        if scope_error:
+            raise HTTPException(status_code=403, detail=scope_error)
 
         reader = resolve_reader(session.harness, base_dir=base_dir)
         started_at = time.monotonic()
 
+        def is_current():
+            return bool(
+                current is not None
+                and current.state in {"starting", "running", "draining"}
+                and (attempt is None or (
+                    attempt["ended_at"] is None
+                    and attempt["state"] in {"starting", "running", "draining"}
+                    and current.task_id == attempt["task_id"]
+                    and current.started_at == attempt["session_started_at"]
+                ))
+            )
+
+        def visible(entry):
+            if attempt is not None and entry.ts < attempt["started_at"]:
+                return False
+            if attempt and attempt["ended_at"] is None and attempt.get("transcript_end_at") is not None:
+                return 0 < entry.ts < attempt["transcript_end_at"]
+            end = attempt["ended_at"] if attempt else getattr(current or session, "ended_at", None)
+            return end is None or 0 < entry.ts <= end
+
         async def gen():
-            # ---------- replay ----------
+            nonlocal attempt, current
             offset = 0
-            path = None
-            if reader is not None:
-                path = reader.resolve_path(session.work_dir, session.session_key)
-            if reader is None or path is None:
-                # Peek-diff fallback: no transcript yet.  Prefer real pane
-                # peek from the session provider; if that is unavailable
-                # or fails, keep the honest "no transcript" placeholder so
-                # the client sees *something* labelled ``source: "peek"``.
-                peek_text = None
-                if reader is not None:
-                    peek_text = await _best_effort_peek(
-                        session, session_providers, config
-                    )
-                if peek_text:
-                    yield _peek_frame(peek_text)
-                else:
-                    yield _peek_frame(
-                        f"(no transcript available for session {session_id}; "
-                        "falling back to peek)"
-                    )
-                if replay_only:
+            end = (attempt["ended_at"] or attempt.get("transcript_end_at")) if attempt else getattr(session, "ended_at", None)
+            if not is_current() and end is None:
+                payload = {"text": "This legacy attempt has no reliable recording end boundary; its transcript cannot be safely isolated."}
+                yield f"event: unavailable\ndata: {json.dumps(payload)}\n\n".encode()
+                return
+            path = await asyncio.to_thread(reader.resolve_session, session) if reader else None
+            if path is None:
+                if not is_current():
+                    payload = {"text": "The recording for this session attempt is unavailable."}
+                    yield f"event: unavailable\ndata: {json.dumps(payload)}\n\n".encode()
                     return
+                peek_text = await _best_effort_peek(current, session_providers, config) if reader else None
+                yield _peek_frame(peek_text or f"(no transcript available for session {session_id}; falling back to peek)")
             else:
                 entries, offset = await reader.read_new(path, 0)
-                for e in entries:
-                    yield _entry_to_frame(e)
+                if is_current():
+                    # Reading can yield while a retry starts. Refresh the end
+                    # boundary before publishing even the initial replay.
+                    current = await db.get_session(session.id)
+                    if attempt_id:
+                        fresh = await db.get_task_session_attempt(attempt_id)
+                        if fresh is None:
+                            return
+                        attempt = fresh
+                    if current is None and attempt is None:
+                        yield b"event: complete\ndata: {}\n\n"
+                        return
+                for entry in entries:
+                    if visible(entry):
+                        yield _entry_to_frame(entry)
 
-            if replay_only:
+            if replay_only or not is_current():
+                yield b"event: complete\ndata: {}\n\n"
                 return
 
-            # ---------- tail ----------
             last_heartbeat = time.monotonic()
             while True:
                 if await request.is_disconnected():
                     return
-                if max_seconds is not None and \
-                        time.monotonic() - started_at > max_seconds:
+                if max_seconds is not None and time.monotonic() - started_at > max_seconds:
                     return
-
-                # Re-resolve the path each iteration while we do not yet
-                # have one — the transcript file often appears seconds
-                # after the harness boots.  Without this, connecting
-                # before the JSONL exists would spin forever emitting
-                # nothing.  Once resolved, replay from offset 0, then
-                # continue tailing at the returned offset.
-                if reader is not None and path is None:
-                    path = reader.resolve_path(
-                        session.work_dir, session.session_key
-                    )
+                current = await db.get_session(session.id)
+                if attempt_id:
+                    fresh = await db.get_task_session_attempt(attempt_id)
+                    if fresh is None:
+                        return
+                    attempt = fresh
+                # A final bounded read captures the last output, but never
+                # crosses into the next task claimed by this worker.
+                if reader is not None:
+                    if path is None:
+                        path = await asyncio.to_thread(reader.resolve_session, session)
                     if path is not None:
                         try:
-                            entries, offset = await reader.read_new(path, 0)
+                            entries, offset = await reader.read_new(path, offset)
                         except Exception:
-                            logger.debug(
-                                "sse late-resolve replay failed for %s",
-                                session_id, exc_info=True,
-                            )
+                            logger.debug("sse tail read failed for %s", session_id, exc_info=True)
                             entries = []
-                        for e in entries:
-                            yield _entry_to_frame(e)
-                            last_heartbeat = time.monotonic()
-
-                if reader is not None and path is not None:
-                    try:
-                        entries, offset = await reader.read_new(path, offset)
-                    except Exception:
-                        logger.debug(
-                            "sse tail read failed for %s", session_id,
-                            exc_info=True,
-                        )
-                        entries = []
-                    for e in entries:
-                        yield _entry_to_frame(e)
-                        last_heartbeat = time.monotonic()
-
+                        # File IO yields: a stop or claim release can commit
+                        # during that read, so fence this batch afterwards too.
+                        current = await db.get_session(session.id)
+                        if attempt_id:
+                            fresh = await db.get_task_session_attempt(attempt_id)
+                            if fresh is None:
+                                return
+                            attempt = fresh
+                        if current is None and attempt is None:
+                            yield b"event: complete\ndata: {}\n\n"
+                            return
+                        for entry in entries:
+                            if visible(entry):
+                                yield _entry_to_frame(entry)
+                                last_heartbeat = time.monotonic()
+                if not is_current():
+                    yield b"event: complete\ndata: {}\n\n"
+                    return
                 now = time.monotonic()
                 if now - last_heartbeat >= heartbeat_interval:
                     yield b": heartbeat\n\n"
                     last_heartbeat = now
-
                 await asyncio.sleep(poll_interval)
 
         return StreamingResponse(
@@ -225,7 +279,8 @@ def _build_default_router() -> APIRouter:
     @router.get("/api/sessions/{session_id}/stream")
     async def stream(session_id: str, request: Request,
                       max_seconds: float | None = None,
-                      replay_only: int = 0) -> StreamingResponse:
+                      replay_only: int = 0,
+                      attempt_id: str | None = None) -> StreamingResponse:
         orch = deps._orchestrator
         if orch is None:
             raise HTTPException(status_code=503, detail="orchestrator not ready")
@@ -250,7 +305,7 @@ def _build_default_router() -> APIRouter:
             if getattr(route, "path", None) == "/api/sessions/{session_id}/stream":
                 return await route.endpoint(
                     session_id=session_id, request=request,
-                    max_seconds=max_seconds, replay_only=replay_only,
+                    max_seconds=max_seconds, replay_only=replay_only, attempt_id=attempt_id,
                 )
         raise HTTPException(status_code=500,
                              detail="sessions router misconfigured")

@@ -664,6 +664,8 @@ sessions = Table(
     Column("restarts", Integer, nullable=False, server_default="0"),
     Column("quarantined_at", Float, nullable=True),
     Column("sleep_reason", Text, nullable=True),
+    Column("ended_at", Float, nullable=True),
+    Column("end_reason", Text, nullable=True),
     Column("llm_provider", Text, nullable=True),
     Column("model", Text, nullable=True),
     Column("intelligence_class", Text, nullable=True),
@@ -672,6 +674,38 @@ sessions = Table(
     Index("idx_sessions_state", "state"),
     Index("idx_sessions_name", "name"),
     Index("idx_sessions_pool", "lifecycle", "project_id", "profile_id", "state"),
+)
+
+
+# Audit associations deliberately use soft references: history outlives task
+# archival, agent deletion, and administrative session deletion.
+task_session_attempts = Table(
+    "task_session_attempts",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("session_id", Text, nullable=False),
+    Column("task_id", Text, nullable=False),
+    Column("project_id", Text, nullable=True),
+    Column("agent_id", Text, nullable=True),
+    Column("agent_name", Text, nullable=True),
+    Column("profile_id", Text, nullable=False),
+    Column("name", Text, nullable=False),
+    Column("lifecycle", Text, nullable=False),
+    Column("model", Text, nullable=True),
+    Column("intelligence_class", Text, nullable=True),
+    Column("llm_provider", Text, nullable=True),
+    Column("harness", Text, nullable=False),
+    Column("provider", Text, nullable=False),
+    Column("state", Text, nullable=False),
+    Column("work_dir", Text, nullable=False),
+    Column("started_at", Float, nullable=False),
+    Column("session_started_at", Float, nullable=False),
+    Column("ended_at", Float, nullable=True),
+    Column("end_reason", Text, nullable=True),
+    Column("outcome", Text, nullable=True),
+    Column("session_key", Text, nullable=True),
+    Index("idx_task_session_attempts_task", "task_id", "started_at"),
+    Index("idx_task_session_attempts_session", "session_id", "started_at"),
 )
 
 messages = Table(

@@ -385,6 +385,7 @@ class PoolsMixin:
                 workspace_source_type=workspace.source_type,
             )
 
+            launched_at = time.time()
             try:
                 await provider.start(spec)
             except SessionDiedDuringStartup as exc:
@@ -405,7 +406,8 @@ class PoolsMixin:
                         work_dir=work_dir,
                         epoch=self.daemon_epoch,
                         instance_token=instance_token,
-                        started_at=now,
+                        started_at=launched_at,
+                        session_key=session_id if harness.session_id_flag else None,
                         task_id=None,
                         state="running",
                         agent_id=agent.id,
@@ -510,7 +512,9 @@ class PoolsMixin:
         manually_paused = task and task.status == TaskStatus.PAUSED and task.resume_after is None
         if manually_paused:
             # Manual cleanup owns release and checkpoints after this confirmed stop.
-            await self.db.update_session(session.id, state="stopped", desired_state="stopped")
+            await self.db.update_session(
+                session.id, state="stopped", desired_state="stopped", end_reason=reason,
+            )
             return
         other_live = [row for row in await self.db.list_sessions(agent_id=session.agent_id, live_only=True)
                       if row.id != session.id] if session.agent_id else []
@@ -524,6 +528,8 @@ class PoolsMixin:
             except Exception:
                 logger.debug("pool session %s: claim file removal failed", session.id)
         if session.state not in ("stopped", "quarantined"):
-            await self.db.update_session(session.id, state="stopped", desired_state="stopped")
+            await self.db.update_session(
+                session.id, state="stopped", desired_state="stopped", end_reason=reason,
+            )
         if session.agent_id and not other_live and still_owned:
             await self.db.update_agent(session.agent_id, state=AgentState.IDLE, current_task_id=None)

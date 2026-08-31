@@ -26,6 +26,7 @@ from src.api.pane_stream import router as pane_router
 from src.api.sessions import router as sessions_router
 from src.api.streams import router as streams_router
 from src.api.task_files import router as task_files_router
+from src.api.task_sessions import router as task_sessions_router
 from src.api.workspace_files import router as workspace_files_router
 from src.api.middleware import RequestContextMiddleware, TokenAuthMiddleware
 from src.api.websocket import WebSocketManager
@@ -124,6 +125,7 @@ def create_app(
 
     # Task file preview (Phase 5): GET /api/tasks/{id}/files + /file
     app.include_router(task_files_router)
+    app.include_router(task_sessions_router)
 
     # Workspace file browsing (pane view: file-browser): GET
     # /api/workspaces/{id}/browse + /file

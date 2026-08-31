@@ -312,6 +312,18 @@ class DatabaseBackend(Protocol):
         worktree_slot_cap: int | None = None,
     ) -> int: ...
 
+    async def get_task_session_attempt(self, attempt_id: str) -> dict | None: ...
+    async def list_task_session_attempts(
+        self, task_id: str, *, project_id: str | None = None, since: float | None = None,
+    ) -> list[dict]: ...
+    async def finish_task_session_attempt(
+        self, session_id, *, task_id=None, ended_at=None, end_reason=None,
+        outcome=None, state="stopped", conn=None,
+    ) -> int: ...
+    async def record_task_session_outcome(
+        self, task_id, outcome, *, session_id=None, conn=None,
+    ) -> None: ...
+
     # --- Sessions (session-runtime spec §2.3) ---
 
     async def create_session(

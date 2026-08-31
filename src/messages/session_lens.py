@@ -414,6 +414,7 @@ class SessionLens:
             )
             # Precompute our fenced handle so partial starts can also be cleaned up.
             handle = SessionHandle(spec.session_name, provider_name, instance_token)
+            launched_at = time.time()
             await provider.start(spec)
             await self._db.create_session(
                 SessionRecord(
@@ -429,7 +430,7 @@ class SessionLens:
                     work_dir=work_dir,
                     epoch=self._epoch,
                     instance_token=instance_token,
-                    started_at=time.time(),
+                    started_at=launched_at,
                     session_key=resume_key or (session_id if harness.session_id_flag else None),
                     state="running",
                     desired_state="running",
@@ -504,7 +505,7 @@ class SessionLens:
         reader = resolve_reader(row.harness)
         if reader is None:
             return None
-        path = reader.resolve_path(row.work_dir, row.session_key)
+        path = await asyncio.to_thread(reader.resolve_session, row)
         if path is None:
             return None
         try:

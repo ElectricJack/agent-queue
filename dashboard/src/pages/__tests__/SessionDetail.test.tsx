@@ -37,6 +37,9 @@ describe("Session terminal", () => {
     state.session.state = sessionState;
     render(page());
     expect(screen.queryByText("Pane")).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Attach" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Nudge" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Kill" })).not.toBeInTheDocument();
     expect(screen.getByText("Saved transcript")).toBeInTheDocument();
     expect(TerminalSocketMock.instances).toHaveLength(0);
   });

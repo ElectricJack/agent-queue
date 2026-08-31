@@ -234,12 +234,11 @@ def test_codex_session_key_short_circuits_the_scan(tmp_path: Path):
     assert r.resolve_path("/not/the/cwd", CODEX_UUID) == path
 
 
-def test_codex_unmatched_key_falls_back_to_cwd(tmp_path: Path):
-    """A key can belong to a rolled-off file; a cwd match still beats
-    reporting the transcript missing."""
-    path = _codex_rollout(tmp_path)
+def test_codex_unmatched_key_never_falls_back_to_cwd(tmp_path: Path):
+    """A missing recording must not display another task's conversation."""
+    _codex_rollout(tmp_path)
     r = CodexTranscriptReader(base_dir=tmp_path)
-    assert r.resolve_path("/tmp/wd", "ffffffff-0000-0000-0000-000000000000") == path
+    assert r.resolve_path("/tmp/wd", "ffffffff-0000-0000-0000-000000000000") is None
 
 
 def test_codex_missing_root_returns_none(tmp_path: Path):

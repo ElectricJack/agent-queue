@@ -37,10 +37,12 @@ equals, the most recently started.  Callers wanting the strict set use
 from __future__ import annotations
 
 import logging
+import time
 
 from sqlalchemy import delete, insert, or_, select, update
 
-from src.database.tables import agent_profiles, agents, sessions
+from src.database.tables import agent_profiles, agents, sessions, task_session_attempts
+from src.database.queries.task_session_queries import TERMINAL_SESSION_STATES, open_attempts
 from src.models import AgentState, SessionRecord
 
 logger = logging.getLogger(__name__)
@@ -124,6 +126,8 @@ def _row_to_session(row) -> SessionRecord:
         restarts=row["restarts"] or 0,
         quarantined_at=row["quarantined_at"],
         sleep_reason=row["sleep_reason"],
+        ended_at=row.get("ended_at"),
+        end_reason=row.get("end_reason"),
         claims=int(row.get("claims") or 0),
         agent_id=row.get("agent_id"),
         llm_provider=row.get("llm_provider"),
@@ -183,6 +187,8 @@ class SessionQueryMixin:
                     restarts=session.restarts,
                     quarantined_at=session.quarantined_at,
                     sleep_reason=session.sleep_reason,
+                    ended_at=session.ended_at,
+                    end_reason=session.end_reason,
                     claims=session.claims,
                     agent_id=session.agent_id,
                     llm_provider=session.llm_provider,
@@ -194,6 +200,8 @@ class SessionQueryMixin:
                     last_claim_result=session.last_claim_result,
                 )
             )
+
+            await self._start_task_session_attempt(conn, session.id)
 
             if release_agent_reservation and session.agent_id:
                 # The pool becomes claimable in the same commit that makes
@@ -316,24 +324,56 @@ class SessionQueryMixin:
         """
         if not fields:
             return 0
-        requested = fields.get("state")
-        if requested is not None:
-            current = await self._current_state(session_id)
-            # A missing row is the UPDATE's problem (it affects 0 rows), not
-            # the state machine's -- do not turn it into a transition error.
-            if current is not None and requested != current:
-                if requested not in _SESSION_TRANSITIONS.get(current, frozenset()):
-                    raise InvalidSessionTransition(session_id, current, requested)
         desired = fields.get("desired_state")
         if desired is not None and desired not in _DESIRED_STATES:
             raise ValueError(
                 f"session {session_id}: {desired!r} is not a desired state "
                 f"({sorted(_DESIRED_STATES)})"
             )
-        async with self._engine.begin() as conn:
-            result = await conn.execute(
-                update(sessions).where(sessions.c.id == session_id).values(**fields)
-            )
+        # Session and attempt writes share a writer/row lock, preventing a
+        # release/key-learning race from changing the previous pool claim.
+        async with self.immediate() as conn:
+            row = (await conn.execute(select(sessions).where(
+                sessions.c.id == session_id,
+            ).with_for_update())).mappings().first()
+            if row is None:
+                return 0
+            requested = fields.get("state", row["state"])
+            if requested != row["state"] and requested not in _SESSION_TRANSITIONS.get(row["state"], ()):
+                raise InvalidSessionTransition(session_id, row["state"], requested)
+            terminal_transition = requested in TERMINAL_SESSION_STATES and requested != row["state"]
+            if terminal_transition:
+                fields.setdefault("ended_at", time.time())
+                fields.setdefault("end_reason", fields.get("sleep_reason") or requested)
+            new_task_id = fields.get("task_id", row["task_id"])
+            reassigned = new_task_id != row["task_id"]
+            if reassigned:
+                await self.finish_task_session_attempt(
+                    session_id, ended_at=fields.get("ended_at") or time.time(),
+                    end_reason=fields.get("end_reason") or ("reassigned" if new_task_id else "released"),
+                    conn=conn,
+                )
+            result = await conn.execute(update(sessions).where(
+                sessions.c.id == session_id,
+            ).values(**fields))
+            if reassigned and new_task_id:
+                await self._start_task_session_attempt(conn, session_id, started_at=time.time())
+            # Only the currently open association may learn mutable runtime
+            # metadata. Closed claims must keep their original conversation.
+            snapshot = {key: fields[key] for key in ("session_key", "work_dir") if key in fields}
+            if snapshot:
+                await conn.execute(update(task_session_attempts).where(
+                    *open_attempts(session_id),
+                ).values(**snapshot))
+            if terminal_transition:
+                await self.finish_task_session_attempt(
+                    session_id, ended_at=fields["ended_at"],
+                    end_reason=fields["end_reason"], state=requested, conn=conn,
+                )
+            elif "state" in fields:
+                await conn.execute(update(task_session_attempts).where(
+                    *open_attempts(session_id),
+                ).values(state=requested))
             return result.rowcount
 
     async def _current_state(self, session_id: str) -> str | None:

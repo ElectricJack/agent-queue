@@ -343,12 +343,17 @@ async def _make_codex_session(db, work_dir, *, session_key=None, task_id="tc"):
 
 
 def _make_codex_transcript(base_dir: Path, work_dir: str, uuid=CODEX_UUID) -> Path:
-    day = base_dir / ".codex" / "sessions" / "2026" / "08" / "21"
+    day = base_dir / ".codex" / "sessions" / time.strftime("%Y/%m/%d", time.gmtime())
     day.mkdir(parents=True, exist_ok=True)
     path = day / f"rollout-2026-08-21T13-28-35-{uuid}.jsonl"
     src = Path(__file__).parent / "fixtures" / "transcripts" / "codex" / "basic.jsonl"
     body = src.read_text().replace('"cwd":"/tmp/wd"', f'"cwd":"{work_dir}"')
-    path.write_text(body)
+    lines = body.splitlines()
+    meta = json.loads(lines[0])
+    meta["timestamp"] = time.time()
+    meta["payload"]["timestamp"] = meta["timestamp"]
+    lines[0] = json.dumps(meta)
+    path.write_text("\n".join(lines) + "\n")
     return path
 
 
@@ -397,3 +402,11 @@ async def test_codex_transcript_feeds_the_stream_and_the_ledger(tmp_path, db, bu
     # 13972 - 6528 input + 6528 cached + 89 output
     assert sum(r["tokens_used"] for r in rollup) == 14061
     assert (await db.get_session("sc")).last_activity
+
+
+@pytest.mark.asyncio
+async def test_legacy_codex_row_uuid_is_replaced_with_real_conversation(tmp_path, db, bus):
+    _make_codex_transcript(tmp_path, "/work/legacy")
+    await _make_codex_session(db, "/work/legacy", session_key="sc")
+    await TranscriptWatcher(db=db, bus=bus, base_dir=tmp_path).tick()
+    assert (await db.get_session("sc")).session_key == CODEX_UUID

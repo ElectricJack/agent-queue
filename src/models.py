@@ -1298,6 +1298,8 @@ class SessionRecord:
     restarts: int = 0
     quarantined_at: float | None = None
     sleep_reason: str | None = None
+    ended_at: float | None = None
+    end_reason: str | None = None
     # Pool lifecycle (swarm-work-model §9–§11).
     claims: int = 0
     agent_id: str | None = None

@@ -52,6 +52,7 @@ from src.database.tables import (
     task_metadata,
     task_proposals,
     task_results,
+    task_session_attempts,
     task_tools,
     task_workspace_requirements,
     tasks,
@@ -86,6 +87,7 @@ _ORDERED_TABLES = [
     archived_tasks,
     task_completion_records,
     task_comments,
+    task_session_attempts,
     agent_questions,
     # FK → agent_profiles
     projects,

@@ -86,3 +86,15 @@ class TestResumeKeyValidation:
         _patch_reader(monkeypatch, _Boom())
         got = await mixin._validated_resume_key("claude", "/ws", "t-1", "some-key")
         assert got == "some-key"
+
+
+@pytest.mark.asyncio
+async def test_codex_rollout_uuid_is_kept(mixin, monkeypatch, tmp_path):
+    from src.sessions.transcripts.codex import CodexTranscriptReader
+    key = "11111111-1111-4111-8111-111111111111"
+    folder = tmp_path / ".codex/sessions/2026/08/31"
+    folder.mkdir(parents=True)
+    (folder / f"rollout-2026-08-31T12-00-00-{key}.jsonl").write_text("")
+    _patch_reader(monkeypatch, CodexTranscriptReader(tmp_path))
+    assert await mixin._validated_resume_key("codex", "/ws", "t-1", key) == key
+    mixin.db.set_task_meta.assert_not_awaited()

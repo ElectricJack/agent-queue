@@ -255,6 +255,9 @@ class ClaimQueryMixin:
         await self._upsert_meta_many(
             task_id, {"claimed_by_session": session_id, "work_dir": work_dir}, conn=conn
         )
+        await self._start_task_session_attempt(
+            conn, session_id, started_at=now, work_dir=work_dir,
+        )
         return slot
 
     async def activate_claim(
@@ -269,6 +272,13 @@ class ClaimQueryMixin:
         """
 
         async def _run(c):
+            # Claims and release acquire the session before the task. Keep
+            # activation in that order as well to avoid a PostgreSQL deadlock.
+            holder = (await c.execute(select(sessions.c.id).where(
+                sessions.c.id == session_id,
+            ).with_for_update())).scalar_one_or_none()
+            if holder is None:
+                return None
             # Share the task row lock with pause. An EXISTS predicate alone
             # can observe a pre-pause PostgreSQL statement snapshot.
             claim = (await c.execute(select(tasks.c.id).where(
@@ -314,10 +324,10 @@ class ClaimQueryMixin:
             return await _run(conn)
 
     async def _release_claim_on(
-        self, conn, session_id, *, task_status, context, now, result, needs_attention
+        self, conn, session_id, *, task_status, context, now, result, needs_attention, end_reason=None
     ) -> TransitionResult:
         row = (
-            (await conn.execute(select(sessions).where(sessions.c.id == session_id)))
+            (await conn.execute(select(sessions).where(sessions.c.id == session_id).with_for_update()))
             .mappings()
             .fetchone()
         )
@@ -345,6 +355,11 @@ class ClaimQueryMixin:
             epoch = (out.row or {}).get("claim_epoch")
             if needs_attention:
                 await self._upsert_meta(task_id, "needs_attention", needs_attention, conn=conn)
+        if task_id:
+            await self.finish_task_session_attempt(
+                session_id, task_id=task_id, ended_at=now,
+                end_reason=end_reason or needs_attention or context, conn=conn,
+            )
         if agent_id:
             # Clear the task lock unconditionally — even a session that held no
             # task (e.g. released mid-``claiming``) must not leave a stale
@@ -413,6 +428,7 @@ class ClaimQueryMixin:
                 session_id,
                 task_status=task_status,
                 context=f"session_{reason}",
+                end_reason=reason,
                 now=time.time(),
                 result="released",
                 needs_attention=None,

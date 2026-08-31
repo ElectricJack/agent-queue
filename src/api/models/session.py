@@ -18,6 +18,11 @@ class SessionSummary(BaseModel):
     id: str
     name: str
     task_id: str | None = None
+    agent_id: str | None = None
+    model: str | None = None
+    intelligence_class: str | None = None
+    ended_at: float | None = None
+    end_reason: str | None = None
     project_id: str | None = None
     profile_id: str | None = None
     harness: str | None = None

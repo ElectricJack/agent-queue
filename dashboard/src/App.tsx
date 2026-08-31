@@ -37,8 +37,10 @@ function WorkspaceIndexRedirect() {
 
 /** Tracks project scope and clears task panes when switching projects. */
 function ProjectScopePaneSync() {
-  const { pathname } = useLocation();
-  const { projectId } = projectNavigation(pathname);
+  const location = useLocation();
+  const { projectId } = projectNavigation(location.pathname);
+  const restoreTaskId = (location.state as { restoreTaskPane?: { taskId?: string } } | null)?.restoreTaskPane?.taskId;
+  const restoredLocation = useRef<string | null>(null);
   const previousProject = useRef(projectId);
   const pane = useShellPaneStore();
   useEffect(() => {
@@ -49,7 +51,13 @@ function ProjectScopePaneSync() {
       previousProject.current = projectId;
       if (pane.state.kind === "open" && pane.state.view === "task-detail") pane.close();
     }
-  }, [projectId, pane]);
+    // Session history preserves pane context separately from the exact URL.
+    // Restore after project-scope cleanup and only once per return navigation.
+    if (restoreTaskId && restoredLocation.current !== location.key) {
+      restoredLocation.current = location.key;
+      pane.open("task-detail", { taskId: restoreTaskId });
+    }
+  }, [projectId, pane, restoreTaskId, location.key]);
   return null;
 }
 

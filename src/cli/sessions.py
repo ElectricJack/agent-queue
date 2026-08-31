@@ -145,15 +145,25 @@ def session_nudge(ctx: click.Context, session_id, text) -> None:
 
 @session.command("logs")
 @click.argument("session_id", required=False)
-@click.option("-n", "--lines", default=200, help="How many lines to show.")
+@click.option("-n", "--lines", default=200, help="How many entries to show.")
+@click.option("--attempt", "attempt_id", help="Read only this task execution attempt.")
 @click.pass_context
 @_handle_errors
-def session_logs(ctx: click.Context, session_id, lines) -> None:
-    """Normalized session output (peek tail until transcript readers land)."""
-    result = _call(
-        ctx, "session_logs", {"session_id": _resolve_session_id(session_id), "lines": lines}
-    )
-    emit(ctx, result, render=lambda data: click.echo(data.get("output", "")))
+def session_logs(ctx: click.Context, session_id, lines, attempt_id) -> None:
+    """Read recorded output, optionally restricted to one task attempt."""
+    args = {"session_id": _resolve_session_id(session_id), "lines": lines}
+    if attempt_id:
+        args["attempt_id"] = attempt_id
+    result = _call(ctx, "session_logs", args)
+
+    def render(data):
+        if data.get("entries"):
+            for entry in data["entries"]:
+                click.echo(f"[{entry.get('type', 'output')}] {entry.get('text', '')}")
+        else:
+            click.echo(data.get("output") or data.get("note") or data.get("error") or "")
+
+    emit(ctx, result, render=render)
 
 
 def _state_cell(row: dict) -> str:

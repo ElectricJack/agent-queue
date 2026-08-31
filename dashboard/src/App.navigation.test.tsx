@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useState, type ReactNode } from "react";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Outlet, useLocation, useParams } from "react-router-dom";
+import { MemoryRouter, Outlet, useLocation, useParams, useNavigate } from "react-router-dom";
 import { useShellPaneStore } from "./panes/store";
 import { useRightSurface } from "./shell/useRightSurface";
 import App from "./App";
@@ -56,12 +56,15 @@ function WorkspaceProbe({ title }: { title: string }) {
 }
 
 function PaneProbe() {
+  const navigate = useNavigate();
   const pane = useShellPaneStore();
   const surface = useRightSurface();
   return <><output aria-label="Current pane">{JSON.stringify(pane.state)}</output>
     <output aria-label="Current surface">{surface.kind ?? "closed"}</output>
     {surface.kind === "drawer" && <ActivityDrawer />}
     <button onClick={() => pane.open("task-detail", { taskId: "task-p1" })}>Open task pane</button>
+    <button onClick={() => navigate("/projects/p1/tasks?q=kept", { state: { restoreTaskPane: { taskId: "task-p1" } } })}>Return from session history</button>
+    <button onClick={pane.close}>Close task pane</button>
     <button onClick={() => pane.open("contextual-settings", { subject: "project", subjectId: "p1" })}>Open settings pane</button></>;
 }
 
@@ -87,6 +90,17 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("Dashboard navigation", () => {
+  it("restores a task pane after returning from a session and permits closing it", async () => {
+    renderApp("/agents");
+    await screen.findByRole("heading", { name: "Agent flock" });
+    await userEvent.click(screen.getByRole("button", { name: "Return from session history" }));
+    await screen.findByRole("heading", { name: "Command Center tasks" });
+    expect(screen.getByLabelText("Current location")).toHaveTextContent("/projects/p1/tasks?q=kept");
+    expect(screen.getByLabelText("Current pane")).toHaveTextContent('"taskId":"task-p1"');
+    await userEvent.click(screen.getByRole("button", { name: "Close task pane" }));
+    expect(screen.getByLabelText("Current pane")).toHaveTextContent('"kind":"closed"');
+  });
+
   it.each([
     ["/system", "/projects/p1/graph"],
     ["/tasks", "/projects/p1/tasks"],

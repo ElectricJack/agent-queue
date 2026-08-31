@@ -21,6 +21,8 @@ success, ``{"error": "..."}`` on failure.
 
 from __future__ import annotations
 
+import asyncio
+
 import logging
 import time
 import uuid
@@ -118,6 +120,11 @@ class SessionCommandsMixin:
             "id": session.id,
             "name": session.name,
             "task_id": session.task_id,
+            "agent_id": session.agent_id,
+            "model": session.model,
+            "intelligence_class": session.intelligence_class,
+            "ended_at": session.ended_at,
+            "end_reason": session.end_reason,
             "project_id": session.project_id,
             "profile_id": session.profile_id,
             "harness": session.harness,
@@ -280,9 +287,44 @@ class SessionCommandsMixin:
         """
         from src.sessions.transcripts import resolve_reader
 
+        from types import SimpleNamespace
+        from src.api.auth import LOCAL_SCOPE, RequestScope
+        from src.api.scope import check_command_scope
+
+        attempt = None
+        if args.get("attempt_id"):
+            attempt = await self.db.get_task_session_attempt(str(args["attempt_id"]))
+            if attempt is None:
+                return {"error": "No such task session attempt"}
+            args = {**args, "session_id": args.get("session_id") or args.get("id") or attempt["session_id"]}
         session, err = await self._resolve_session(args)
-        if err:
+        if attempt is None and session is not None and session.task_id and session.state in {"stopped", "sleeping", "quarantined"}:
+            history = await self.db.list_task_session_attempts(session.task_id)
+            retained = next((item for item in history if item["session_id"] == session.id), None)
+            if retained is not None:
+                attempt = await self.db.get_task_session_attempt(retained["id"])
+        if attempt is not None:
+            if (
+                (session is not None and session.id != attempt["session_id"])
+                or (session is None and args["session_id"] != attempt["session_id"])
+                or (args.get("task_id") and args["task_id"] != attempt["task_id"])
+            ):
+                return {"error": "Attempt does not belong to this session/task"}
+            session = SimpleNamespace(**{
+                **attempt, "id": attempt["session_id"],
+                "started_at": attempt["session_started_at"],
+            })
+        elif err:
             return err
+        scope = RequestScope(**self._current_scope) if self._current_scope else LOCAL_SCOPE
+        if scope.kind != "local" and scope.project_id is not None and scope.project_id != session.project_id:
+            return {"error": "Session project is out of scope"}
+        denied = check_command_scope("session_logs", {
+            "session_id": session.id, "project_id": session.project_id,
+            "task_id": session.task_id,
+        }, scope)
+        if denied:
+            return {"error": denied}
 
         # Default cap of 100 entries per call: rereading a large JSONL and
         # returning every entry over the CLI/MCP boundary produces multi-MB
@@ -290,8 +332,12 @@ class SessionCommandsMixin:
         # pass ``limit``/``lines``/``n`` explicitly.
         base_dir = getattr(self.orchestrator, "transcript_base_dir", None)
         reader = resolve_reader(session.harness, base_dir=base_dir)
+        end = (attempt["ended_at"] or attempt.get("transcript_end_at")) if attempt else getattr(session, "ended_at", None)
+        if session.state not in {"starting", "running", "draining"} and end is None:
+            return {"success": True, "session_id": session.id, "source": "unavailable",
+                    "entries": [], "note": "Legacy recording has no reliable end boundary."}
         if reader is not None:
-            path = reader.resolve_path(session.work_dir, session.session_key)
+            path = await asyncio.to_thread(reader.resolve_session, session)
             if path is not None:
                 try:
                     # ``read_new`` runs the blocking file IO in
@@ -301,6 +347,25 @@ class SessionCommandsMixin:
                     entries, _ = await reader.read_new(path, 0)
                 except Exception:
                     entries = []
+                if attempt is not None:
+                    fresh_attempt = await self.db.get_task_session_attempt(attempt["id"])
+                    if fresh_attempt is None:
+                        return {"success": True, "source": "unavailable", "entries": [],
+                                "note": "This task attempt is no longer available."}
+                    attempt = fresh_attempt
+                    end = attempt["ended_at"] or attempt.get("transcript_end_at")
+                    entries = [entry for entry in entries
+                               if entry.ts >= attempt["started_at"]
+                               and (end is None or (
+                                   entry.ts <= end if attempt["ended_at"] is not None else entry.ts < end
+                               ))]
+                else:
+                    fresh_session = await self.db.get_session(session.id)
+                    if fresh_session is None:
+                        return {"success": True, "source": "unavailable", "entries": [],
+                                "note": "This session is no longer available."}
+                    if fresh_session.ended_at is not None:
+                        entries = [entry for entry in entries if 0 < entry.ts <= fresh_session.ended_at]
                 if entries:
                     tail_size = int(args.get("limit") or args.get("lines") or args.get("n") or 100)
                     tail = entries[-tail_size:]
@@ -321,6 +386,12 @@ class SessionCommandsMixin:
                             for e in tail
                         ],
                     }
+
+        if attempt is not None or session.state not in {"starting", "running", "draining"}:
+            return {
+                "success": True, "session_id": session.id, "source": "unavailable",
+                "entries": [], "note": "The recording for this ended session is unavailable.",
+            }
 
         # Fallback: peek-diff.  Reuses the existing operator surface, then
         # relabels so the caller sees where the bytes came from.
@@ -817,6 +888,10 @@ class SessionCommandsMixin:
                 notes=str(args.get("notes") or "").strip(),
                 completed_at=time.time(),
             )
+        )
+
+        await self.db.record_task_session_outcome(
+            task_id, outcome, session_id=session.id if session is not None else None,
         )
 
         if is_pool:

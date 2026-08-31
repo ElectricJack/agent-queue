@@ -318,26 +318,60 @@ class CodexTranscriptReader(TranscriptReader):
         return str(cwd) if cwd else None
 
     def resolve_path(self, work_dir: str, session_key: str | None) -> Path | None:
-        candidates = self._candidates()
-        if not candidates:
-            return None
         if session_key:
-            # Known conversation id — a direct match, no cwd scan.  This is
-            # the steady state once the watcher has written the key back.
-            for path in candidates:
-                if session_key.lower() in path.stem.lower():
-                    return path
-            # Fall through rather than returning None: the key may belong to
-            # a rolled-off file, and a cwd match is still better than
-            # reporting the transcript missing.
+            # Exact identity searches include archived date partitions; the
+            # bounded discovery scan must never hide a known conversation.
+            if not re.fullmatch(r"[0-9a-fA-F-]{36}", session_key):
+                return None
+            matches = [
+                path for path in self._sessions_root.glob("*/*/*/rollout-*.jsonl")
+                if (self.discover_session_key(path) or "").lower() == session_key.lower()
+            ]
+            return matches[0] if len(matches) == 1 else None
         wanted = str(work_dir or "").rstrip("/")
         if not wanted:
             return None
-        for path in candidates:
-            cwd = self._cwd_of(path)
-            if cwd and cwd.rstrip("/") == wanted:
+        for path in self._candidates():
+            if (self._cwd_of(path) or "").rstrip("/") == wanted:
                 return path
         return None
+
+    def resolve_session(self, session) -> Path | None:
+        # Old launchers incorrectly stored AQ's row UUID as Codex's key.
+        # A real discovered/resumed key is authoritative, including when
+        # its recording has been removed.
+        key = session.session_key
+        if key and key != session.id:
+            return self.resolve_path(session.work_dir, key)
+        launched = float(session.started_at or 0)
+        wanted = str(session.work_dir or "").rstrip("/")
+        if not launched or not wanted:
+            return None
+        matches = []
+        # Restrict discovery by the launch's UTC date (including midnight
+        # skew), not the newest files anywhere on a busy host.
+        from datetime import datetime, timezone
+        days = {
+            datetime.fromtimestamp(launched + skew, timezone.utc).strftime("%Y/%m/%d")
+            for skew in (-10, 0, 60)
+        }
+        for day in sorted(days):
+            for path in (self._sessions_root / day).glob("rollout-*.jsonl"):
+                try:
+                    with path.open("rb") as file:
+                        raw = json.loads(file.readline(64_000))
+                    if raw.get("type") != "session_meta":
+                        continue
+                    meta = raw.get("payload") or {}
+                    timestamp = parse_iso_ts(meta.get("timestamp") or raw.get("timestamp"))
+                    if (
+                        str(meta.get("cwd") or "").rstrip("/") == wanted
+                        and launched - 10 <= timestamp <= launched + 60
+                    ):
+                        matches.append(path)
+                except (OSError, ValueError, AttributeError):
+                    continue
+        return matches[0] if len(matches) == 1 else None
 
     # -- incremental read --------------------------------------------------
 

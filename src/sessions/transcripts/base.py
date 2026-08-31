@@ -93,6 +93,12 @@ class TranscriptReader(ABC):
         """
         return None
 
+    def resolve_session(self, session) -> Path | None:
+        """Resolve a recorded session without guessing from a reused workspace."""
+        if not session.session_key:
+            return None
+        return self.resolve_path(session.work_dir, session.session_key)
+
     @abstractmethod
     def resolve_path(self, work_dir: str, session_key: str | None) -> Path | None:
         """Locate the transcript file for a session, or ``None``."""

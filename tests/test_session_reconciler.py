@@ -1272,6 +1272,16 @@ class TestOrphanStep:
 
 
 class TestResumeKey:
+    async def test_legacy_resume_placeholder_is_not_carried(
+        self, db, provider, releasing_reconciler
+    ):
+        await _task(db)
+        row = await _session(db, provider, started_at=NOW - 10)
+        from dataclasses import replace
+        row = replace(row, harness="codex", session_key=row.id)
+        await releasing_reconciler._carry_resume_key(row, await db.get_task("t1"))
+        assert await db.get_task_meta("t1", "session_resume_key") is None
+
     async def test_a_crash_hands_the_conversation_id_to_the_task(
         self, db, provider, releasing_reconciler
     ):

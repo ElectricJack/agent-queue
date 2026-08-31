@@ -15,6 +15,8 @@ import {
 import StatusBadge from "../components/StatusBadge";
 import TaskActions from "../components/TaskActions";
 import TaskComments from "../components/TaskComments";
+import TaskSessions from "../components/TaskSessions";
+import TaskAttention from "../components/TaskAttention";
 import TaskDescription from "../components/TaskDescription";
 import TaskGraph, { TaskExplain } from "./task/TaskGraph";
 import { workspaceHref } from "../shell/projectNavigation";
@@ -195,6 +197,8 @@ function TaskDetailContent({ taskId }: { taskId: string }) {
       {/* Actions */}
       {!editing && <TaskActions task={task} />}
 
+      <TaskAttention task={task as typeof task & { needs_attention?: string | null }} />
+
       {/* Tabs */}
       <div className="flex gap-1 border-b border-gray-800">
         {(
@@ -225,6 +229,8 @@ function TaskDetailContent({ taskId }: { taskId: string }) {
       {activeTab === "details" && (
         <>
       <TaskDescription key={task.id} task={task} />
+
+      <TaskSessions taskId={task.id} />
 
       <TaskComments taskId={task.id} />
 

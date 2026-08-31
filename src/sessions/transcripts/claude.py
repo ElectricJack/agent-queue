@@ -126,10 +126,7 @@ class ClaudeTranscriptReader(TranscriptReader):
             candidate = proj_dir / f"{session_key}.jsonl"
             if candidate.is_file():
                 return candidate
-            # Fall through: session key given but file not there yet — fall
-            # back to mtime rather than returning None so the very first
-            # poll (before ``--session-id`` has been written) still sees
-            # something.
+            return None
         files = [p for p in proj_dir.iterdir() if p.suffix == ".jsonl"]
         if not files:
             return None

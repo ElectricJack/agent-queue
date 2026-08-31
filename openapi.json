@@ -384,6 +384,22 @@
               "default": 0,
               "title": "Replay Only"
             }
+          },
+          {
+            "name": "attempt_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Attempt Id"
+            }
           }
         ],
         "responses": {
@@ -742,6 +758,45 @@
             "content": {
               "application/json": {
                 "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/{task_id}/sessions": {
+      "get": {
+        "summary": "Task Sessions",
+        "operationId": "task_sessions_api_tasks__task_id__sessions_get",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskSessionsResponse"
+                }
               }
             }
           },
@@ -19388,6 +19443,17 @@
                 "type": "null"
               }
             ]
+          },
+          "needs_attention": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Needs Attention"
           }
         },
         "type": "object",
@@ -27159,6 +27225,18 @@
       },
       "SessionLogsRequest": {
         "properties": {
+          "attempt_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attempt Id",
+            "description": "Read only this task execution attempt"
+          },
           "session_id": {
             "anyOf": [
               {
@@ -27730,6 +27808,61 @@
               }
             ],
             "title": "Task Id"
+          },
+          "agent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Id"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "intelligence_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intelligence Class"
+          },
+          "ended_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended At"
+          },
+          "end_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "End Reason"
           },
           "project_id": {
             "anyOf": [
@@ -30095,6 +30228,17 @@
                 "type": "null"
               }
             ]
+          },
+          "needs_attention": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Needs Attention"
           }
         },
         "type": "object",
@@ -30331,6 +30475,168 @@
           "task_id"
         ],
         "title": "TaskRouteResponse"
+      },
+      "TaskSessionAttempt": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "agent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Id"
+          },
+          "agent_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Name"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "intelligence_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intelligence Class"
+          },
+          "harness": {
+            "type": "string",
+            "title": "Harness"
+          },
+          "provider": {
+            "type": "string",
+            "title": "Provider"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "work_dir": {
+            "type": "string",
+            "title": "Work Dir"
+          },
+          "started_at": {
+            "type": "number",
+            "title": "Started At"
+          },
+          "session_started_at": {
+            "type": "number",
+            "title": "Session Started At"
+          },
+          "ended_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended At"
+          },
+          "end_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "End Reason"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "session_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Key"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "session_id",
+          "task_id",
+          "harness",
+          "provider",
+          "state",
+          "work_dir",
+          "started_at",
+          "session_started_at"
+        ],
+        "title": "TaskSessionAttempt"
+      },
+      "TaskSessionsResponse": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "sessions": {
+            "items": {
+              "$ref": "#/components/schemas/TaskSessionAttempt"
+            },
+            "type": "array",
+            "title": "Sessions"
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "sessions"
+        ],
+        "title": "TaskSessionsResponse"
       },
       "TaskSetRequest": {
         "properties": {
@@ -30667,6 +30973,17 @@
               }
             ]
           },
+          "needs_attention": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Needs Attention"
+          },
           "context": {
             "items": {
               "additionalProperties": true,
@@ -30922,6 +31239,17 @@
                 "type": "null"
               }
             ]
+          },
+          "needs_attention": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Needs Attention"
           },
           "context": {
             "items": {

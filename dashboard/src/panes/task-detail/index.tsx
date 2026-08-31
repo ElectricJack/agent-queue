@@ -18,6 +18,8 @@ import {
 import StatusBadge from "../../components/StatusBadge";
 import TaskActions from "../../components/TaskActions";
 import TaskComments from "../../components/TaskComments";
+import TaskSessions from "../../components/TaskSessions";
+import TaskAttention from "../../components/TaskAttention";
 import TaskDescription from "../../components/TaskDescription";
 import Modal from "../../components/Modal";
 import { useShellPaneStore } from "../store";
@@ -144,7 +146,11 @@ export default function TaskDetailPane({
 
       {task && <TaskActions task={task} returnTo={location.pathname + location.search} onDeleted={close} onOpenTerminal={close} />}
 
+      {task && <TaskAttention task={task as Task & { needs_attention?: string | null }} />}
+
       {task && <TaskDescription key={task.id} task={task} />}
+
+      {task && <TaskSessions taskId={args.taskId} onOpenSession={close} fromTaskPane />}
 
       {task && <TaskComments taskId={args.taskId} />}
 

@@ -34,6 +34,7 @@ export type StreamStatus = "connecting" | "open" | "closed" | "error";
 interface UseTranscriptStreamOptions {
   bufferSize?: number;
   enabled?: boolean;
+  attemptId?: string;
 }
 
 const DEFAULT_BUFFER = 2000;
@@ -42,10 +43,11 @@ export function useTranscriptStream(
   sessionId: string | null | undefined,
   opts: UseTranscriptStreamOptions = {},
 ) {
-  const { bufferSize = DEFAULT_BUFFER, enabled = true } = opts;
+  const { bufferSize = DEFAULT_BUFFER, enabled = true, attemptId } = opts;
   const [entries, setEntries] = useState<TranscriptFrame[]>([]);
   const [status, setStatus] = useState<StreamStatus>("closed");
   const [error, setError] = useState<string | null>(null);
+  const [unavailable, setUnavailable] = useState<string | null>(null);
   const idxRef = useRef(0);
   const esRef = useRef<EventSource | null>(null);
 
@@ -55,21 +57,30 @@ export function useTranscriptStream(
   }, []);
 
   useEffect(() => {
+    clear();
+    setError(null);
+    setUnavailable(null);
+  }, [sessionId, attemptId, clear]);
+
+  useEffect(() => {
     if (!enabled || !sessionId) return;
 
     const base =
       import.meta.env.VITE_API_URL ||
       `${window.location.protocol}//${window.location.host}`;
-    const url = `${base}/api/sessions/${encodeURIComponent(sessionId)}/stream`;
+    const url = `${base}/api/sessions/${encodeURIComponent(sessionId)}/stream`
+      + (attemptId ? `?attempt_id=${encodeURIComponent(attemptId)}` : "");
 
     setStatus("connecting");
     setError(null);
+    setUnavailable(null);
     const es = new EventSource(url);
     esRef.current = es;
 
-    es.onopen = () => setStatus("open");
+    es.onopen = () => { if (esRef.current === es) setStatus("open"); };
 
     es.onmessage = (msg) => {
+      if (esRef.current !== es) return;
       try {
         const raw = JSON.parse(msg.data) as Omit<TranscriptFrame, "_idx">;
         const frame: TranscriptFrame = { ...raw, _idx: idxRef.current++ };
@@ -86,7 +97,28 @@ export function useTranscriptStream(
       }
     };
 
+    es.addEventListener("unavailable", (event) => {
+      if (esRef.current !== es) return;
+      let reason = "Transcript is not available for this attempt.";
+      try {
+        const data = JSON.parse((event as MessageEvent).data) as { text?: unknown };
+        if (typeof data.text === "string" && data.text) reason = data.text;
+      } catch { /* Preserve the explicit unavailable state for malformed details. */ }
+      setUnavailable(reason);
+      setStatus("closed");
+      es.close();
+      esRef.current = null;
+    });
+
+    es.addEventListener("complete", () => {
+      if (esRef.current !== es) return;
+      setStatus("closed");
+      es.close();
+      esRef.current = null;
+    });
+
     es.onerror = () => {
+      if (esRef.current !== es) return;
       setStatus("error");
       setError("stream error (EventSource will retry)");
     };
@@ -96,7 +128,7 @@ export function useTranscriptStream(
       esRef.current = null;
       setStatus("closed");
     };
-  }, [sessionId, enabled, bufferSize]);
+  }, [sessionId, attemptId, enabled, bufferSize]);
 
-  return { entries, status, error, clear };
+  return { entries, status, error, unavailable, clear };
 }

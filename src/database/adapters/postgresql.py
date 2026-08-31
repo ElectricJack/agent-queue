@@ -40,6 +40,7 @@ from src.database.queries.project_queries import ProjectQueryMixin
 from src.database.queries.repo_queries import RepoQueryMixin
 from src.database.queries.result_queries import ResultQueryMixin
 from src.database.queries.session_queries import SessionQueryMixin
+from src.database.queries.task_session_queries import TaskSessionQueryMixin
 from src.database.queries.task_comment_queries import TaskCommentQueriesMixin
 from src.database.queries.task_queries import TaskQueryMixin
 from src.database.queries.task_requirements_queries import TaskRequirementsQueryMixin
@@ -71,6 +72,7 @@ class PostgreSQLDatabaseAdapter(
     WorkspaceKindQueryMixin,
     TaskRequirementsQueryMixin,
     SessionQueryMixin,
+    TaskSessionQueryMixin,
     TokenQueryMixin,
     ResultQueryMixin,
     EventQueryMixin,

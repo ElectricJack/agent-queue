@@ -20,6 +20,7 @@ vi.mock("../../api/hooks", () => ({
   useResolveGate: () => ({}), useDeleteTask: () => ({}), useReopenWithFeedback: () => ({}),
 }));
 vi.mock("../TaskActions", () => ({ default: () => null }));
+vi.mock("../TaskSessions", () => ({ default: () => null }));
 vi.mock("../../pages/task/TaskGraph", () => ({ default: () => null, TaskExplain: () => null }));
 vi.mock("../../panes/store", () => ({ useShellPaneStore: () => ({ open: vi.fn(), close: vi.fn() }) }));
 

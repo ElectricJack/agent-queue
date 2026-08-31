@@ -324,3 +324,236 @@ async def test_sse_tail_resolves_path_after_connect(tmp_path, db):
         "SSE tail must re-resolve the transcript path when the file "
         "appears after connect"
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("legacy", [False, True])
+async def test_historical_attempt_stream_uses_snapshot_and_time_window(tmp_path, legacy):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    current = SimpleNamespace(id="pooled", name="worker", task_id="new-task",
+        project_id="p1", harness="claude", provider="fake", instance_token="t",
+        work_dir="/reused", session_key="new-key", started_at=100, state="running")
+    attempt = dict(id="attempt-old", session_id="pooled", task_id="old-task",
+        project_id="p1", harness="claude", provider="fake", work_dir="/original",
+        session_key="old-key", started_at=110, session_started_at=100,
+        ended_at=None if legacy else 120, transcript_end_at=120 if legacy else None,
+        state="stopped")
+    database = SimpleNamespace(get_session=AsyncMock(return_value=current),
+        get_task_session_attempt=AsyncMock(return_value=attempt))
+    for directory, key, entries in [
+        ("/original", "old-key", [(109, "before"), (115, "old-work"), (121, "after")]),
+        ("/reused", "new-key", [(115, "other-task-secret")]),
+    ]:
+        _write_transcript(tmp_path, directory, key, [
+            {"type":"assistant", "uuid":text, "timestamp":stamp,
+             "message":{"content":text}} for stamp,text in entries])
+    app = _make_app(database, tmp_path)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/api/sessions/pooled/stream",
+            params={"attempt_id":"attempt-old", "replay_only":1})
+    assert response.status_code == 200
+    assert "old-work" in response.text
+    assert "other-task-secret" not in response.text
+    assert '"before"' not in response.text and '"after"' not in response.text
+    assert "event: complete" in response.text
+    from src.commands.handler import CommandHandler
+    handler = CommandHandler.__new__(CommandHandler)
+    handler.orchestrator = SimpleNamespace(db=database, transcript_base_dir=tmp_path)
+    result = await handler._cmd_session_logs({"session_id":"pooled", "attempt_id":"attempt-old"})
+    assert [entry["text"] for entry in result["entries"]] == ["old-work"]
+
+
+@pytest.mark.asyncio
+async def test_attempt_for_other_session_is_rejected(tmp_path, db):
+    from unittest.mock import AsyncMock
+    await _make_session(db, session_id="s-cross", task_id="t-cross",
+        work_dir="/missing", session_key="key")
+    db.get_task_session_attempt = AsyncMock(return_value={
+        "id":"wrong","session_id":"somebody-else"})
+    app = _make_app(db, tmp_path)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/api/sessions/s-cross/stream",
+            params={"attempt_id":"wrong", "replay_only":1})
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_stopped_session_missing_recording_never_peeks_new_process(tmp_path, db, monkeypatch):
+    from unittest.mock import AsyncMock
+    await _make_session(db, session_id="s-old", task_id="t-old",
+        work_dir="/reused", session_key="gone")
+    await db.update_session("s-old", state="stopped")
+    peek = AsyncMock(return_value="new-process-secret")
+    monkeypatch.setattr("src.api.sessions._best_effort_peek", peek)
+    app = _make_app(db, tmp_path)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/api/sessions/s-old/stream", params={"replay_only":1})
+    assert "event: unavailable" in response.text
+    assert "new-process-secret" not in response.text
+    peek.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_history_stream_denies_other_project_scope(tmp_path, db):
+    from src.api.auth import RequestScope
+    await _make_session(db, session_id="private", task_id="private-task",
+        work_dir="/private", session_key="secret-key")
+    _write_transcript(tmp_path, "/private", "secret-key", [
+        {"type":"assistant","uuid":"secret","timestamp":time.time(),
+         "message":{"content":"private recording"}}])
+    app = _make_app(db, tmp_path)
+    @app.middleware("http")
+    async def scoped(request, call_next):
+        request.state.scope = RequestScope(kind="session", project_id="other",
+            session_id="supervisor-other", elevated=True)
+        return await call_next(request)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/api/sessions/private/stream", params={"replay_only":1})
+    assert response.status_code == 403
+    assert "private recording" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_stopped_cli_logs_do_not_peek(tmp_path, db):
+    from unittest.mock import AsyncMock, MagicMock
+    from src.commands.handler import CommandHandler
+    await _make_session(db, session_id="cli-old", task_id="cli-task",
+        work_dir="/reused", session_key="gone")
+    await db.update_session("cli-old", state="stopped")
+    handler = CommandHandler.__new__(CommandHandler)
+    handler.orchestrator = MagicMock(db=db, transcript_base_dir=tmp_path)
+    handler._active_project_id = None
+    handler._cmd_session_peek = AsyncMock(return_value={"output":"unrelated"})
+    response = await handler._cmd_session_logs({"session_id":"cli-old"})
+    assert response["source"] == "unavailable"
+    handler._cmd_session_peek.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_legacy_unknown_end_never_replays_unbounded_recording(tmp_path):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    current = SimpleNamespace(id="legacy", name="old", task_id="old-task",
+        project_id="p1", harness="claude", provider="fake", instance_token="t",
+        work_dir="/old", session_key="known", started_at=100, state="stopped")
+    attempt = dict(id="legacy-attempt", session_id="legacy", task_id="old-task",
+        project_id="p1", harness="claude", provider="fake", work_dir="/old",
+        session_key="known", started_at=100, session_started_at=100,
+        ended_at=None, transcript_end_at=None, state="stopped")
+    database = SimpleNamespace(get_session=AsyncMock(return_value=current),
+        get_task_session_attempt=AsyncMock(return_value=attempt))
+    _write_transcript(tmp_path, "/old", "known", [
+        {"type":"assistant","uuid":"other-task","timestamp":300,
+         "message":{"content":"possibly later resumed work"}}])
+    app = _make_app(database, tmp_path)
+    async with AsyncClient(transport=ASGITransport(app=app),base_url="http://test") as client:
+        response = await client.get("/api/sessions/legacy/stream",
+            params={"attempt_id":"legacy-attempt","replay_only":1})
+    assert "event: unavailable" in response.text
+    assert "possibly later resumed work" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_project_supervisor_cannot_read_projectless_session(tmp_path, db):
+    from src.api.auth import RequestScope
+    from src.commands.handler import CommandHandler
+    from types import SimpleNamespace
+    await _make_session(db, session_id="global-s", task_id="global-t",
+        work_dir="/global", session_key="key")
+    await db.update_session("global-s", project_id=None)
+    _write_transcript(tmp_path, "/global", "key", [
+        {"type":"assistant","uuid":"global-secret","timestamp":time.time(),
+         "message":{"content":"global supervisor recording"}}])
+    app = _make_app(db, tmp_path)
+    scope = dict(kind="session", project_id="p1", session_id="project-supervisor", elevated=True)
+    @app.middleware("http")
+    async def scoped(request, call_next):
+        request.state.scope = RequestScope(**scope)
+        return await call_next(request)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/api/sessions/global-s/stream", params={"replay_only":1})
+    handler = CommandHandler.__new__(CommandHandler)
+    handler.orchestrator = SimpleNamespace(db=db, transcript_base_dir=tmp_path)
+    handler._current_scope = scope
+    try:
+        logs = await handler._cmd_session_logs({"session_id":"global-s"})
+    finally:
+        handler._current_scope = None
+    assert response.status_code == 403
+    assert "error" in logs
+    assert "global supervisor recording" not in response.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stop_during_read", [False, True])
+async def test_live_stream_final_read_uses_refreshed_end_boundary(tmp_path, monkeypatch, stop_during_read):
+    from dataclasses import replace
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from src.sessions.transcripts.base import TranscriptEntry
+    current = SessionRecord(id="tail",project_id="p1",task_id="task",profile_id="p",
+        harness="claude",provider="fake",name="tail",lifecycle="task",work_dir="/w",
+        epoch="e",instance_token="t",started_at=100,state="running",session_key="key")
+    stopped = replace(current,state="stopped",ended_at=120)
+    db = SimpleNamespace(get_session=AsyncMock(side_effect=[
+        current, current, current if stop_during_read else stopped, stopped]))
+    entries = [TranscriptEntry(str(stamp),None,"assistant",text,None,None,stamp)
+        for stamp,text in [(115,"original-output"),(125,"retry-secret")]]
+    reader = SimpleNamespace(resolve_session=lambda row: tmp_path/"fixture",
+        read_new=AsyncMock(side_effect=[([],0),(entries,100)]))
+    monkeypatch.setattr("src.api.sessions.resolve_reader",lambda *a,**kw:reader)
+    app = _make_app(db,tmp_path)
+    async with AsyncClient(transport=ASGITransport(app=app),base_url="http://test") as client:
+        response = await client.get("/api/sessions/tail/stream",params={"max_seconds":1})
+    assert "original-output" in response.text
+    assert "retry-secret" not in response.text
+    assert "event: complete" in response.text
+
+
+@pytest.mark.asyncio
+async def test_initial_replay_rechecks_end_after_file_read(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from src.sessions.transcripts.base import TranscriptEntry
+    current = SessionRecord(id="race",project_id="p1",task_id="task",profile_id="p",
+        harness="claude",provider="fake",name="race",lifecycle="task",work_dir="/w",
+        epoch="e",instance_token="t",started_at=100,state="running",session_key="key")
+    db = SimpleNamespace(get_session=AsyncMock(side_effect=[
+        current, replace(current,state="stopped",ended_at=120)]))
+    entries = [TranscriptEntry(str(stamp),None,"assistant",text,None,None,stamp)
+        for stamp,text in [(115,"initial-own"),(125,"initial-retry-secret")]]
+    reader = SimpleNamespace(resolve_session=lambda row: tmp_path/"fixture",
+        read_new=AsyncMock(return_value=(entries,100)))
+    monkeypatch.setattr("src.api.sessions.resolve_reader",lambda *a,**kw:reader)
+    app = _make_app(db,tmp_path)
+    async with AsyncClient(transport=ASGITransport(app=app),base_url="http://test") as client:
+        response = await client.get("/api/sessions/race/stream",params={"replay_only":1})
+    assert "initial-own" in response.text
+    assert "initial-retry-secret" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_attempt_cli_read_refreshes_boundary_after_io(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from src.commands.handler import CommandHandler
+    from src.sessions.transcripts.base import TranscriptEntry
+    current = SimpleNamespace(id="cli-race", task_id="task", project_id="p1",
+        harness="claude", work_dir="/w", session_key="key", state="running")
+    attempt = dict(id="attempt",session_id="cli-race",task_id="task",project_id="p1",
+        harness="claude",work_dir="/w",session_key="key",state="running",
+        started_at=110,session_started_at=100,ended_at=None,transcript_end_at=None)
+    db = SimpleNamespace(get_session=AsyncMock(return_value=current),
+        get_task_session_attempt=AsyncMock(side_effect=[
+            attempt,{**attempt,"state":"stopped","ended_at":120}]))
+    entries = [TranscriptEntry(str(stamp),None,"assistant",text,None,None,stamp)
+        for stamp,text in [(115,"own-cli-output"),(125,"other-cli-output")]]
+    reader = SimpleNamespace(resolve_session=lambda row: tmp_path/"fixture",
+        read_new=AsyncMock(return_value=(entries,100)))
+    monkeypatch.setattr("src.sessions.transcripts.resolve_reader",lambda *a,**kw:reader)
+    handler = CommandHandler.__new__(CommandHandler)
+    handler.orchestrator = SimpleNamespace(db=db,transcript_base_dir=tmp_path)
+    result = await handler._cmd_session_logs({"session_id":"cli-race","attempt_id":"attempt"})
+    assert [entry["text"] for entry in result["entries"]] == ["own-cli-output"]

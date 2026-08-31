@@ -26,6 +26,8 @@ a session's row disappears.
 
 from __future__ import annotations
 
+import asyncio
+
 import logging
 import time
 from dataclasses import dataclass, field
@@ -112,7 +114,7 @@ class TranscriptWatcher:
             return
 
         state = self._states.setdefault(row.id, SessionTrackingState())
-        path = reader.resolve_path(row.work_dir, row.session_key)
+        path = await asyncio.to_thread(reader.resolve_session, row)
         if path is None:
             if not state.missing_emitted:
                 await self._emit(
@@ -201,9 +203,9 @@ class TranscriptWatcher:
         blocks ``codex resume``. Reading it off the resolved transcript is
         the only place the daemon can learn it.
 
-        Only ever fills a blank -- never overwrites a key the launcher set.
+        Fills blanks or legacy Codex AQ UUID placeholders, never a real pinned key.
         """
-        if getattr(row, "session_key", None):
+        if row.session_key and not (row.harness == "codex" and row.session_key == row.id):
             return
         try:
             key = reader.discover_session_key(path)
