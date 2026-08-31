@@ -1,0 +1,258 @@
+"""Integration-mode policy tests.
+
+Started as characterization tests for the legacy ``requires_approval`` flag
+(session close, ``_phase_verify``, ``_phase_integrate``, execution rules) and
+now pin the replacement ``integration_mode`` contract: the git pipeline
+branches on the *effective* integration mode (task override → project policy
+→ config default), PR-mode work is never auto-merged, and direct integration
+is available only through explicit policy.
+"""
+
+import os
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from src.config import AppConfig
+from src.models import (
+    Agent,
+    AgentOutput,
+    AgentResult,
+    PhaseResult,
+    PipelineContext,
+    Project,
+    RepoConfig,
+    RepoSourceType,
+    Task,
+    TaskStatus,
+    Workspace,
+)
+from src.orchestrator import Orchestrator
+
+
+class _NullRuntimeFactory:
+    def create(self, agent_type, profile=None, llm_logger=None):
+        raise AssertionError("no runtime should be created in these tests")
+
+
+@pytest.fixture
+async def orch(tmp_path):
+    config = AppConfig(
+        database_path=str(tmp_path / "test.db"),
+        workspace_dir=str(tmp_path / "workspaces"),
+        data_dir=str(tmp_path / "data"),
+    )
+    config.worktrees.enabled = False
+    o = Orchestrator(config, runtimes=_NullRuntimeFactory())
+    await o.initialize()
+
+    await o.db.create_project(Project(id="p-1", name="alpha"))
+    ws_path = str(tmp_path / "workspaces" / "ws1")
+    os.makedirs(ws_path, exist_ok=True)
+    await o.db.create_workspace(
+        Workspace(
+            id="ws-1",
+            project_id="p-1",
+            workspace_path=ws_path,
+            source_type=RepoSourceType.LINK,
+        )
+    )
+    await o.db.create_agent(Agent(id="a-1", name="claude-1", profile_id="claude"))
+
+    mock_git = MagicMock()
+    mock_git.avalidate_checkout = AsyncMock(return_value=True)
+    mock_git.ahas_remote = AsyncMock(return_value=True)
+    mock_git.aget_current_branch = AsyncMock(return_value="feature-1")
+    mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
+    mock_git.afind_open_pr = AsyncMock(return_value="https://github.com/org/repo/pull/42")
+    mock_git._arun = AsyncMock(return_value="0")
+    mock_git.acommit_all = AsyncMock(return_value=True)
+    mock_git.apush_branch = AsyncMock(return_value=None)
+    mock_git.amerge_branch = AsyncMock(return_value=True)
+    mock_git.aabort_in_progress_operations = AsyncMock()
+    mock_git.aforce_clean_workspace = AsyncMock(return_value=True)
+    mock_git.aget_remote_url = AsyncMock(return_value="")
+    o.git = mock_git
+
+    yield o
+    if o._running_tasks:
+        import asyncio
+
+        await asyncio.gather(*o._running_tasks.values(), return_exceptions=True)
+        o._running_tasks.clear()
+    await o.shutdown()
+
+
+def _pr_task(task_id: str = "t-pr", **kw) -> Task:
+    kw.setdefault("branch_name", "feature-1")
+    kw.setdefault("status", TaskStatus.IN_PROGRESS)
+    return Task(
+        id=task_id,
+        project_id="p-1",
+        title="PR task",
+        description="pr characterization",
+        requires_approval=True,
+        **kw,
+    )
+
+
+def _direct_task(task_id: str = "t-direct", **kw) -> Task:
+    kw.setdefault("branch_name", "feature-1")
+    kw.setdefault("status", TaskStatus.IN_PROGRESS)
+    return Task(
+        id=task_id,
+        project_id="p-1",
+        title="direct task",
+        description="direct characterization",
+        requires_approval=False,
+        **kw,
+    )
+
+
+def _ctx(orch, task, ws_path) -> PipelineContext:
+    return PipelineContext(
+        task=task,
+        agent=Agent(id="a-1", name="claude-1", profile_id="claude"),
+        output=AgentOutput(result=AgentResult.COMPLETED, tokens_used=10),
+        workspace_path=ws_path,
+        workspace_id="ws-1",
+        repo=RepoConfig(
+            id="r-1", project_id="p-1", source_type=RepoSourceType.LINK, default_branch="main"
+        ),
+        default_branch="main",
+    )
+
+
+class TestExecutionRulesByMode:
+    """_get_execution_rules varies the git instructions with the mode."""
+
+    def test_pr_mode_instructs_push_and_pr_never_merge(self, tmp_path):
+        config = AppConfig(
+            database_path=str(tmp_path / "x.db"),
+            workspace_dir=str(tmp_path / "w"),
+            data_dir=str(tmp_path / "d"),
+        )
+        o = Orchestrator(config, runtimes=_NullRuntimeFactory())
+        rules = o._get_execution_rules(
+            task=_pr_task(),
+            branch_name="feature-1",
+            default_branch="main",
+            has_remote=True,
+            is_final_subtask=True,
+            requires_approval=True,
+        )
+        assert "gh pr create" in rules
+        assert "do NOT merge" in rules
+
+    def test_direct_mode_instructs_merge_to_default(self, tmp_path):
+        config = AppConfig(
+            database_path=str(tmp_path / "x.db"),
+            workspace_dir=str(tmp_path / "w"),
+            data_dir=str(tmp_path / "d"),
+        )
+        o = Orchestrator(config, runtimes=_NullRuntimeFactory())
+        rules = o._get_execution_rules(
+            task=_direct_task(),
+            branch_name="feature-1",
+            default_branch="main",
+            has_remote=True,
+            is_final_subtask=True,
+            requires_approval=False,
+        )
+        assert "git merge feature-1" in rules
+        assert "gh pr create" not in rules
+
+
+class TestPhaseVerifyByMode:
+    async def test_pr_mode_requires_open_pr_and_never_merges(self, orch):
+        task = _pr_task()
+        await orch.db.create_task(task)
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = _ctx(orch, task, ws.workspace_path)
+
+        result = await orch._phase_verify(ctx)
+        assert result == PhaseResult.CONTINUE
+        assert ctx.pr_url == "https://github.com/org/repo/pull/42"
+        # The PR-mode branch must never be merged into the default branch.
+        merge_calls = [
+            c for c in orch.git._arun.await_args_list if c.args and "merge" in c.args[0]
+        ]
+        assert merge_calls == []
+
+    async def test_pr_mode_stops_without_open_pr(self, orch):
+        task = _pr_task("t-pr-nopr", branch_name="feature-2")
+        await orch.db.create_task(task)
+        orch.git.aget_current_branch = AsyncMock(return_value="feature-2")
+        orch.git.afind_open_pr = AsyncMock(return_value=None)
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = _ctx(orch, task, ws.workspace_path)
+
+        result = await orch._phase_verify(ctx)
+        assert result == PhaseResult.STOP
+
+    async def test_direct_mode_auto_merges_to_default(self, orch):
+        task = _direct_task()
+        await orch.db.create_task(task)
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = _ctx(orch, task, ws.workspace_path)
+
+        result = await orch._phase_verify(ctx)
+        assert result == PhaseResult.CONTINUE
+        merge_calls = [
+            c for c in orch.git._arun.await_args_list if c.args and "merge" in c.args[0]
+        ]
+        assert merge_calls, "direct mode should auto-merge the task branch into default"
+
+
+class TestPhaseIntegrateByMode:
+    """_phase_integrate merges into default only in direct mode."""
+
+    async def _run_integrate(self, orch, task, monkeypatch):
+        from src.orchestrator import git_ops
+
+        monkeypatch.setattr(git_ops, "acquire_merge_slot", AsyncMock(return_value=True))
+        monkeypatch.setattr(git_ops, "renew_merge_slot", AsyncMock(return_value=True))
+        monkeypatch.setattr(git_ops, "release_merge_slot", AsyncMock(return_value=None))
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = _ctx(orch, task, ws.workspace_path)
+        orch.git.aget_current_branch = AsyncMock(return_value=task.branch_name)
+        return await orch._phase_integrate(ctx)
+
+    async def test_pr_mode_skips_base_merge(self, orch, monkeypatch):
+        task = _pr_task("t-int-pr")
+        await orch.db.create_task(task)
+        result = await self._run_integrate(orch, task, monkeypatch)
+        assert result == PhaseResult.CONTINUE
+        orch.git.amerge_branch.assert_not_awaited()
+
+    async def test_direct_mode_merges_into_default(self, orch, monkeypatch):
+        task = _direct_task("t-int-direct")
+        await orch.db.create_task(task)
+        result = await self._run_integrate(orch, task, monkeypatch)
+        assert result == PhaseResult.CONTINUE
+        orch.git.amerge_branch.assert_awaited_once()
+
+
+class TestSessionCloseCompletion:
+    """Session close marks the worker task COMPLETED; PR mode carries pr_url."""
+
+    async def test_pass_with_pr_completes_and_reports_pr_url(self, orch):
+        task = _pr_task("t-close-pr", status=TaskStatus.IN_PROGRESS)
+        await orch.db.create_task(task)
+        orch._run_completion_pipeline = AsyncMock(
+            return_value=("https://github.com/org/repo/pull/7", True)
+        )
+
+        result = await orch.complete_session_task(task, outcome="pass", notes="done")
+        assert result["status"] == TaskStatus.COMPLETED.value
+        assert result["pr_url"] == "https://github.com/org/repo/pull/7"
+        refreshed = await orch.db.get_task(task.id)
+        assert refreshed.status == TaskStatus.COMPLETED
+
+    async def test_pass_with_pipeline_stop_blocks(self, orch):
+        task = _pr_task("t-close-stop", status=TaskStatus.IN_PROGRESS)
+        await orch.db.create_task(task)
+        orch._run_completion_pipeline = AsyncMock(return_value=(None, False))
+
+        result = await orch.complete_session_task(task, outcome="pass", notes="done")
+        assert result["status"] == TaskStatus.BLOCKED.value
