@@ -375,6 +375,15 @@ class TestClaimAdmissibility:
         assert (await db.get_task("deep")).status == TaskStatus.READY
 
 
+def _pool_warnings(caplog):
+    """Warnings from ``pools`` only — another module's noise is not the subject."""
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == "src.orchestrator.pools" and r.levelname == "WARNING"
+    ]
+
+
 class TestQuarantine:
     """A startup death stops the pool and says why — once, not per tick."""
 
@@ -404,17 +413,16 @@ class TestQuarantine:
         # bare timestamp left an operator with nowhere to look.
         assert "unknown flag --nope" in row["quarantined_reason"]
 
-        quarantine_logs = [
-            r for r in caplog.records if "quarantined" in r.getMessage()
-        ]
-        assert len(quarantine_logs) == 1
+        assert len(_pool_warnings(caplog)) == 1
 
-        # Second tick: the key is still quarantined, so nothing is retried
-        # and nothing is logged again.
+        # Second tick: the key is still quarantined, so the launch is never
+        # attempted and the excerpt is not re-read or re-logged. This is the
+        # difference between one warning per backoff window and one per 5s
+        # tick for as long as the harness stays broken.
         caplog.clear()
         with caplog.at_level("WARNING", logger="src.orchestrator.pools"):
             await orch._reconcile_pools()
-        assert caplog.records == []
+        assert _pool_warnings(caplog) == []
         assert await db.list_sessions(lifecycle="pool", project_id=PROJECT_ID) == []
 
     async def test_expired_quarantine_relaunches(self, orch, db):
