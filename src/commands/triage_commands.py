@@ -7,7 +7,7 @@ from src.triage.models import RoutingChoice
 
 class TriageCommandsMixin:
     async def _triage_principal(self):
-        return await self._triage_service.authenticate(self._current_scope)
+        return await self._triage_service.authenticate(self._authenticated_request_scope)
 
     async def _cmd_triage_options(self, args: dict) -> dict:
         principal = await self._triage_principal()

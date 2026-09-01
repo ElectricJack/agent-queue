@@ -1,6 +1,6 @@
 """``CommandHandler._current_scope`` is per-call identity, not shared state.
 
-The scope dict ``/api/execute`` injects says *who is calling*: which
+The RequestScope that ``execute_scoped`` installs says *who is calling*: which
 session, which task, which project, and whether the caller is elevated.
 Every fence in the swarm surface reads it — ``_cmd_task_claim``,
 ``_assert_task_in_scope``, ``_cmd_create_task``'s worker-filing branch,
@@ -18,8 +18,7 @@ written at the top of ``execute`` and cleared unconditionally in its
   whole completion pipeline, so the window is seconds wide on a daemon
   serving more than one caller.
 
-Both now hold because the value lives in a ContextVar that ``execute``
-saves and restores.
+Both now hold because command dispatch saves and restores ContextVars.
 """
 
 from __future__ import annotations
@@ -30,6 +29,7 @@ import types
 import pytest
 
 from src.commands.handler import CommandHandler
+from src.api.auth import RequestScope
 from src.config import AppConfig
 
 
@@ -39,7 +39,7 @@ class _Bus:
 
 
 @pytest.fixture
-def handler():
+async def handler():
     orch = types.SimpleNamespace(
         db=None,
         bus=_Bus(),
@@ -49,14 +49,8 @@ def handler():
     return CommandHandler(orch, cfg)
 
 
-def _scope(session_id: str) -> dict:
-    return {
-        "kind": "session",
-        "session_id": session_id,
-        "task_id": None,
-        "project_id": "p1",
-        "elevated": False,
-    }
+def _scope(session_id: str) -> RequestScope:
+    return RequestScope(kind="session", session_id=session_id, project_id="p1")
 
 
 class TestScopeIsolation:
@@ -77,12 +71,11 @@ class TestScopeIsolation:
         handler._cmd_inner = _cmd_inner
         handler._cmd_outer = _cmd_outer
 
-        await handler.execute("outer", {"_scope": _scope("s-outer")})
+        await handler.execute_scoped("outer", {}, _scope("s-outer"))
 
         assert seen["before"]["session_id"] == "s-outer"
-        # A re-entrant ``execute`` with no ``_scope`` of its own is an
-        # unauthenticated internal call and gets no identity — unchanged.
-        assert seen["inner"] is None
+        # Re-entrant dispatch inherits the authenticated outer request.
+        assert seen["inner"]["session_id"] == "s-outer"
         # …but the outer command still has its own afterwards.  This is the
         # assertion that used to fail.
         assert seen["after"]["session_id"] == "s-outer"
@@ -107,7 +100,7 @@ class TestScopeIsolation:
         handler._cmd_claimish = _cmd_claimish
         handler._cmd_closeish = _cmd_closeish
 
-        await handler.execute("closeish", {"_scope": _scope("s-worker")})
+        await handler.execute_scoped("closeish", {}, _scope("s-worker"))
         assert seen["claim"]["session_id"] == "s-worker"
 
     async def test_concurrent_commands_keep_their_own_scope(self, handler):
@@ -131,8 +124,8 @@ class TestScopeIsolation:
         handler._cmd_slow = _cmd_slow
 
         await asyncio.gather(
-            handler.execute("slow", {"who": "a", "_scope": _scope("s-a")}),
-            handler.execute("slow", {"who": "b", "_scope": _scope("s-b")}),
+            handler.execute_scoped("slow", {"who": "a"}, _scope("s-a")),
+            handler.execute_scoped("slow", {"who": "b"}, _scope("s-b")),
         )
 
         assert [s["session_id"] for s in seen["a"]] == ["s-a", "s-a"]
@@ -148,7 +141,7 @@ class TestScopeIsolation:
 
         handler._cmd_probe = _cmd_probe
 
-        await handler.execute("probe", {"_scope": _scope("s1")})
+        await handler.execute_scoped("probe", {}, _scope("s1"))
         await handler.execute("probe", {})
 
         assert seen[0]["session_id"] == "s1"

@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from src.api.auth import RequestScope
 from src.config import AppConfig
 from src.database import Database
 from src.event_bus import EventBus
@@ -366,29 +367,29 @@ async def test_scoped_commands_check_server_identity_and_project(env):
         SimpleNamespace(db=env.db, bus=env.bus, agent_questions=svc, plugin_registry=None),
         env.config,
     )
-    result = await handler.execute(
+    result = await handler.execute_scoped(
         "question_answer",
         {
             "question_id": q["id"],
             "body": "Yes",
             "human": True,
             "actor": "local",
-            "_scope": {"kind": "session", "session_id": "s", "project_id": "p", "elevated": True},
         },
+        RequestScope(kind="session", session_id="s", project_id="p", elevated=True),
     )
     assert result.get("error")
     assert (await env.db.get_agent_question(q["id"]))["state"] == "human"
     sup = await supervisor(env)
-    scope = {"kind": "session", "session_id": sup.id, "project_id": None, "elevated": True}
-    denied = await handler.execute(
-        "question_answer", {"question_id": q["id"], "body": "Yes", "_scope": scope}
+    scope = RequestScope(kind="session", session_id=sup.id, elevated=True)
+    denied = await handler.execute_scoped(
+        "question_answer", {"question_id": q["id"], "body": "Yes"}, scope
     )
     assert denied.get("error")
     await env.db.transition_agent_question(
         q["id"], ("human",), state="supervisor", requires_human=False
     )
-    result = await handler.execute(
-        "question_answer", {"question_id": q["id"], "body": "tests/config.py", "_scope": scope}
+    result = await handler.execute_scoped(
+        "question_answer", {"question_id": q["id"], "body": "tests/config.py"}, scope
     )
     assert result.get("state") == "delivered"
     assert result["answered_by"] == "session:super"
@@ -404,18 +405,20 @@ async def test_project_supervisor_cannot_read_or_answer_foreign_question(env):
         SimpleNamespace(db=env.db, bus=env.bus, agent_questions=svc, plugin_registry=None),
         env.config,
     )
-    scope = {"kind": "session", "session_id": sup.id, "project_id": "other", "elevated": True}
+    scope = RequestScope(
+        kind="session", session_id=sup.id, project_id="other", elevated=True
+    )
     for cmd, extra in [
         ("question_answer", {"body": "Yes"}),
         ("question_escalate", {"reason": "Help"}),
     ]:
-        result = await handler.execute(cmd, {"question_id": q["id"], "_scope": scope, **extra})
+        result = await handler.execute_scoped(cmd, {"question_id": q["id"], **extra}, scope)
         assert result.get("error")
-    result = await handler.execute("question_list", {"_scope": scope})
+    result = await handler.execute_scoped("question_list", {}, scope)
     assert result.get("questions") == []
-    assert (await handler.execute("question_list", {"project_id": "p", "_scope": scope})).get(
-        "error"
-    )
+    assert (
+        await handler.execute_scoped("question_list", {"project_id": "p"}, scope)
+    ).get("error")
 
 
 @pytest.mark.parametrize("body", ["", "  ", "x" * 16001, "\x1b[2J"])

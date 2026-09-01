@@ -85,14 +85,7 @@ async def post_message(
     scope_err = check_command_scope("message_send", args, scope)
     if scope_err is not None:
         return JSONResponse({"error": scope_err}, status_code=403)
-    args["_scope"] = {
-        "kind": scope.kind,
-        "session_id": scope.session_id,
-        "task_id": scope.task_id,
-        "project_id": scope.project_id,
-        "elevated": scope.elevated,
-    }
-    result = await ch.execute("message_send", args)
+    result = await ch.execute_scoped("message_send", args, scope)
     if "error" in result:
         return JSONResponse({"error": result["error"]}, status_code=422)
     return {"success": True, **result}
@@ -170,15 +163,7 @@ async def post_session_message(
     scope_err = check_command_scope("message_send", args, scope)
     if scope_err is not None:
         return JSONResponse({"error": scope_err}, status_code=403)
-    args["_scope"] = {
-        "kind": scope.kind,
-        "session_id": scope.session_id,
-        "task_id": scope.task_id,
-        "project_id": scope.project_id,
-        "elevated": scope.elevated,
-    }
-
-    result = await ch.execute("message_send", args)
+    result = await ch.execute_scoped("message_send", args, scope)
     if "error" in result:
         raise HTTPException(status_code=422, detail=result["error"])
 
@@ -219,15 +204,7 @@ async def get_session_messages(
     scope_err = check_command_scope("message_list", args, scope)
     if scope_err is not None:
         return JSONResponse({"error": scope_err}, status_code=403)
-    args["_scope"] = {
-        "kind": scope.kind,
-        "session_id": scope.session_id,
-        "task_id": scope.task_id,
-        "project_id": scope.project_id,
-        "elevated": scope.elevated,
-    }
-
-    result = await ch.execute("message_list", args)
+    result = await ch.execute_scoped("message_list", args, scope)
     if "error" in result:
         raise HTTPException(status_code=422, detail=result["error"])
 

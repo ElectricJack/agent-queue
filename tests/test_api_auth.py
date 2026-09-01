@@ -586,16 +586,12 @@ class TestPrimeScopeResolution:
         orig = _PR.render_for_task
         _PR.render_for_task = _render_for_task  # type: ignore[assignment]
         try:
-            result = await ch.execute(
+            result = await ch.execute_scoped(
                 "prime",
-                {
-                    "_scope": {
-                        "kind": "session",
-                        "session_id": "s1",
-                        "task_id": "t1",
-                        "project_id": "p1",
-                    }
-                },
+                {},
+                RequestScope(
+                    kind="session", session_id="s1", task_id="t1", project_id="p1"
+                ),
             )
         finally:
             _PR.render_for_task = orig

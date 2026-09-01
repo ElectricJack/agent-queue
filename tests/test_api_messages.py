@@ -197,7 +197,7 @@ def test_router_is_mounted_in_create_app():
 
 
 from src.api import dependencies as _deps  # noqa: E402
-from src.api.auth import SessionTokenStore  # noqa: E402
+from src.api.auth import RequestScope, SessionTokenStore  # noqa: E402
 from src.api.middleware import RequestContextMiddleware, TokenAuthMiddleware  # noqa: E402
 
 
@@ -379,7 +379,9 @@ async def test_scoped_or_unprivileged_tokens_cannot_access_global_chat(tmp_path,
 @pytest.mark.parametrize("elevated,project_id", [(False, "agent-queue"), (True, "agent-queue"), (False, None)])
 async def test_system_message_commands_require_global_authority(handler, elevated, project_id):
     message = await handler.db.create_message(project_id=None, from_kind="user", from_id="user", to_kind="session", to_id="supervisor-global", body="private")
-    scope = {"kind": "session", "session_id": "scoped", "elevated": elevated, "project_id": project_id}
+    scope = RequestScope(
+        kind="session", session_id="scoped", elevated=elevated, project_id=project_id
+    )
     calls = [
         ("message_list", {"system_only": True}),
         ("message_inbox", {"to_kind": "session", "to_id": "supervisor-global", "inject": True}),
@@ -387,7 +389,7 @@ async def test_system_message_commands_require_global_authority(handler, elevate
         ("message_send", {"to_kind": "session", "to_id": "supervisor-global", "from_id": "user", "body": "denied"}),
     ]
     for command, args in calls:
-        result = await handler.execute(command, {**args, "_scope": scope})
+        result = await handler.execute_scoped(command, args, scope)
         assert "out of scope" in result["error"]
     persisted = await handler.db.get_message(message.id)
     assert persisted.read_at is None
@@ -408,7 +410,12 @@ async def test_global_admin_can_send_without_project_and_read_system_chat(tmp_pa
             assert response.status_code == 200
             assert response.json()["project_id"] is None
             assert [m["body"] for m in response.json()["messages"]] == ["hello"]
-        direct = await ch.execute("message_send", {"from_kind": "session", "from_id": "global-admin", "to_kind": "user", "to_id": "user", "body": "update", "_scope": {"kind": "session", "session_id": "global-admin", "elevated": True, "project_id": None}})
+        direct = await ch.execute_scoped(
+            "message_send",
+            {"from_kind": "session", "from_id": "global-admin", "to_kind": "user",
+             "to_id": "user", "body": "update"},
+            RequestScope(kind="session", session_id="global-admin", elevated=True),
+        )
         assert direct["message"]["project_id"] is None
         assert await db.get_project("global") is None
     finally:
@@ -425,11 +432,13 @@ async def test_scoped_inbox_cannot_read_system_replies_to_user(handler, inject):
         project_id=None, from_kind="session", from_id="supervisor-global",
         to_kind="user", to_id="user", body="private response",
     )
-    result = await handler.execute("message_inbox", {
-        "to_kind": "user", "to_id": "user", "inject": inject,
-        "_scope": {"kind": "session", "session_id": "scoped",
-                   "project_id": "agent-queue", "elevated": False},
-    })
+    result = await handler.execute_scoped(
+        "message_inbox",
+        {"to_kind": "user", "to_id": "user", "inject": inject},
+        RequestScope(
+            kind="session", session_id="scoped", project_id="agent-queue"
+        ),
+    )
     assert "out of scope" in result["error"]
     persisted = await handler.db.get_message(message.id)
     assert persisted.delivered_at is None
@@ -437,17 +446,20 @@ async def test_scoped_inbox_cannot_read_system_replies_to_user(handler, inject):
 
 
 async def test_global_supervisor_can_send_to_a_real_project(handler):
-    sent = await handler.execute("message_send", {
-        "project_id": "agent-queue", "from_kind": "session",
-        "from_id": "supervisor-global", "to_kind": "session",
-        "to_id": "supervisor-agent-queue", "body": "project instruction",
-        "_scope": {"kind": "session", "session_id": "global-admin",
-                   "project_id": None, "elevated": True},
-    })
+    sent = await handler.execute_scoped(
+        "message_send",
+        {"project_id": "agent-queue", "from_kind": "session",
+         "from_id": "supervisor-global", "to_kind": "session",
+         "to_id": "supervisor-agent-queue", "body": "project instruction"},
+        RequestScope(kind="session", session_id="global-admin", elevated=True),
+    )
     assert sent["message"]["project_id"] == "agent-queue"
-    reply = await handler.execute("message_reply", {
-        "message_id": sent["message_id"], "body": "project response",
-        "_scope": {"kind": "session", "session_id": "project-admin",
-                   "project_id": "agent-queue", "elevated": True},
-    })
+    reply = await handler.execute_scoped(
+        "message_reply",
+        {"message_id": sent["message_id"], "body": "project response"},
+        RequestScope(
+            kind="session", session_id="project-admin",
+            project_id="agent-queue", elevated=True,
+        ),
+    )
     assert reply["reply"]["project_id"] == "agent-queue"

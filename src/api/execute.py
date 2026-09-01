@@ -64,22 +64,15 @@ async def api_execute(
         body.command, args, scope, db=getattr(ch, "db", None),
     )
     if scope_err is not None:
+        if body.command in {"triage_options", "task_route", "triage_defer"}:
+            return JSONResponse(
+                {"success": False, "code": "unauthorized", "error": scope_err},
+                status_code=403,
+            )
         return JSONResponse({"ok": False, "error": scope_err}, status_code=403)
 
-    # Forward the server-derived scope so surface commands can resolve
-    # ``task_id``/``project_id``/``session_id`` without an explicit arg.
-    args["_scope"] = {
-        "kind": scope.kind,
-        "session_id": scope.session_id,
-        "task_id": scope.task_id,
-        "project_id": scope.project_id,
-        # Commands that fence reads on the scope need to know whether this
-        # is a plain agent session or an elevated supervisor one.
-        "elevated": scope.elevated,
-    }
-
     try:
-        result = await ch.execute(body.command, args)
+        result = await ch.execute_scoped(body.command, args, scope)
     except Exception:
         logger.exception("Error executing command %s", body.command)
         return JSONResponse(
@@ -88,6 +81,10 @@ async def api_execute(
         )
 
     if "error" in result:
+        if body.command in {"triage_options", "task_route", "triage_defer"}:
+            return JSONResponse(
+                json.loads(json.dumps(result, default=str)), status_code=200
+            )
         # Forward the rest of the error payload under `details`. Commands like
         # `create_task_graph` return a structured `errors`/`warnings` list
         # alongside the one-line summary; dropping it here is what made the

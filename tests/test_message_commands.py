@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from src.api.auth import RequestScope
 from src.commands.handler import CommandHandler
 from src.commands.message_commands import MESSAGES_DISABLED_ERROR, message_to_dict
 from src.config import MessagesConfig
@@ -308,7 +309,7 @@ class TestInbox:
 # ---------------------------------------------------------------------------
 
 
-def _session_scope(**overrides) -> dict:
+def _session_scope(**overrides) -> RequestScope:
     scope = {
         "kind": "session",
         "session_id": "sess-1",
@@ -317,7 +318,7 @@ def _session_scope(**overrides) -> dict:
         "elevated": False,
     }
     scope.update(overrides)
-    return scope
+    return RequestScope(**scope)
 
 
 async def _seed_session_row(db, *, task_id: str | None = "task-claimed") -> None:
@@ -350,9 +351,10 @@ class TestInboxMailboxFence:
     async def test_own_session_mailbox_is_readable(self, setup):
         handler, _db, _bus = setup
         await handler._cmd_message_send(_send_args(to_id="sess-1"))
-        result = await handler.execute(
+        result = await handler.execute_scoped(
             "message_inbox",
-            {"to_kind": "session", "to_id": "sess-1", "_scope": _session_scope()},
+            {"to_kind": "session", "to_id": "sess-1"},
+            _session_scope(),
         )
         assert "error" not in result
         assert result["count"] == 1
@@ -360,14 +362,14 @@ class TestInboxMailboxFence:
     async def test_foreign_session_mailbox_is_refused_and_not_consumed(self, setup):
         handler, db, _bus = setup
         sent = await handler._cmd_message_send(_send_args(to_id="sess-other"))
-        result = await handler.execute(
+        result = await handler.execute_scoped(
             "message_inbox",
             {
                 "to_kind": "session",
                 "to_id": "sess-other",
                 "inject": True,
-                "_scope": _session_scope(),
             },
+            _session_scope(),
         )
         assert "out of scope" in result["error"]
         assert "session:sess-other" in result["error"]
@@ -378,16 +380,18 @@ class TestInboxMailboxFence:
     async def test_pinned_task_mailbox_is_readable_and_foreign_task_refused(self, setup):
         handler, _db, _bus = setup
         await handler._cmd_message_send(_send_args(to_kind="task", to_id="task-1"))
-        own = await handler.execute(
+        own = await handler.execute_scoped(
             "message_inbox",
-            {"to_kind": "task", "to_id": "task-1", "_scope": _session_scope()},
+            {"to_kind": "task", "to_id": "task-1"},
+            _session_scope(),
         )
         assert "error" not in own
         assert own["count"] == 1
 
-        foreign = await handler.execute(
+        foreign = await handler.execute_scoped(
             "message_inbox",
-            {"to_kind": "task", "to_id": "task-2", "_scope": _session_scope()},
+            {"to_kind": "task", "to_id": "task-2"},
+            _session_scope(),
         )
         assert "out of scope" in foreign["error"]
 
@@ -396,64 +400,69 @@ class TestInboxMailboxFence:
         handler, db, _bus = setup
         await _seed_session_row(db, task_id="task-claimed")
 
-        claimed = await handler.execute(
+        claimed = await handler.execute_scoped(
             "message_inbox",
             {
                 "to_kind": "task",
                 "to_id": "task-claimed",
-                "_scope": _session_scope(task_id=None),
             },
+            _session_scope(task_id=None),
         )
         assert "error" not in claimed
 
-        other = await handler.execute(
+        other = await handler.execute_scoped(
             "message_inbox",
-            {"to_kind": "task", "to_id": "task-x", "_scope": _session_scope(task_id=None)},
+            {"to_kind": "task", "to_id": "task-x"},
+            _session_scope(task_id=None),
         )
         assert "out of scope" in other["error"]
 
     async def test_pool_token_with_no_claim_cannot_read_any_task_mailbox(self, setup):
         handler, db, _bus = setup
         await _seed_session_row(db, task_id=None)
-        result = await handler.execute(
+        result = await handler.execute_scoped(
             "message_inbox",
-            {"to_kind": "task", "to_id": "task-x", "_scope": _session_scope(task_id=None)},
+            {"to_kind": "task", "to_id": "task-x"},
+            _session_scope(task_id=None),
         )
         assert "out of scope" in result["error"]
 
     async def test_own_profile_mailbox_is_readable_and_foreign_profile_refused(self, setup):
         handler, db, _bus = setup
         await _seed_session_row(db)
-        own = await handler.execute(
+        own = await handler.execute_scoped(
             "message_inbox",
-            {"to_kind": "profile", "to_id": "worker", "_scope": _session_scope()},
+            {"to_kind": "profile", "to_id": "worker"},
+            _session_scope(),
         )
         assert "error" not in own
 
-        foreign = await handler.execute(
+        foreign = await handler.execute_scoped(
             "message_inbox",
-            {"to_kind": "profile", "to_id": "reviewer", "_scope": _session_scope()},
+            {"to_kind": "profile", "to_id": "reviewer"},
+            _session_scope(),
         )
         assert "out of scope" in foreign["error"]
 
     async def test_user_mailbox_is_never_agent_readable(self, setup):
         handler, _db, _bus = setup
-        result = await handler.execute(
+        result = await handler.execute_scoped(
             "message_inbox",
-            {"to_kind": "user", "to_id": "user", "_scope": _session_scope()},
+            {"to_kind": "user", "to_id": "user"},
+            _session_scope(),
         )
         assert "out of scope" in result["error"]
 
     async def test_elevated_supervisor_reads_any_mailbox(self, setup):
         handler, _db, _bus = setup
         await handler._cmd_message_send(_send_args(to_id="somebody-else"))
-        result = await handler.execute(
+        result = await handler.execute_scoped(
             "message_inbox",
             {
                 "to_kind": "session",
                 "to_id": "somebody-else",
-                "_scope": _session_scope(elevated=True),
             },
+            _session_scope(elevated=True),
         )
         assert "error" not in result
         assert result["count"] == 1

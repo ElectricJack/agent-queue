@@ -13,6 +13,8 @@ from weakref import WeakValueDictionary
 
 import discord
 
+from src.api.auth import LOCAL_SCOPE
+
 logger = logging.getLogger(__name__)
 _PENDING = frozenset({"supervisor", "human", "answered"})
 _STATE_LABELS = {
@@ -64,9 +66,11 @@ class AgentQuestionReplyModal(discord.ui.Modal):
         try:
             # Do not accept actor/human flags from the modal or call session input
             # directly. The trusted command scope and question service own both.
-            result = await handler.execute("question_answer", {
-                "question_id": self.question_id, "body": body, "_scope": {"kind": "local"},
-            })
+            result = await handler.execute_scoped(
+                "question_answer",
+                {"question_id": self.question_id, "body": body},
+                LOCAL_SCOPE,
+            )
         except Exception:
             logger.exception("Failed to answer agent question %s", self.question_id)
             await interaction.followup.send(

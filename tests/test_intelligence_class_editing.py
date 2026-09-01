@@ -233,7 +233,7 @@ async def test_scope_is_enforced_for_http_gate_and_direct_dispatch(handler, scop
     args = await payload(handler)
     before = class_path(handler).read_bytes()
     assert check_command_scope("edit_intelligence_class", dict(args), scope)
-    result = await handler.execute("edit_intelligence_class", {**args, "_scope": vars(scope)})
+    result = await handler.execute_scoped("edit_intelligence_class", args, scope)
     assert "global admin" in result["error"]
     handler._current_scope = vars(scope)
     assert "global admin" in (await edit(handler, args))["error"]
@@ -242,18 +242,12 @@ async def test_scope_is_enforced_for_http_gate_and_direct_dispatch(handler, scop
 
 async def test_global_admin_dispatch_can_edit(handler):
     args = await payload(handler)
-    result = await handler.execute(
+    result = await handler.execute_scoped(
         "edit_intelligence_class",
-        {
-            **args,
-            "_scope": {
-                "kind": "session",
-                "session_id": "supervisor-global",
-                "elevated": True,
-                "project_id": None,
-                "task_id": None,
-            },
-        },
+        args,
+        RequestScope(
+            kind="session", session_id="supervisor-global", elevated=True
+        ),
     )
     assert result["success"]
 

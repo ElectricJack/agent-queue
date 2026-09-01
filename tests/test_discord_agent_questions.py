@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import discord
 import pytest
 
+from src.api.auth import LOCAL_SCOPE
 from src.event_bus import EventBus
 from src.models import Message
 
@@ -75,7 +76,7 @@ def fake_bot(db):
 
     return SimpleNamespace(
         orchestrator=SimpleNamespace(db=db),
-        handler=SimpleNamespace(execute=AsyncMock(return_value={
+        handler=SimpleNamespace(execute_scoped=AsyncMock(return_value={
             "question_id": "question-1", "state": "answered",
         })),
         _is_authorized=MagicMock(return_value=True),
@@ -116,9 +117,11 @@ async def test_authorized_reply_uses_original_question_id_and_scoped_command_onl
     modal.answer._value = "Please keep it local."
     submit = interaction()
     await modal.on_submit(submit)
-    bot.handler.execute.assert_awaited_once_with("question_answer", {
-        "question_id": "question-1", "body": "Please keep it local.", "_scope": {"kind": "local"},
-    })
+    bot.handler.execute_scoped.assert_awaited_once_with(
+        "question_answer",
+        {"question_id": "question-1", "body": "Please keep it local."},
+        LOCAL_SCOPE,
+    )
     assert submit.followup.send.await_args.kwargs["ephemeral"] is True
     assert "queued" in submit.followup.send.await_args.args[0].lower()
 
@@ -133,7 +136,7 @@ async def test_unauthorized_button_callback_is_rejected_even_without_framework_c
     click.response.send_modal.assert_not_awaited()
     click.response.send_message.assert_awaited_once()
     assert click.response.send_message.await_args.kwargs["ephemeral"] is True
-    bot.handler.execute.assert_not_awaited()
+    bot.handler.execute_scoped.assert_not_awaited()
 
 
 async def test_modal_rechecks_authorization_after_permission_changes():
@@ -143,7 +146,7 @@ async def test_modal_rechecks_authorization_after_permission_changes():
     modal.answer._value = "An unauthorized answer"
     submit = interaction()
     await modal.on_submit(submit)
-    bot.handler.execute.assert_not_awaited()
+    bot.handler.execute_scoped.assert_not_awaited()
     submit.response.send_message.assert_awaited_once()
 
 
@@ -160,13 +163,15 @@ async def test_missing_authorization_configuration_fails_closed():
 @pytest.mark.parametrize("error", ["question is stale", "question already answered"])
 async def test_stale_or_duplicate_answer_surfaces_service_rejection(error):
     bot = fake_bot(FakeDB(question()))
-    bot.handler.execute.return_value = {"error": error}
+    bot.handler.execute_scoped.return_value = {"error": error}
     _, modal = await reply_modal(bot)
     modal.answer._value = "Do it."
     submit = interaction()
     await modal.on_submit(submit)
     assert error in submit.followup.send.await_args.args[0]
-    assert [call.args[0] for call in bot.handler.execute.await_args_list] == ["question_answer"]
+    assert [call.args[0] for call in bot.handler.execute_scoped.await_args_list] == [
+        "question_answer"
+    ]
 
 
 async def test_card_has_literal_question_and_exact_provenance_without_mentions():
@@ -219,7 +224,7 @@ async def test_question_duplicate_events_and_restart_do_not_resend():
     modal = click.response.send_modal.await_args.args[0]
     modal.answer._value = "Reply after restart"
     await modal.on_submit(interaction())
-    assert restarted.handler.execute.await_args.args[1]["question_id"] == "question-1"
+    assert restarted.handler.execute_scoped.await_args.args[1]["question_id"] == "question-1"
 
 
 async def test_failed_question_send_remains_unnotified_and_retries_after_restart():

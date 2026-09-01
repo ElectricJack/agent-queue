@@ -6,7 +6,7 @@ becomes a ``POST /api/{category}/{command-name}`` endpoint with:
 
 - A Pydantic request model generated from the tool's ``input_schema``
 - A Pydantic response model looked up from ``src.api.models``
-- A handler that delegates to ``CommandHandler.execute()``
+- A handler that delegates to ``CommandHandler.execute_scoped()``
 
 Category grouping, prefix stripping, and naming all follow the same
 logic as the CLI so that ``aq git commit`` maps to ``POST /api/git/commit``.
@@ -343,7 +343,7 @@ def _make_input_model(cmd_name: str, input_schema: dict) -> type[BaseModel]:
 
 
 def _make_route_handler(cmd_name: str, input_model: type[BaseModel]):
-    """Create an async route handler that delegates to CommandHandler.execute()."""
+    """Create an async route handler that delegates to execute_scoped()."""
     from typing import Annotated
 
     # Capture the model in a default arg so the closure resolves correctly.
@@ -379,19 +379,14 @@ def _make_route_handler(cmd_name: str, input_model: type[BaseModel]):
             cmd_name, args, scope, db=getattr(ch, "db", None),
         )
         if scope_err is not None:
+            if cmd_name in {"triage_options", "task_route", "triage_defer"}:
+                return JSONResponse(
+                    {"success": False, "code": "unauthorized", "error": scope_err},
+                    status_code=403,
+                )
             return JSONResponse({"error": scope_err}, status_code=403)
 
-        # Forward the server-derived scope so surface commands can resolve
-        # ``task_id``/``project_id``/``session_id`` without an explicit arg.
-        args["_scope"] = {
-            "kind": scope.kind,
-            "session_id": scope.session_id,
-            "task_id": scope.task_id,
-            "project_id": scope.project_id,
-            "elevated": scope.elevated,
-        }
-
-        result = await ch.execute(cmd_name, args)
+        result = await ch.execute_scoped(cmd_name, args, scope)
         if cmd_name == "edit_intelligence_class" and result.get("error_code") == "revision_conflict":
             return JSONResponse(
                 {"error": result["error"], "error_code": "revision_conflict",
@@ -399,6 +394,8 @@ def _make_route_handler(cmd_name: str, input_model: type[BaseModel]):
                 status_code=409,
             )
         if "error" in result:
+            if cmd_name in {"triage_options", "task_route", "triage_defer"}:
+                return JSONResponse(result, status_code=422)
             return JSONResponse(
                 {"error": result["error"]},
                 status_code=422,

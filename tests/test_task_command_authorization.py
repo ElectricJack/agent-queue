@@ -3,14 +3,15 @@
 Commands 23–24 of the test-coverage plan: the representative *mutating*
 boundary evidence that the definition-level scope matrix in
 ``tests/test_command_scope_matrix.py`` deliberately does not attempt.  Both
-tests dispatch through the real ``execute()`` with a trusted ``_scope``
-envelope and a real SQLite database.
+tests dispatch through the real ``execute_scoped()`` boundary with a trusted
+RequestScope and a real SQLite database.
 """
 
 from __future__ import annotations
 
 import time
 
+from src.api.auth import RequestScope
 from src.models import (
     Agent,
     Project,
@@ -45,14 +46,10 @@ def _session(
     )
 
 
-def _scope(session_id: str, project_id: str, task_id: str | None) -> dict:
-    return {
-        "kind": "session",
-        "session_id": session_id,
-        "project_id": project_id,
-        "task_id": task_id,
-        "elevated": False,
-    }
+def _scope(session_id: str, project_id: str, task_id: str | None) -> RequestScope:
+    return RequestScope(
+        kind="session", session_id=session_id, project_id=project_id, task_id=task_id
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -76,30 +73,32 @@ async def test_execute_blocks_pool_session_reading_foreign_task_and_worker_filin
     scope = _scope("s1", "p1", None)
 
     # Own project: readable.
-    own = await handler.execute("task_show", {"task_id": "t1", "_scope": scope})
+    own = await handler.execute_scoped("task_show", {"task_id": "t1"}, scope)
     assert "error" not in own, own
     assert own["id"] == "t1"
 
     # Foreign project: refused, with the out-of-scope claim result.
-    foreign = await handler.execute("task_show", {"task_id": "t2", "_scope": scope})
+    foreign = await handler.execute_scoped("task_show", {"task_id": "t2"}, scope)
     assert foreign["success"] is False
     assert foreign["result"] == "out_of_scope"
     assert "outside this session's scope" in foreign["error"]
 
     # A worker filing new work cannot aim it at another project — the filing
     # is pinned to (or rejected for) the session's own project.
-    rejected = await handler.execute(
+    rejected = await handler.execute_scoped(
         "create_task",
-        {"title": "sneaky", "description": "", "project_id": "p2", "_scope": scope},
+        {"title": "sneaky", "description": "", "project_id": "p2"},
+        scope,
     )
     assert rejected["success"] is False
     assert rejected["error"] == "worker-filed tasks are pinned to the session's project"
     assert [t.id for t in await db.list_tasks(project_id="p2")] == ["t2"]
 
     # Filing with the project omitted is pinned to p1 and starts DEFINED.
-    filed = await handler.execute(
+    filed = await handler.execute_scoped(
         "create_task",
-        {"title": "discovered work", "description": "found it", "_scope": scope},
+        {"title": "discovered work", "description": "found it"},
+        scope,
     )
     assert filed.get("error") is None, filed
     filed_id = filed.get("task_id") or filed.get("created") or filed.get("id")
@@ -110,9 +109,10 @@ async def test_execute_blocks_pool_session_reading_foreign_task_and_worker_filin
 
     # An idle pool session (holding nothing) cannot file at all.
     await db.create_session(_session("s-idle", project_id="p1", task_id=None))
-    idle = await handler.execute(
+    idle = await handler.execute_scoped(
         "create_task",
-        {"title": "from idle", "description": "", "_scope": _scope("s-idle", "p1", None)},
+        {"title": "from idle", "description": ""},
+        _scope("s-idle", "p1", None),
     )
     assert idle["success"] is False
     assert idle["code"] == "idle_session_cannot_file"

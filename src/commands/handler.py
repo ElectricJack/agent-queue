@@ -5,10 +5,9 @@ Both the Discord slash commands and the chat agent LLM tools delegate
 their business logic here, keeping formatting and presentation separate.
 
 This is the Command Pattern in action: every operation the system supports
-(50+ commands) is routed through CommandHandler.execute(name, args).  The
-two callers -- Discord slash commands and Supervisor LLM tool-use -- never
-contain business logic themselves; they translate their inputs into a dict,
-call execute(), and format the returned dict for their respective UIs.
+(50+ commands) is routed through the handler's shared dispatch body. Local
+callers use ``execute`` and authenticated server adapters use
+``execute_scoped``.
 
 The benefit is feature parity by construction.  A new command added here is
 immediately available to both Discord and the chat agent without duplicating
@@ -33,6 +32,7 @@ from collections.abc import Callable
 
 import logging
 
+from src.api.auth import RequestScope
 from src.config import AppConfig
 from src.orchestrator import Orchestrator
 from src.logging_config import CorrelationContext
@@ -105,6 +105,9 @@ _plan_subtask_creation_mode_var: contextvars.ContextVar[bool] = contextvars.Cont
 #: concurrent command to land.
 _current_scope_var: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
     "_current_scope_var", default=None
+)
+_authenticated_request_scope_var: contextvars.ContextVar[RequestScope | None] = (
+    contextvars.ContextVar("_authenticated_request_scope_var", default=None)
 )
 
 
@@ -405,12 +408,12 @@ class CommandHandler(
         # Signature: async callback(project_id, note_filename, note_path) -> None
         # The Discord bot registers this to auto-refresh viewed notes.
         self.on_note_written: Callable | None = None
-        # aq-surface Phase S2: server-injected RequestScope dict from
-        # /api/execute (never client-supplied — stripped from args before
-        # dispatch).  Handlers that need it (e.g. ``_cmd_prime``) read
-        # ``self._current_scope`` explicitly; everything else ignores it.
+        # Compatibility projection of the RequestScope installed by
+        # execute_scoped. Handlers that need it read ``self._current_scope``;
+        # triage reads the separately retained typed RequestScope.
         # Backed by ``_current_scope_var`` — see its docstring.
         self._current_scope = None
+        _authenticated_request_scope_var.set(None)
         # Catalog/config lock order is always this lock before ``db.immediate``.
         # Intelligence-class editing already owns the same orchestrator-wide
         # lock while saving and publishing the builder's new class map.
@@ -442,6 +445,10 @@ class CommandHandler(
     @_current_scope.setter
     def _current_scope(self, value: dict | None) -> None:
         _current_scope_var.set(value)
+
+    @property
+    def _authenticated_request_scope(self) -> RequestScope | None:
+        return _authenticated_request_scope_var.get()
 
     # The following four properties are backed by module-level ContextVars
     # so concurrent callers (Discord, supervisor-platform tasks, playbook
@@ -674,21 +681,54 @@ class CommandHandler(
         return False
 
     async def execute(self, name: str, args: dict) -> dict:
+        """Execute without accepting identity from client-shaped arguments.
+
+        Nested dispatch inherits an already-authenticated request context.
+        Top-level callers must use :meth:`execute_scoped` to install one.
+        """
+        clean_args = dict(args) if isinstance(args, dict) else args
+        if isinstance(clean_args, dict):
+            clean_args.pop("_scope", None)
+        return await self._execute(
+            name,
+            clean_args,
+            scope=_current_scope_var.get(),
+            request_scope=_authenticated_request_scope_var.get(),
+        )
+
+    async def execute_scoped(
+        self, name: str, args: dict, scope: RequestScope
+    ) -> dict:
+        """Execute with identity supplied by the authenticated server adapter."""
+        if not isinstance(scope, RequestScope):
+            raise TypeError("scope must be an authenticated RequestScope")
+        clean_args = dict(args) if isinstance(args, dict) else args
+        if isinstance(clean_args, dict):
+            clean_args.pop("_scope", None)
+        scope_dict = {
+            "kind": scope.kind,
+            "session_id": scope.session_id,
+            "task_id": scope.task_id,
+            "project_id": scope.project_id,
+            "elevated": scope.elevated,
+        }
+        return await self._execute(
+            name, clean_args, scope=scope_dict, request_scope=scope
+        )
+
+    async def _execute(
+        self,
+        name: str,
+        args: dict,
+        *,
+        scope: dict | None,
+        request_scope: RequestScope | None,
+    ) -> dict:
         """Execute a command by name and return a structured result dict.
 
-        This is the single code path for all operational commands in the system.
-        Both Discord slash commands and chat agent LLM tools call this method.
+        This is the shared dispatch body for local and authenticated callers.
         """
         with CorrelationContext(command=name, component="command_handler"):
-            # aq-surface Phase S2: pop the server-injected ``_scope`` off
-            # BEFORE dispatch so no ``_cmd_*`` handler sees it in its
-            # ``args`` unless it explicitly reads ``self._current_scope``.
-            # Belt-and-braces defense — /api/execute already strips any
-            # client-supplied ``_scope`` before forwarding the trusted one.
-            scope = None
-            if isinstance(args, dict) and "_scope" in args:
-                args = dict(args)
-                scope = args.pop("_scope")
             # Save/restore rather than set/clear: a command can dispatch
             # another one inside its own body (``task_close --claim-next``
             # calls ``_cmd_task_claim``; the playbook runner and supervisor
@@ -696,6 +736,7 @@ class CommandHandler(
             # the ``finally`` would strip the outer command's identity the
             # moment the inner one returned.
             _scope_token = _current_scope_var.set(scope)
+            _request_scope_token = _authenticated_request_scope_var.set(request_scope)
             mutating = self._is_mutating(name)
             # Terminal keystrokes may be secrets. They belong only to the
             # terminal, never to general command logs or the activity feed.
@@ -796,6 +837,7 @@ class CommandHandler(
             finally:
                 # Ensure scope does not leak across commands.
                 _current_scope_var.reset(_scope_token)
+                _authenticated_request_scope_var.reset(_request_scope_token)
                 # Emit ``command.invoked`` for dashboard live-activity chips
                 # and future observability surfaces. Gated on the config flag;
                 # any failure is swallowed so a broken bus never breaks

@@ -14,6 +14,7 @@ import logging
 
 import pytest
 
+from src.api.auth import RequestScope
 
 def _invoked_payloads(bus_emit) -> list[dict]:
     return [
@@ -204,14 +205,18 @@ async def test_execute_exposes_scope_via_current_scope_not_handler_args(
         return {"success": True}
 
     handler._cmd_probe_scope = _probe  # type: ignore[attr-defined]
-    scope = {"session_id": "s1", "task_id": "t1", "project_id": "p1"}
+    scope = RequestScope(
+        kind="session", session_id="s1", task_id="t1", project_id="p1"
+    )
 
-    await handler.execute("probe_scope", {"task_id": "t1", "_scope": scope})
+    await handler.execute_scoped("probe_scope", {"task_id": "t1"}, scope)
 
     args, current = seen[0]
     assert "_scope" not in args
     assert args == {"task_id": "t1"}
-    assert current == scope
+    assert current["session_id"] == "s1"
+    assert current["task_id"] == "t1"
+    assert current["project_id"] == "p1"
 
     # Scope does not leak into the next dispatch.
     await handler.execute("probe_scope", {"task_id": "t1"})

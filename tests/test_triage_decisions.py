@@ -65,6 +65,16 @@ async def test_conflicting_duplicate_route_is_rejected_without_reopening_gate(db
     assert (await db.get_task(case.task_id)).routing_decision_id == first["decision_id"]
 
 
+async def test_same_type_with_different_reason_conflicts(db):
+    case = await TriageCase.create(db)
+    first = await case.service.complete(case.principal, choice(case))
+    conflict = await case.service.complete(
+        case.principal, choice(case, reason="A materially different justification")
+    )
+    assert first["success"] is True
+    assert conflict["success"] is False and conflict["code"] == "decision_conflict"
+
+
 async def test_wrong_project_and_dead_or_stale_session_are_rejected(db):
     case = await TriageCase.create(db)
     await db.create_project(Project("other", "Other"))
@@ -137,10 +147,29 @@ async def test_direct_local_operator_scope_cannot_authenticate_as_triage(db):
     case = await TriageCase.create(db)
     local = await case.service.authenticate(LOCAL_SCOPE)
     assert local["success"] is False and local["code"] == "unauthorized"
-    session = await case.service.authenticate(
+    missing_evidence = await case.service.authenticate(
         RequestScope(kind="session", session_id=case.principal.session_id, project_id="p")
     )
-    assert session == case.principal
+    assert missing_evidence["success"] is False
+    fabricated = await case.service.authenticate({
+        "kind": "session", "session_id": case.principal.session_id, "project_id": "p",
+        "instance_token": case.principal.instance_token,
+    })
+    assert fabricated["success"] is False
+    verified = await case.service.authenticate(RequestScope(
+        kind="session",
+        session_id=case.principal.session_id,
+        project_id="p",
+        instance_token=case.principal.instance_token,
+    ))
+    assert verified == case.principal
+    stale = await case.service.authenticate(RequestScope(
+        kind="session",
+        session_id=case.principal.session_id,
+        project_id="p",
+        instance_token="stale-instance",
+    ))
+    assert stale["success"] is False
 
 
 async def test_defer_is_durable_and_keeps_routing_gate_open(db):
@@ -157,6 +186,23 @@ async def test_defer_is_durable_and_keeps_routing_gate_open(db):
     assert saved["catalog_generation"] and saved["policy_generation"]
     assert saved["reason"] == "No compatible specialist"
     assert (await db.get_gate(case.gate_id))["status"] == "open"
+
+
+async def test_busy_to_idle_changes_deferral_catalog_generation(db):
+    case = await TriageCase.create(db)
+    await db.create_task(Task("occupied", "p", "Occupied", ""))
+    await db.update_agent(
+        "worker-1", state=AgentState.BUSY, current_task_id="occupied"
+    )
+    busy = await case.service.defer(
+        case.principal, case.task_id, case.revision, "No idle capacity"
+    )
+    await db.update_agent("worker-1", state=AgentState.IDLE, current_task_id=None)
+    idle = await case.service.defer(
+        case.principal, case.task_id, case.revision, "No idle capacity"
+    )
+    assert idle["catalog_generation"] != busy["catalog_generation"]
+    assert idle["deferral_id"] != busy["deferral_id"]
 
 
 async def test_concurrent_definition_edit_cannot_create_unvalidated_snapshot(db):

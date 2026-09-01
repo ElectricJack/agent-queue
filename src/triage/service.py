@@ -10,6 +10,7 @@ import logging
 
 from sqlalchemy import select
 
+from src.api.auth import RequestScope
 from src.agents.execution_types import (
     ExecutionCatalog,
     execution_catalog_config_lock,
@@ -44,6 +45,7 @@ def _catalog_generation(catalog: ExecutionCatalog) -> str:
         {
             "types": {key: asdict(value) for key, value in catalog.types.items()},
             "members": catalog.members,
+            "idle_counts": catalog.idle_counts,
             "diagnostics": catalog.diagnostics,
         }
     )
@@ -71,16 +73,17 @@ class TriageService:
 
     async def authenticate(self, scope):
         """Resolve a live principal only from the server-derived request scope."""
-        kind = scope.get("kind") if isinstance(scope, dict) else getattr(scope, "kind", None)
-        if kind != "session":
+        if not isinstance(scope, RequestScope) or scope.kind != "session":
             return _error("unauthorized", "A live triage playbook session is required")
-        session_id = (
-            scope.get("session_id") if isinstance(scope, dict) else getattr(scope, "session_id", None)
-        )
-        project_id = (
-            scope.get("project_id") if isinstance(scope, dict) else getattr(scope, "project_id", None)
-        )
-        if not isinstance(session_id, str) or not session_id or not isinstance(project_id, str):
+        session_id = scope.session_id
+        project_id = scope.project_id
+        if (
+            not isinstance(session_id, str)
+            or not session_id
+            or not isinstance(project_id, str)
+            or not isinstance(scope.instance_token, str)
+            or not scope.instance_token
+        ):
             return _error("unauthorized", "The request has no triage session ownership")
         session = await self.db.get_session(session_id)
         if session is None or not session.playbook_run_id:
@@ -90,7 +93,7 @@ class TriageService:
             project_id=project_id,
             run_id=session.playbook_run_id,
             session_id=session_id,
-            instance_token=session.instance_token,
+            instance_token=scope.instance_token,
         )
         if not self._authorized(principal, run, session):
             return _error("unauthorized", "Triage run/session ownership is not live")
@@ -175,7 +178,10 @@ class TriageService:
                     conn, choice.task_id, choice.expected_revision
                 )
                 if existing is not None:
-                    if existing["execution_type_key"] == choice.execution_type_key:
+                    if (
+                        existing["execution_type_key"] == choice.execution_type_key
+                        and existing["reason"] == choice.reason.strip()
+                    ):
                         return self._result(existing, [])
                     return _error(
                         "decision_conflict",

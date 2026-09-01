@@ -14,7 +14,7 @@ import hashlib
 import logging
 import secrets
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
@@ -45,6 +45,9 @@ class RequestScope:
     #: command instead of restricting to :data:`AGENT_COMMAND_SET`.
     #: ``project_id`` is still enforced when set.
     elevated: bool = False
+    #: Session-generation evidence bound by token validation. This is never
+    #: accepted from request JSON and is intentionally omitted from repr.
+    instance_token: str | None = field(default=None, repr=False)
 
 
 LOCAL_SCOPE = RequestScope(kind="local")
@@ -75,6 +78,7 @@ class SessionTokenStore:
         now = time.time()
         expires_at = now + self._ttl_seconds
         h = _hash(plaintext)
+        instance_token = await self._bound_instance_token(session_id, now)
         await self._db.insert_api_token(
             token_hash=h,
             session_id=session_id,
@@ -91,6 +95,7 @@ class SessionTokenStore:
                 task_id=task_id,
                 project_id=project_id,
                 elevated=elevated,
+                instance_token=instance_token,
             ),
             expires_at,
         )
@@ -118,15 +123,40 @@ class SessionTokenStore:
         expires_at = float(row["expires_at"])
         if expires_at <= now:
             return None
+        instance_token = await self._bound_instance_token(
+            row["session_id"], float(row["created_at"])
+        )
         scope = RequestScope(
             kind="session",
             session_id=row["session_id"],
             task_id=row.get("task_id"),
             project_id=row.get("project_id"),
             elevated=bool(row.get("elevated") or False),
+            instance_token=instance_token,
         )
         self._cache[h] = (scope, expires_at)
         return scope
+
+    async def _bound_instance_token(
+        self, session_id: str, token_created_at: float
+    ) -> str | None:
+        """Bind a bearer token to the session generation that minted it."""
+        get_session = getattr(self._db, "get_session", None)
+        if get_session is None:
+            return None
+        session = await get_session(session_id)
+        if session is None:
+            return None
+        started_at = getattr(session, "started_at", None)
+        instance_token = getattr(session, "instance_token", None)
+        if (
+            not isinstance(started_at, (int, float))
+            or token_created_at < float(started_at)
+            or not isinstance(instance_token, str)
+            or not instance_token
+        ):
+            return None
+        return instance_token
 
     async def revoke_session(self, session_id: str) -> int:
         now = time.time()

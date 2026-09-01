@@ -138,9 +138,9 @@ async def api(tmp_path, monkeypatch, request, generated_routers):
                 return payload["result"]
             return payload
 
-        principal = await handler._triage_service.authenticate({
-            "kind": "session", "session_id": "s-triager", "project_id": "p",
-        })
+        principal = await handler._triage_service.authenticate(
+            await store.validate(tokens["triager"])
+        )
         options = await handler._triage_service.options(principal)
         type_key = options["types"][0]["execution_type_key"]
 
@@ -191,10 +191,9 @@ async def test_authenticated_options_and_durable_defer_use_live_scope(api):
 async def test_legacy_profile_only_route_returns_migration_error(api):
     response = await api.post("task_route", {"task_id": "target", "profile_id": "coder"})
     payload = response.json()
-    if api.surface == "execute":
-        assert response.status_code == 200 and payload["details"]["code"] == "migration_required"
-    else:
-        assert response.status_code == 422 and "profile-only" in payload["error"]
+    assert response.status_code == (200 if api.surface == "execute" else 422)
+    assert payload["success"] is False and payload["code"] == "migration_required"
+    assert "profile-only" in payload["error"]
     assert (await api.db.get_gate(api.gate))["status"] == "open"
 
 
@@ -205,6 +204,48 @@ async def test_direct_local_handler_call_cannot_bypass_triage_auth(api):
     })
     assert result["success"] is False and result["code"] == "unauthorized"
     assert (await api.db.get_gate(api.gate))["status"] == "open"
+
+
+async def test_fabricated_handler_scope_cannot_route_without_authenticated_request(api):
+    result = await api.handler.execute("task_route", {
+        "task_id": "target", "execution_type_key": api.type_key,
+        "expected_revision": 1, "reason": "Fabricated handler identity",
+        "_scope": {
+            "kind": "session", "session_id": "s-triager", "project_id": "p",
+        },
+    })
+    assert result == {
+        "success": False,
+        "code": "unauthorized",
+        "error": "A live triage playbook session is required",
+    }
+    assert (await api.db.get_gate(api.gate))["status"] == "open"
+
+
+async def test_triage_command_rejection_preserves_stable_error_shape(api):
+    response = await api.post("task_route", {
+        "task_id": "target", "execution_type_key": "f" * 64,
+        "expected_revision": 1, "reason": "Unavailable type",
+    })
+    assert response.status_code == (200 if api.surface == "execute" else 422)
+    assert response.json() == {
+        "success": False,
+        "code": "execution_type_unavailable",
+        "error": "The selected execution type has no eligible configured worker",
+    }
+
+
+async def test_triage_scope_rejection_preserves_stable_error_shape(api):
+    response = await api.post("task_route", {
+        "task_id": "target", "execution_type_key": api.type_key,
+        "expected_revision": 1, "reason": "Worker impersonation",
+    }, worker="worker")
+    assert response.status_code == 403
+    assert response.json() == {
+        "success": False,
+        "code": "unauthorized",
+        "error": "out of scope: task_route",
+    }
 
 
 async def test_shared_config_editor_lock_precedes_completion_transaction(api):
