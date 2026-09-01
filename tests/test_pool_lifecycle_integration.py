@@ -486,3 +486,46 @@ class TestReconcilerInterplay:
         await ready(db, "t1", profile_id="pusher")
         res = await handler._cmd_explain_task({"task_id": "t1"})
         assert "awaiting_pool_session" not in res["reason_codes"]
+
+
+class TestPoolStatusRendering:
+    """``aq pool status`` has to show the reason, not just the deadline."""
+
+    def _render(self, row):
+        from io import StringIO
+
+        from rich.console import Console
+
+        from src.cli.formatters import format_pool_table
+
+        buf = StringIO()
+        Console(file=buf, width=200).print(format_pool_table([row]))
+        return buf.getvalue()
+
+    def _row(self, **kw):
+        base = {
+            "project_id": PROJECT_ID,
+            "profile_id": "worker",
+            "min_active": 0,
+            "max_active": 2,
+            "desired": 0,
+            "running_idle": 0,
+            "running_busy": 0,
+            "starting": 0,
+            "draining": 0,
+            "ready": 1,
+        }
+        base.update(kw)
+        return base
+
+    def test_quarantine_reason_is_rendered(self):
+        out = self._render(
+            self._row(
+                quarantined_until=time.time() + 60,
+                quarantined_reason="unknown harness 'claud'",
+            )
+        )
+        assert "unknown harness" in out
+
+    def test_healthy_pool_renders_a_dash(self):
+        assert "—" in self._render(self._row())
