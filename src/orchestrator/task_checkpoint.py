@@ -35,7 +35,7 @@ async def capture_checkpoint(db, git, task_id: str, workspace: str) -> None:
             [*identity, "commit-tree", staged, "-p", head, "-m", "Paused task index"], cwd=workspace
         )
         await isolated._arun(
-            ["add", "--all", "--", ".", ":(exclude).agent-queue-lock", ":(exclude).aq-worktree.json"],
+            ["add", "--all", "--", ".", ":(exclude).agent-queue-lock"],
             cwd=workspace,
         )
         tree = await isolated._arun(["write-tree"], cwd=workspace)

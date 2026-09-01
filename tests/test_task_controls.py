@@ -712,6 +712,29 @@ def make_git_repo(root, name):
     return repo, git
 
 
+async def test_pause_checkpoint_ignores_slot_metadata(env, tmp_path):
+    from pathlib import Path
+
+    repo, git = make_git_repo(tmp_path, "repo")
+    exclude = git("rev-parse", "--git-path", "info/exclude")
+    exclude_path = Path(exclude)
+    if not exclude_path.is_absolute():
+        exclude_path = repo / exclude_path
+    with exclude_path.open("a") as handle:
+        handle.write("/.aq-worktree.json\n")
+    (repo / ".aq-worktree.json").write_text('{"task_id": "t"}\n')
+    (repo / "progress.txt").write_text("dirty progress")
+
+    await running_session(env, repo)
+    await pause(env)
+
+    saved = await env.db.get_task_meta("t", "manual_pause_checkpoint")
+    assert saved
+    tree = git("ls-tree", "-r", "--name-only", saved["commit"]).splitlines()
+    assert "progress.txt" in tree
+    assert ".aq-worktree.json" not in tree
+
+
 async def test_checkpoint_ref_survives_original_slot_removal(env, tmp_path):
     from dataclasses import replace
     import subprocess
