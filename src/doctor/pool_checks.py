@@ -274,6 +274,7 @@ async def _audit(ctx: DoctorContext, agent, reason: str) -> None:
     try:
         await ctx.db.log_event(
             "pool.agent_repaired",
+            agent_id=agent.id,
             payload=f"{reason} {agent.id} ({agent.profile_id})",
         )
     except Exception:  # pragma: no cover - an audit failure must not block the repair
