@@ -137,20 +137,10 @@ class TestAutoTaskConfigValidation:
     def test_valid_defaults(self):
         assert AutoTaskConfig().validate() == []
 
-    def test_max_plan_depth_zero(self):
-        cfg = AutoTaskConfig(max_plan_depth=0)
+    def test_negative_verification_retries(self):
+        cfg = AutoTaskConfig(max_verification_retries=-1)
         errors = cfg.validate()
-        assert any("max_plan_depth" in e.field for e in errors)
-
-    def test_max_steps_per_plan_zero(self):
-        cfg = AutoTaskConfig(max_steps_per_plan=0)
-        errors = cfg.validate()
-        assert any("max_steps_per_plan" in e.field for e in errors)
-
-    def test_base_priority_negative(self):
-        cfg = AutoTaskConfig(base_priority=-1)
-        errors = cfg.validate()
-        assert any("base_priority" in e.field for e in errors)
+        assert any("max_verification_retries" in e.field for e in errors)
 
 
 # ── ArchiveConfig ─────────────────────────────────────────────────────

@@ -110,10 +110,10 @@ async def populated_db(db):
     task3 = Task(
         id="task-003",
         project_id="test-project",
-        title="Awaiting approval",
+        title="Completed with PR",
         description="Needs review",
-        status=TaskStatus.AWAITING_APPROVAL,
-        requires_approval=True,
+        status=TaskStatus.COMPLETED,
+        integration_mode="pull_request",
     )
     await db.create_task(task1)
     await db.create_task(task2)
@@ -308,7 +308,6 @@ class TestDynamicToolRegistration:
         for name in [
             "create_task",
             "stop_task",
-            "approve_task",
             "list_projects",
             "add_dependency",
             "list_workspaces",

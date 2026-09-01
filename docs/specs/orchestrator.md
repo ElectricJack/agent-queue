@@ -165,8 +165,6 @@ The constructor creates all sub-objects but performs no I/O:
 | `_notify` | `NotifyCallback \| None` | Discord notification callback |
 | `_create_thread` | `CreateThreadCallback \| None` | Discord thread creation callback |
 | `_paused` | `bool` | Global scheduling pause flag |
-| `_last_approval_check` | `float` | Unix timestamp of last approval poll |
-| `_no_pr_reminded_at` | `dict[str, float]` | Rate-limit tracker for no-PR reminders |
 | `_stuck_notified_at` | `dict[str, float]` | Rate-limit tracker for stuck-DEFINED alerts |
 | `playbook_manager` | `PlaybookManager \| None` | Playbook subsystem (`None` when `playbooks.enabled` is false) |
 | `timer_service` | `TimerService \| None` | Emits synthetic `timer.*` events for periodic playbook triggers |
@@ -222,7 +220,7 @@ executes the following steps in strict order, wrapped in a single broad `try/exc
 logs unexpected errors with a full traceback but does not crash the loop.
 
 ```
-Step 0   _check_awaiting_approval       — poll PR merge status (rate-limited to 60s)
+Step 0   _sweep_resolve_pr_ci_gates     — resolve satisfied pr-merged/ci-run gates (polls `gh` via `_poll_pr_merged`, `src/orchestrator/pr_polling.py`)
 Step 1   _resume_paused_tasks           — promote PAUSED tasks whose resume_after has elapsed
 Step 2   _check_defined_tasks           — promote DEFINED tasks whose deps are all COMPLETED
 Step 2b  _check_stuck_defined_tasks     — alert on DEFINED tasks stuck beyond threshold
@@ -235,7 +233,7 @@ Step 8   Periodic memory compaction     — compact project memory indexes
 ```
 
 **Pause behaviour.**  When `self._paused` is true, step 3 is skipped and `actions` is set
-to an empty list.  All other steps (approval checks, promotion, etc.) continue running
+to an empty list.  All other steps (gate sweeps, promotion, etc.) continue running
 because those represent state maintenance, not new work assignment.
 
 **Background task cleanup.**  At the start of step 4, the `_running_tasks` dict is
@@ -260,8 +258,8 @@ Runs every cycle.  For each task currently in status `DEFINED`:
    - This returns `True` only when every upstream task has status `COMPLETED`.
    - If met: call `db.transition_task(id, READY, context="deps_met")`.
 
-**Plan subtask special handling:** When a plan is approved, the parent task
-transitions to `IN_PROGRESS` (not `COMPLETED`).  Plan subtasks whose parent
+**Plan subtask special handling:** While a plan's subtasks run, the parent
+task stays `IN_PROGRESS` (not `COMPLETED`).  Plan subtasks whose parent
 is `IN_PROGRESS` treat the parent dependency as satisfied — only non-parent
 dependencies must be `COMPLETED` for promotion.
 
@@ -508,24 +506,30 @@ If `output.tokens_used > 0`: `db.record_token_usage(project_id, agent_id, task_i
 **Step 15 — Handle result.**
 
 *`COMPLETED`:*
-- Run `_run_completion_pipeline(ctx)` which executes:
-  1. `_phase_commit` — commit agent changes to git
-  2. `_phase_merge` — merge/push or create PR based on configuration; on merge
-     success transitions to `COMPLETED`, on PR creation transitions to
-     `AWAITING_APPROVAL`, on merge failure transitions to `BLOCKED`
+- Run `_run_completion_pipeline(ctx)` which executes `_phase_verify`
+  (`src/orchestrator/git_ops.py`) — the agent is responsible for committing,
+  pushing, and (per policy) opening a PR or merging via its prompt
+  instructions; this phase only *checks* the resulting git state against the
+  task's **effective integration mode** (`_effective_integration_mode`: plan-
+  subtask parent's task-level override → task override → project policy →
+  config `integration.default_mode`) and reopens the task with feedback when
+  something is off. On pipeline success the task always transitions to
+  `COMPLETED`: in `pull_request` mode it completes **unmerged** with `pr_url`
+  recorded on the row (the review pipeline's `pr-merged` gates own the
+  merge); in `direct` mode the branch must be merged into the default branch.
+  On pipeline failure the task does not complete (reopened or `BLOCKED`).
 - Automatic plan-file discovery (the former `_phase_plan_discover` phase) and
   the manual `process_plan`/`process_task_completion` commands that replaced
   it were both removed (llm-direct-path §6.3) — nothing discovers or
-  processes plan files anymore. `AWAITING_PLAN_APPROVAL` rows only exist as
-  pre-existing data from before this removal; `approve_plan`/`reject_plan`/
-  `delete_plan` remain as the remediation path for those rows (see
-  `docs/specs/command-handler.md`), and the `tasks.awaiting_plan_approval`
-  doctor check flags any that are stranded.
-- The pipeline handles PR creation, approval transitions, and completion notifications.
+  processes plan files anymore. The `AWAITING_PLAN_APPROVAL` status and its
+  remediation commands (`approve_plan`/`reject_plan`/`delete_plan`) were
+  subsequently deleted outright; the `integration_mode` migration's preflight
+  (Alembic `c4d5e6f7a8b9`) refuses to upgrade while any active row still
+  holds the old status — see `docs/guides/upgrade-integration-mode.md`.
 - Post full completion summary to thread (or `_notify_channel`); post brief to main.
 
-> **Note:** `_complete_workspace` still exists in the code but is dead code — it is
-> never called from `_execute_task`. The active code path is `_run_completion_pipeline`.
+> **Note:** `_complete_workspace` (the pre-pipeline completion path) has been
+> deleted. The active code path is `_run_completion_pipeline`.
 
 *`FAILED`:*
 - Increment `retry_count`.
@@ -707,7 +711,16 @@ PAUSED with a backoff rather than allowing the agent to proceed without branch m
 
 ## 11. Workspace Completion
 
-`_complete_workspace(task, agent) -> str | None`
+> **Removed.** `_complete_workspace` was deleted along with the
+> `requires_approval` flag; completion runs exclusively through
+> `_run_completion_pipeline` / `_phase_verify` (§9b step 15), and integration
+> decisions come from the task's effective `integration_mode`. The helpers
+> below (`_is_last_subtask`, `_mid_chain_rebase`, `_merge_and_push`,
+> `_create_pr_for_task`) still exist — the latter two are deprecated,
+> kept for manual use only. The `_complete_workspace` walkthrough is
+> retained as historical reference.
+
+`_complete_workspace(task, agent) -> str | None` *(deleted)*
 
 Called after the adapter signals `COMPLETED`.  Returns a PR URL if one was created,
 otherwise `None`.
@@ -727,9 +740,10 @@ nothing was committed, log a message (not an error).
     `db.get_subtasks(parent_task_id)` and returns `True` only when every sibling other
     than this task has status `COMPLETED`.
 - If last subtask and repo exists: fetch the parent task record.
-  - If parent task exists and has `requires_approval`: return `await _create_pr_for_task(...)`,
+  - If the effective integration mode (resolved from the parent's override) was
+    `pull_request`: return `await _create_pr_for_task(...)`,
     which may return a PR URL or `None`.
-  - Otherwise: call `_merge_and_push`.
+  - Otherwise (`direct`): call `_merge_and_push`.
 - If not the last subtask and repo exists and branch_name is set:
   call `_mid_chain_rebase(task, repo, workspace)` to optionally rebase the shared branch
   onto latest main between subtask completions.  This internally calls
@@ -741,8 +755,8 @@ nothing was committed, log a message (not an error).
 - Return `None`.
 
 **Root task path.**
-- If repo exists and `requires_approval`: call `_create_pr_for_task`, return the URL.
-- If repo exists and no approval needed: call `_merge_and_push`, return `None`.
+- If repo exists and effective mode is `pull_request`: call `_create_pr_for_task`, return the URL.
+- If repo exists and effective mode is `direct`: call `_merge_and_push`, return `None`.
 - If no repo: changes remain committed on the branch but nothing is pushed, return `None`.
 
 ### `_is_last_subtask(task) -> bool`
@@ -846,78 +860,26 @@ Pushes the task branch and creates a PR. Returns the PR URL or `None`.
 
 ---
 
-## 12. Plan-Generated Tasks (On-Demand Approval Workflow)
+## 12. Plan-Generated Tasks (Removed Approval Workflow)
 
-> **Removed: automatic plan discovery.** The orchestrator no longer discovers
-> plan files as part of the completion pipeline. There is no
+> **Removed: plan discovery and plan approval.** The orchestrator no longer
+> discovers plan files as part of the completion pipeline. There is no
 > `_phase_plan_discover`, no Supervisor delegation, no `_chat_provider`, and
 > no LLM-based plan parser (`use_llm_parser`/`llm_parser_model` were removed
 > from config). See `docs/superpowers/specs/2026-08-30-llm-direct-path-design.md`.
-> Any `AWAITING_PLAN_APPROVAL` rows left over from before this change are
-> flagged by a doctor check as stranded, since nothing auto-resolves them
-> anymore.
+> The remainder of the flow was then deleted with the `integration_mode`
+> cutover: the `AWAITING_PLAN_APPROVAL` status, the `approve_plan` /
+> `reject_plan` / `delete_plan` remediation commands,
+> `_create_subtasks_from_stored_plan`,
+> `CommandHandler._cleanup_plan_files_after_approval`, `src/plan_parser.py`,
+> and the `tasks.awaiting_plan_approval` doctor check are all gone. The
+> migration preflight (Alembic `c4d5e6f7a8b9`) refuses to upgrade while any
+> active row still holds the old status — see
+> `docs/guides/upgrade-integration-mode.md` for the disposition options.
+> Structured multi-task plans are authored via formulas / `creator.write_plan`
+> (`src/task_graph/formulas.py`) instead.
 
-Plan handling is no longer discovery-driven at all: the `process_plan` /
-`process_task_completion` commands that used to discover, read, and archive
-a plan file (`.claude/plan.md`) were deleted outright (llm-direct-path
-§6.3 addendum) — the LLM plan parser they depended on is gone, so a
-discovered-but-unparsed plan was an unrecoverable dead end. `src/plan_parser.py`
-still provides `find_plan_file`/`read_plan_file`/`find_all_plan_files`
-utilities, but nothing calls the discovery ones anymore. Any
-`AWAITING_PLAN_APPROVAL` row is therefore pre-existing data; a human resolves
-it via the `approve_plan` (only works if draft subtasks were already stored),
-`reject_plan`, or `delete_plan` command — the mechanics of that approval step
-(`12b` below) are unchanged from before this removal.
-
-### 12b. `_create_subtasks_from_stored_plan(task) -> list[Task]`
-
-Called by `CommandHandler._cmd_approve_plan` after the user approves the plan.  Retrieves
-the stored plan data from `task_context` entries and creates subtasks.
-
-**Preamble extraction.**
-Extract text from the stored plan raw content before the first step title as
-`plan_context`.  Strip a leading `# Title` heading if present.  This context is
-prepended to every subtask description.
-
-**Subtask creation loop.**  Iterate the stored plan steps with an index:
-
-For each step:
-1. `new_id = await generate_task_id(db)`.
-2. `description = build_task_description(step, parent_task=task, plan_context=plan_context)`.
-3. Determine `requires_approval`:
-   - If `inherit_approval` and `chain_dependencies`: only the final step inherits the parent's
-     `requires_approval`; intermediate steps get `False`.
-   - If `inherit_approval` and not `chain_dependencies`: every step inherits.
-   - Otherwise: `False`.
-4. Construct a `Task` dataclass:
-   - `status = DEFINED`
-   - `parent_task_id = task.id`
-   - `repo_id = task.repo_id if inherit_repo else None`
-   - `priority = config.base_priority + step.priority_hint`
-   - `plan_source = archived_path`
-   - `is_plan_subtask = True`
-5. `db.create_task(new_task)`.
-6. If `chain_dependencies` and `prev_task_id` is set: `db.add_dependency(new_id, depends_on=prev_task_id)`.
-7. Record `prev_task_id = new_id` for the next iteration.
-
-**After creation.**  Return the list of created tasks.  The caller (`_cmd_approve_plan`)
-transitions the task to COMPLETED, then the next scheduling cycle promotes subtasks with
-no unmet dependencies to READY.
-
-### 12c. Plan File Cleanup
-
-Plan files are cleaned up at two points to prevent stale plans from being re-presented
-for approval by subsequent tasks reusing the same workspace:
-
-**Post-approval cleanup** (`CommandHandler._cleanup_plan_files_after_approval`):
-Runs after both `approve_plan` and `delete_plan` commands.
-1. Deletes the archived plan file from `.claude/plans/<task_id>-plan.md` (path retrieved
-   from the `plan_archived_path` task context entry).
-2. Deletes any original plan files (`.claude/plan.md`, `plan.md`) that may still exist
-   if archival failed.
-3. Commits the deletions to git via `git.acommit_all` so the plan file is removed from
-   the branch.
-Uses `ws.workspace_path` (not `ws.path`) from the workspace record.
+What survives is workspace hygiene only:
 
 **Pre-task cleanup** (`Orchestrator._cleanup_plan_files_before_task`):
 Runs during `_prepare_workspace` before every task launch.  Removes both primary plan files
@@ -928,55 +890,32 @@ for details.
 
 ---
 
-## 13. Approval Checking
+## 13. PR Merge Polling (Gate Sweep)
 
-### `_check_awaiting_approval`
+The 60-second `AWAITING_APPROVAL` poller (`_check_awaiting_approval` /
+`_handle_awaiting_no_pr` / `_check_pr_status`, formerly
+`src/orchestrator/approval.py`) was deleted with the `requires_approval`
+flag. PR-merge waiting is now a `pr-merged` gate on downstream work, never a
+task status, and is resolved by the cascade's gate sweep.
 
-Rate-limited to once per 60 seconds using `_last_approval_check`.
+### `_sweep_resolve_pr_ci_gates` (`src/orchestrator/core.py`)
 
-1. List all tasks with status `AWAITING_APPROVAL`.
-2. Clean up `_no_pr_reminded_at` for task IDs no longer in the list.
-3. For each task:
-   - If `task.pr_url` is absent: call `_handle_awaiting_no_pr(task, now)`.
-   - Otherwise: call `_check_pr_status(task)`.
+Runs as cascade step 0 (before promotion, so a freshly resolved gate unblocks
+its waiters in the same cycle). For each open `pr-merged`/`ci-run` gate it
+calls `_poll_pr_merged(pr_url, project_id=...)` and resolves the gate when the
+PR is merged.
 
-### `_handle_awaiting_no_pr(task, now)`
+### `_poll_pr_merged(pr_url, *, project_id)` (`src/orchestrator/pr_polling.py::PRPollingMixin`)
 
-Compute `updated_at = db.get_task_updated_at(task.id)` and
-`age = (now - updated_at) if updated_at else 0`.
-
-**Auto-complete path** (when `task.requires_approval` is false):
-- If `age >= _NO_PR_AUTO_COMPLETE_GRACE` (120 seconds default): transition to COMPLETED
-  (`context="auto_complete_no_pr"`), log a `"task_completed"` event, notify, and clear the
-  reminder tracker.  Return immediately after (the manual-approval path below is skipped).
-
-**Manual-approval path** (when `task.requires_approval` is true):
-- Check the reminder interval: skip if `now - _no_pr_reminded_at[task.id] < _NO_PR_REMINDER_INTERVAL` (3600s).
-- Update `_no_pr_reminded_at[task.id] = now`.
-- If `age >= _NO_PR_ESCALATION_THRESHOLD` (86400s = 24h): send a high-visibility escalation
-  warning with the age in hours and log `"approval_stuck"`.
-- Otherwise: send a standard "awaiting manual approval" reminder.
-
-### `_check_pr_status(task)`
-
-Resolves a checkout path by checking `db.get_agent_workspace(agent_id, project_id)`,
-then falling back to any workspace for the task's project via `db.list_workspaces(project_id=...)`.
-If no path is found, return.
-
-Call `git.check_pr_merged(checkout_path, task.pr_url)`:
+Polls `gh` for a PR's merge state via a project checkout:
 - Returns `True` if merged.
+- Returns `False` if still open, or the poll could not run yet (no checkout
+  available, transient `gh` failure) — retry next cycle.
 - Returns `None` if closed without merge.
-- Returns `False` if still open.
 
-**Merged (`True`):**
-Transition to COMPLETED, log `"task_completed"`, notify.
-Best-effort: delete the task branch locally and remotely.
-
-**Closed without merge (`None`):**
-Transition to BLOCKED, context `"pr_closed"`, notify.
-Call `_notify_stuck_chain(task)`.
-
-**Still open (`False`):** no action.
+The gate-sweep caller only acts on `True` and treats both `False` and `None`
+as "leave the gate open", so a closed-unmerged PR keeps blocking its waiters
+until an operator resolves the gate by hand.
 
 ---
 
@@ -1114,7 +1053,7 @@ Edits the root message of a task's Discord thread. Used to update status after c
 
 ### `set_command_handler(handler)`
 
-Sets the CommandHandler reference for interactive Discord views (e.g., plan approval buttons).
+Sets the CommandHandler reference for interactive Discord views.
 
 ---
 
@@ -1123,10 +1062,6 @@ Sets the CommandHandler reference for interactive Discord views (e.g., plan appr
 | Constant | Default | Location | Purpose |
 |---|---|---|---|
 | `_MAX_RETRIES` | 10 | `task_names.py` | Max random attempts before using suffixed fallback |
-| `_NO_PR_REMINDER_INTERVAL` | 3600s | `Orchestrator` | Min gap between no-PR approval reminders |
-| `_NO_PR_ESCALATION_THRESHOLD` | 86400s | `Orchestrator` | Age at which no-PR reminder escalates |
-| `_NO_PR_AUTO_COMPLETE_GRACE` | 120s | `Orchestrator` | Grace period before auto-completing non-approval tasks with no PR |
-| Approval poll interval | 60s | `_check_awaiting_approval` | Rate limit on PR status checks |
 | Shutdown timeout | 10s | `shutdown` | Max wait for running tasks before close |
 
 ---

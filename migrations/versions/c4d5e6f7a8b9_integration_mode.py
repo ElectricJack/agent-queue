@@ -39,6 +39,34 @@ depends_on: Union[str, Sequence[str], None] = None
 LEGACY_STATUSES = ("AWAITING_APPROVAL", "AWAITING_PLAN_APPROVAL")
 
 
+class _sqlite_fk_suspended:
+    """Suspend SQLite FK enforcement around a batch table rebuild.
+
+    SQLite rebuilds the referenced ``tasks`` table to drop a column;
+    with ``PRAGMA foreign_keys=ON`` the rebuild trips FK checks from
+    referencing tables (task_comments, task_dependencies, …).  Same
+    pattern as revision 882b77dc8495.
+    """
+
+    def __init__(self, bind):
+        self.bind = bind
+        self.was_on = (
+            bind.dialect.name == "sqlite"
+            and bind.exec_driver_sql("PRAGMA foreign_keys").scalar_one()
+        )
+
+    def __enter__(self):
+        if self.was_on:
+            with op.get_context().autocommit_block():
+                self.bind.exec_driver_sql("PRAGMA foreign_keys=OFF")
+
+    def __exit__(self, *exc):
+        if self.was_on:
+            with op.get_context().autocommit_block():
+                self.bind.exec_driver_sql("PRAGMA foreign_keys=ON")
+        return False
+
+
 def _preflight(bind) -> None:
     """Abort with exact remediation if active rows sit in a retired status."""
     rows = bind.execute(
@@ -99,12 +127,13 @@ def upgrade() -> None:
             )
         )
 
-    with op.batch_alter_table("tasks") as batch_op:
-        batch_op.drop_column("requires_approval")
-        batch_op.drop_column("auto_approve_plan")
-    with op.batch_alter_table("archived_tasks") as batch_op:
-        batch_op.drop_column("requires_approval")
-        batch_op.drop_column("auto_approve_plan")
+    with _sqlite_fk_suspended(bind):
+        with op.batch_alter_table("tasks") as batch_op:
+            batch_op.drop_column("requires_approval")
+            batch_op.drop_column("auto_approve_plan")
+        with op.batch_alter_table("archived_tasks") as batch_op:
+            batch_op.drop_column("requires_approval")
+            batch_op.drop_column("auto_approve_plan")
 
 
 def downgrade() -> None:
@@ -126,9 +155,10 @@ def downgrade() -> None:
             )
         )
 
-    with op.batch_alter_table("tasks") as batch_op:
-        batch_op.drop_column("integration_mode")
-    with op.batch_alter_table("archived_tasks") as batch_op:
-        batch_op.drop_column("integration_mode")
-    with op.batch_alter_table("projects") as batch_op:
-        batch_op.drop_column("integration_mode")
+    with _sqlite_fk_suspended(bind):
+        with op.batch_alter_table("tasks") as batch_op:
+            batch_op.drop_column("integration_mode")
+        with op.batch_alter_table("archived_tasks") as batch_op:
+            batch_op.drop_column("integration_mode")
+        with op.batch_alter_table("projects") as batch_op:
+            batch_op.drop_column("integration_mode")

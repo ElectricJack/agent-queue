@@ -543,8 +543,6 @@ class TestStyles:
             "WAITING_INPUT",
             "PAUSED",
             "VERIFYING",
-            "AWAITING_APPROVAL",
-            "AWAITING_PLAN_APPROVAL",
             "COMPLETED",
             "FAILED",
             "BLOCKED",
@@ -610,7 +608,6 @@ class TestAutoCommands:
         assert task_group is not None
         # Hand-crafted (interactive commands)
         assert "create" in task_group.commands
-        assert "approve" in task_group.commands
         assert "search" in task_group.commands
         # Auto-generated (from task category + formatter registry)
         assert "list" in task_group.commands

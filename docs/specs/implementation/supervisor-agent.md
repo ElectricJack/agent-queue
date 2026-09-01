@@ -59,7 +59,8 @@ Changed files: `src/database/tables.py`, `src/models.py`, `src/profiles/parser.p
 
 House conventions observed in `tables.py`: `Text` ids, `Float` epoch timestamps
 (`Column("created_at", Float, ...)` throughout), integer 0/1 booleans with string
-`server_default` (cf. `tasks.requires_approval`).
+`server_default` (cf. `tasks.is_plan_subtask`; the doc originally cited the
+since-dropped `tasks.requires_approval`).
 
 ```python
 messages = Table(
@@ -409,6 +410,16 @@ Old YAML carrying `legacy_chat` is silently ignored by the config loader.
       disabled (no concrete replacement path yet). **Default flip deferred**:
       `legacy_plan_discovery` remains `True`; drain of in-flight `AWAITING_PLAN_APPROVAL`
       tasks and marking `plan-parser.md` superseded are post-live-test ops steps.
+
+> **Landed since (2026-08-31):** the plan-approval region is gone entirely.
+> `AWAITING_PLAN_APPROVAL` (and `AWAITING_APPROVAL`) were deleted from
+> `TaskStatus`, the `approve_plan`/`reject_plan`/`delete_plan` remediation
+> commands and `src/plan_parser.py` were removed, and `src/orchestrator/approval.py`
+> was deleted (PR polling now lives in `src/orchestrator/pr_polling.py`, feeding
+> the `pr-merged` gate sweep). Stranded rows are dispositioned via the
+> `integration_mode` migration preflight (Alembic `c4d5e6f7a8b9`) — see
+> `docs/guides/upgrade-integration-mode.md`. File:line references in the table
+> above are historical.
 
 ### 11.1 Open questions the delivery engine must settle (Phase 3)
 

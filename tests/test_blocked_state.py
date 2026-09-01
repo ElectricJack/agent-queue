@@ -24,6 +24,7 @@ from sqlalchemy import insert, select, text
 
 from src.database import SQLiteDatabaseAdapter
 from src.database.queries.blocked_state import blocked_predicate
+from src.database.queries.hierarchy_queries import HierarchyError
 from src.database.tables import gates, task_dependencies, task_gates, tasks as tasks_t
 from src.models import DepType, Project, Task, TaskStatus
 from src.state_machine import CyclicDependencyError, validate_dag_with_new_edge, validate_waits_for
@@ -676,7 +677,12 @@ class TestRecomputeProperty:
                 edge = (ids[j], ids[i], rng.choice(dep_types))
                 if edge in edges:
                     continue
-                await db.add_dependency(*edge)
+                try:
+                    await db.add_dependency(*edge)
+                except HierarchyError:
+                    # A parent-child edge onto a closed container is refused
+                    # by invariant — skip and keep mutating.
+                    continue
                 edges.append(edge)
             elif action < 0.8:
                 # Remove an edge.

@@ -51,10 +51,9 @@ def _seed_plan_pair(conn, *, edge_types: tuple[str, ...]) -> None:
             sa.text(
                 "INSERT INTO tasks (id, project_id, parent_task_id, title, description,"
                 " priority, status, verification_type, retry_count, max_retries,"
-                " requires_approval, is_plan_subtask, auto_approve_plan, attachments,"
-                " created_at, updated_at)"
+                " is_plan_subtask, attachments, created_at, updated_at)"
                 " VALUES (:id, 'p-wg', :parent, :id, '', 3, :status, 'automated', 0, 3,"
-                " 0, :is_sub, 0, '[]', :now, :now)"
+                " :is_sub, '[]', :now, :now)"
             ),
             {"id": tid, "parent": parent, "is_sub": is_sub, "status": status, "now": now},
         )
@@ -149,10 +148,10 @@ def test_non_plan_edges_are_left_alone():
                 sa.text(
                     "INSERT INTO tasks (id, project_id, title, description, priority,"
                     " status, verification_type, retry_count, max_retries,"
-                    " requires_approval, is_plan_subtask, auto_approve_plan, attachments,"
+                    " is_plan_subtask, attachments,"
                     " created_at, updated_at)"
                     " VALUES ('other', 'p-wg', 'other', '', 3, 'DEFINED', 'automated',"
-                    " 0, 3, 0, 0, 0, '[]', :now, :now)"
+                    " 0, 3, 0, '[]', :now, :now)"
                 ),
                 {"now": time.time()},
             )

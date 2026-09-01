@@ -61,7 +61,7 @@ Closes the connection if one is open. Safe to call even if `initialize()` was ne
 
 ## 3. Schema
 
-Every table is declared as a SQLAlchemy Core `Table` in `src/database/tables.py`, which is the single source of truth; DDL is applied by Alembic (`migrations/`). Foreign keys are declared with `ForeignKey(...)`. A `CHECK` constraint exists on `task_dependencies`. Integer booleans (SQLite has no native boolean) are used for flags such as `requires_approval` and `is_plan_subtask` (tasks). Timestamps are stored as `REAL` (Unix epoch, floating-point seconds).
+Every table is declared as a SQLAlchemy Core `Table` in `src/database/tables.py`, which is the single source of truth; DDL is applied by Alembic (`migrations/`). Foreign keys are declared with `ForeignKey(...)`. A `CHECK` constraint exists on `task_dependencies`. Integer booleans (SQLite has no native boolean) are used for flags such as `is_plan_subtask` and `is_blocked` (tasks). Timestamps are stored as `REAL` (Unix epoch, floating-point seconds).
 
 > **This catalog is enforced.** `tests/test_docs_sync.py` compares the `### Table:` headings below against `src/database/tables.py` and fails when they drift, so a schema change lands with its doc row in the same commit (see `docs/specs/design/trust-and-ops.md` §6). `alembic_version` is the one deliberate exclusion.
 
@@ -145,6 +145,7 @@ Authorized project moves transfer known active-task comment ownership in the sam
 | `repo_url` | TEXT | DEFAULT '' | Repository URL for the project (added via migration) |
 | `repo_default_branch` | TEXT | DEFAULT 'main' | Default branch name (added via migration) |
 | `default_profile_id` | TEXT | nullable REFERENCES agent_profiles(id) | Default agent profile (added via migration) |
+| `integration_mode` | TEXT | nullable | Project-level integration policy: `'direct'`, `'pull_request'`, or NULL (fall through to config `integration.default_mode`). Added by Alembic `c4d5e6f7a8b9` |
 | `created_at` | REAL | NOT NULL | Unix timestamp, set on insert |
 
 No `updated_at` on projects. The `discord_control_channel_id` column exists for backward compatibility — `_row_to_project` falls back to it when `discord_channel_id` is NULL.
@@ -179,7 +180,7 @@ No `updated_at` on projects. The `discord_control_channel_id` column exists for 
 | `assigned_agent_id` | TEXT | nullable REFERENCES agents(id) | Set when status = ASSIGNED or IN_PROGRESS |
 | `branch_name` | TEXT | nullable | Git branch for this task's work |
 | `resume_after` | REAL | nullable | Unix timestamp; PAUSED tasks resume after this |
-| `requires_approval` | INTEGER | NOT NULL DEFAULT 0 | Boolean (0/1); whether task requires manual approval before merge |
+| `integration_mode` | TEXT | nullable | Integration policy override: `'direct'`, `'pull_request'`, or NULL (inherit from parent/project/config `integration.default_mode`). Replaces the dropped `requires_approval` flag (Alembic `c4d5e6f7a8b9` backfilled `1`→`'pull_request'`, `0`→`'direct'`) |
 | `pr_url` | TEXT | nullable | GitHub/GitLab PR link |
 | `plan_source` | TEXT | nullable | Path to the plan file that generated this task |
 | `is_plan_subtask` | INTEGER | NOT NULL DEFAULT 0 | Boolean (0/1); flags auto-generated plan subtasks |
@@ -825,7 +826,7 @@ Reads `source_type` as a `RepoSourceType` enum (defaults to `RepoSourceType.CLON
 
 ### `create_task(task: Task) -> None`
 
-Inserts all task columns. Both `created_at` and `updated_at` are set to `time.time()` at insert time; the dataclass values are ignored. `status` and `verification_type` are serialized to their enum `.value`. `requires_approval` and `is_plan_subtask` are stored as integers (0/1) via `int()`. Commits.
+Inserts all task columns. Both `created_at` and `updated_at` are set to `time.time()` at insert time; the dataclass values are ignored. `status` and `verification_type` are serialized to their enum `.value`. `is_plan_subtask` is stored as an integer (0/1) via `int()`. Commits.
 
 ### `get_task(task_id: str) -> Task | None`
 
@@ -885,7 +886,7 @@ Atomic multi-table update (no explicit transaction — relies on SQLite's defaul
 
 ### `_row_to_task(row) -> Task`
 
-Private helper. Uses `key in row.keys()` guards for migration-added columns (`requires_approval`, `pr_url`, `plan_source`, `is_plan_subtask`) to handle databases that predate those migrations. `requires_approval` and `is_plan_subtask` are cast to `bool`.
+Private helper. Uses `key in row.keys()` guards for migration-added columns (`pr_url`, `plan_source`, `is_plan_subtask`) to handle databases that predate those migrations. `is_plan_subtask` is cast to `bool`. `integration_mode` is read as-is (nullable TEXT).
 
 ---
 
@@ -1048,7 +1049,7 @@ The full list of migrations applied in order:
 | `ALTER TABLE projects ADD COLUMN workspace_path TEXT` | Legacy migration — column is now deprecated/unused (workspace paths managed via `workspaces` table) |
 | `ALTER TABLE repos ADD COLUMN source_type TEXT NOT NULL DEFAULT 'clone'` | Adds repo source type enum |
 | `ALTER TABLE repos ADD COLUMN source_path TEXT NOT NULL DEFAULT ''` | Adds local path for linked/initialized repos |
-| `ALTER TABLE tasks ADD COLUMN requires_approval INTEGER NOT NULL DEFAULT 0` | Adds approval requirement flag |
+| `ALTER TABLE tasks ADD COLUMN requires_approval INTEGER NOT NULL DEFAULT 0` | Historical: added the approval requirement flag (later replaced by `integration_mode` and dropped by Alembic `c4d5e6f7a8b9`) |
 | `ALTER TABLE tasks ADD COLUMN pr_url TEXT` | Adds pull request URL field |
 | `ALTER TABLE projects ADD COLUMN discord_channel_id TEXT` | Adds per-project Discord channel |
 | `ALTER TABLE projects ADD COLUMN discord_control_channel_id TEXT` | Adds legacy control channel column |
@@ -1075,6 +1076,8 @@ The full list of migrations applied in order:
 The `SCHEMA` constant includes migrated columns for `projects` and `tasks`, so those tables have all columns from the start on fresh databases. However, the `repos` table in `SCHEMA` does **not** include `source_type` or `source_path` — those two columns are only added via the migration statements, meaning fresh databases also require the migrations to be run for `repos` to have those columns. Migrations always matter for `repos` regardless of whether the database is new or existing.
 
 `alembic_version` records the applied revision. Destructive changes (DROP COLUMN, renames, type changes) are expressible but must be written by hand and reviewed — autogenerate will not infer them correctly.
+
+Alembic revision `c4d5e6f7a8b9` (integration mode) adds `integration_mode` to `tasks`, `archived_tasks`, and `projects`, backfills the old `requires_approval` flag (`1`→`'pull_request'`, `0`→`'direct'`) on both task tables, and drops `requires_approval` and `auto_approve_plan`. It carries a PREFLIGHT that fails the upgrade with per-row remediation SQL if any active task is still in the deleted `AWAITING_APPROVAL`/`AWAITING_PLAN_APPROVAL` statuses — see `docs/guides/upgrade-integration-mode.md`.
 
 ---
 

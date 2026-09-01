@@ -37,6 +37,12 @@ The work graph adds seven pieces, all deterministic, zero-LLM, and consumed by t
 
 A later phase (§12) collapses the three wait statuses into gates behind a compatibility projection. Phase 0 keeps all 11 `TaskStatus` values.
 
+> **Landed (partially, 2026-08-31):** the two approval statuses are gone.
+> `AWAITING_APPROVAL` and `AWAITING_PLAN_APPROVAL` were deleted from
+> `TaskStatus` together with their events and transitions (see §12 note);
+> human approval is a `human` gate and PR-merge waiting is a `pr-merged`
+> gate resolved by the gate sweep. `WAITING_INPUT` remains a status for now.
+
 ## 3. Typed dependency edges
 
 `task_dependencies` gains `dep_type TEXT NOT NULL DEFAULT 'blocks'`. An edge `(task_id, depends_on_task_id, dep_type)` reads "*task_id* has a *dep_type* relationship to *depends_on_task_id*". One pair may carry multiple edge types (e.g. `blocks` and `discovered-from`).
@@ -48,13 +54,13 @@ A blocking edge contributes to `is_blocked` until its **satisfaction rule** hold
 | dep_type | Reads as | Satisfied when |
 |---|---|---|
 | `blocks` (default) | task runs after dep | `dep.status = COMPLETED` |
-| `parent-child` | task is a child of dep (its container) | `dep.status ∉ {DEFINED, AWAITING_PLAN_APPROVAL}` — the container has been *released* |
+| `parent-child` | task is a child of dep (its container) | `dep.status ≠ DEFINED` — the container has been *released* (the rule originally also excluded the since-removed `AWAITING_PLAN_APPROVAL` status) |
 | `waits-for` | task fans in over dep's children | every task with a `parent-child` edge to dep has `status = COMPLETED` (vacuously true with zero children; children added later **re-block** the waiter) |
 | `conditional-blocks` | task runs only if dep failed | `dep.status = BLOCKED`, or `dep.status = FAILED` with `retry_count ≥ max_retries` (terminal failure only — a transiently FAILED task about to be retried does not satisfy it) |
 
 Notes:
 
-- **`parent-child` replaces the plan-subtask special case.** Today `_check_defined_tasks` hard-codes "parent IN_PROGRESS counts as met" for `is_plan_subtask` rows. The new rule generalizes it: a DEFINED or AWAITING_PLAN_APPROVAL parent withholds its children (a staged graph, an unapproved plan); any released parent — READY, IN_PROGRESS, even a pure container that never executes — frees them. `parent_task_id` stays as a denormalized pointer for tree rendering; the edge is authoritative.
+- **`parent-child` replaces the plan-subtask special case.** Today `_check_defined_tasks` hard-codes "parent IN_PROGRESS counts as met" for `is_plan_subtask` rows. The new rule generalizes it: a DEFINED or AWAITING_PLAN_APPROVAL (status since removed) parent withholds its children (a staged graph, an unapproved plan); any released parent — READY, IN_PROGRESS, even a pure container that never executes — frees them. `parent_task_id` stays as a denormalized pointer for tree rendering; the edge is authoritative.
 - **`waits-for` is dynamic fan-in.** The classic pattern: a finalize/review task `waits-for` the group container; workers discovered mid-flight get `parent-child` edges to the container and automatically re-block the finalizer. A `waits-for` edge whose waiter is itself a child of the target container is rejected at write time — it can never be satisfied (§11).
 - **`conditional-blocks` has a disposal rule.** When the dependency reaches COMPLETED the edge is permanently unsatisfiable. A cascade step auto-closes dependents whose *only* remaining unsatisfied blocking edges are conditional edges on COMPLETED deps: they transition to COMPLETED with `work_outcome=no-op` metadata and a `task.skipped_conditional` event. Contingency tasks never rot in the queue.
 
@@ -221,6 +227,20 @@ Every event type emitted anywhere (bus or `log_event`) must have a registered pa
 - Cross-project edges participate in the same global DFS — the graph is one DB, so no special casing.
 
 ## 12. Future: status collapse (design only — later phase)
+
+> **Landed for the approval statuses (2026-08-31).** `AWAITING_APPROVAL` and
+> `AWAITING_PLAN_APPROVAL` were deleted from `TaskStatus` (with the
+> `PR_CREATED`/`PR_MERGED`/`PR_CLOSED`/`PLAN_*` events and their
+> transitions). PR-merge waiting is a `pr-merged` gate resolved by the gate
+> sweep (`_sweep_resolve_pr_ci_gates` → `_poll_pr_merged`,
+> `src/orchestrator/pr_polling.py`); human approval is a `human` gate; the
+> old 60-second `_check_awaiting_approval` poller is deleted. Integration
+> policy is the explicit `integration_mode` column (task/project) + config
+> `integration.default_mode`, replacing `requires_approval` (Alembic
+> `c4d5e6f7a8b9`, with a preflight for stranded rows — see
+> `docs/guides/upgrade-integration-mode.md`). The `WAITING_INPUT` collapse
+> below remains future work. The mapping table is kept as the original
+> design record.
 
 **Not scheduled first.** Designed now so nothing in phases 0–2 paints us into a corner.
 
