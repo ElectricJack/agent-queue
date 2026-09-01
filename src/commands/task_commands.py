@@ -50,6 +50,14 @@ from src.task_summary import write_task_summary
 
 logger = logging.getLogger(__name__)
 
+#: Capacity reason codes that describe the **push** scheduler's supply and so
+#: cannot explain a ``lifecycle: pool`` task, whose work is claimed rather
+#: than pushed (swarm-work-model §11).  Everything else
+#: ``build_capacity_reasons`` produces still applies to the pull path: a
+#: paused project or an exhausted budget fails ``_admission_reason`` on the
+#: claim, and no free workspace starves ``_launch_pool_session``.
+_PUSH_ONLY_REASON_CODES = frozenset({"no_idle_agent", "no_compatible_agent", "rate_limited"})
+
 
 def _normalize_label_list(raw) -> list[str]:
     """Coerce a label argument into a clean list of strings.
@@ -3137,10 +3145,19 @@ class TaskCommandsMixin:
 
         # 6. Capacity reasons — only relevant when a scheduler snapshot exists.
         state = getattr(self.orchestrator, "_last_scheduler_state", None)
-        if state is not None and pool_reason is None:
+        if state is not None:
             ws_counts = getattr(self.orchestrator, "_last_scheduler_workspace_counts", {})
             idle = getattr(self.orchestrator, "_last_scheduler_idle_by_project", {})
-            reasons.extend(build_capacity_reasons(task, state, ws_counts, idle))
+            capacity = build_capacity_reasons(task, state, ws_counts, idle)
+            if pool_reason is not None:
+                # A pool-routed task is not in the push queue, so the codes
+                # that describe *that* queue's supply would send an operator
+                # looking for an idle worker nothing is ever going to create.
+                # The rest still bite: a paused project or an exhausted budget
+                # fails ``_admission_reason`` on the claim itself, and no free
+                # workspace is what starves ``_launch_pool_session``.
+                capacity = [r for r in capacity if r["code"] not in _PUSH_ONLY_REASON_CODES]
+            reasons.extend(capacity)
 
         return {
             "success": True,
