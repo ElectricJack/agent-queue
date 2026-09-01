@@ -104,8 +104,8 @@ async def test_claims_the_reserved_id():
 
 async def test_declares_no_fix():
     """The reserved-id contract allows only ``git worktree prune``, which
-    clears neither pin — releasing a lock or moving a slot off a dead task's
-    branch is an operator call."""
+    drops registrations for worktrees that are already gone — not a live
+    slot's own checkout.  Moving a slot off a branch is an operator call."""
     assert all(c.fix is None for c in worktree_checks.CHECKS)
 
 
