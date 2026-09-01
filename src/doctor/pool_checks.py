@@ -179,6 +179,11 @@ async def _find_orphan_agents(ctx: DoctorContext):
             continue
         if (agent.created_at or 0.0) > threshold:
             continue
+        # Unfiltered: ``stopped`` rows count. A worker that has actually run
+        # keeps its session history, so a normally-drained pool agent is
+        # never an orphan here at all. What reaches the buckets below is a
+        # row that never got a session row -- a rolled-back launch, or a push
+        # agent for a profile that has since become ``lifecycle: pool``.
         if await ctx.db.list_sessions(agent_id=agent.id):
             continue
         if agent.state is AgentState.BUSY or agent.current_task_id:
