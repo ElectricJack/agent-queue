@@ -107,6 +107,7 @@ _current_scope_var: contextvars.ContextVar[dict | None] = contextvars.ContextVar
 )
 
 
+from src.commands.authorization import authorize_command, denial_result  # noqa: E402
 from src.commands.principal import (  # noqa: E402
     SERVER_OWNED_ARG_KEYS,
     _principal_var,
@@ -863,6 +864,44 @@ class CommandHandler(
                     result = {"success": False, "error": paused_error}
                     _emit_ok = False
                     _emit_error = paused_error
+                    return result
+
+                # Capability gate (Playbook V2 Package 0 §3.6).  Placed
+                # BEFORE the built-in lookup so the plugin fallback below is
+                # covered by the same check with no second call site — the
+                # plugin path previously ran with no capability check at all.
+                # It composes with, and does not replace, check_request_scope:
+                # a command must pass both.
+                decision = authorize_command(
+                    name,
+                    principal,
+                    resolver=self._command_resolver,
+                    mode=getattr(self.config.security, "capability_enforcement", "audit"),
+                )
+                if decision.shadow:
+                    logger.warning(
+                        "capability_denied_shadow cmd=%s principal=%s profile=%s ns=%s "
+                        "fingerprint=%s derived_from_legacy=True",
+                        name,
+                        principal.describe(),
+                        principal.profile_id,
+                        decision.namespace,
+                        principal.policy.fingerprint(),
+                    )
+                elif not decision.allowed:
+                    logger.warning(
+                        "capability_denied cmd=%s principal=%s session=%s profile=%s "
+                        "ns=%s fingerprint=%s",
+                        name,
+                        principal.describe(),
+                        principal.session_id,
+                        principal.profile_id,
+                        decision.namespace,
+                        principal.policy.fingerprint(),
+                    )
+                    result = denial_result(name)
+                    _emit_ok = False
+                    _emit_error = result["error"]
                     return result
 
                 handler = getattr(self, f"_cmd_{name}", None)

@@ -51,6 +51,14 @@ ENFORCED_KINDS: frozenset[PrincipalKind] = frozenset(
     {PrincipalKind.SESSION, PrincipalKind.PLAYBOOK}
 )
 
+#: Provenance reasons meaning "identity could not be resolved", as opposed to
+#: "identity resolved to a narrow policy".  A principal carrying one of these
+#: has DENY_ALL because a row was missing, not because an operator authored an
+#: empty capability set — see :attr:`ExecutionPrincipal.unresolved`.
+UNRESOLVED_PROVENANCE: frozenset[str] = frozenset(
+    {"session-not-found", "session-has-no-profile", "profile-not-found"}
+)
+
 #: Arg keys the server owns.  Stripped at both HTTP surfaces and again in
 #: ``CommandHandler.execute`` — two independent layers, because one of them
 #: being bypassed is exactly the interesting failure.
@@ -88,6 +96,21 @@ class ExecutionPrincipal:
         kind and cannot be requested.
         """
         return self.kind in ENFORCED_KINDS
+
+    @property
+    def unresolved(self) -> bool:
+        """Whether this principal's DENY_ALL came from a *missing* row.
+
+        Distinguishes "the operator said this profile may do nothing" from
+        "we could not find out what this profile may do".  Both fail closed
+        under ``enforce``.  Under ``audit`` they differ: an authored empty
+        policy is enforced (the operator asked for it), while an unresolved
+        identity is treated like an un-migrated legacy profile and only
+        warned about — otherwise a session whose profile row is missing or
+        mid-resync would lose every command in the *shipped default* mode,
+        which is the fleet-stranding outcome audit mode exists to prevent.
+        """
+        return any(reason in UNRESOLVED_PROVENANCE for reason in self.provenance)
 
     def narrow(self, policy: CapabilityPolicy, *, reason: str) -> "ExecutionPrincipal":
         """Intersect this principal's policy with *policy*.
@@ -175,6 +198,7 @@ __all__ = [
     "PrincipalKind",
     "SERVER_OWNED_ARG_KEYS",
     "TRUSTED_LOCAL",
+    "UNRESOLVED_PROVENANCE",
     "check_delegation",
     "current_principal",
     "principal_context",
