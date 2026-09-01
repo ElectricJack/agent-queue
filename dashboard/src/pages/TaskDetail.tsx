@@ -14,6 +14,7 @@ import {
 } from "../api/hooks";
 import StatusBadge from "../components/StatusBadge";
 import TaskActions from "../components/TaskActions";
+import TaskAttachments from "../components/TaskAttachments";
 import TaskComments from "../components/TaskComments";
 import TaskSessions from "../components/TaskSessions";
 import TaskAttention from "../components/TaskAttention";
@@ -227,6 +228,8 @@ function TaskDetailContent({ taskId }: { taskId: string }) {
       {activeTab === "details" && (
         <>
       <TaskDescription key={task.id} task={task} />
+
+      <TaskAttachments taskId={task.id} />
 
       <TaskSessions taskId={task.id} />
 

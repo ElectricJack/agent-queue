@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   ArrowTopRightOnSquareIcon,
@@ -15,8 +15,10 @@ import {
   type TaskRef,
   type GateSummary,
 } from "../../api/hooks";
+import { useAttachmentUploader } from "../../api/taskAttachments";
 import StatusBadge from "../../components/StatusBadge";
 import TaskActions from "../../components/TaskActions";
+import TaskAttachments from "../../components/TaskAttachments";
 import TaskComments from "../../components/TaskComments";
 import TaskSessions from "../../components/TaskSessions";
 import TaskAttention from "../../components/TaskAttention";
@@ -50,6 +52,11 @@ export default function TaskDetailPane({
   const [modal, setModal] = useState<LocalModal>(null);
   const [moreOpen, setMoreOpen] = useState(false);
   const [feedback, setFeedback] = useState("");
+  const uploader = useAttachmentUploader(args.taskId);
+  const [dragOver, setDragOver] = useState(false);
+  // Counts dragenter/dragleave pairs: child elements fire both constantly
+  // while a drag moves across the pane, so a plain boolean flickers.
+  const dragDepth = useRef(0);
   const location = useLocation();
   const from = (location.state as { from?: string } | null)?.from ?? location.pathname + location.search;
   const openFull = useCallback(() => {
@@ -107,7 +114,36 @@ export default function TaskDetailPane({
   }
 
   return (
-    <div className="flex flex-col gap-4 p-4">
+    <div
+      className="relative flex flex-col gap-4 p-4"
+      onDragEnter={(e) => {
+        if (![...e.dataTransfer.types].includes("Files")) return;
+        e.preventDefault();
+        dragDepth.current += 1;
+        setDragOver(true);
+      }}
+      onDragOver={(e) => {
+        if (![...e.dataTransfer.types].includes("Files")) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "copy";
+      }}
+      onDragLeave={() => {
+        dragDepth.current = Math.max(0, dragDepth.current - 1);
+        if (dragDepth.current === 0) setDragOver(false);
+      }}
+      onDrop={(e) => {
+        if (![...e.dataTransfer.types].includes("Files")) return;
+        e.preventDefault();
+        dragDepth.current = 0;
+        setDragOver(false);
+        void uploader.uploadFiles(e.dataTransfer.files);
+      }}
+    >
+      {dragOver && (
+        <div className="pointer-events-none absolute inset-2 z-40 flex items-center justify-center rounded-lg border-2 border-dashed border-indigo-500 bg-indigo-500/10">
+          <p className="text-sm font-medium text-indigo-300">Drop to attach to this task</p>
+        </div>
+      )}
       <header className="min-w-0">
         <p className="truncate font-mono text-xs text-gray-500">{args.taskId}</p>
         <h2 className="mt-0.5 truncate text-lg font-semibold text-gray-100">
@@ -149,6 +185,8 @@ export default function TaskDetailPane({
       {task && <TaskAttention task={task as Task & { needs_attention?: string | null }} />}
 
       {task && <TaskDescription key={task.id} task={task} />}
+
+      {task && <TaskAttachments taskId={args.taskId} uploader={uploader} capturePaste />}
 
       {task && <TaskSessions taskId={args.taskId} onOpenSession={close} fromTaskPane />}
 

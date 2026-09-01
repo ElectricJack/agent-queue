@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { useState } from "react";
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import TaskDetailPane from "../index";
@@ -36,6 +36,12 @@ vi.mock("../../store", () => ({
     setWidth: vi.fn(),
     registry: {},
   }),
+}));
+
+const mockLegacyFetch = vi.fn();
+vi.mock("../../../api/legacy-fetch", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../api/legacy-fetch")>()),
+  legacyFetch: (...args: unknown[]) => mockLegacyFetch(...args),
 }));
 
 const mockNavigate = vi.fn();
@@ -98,7 +104,20 @@ beforeEach(() => {
   mockNavigate.mockReset();
   mockUseGates.mockReturnValue({ data: [] });
   mockUseResolveGate.mockReturnValue({ mutate: vi.fn() });
+  mockLegacyFetch.mockReset().mockResolvedValue({
+    ok: true,
+    status: 200,
+    json: async () => ({ success: true, attachments: [], attachment: {} }),
+  });
 });
+
+const attachmentUploads = () =>
+  mockLegacyFetch.mock.calls.filter(
+    ([url, init]) =>
+      typeof url === "string" &&
+      url.includes("/attachments") &&
+      (init as RequestInit | undefined)?.method === "POST",
+  );
 
 describe("TaskDetailPane — header, description, actions", () => {
   it("jumps from a selected task to its current worker and closes the pane", () => {
@@ -145,6 +164,33 @@ describe("TaskDetailPane — header, description, actions", () => {
     mockUseTask.mockReturnValue({ data: fixtureTask, isLoading: false, isError: false });
     renderWithRouter(<TaskDetailPane {...noopProps()} />);
     expect(screen.getByRole("button", { name: /answer question/i })).toBeInTheDocument();
+  });
+});
+
+describe("TaskDetailPane — screenshot attachments", () => {
+  const pngFile = () =>
+    new File([new Uint8Array([137, 80, 78, 71])], "shot.png", { type: "image/png" });
+
+  it("uploads a file dropped anywhere on the pane", async () => {
+    mockUseTask.mockReturnValue({ data: fixtureTask, isLoading: false, isError: false });
+    const { container } = renderWithRouter(<TaskDetailPane {...noopProps()} />);
+    const paneRoot = container.firstElementChild as HTMLElement;
+    fireEvent.drop(paneRoot, {
+      dataTransfer: { files: [pngFile()], types: ["Files"] },
+    });
+    await waitFor(() => expect(attachmentUploads()).toHaveLength(1));
+    expect(attachmentUploads()[0]?.[0]).toBe("/api/tasks/t1/attachments");
+  });
+
+  it("uploads a screenshot pasted while the pane is open", async () => {
+    mockUseTask.mockReturnValue({ data: fixtureTask, isLoading: false, isError: false });
+    renderWithRouter(<TaskDetailPane {...noopProps()} />);
+    const event = new Event("paste", { bubbles: true }) as ClipboardEvent;
+    Object.defineProperty(event, "clipboardData", { value: { files: [pngFile()] } });
+    await act(async () => {
+      document.dispatchEvent(event);
+    });
+    await waitFor(() => expect(attachmentUploads()).toHaveLength(1));
   });
 });
 
