@@ -36,7 +36,20 @@ def test_default_pipeline_compiles():
     d = r.playbook.to_dict()
     assert d["kind"] == "pipeline"
     assert d["role"] == "default-pipeline"
-    assert "task.created" in d["triggers"]
+    assert "task.created" not in d["triggers"]
+    entries = {
+        rule["entry"] for rules in d["pipeline_rules"].values() for rule in rules
+    }
+    assert not any("task-created-routing" in entry for entry in entries)
+    assert not any("worker-filed-triage" in entry for entry in entries)
+    expected = {
+        "per-task-review",
+        "per-branch-final-review",
+        "spec-ingest-on-approve",
+        "proposal-ready-gate",
+        "commit-on-gate-resolve",
+    }
+    assert all(any(entry.startswith(f"{rule_id}-") for entry in entries) for rule_id in expected)
 
 
 def test_triage_profile_ships(tmp_path):

@@ -4,7 +4,6 @@ kind: pipeline
 role: default-pipeline
 scope: system
 triggers:
-  - task.created
   - task.completed
   - spec.approved
   - proposal.ready
@@ -17,11 +16,8 @@ triggers:
 
 The system default pipeline. Reacts to task lifecycle events.
 
-Ships three rules:
+Ships five rules:
 
-- **Routing** (`task.created`) — attaches a routing gate to every new task and
-  coalesces work by waking one reusable triage task per project only when
-  open routing gates need attention.
 - **Per-task review** (`task.completed`) — on every `task.completed` whose task
   has a `branch_name`, spawns one reviewer task with a `discovered-from` edge
   to the reviewed task and attaches a `task` gate to each downstream dependent
@@ -42,49 +38,9 @@ Ships three rules:
 - **Proposal commit** (`gate.resolved`, filtered to `gate_type: human`) —
   once the gate is resolved, calls `task_batch_commit` for the awaited
   proposal so the approved batch is written into the task graph.
-- **Worker-filed triage** (`task.created`, session-filed root tasks only) —
-  routes a task a pool worker filed for itself (no `parent_id`) straight to
-  the filer's own profile via `task_route`, resolving the routing gate the
-  worker-filing constraint attached. Projects that want different triage for
-  worker-filed work override this rule.
-
 ```json
 {
   "rules": [
-    {
-      "id": "task-created-routing",
-      "on": "task.created",
-      "when": {"field": "event.task.profile_id", "is_null": true},
-      "entry": "attach_routing_gate",
-      "nodes": {
-        "attach_routing_gate": {
-          "command": "gate_create",
-          "args": {
-            "project_id": "{{event.project_id}}",
-            "gate_type": "routing",
-            "title": "Route task",
-            "question": "Assign profile + intelligence class (+ workspace if profile needs one).",
-            "waiter_task_ids": ["{{event.task_id}}"]
-          },
-          "on_success": "ensure_triage_task",
-          "on_failure": "done"
-        },
-        "ensure_triage_task": {
-          "command": "ensure_task",
-          "args": {
-            "project_id": "{{event.project_id}}",
-            "dedup_key": "triage-open",
-            "title": "Triage unrouted tasks",
-            "description": "Route every task with an open routing gate in this project via `task_route`. Close this task with a summary when the queue is empty. The framework reuses this task for new routing requests; do not create another triage task.",
-            "profile_id": "triage",
-            "priority": 1
-          },
-          "on_success": "done",
-          "on_failure": "done"
-        },
-        "done": {"terminal": true}
-      }
-    },
     {
       "id": "per-task-review",
       "on": "task.completed",
@@ -256,29 +212,6 @@ Ships three rules:
           "command": "task_batch_commit",
           "args": {
             "proposal_id": "{{event.await_id}}"
-          },
-          "on_success": "done",
-          "on_failure": "done"
-        },
-        "done": {"terminal": true}
-      }
-    },
-    {
-      "id": "worker-filed-triage",
-      "on": "task.created",
-      "when": {
-        "all": [
-          {"field": "event.created_by_kind", "equals": "session"},
-          {"field": "event.parent_task_id", "is_null": true}
-        ]
-      },
-      "entry": "route",
-      "nodes": {
-        "route": {
-          "command": "task_route",
-          "args": {
-            "task_id": "{{event.task_id}}",
-            "profile_id": "{{event.filed_by_profile_id}}"
           },
           "on_success": "done",
           "on_failure": "done"

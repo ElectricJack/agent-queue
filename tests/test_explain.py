@@ -14,6 +14,8 @@ Covers docs/specs/implementation/work-graph.md §6.3 and §11:
 from __future__ import annotations
 
 import time
+from types import SimpleNamespace
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -22,7 +24,8 @@ from src.commands.handler import CommandHandler
 from src.config import AppConfig, DiscordConfig
 from src.database import Database
 from src.explain import build_capacity_reasons
-from src.models import Agent, AgentState, Project, Task, TaskStatus
+from src.intelligence_classes import IntelligenceClass
+from src.models import Agent, AgentProfile, AgentState, Project, Task, TaskStatus
 from src.orchestrator import Orchestrator
 
 
@@ -53,6 +56,27 @@ async def handler(db, config):
     orch = Orchestrator(config)
     orch.db = db
     orch.git = MagicMock()
+    orch.session_spec_builder._intelligence_classes = {
+        "fast-low": IntelligenceClass(
+            "fast-low", "Fast", "", {"anthropic": {"model": "claude-sonnet-5"}}
+        )
+    }
+    await db.create_profile(AgentProfile(id="worker", name="Worker", harness="claude"))
+    from src.playbooks.compiler import compile_playbook
+
+    compiled = compile_playbook(
+        (
+            Path(__file__).parent.parent
+            / "src"
+            / "prompts"
+            / "default_playbooks"
+            / "default-assignment-routing.md"
+        ).read_text(encoding="utf-8")
+    ).playbook
+    orch.playbook_manager = SimpleNamespace(
+        get_playbook=lambda playbook_id: compiled if playbook_id == compiled.id else None,
+        get_scope_identifier=lambda _playbook_id: None,
+    )
     return CommandHandler(orch, config)
 
 
@@ -89,6 +113,40 @@ def make_state(**kw):
 
 
 class TestExplainCommand:
+    async def test_unrouted_ready_task_reports_awaiting_intelligence_route(
+        self, handler, db
+    ):
+        await mktask(db, "unrouted", status=TaskStatus.READY)
+
+        res = await handler._cmd_explain_task({"task_id": "unrouted"})
+
+        assert "awaiting_intelligence_route" in res["reason_codes"]
+        assert res["assignment_route"] is None
+
+    async def test_explicit_class_is_exposed_as_effective_assignment_route(
+        self, handler, db
+    ):
+        await mktask(
+            db,
+            "explicit",
+            status=TaskStatus.READY,
+            intelligence_class="fast-low",
+        )
+
+        res = await handler._cmd_explain_task({"task_id": "explicit"})
+
+        assert res["assignment_route"] == {
+            "source": "explicit",
+            "intelligence_class": "fast-low",
+            "provider": None,
+            "reason": None,
+            "playbook_id": None,
+            "playbook_version": None,
+            "playbook_run_id": None,
+            "freshness": "fresh",
+        }
+        assert "route_waiting_for_compatible_agent" in res["reason_codes"]
+
     async def test_blocked_dependency_reason(self, handler, db):
         await mktask(db, "dep")
         await mktask(db, "t")

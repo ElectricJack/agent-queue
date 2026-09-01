@@ -50,13 +50,12 @@ def test_validator_rejects_non_bool_is_null():
     assert errs, "'is_null' must be a boolean"
 
 
-def test_default_pipeline_triage_rule_present():
+def test_default_pipeline_legacy_triage_rule_absent():
     text = Path("src/prompts/default_playbooks/default-pipeline.md").read_text(encoding="utf-8")
     block = re.search(r"```json\n(.*?)\n```", text, re.S).group(1)
     rules = {r["id"]: r for r in json.loads(block)["rules"]}
-    rule = rules["worker-filed-triage"]
-    assert rule["on"] == "task.created"
-    assert rule["nodes"]["route"]["command"] == "task_route"
+    assert "worker-filed-triage" not in rules
+    assert "task-created-routing" not in rules
 
 
 def test_any_clause_semantics():

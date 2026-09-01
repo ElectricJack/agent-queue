@@ -389,9 +389,22 @@ class ExplainReason(BaseModel):
     ref: str | None = None
 
 
+class AssignmentRouteDetail(BaseModel):
+    source: str
+    intelligence_class: str
+    provider: str | None = None
+    reason: str | None = None
+    playbook_id: str | None = None
+    playbook_version: int | None = None
+    playbook_run_id: str | None = None
+    freshness: str
+
+
 class ExplainTaskResponse(BaseModel):
     success: bool = True
     reasons: list[ExplainReason] = []
+    reason_codes: list[str] = []
+    assignment_route: AssignmentRouteDetail | None = None
 
 
 class ReadyTask(BaseModel):

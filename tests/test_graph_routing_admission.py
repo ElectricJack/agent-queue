@@ -1,7 +1,6 @@
 """Admitted graph tasks must reach the project's selected routing pipeline."""
 
 import asyncio
-import copy
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -20,6 +19,18 @@ from src.vault import ensure_default_intelligence_classes
 from tests.pg_dsn import ensure_worker_postgres_dsn
 
 POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
+
+PROJECT_ROUTING_PIPELINE = """---
+id: project-routing
+kind: pipeline
+role: default-pipeline
+scope: project
+triggers: [task.created]
+---
+```json
+{"rules":[{"id":"route-created","on":"task.created","when":{"field":"event.task.profile_id","is_null":true},"entry":"gate","nodes":{"gate":{"command":"gate_create","args":{"project_id":"{{event.project_id}}","gate_type":"routing","title":"Route task","waiter_task_ids":["{{event.task_id}}"]},"on_success":"route","on_failure":"done"},"route":{"command":"task_route","args":{"task_id":"{{event.task_id}}","profile_id":"coder","intelligence_class":"deep-high"},"on_success":"done","on_failure":"done"},"done":{"terminal":true}}}]}
+```
+"""
 
 
 @pytest.fixture(params=["sqlite", "postgres"])
@@ -74,25 +85,7 @@ async def wired(request, tmp_path, monkeypatch):
     default = compile_pipeline(
         Path("src/prompts/default_playbooks/default-pipeline.md").read_text()
     ).playbook
-    custom = copy.deepcopy(default)
-    custom.id = "project-routing"
-    custom.scope = "project"
-    for node in custom.nodes.values():
-        action = node.action
-        if (
-            action
-            and action.get("command") == "ensure_task"
-            and (action.get("args", {}).get("dedup_key") == "triage-open")
-        ):
-            node.action = {
-                **action,
-                "command": "task_route",
-                "args": {
-                    "task_id": "{{event.task_id}}",
-                    "profile_id": "coder",
-                    "intelligence_class": "deep-high",
-                },
-            }
+    custom = compile_pipeline(PROJECT_ROUTING_PIPELINE).playbook
     for playbook in (default, custom):
         manager._active[playbook.id] = playbook
         manager._index_triggers(playbook)

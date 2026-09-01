@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from src.assignment_routing import (
+    AssignmentPlaybookError,
     EffectiveAssignmentRoute,
     assignment_input,
     assignment_input_hash,
@@ -218,6 +219,8 @@ class AssignmentRoutingCoordinator:
         self._project_locks: dict[str, asyncio.Lock] = {}
         self._retry: dict[str, tuple[int, float, str]] = {}
         self._catalog_hashes: dict[str, str] = {}
+        self._running_task_ids: set[str] = set()
+        self._task_retry: dict[str, tuple[float, str]] = {}
 
     @property
     def db(self):
@@ -318,10 +321,13 @@ class AssignmentRoutingCoordinator:
                 return message["content"]
         return None
 
-    def _note_failure(self, batch_key: str, error: str) -> None:
+    def _note_failure(self, batch_key: str, error: str, tasks: Sequence[Task]) -> None:
         count = self._retry.get(batch_key, (0, 0.0, ""))[0] + 1
         delay = min(300.0, float(2 ** min(count - 1, 8)))
-        self._retry[batch_key] = (count, time.time() + delay, error)
+        retry_at = time.time() + delay
+        self._retry[batch_key] = (count, retry_at, error)
+        for task in tasks:
+            self._task_retry[task.id] = (retry_at, error)
         logger.warning("assignment routing batch %s failed: %s", batch_key, error)
 
     async def _route_batch(self, project, tasks, options):
@@ -358,24 +364,32 @@ class AssignmentRoutingCoordinator:
                 sync_task_projection=False,
                 tool_overrides=[],
             )
+            self._running_task_ids.update(task.id for task in tasks)
             try:
-                result = await runner.run()
-            except IntegrityError:
-                logger.info("assignment batch %s lost the playbook-run insert race", batch_key)
-                return {}
+                try:
+                    result = await runner.run()
+                except IntegrityError:
+                    logger.info("assignment batch %s lost the playbook-run insert race", batch_key)
+                    return {}
+            finally:
+                self._running_task_ids.difference_update(task.id for task in tasks)
             run_id = runner.run_id
             if result.status != "completed" or not result.final_response:
-                self._note_failure(batch_key, result.error or "assignment playbook failed")
+                self._note_failure(
+                    batch_key, result.error or "assignment playbook failed", tasks
+                )
                 return {}
             response = result.final_response
         try:
             decisions = validate_assignment_response(response or "", tasks, options)
         except AssignmentRoutingValidationError as exc:
-            self._note_failure(batch_key, str(exc))
+            self._note_failure(batch_key, str(exc), tasks)
             return {}
         committed = await self._commit(project, playbook, tasks, options, decisions, run_id)
         if committed:
             self._retry.pop(batch_key, None)
+            for task_id in committed:
+                self._task_retry.pop(task_id, None)
         return committed
 
     async def _commit(self, project, playbook, original_tasks, options, decisions, run_id):
@@ -472,6 +486,7 @@ class AssignmentRoutingCoordinator:
                     effective = resolve_effective_route(task, saved_rows.get(task.id), catalog_hash)
                     if effective is not None:
                         resolved[task.id] = effective
+                        self._task_retry.pop(task.id, None)
                         if effective.source == "explicit":
                             await self._resolve_routing_gates(task.id, run_id=None)
                     else:
@@ -502,3 +517,89 @@ class AssignmentRoutingCoordinator:
                 if route is not None:
                     resolved[task.id] = route
         return resolved
+
+    async def explain(self, task: Task) -> tuple[dict | None, dict | None]:
+        """Return route audit detail and one actionable routing reason."""
+
+        options = await self._options(task.project_id)
+        catalog_hash = options_hash(options)
+        saved = await self.db.get_task_assignment_route(task.id)
+        effective = resolve_effective_route(task, saved, catalog_hash)
+        detail = None
+        if effective is not None:
+            detail = {
+                "source": effective.source,
+                "intelligence_class": effective.intelligence_class,
+                "provider": effective.provider,
+                "reason": saved.reason if effective.source == "playbook" and saved else None,
+                "playbook_id": saved.playbook_id if effective.source == "playbook" and saved else None,
+                "playbook_version": (
+                    saved.playbook_version if effective.source == "playbook" and saved else None
+                ),
+                "playbook_run_id": (
+                    saved.playbook_run_id if effective.source == "playbook" and saved else None
+                ),
+                "freshness": "fresh",
+            }
+            if task.assigned_agent_id is None and task.status in _ACTIVE_ROUTE_STATUSES:
+                return detail, {
+                    "code": "route_waiting_for_compatible_agent",
+                    "detail": (
+                        f"route selects intelligence class '{effective.intelligence_class}'"
+                        + (f" on provider '{effective.provider}'" if effective.provider else "")
+                        + "; waiting for existing scheduling constraints"
+                    ),
+                    "ref": effective.decision_id,
+                }
+            return detail, None
+
+        if saved is not None:
+            detail = {
+                "source": "playbook",
+                "intelligence_class": saved.intelligence_class,
+                "provider": saved.provider,
+                "reason": saved.reason,
+                "playbook_id": saved.playbook_id,
+                "playbook_version": saved.playbook_version,
+                "playbook_run_id": saved.playbook_run_id,
+                "freshness": "stale",
+            }
+        if task.id in self._running_task_ids:
+            return detail, {
+                "code": "assignment_playbook_running",
+                "detail": "assignment playbook is selecting an intelligence route",
+                "ref": task.id,
+            }
+        retry = self._task_retry.get(task.id)
+        if retry and retry[0] > time.time():
+            return detail, {
+                "code": "assignment_route_retry",
+                "detail": f"assignment route failed and will retry: {retry[1]}",
+                "ref": task.id,
+            }
+        project = await self.db.get_project(task.project_id)
+        try:
+            if project is None:
+                raise AssignmentPlaybookError(f"project '{task.project_id}' is missing")
+            select_assignment_playbook(self.owner.playbook_manager, project)
+            if not options:
+                raise AssignmentPlaybookError(
+                    "no compatible intelligence class/provider options are configured"
+                )
+        except AssignmentPlaybookError as exc:
+            return detail, {
+                "code": "assignment_playbook_unavailable",
+                "detail": str(exc),
+                "ref": project.assignment_playbook_id if project else task.project_id,
+            }
+        if saved is not None:
+            return detail, {
+                "code": "assignment_route_stale",
+                "detail": "saved assignment route no longer matches the task or option catalog",
+                "ref": saved.playbook_run_id,
+            }
+        return None, {
+            "code": "awaiting_intelligence_route",
+            "detail": "task is awaiting an assignment playbook intelligence route",
+            "ref": task.id,
+        }

@@ -16,6 +16,7 @@ import pytest
 from src.commands.handler import CommandHandler
 from src.config import AppConfig, DiscordConfig
 from src.database import Database
+from src.intelligence_classes import IntelligenceClass
 from src.models import (
     AgentProfile,
     AgentState,
@@ -56,6 +57,7 @@ async def db(tmp_path):
             harness="claude",
             max_active=1,
             max_claims_per_session=2,
+            default_class="fast-low",
             needs_workspace=False,
         )
     )
@@ -87,6 +89,14 @@ async def orch(db, tmp_path):
     cfg.swarm.claim_wait_max = 5
     cfg.swarm.max_starts_per_tick = 5
     o = Orchestrator(cfg)
+    o.session_spec_builder._intelligence_classes = {
+        "fast-low": IntelligenceClass(
+            "fast-low",
+            "Fast",
+            "",
+            {"anthropic": {"model": "claude-haiku"}},
+        )
+    }
     o.db = db
     # AgentReconciler and SessionReconciler were both built in __init__
     # against the (real, uninitialized) db the constructor saw -- point
@@ -151,6 +161,7 @@ async def mktask(db, tid, **kw):
             description=tid,
             status=TaskStatus.READY,
             profile_id="worker",
+            intelligence_class="fast-low",
             **kw,
         )
     )
@@ -292,7 +303,10 @@ class TestSwarmWorkerLoopEndToEnd:
         claimed = await h._cmd_task_claim({"next": True})
         assert claimed["result"] == "claimed"
 
-        res = await h._cmd_create_task({"title": "found a bug while working t1"})
+        res = await h._cmd_create_task({
+            "title": "found a bug while working t1",
+            "reason": "The active task uncovered a separate defect.",
+        })
         assert res["success"] is True
         filed_id = res["task_id"]
         assert res["status"] == TaskStatus.DEFINED.value

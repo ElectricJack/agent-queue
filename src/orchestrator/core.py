@@ -6,9 +6,10 @@ agents, launching agent execution as background asyncio tasks, managing git
 workspaces (clone/link/init), parsing plan files into chained subtasks,
 handling PR/approval workflows, and monitoring for stuck tasks.
 
-Design principle: **zero LLM calls for orchestration**.  All scheduling and
-state-machine logic is purely deterministic.  Every token budget goes to
-actual agent work, not coordination overhead.
+Scheduling and state-machine decisions are deterministic after one narrow
+exception: the assignment-routing playbook selects a task's intelligence
+class and optional provider. Capacity, workspace, fairness, profile, and
+concrete-agent selection remain algorithmic.
 
 Heavy operations (agent execution, git clones) run as background asyncio
 tasks so the main loop stays responsive and can continue checking heartbeats,

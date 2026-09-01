@@ -20,6 +20,18 @@ from tests.pg_dsn import ensure_worker_postgres_dsn
 
 POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
 
+LEGACY_ROUTING_PIPELINE = """---
+id: legacy-routing-pipeline
+kind: pipeline
+role: default-pipeline
+scope: system
+triggers: [task.created]
+---
+```json
+{"rules":[{"id":"legacy-routing","on":"task.created","when":{"field":"event.task.profile_id","is_null":true},"entry":"gate","nodes":{"gate":{"command":"gate_create","args":{"project_id":"{{event.project_id}}","gate_type":"routing","title":"Route task","waiter_task_ids":["{{event.task_id}}"]},"on_success":"triage","on_failure":"done"},"triage":{"command":"ensure_task","args":{"project_id":"{{event.project_id}}","dedup_key":"triage-open","title":"Triage","profile_id":"triage"},"on_success":"done","on_failure":"done"},"done":{"terminal":true}}}]}
+```
+"""
+
 
 @pytest.fixture(params=["sqlite", "postgres"])
 async def setup(tmp_path, request):
@@ -57,9 +69,7 @@ async def setup(tmp_path, request):
     orch._emit_task_event = AsyncMock()
     handler = CommandHandler(orch, config)
     manager = PlaybookManager(config=config)
-    pb = compile_pipeline(
-        Path("src/prompts/default_playbooks/default-pipeline.md").read_text()
-    ).playbook
+    pb = compile_pipeline(LEGACY_ROUTING_PIPELINE).playbook
     manager._active[pb.id] = pb
     manager._index_triggers(pb)
     orch.playbook_manager = manager
@@ -350,9 +360,14 @@ async def test_worker_filed_child_is_gated_before_created_event(setup):
         "project_id": "p",
         "elevated": False,
     }
-    result = await handler._cmd_create_task(
-        {"project_id": "p", "title": "Discovered subtask", "parent_id": "held"}
-    )
+        result = await handler._cmd_create_task(
+            {
+                "project_id": "p",
+                "title": "Discovered subtask",
+                "parent_id": "held",
+                "reason": "The held task discovered additional required work.",
+            }
+        )
     assert result.get("success"), result
     assert (await db.get_task(result["created"])).is_blocked
     assert len(await db.get_gates_for_task(result["created"])) == 1
