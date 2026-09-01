@@ -20,9 +20,13 @@ W_SLACK = 0.5
 
 MAX_OPTIMIZED_SIBLINGS = 500
 INCREMENTAL_EVALS = 200
-INCREMENTAL_SECONDS = 0.05
+# Wall-clock safety valve only (never used to decide layout — that would
+# break determinism). 10x the nominal per-eval budget so it never trips
+# under normal operation; it only guards against a pathological case where
+# eval count doesn't bound wall time.
+INCREMENTAL_SECONDS = 0.5
 TIDY_EVALS = 5000
-TIDY_SECONDS = 2.0
+TIDY_SECONDS = 20.0
 TIDY_JOB_SECONDS = 60.0
 
 FINISHED_STATUSES = frozenset({"COMPLETED", "CANCELED", "CANCELLED", "SKIPPED"})

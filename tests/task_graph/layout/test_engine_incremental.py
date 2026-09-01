@@ -1,3 +1,6 @@
+import time
+
+from src.task_graph.layout import engine as engine_module
 from src.task_graph.layout.constants import CARD_H, CARD_W
 from src.task_graph.layout.engine import layout_container
 from src.task_graph.layout.model import ContainerScope, SnapTask
@@ -44,6 +47,20 @@ def test_new_node_with_blockers_lands_under_barycenter():
     assert res.rows["n"].rank == 1
     xa, xc = res.rows["a"].rel_x, res.rows["c"].rel_x
     assert xa <= res.rows["n"].rel_x <= xc + CARD_W
+    # Strengthen: an existing rank-1 node "m" keyed to sit at the far right
+    # (rooted under c only) must not attract n — n, blocked by a AND c,
+    # lands under their median, to the left of m.
+    with_m = kids + [task("m", created=1)]
+    second = layout_container(
+        scope(with_m, edges=[("m", "c")], existing=first.rows), mode="incremental"
+    )
+    with_n = with_m + [task("n", created=5)]
+    res2 = layout_container(
+        scope(with_n, edges=[("m", "c"), ("n", "a"), ("n", "c")], existing=second.rows),
+        mode="incremental",
+    )
+    assert res2.rows["n"].rank == 1
+    assert res2.rows["n"].rel_x < res2.rows["m"].rel_x
 
 
 def test_new_edge_forces_rank_repair_of_dependent_chain_only():
@@ -99,3 +116,42 @@ def test_deterministic():
     b = layout_container(scope(kids, edges=edges), mode="incremental", seed=7)
     assert {k: (r.ordinal, r.rel_x, r.rel_y) for k, r in a.rows.items()} == \
            {k: (r.ordinal, r.rel_x, r.rel_y) for k, r in b.rows.items()}
+
+
+def test_forced_repair_avoids_key_collision():
+    # b, z at rank 0 (both key "U"-adjacent, first-ever keys); c depends on
+    # z so c is at rank 1 with key "U" (its rank's first-ever key too).
+    kids = [task("b"), task("z"), task("c")]
+    first = layout_container(scope(kids, edges=[("c", "z")]), mode="incremental")
+    assert first.rows["b"].rank == 0 and first.rows["z"].rank == 0
+    assert first.rows["c"].rank == 1
+    # New edge b->z forces b down to rank 1, where it would collide with
+    # c's key under the old "keep the old key" repair. Also insert n,
+    # blocked by z, in the same pass.
+    kids2 = kids + [task("n", created=5)]
+    res = layout_container(
+        scope(kids2, edges=[("c", "z"), ("b", "z"), ("n", "z")], existing=first.rows),
+        mode="incremental",
+    )
+    ordinals = [r.ordinal for r in res.rows.values()]
+    assert len(ordinals) == len(set(ordinals))  # no exception, no collisions
+    assert res.rows["b"].rank == 1
+
+
+def test_wallclock_stub_does_not_change_result(monkeypatch):
+    kids = [task(f"t{i}", created=i) for i in range(30)]
+    edges = [(f"t{i}", f"t{i-3}") for i in range(3, 30)]
+    baseline = layout_container(scope(kids, edges=edges), mode="incremental", seed=7)
+
+    real_monotonic = time.monotonic
+    calls = {"n": 0}
+
+    def fake_monotonic():
+        calls["n"] += 1
+        return real_monotonic() + calls["n"] * 0.01
+
+    monkeypatch.setattr(engine_module.time, "monotonic", fake_monotonic)
+    stubbed = layout_container(scope(kids, edges=edges), mode="incremental", seed=7)
+
+    assert {k: (r.ordinal, r.rel_x, r.rel_y) for k, r in baseline.rows.items()} == \
+           {k: (r.ordinal, r.rel_x, r.rel_y) for k, r in stubbed.rows.items()}
