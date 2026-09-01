@@ -21,6 +21,9 @@ from .archive_task_response import ArchiveTaskResponse
 from .archive_task_response_422 import ArchiveTaskResponse422
 from .ask_human_request import AskHumanRequest
 from .ask_human_response_422 import AskHumanResponse422
+from .body_upload_attachment_api_tasks_task_id_attachments_post import (
+    BodyUploadAttachmentApiTasksTaskIdAttachmentsPost,
+)
 from .cancel_playbook_run_request import CancelPlaybookRunRequest
 from .cancel_playbook_run_response import CancelPlaybookRunResponse
 from .cancel_playbook_run_response_422 import CancelPlaybookRunResponse422
@@ -735,6 +738,10 @@ from .stuck_tasks_thresholds import StuckTasksThresholds
 from .tail_api_streams_stream_id_tail_get_response_tail_api_streams_stream_id_tail_get import (
     TailApiStreamsStreamIdTailGetResponseTailApiStreamsStreamIdTailGet,
 )
+from .task_attachment_delete_response import TaskAttachmentDeleteResponse
+from .task_attachment_detail import TaskAttachmentDetail
+from .task_attachment_response import TaskAttachmentResponse
+from .task_attachments_response import TaskAttachmentsResponse
 from .task_batch_ack_response import TaskBatchAckResponse
 from .task_batch_commit_request import TaskBatchCommitRequest
 from .task_batch_commit_response import TaskBatchCommitResponse
@@ -861,6 +868,7 @@ __all__ = (
     "ArchiveTaskResponse422",
     "AskHumanRequest",
     "AskHumanResponse422",
+    "BodyUploadAttachmentApiTasksTaskIdAttachmentsPost",
     "CancelPlaybookRunRequest",
     "CancelPlaybookRunResponse",
     "CancelPlaybookRunResponse422",
@@ -1565,6 +1573,10 @@ __all__ = (
     "StuckTask",
     "StuckTasksThresholds",
     "TailApiStreamsStreamIdTailGetResponseTailApiStreamsStreamIdTailGet",
+    "TaskAttachmentDeleteResponse",
+    "TaskAttachmentDetail",
+    "TaskAttachmentResponse",
+    "TaskAttachmentsResponse",
     "TaskBatchAckResponse",
     "TaskBatchCommitRequest",
     "TaskBatchCommitResponse",

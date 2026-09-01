@@ -77,6 +77,9 @@ import {
   gateList,
   gateShow,
   gateResolve,
+  deleteAttachmentApiTasksTaskIdAttachmentsAttachmentIdDelete,
+  listAttachmentsApiTasksTaskIdAttachmentsGet,
+  uploadAttachmentApiTasksTaskIdAttachmentsPost,
 } from "./client";
 import type {
   AgentSummary,
@@ -148,6 +151,7 @@ import type {
   GateSummary,
   InspectPlaybookRunResponse,
   CancelPlaybookRunResponse,
+  TaskAttachmentsResponse,
 } from "./client";
 import {
   fetchChatMessages,
@@ -292,6 +296,60 @@ export function useTask(taskId: string) {
     queryFn: async () => (await getTask({ body: { task_id: taskId }, throwOnError: true })).data as TaskResponse,
     refetchInterval: 60_000,
     enabled: !!taskId,
+  });
+}
+
+export function useTaskAttachments(taskId: string, enabled = true) {
+  return useQuery({
+    queryKey: ["task-attachments", taskId],
+    queryFn: async () => (
+      await listAttachmentsApiTasksTaskIdAttachmentsGet({
+        path: { task_id: taskId },
+        throwOnError: true,
+      })
+    ).data as TaskAttachmentsResponse,
+    enabled: enabled && !!taskId,
+  });
+}
+
+function invalidateTaskAttachments(queryClient: ReturnType<typeof useQueryClient>, taskId: string) {
+  void queryClient.invalidateQueries({ queryKey: ["task-attachments", taskId] });
+  void queryClient.invalidateQueries({ queryKey: ["task", taskId] });
+  void queryClient.invalidateQueries({ queryKey: ["tasks"] });
+}
+
+export function useUploadTaskAttachment() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ taskId, file }: { taskId: string; file: File }) => (
+      await uploadAttachmentApiTasksTaskIdAttachmentsPost({
+        path: { task_id: taskId },
+        // The pinned generator types OpenAPI binary strings as `string`,
+        // while its multipart serializer correctly accepts Blob/File values.
+        body: { file: file as unknown as string },
+        throwOnError: true,
+      })
+    ).data,
+    onSuccess: (_data, variables) => invalidateTaskAttachments(queryClient, variables.taskId),
+  });
+}
+
+export function useDeleteTaskAttachment() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      taskId,
+      attachmentId,
+    }: {
+      taskId: string;
+      attachmentId: string;
+    }) => (
+      await deleteAttachmentApiTasksTaskIdAttachmentsAttachmentIdDelete({
+        path: { task_id: taskId, attachment_id: attachmentId },
+        throwOnError: true,
+      })
+    ).data,
+    onSuccess: (_data, variables) => invalidateTaskAttachments(queryClient, variables.taskId),
   });
 }
 

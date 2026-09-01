@@ -1868,6 +1868,7 @@ class TaskCommandsMixin:
             "retry_count": task.retry_count,
             "max_retries": task.max_retries,
             "integration_mode": task.integration_mode,
+            "attachments": task.attachments,
             # Persisted graph blockedness (work-graph design §4).  Capacity
             # reasons (no agent, workspace busy, budget) are NOT in here —
             # those belong to `task explain`.
