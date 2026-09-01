@@ -119,3 +119,29 @@ def test_daemon_environment_does_not_duplicate_existing_path(tmp_path, monkeypat
     env = daemon_mod._daemon_environment(home=str(tmp_path))
 
     assert env["PATH"].split(daemon_mod.os.pathsep).count(str(local_bin)) == 1
+
+
+def test_resolve_daemon_prefers_current_venv_entry_point(tmp_path, monkeypatch):
+    venv_bin = tmp_path / "venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    local_daemon = venv_bin / "agent-queue"
+    local_daemon.write_text("local")
+    monkeypatch.setattr(daemon_mod.sys, "executable", str(venv_bin / "python"))
+
+    with patch("shutil.which", return_value="/home/user/.local/bin/agent-queue"):
+        resolved = daemon_mod._resolve_agent_queue_bin()
+
+    assert resolved == str(local_daemon)
+
+
+def test_resolve_daemon_falls_back_to_path_without_venv_entry_point(
+    tmp_path, monkeypatch,
+):
+    venv_bin = tmp_path / "venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    monkeypatch.setattr(daemon_mod.sys, "executable", str(venv_bin / "python"))
+
+    with patch("shutil.which", return_value="/usr/local/bin/agent-queue"):
+        resolved = daemon_mod._resolve_agent_queue_bin()
+
+    assert resolved == "/usr/local/bin/agent-queue"

@@ -72,16 +72,18 @@ def _find_daemon_pid() -> int | None:
 
 
 def _resolve_agent_queue_bin() -> str:
-    """Find the agent-queue entry point binary."""
+    """Find the agent-queue entry point for the active installation."""
     import shutil
 
-    path = shutil.which("agent-queue")
-    if path:
-        return path
-    # Fallback: try the venv bin
+    # A checkout-local ``aq`` must restart the matching checkout-local
+    # daemon.  Looking at PATH first can silently select an older user-wide
+    # install and make a successful source deployment appear ineffective.
     venv_bin = os.path.join(os.path.dirname(sys.executable), "agent-queue")
     if os.path.exists(venv_bin):
         return venv_bin
+    path = shutil.which("agent-queue")
+    if path:
+        return path
     return "agent-queue"
 
 
