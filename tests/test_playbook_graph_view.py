@@ -34,6 +34,7 @@ from src.playbooks.graph_view import (
     build_run_history,
     build_run_overlay,
 )
+from src.playbooks.graph import _topo_order
 from src.playbooks.models import (
     CompiledPlaybook,
     LlmConfig,
@@ -157,6 +158,48 @@ def _complex_playbook() -> CompiledPlaybook:
                 prompt="Handle timeout",
                 terminal=True,
             ),
+        },
+    )
+
+
+def _pipeline_playbook() -> CompiledPlaybook:
+    """Create two pipeline entry flows with success/failure action edges."""
+    return CompiledPlaybook(
+        id="pipeline-playbook",
+        version=1,
+        source_hash="pipeline123",
+        triggers=["task.created", "task.closed"],
+        scope="system",
+        nodes={
+            "create-gate": PlaybookNode(
+                entry=True,
+                action={
+                    "command": "gate_create",
+                    "args": {},
+                    "on_success": "ensure-task",
+                    "on_failure": "failed",
+                },
+            ),
+            "ensure-task": PlaybookNode(
+                action={
+                    "command": "ensure_task",
+                    "args": {},
+                    "on_success": "created",
+                    "on_failure": "failed",
+                },
+            ),
+            "route-task": PlaybookNode(
+                entry=True,
+                action={
+                    "command": "task_edit",
+                    "args": {},
+                    "on_success": "routed",
+                    "on_failure": "failed",
+                },
+            ),
+            "created": PlaybookNode(terminal=True),
+            "routed": PlaybookNode(terminal=True),
+            "failed": PlaybookNode(terminal=True),
         },
     )
 
@@ -336,6 +379,25 @@ class TestComputeLayout:
         positions = _compute_layout(pb)
         assert positions == {}
 
+    def test_pipeline_layout_starts_all_entry_flows_in_parallel(self):
+        positions = _compute_layout(_pipeline_playbook())
+
+        assert positions["create-gate"]["y"] == 0
+        assert positions["route-task"]["y"] == 0
+        assert positions["ensure-task"]["y"] == 1
+        assert positions["routed"]["y"] == 1
+        assert positions["created"]["y"] == 2
+        assert max(position["y"] for position in positions.values()) == 2
+
+    def test_pipeline_topological_order_seeds_all_entries(self):
+        order = _topo_order(_pipeline_playbook())
+
+        assert order[:2] == ["create-gate", "route-task"]
+        assert set(order) == {
+            "create-gate", "ensure-task", "route-task",
+            "created", "routed", "failed",
+        }
+
 
 # ===========================================================================
 # Node trace parsing tests
@@ -501,6 +563,35 @@ class TestBuildEdges:
         assert timeout_edges[0]["source"] == "start"
         assert timeout_edges[0]["target"] == "timeout_handler"
         assert timeout_edges[0]["label"] == "timeout"
+
+    def test_pipeline_action_edges_have_distinct_types_and_labels(self):
+        edges = build_edges(_pipeline_playbook())
+
+        assert {
+            (edge["source"], edge["target"], edge["edge_type"], edge["label"])
+            for edge in edges
+        } == {
+            ("create-gate", "ensure-task", "success", "success"),
+            ("create-gate", "failed", "failure", "failure"),
+            ("ensure-task", "created", "success", "success"),
+            ("ensure-task", "failed", "failure", "failure"),
+            ("route-task", "routed", "success", "success"),
+            ("route-task", "failed", "failure", "failure"),
+        }
+
+
+class TestPipelineNodes:
+    def test_action_nodes_surface_command_and_count_action_edges(self):
+        pb = _pipeline_playbook()
+        nodes = build_nodes(pb, _compute_layout(pb))
+        by_id = {node["id"]: node for node in nodes}
+
+        assert by_id["create-gate"]["prompt_preview"] == "gate_create"
+        assert by_id["create-gate"]["out_degree"] == 2
+        assert by_id["ensure-task"]["prompt_preview"] == "ensure_task"
+        assert by_id["ensure-task"]["out_degree"] == 2
+        assert by_id["route-task"]["prompt_preview"] == "task_edit"
+        assert by_id["route-task"]["out_degree"] == 2
 
 
 # ===========================================================================

@@ -23551,6 +23551,14 @@
           },
           "edge_type": {
             "type": "string",
+            "enum": [
+              "goto",
+              "condition",
+              "otherwise",
+              "timeout",
+              "success",
+              "failure"
+            ],
             "title": "Edge Type"
           }
         },

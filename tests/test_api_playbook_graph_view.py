@@ -199,3 +199,13 @@ def test_missing_playbook_id_is_rejected_before_the_command_runs(client):
     r = client.post("/api/playbook/graph-view", json={"direction": "TD"})
     assert r.status_code == 422, r.text
     assert "playbook_id" in r.text
+
+
+def test_openapi_edge_type_enum_includes_pipeline_outcomes(client):
+    edge_type = client.app.openapi()["components"]["schemas"]["PlaybookGraphEdge"][
+        "properties"
+    ]["edge_type"]
+
+    assert set(edge_type["enum"]) == {
+        "goto", "condition", "otherwise", "timeout", "success", "failure"
+    }

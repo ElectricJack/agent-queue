@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
@@ -260,8 +260,9 @@ class PlaybookGraphEdge(BaseModel):
     source: str
     target: str
     label: str = ""
-    #: goto | condition | otherwise | timeout
-    edge_type: str
+    edge_type: Literal[
+        "goto", "condition", "otherwise", "timeout", "success", "failure"
+    ]
 
 
 class PlaybookGraphNodesEdges(BaseModel):

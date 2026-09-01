@@ -151,15 +151,15 @@ def _compute_layout(
 ) -> dict[str, dict[str, int]]:
     """Compute node positions using layered BFS layout.
 
-    Assigns each node a (row, col) position based on BFS depth from the entry
-    node.  Nodes at the same BFS depth are placed in the same row (for top-down
-    layout) or same column (for left-right layout).
+    Assigns each node a (row, col) position based on BFS depth from all entry
+    nodes.  Nodes at the same BFS depth are placed in the same row (for
+    top-down layout) or same column (for left-right layout).
 
     Returns a dict mapping node_id → {"x": int, "y": int} in grid coordinates.
     The caller can scale these to pixel positions.
     """
-    entry = playbook.entry_node_id()
-    if not entry:
+    entries = [nid for nid, node in playbook.nodes.items() if node.entry]
+    if not entries:
         # Fallback: single row
         return {
             nid: {"x": i, "y": 0} for i, nid in enumerate(playbook.nodes)
@@ -167,7 +167,7 @@ def _compute_layout(
 
     # BFS to assign layers (depth)
     layers: dict[str, int] = {}
-    queue: deque[tuple[str, int]] = deque([(entry, 0)])
+    queue: deque[tuple[str, int]] = deque((entry, 0) for entry in entries)
     visited: set[str] = set()
 
     while queue:
@@ -183,6 +183,11 @@ def _compute_layout(
             successors.append(node.goto)
         for t in node.transitions:
             successors.append(t.goto)
+        if node.action:
+            for hop in ("on_success", "on_failure"):
+                target = node.action.get(hop)
+                if isinstance(target, str):
+                    successors.append(target)
         if node.on_timeout and node.on_timeout != node.goto:
             successors.append(node.on_timeout)
 
@@ -290,6 +295,10 @@ def build_nodes(
 
         if show_prompts and not node.terminal:
             preview = _prompt_preview(node, max_prompt_len)
+            if not preview and node.action:
+                command = node.action.get("command")
+                if isinstance(command, str):
+                    preview = command
             if preview:
                 node_data["prompt_preview"] = preview
 
@@ -300,7 +309,13 @@ def build_nodes(
             node_data["on_timeout"] = node.on_timeout
 
         # Transition count for sizing hint
-        out_edges = len(node.transitions) + (1 if node.goto else 0)
+        action_edges = 0
+        if node.action:
+            action_edges = sum(
+                isinstance(node.action.get(hop), str)
+                for hop in ("on_success", "on_failure")
+            )
+        out_edges = len(node.transitions) + (1 if node.goto else 0) + action_edges
         node_data["out_degree"] = out_edges
 
         # Full compiled configuration for the node inspector — untruncated
@@ -346,6 +361,21 @@ def build_edges(playbook: CompiledPlaybook) -> list[dict[str, Any]]:
                 "label": label,
                 "edge_type": edge_type,
             })
+
+        # Pipeline action outcomes
+        if node.action:
+            for hop, edge_type in (
+                ("on_success", "success"),
+                ("on_failure", "failure"),
+            ):
+                target = node.action.get(hop)
+                if isinstance(target, str):
+                    edges.append({
+                        "source": nid,
+                        "target": target,
+                        "label": edge_type,
+                        "edge_type": edge_type,
+                    })
 
         # Timeout edge
         if node.on_timeout and node.on_timeout != node.goto:

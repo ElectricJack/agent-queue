@@ -98,19 +98,19 @@ def _edge_label(transition) -> str:
 
 
 def _topo_order(playbook: CompiledPlaybook) -> list[str]:
-    """Return node IDs in a BFS order starting from the entry node.
+    """Return node IDs in a BFS order starting from all entry nodes.
 
     Unreachable nodes are appended at the end (shouldn't happen in valid
     playbooks but handled for robustness).
     """
-    entry = playbook.entry_node_id()
-    if not entry:
+    entries = [nid for nid, node in playbook.nodes.items() if node.entry]
+    if not entries:
         # Fallback: return dict order
         return list(playbook.nodes.keys())
 
     ordered: list[str] = []
     visited: set[str] = set()
-    queue: deque[str] = deque([entry])
+    queue: deque[str] = deque(entries)
 
     while queue:
         nid = queue.popleft()
@@ -126,6 +126,11 @@ def _topo_order(playbook: CompiledPlaybook) -> list[str]:
         for t in node.transitions:
             if t.goto not in visited:
                 queue.append(t.goto)
+        if node.action:
+            for hop in ("on_success", "on_failure"):
+                target = node.action.get(hop)
+                if isinstance(target, str) and target not in visited:
+                    queue.append(target)
         # on_timeout edge
         if node.on_timeout and node.on_timeout not in visited:
             queue.append(node.on_timeout)
