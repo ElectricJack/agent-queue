@@ -2,9 +2,8 @@
 
 Date: 2026-08-31
 
-Status: Product direction and the in-conversation design are approved. This written
-specification is awaiting review before an implementation plan is written. It
-contains no runtime changes.
+Status: Approved for implementation. This document is the governing specification
+for the narrow assignment-routing change.
 
 Source baseline: `agent-queue2`, commit `0436555e`.
 
@@ -105,6 +104,7 @@ Add one current-decision table, `task_assignment_routes`, with:
 | `task_id` | Primary key and foreign key to the routed task. |
 | `project_id` | Project-scoped lookup and integrity check. |
 | `input_hash` | Hash of the material task snapshot used by the LLM. |
+| `task_updated_at` | Redundant task revision used for an inexpensive freshness join in scheduling and claims. |
 | `options_hash` | Hash of the compatible class/provider catalog used by the LLM. |
 | `intelligence_class` | Required class selected by the playbook. |
 | `provider` | Nullable hard provider constraint. |
