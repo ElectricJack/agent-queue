@@ -314,9 +314,15 @@ class Orchestrator(
         # ``(project_id, profile_id)`` key has been in continuous surplus,
         # so scale-down waits out ``swarm.scale_down_grace`` before draining.
         # ``_pool_quarantine`` holds a key's until-timestamp for a pool a
-        # launch failure has temporarily stopped starting into.
+        # launch failure has temporarily stopped starting into, and
+        # ``_pool_quarantine_reason`` the human-readable why for the same key
+        # (``aq pool status``).  Two maps rather than one tuple value: the
+        # timestamp map is read as a bare float in several places, and the
+        # reason is optional -- a key quarantined without one still reports
+        # its window.  ``PoolsMixin._quarantine_pool`` writes both.
         self._pool_surplus_since: dict = {}
         self._pool_quarantine: dict = {}
+        self._pool_quarantine_reason: dict = {}
         # EventBus subscription that resolves ``event`` gates live.  Set by
         # ``_subscribe_event_gates`` on initialize; kept as an attribute so
         # tests can toggle it deterministically.

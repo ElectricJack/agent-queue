@@ -507,6 +507,10 @@ class PoolStatusRow(BaseModel):
     draining: int
     ready: int
     quarantined_until: float | None = None
+    #: Why the pool is quarantined (unknown harness, startup death + the
+    #: captured startup-output excerpt, ...).  ``None`` when the key was
+    #: quarantined without one.
+    quarantined_reason: str | None = None
 
 
 class PoolStatusResponse(BaseModel):

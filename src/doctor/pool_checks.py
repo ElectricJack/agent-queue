@@ -6,6 +6,47 @@ dataclass (``CheckResult``/``DoctorCheck``) and registration API.  Mirrors
 pair per check, a factory that returns the list of :class:`DoctorCheck`, plus
 a ``CHECKS`` snapshot and a ``run_check`` convenience wrapper used by tests
 and any one-off invocation that doesn't want to spin up a full registry.
+
+Pool agent rows — the rule
+--------------------------
+
+``_launch_pool_session`` creates one ``agents`` row per pool session and
+``_terminate_pool_session`` gives it back.  *Which state* it comes back in is
+the whole rule, and both halves matter:
+
+* **Confirmed stop → ``IDLE``.**  Teardown that saw ``provider.stop`` succeed
+  returns the definition to the reuse pool, and the next launch draws from
+  ``list_agents(state=IDLE)``.  That reuse is what bounds the roster at
+  roughly ``max_active`` per pool instead of growing it by one row per
+  claimed task — what the agent-flock design means by "pools ... may reuse
+  idle definitions after safe termination".
+* **Unconfirmed stop → ``RETIRED``.**  ``_terminate_pool_session_locked``
+  marks the row ``RETIRED`` *before* stopping the process and clears it back
+  to ``IDLE`` only once the stop is confirmed, so a worker whose process may
+  still be alive is never handed to a second session.
+
+``RETIRED`` rows are therefore rare, and nothing reaps them automatically:
+``soft_delete_agent`` cannot, because ``create_automatic_agent`` refuses to
+grow the roster while *any* worker tombstone exists, and a hard delete would
+drop history the task ledger still references.
+
+``pools.orphan_agents`` polices the rows that fall outside that loop — a
+pool-profile agent with no session row at all, stale by ``2 x prepare_timeout``
+so an in-flight launch is never caught.  Four shapes, four verdicts:
+
+* idle, enabled, unowned, holding no workspace — the reuse pool; left alone.
+* idle but still holding a workspace lock — a rolled-back launch leaked it;
+  the lock is released and the row stays IDLE and reusable.
+* busy, or ``current_task_id`` set — reported, never touched.  This is the
+  "fixed push-agent row for a profile that has since become ``lifecycle:
+  pool``" case: no pool session will ever adopt it, but it may still own a
+  task, so retiring or deleting it would strand that task.
+* disabled, or ``ERROR``/``PAUSED`` — unusable and unowned; retired, never
+  deleted.
+
+Every repair writes one ``pool.agent_repaired`` event, so ``aq events
+--event-type pool.agent_repaired`` answers "why is this worker RETIRED?"
+long after the doctor run has scrolled away.
 """
 
 from __future__ import annotations
@@ -14,7 +55,7 @@ import time
 
 from src.doctor.models import CheckResult, DoctorCheck, DoctorContext, Severity
 from src.doctor.runner import apply_fix
-from src.models import TaskStatus
+from src.models import AgentState, TaskStatus
 
 OWNER = "swarm-work-model"
 
@@ -114,60 +155,129 @@ async def _fix_pools_stuck(ctx: DoctorContext) -> CheckResult:
 
 
 async def _find_orphan_agents(ctx: DoctorContext):
-    """Pool-profile agents with no session row -- but only once they're old.
+    """Classify every pool-profile agent row that has no session row at all.
+
+    Returns ``(leaked, stranded, retirable, spares)`` — see the module
+    docstring's "pool agent rows" rule for what each bucket means and what
+    ``--fix`` is allowed to do to it.
 
     A pool launch creates the agent row first, then acquires a workspace,
     then writes the session row (``_launch_pool_session``) -- there is a
     real window, seconds wide, where a perfectly healthy in-flight launch
     has an agent with no session yet. Flagging on that window would make
-    the check (and ``--fix``) race the launch and delete an agent mid-boot.
+    the check (and ``--fix``) race the launch and act on an agent mid-boot.
     Gate on the same ``2 x prepare_timeout`` staleness ``pools.preparing_stuck``
     uses for its own "this has been mid-flight too long" judgment call.
     """
     pool_profile_ids = await _pool_profile_ids(ctx.db)
     if not pool_profile_ids:
-        return []
+        return [], [], [], []
     threshold = time.time() - 2 * _prepare_timeout(ctx)
-    bad = []
+    leaked, stranded, retirable, spares = [], [], [], []
     for agent in await ctx.db.list_agents():
         if agent.profile_id not in pool_profile_ids:
             continue
         if (agent.created_at or 0.0) > threshold:
             continue
-        sessions = await ctx.db.list_sessions(agent_id=agent.id)
-        if not sessions:
-            bad.append(agent)
-    return bad
+        if await ctx.db.list_sessions(agent_id=agent.id):
+            continue
+        if agent.state is AgentState.BUSY or agent.current_task_id:
+            # May still own a task.  Retiring or deleting it here would
+            # strand that task with no way back; a human decides.
+            stranded.append(agent)
+        elif not agent.enabled or agent.state in (AgentState.ERROR, AgentState.PAUSED):
+            retirable.append(agent)
+        elif await ctx.db.get_workspace_for_agent(agent.id) is not None:
+            leaked.append(agent)
+        else:
+            spares.append(agent)
+    return leaked, stranded, retirable, spares
+
+
+def _agent_ids(rows) -> list[str]:
+    return [a.id for a in rows[:50]]
 
 
 async def _check_orphan_agents(ctx: DoctorContext) -> CheckResult:
     if ctx.db is None:
         return _no_db_result("pools.orphan_agents")
-    bad = await _find_orphan_agents(ctx)
-    if not bad:
+    leaked, stranded, retirable, spares = await _find_orphan_agents(ctx)
+    data = {
+        "count": len(leaked) + len(stranded) + len(retirable),
+        "leaked_workspace": _agent_ids(leaked),
+        "stranded": _agent_ids(stranded),
+        "retirable": _agent_ids(retirable),
+        # Reported so an operator can see the reuse pool, never acted on.
+        "spares": _agent_ids(spares),
+    }
+    if not data["count"]:
         return CheckResult(
-            id="pools.orphan_agents", severity=Severity.OK, detail="no orphaned pool agents"
+            id="pools.orphan_agents",
+            severity=Severity.OK,
+            detail=(
+                f"no orphaned pool agents ({len(spares)} idle definition(s) available for reuse)"
+            ),
+            data=data,
         )
+    parts = []
+    if leaked:
+        parts.append(f"{len(leaked)} holding a workspace lock with no session")
+    if retirable:
+        parts.append(f"{len(retirable)} unusable and unowned (retirable)")
+    if stranded:
+        parts.append(f"{len(stranded)} busy or holding a task with no session (needs a human)")
     return CheckResult(
         id="pools.orphan_agents",
-        severity=Severity.ERROR,
-        detail=f"{len(bad)} pool-profile agent(s) with no session row",
-        data={"count": len(bad), "agents": [a.id for a in bad[:50]]},
+        severity=Severity.ERROR if stranded else Severity.WARN,
+        detail="pool-profile agent(s) with no session row: " + "; ".join(parts),
+        data=data,
     )
 
 
 async def _fix_orphan_agents(ctx: DoctorContext) -> CheckResult:
     if ctx.db is None:
         return _no_db_result("pools.orphan_agents")
-    bad = await _find_orphan_agents(ctx)
-    for agent in bad:
+    leaked, stranded, retirable, _spares = await _find_orphan_agents(ctx)
+    for agent in leaked:
+        # The definition itself is fine and reusable -- only the lock the
+        # rolled-back launch failed to give back is wrong.
         await ctx.db.release_workspaces_for_agent(agent.id)
-        await ctx.db.delete_agent(agent.id)
+        await _audit(ctx, agent, "workspace_lock_released")
+    for agent in retirable:
+        await ctx.db.release_workspaces_for_agent(agent.id)
+        await ctx.db.update_agent(agent.id, state=AgentState.RETIRED, current_task_id=None)
+        await _audit(ctx, agent, "retired_unusable_orphan")
+    detail = f"released {len(leaked)} leaked workspace lock(s), retired {len(retirable)} agent(s)"
+    if stranded:
+        detail += (
+            f"; left {len(stranded)} busy/task-holding agent(s) untouched "
+            "(retire or reassign them by hand)"
+        )
     return CheckResult(
         id="pools.orphan_agents",
-        severity=Severity.OK,
-        detail=f"deleted {len(bad)} orphaned pool agent(s)",
+        severity=Severity.ERROR if stranded else Severity.OK,
+        detail=detail,
+        data={
+            "released": _agent_ids(leaked),
+            "retired": _agent_ids(retirable),
+            "skipped_busy": _agent_ids(stranded),
+        },
     )
+
+
+async def _audit(ctx: DoctorContext, agent, reason: str) -> None:
+    """One durable row per repaired agent -- never a silent mutation.
+
+    ``aq events --event-type pool.agent_repaired`` is the answer to "why is
+    this worker RETIRED?" long after the doctor run has scrolled away.
+    """
+    try:
+        await ctx.db.log_event(
+            "pool.agent_repaired",
+            payload=f"{reason} {agent.id} ({agent.profile_id})",
+        )
+    except Exception:  # pragma: no cover - an audit failure must not block the repair
+        pass
 
 
 # ---------------------------------------------------------------------------
