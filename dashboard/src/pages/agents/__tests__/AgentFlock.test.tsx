@@ -364,7 +364,8 @@ describe("Tiled agent workspace", () => {
 
   it("defines a new shared worker without creating a running session", async () => {
     renderFlock("/agents", true);
-    fireEvent.click(await screen.findByRole("button", { name: "Add agent" }));
+    const rail = within(await screen.findByRole("region", { name: "Agent flock" }));
+    fireEvent.click(rail.getByRole("button", { name: "Add agent" }));
     const form = screen.getByRole("form", { name: "Add agent" });
     fireEvent.change(within(form).getByLabelText("Name"), { target: { value: "Designer" } });
     await within(form).findByRole("option", { name: "Implementer" });
@@ -374,6 +375,25 @@ describe("Tiled agent workspace", () => {
     await screen.findByRole("region", { name: "Designer agent window" });
     expect(screen.getByLabelText("Current location")).toHaveTextContent("/agents?agent=new-agent");
     expect(TerminalSocketMock.instances).toHaveLength(0);
+  });
+
+  it("opens the add-agent form on the agents page from any other page", async () => {
+    renderFlock("/tasks", true);
+    const rail = within(await screen.findByRole("region", { name: "Agent flock" }));
+    fireEvent.click(rail.getByRole("button", { name: "Add agent" }));
+    expect(screen.getByLabelText("Current location")).toHaveTextContent("/agents?add=1");
+    expect(screen.getByRole("form", { name: "Add agent" })).toBeInTheDocument();
+    expect(rail.queryByRole("link", { name: /manage agent/i })).not.toBeInTheDocument();
+  });
+
+  it("gives the whole page to the agent window once one is selected", async () => {
+    renderFlock("/agents?agent=b", true);
+    await screen.findByRole("region", { name: "Builder agent window" });
+    expect(screen.queryByRole("heading", { name: "Agent flock" })).not.toBeInTheDocument();
+    // The only remaining Add-agent control is the left rail's; the page header is gone.
+    const addButtons = screen.getAllByRole("button", { name: "Add agent" });
+    expect(addButtons).toHaveLength(1);
+    expect(screen.getByRole("region", { name: "Agent flock" })).toContainElement(addButtons[0]!);
   });
 });
 

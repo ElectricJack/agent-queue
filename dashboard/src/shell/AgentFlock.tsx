@@ -1,6 +1,5 @@
 import { useId, useState } from "react";
-import { Link } from "react-router-dom";
-import { ChevronDownIcon, ChevronRightIcon, UsersIcon, ArrowTopRightOnSquareIcon } from "@heroicons/react/24/outline";
+import { ChevronDownIcon, ChevronRightIcon, UsersIcon, PlusIcon } from "@heroicons/react/24/outline";
 import { useAgentFlock } from "../api/agents";
 import { useAgentSelection } from "../pages/agents/useAgentSelection";
 import { AgentState, AgentEligibility, AgentWaitingQuestion } from "../pages/agents/AgentMetadata";
@@ -41,10 +40,11 @@ export default function AgentFlock() {
           <span>Agent flock</span>
           <span className="ml-auto font-mono text-[10px] text-gray-500">{agents.length}</span>
         </button>
-        <Link to="/agents" data-listnav="1" aria-label="Manage agent flock" title="Manage agents"
+        <button type="button" data-listnav="1" aria-label="Add agent" title="Add agent"
+          onClick={() => selection.setAdding(true)}
           className="rounded p-2 text-gray-500 hover:bg-gray-800 hover:text-gray-200">
-          <ArrowTopRightOnSquareIcon className="h-3.5 w-3.5" />
-        </Link>
+          <PlusIcon className="h-3.5 w-3.5" />
+        </button>
       </div>
       {!collapsed && (
         <div id={listId} className="space-y-1">

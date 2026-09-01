@@ -19,9 +19,12 @@ export function useAgentSelection() {
     return () => { current.mounted = false; };
   }, []);
 
-  const navigateTo = (ids: string[], replaceSelection = false) => {
+  const adding = location.pathname === "/agents" && params.get("add") === "1";
+
+  const navigateTo = (ids: string[], replaceSelection = false, add = false) => {
     const search = new URLSearchParams();
     ids.forEach((id) => search.append("agent", id));
+    if (add) search.set("add", "1");
     navigate(
       { pathname: "/agents", search: search.toString() },
       { state: replaceSelection ? { agentSelection: "replace" } : null },
@@ -42,6 +45,9 @@ export function useAgentSelection() {
   return {
     selectedIds,
     select,
+    /** The Add-agent form is URL state so the left rail can open it from any page. */
+    adding,
+    setAdding: (next: boolean) => navigateTo(selectedIds, false, next),
     close: (id: string) => {
       // A deletion may finish after selection changes or the workspace unmounts.
       if (!latest.current.mounted || !latest.current.selectedIds.includes(id)) return;

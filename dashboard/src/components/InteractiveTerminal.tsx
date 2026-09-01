@@ -113,12 +113,24 @@ export default function InteractiveTerminal({ sessionId, name }: { sessionId: st
   const reconnect = state.status === "disconnected" || state.status === "error";
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col">
-      <div className="flex shrink-0 items-center justify-between border-b border-gray-800 px-3 py-1 text-[10px] text-gray-500">
+      {/* One control row only: the terminal itself owns every other pixel of height. */}
+      <div ref={controlsRef} tabIndex={-1} className="flex shrink-0 items-center gap-2 border-b border-gray-800 px-3 py-1 text-[10px] text-gray-500">
         <span>Live tmux · interactive</span>
-        <span role="status" aria-label={name + " terminal connection"} className="capitalize">{state.status}</span>
+        <span id={hintId} className="sr-only">Click to type · Ctrl+M releases keyboard</span>
+        <span role="status" aria-label={name + " terminal connection"} className="ml-auto capitalize">{state.status}</span>
+        <button ref={focusButton} type="button" aria-label={"Focus " + name + " terminal"} disabled={disabled}
+          onClick={() => terminalRef.current?.focus()}
+          className="rounded border border-gray-700 px-1.5 py-0.5 text-gray-300 hover:bg-gray-800 disabled:opacity-40">Type</button>
+        <button type="button" aria-label={"Send Enter to " + name} disabled={disabled}
+          onClick={() => connectionRef.current?.sendInput(encoder.encode("\r"))}
+          className="rounded border border-gray-700 px-1.5 py-0.5 text-gray-300 hover:bg-gray-800 disabled:opacity-40">Enter</button>
+        <button type="button" aria-label={"Interrupt " + name} disabled={disabled}
+          onClick={() => connectionRef.current?.sendInput(encoder.encode("\x03"))}
+          className="rounded border border-gray-700 px-1.5 py-0.5 text-gray-300 hover:bg-gray-800 disabled:opacity-40">Ctrl+C</button>
       </div>
       <div className="min-h-0 min-w-0 flex-1 overflow-hidden bg-[#0d1117] p-2">
-        <div ref={hostRef} onKeyDown={(event) => event.stopPropagation()} className="h-full w-full [&_.xterm]:h-full" />
+        <div ref={hostRef} title="Click to type · Ctrl+M releases keyboard"
+          onKeyDown={(event) => event.stopPropagation()} className="h-full w-full [&_.xterm]:h-full" />
       </div>
       {state.message && (
         <div role={reconnect ? "alert" : "status"} className="shrink-0 border-t border-gray-800 px-3 py-2 text-xs text-gray-300">
@@ -131,18 +143,6 @@ export default function InteractiveTerminal({ sessionId, name }: { sessionId: st
           )}
         </div>
       )}
-      <div ref={controlsRef} tabIndex={-1} className="flex shrink-0 flex-wrap items-center gap-2 border-t border-gray-800 px-3 py-2 text-[10px] text-gray-500">
-        <span id={hintId} className="min-w-0 flex-1">Click to type · Ctrl+M releases keyboard</span>
-        <button ref={focusButton} type="button" aria-label={"Focus " + name + " terminal"} disabled={disabled}
-          onClick={() => terminalRef.current?.focus()}
-          className="rounded border border-gray-700 px-2 py-1 text-gray-300 hover:bg-gray-800 disabled:opacity-40">Type</button>
-        <button type="button" aria-label={"Send Enter to " + name} disabled={disabled}
-          onClick={() => connectionRef.current?.sendInput(encoder.encode("\r"))}
-          className="rounded border border-gray-700 px-2 py-1 text-gray-300 hover:bg-gray-800 disabled:opacity-40">Enter</button>
-        <button type="button" aria-label={"Interrupt " + name} disabled={disabled}
-          onClick={() => connectionRef.current?.sendInput(encoder.encode("\x03"))}
-          className="rounded border border-gray-700 px-2 py-1 text-gray-300 hover:bg-gray-800 disabled:opacity-40">Ctrl+C</button>
-      </div>
     </div>
   );
 }
