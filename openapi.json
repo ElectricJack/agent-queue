@@ -774,6 +774,178 @@
         }
       }
     },
+    "/api/tasks/{task_id}/attachments": {
+      "post": {
+        "summary": "Upload Attachment",
+        "operationId": "upload_attachment_api_tasks__task_id__attachments_post",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_attachment_api_tasks__task_id__attachments_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "List Attachments",
+        "operationId": "list_attachments_api_tasks__task_id__attachments_get",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/{task_id}/attachment": {
+      "get": {
+        "summary": "Get Attachment",
+        "operationId": "get_attachment_api_tasks__task_id__attachment_get",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete Attachment",
+        "operationId": "delete_attachment_api_tasks__task_id__attachment_delete",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/tasks/{task_id}/sessions": {
       "get": {
         "summary": "Task Sessions",
@@ -6394,8 +6566,8 @@
         "tags": [
           "project"
         ],
-        "summary": "Edit a project's properties: name, credit_weight, max_concurrent_agents, budget_limit, discord_channel_id, default_profile_id, or repo_default_branch. Use this to rename projects, adjust scheduling weight, set token budgets, link Discord channels, set a default agent profile, or change the default git branch.",
-        "description": "Edit a project's properties: name, credit_weight, max_concurrent_agents, budget_limit, discord_channel_id, default_profile_id, or repo_default_branch. Use this to rename projects, adjust scheduling weight, set token budgets, link Discord channels, set a default agent profile, or change the default git branch.",
+        "summary": "Edit a project's properties: name, credit_weight, max_concurrent_agents, budget_limit, discord_channel_id, default_profile_id, assignment_playbook_id, or repo_default_branch. Use this to rename projects, adjust scheduling weight, set token budgets, link Discord channels, set a default agent profile, or change the default git branch.",
+        "description": "Edit a project's properties: name, credit_weight, max_concurrent_agents, budget_limit, discord_channel_id, default_profile_id, assignment_playbook_id, or repo_default_branch. Use this to rename projects, adjust scheduling weight, set token budgets, link Discord channels, set a default agent profile, or change the default git branch.",
         "operationId": "edit_project",
         "requestBody": {
           "content": {
@@ -12422,6 +12594,98 @@
         ],
         "title": "AskHumanRequest"
       },
+      "AssignmentRouteDetail": {
+        "properties": {
+          "source": {
+            "type": "string",
+            "title": "Source"
+          },
+          "intelligence_class": {
+            "type": "string",
+            "title": "Intelligence Class"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "playbook_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Playbook Id"
+          },
+          "playbook_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Playbook Version"
+          },
+          "playbook_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Playbook Run Id"
+          },
+          "freshness": {
+            "type": "string",
+            "title": "Freshness"
+          }
+        },
+        "type": "object",
+        "required": [
+          "source",
+          "intelligence_class",
+          "freshness"
+        ],
+        "title": "AssignmentRouteDetail"
+      },
+      "Body_upload_attachment_api_tasks__task_id__attachments_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_upload_attachment_api_tasks__task_id__attachments_post"
+      },
       "CancelPlaybookRunRequest": {
         "properties": {
           "run_id": {
@@ -16228,6 +16492,18 @@
             "title": "Default Profile Id",
             "description": "Default agent profile ID for tasks in this project (optional, null to clear)"
           },
+          "assignment_playbook_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignment Playbook Id",
+            "description": "Project-scoped assignment-routing playbook ID (optional, null to use the system default)"
+          },
           "repo_default_branch": {
             "anyOf": [
               {
@@ -16832,6 +17108,24 @@
             "type": "array",
             "title": "Reasons",
             "default": []
+          },
+          "reason_codes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Reason Codes",
+            "default": []
+          },
+          "assignment_route": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AssignmentRouteDetail"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -18988,6 +19282,17 @@
               }
             ],
             "title": "Default Profile Id"
+          },
+          "assignment_playbook_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignment Playbook Id"
           }
         },
         "type": "object",
@@ -19363,6 +19668,14 @@
               }
             ],
             "title": "Pr Url"
+          },
+          "attachments": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Attachments",
+            "default": []
           },
           "depends_on": {
             "items": {
@@ -25343,6 +25656,17 @@
               }
             ],
             "title": "Discord Channel Id"
+          },
+          "assignment_playbook_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignment Playbook Id"
           }
         },
         "type": "object",
@@ -30582,6 +30906,14 @@
             ],
             "title": "Pr Url"
           },
+          "attachments": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Attachments",
+            "default": []
+          },
           "depends_on": {
             "items": {
               "$ref": "#/components/schemas/TaskRef"
@@ -31431,6 +31763,14 @@
             ],
             "title": "Pr Url"
           },
+          "attachments": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Attachments",
+            "default": []
+          },
           "depends_on": {
             "items": {
               "$ref": "#/components/schemas/TaskRef"
@@ -31729,6 +32069,14 @@
               }
             ],
             "title": "Pr Url"
+          },
+          "attachments": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Attachments",
+            "default": []
           },
           "depends_on": {
             "items": {

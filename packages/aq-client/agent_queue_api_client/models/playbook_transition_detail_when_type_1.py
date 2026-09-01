@@ -6,11 +6,11 @@ from typing import Any, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-T = TypeVar("T", bound="PlaybookGraphViewResponseOverlays")
+T = TypeVar("T", bound="PlaybookTransitionDetailWhenType1")
 
 
 @_attrs_define
-class PlaybookGraphViewResponseOverlays:
+class PlaybookTransitionDetailWhenType1:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -23,10 +23,10 @@ class PlaybookGraphViewResponseOverlays:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        playbook_graph_view_response_overlays = cls()
+        playbook_transition_detail_when_type_1 = cls()
 
-        playbook_graph_view_response_overlays.additional_properties = d
-        return playbook_graph_view_response_overlays
+        playbook_transition_detail_when_type_1.additional_properties = d
+        return playbook_transition_detail_when_type_1
 
     @property
     def additional_keys(self) -> list[str]:
