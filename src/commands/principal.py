@@ -56,7 +56,14 @@ ENFORCED_KINDS: frozenset[PrincipalKind] = frozenset(
 #: has DENY_ALL because a row was missing, not because an operator authored an
 #: empty capability set — see :attr:`ExecutionPrincipal.unresolved`.
 UNRESOLVED_PROVENANCE: frozenset[str] = frozenset(
-    {"session-not-found", "session-has-no-profile", "profile-not-found"}
+    {
+        "session-not-found",
+        "session-has-no-profile",
+        "profile-not-found",
+        # The store could not be consulted at all (no database wired yet, or
+        # the lookup raised).  Squarely "we could not find out".
+        "database-unavailable",
+    }
 )
 
 #: Arg keys the server owns.  Stripped at both HTTP surfaces and again in

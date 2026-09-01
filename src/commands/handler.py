@@ -755,14 +755,33 @@ class CommandHandler(
         if entry is not None and entry[1] > now:
             profile_id, policy, reason = entry[0]
         else:
-            session = await self.db.get_session(session_id)
+            # A store that cannot answer is "we could not find out", not
+            # "the caller may do anything" — and it must not be an
+            # exception either.  ``execute`` is the single dispatch seam
+            # for Discord, MCP, the CLI and both HTTP surfaces, so raising
+            # here would turn an unresolvable identity into a 500 on every
+            # session-scoped command rather than a clean denial.  Reached
+            # whenever the handler is wired without a live database: early
+            # startup before ``Database.initialize``, and any caller that
+            # builds a CommandHandler on a stub orchestrator.
+            try:
+                session = await self.db.get_session(session_id)
+            except AttributeError:
+                return _closed("database-unavailable")
+            except Exception:
+                logger.exception("principal lookup failed for session %s", session_id)
+                return _closed("database-unavailable")
             if session is None:
                 return _closed("session-not-found")
             profile_id = getattr(session, "profile_id", None)
             if not profile_id:
                 profile_id, policy, reason = None, DENY_ALL, "session-has-no-profile"
             else:
-                profile = await self.db.get_profile(profile_id)
+                try:
+                    profile = await self.db.get_profile(profile_id)
+                except Exception:
+                    logger.exception("profile lookup failed for %s", profile_id)
+                    return _closed("database-unavailable")
                 if profile is None:
                     policy, reason = DENY_ALL, "profile-not-found"
                 else:

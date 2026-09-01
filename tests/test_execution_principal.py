@@ -210,6 +210,49 @@ class TestSeamDerivation:
         assert p.policy == DENY_ALL
         assert p.provenance == ("profile-not-found",)
 
+    async def test_an_unusable_store_fails_closed_rather_than_raising(
+        self, command_handler_factory
+    ):
+        """A store that cannot answer must deny, not blow up the dispatch.
+
+        ``execute`` is the single dispatch seam for Discord, MCP, the CLI and
+        both HTTP surfaces.  Raising out of the seam turns an unresolvable
+        identity into a 500 on *every* session-scoped command instead of a
+        clean denial — worse than the fail-closed answer, and it hides the
+        cause.  Reached whenever the handler has no live database: early
+        startup before ``Database.initialize``, and any caller holding a stub
+        orchestrator.
+        """
+        from src.profiles.capabilities import DENY_ALL
+
+        handler = await command_handler_factory()
+        handler.orchestrator.db = None
+        handler._invalidate_principal_cache()
+
+        p = await handler._principal_from_scope(_scope())
+
+        assert p.policy == DENY_ALL
+        assert p.provenance == ("database-unavailable",)
+        assert p.unresolved is True
+
+    async def test_a_raising_store_fails_closed(self, command_handler_factory):
+        """Same answer when the lookup itself errors, not just when it is absent."""
+        from src.profiles.capabilities import DENY_ALL
+
+        handler = await command_handler_factory()
+        await _seed(handler, profile=AgentProfile(id="narrow", name="narrow"))
+        handler._invalidate_principal_cache()
+
+        async def _boom(_session_id):
+            raise RuntimeError("connection pool exhausted")
+
+        handler.orchestrator.db.get_session = _boom
+
+        p = await handler._principal_from_scope(_scope())
+
+        assert p.policy == DENY_ALL
+        assert p.provenance == ("database-unavailable",)
+
     async def test_elevated_scope_still_carries_the_profile_policy(self, command_handler_factory):
         handler = await command_handler_factory()
         await _seed(
