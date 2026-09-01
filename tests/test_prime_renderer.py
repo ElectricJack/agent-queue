@@ -10,11 +10,12 @@ from __future__ import annotations
 
 import json
 import os
+import time
 
 import pytest
 
 from src.config import AppConfig
-from src.models import AgentProfile, Project, Task
+from src.models import AgentProfile, Project, SessionRecord, Task
 from src.prime import PrimeRenderer
 from src.prime.models import PrimeDocument, PrimeSection
 
@@ -375,6 +376,38 @@ class TestStaticSections:
         body = {s.key: s.body for s in doc.sections}["completion_protocol"]
         assert "aq task close task-1" in body
         assert "aq session drain-ack" in body
+
+    @pytest.mark.parametrize("lifecycle", [None, "pool"])
+    async def test_completion_protocol_renders_emergent_work_guidance(
+        self, db, config, task, lifecycle
+    ):
+        session_id = None
+        if lifecycle == "pool":
+            session_id = "pool-session"
+            await db.create_session(
+                SessionRecord(
+                    id=session_id,
+                    project_id="proj-1",
+                    profile_id="coder",
+                    harness="codex",
+                    provider="fake",
+                    name="pool-session",
+                    lifecycle="pool",
+                    work_dir="/tmp/pool-session",
+                    epoch="test",
+                    instance_token="test-only",
+                    started_at=time.time(),
+                    task_id="task-1",
+                    state="running",
+                )
+            )
+        doc = await PrimeRenderer(db, config).render_for_task("task-1", session_id=session_id)
+        body = {s.key: s.body for s in doc.sections}["completion_protocol"]
+        assert "## Emergent work" in body
+        assert "aq task create" in body
+        assert "--reason" in body
+        assert "discovered-from" in body
+        assert "--parent <container-id>" in body
 
 
 # ---------------------------------------------------------------------------

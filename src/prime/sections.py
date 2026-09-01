@@ -406,6 +406,9 @@ def build_completion_protocol_section(task_id: str, *, lifecycle: str | None = N
         pool_body = _load_template("completion_protocol_pool.md").replace("{task_id}", task_id)
         if pool_body:
             body = f"{body}\n\n{pool_body}" if body else pool_body
+    emergent_work = _load_template("emergent_work.md")
+    if emergent_work:
+        body = f"{body}\n\n{emergent_work}" if body else emergent_work
     return PrimeSection(
         key="completion_protocol", title=SECTION_TITLES["completion_protocol"], body=body
     )
