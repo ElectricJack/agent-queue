@@ -243,6 +243,30 @@ def _config_uses_postgres() -> bool:
     return False
 
 
+def _daemon_environment(*, home: str | None = None) -> dict[str, str]:
+    """Build a stable daemon environment for non-login shell launches."""
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GIT_ASKPASS"] = "/bin/false"
+    env["GH_PROMPT_DISABLED"] = "1"
+    # Preserve the caller's PATH precedence, then expose conventional
+    # per-user executable locations omitted by non-login service shells.
+    user_home = home or str(Path.home())
+    path_parts = env.get("PATH", "").split(os.pathsep) if env.get("PATH") else []
+    for candidate in (
+        os.path.join(user_home, ".local", "bin"),
+        os.path.join(user_home, ".local", "share", "pnpm"),
+    ):
+        if os.path.isdir(candidate) and candidate not in path_parts:
+            path_parts.append(candidate)
+    env["PATH"] = os.pathsep.join(path_parts)
+    # Strip Claude Code session markers.
+    env.pop("CLAUDECODE", None)
+    env.pop("CLAUDE_CODE_ENTRYPOINT", None)
+    return env
+
+
 def start_daemon() -> bool:
     """Start the daemon. Returns True on success."""
     if not os.path.exists(CONFIG_PATH):
@@ -274,14 +298,7 @@ def start_daemon() -> bool:
         console.print("[bold]Starting agent-queue daemon...[/]")
         bin_path = _resolve_agent_queue_bin()
 
-        env = os.environ.copy()
-        env["PYTHONUNBUFFERED"] = "1"
-        env["GIT_TERMINAL_PROMPT"] = "0"
-        env["GIT_ASKPASS"] = "/bin/false"
-        env["GH_PROMPT_DISABLED"] = "1"
-        # Strip Claude Code session markers
-        env.pop("CLAUDECODE", None)
-        env.pop("CLAUDE_CODE_ENTRYPOINT", None)
+        env = _daemon_environment()
 
         os.makedirs(CONFIG_DIR, exist_ok=True)
         with open(LOG_PATH, "a") as log_file:

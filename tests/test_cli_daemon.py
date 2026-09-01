@@ -87,3 +87,35 @@ def test_daemon_start_reports_docker_or_subprocess_failure_without_claiming_succ
 
     # No branch above may have attempted to spawn the daemon.
     no_popen.assert_not_called()
+
+
+def test_daemon_environment_appends_installed_user_executable_dirs(
+    tmp_path, monkeypatch,
+):
+    """Non-login launches can still find user-installed MCP executables."""
+    local_bin = tmp_path / ".local" / "bin"
+    pnpm_bin = tmp_path / ".local" / "share" / "pnpm"
+    local_bin.mkdir(parents=True)
+    pnpm_bin.mkdir(parents=True)
+    monkeypatch.setenv("PATH", "/venv/bin:/usr/bin")
+    monkeypatch.setenv("CLAUDECODE", "1")
+
+    env = daemon_mod._daemon_environment(home=str(tmp_path))
+
+    assert env["PATH"].split(daemon_mod.os.pathsep) == [
+        "/venv/bin",
+        "/usr/bin",
+        str(local_bin),
+        str(pnpm_bin),
+    ]
+    assert "CLAUDECODE" not in env
+
+
+def test_daemon_environment_does_not_duplicate_existing_path(tmp_path, monkeypatch):
+    local_bin = tmp_path / ".local" / "bin"
+    local_bin.mkdir(parents=True)
+    monkeypatch.setenv("PATH", f"/usr/bin{daemon_mod.os.pathsep}{local_bin}")
+
+    env = daemon_mod._daemon_environment(home=str(tmp_path))
+
+    assert env["PATH"].split(daemon_mod.os.pathsep).count(str(local_bin)) == 1
