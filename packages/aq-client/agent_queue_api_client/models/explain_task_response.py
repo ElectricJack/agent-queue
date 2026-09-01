@@ -49,7 +49,7 @@ class ExplainTaskResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.explain_reason import ExplainReason
+        from ..models.explain_reason import ExplainReason  # noqa: PLC0415
 
         d = dict(src_dict)
         success = d.pop("success", UNSET)

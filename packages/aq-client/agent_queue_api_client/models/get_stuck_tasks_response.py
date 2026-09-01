@@ -57,8 +57,8 @@ class GetStuckTasksResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.stuck_task import StuckTask
-        from ..models.stuck_tasks_thresholds import StuckTasksThresholds
+        from ..models.stuck_task import StuckTask  # noqa: PLC0415
+        from ..models.stuck_tasks_thresholds import StuckTasksThresholds  # noqa: PLC0415
 
         d = dict(src_dict)
         now_used = d.pop("now_used")

@@ -49,5 +49,4 @@ never silently substitute a lighter model.
 ## Action Word Mappings
 
 - "cancel", "kill", "abort" → `stop_task`
-- "approve", "LGTM", "ship it" → `approve_task`
 - "restart", "retry", "rerun" → `restart_task`

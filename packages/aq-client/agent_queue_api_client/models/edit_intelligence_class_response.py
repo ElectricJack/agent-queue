@@ -46,7 +46,7 @@ class EditIntelligenceClassResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.intelligence_class_model import IntelligenceClassModel
+        from ..models.intelligence_class_model import IntelligenceClassModel  # noqa: PLC0415
 
         d = dict(src_dict)
         intelligence_class = IntelligenceClassModel.from_dict(d.pop("intelligence_class"))

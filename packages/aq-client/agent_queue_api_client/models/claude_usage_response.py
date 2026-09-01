@@ -50,8 +50,10 @@ class ClaudeUsageResponse:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.claude_usage_response_model_usage_type_0 import ClaudeUsageResponseModelUsageType0
-        from ..models.claude_usage_response_rate_limit_type_0 import ClaudeUsageResponseRateLimitType0
+        from ..models.claude_usage_response_model_usage_type_0 import (
+            ClaudeUsageResponseModelUsageType0,  # noqa: PLC0415
+        )
+        from ..models.claude_usage_response_rate_limit_type_0 import ClaudeUsageResponseRateLimitType0  # noqa: PLC0415
 
         subscription: None | str | Unset
         if isinstance(self.subscription, Unset):
@@ -154,9 +156,13 @@ class ClaudeUsageResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.claude_usage_response_active_sessions_item import ClaudeUsageResponseActiveSessionsItem
-        from ..models.claude_usage_response_model_usage_type_0 import ClaudeUsageResponseModelUsageType0
-        from ..models.claude_usage_response_rate_limit_type_0 import ClaudeUsageResponseRateLimitType0
+        from ..models.claude_usage_response_active_sessions_item import (
+            ClaudeUsageResponseActiveSessionsItem,  # noqa: PLC0415
+        )
+        from ..models.claude_usage_response_model_usage_type_0 import (
+            ClaudeUsageResponseModelUsageType0,  # noqa: PLC0415
+        )
+        from ..models.claude_usage_response_rate_limit_type_0 import ClaudeUsageResponseRateLimitType0  # noqa: PLC0415
 
         d = dict(src_dict)
 

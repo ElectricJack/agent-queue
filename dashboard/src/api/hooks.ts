@@ -2,15 +2,12 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiGet } from "./legacy-fetch";
 import {
   addWorkspace,
-  approvePlan,
-  approveTask,
   archiveTask,
   createMcpServer,
   createPlaybook,
   createProjectProfile,
   createTask,
   deleteMcpServer,
-  deletePlan,
   deletePlaybook,
   deleteProfile,
   deleteProject,
@@ -49,7 +46,6 @@ import {
   resumeTask,
   probeMcpServer,
   provideInput,
-  rejectPlan,
   releaseWorkspace,
   reloadConfig,
   removeWorkspace,
@@ -607,42 +603,6 @@ export function useSkipTask() {
   return useMutation({
     mutationFn: async (input: { task_id: string }) =>
       (await skipTask({ body: input, throwOnError: true })).data,
-    ...cb,
-  });
-}
-
-export function useApproveTask() {
-  const cb = useTaskMutationCallbacks();
-  return useMutation({
-    mutationFn: async (input: { task_id: string }) =>
-      (await approveTask({ body: input, throwOnError: true })).data,
-    ...cb,
-  });
-}
-
-export function useApprovePlan() {
-  const cb = useTaskMutationCallbacks();
-  return useMutation({
-    mutationFn: async (input: { task_id: string }) =>
-      (await approvePlan({ body: input, throwOnError: true })).data,
-    ...cb,
-  });
-}
-
-export function useRejectPlan() {
-  const cb = useTaskMutationCallbacks();
-  return useMutation({
-    mutationFn: async (input: { task_id: string; feedback: string }) =>
-      (await rejectPlan({ body: input, throwOnError: true })).data,
-    ...cb,
-  });
-}
-
-export function useDeletePlan() {
-  const cb = useTaskMutationCallbacks();
-  return useMutation({
-    mutationFn: async (input: { task_id: string }) =>
-      (await deletePlan({ body: input, throwOnError: true })).data,
     ...cb,
   });
 }

@@ -152,7 +152,13 @@ def _create_task_graph(
 @click.option("-d", "--description", default=None, help="Task description")
 @click.option("--priority", default=None, type=int, help="Priority (1-300)")
 @click.option("--type", "task_type", default=None, help="Task type")
-@click.option("--approval/--no-approval", default=False, help="Require approval")
+@click.option(
+    "--integration-mode",
+    "integration_mode",
+    type=click.Choice(["direct", "pull_request"]),
+    default=None,
+    help="Integration policy override (omit to inherit the project/system policy)",
+)
 @click.option(
     "-P",
     "--profile",
@@ -211,7 +217,7 @@ def task_create(
     description: str | None,
     priority: int | None,
     task_type: str | None,
-    approval: bool,
+    integration_mode: str | None,
     profile_id: str | None,
     intelligence_class: str | None,
     agent_type: str | None,
@@ -255,8 +261,9 @@ def task_create(
             "description": description,
             "priority": priority or 100,
             "task_type": task_type,
-            "requires_approval": approval,
         }
+        if integration_mode:
+            params["integration_mode"] = integration_mode
         if profile_id:
             params["profile_id"] = profile_id
         if agent_type:
@@ -301,30 +308,6 @@ def task_create(
     title = _getval(result, "title")
     if title:
         console.print(f"  [dim]{title}[/]")
-
-
-@task.command("approve")
-@click.argument("task_id")
-@click.option("-y", "--yes", is_flag=True, help="Skip confirmation")
-@click.pass_context
-@_handle_errors
-def task_approve(ctx: click.Context, task_id: str, yes: bool) -> None:
-    """Approve a task for execution."""
-    api_url = ctx.obj.get("api_url") if ctx.obj else None
-
-    if not yes:
-        from .menus import confirm
-
-        if not confirm(f"Approve task '{task_id}'?"):
-            console.print("[dim]Cancelled.[/]")
-            return
-
-    async def _approve():
-        async with _get_client(api_url) as client:
-            return await client.execute("approve_task", {"task_id": task_id})
-
-    result = _run(_approve())
-    console.print(f"[bold green]Task approved:[/] {_getval(result, 'approved', task_id)}")
 
 
 @task.command("stop")
@@ -617,7 +600,7 @@ def task_set(
 ) -> None:
     """Work-state writes: findings, branch, PR URL, work dir, notes, labels, metadata.
 
-    Never changes task status — use `aq task approve|stop|restart` for that.
+    Never changes task status — use `aq task stop|restart` for that.
     """
     api_url = ctx.obj.get("api_url") if ctx.obj else None
 

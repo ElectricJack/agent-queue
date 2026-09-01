@@ -60,7 +60,6 @@ PROJECTION_INPUT_COLUMNS = frozenset({"status", "retry_count", "max_retries"})
 # Anything else counts as "released" (design §3.1).
 _WITHHOLDING_PARENT_STATUSES = (
     TaskStatus.DEFINED.value,
-    TaskStatus.AWAITING_PLAN_APPROVAL.value,
 )
 
 

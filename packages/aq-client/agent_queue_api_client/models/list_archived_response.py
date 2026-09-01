@@ -65,7 +65,7 @@ class ListArchivedResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.list_archived_response_tasks_item import ListArchivedResponseTasksItem
+        from ..models.list_archived_response_tasks_item import ListArchivedResponseTasksItem  # noqa: PLC0415
 
         d = dict(src_dict)
         _tasks = d.pop("tasks", UNSET)

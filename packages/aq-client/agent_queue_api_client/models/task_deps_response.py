@@ -85,8 +85,8 @@ class TaskDepsResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.provenance_ref import ProvenanceRef
-        from ..models.task_ref import TaskRef
+        from ..models.provenance_ref import ProvenanceRef  # noqa: PLC0415
+        from ..models.task_ref import TaskRef  # noqa: PLC0415
 
         d = dict(src_dict)
         task_id = d.pop("task_id")

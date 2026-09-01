@@ -32,7 +32,6 @@ from src.notifications.events import (
     ChainStuckEvent,
     MergeConflictEvent,
     NotifyEvent,
-    PlanAwaitingApprovalEvent,
     PRCreatedEvent,
     PushFailedEvent,
     StuckDefinedTaskEvent,
@@ -178,15 +177,6 @@ class TestNotifyEventModels:
         assert e.category == "interaction"
         assert e.question == "What database?"
 
-    def test_plan_awaiting_approval_event(self):
-        e = PlanAwaitingApprovalEvent(
-            task=_make_task_detail(),
-            subtasks=[{"title": "step 1"}],
-            plan_url="http://example.com/plan",
-        )
-        assert e.category == "interaction"
-        assert len(e.subtasks) == 1
-
     def test_vcs_events(self):
         pr = PRCreatedEvent(task=_make_task_detail(), pr_url="http://github.com/pr/1")
         assert pr.category == "vcs"
@@ -245,7 +235,6 @@ class TestNotifyEventModels:
             TaskBlockedEvent,
             TaskStoppedEvent,
             AgentQuestionEvent,
-            PlanAwaitingApprovalEvent,
             PRCreatedEvent,
             MergeConflictEvent,
             PushFailedEvent,
@@ -291,16 +280,14 @@ class TestBuilders:
             parent_task_id="parent-1",
             is_plan_subtask=True,
             profile_id="fast-profile",
-            requires_approval=True,
-            auto_approve_plan=True,
+            integration_mode="pull_request",
         )
         detail = build_task_detail(task)
         assert detail.pr_url == "http://github.com/pr/1"
         assert detail.parent_task_id == "parent-1"
         assert detail.is_plan_subtask is True
         assert detail.profile_id == "fast-profile"
-        assert detail.requires_approval is True
-        assert detail.auto_approve_plan is True
+        assert detail.integration_mode == "pull_request"
 
     def test_build_task_detail_none_description(self):
         task = _make_task(description=None)

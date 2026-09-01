@@ -46,7 +46,9 @@ class CreateProjectProfileRequest:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.create_project_profile_request_install_type_0 import CreateProjectProfileRequestInstallType0
+        from ..models.create_project_profile_request_install_type_0 import (
+            CreateProjectProfileRequestInstallType0,  # noqa: PLC0415
+        )
 
         project_id = self.project_id
 
@@ -141,7 +143,9 @@ class CreateProjectProfileRequest:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.create_project_profile_request_install_type_0 import CreateProjectProfileRequestInstallType0
+        from ..models.create_project_profile_request_install_type_0 import (
+            CreateProjectProfileRequestInstallType0,  # noqa: PLC0415
+        )
 
         d = dict(src_dict)
         project_id = d.pop("project_id")

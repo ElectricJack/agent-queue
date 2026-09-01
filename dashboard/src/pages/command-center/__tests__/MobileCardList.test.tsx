@@ -10,7 +10,7 @@ describe("mobile task hierarchy", () => {
   it("includes waiting tasks and keeps expand controls separate from task selection", () => {
     const open = vi.fn();
     render(<MobileCardList graph={graph(
-      [task("parent", { status: "AWAITING_PLAN_APPROVAL" }), task("child", { status: "WAITING_INPUT" })],
+      [task("parent", { status: "WAITING_INPUT" }), task("child", { status: "WAITING_INPUT" })],
       [edge("child", "parent")],
     )} onTaskClick={open} selectedTaskId="child" />);
     expect(screen.getByText("Task parent")).toBeInTheDocument();

@@ -157,7 +157,7 @@ The completion pipeline stays algorithmic. After verification, integration runs 
 
 1. Acquire merge slot → emit `merge.started`.
 2. In the **slot worktree** (the branch's home — a branch checked out in one worktree cannot be checked out in another): `git fetch origin`, rebase `aq/<task>` onto `origin/<default>` (the existing rebase-before-merge behavior), push with `--force-with-lease`.
-3. Per project policy: open a PR via `gh` (record `pr_url` on the task; the existing AWAITING_APPROVAL / PR-merge polling flow takes over), **or** local merge: in the **base** — `checkout <default>`, `reset --hard origin/<default>`, merge the branch, push.
+3. Per the task's effective integration mode (task override → project policy → `integration.default_mode`): in `pull_request` mode, open a PR via `gh` (record `pr_url` on the task; the task completes unmerged and the review pipeline's `pr-merged` gate sweep takes over), **or** in `direct` mode, local merge: in the **base** — `checkout <default>`, `reset --hard origin/<default>`, merge the branch, push.
 4. Success → emit `merge.succeeded`, record `merged_at`; release the slot.
 
 ### 4.3 Conflicts

@@ -102,8 +102,8 @@ class GetConfigResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.env_var_reference import EnvVarReference
-        from ..models.get_config_response_config import GetConfigResponseConfig
+        from ..models.env_var_reference import EnvVarReference  # noqa: PLC0415
+        from ..models.get_config_response_config import GetConfigResponseConfig  # noqa: PLC0415
 
         d = dict(src_dict)
         path = d.pop("path", UNSET)

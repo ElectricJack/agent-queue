@@ -21,15 +21,18 @@ class ContextMixin:
         default_branch: str,
         has_remote: bool,
         is_final_subtask: bool,
-        requires_approval: bool,
+        integration_mode: str,
     ) -> str:
         """Return execution rules tailored to the task type and git context.
 
         Produces three prompt variants:
-        A) Normal / final subtask (no approval) — branch, merge to default, push
-        B) Requires approval — branch, push, create PR
+        A) Normal / final subtask, ``direct`` mode — branch, merge to default, push
+        B) ``pull_request`` mode — branch, push, create PR
         C) Intermediate subtask — branch, commit, stay on branch
         """
+        from src.models import INTEGRATION_MODE_PULL_REQUEST
+
+        pr_mode = integration_mode == INTEGRATION_MODE_PULL_REQUEST
         # -- Non-git execution rules (shared) --
         if task.is_plan_subtask:
             behaviour = (
@@ -74,7 +77,7 @@ class ContextMixin:
                 f"3. Stay on `{branch_name}` — do NOT merge to "
                 f"`{default_branch}`. A later subtask handles the final merge."
             )
-        elif requires_approval:
+        elif pr_mode:
             # PR workflow: push branch, create PR, don't merge
             push_cmd = f"`git push origin {branch_name}`"
             pr_cmd = (
@@ -134,54 +137,20 @@ class ContextMixin:
         plan_rules = ""
         if not task.is_plan_subtask:
             plan_rules = (
-                "\n\n## CRITICAL: Writing Implementation Plans\n"
+                "\n\n## Writing Implementation Plans\n"
                 "Most tasks do NOT require writing a plan — just implement "
                 "the changes directly.\n"
                 "Only write a plan if the task explicitly asks you to create "
                 "an implementation plan,\n"
                 "investigate and propose changes, or produce a multi-step "
                 "strategy for follow-up work.\n"
-                "\n"
-                "If you DO need to write a plan, you MUST follow these rules "
-                "exactly:\n"
-                "1. Write the plan to **`.claude/plan.md`** in the workspace "
-                "root (preferred)\n"
-                "   or `plan.md` — these are the ONLY locations the system "
-                "checks first\n"
-                "2. Do NOT write plans to `notes/`, `docs/`, or any other "
-                "directory — plans\n"
-                "   written elsewhere may not be detected for automatic task "
-                "splitting\n"
-                "3. Name each implementation phase clearly: "
-                "`## Phase 1: <title>`,\n"
-                "   `## Phase 2: <title>`, etc.\n"
-                "4. Put ALL background/reference material (design specs, "
-                "constraints,\n"
-                "   architecture notes) BEFORE the phase headings, NOT as "
-                "separate phases\n"
-                "5. Keep each phase focused on a single actionable "
-                "implementation step\n"
-                "6. If you implement the plan yourself (i.e., you both plan "
-                "AND execute the work\n"
-                "   in a single task), DELETE the plan file before completing. "
-                "Only leave a plan\n"
-                "   file in the workspace if you want the system to create "
-                "follow-up tasks from it.\n"
-                "   Alternatively, add `auto_tasks: false` to the plan's YAML "
-                "frontmatter.\n"
-                "\n"
-                "NOTE: Any plan file left in the workspace when your task "
-                "completes will be\n"
-                "automatically parsed and converted into follow-up subtasks. "
-                "If you already\n"
-                "did the work described in the plan, this creates "
-                "duplicate/unnecessary tasks.\n"
-                "\n"
-                "This is required for the system to automatically split your "
-                "plan into\n"
-                "follow-up tasks. Plans that mix reference sections with "
-                "implementation\n"
-                "phases will produce low-quality task splits."
+                "Plan files are NOT parsed automatically — if follow-up work "
+                "should become tasks,\n"
+                "create them explicitly (e.g. `aq task add` / the create_task "
+                "command) or say so\n"
+                "in your close summary. Delete throwaway plan files before "
+                "completing so they\n"
+                "don't clutter the workspace."
             )
 
         return behaviour + git_rules + plan_rules
@@ -243,11 +212,6 @@ class ContextMixin:
         else:
             has_remote = False
         is_final = (not task.is_plan_subtask) or await self._is_last_subtask(task)
-        if task.is_plan_subtask and task.parent_task_id:
-            parent = await self.db.get_task(task.parent_task_id)
-            needs_approval = parent.requires_approval if parent else task.requires_approval
-        else:
-            needs_approval = task.requires_approval
         builder.add_context(
             "execution_rules",
             self._get_execution_rules(
@@ -256,7 +220,7 @@ class ContextMixin:
                 default_branch=default_branch,
                 has_remote=has_remote,
                 is_final_subtask=is_final,
-                requires_approval=needs_approval,
+                integration_mode=await self._effective_integration_mode(task),
             ),
         )
 

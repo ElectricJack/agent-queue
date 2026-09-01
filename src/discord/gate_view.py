@@ -5,7 +5,7 @@ Button callbacks route through the shared ``CommandHandler`` to
 ``gate_resolve``, tagging ``resolved_by`` with the clicking user's
 Discord id.
 
-Follows the ``TaskApprovalView`` pattern in ``src/discord/notifications.py``:
+Follows the ``TaskFailedView`` pattern in ``src/discord/notifications.py``:
 short-lived (24h timeout), disable-on-success, ephemeral confirmations.
 
 MVP scope (see docs/superpowers/plans/2026-08-21-wave4-discord-e2e.md):
@@ -45,7 +45,7 @@ class GateView(discord.ui.View):
         bot: Any | None = None,
         on_timeout_evict: Callable[[str], None] | None = None,
     ) -> None:
-        super().__init__(timeout=86400)  # 24h — matches TaskApprovalView
+        super().__init__(timeout=86400)  # 24h — matches TaskFailedView
         self.gate_id = gate_id
         self._handler = handler
         self._bot = bot

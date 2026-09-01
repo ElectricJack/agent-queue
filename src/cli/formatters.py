@@ -147,7 +147,7 @@ def format_task_detail(
         ("Type", task.task_type if task.task_type else "—"),
         ("Agent", task.assigned_agent_id or "—"),
         ("Branch", task.branch_name or "—"),
-        ("Approval", "Required" if task.requires_approval else "No"),
+        ("Integration", task.integration_mode or "policy"),
     ]
 
     if task.pr_url:

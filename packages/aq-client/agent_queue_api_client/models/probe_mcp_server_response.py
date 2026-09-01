@@ -38,7 +38,7 @@ class ProbeMcpServerResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.catalog_entry_model import CatalogEntryModel
+        from ..models.catalog_entry_model import CatalogEntryModel  # noqa: PLC0415
 
         d = dict(src_dict)
         probed = CatalogEntryModel.from_dict(d.pop("probed"))

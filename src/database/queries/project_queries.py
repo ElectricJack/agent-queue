@@ -47,6 +47,7 @@ class ProjectQueryMixin:
                     repo_url=project.repo_url,
                     repo_default_branch=project.repo_default_branch,
                     default_profile_id=project.default_profile_id,
+                    integration_mode=project.integration_mode,
                     created_at=time.time(),
                 )
             )
@@ -236,4 +237,5 @@ class ProjectQueryMixin:
             if row.get("repo_default_branch")
             else "main",
             default_profile_id=row.get("default_profile_id"),
+            integration_mode=row.get("integration_mode"),
         )

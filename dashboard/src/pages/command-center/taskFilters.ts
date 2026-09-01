@@ -7,7 +7,7 @@ export interface TaskFilters {
 // These are the engine's states; legacy terminal spellings remain readable.
 export const TASK_STATUSES = [
   "DEFINED", "READY", "ASSIGNED", "IN_PROGRESS", "WAITING_INPUT", "PAUSED",
-  "AWAITING_APPROVAL", "AWAITING_PLAN_APPROVAL", "BLOCKED", "FAILED", "COMPLETED",
+  "BLOCKED", "FAILED", "COMPLETED",
 ];
 export const FINISHED_STATUSES = new Set(["COMPLETED", "CANCELED", "CANCELLED", "SKIPPED"]);
 

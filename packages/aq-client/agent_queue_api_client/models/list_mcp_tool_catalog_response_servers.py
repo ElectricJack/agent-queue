@@ -15,8 +15,6 @@ T = TypeVar("T", bound="ListMcpToolCatalogResponseServers")
 
 @_attrs_define
 class ListMcpToolCatalogResponseServers:
-    """ """
-
     additional_properties: dict[str, CatalogEntryModel] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -29,7 +27,7 @@ class ListMcpToolCatalogResponseServers:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.catalog_entry_model import CatalogEntryModel
+        from ..models.catalog_entry_model import CatalogEntryModel  # noqa: PLC0415
 
         d = dict(src_dict)
         list_mcp_tool_catalog_response_servers = cls()

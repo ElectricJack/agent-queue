@@ -62,7 +62,7 @@ class ReadLogsResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.log_entry import LogEntry
+        from ..models.log_entry import LogEntry  # noqa: PLC0415
 
         d = dict(src_dict)
         log_file = d.pop("log_file")

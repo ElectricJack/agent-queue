@@ -50,7 +50,7 @@ class ShowSessionResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.session_summary import SessionSummary
+        from ..models.session_summary import SessionSummary  # noqa: PLC0415
 
         d = dict(src_dict)
         session = SessionSummary.from_dict(d.pop("session"))

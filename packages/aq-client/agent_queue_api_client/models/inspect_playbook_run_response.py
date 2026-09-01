@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from ..models.inspect_playbook_run_response_conversation_history_item import (
         InspectPlaybookRunResponseConversationHistoryItem,
     )
+    from ..models.inspect_playbook_run_response_graph_type_0 import InspectPlaybookRunResponseGraphType0
     from ..models.inspect_playbook_run_response_node_trace_item import InspectPlaybookRunResponseNodeTraceItem
     from ..models.inspect_playbook_run_response_trigger_event import InspectPlaybookRunResponseTriggerEvent
 
@@ -40,6 +41,7 @@ class InspectPlaybookRunResponse:
         paused_at (float | None | Unset):
         waiting_for_event (None | str | Unset):
         total_duration_seconds (float | None | Unset):
+        graph (InspectPlaybookRunResponseGraphType0 | None | Unset):
     """
 
     run_id: str
@@ -59,9 +61,14 @@ class InspectPlaybookRunResponse:
     paused_at: float | None | Unset = UNSET
     waiting_for_event: None | str | Unset = UNSET
     total_duration_seconds: float | None | Unset = UNSET
+    graph: InspectPlaybookRunResponseGraphType0 | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.inspect_playbook_run_response_graph_type_0 import (
+            InspectPlaybookRunResponseGraphType0,  # noqa: PLC0415
+        )
+
         run_id = self.run_id
 
         playbook_id = self.playbook_id
@@ -136,6 +143,14 @@ class InspectPlaybookRunResponse:
         else:
             total_duration_seconds = self.total_duration_seconds
 
+        graph: dict[str, Any] | None | Unset
+        if isinstance(self.graph, Unset):
+            graph = UNSET
+        elif isinstance(self.graph, InspectPlaybookRunResponseGraphType0):
+            graph = self.graph.to_dict()
+        else:
+            graph = self.graph
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -172,16 +187,25 @@ class InspectPlaybookRunResponse:
             field_dict["waiting_for_event"] = waiting_for_event
         if total_duration_seconds is not UNSET:
             field_dict["total_duration_seconds"] = total_duration_seconds
+        if graph is not UNSET:
+            field_dict["graph"] = graph
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.inspect_playbook_run_response_conversation_history_item import (
-            InspectPlaybookRunResponseConversationHistoryItem,
+            InspectPlaybookRunResponseConversationHistoryItem,  # noqa: PLC0415
         )
-        from ..models.inspect_playbook_run_response_node_trace_item import InspectPlaybookRunResponseNodeTraceItem
-        from ..models.inspect_playbook_run_response_trigger_event import InspectPlaybookRunResponseTriggerEvent
+        from ..models.inspect_playbook_run_response_graph_type_0 import (
+            InspectPlaybookRunResponseGraphType0,  # noqa: PLC0415
+        )
+        from ..models.inspect_playbook_run_response_node_trace_item import (
+            InspectPlaybookRunResponseNodeTraceItem,  # noqa: PLC0415
+        )
+        from ..models.inspect_playbook_run_response_trigger_event import (
+            InspectPlaybookRunResponseTriggerEvent,  # noqa: PLC0415
+        )
 
         d = dict(src_dict)
         run_id = d.pop("run_id")
@@ -288,6 +312,23 @@ class InspectPlaybookRunResponse:
 
         total_duration_seconds = _parse_total_duration_seconds(d.pop("total_duration_seconds", UNSET))
 
+        def _parse_graph(data: object) -> InspectPlaybookRunResponseGraphType0 | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                graph_type_0 = InspectPlaybookRunResponseGraphType0.from_dict(data)
+
+                return graph_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(InspectPlaybookRunResponseGraphType0 | None | Unset, data)
+
+        graph = _parse_graph(d.pop("graph", UNSET))
+
         inspect_playbook_run_response = cls(
             run_id=run_id,
             playbook_id=playbook_id,
@@ -306,6 +347,7 @@ class InspectPlaybookRunResponse:
             paused_at=paused_at,
             waiting_for_event=waiting_for_event,
             total_duration_seconds=total_duration_seconds,
+            graph=graph,
         )
 
         inspect_playbook_run_response.additional_properties = d

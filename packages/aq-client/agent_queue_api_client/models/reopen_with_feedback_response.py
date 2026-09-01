@@ -20,7 +20,6 @@ class ReopenWithFeedbackResponse:
         previous_status (str | Unset):  Default: ''.
         status (str | Unset):  Default: 'READY'.
         feedback_added (bool | Unset):  Default: False.
-        requires_approval (bool | Unset):  Default: False.
     """
 
     reopened: str
@@ -28,7 +27,6 @@ class ReopenWithFeedbackResponse:
     previous_status: str | Unset = ""
     status: str | Unset = "READY"
     feedback_added: bool | Unset = False
-    requires_approval: bool | Unset = False
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -41,8 +39,6 @@ class ReopenWithFeedbackResponse:
         status = self.status
 
         feedback_added = self.feedback_added
-
-        requires_approval = self.requires_approval
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -58,8 +54,6 @@ class ReopenWithFeedbackResponse:
             field_dict["status"] = status
         if feedback_added is not UNSET:
             field_dict["feedback_added"] = feedback_added
-        if requires_approval is not UNSET:
-            field_dict["requires_approval"] = requires_approval
 
         return field_dict
 
@@ -76,15 +70,12 @@ class ReopenWithFeedbackResponse:
 
         feedback_added = d.pop("feedback_added", UNSET)
 
-        requires_approval = d.pop("requires_approval", UNSET)
-
         reopen_with_feedback_response = cls(
             reopened=reopened,
             title=title,
             previous_status=previous_status,
             status=status,
             feedback_added=feedback_added,
-            requires_approval=requires_approval,
         )
 
         reopen_with_feedback_response.additional_properties = d

@@ -77,7 +77,7 @@ class AgentSummary:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.agent_waiting_question import AgentWaitingQuestion
+        from ..models.agent_waiting_question import AgentWaitingQuestion  # noqa: PLC0415
 
         id = self.id
 
@@ -256,8 +256,8 @@ class AgentSummary:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.agent_settings import AgentSettings
-        from ..models.agent_waiting_question import AgentWaitingQuestion
+        from ..models.agent_settings import AgentSettings  # noqa: PLC0415
+        from ..models.agent_waiting_question import AgentWaitingQuestion  # noqa: PLC0415
 
         d = dict(src_dict)
         id = d.pop("id")

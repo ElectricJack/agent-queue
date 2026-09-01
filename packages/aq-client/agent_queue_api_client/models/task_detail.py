@@ -31,14 +31,15 @@ class TaskDetail:
         assigned_agent (None | str | Unset):
         retry_count (int | Unset):  Default: 0.
         max_retries (int | Unset):  Default: 3.
-        requires_approval (bool | Unset):  Default: False.
+        integration_mode (None | str | Unset):
+        effective_integration_mode (None | str | Unset):
+        integration_mode_source (None | str | Unset):
         is_blocked (bool | Unset):  Default: False.
         is_plan_subtask (bool | Unset):  Default: False.
         task_type (None | str | Unset):
         parent_task_id (None | str | Unset):
         profile_id (None | str | Unset):
         intelligence_class (None | str | Unset):
-        auto_approve_plan (bool | Unset):  Default: False.
         skip_verification (bool | Unset):  Default: False.
         pr_url (None | str | Unset):
         depends_on (list[TaskRef] | Unset):
@@ -61,14 +62,15 @@ class TaskDetail:
     assigned_agent: None | str | Unset = UNSET
     retry_count: int | Unset = 0
     max_retries: int | Unset = 3
-    requires_approval: bool | Unset = False
+    integration_mode: None | str | Unset = UNSET
+    effective_integration_mode: None | str | Unset = UNSET
+    integration_mode_source: None | str | Unset = UNSET
     is_blocked: bool | Unset = False
     is_plan_subtask: bool | Unset = False
     task_type: None | str | Unset = UNSET
     parent_task_id: None | str | Unset = UNSET
     profile_id: None | str | Unset = UNSET
     intelligence_class: None | str | Unset = UNSET
-    auto_approve_plan: bool | Unset = False
     skip_verification: bool | Unset = False
     pr_url: None | str | Unset = UNSET
     depends_on: list[TaskRef] | Unset = UNSET
@@ -83,9 +85,9 @@ class TaskDetail:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.task_completion_detail import TaskCompletionDetail
-        from ..models.task_detail_children_type_0 import TaskDetailChildrenType0
-        from ..models.task_detail_parent_type_0 import TaskDetailParentType0
+        from ..models.task_completion_detail import TaskCompletionDetail  # noqa: PLC0415
+        from ..models.task_detail_children_type_0 import TaskDetailChildrenType0  # noqa: PLC0415
+        from ..models.task_detail_parent_type_0 import TaskDetailParentType0  # noqa: PLC0415
 
         id = self.id
 
@@ -109,7 +111,23 @@ class TaskDetail:
 
         max_retries = self.max_retries
 
-        requires_approval = self.requires_approval
+        integration_mode: None | str | Unset
+        if isinstance(self.integration_mode, Unset):
+            integration_mode = UNSET
+        else:
+            integration_mode = self.integration_mode
+
+        effective_integration_mode: None | str | Unset
+        if isinstance(self.effective_integration_mode, Unset):
+            effective_integration_mode = UNSET
+        else:
+            effective_integration_mode = self.effective_integration_mode
+
+        integration_mode_source: None | str | Unset
+        if isinstance(self.integration_mode_source, Unset):
+            integration_mode_source = UNSET
+        else:
+            integration_mode_source = self.integration_mode_source
 
         is_blocked = self.is_blocked
 
@@ -138,8 +156,6 @@ class TaskDetail:
             intelligence_class = UNSET
         else:
             intelligence_class = self.intelligence_class
-
-        auto_approve_plan = self.auto_approve_plan
 
         skip_verification = self.skip_verification
 
@@ -225,8 +241,12 @@ class TaskDetail:
             field_dict["retry_count"] = retry_count
         if max_retries is not UNSET:
             field_dict["max_retries"] = max_retries
-        if requires_approval is not UNSET:
-            field_dict["requires_approval"] = requires_approval
+        if integration_mode is not UNSET:
+            field_dict["integration_mode"] = integration_mode
+        if effective_integration_mode is not UNSET:
+            field_dict["effective_integration_mode"] = effective_integration_mode
+        if integration_mode_source is not UNSET:
+            field_dict["integration_mode_source"] = integration_mode_source
         if is_blocked is not UNSET:
             field_dict["is_blocked"] = is_blocked
         if is_plan_subtask is not UNSET:
@@ -239,8 +259,6 @@ class TaskDetail:
             field_dict["profile_id"] = profile_id
         if intelligence_class is not UNSET:
             field_dict["intelligence_class"] = intelligence_class
-        if auto_approve_plan is not UNSET:
-            field_dict["auto_approve_plan"] = auto_approve_plan
         if skip_verification is not UNSET:
             field_dict["skip_verification"] = skip_verification
         if pr_url is not UNSET:
@@ -268,10 +286,10 @@ class TaskDetail:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.task_completion_detail import TaskCompletionDetail
-        from ..models.task_detail_children_type_0 import TaskDetailChildrenType0
-        from ..models.task_detail_parent_type_0 import TaskDetailParentType0
-        from ..models.task_ref import TaskRef
+        from ..models.task_completion_detail import TaskCompletionDetail  # noqa: PLC0415
+        from ..models.task_detail_children_type_0 import TaskDetailChildrenType0  # noqa: PLC0415
+        from ..models.task_detail_parent_type_0 import TaskDetailParentType0  # noqa: PLC0415
+        from ..models.task_ref import TaskRef  # noqa: PLC0415
 
         d = dict(src_dict)
         id = d.pop("id")
@@ -299,7 +317,32 @@ class TaskDetail:
 
         max_retries = d.pop("max_retries", UNSET)
 
-        requires_approval = d.pop("requires_approval", UNSET)
+        def _parse_integration_mode(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        integration_mode = _parse_integration_mode(d.pop("integration_mode", UNSET))
+
+        def _parse_effective_integration_mode(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        effective_integration_mode = _parse_effective_integration_mode(d.pop("effective_integration_mode", UNSET))
+
+        def _parse_integration_mode_source(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        integration_mode_source = _parse_integration_mode_source(d.pop("integration_mode_source", UNSET))
 
         is_blocked = d.pop("is_blocked", UNSET)
 
@@ -340,8 +383,6 @@ class TaskDetail:
             return cast(None | str | Unset, data)
 
         intelligence_class = _parse_intelligence_class(d.pop("intelligence_class", UNSET))
-
-        auto_approve_plan = d.pop("auto_approve_plan", UNSET)
 
         skip_verification = d.pop("skip_verification", UNSET)
 
@@ -455,14 +496,15 @@ class TaskDetail:
             assigned_agent=assigned_agent,
             retry_count=retry_count,
             max_retries=max_retries,
-            requires_approval=requires_approval,
+            integration_mode=integration_mode,
+            effective_integration_mode=effective_integration_mode,
+            integration_mode_source=integration_mode_source,
             is_blocked=is_blocked,
             is_plan_subtask=is_plan_subtask,
             task_type=task_type,
             parent_task_id=parent_task_id,
             profile_id=profile_id,
             intelligence_class=intelligence_class,
-            auto_approve_plan=auto_approve_plan,
             skip_verification=skip_verification,
             pr_url=pr_url,
             depends_on=depends_on,

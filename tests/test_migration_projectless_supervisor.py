@@ -10,9 +10,13 @@ from alembic import command
 from alembic.config import Config
 
 PRIOR_REVISION = "d4e5f6a7b8c9"
+# The revision under test — later revisions add columns (e.g. c4d5e6f7a8b9's
+# projects.integration_mode) that would skew the SELECT-* snapshots below.
+TARGET_REVISION = "5f37c424acde"
 
 
-def _migrate(engine, target="head", *, downgrade=False):
+def _migrate(engine, target=None, *, downgrade=False):
+    target = target or TARGET_REVISION
     cfg = Config("alembic.ini")
     # Supplying the connection takes precedence over config and environment URLs.
     with engine.connect() as conn:

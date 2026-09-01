@@ -54,7 +54,7 @@ def task_to_dict(task: Any) -> dict[str, Any]:
         "branch_name": task.branch_name,
         "pr_url": task.pr_url,
         "profile_id": task.profile_id,
-        "requires_approval": task.requires_approval,
+        "integration_mode": task.integration_mode,
         "is_plan_subtask": task.is_plan_subtask,
     }
 

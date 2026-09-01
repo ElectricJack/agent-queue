@@ -55,8 +55,12 @@ class ListAvailableToolsResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.list_available_tools_response_mcp_servers_item import ListAvailableToolsResponseMcpServersItem
-        from ..models.list_available_tools_response_tools_item import ListAvailableToolsResponseToolsItem
+        from ..models.list_available_tools_response_mcp_servers_item import (
+            ListAvailableToolsResponseMcpServersItem,  # noqa: PLC0415
+        )
+        from ..models.list_available_tools_response_tools_item import (
+            ListAvailableToolsResponseToolsItem,  # noqa: PLC0415
+        )
 
         d = dict(src_dict)
         _tools = d.pop("tools", UNSET)

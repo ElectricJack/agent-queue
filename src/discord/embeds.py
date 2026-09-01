@@ -87,8 +87,6 @@ STATUS_COLORS: dict[str, int] = {
     TaskStatus.IN_PROGRESS.value: 0xF39C12,  # Amber
     TaskStatus.WAITING_INPUT.value: 0x1ABC9C,  # Teal
     TaskStatus.PAUSED.value: 0x7F8C8D,  # Dark gray
-    TaskStatus.AWAITING_APPROVAL.value: 0xE67E22,  # Orange
-    TaskStatus.AWAITING_PLAN_APPROVAL.value: 0xF39C12,  # Amber
     TaskStatus.COMPLETED.value: 0x2ECC71,  # Green
     TaskStatus.FAILED.value: 0xE74C3C,  # Red
     TaskStatus.BLOCKED.value: 0x992D22,  # Dark red
@@ -101,8 +99,6 @@ STATUS_EMOJIS: dict[str, str] = {
     TaskStatus.IN_PROGRESS.value: "\U0001f7e1",  # yellow circle
     TaskStatus.WAITING_INPUT.value: "\U0001f4ac",  # speech balloon
     TaskStatus.PAUSED.value: "\u23f8\ufe0f",  # pause button
-    TaskStatus.AWAITING_APPROVAL.value: "\u231b",  # hourglass
-    TaskStatus.AWAITING_PLAN_APPROVAL.value: "\U0001f4cb",  # clipboard
     TaskStatus.COMPLETED.value: "\U0001f7e2",  # green circle
     TaskStatus.FAILED.value: "\U0001f534",  # red circle
     TaskStatus.BLOCKED.value: "\u26d4",  # no entry
@@ -623,8 +619,6 @@ def tree_view_embed(
     _SUBTASK_STAT_ORDER: list[tuple[str, str]] = [
         ("IN_PROGRESS", "in progress"),
         ("ASSIGNED", "assigned"),
-        ("AWAITING_APPROVAL", "awaiting approval"),
-        ("AWAITING_PLAN_APPROVAL", "awaiting plan approval"),
         ("WAITING_INPUT", "waiting input"),
         ("PAUSED", "paused"),
         ("FAILED", "failed"),

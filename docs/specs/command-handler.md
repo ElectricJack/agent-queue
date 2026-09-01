@@ -377,6 +377,7 @@ Returns up to 200 tasks, optionally filtered.
             "status": <str>,
             "priority": <int>,
             "assigned_agent": <str | None>,
+            "integration_mode": <str | None>,
         },
         ...
     ],
@@ -397,7 +398,7 @@ Creates a new task in READY status. If no `project_id` is given, the active proj
 - `description` (optional, falls back to `title`): Full task description/prompt for the agent.
 - `project_id` (optional, falls back to active project): Project to assign the task to.
 - `priority` (optional, default: `100`): Scheduling priority (lower value = higher priority).
-- `requires_approval` (optional, default: `False`): If true, task moves to AWAITING_APPROVAL instead of COMPLETED when done.
+- `integration_mode` (optional, default: `None` = inherit): Integration policy override — `'direct'` or `'pull_request'`. When unset, the effective mode is resolved down the chain: plan-subtask parent's task-level override → task override → project policy (`projects.integration_mode`) → config `integration.default_mode` (shipped default `pull_request`). In `pull_request` mode the worker pushes its branch and opens a PR; the task completes unmerged and the review pipeline owns the merge. In `direct` mode the completion pipeline merges the task branch on completion.
 - `task_type` (optional): Task type classification (feature, bugfix, docs, etc.).
 - `profile_id` (optional): Agent profile to use for execution.
 - `preferred_workspace_id` (optional): Specific workspace to use.
@@ -412,7 +413,7 @@ Creates a new task in READY status. If no `project_id` is given, the active proj
     "title": <str>,
     "project_id": <str>,
     "repo_id": <str>,          # present only if repo_id was supplied
-    "requires_approval": True, # present only if requires_approval=True
+    "integration_mode": <str>, # present only if integration_mode was supplied
 }
 ```
 
@@ -439,7 +440,9 @@ Returns full details for a single task.
     "assigned_agent": <str | None>,
     "retry_count": <int>,
     "max_retries": <int>,
-    "requires_approval": <bool>,
+    "integration_mode": <str | None>,          # task-level override, None = inherit
+    "effective_integration_mode": <str>,       # resolved mode: "direct" | "pull_request"
+    "integration_mode_source": <str>,          # "parent" | "task" | "project" | "default"
     "pr_url": <str>,   # present only if set
 }
 ```
@@ -464,6 +467,7 @@ Updates one or more mutable fields on a task.
 - `max_retries` (optional): Update retry limit.
 - `verification_type` (optional): Change verification mode.
 - `profile_id` (optional): Change agent profile.
+- `integration_mode` (optional): Set the task-level integration policy override (`'direct'` or `'pull_request'`); pass `null` to clear the override so the task inherits from parent/project/config.
 
 At least one optional field must be supplied.
 
@@ -536,26 +540,6 @@ Deletes a task. If the task is IN_PROGRESS, it is stopped first.
 **Errors:**
 - Task not found.
 - Could not stop the running task before deleting.
-
----
-
-#### `approve_task`
-
-Approves a task that is in AWAITING_APPROVAL status, moving it to COMPLETED.
-
-**Parameters:**
-- `task_id` (required)
-
-**Behavior:** Validates the task is in AWAITING_APPROVAL. Transitions to COMPLETED and logs a `task_completed` event.
-
-**Returns on success:**
-```python
-{"approved": <str: task_id>, "title": <str>}
-```
-
-**Errors:**
-- Task not found.
-- Task is not in AWAITING_APPROVAL status.
 
 ---
 
@@ -732,101 +716,6 @@ Returns diagnostic information about a task's most recent failure.
 
 **Errors:**
 - Task not found.
-
----
-
-### Plan Approval
-
----
-
-#### `approve_plan`
-
-Approve a plan and create subtasks from it.
-
-**Parameters:**
-- `task_id` (required)
-
-**Behavior:** The task must be in `AWAITING_PLAN_APPROVAL` status. Reads stored plan data from `task_context` entries (saved by `_discover_and_store_plan` as `plan_raw`). Creates subtasks directly with dependency chains, delegating to the [[specs/supervisor|Supervisor]] for LLM-based plan splitting when needed. Then calls `_cleanup_plan_files_after_approval(task)` to delete plan files from the workspace and branch. Transitions the task to `COMPLETED` with context `"plan_approved"` and logs a `"plan_approved"` event.
-
-**Returns on success:**
-```python
-{
-    "approved": <str: task_id>,
-    "title": <str>,
-    "subtask_count": <int>,
-    "subtasks": [{"id": <str>, "title": <str>}, ...],
-}
-```
-
-**Errors:**
-- Task not found.
-- Task is not awaiting plan approval.
-
----
-
-#### `reject_plan`
-
-Reject a plan and reopen the task with feedback for revision.
-
-**Parameters:**
-- `task_id` (required)
-- `feedback` (required): revision instructions for the agent.
-
-**Behavior:** The task must be in `AWAITING_PLAN_APPROVAL` status. Appends feedback to the task description (under a `**Plan Revision Requested:**` separator). Transitions the task back to `READY` with context `"plan_rejected"`, resetting `retry_count`, `assigned_agent_id`, and `pr_url`. Stores feedback as a `plan_revision_feedback` task context entry and logs a `"plan_rejected"` event.
-
-**Returns on success:**
-```python
-{
-    "rejected": <str: task_id>,
-    "title": <str>,
-    "status": "READY",
-    "feedback_added": True,
-}
-```
-
-**Errors:**
-- Task not found.
-- Task is not awaiting plan approval.
-- Feedback is required (empty feedback).
-
----
-
-#### `delete_plan`
-
-Delete a plan and complete the task without creating subtasks.
-
-**Parameters:**
-- `task_id` (required)
-
-**Behavior:** The task must be in `AWAITING_PLAN_APPROVAL` status. Calls `_cleanup_plan_files_after_approval(task)` to delete plan files from the workspace. Transitions the task to `COMPLETED` with context `"plan_deleted"` and logs a `"plan_deleted"` event.
-
-**Returns on success:**
-```python
-{
-    "deleted": <str: task_id>,
-    "title": <str>,
-}
-```
-
-**Errors:**
-- Task not found.
-- Task is not awaiting plan approval.
-
----
-
-### Plan File Cleanup Helper
-
-#### `_cleanup_plan_files_after_approval(task)`
-
-Private helper called by `approve_plan` and `delete_plan`.
-
-**Behavior:** Retrieves the workspace for the task via `db.get_workspace_for_task(task.id)`. Uses `ws.workspace_path` to locate the workspace directory.
-
-1. **Delete archived plan:** Looks up the `plan_archived_path` task context entry to find the archived file path (`.claude/plans/<task_id>-plan.md`). Removes it if it exists.
-2. **Delete original plan files:** Checks for `.claude/plan.md` and `plan.md` in the workspace root — these may still exist if archival failed or a copy was left behind.
-3. **Commit deletions:** If any files were deleted and the workspace is a valid git checkout, commits via `git.acommit_all` with a `chore: delete plan file after approval` message.
-
-All I/O errors are caught and logged as warnings — cleanup failures never propagate.
 
 ---
 

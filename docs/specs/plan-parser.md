@@ -11,28 +11,26 @@ tags: [spec, plans, tasks]
 > **deleted** — see `docs/superpowers/specs/2026-08-30-llm-direct-path-design.md`
 > §6.3 and its "Deviations applied during implementation" §2.
 >
-> **What exists now:** `src/plan_parser.py` provides only
-> `find_plan_file`/`find_all_plan_files`/`read_plan_file` — plain file-discovery
-> and reading utilities, no parsing into structured steps and no LLM call.
-> The sole production caller is the post-approval plan-cleanup step in
-> `src/commands/task_commands.py`, which uses `find_all_plan_files` to delete
-> leftover plan files from project workspaces; `find_plan_file`/`read_plan_file`
-> are retained for manual/remediation use only (EVT-4).
+> **What exists now: nothing.** `src/plan_parser.py` has been deleted
+> entirely (with the `integration_mode` cutover), including the residual
+> `find_plan_file`/`find_all_plan_files`/`read_plan_file` utilities.
 > The `process_plan` and `process_task_completion` commands that used to drive
 > plan discovery (`process_plan` → `AWAITING_PLAN_APPROVAL` → `approve_plan`)
 > were deleted outright — the LLM plan parser they depended on is gone, so a
 > discovered-but-unparsed plan was an unrecoverable dead end (llm-direct-path
-> §6.3 addendum). Nothing discovers plan files anymore. `approve_plan` /
-> `reject_plan` / `delete_plan` remain (see [[specs/command-handler]] and
-> `docs/specs/orchestrator.md` §12) purely as the remediation path for
-> pre-existing `AWAITING_PLAN_APPROVAL` rows. Structured, LLM-assisted plan
+> §6.3 addendum). Nothing discovers plan files anymore. The `approve_plan` /
+> `reject_plan` / `delete_plan` remediation commands, the
+> `TaskStatus.AWAITING_PLAN_APPROVAL` status, and the
+> `tasks.awaiting_plan_approval` doctor check have all been **removed** as
+> well; the disposition path for rows stranded in the old status is now the
+> `integration_mode` migration's preflight (Alembic `c4d5e6f7a8b9` fails the
+> upgrade with per-row remediation SQL — see
+> `docs/guides/upgrade-integration-mode.md`). Structured, LLM-assisted plan
 > breakdown — if wanted — is expected to come from dispatching the work to an
 > agent running under a `planner` profile (a `harness`-selected coding agent,
 > like any other), not from an in-process LLM call; no such profile ships
-> in-tree yet.
-> `TaskStatus.AWAITING_PLAN_APPROVAL` stays in the enum; a doctor check reports
-> any task stranded in that state (nothing auto-resolves it) with the
-> instruction to reopen or close it.
+> in-tree yet. Pre-task workspace cleanup still deletes files matching
+> `auto_task.plan_file_patterns` (`Orchestrator._cleanup_plan_files_before_task`).
 >
 > The rest of this page is kept as historical reference for the data model
 > shapes that no longer exist in code.

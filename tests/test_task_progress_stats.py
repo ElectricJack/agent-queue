@@ -160,7 +160,6 @@ class TestFormatStatusSummary:
         counts = {
             "IN_PROGRESS": 1,
             "ASSIGNED": 1,
-            "AWAITING_APPROVAL": 1,
             "WAITING_INPUT": 1,
             "PAUSED": 1,
             "FAILED": 1,
@@ -168,11 +167,10 @@ class TestFormatStatusSummary:
             "READY": 1,
             "DEFINED": 1,
         }
-        result = _format_status_summary(counts, 9)
-        assert "0/9 subtasks complete" in result
+        result = _format_status_summary(counts, 8)
+        assert "0/8 subtasks complete" in result
         assert "1 in progress" in result
         assert "1 assigned" in result
-        assert "1 awaiting approval" in result
         assert "1 waiting input" in result
         assert "1 paused" in result
         assert "1 failed" in result

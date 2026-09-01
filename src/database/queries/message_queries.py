@@ -9,7 +9,7 @@ House rules observed here:
 - Timestamps are Float epoch seconds set by *this* layer, never by the
   database (spec §3.3 — no dialect-specific ``now()`` defaults).
 - ``archive_after_inject`` is stored as integer 0/1, matching
-  ``tasks.requires_approval``.
+  ``tasks.is_plan_subtask``.
 - :meth:`MessageQueriesMixin.mark_delivered` is a compare-and-set: it only
   matches rows whose ``delivered_at IS NULL``.  That single predicate is the
   idempotency guard against double delivery when a nudge and a

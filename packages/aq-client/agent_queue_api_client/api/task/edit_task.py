@@ -66,13 +66,13 @@ def sync_detailed(
     body: EditTaskRequest,
 ) -> Response[EditTaskResponse | EditTaskResponse422]:
     """Edit a task's properties: project_id, title, description, priority, task_type, status, max_retries,
-    verification_type, profile_id, auto_approve_plan, skip_verification, intelligence_class,
+    verification_type, profile_id, integration_mode, skip_verification, intelligence_class,
     affinity_agent_id, affinity_reason, or workspace_mode. Use this to move a task to a different
     project, rename tasks, change priority, override status (admin), assign a profile, adjust
     retry/verification settings, or set coordination parameters.
 
      Edit a task's properties: project_id, title, description, priority, task_type, status, max_retries,
-    verification_type, profile_id, auto_approve_plan, skip_verification, intelligence_class,
+    verification_type, profile_id, integration_mode, skip_verification, intelligence_class,
     affinity_agent_id, affinity_reason, or workspace_mode. Use this to move a task to a different
     project, rename tasks, change priority, override status (admin), assign a profile, adjust
     retry/verification settings, or set coordination parameters.
@@ -105,13 +105,13 @@ def sync(
     body: EditTaskRequest,
 ) -> EditTaskResponse | EditTaskResponse422 | None:
     """Edit a task's properties: project_id, title, description, priority, task_type, status, max_retries,
-    verification_type, profile_id, auto_approve_plan, skip_verification, intelligence_class,
+    verification_type, profile_id, integration_mode, skip_verification, intelligence_class,
     affinity_agent_id, affinity_reason, or workspace_mode. Use this to move a task to a different
     project, rename tasks, change priority, override status (admin), assign a profile, adjust
     retry/verification settings, or set coordination parameters.
 
      Edit a task's properties: project_id, title, description, priority, task_type, status, max_retries,
-    verification_type, profile_id, auto_approve_plan, skip_verification, intelligence_class,
+    verification_type, profile_id, integration_mode, skip_verification, intelligence_class,
     affinity_agent_id, affinity_reason, or workspace_mode. Use this to move a task to a different
     project, rename tasks, change priority, override status (admin), assign a profile, adjust
     retry/verification settings, or set coordination parameters.
@@ -139,13 +139,13 @@ async def asyncio_detailed(
     body: EditTaskRequest,
 ) -> Response[EditTaskResponse | EditTaskResponse422]:
     """Edit a task's properties: project_id, title, description, priority, task_type, status, max_retries,
-    verification_type, profile_id, auto_approve_plan, skip_verification, intelligence_class,
+    verification_type, profile_id, integration_mode, skip_verification, intelligence_class,
     affinity_agent_id, affinity_reason, or workspace_mode. Use this to move a task to a different
     project, rename tasks, change priority, override status (admin), assign a profile, adjust
     retry/verification settings, or set coordination parameters.
 
      Edit a task's properties: project_id, title, description, priority, task_type, status, max_retries,
-    verification_type, profile_id, auto_approve_plan, skip_verification, intelligence_class,
+    verification_type, profile_id, integration_mode, skip_verification, intelligence_class,
     affinity_agent_id, affinity_reason, or workspace_mode. Use this to move a task to a different
     project, rename tasks, change priority, override status (admin), assign a profile, adjust
     retry/verification settings, or set coordination parameters.
@@ -176,13 +176,13 @@ async def asyncio(
     body: EditTaskRequest,
 ) -> EditTaskResponse | EditTaskResponse422 | None:
     """Edit a task's properties: project_id, title, description, priority, task_type, status, max_retries,
-    verification_type, profile_id, auto_approve_plan, skip_verification, intelligence_class,
+    verification_type, profile_id, integration_mode, skip_verification, intelligence_class,
     affinity_agent_id, affinity_reason, or workspace_mode. Use this to move a task to a different
     project, rename tasks, change priority, override status (admin), assign a profile, adjust
     retry/verification settings, or set coordination parameters.
 
      Edit a task's properties: project_id, title, description, priority, task_type, status, max_retries,
-    verification_type, profile_id, auto_approve_plan, skip_verification, intelligence_class,
+    verification_type, profile_id, integration_mode, skip_verification, intelligence_class,
     affinity_agent_id, affinity_reason, or workspace_mode. Use this to move a task to a different
     project, rename tasks, change priority, override status (admin), assign a profile, adjust
     retry/verification settings, or set coordination parameters.

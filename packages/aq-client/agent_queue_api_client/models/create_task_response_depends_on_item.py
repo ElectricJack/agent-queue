@@ -6,43 +6,27 @@ from typing import Any, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-from ..types import UNSET, Unset
-
-T = TypeVar("T", bound="DeletePlanResponse422")
+T = TypeVar("T", bound="CreateTaskResponseDependsOnItem")
 
 
 @_attrs_define
-class DeletePlanResponse422:
-    """
-    Attributes:
-        error (str | Unset):
-    """
-
-    error: str | Unset = UNSET
+class CreateTaskResponseDependsOnItem:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        error = self.error
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update({})
-        if error is not UNSET:
-            field_dict["error"] = error
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        error = d.pop("error", UNSET)
+        create_task_response_depends_on_item = cls()
 
-        delete_plan_response_422 = cls(
-            error=error,
-        )
-
-        delete_plan_response_422.additional_properties = d
-        return delete_plan_response_422
+        create_task_response_depends_on_item.additional_properties = d
+        return create_task_response_depends_on_item
 
     @property
     def additional_keys(self) -> list[str]:

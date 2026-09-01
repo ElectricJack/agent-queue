@@ -257,7 +257,6 @@ All task statuses have associated emoji and hex color values used in embeds and 
 | IN_PROGRESS | 🟡 | #f39c12 |
 | WAITING_INPUT | 💬 | #1abc9c |
 | PAUSED | ⏸️ | #7f8c8d |
-| AWAITING_APPROVAL | ⏳ | #e67e22 |
 | COMPLETED | 🟢 | #2ecc71 |
 | FAILED | 🔴 | #e74c3c |
 | BLOCKED | ⛔ | #992d22 |
@@ -439,13 +438,6 @@ Deletes a task permanently.
 | Parameter | Type | Description |
 |---|---|---|
 | `task_id` | str | Task to delete |
-
-#### `/approve-task`
-Approves a task in AWAITING_APPROVAL state, marking it as COMPLETED.
-
-| Parameter | Type | Description |
-|---|---|---|
-| `task_id` | str | Task to approve |
 
 #### `/skip-task`
 Marks a blocked or failed task as COMPLETED (skipped), unblocking its dependency chain.
@@ -947,9 +939,9 @@ A `discord.ui.View` with `timeout=600` (10 minutes).
 - `total` — total task count
 - `expanded` — set of currently expanded status names
 
-**Initial expansion:** Active and actionable statuses are expanded by default — `IN_PROGRESS`, `ASSIGNED`, `READY`, `FAILED`, `BLOCKED`, `PAUSED`, `WAITING_INPUT`, `AWAITING_APPROVAL`. If none of those have tasks, the first non-empty status in `_STATUS_ORDER` is expanded.
+**Initial expansion:** Active and actionable statuses are expanded by default — `IN_PROGRESS`, `ASSIGNED`, `READY`, `FAILED`, `BLOCKED`, `PAUSED`, `WAITING_INPUT`. If none of those have tasks, the first non-empty status in `_STATUS_ORDER` is expanded.
 
-Status display order: `IN_PROGRESS`, `ASSIGNED`, `READY`, `DEFINED`, `PAUSED`, `WAITING_INPUT`, `AWAITING_APPROVAL`, `AWAITING_PLAN_APPROVAL`, `FAILED`, `BLOCKED`, `COMPLETED`.
+Status display order: `IN_PROGRESS`, `ASSIGNED`, `READY`, `DEFINED`, `PAUSED`, `WAITING_INPUT`, `FAILED`, `BLOCKED`, `COMPLETED`.
 
 #### `StatusToggleButton`
 

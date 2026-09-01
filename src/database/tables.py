@@ -45,6 +45,9 @@ projects = Table(
     Column("repo_url", Text, nullable=True, server_default="''"),
     Column("repo_default_branch", Text, nullable=True, server_default="'main'"),
     Column("default_profile_id", Text, ForeignKey("agent_profiles.id"), nullable=True),
+    # Project-level integration policy: 'direct' | 'pull_request' | NULL
+    # (NULL = inherit config ``integration.default_mode``).
+    Column("integration_mode", Text, nullable=True),
     Column("created_at", Float, nullable=False),
 )
 
@@ -77,7 +80,9 @@ tasks = Table(
     Column("assigned_agent_id", Text, ForeignKey("agents.id"), nullable=True),
     Column("branch_name", Text, nullable=True),
     Column("resume_after", Float, nullable=True),
-    Column("requires_approval", Integer, nullable=False, server_default="0"),
+    # Integration policy override: 'direct' | 'pull_request' | NULL (inherit
+    # project policy, then config ``integration.default_mode``).
+    Column("integration_mode", Text, nullable=True),
     Column("pr_url", Text, nullable=True),
     Column("plan_source", Text, nullable=True),
     Column("is_plan_subtask", Integer, nullable=False, server_default="0"),
@@ -95,14 +100,13 @@ tasks = Table(
         nullable=True,
     ),
     Column("attachments", Text, nullable=True, server_default="'[]'"),
-    Column("auto_approve_plan", Integer, nullable=False, server_default="0"),
     Column("skip_verification", Integer, nullable=False, server_default="0"),
     Column("workflow_id", Text, ForeignKey("workflows.workflow_id", use_alter=True), nullable=True),
     Column("affinity_agent_id", Text, nullable=True),
     Column("affinity_reason", Text, nullable=True),
     Column("workspace_mode", Text, nullable=True),
     # Persisted blocked-state projection (work-graph spec §2.2).  Integer
-    # 0/1 matches the table's existing flag style (e.g. requires_approval).
+    # 0/1 matches the table's existing flag style (e.g. is_plan_subtask).
     # Recomputed by the query layer; never written directly.
     Column("is_blocked", Integer, nullable=False, server_default="0"),
     Column("dedup_key", Text, nullable=True),
@@ -821,7 +825,7 @@ archived_tasks = Table(
     Column("assigned_agent_id", Text, nullable=True),
     Column("branch_name", Text, nullable=True),
     Column("resume_after", Float, nullable=True),
-    Column("requires_approval", Integer, nullable=False, server_default="0"),
+    Column("integration_mode", Text, nullable=True),
     Column("pr_url", Text, nullable=True),
     Column("plan_source", Text, nullable=True),
     Column("is_plan_subtask", Integer, nullable=False, server_default="0"),
@@ -829,7 +833,6 @@ archived_tasks = Table(
     Column("profile_id", Text, nullable=True),
     Column("preferred_workspace_id", Text, nullable=True),
     Column("attachments", Text, nullable=True, server_default="'[]'"),
-    Column("auto_approve_plan", Integer, nullable=False, server_default="0"),
     Column("skip_verification", Integer, nullable=False, server_default="0"),
     Column("workflow_id", Text, nullable=True),
     Column("affinity_agent_id", Text, nullable=True),
