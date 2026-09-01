@@ -1,11 +1,13 @@
 # Playbook V2 Semantic Graph Design
 
-**Status:** Approved design
+**Status:** Approved design, revised after adversarial review
 **Date:** 2026-09-01
 
 ## Summary
 
 Playbook V2 makes the compiled graph a strict, typed execution contract that is both executable and explainable. Markdown remains the authoring source of truth. The compiler produces a semantic graph body, the server adds authoritative metadata and validates it, and the resulting JSON is the sole executable artifact.
+
+Phase 0 establishes the security boundary before the graph model changes: compiler output cannot claim authoritative metadata, every AI state runs as an authenticated capability principal, tool and command authorization is enforced at dispatch as well as in the model-visible schema, and delegation cannot widen capabilities. These invariants are carried forward by the V2 engine rather than left behind in the old runner.
 
 The same typed graph drives execution, dry-run, graph rendering, and the selected-node inspector. Human-readable intent is a deterministic projection of executable fields and command contracts; it is never a separately generated summary.
 
@@ -33,6 +35,10 @@ The review identified concrete contract failures:
 - natural-language transitions can invoke an LLM without that AI decision being visible as a graph state;
 - multiple orchestrator paths independently select and interpret runners;
 - definition traversal and the separate `PlaybookRun` lifecycle are both described as state machines.
+- pre-pause result bindings are held only in memory, so resumed runs can lose values needed by later steps;
+- profile allowlists mix harness tools and orchestrator commands even though agent sessions cannot enforce the latter through a harness flag;
+- two runtime-status enums disagree, cancellation has no legal transition, and command success is inferred inconsistently;
+- mutable artifact files have no authoritative activation record or retained content-addressed history.
 
 The UI is therefore exposing storage structure rather than author or operator intent. Fixing only the presentation would preserve the underlying ambiguity.
 
@@ -46,8 +52,10 @@ The UI is therefore exposing storage structure rather than author or operator in
 6. Give every orchestrator consumer one execution boundary.
 7. Make live runs and dry-runs use the same traversal and runner selection.
 8. Detect command-contract changes and require affected playbooks to rebuild.
-9. Reject unknown or unrenderable executable fields instead of silently ignoring them.
+9. Reject unknown executable fields and require every validated field to have a lossless canonical rendering.
 10. Preserve historical artifacts and run traces for inspection without preserving obsolete executable command APIs.
+11. Preserve capability confinement across inline LLM calls, agent tasks, CLI/MCP command calls, and nested delegation.
+12. Persist enough typed run state to resume waits and loops without losing pre-pause results.
 
 ## Non-goals
 
@@ -57,6 +65,9 @@ The UI is therefore exposing storage structure rather than author or operator in
 - Making LLM or agent outputs deterministic.
 - Allowing a run to resume against a newly compiled graph with different semantics.
 - Keeping V1 artifacts executable indefinitely.
+- Automatically rebuilding or activating a playbook after a command contract changes.
+- Treating a model-visible tool list, a prompt, or a harness flag as an authorization boundary.
+- Supporting parallel or nested `ForEachStep` execution in the initial V2 release.
 
 ## Terminology
 
@@ -70,9 +81,17 @@ The UI is therefore exposing storage structure rather than author or operator in
 
 **Command contract:** The current public input, output, outcome, behavioral, and presentation contract for a registered orchestrator command.
 
+**Capability policy:** The resolved, fingerprinted set of harness tools, orchestrator commands, and MCP tools available to one AI principal. These namespaces are distinct and are never stored in one ambiguous string list.
+
+**Run snapshot:** The mutable, authoritative continuation state persisted at each durable execution boundary.
+
+**Execution receipt:** An immutable audit record of one completed or interrupted step attempt. Receipts explain history; they are not replayed to reconstruct continuation state.
+
+**Artifact hash:** The SHA-256 digest of the canonical installed JSON bytes. A run always points to this immutable artifact identity.
+
 ## Canonical V2 artifact
 
-The V2 artifact is a discriminated, strict schema. It contains common metadata, first-class rules, a typed step map, and the command fingerprints against which it was compiled.
+The V2 artifact is a discriminated, strict schema. It contains common metadata, first-class rules, a typed step map, and the execution-contract and capability-policy fingerprints against which it was compiled.
 
 `purpose` describes the result contract expected by the caller, such as `routine` or `assignment_routing`; it does not select a different runner. Typed steps determine execution behavior.
 
@@ -84,13 +103,15 @@ The V2 artifact is a discriminated, strict schema. It contains common metadata, 
   "scope": { "type": "system" },
   "source_hash": "sha256:...",
   "compiled_at": "2026-09-01T00:00:00Z",
-  "enabled": true,
   "purpose": "routine",
   "rules": [],
   "steps": {},
   "compiled_against": {
     "commands": {
       "ensure_task": "sha256:..."
+    },
+    "profiles": {
+      "reviewer": "sha256:..."
     }
   }
 }
@@ -102,7 +123,9 @@ Markdown owns author-facing purpose, descriptions, rule names, and desired behav
 
 The compiler emits only the semantic body: rules, steps, expressions, declared results, and source references.
 
-The server owns and merges identity, scope, artifact version, source hash, compilation time, activation metadata, and command fingerprints. Compiler output is never expected to invent these fields.
+The server owns and merges identity, scope, artifact version, source hash, compilation time, and command/profile fingerprints. Operational activation metadata, including `enabled`, health, and the active artifact hash, lives in `playbook_activations` rather than inside the immutable artifact. Compiler output is never expected to invent any of these fields.
+
+The server also extracts an authoritative identifier inventory from frontmatter and exact backticked identifiers in the Markdown. Every command name, event name, profile ID, context key, result name, dedup-key pattern, and external field name emitted by the compiler must appear in that inventory. Internal artifact-local step IDs may be compiler-generated. An external identifier absent from the source is a compile error, never a model guess.
 
 The installed JSON artifact is the only executable source of truth. Markdown must be recompiled before an edit can execute.
 
@@ -111,6 +134,62 @@ The installed JSON artifact is the only executable source of truth. Markdown mus
 The runtime model and published JSON Schema have one source. Unknown fields fail validation. Every supported field must survive serialization round-trip. The loader never silently discards executable data.
 
 `schema_version` versions the artifact format only. It does not imply support for multiple current command APIs. V1 becomes historical and read-only after cutover.
+
+The generated runtime schema is served directly by the backend. A checked-in documentation snapshot is regenerated in CI, and CI fails when regeneration changes it. Activation validates with the same runtime model that generates that schema; a hand-written loader is not a second interpretation path.
+
+## Phase 0: security and authority baseline
+
+Phase 0 lands before the V2 schema and executor migration. It restores and tests the security promises that already exist in pieces but are not consistently enforced by the current compiler-agent and agent-session paths.
+
+### Authoritative compilation boundary
+
+The compiler agent is untrusted with respect to authority. It proposes only the semantic body and source references. The server discards any compiler-supplied identity, scope, triggers, filters, enabled state, artifact version, hashes, activation state, or capability snapshots. It reconstructs artifact fields from trusted source metadata and registries and preserves operational state from the activation record.
+
+Activation accepts a compiler artifact only when:
+
+- every executable identifier is present in the source identifier inventory;
+- every `source_ref` resolves to the source span that names the relevant behavior;
+- all referenced commands, profiles, events, and fields resolve;
+- the server has merged authoritative metadata and recomputed canonical hashes;
+- strict validation, explanation coverage, and the human structural-diff review succeed.
+
+The current orphaned frontmatter-merge behavior is restored on the actual install path as the first Phase 0 change. Tests prove that a compiler cannot invent, omit, or widen `profile_id`, scope, triggers, filters, or enabled state.
+
+### Capability model
+
+Every `LlmStep` and `AgentTaskStep` names a profile explicitly. There is no unscoped AI execution in V2. The server resolves that profile into three independent allowlists:
+
+- `harness_tools`: local model-client capabilities such as read, edit, shell, or web access;
+- `commands`: contracted orchestrator commands such as `ensure_task` or `task_close`;
+- `mcp_tools`: fully qualified third-party MCP tools.
+
+An empty list means none. Wildcards and “missing means default tools” are invalid in a V2 capability policy. The artifact records the resolved profile fingerprint; any profile change requires review and rebuild before a new run can use it.
+
+Tool schemas are narrowed to the policy for model guidance, and the dispatcher independently authorizes every invocation. A model-generated call not present in the active policy is rejected before handler lookup. This dispatch check is the security boundary.
+
+Every playbook run, inline LLM call, and agent session receives an authenticated execution principal containing the run, rule, step, task, profile, and capability-policy identity. CLI and MCP requests carry a short-lived token for that principal. The server authorizes orchestrator commands from the principal; access through `Bash`, an MCP transport, or another adapter cannot bypass the command allowlist.
+
+Delegation is monotonic. An `AgentTaskStep` or an AI-invoked task-creation command may select only a profile whose three capability sets are subsets of the caller's policy. Missing caller identity, an unknown profile, or an incomparable policy fails closed. The subset check is performed by the server, not inferred from prompt text.
+
+Phase 0 adds end-to-end tests for compiler authority, off-list dispatch rejection, empty-policy lockdown, missing-profile failure, CLI/MCP principal propagation, and recursive no-widening delegation. Unit tests that replay the expected subset algorithm without invoking the real handler are not sufficient acceptance evidence.
+
+## Authoring contract
+
+Playbook sources are English prose with YAML frontmatter. Embedded JSON graph blocks are disallowed. The prose is normative; the compiler agent owns prose-to-typed-graph translation, and the server owns validation and authority.
+
+Authors use controlled English only for executable identifiers: command names, profiles, events, fields, result bindings, outcome labels, and literal keys appear exactly in backticks or frontmatter. Prose can describe structure freely, but the compiler never invents an executable identifier. If prose leaves a guard, transition target, failure path, input source, or output choice ambiguous, compilation fails with a question tied to the relevant `source_ref`. There are no silent defaults for missing executable behavior.
+
+The authoring loop is:
+
+1. edit prose;
+2. compile to a proposed typed graph;
+3. read the contract-derived intent cards and structural diff as the proofread surface;
+4. revise the prose when the proposal does not match intent;
+5. explicitly activate the reviewed artifact.
+
+Compilation is allowed to be nondeterministic; activation is not automatic. Command contracts are expected to change rarely, and each resulting rebuild is manually reviewed as a whole. Step IDs are artifact-local and may change across rebuilds. Cross-version analytics use rule IDs and source references when possible and otherwise accept version fragmentation.
+
+Bundled sources, including `default-pipeline.md`, are converted to normative prose and lose their embedded JSON blocks before cutover. A structural fixture verifies the approved compiled rules, steps, and edges for each bundled playbook. Pipeline and ordinary playbooks use the same compiler entry point.
 
 ## First-class rules
 
@@ -121,7 +200,10 @@ A rule preserves the structure that is currently flattened into pipeline metadat
   "id": "per-branch-final-review",
   "title": "Branch final review",
   "description": "Request and route a final review when required.",
-  "trigger": { "event": "task.completed" },
+  "trigger": {
+    "event": "task.completed",
+    "filter": { "task.kind": "implementation" }
+  },
   "guard": {
     "type": "equals",
     "left": { "type": "event_ref", "path": "review_scope" },
@@ -132,9 +214,13 @@ A rule preserves the structure that is currently flattened into pipeline metadat
 }
 ```
 
-Rules give the compiler, validator, engine, and graph projector the same input-event and grouping information. Multiple rules may use the same event. The UI may display them as separate clusters on one event-scoped canvas.
+Rules give the compiler, validator, engine, and graph projector the same input-event and grouping information. Multiple rules may use the same event. The UI displays them as separate clusters on one event-scoped canvas.
 
-Triggers and guards are executable graph semantics, not UI-only metadata. A guard must use a typed deterministic condition. When judgment requires an LLM, the rule enters an explicit `LlmStep` instead of hiding an LLM evaluation inside natural-language edge text.
+Every event type registers a payload schema. A trigger filter is a subscription-level conjunction of literal equality or membership tests against that schema; it cheaply decides whether to offer an event to a rule. A guard is a full typed deterministic expression evaluated after delivery. Both survive compilation and appear in the inspector. When judgment requires an LLM, the rule enters an explicit `LlmStep` instead of hiding an LLM evaluation inside natural-language edge text.
+
+Each matching rule creates an independent run with its own status, snapshot, and receipts. Runs produced from one incoming event share a `dispatch_id`, but one rule's failure cannot abort another rule. Event deduplication uses `(scope, playbook_id, rule_id, event_id)`; rebuilding a playbook does not silently replay an event already consumed by that rule.
+
+A rule owns a closed subgraph. Transitions cannot cross into another rule's steps, and result bindings cannot cross rule boundaries. Reusable source prose or compiler helpers can remove authoring repetition, but the artifact duplicates shared terminal or utility steps per rule so the event-scoped graph never requires cross-cluster edges.
 
 ## Typed values and conditions
 
@@ -144,15 +230,27 @@ Opaque interpolation strings are replaced by a typed value-expression union:
 - `EventRef`
 - `ContextRef`
 - `ResultRef`
-- `TemplateValue`, composed from typed value parts
+- `LoopItemRef`
+- `ListValue`, whose items are typed values
+- `ObjectValue`, whose fields are typed values
+- `TemplateValue`, composed from typed value parts and producing only a string
+- `CoalesceValue`, which provides an explicit typed fallback
 
-This preserves dynamic behavior while making references statically validatable and deterministically explainable. For example, `{{event.project_id}}` becomes an `EventRef` whose display label can be rendered as “this event's project.”
+This preserves dynamic behavior while making references statically validatable and deterministically explainable. For example, `{{event.project_id}}` becomes an `EventRef` whose display label can be rendered as “this event's project,” while `waiter_task_ids: ["{{outputs.dep.id}}"]` becomes a `ListValue` containing a typed reference rather than a string template.
 
-Conditions similarly use a typed expression tree for comparisons, boolean composition, existence, and collection predicates. A condition cannot contain undeclared natural-language LLM behavior.
+`EventRef` paths validate against the rule's registered event schema. Context references validate against an engine context schema. Result references validate against the producing step's output schema. The compiler performs all-paths definite-assignment analysis across branches: a `ResultRef` is legal only where its binding is guaranteed to exist. Optional behavior uses an explicit `CoalesceValue` or an existence condition; it is never inferred.
+
+A missing or type-invalid value fails before the command or AI call with reserved outcome `input_resolution_failed`. The engine never injects an `UNRESOLVED` marker and never coerces a missing value to an empty string.
+
+Loop item bindings are lexical, cannot shadow event, context, result, or outer loop names, and are not visible after the loop. Initial V2 forbids nested `ForEachStep`, making definite assignment and persisted loop state finite and inspectable.
+
+Conditions use a typed expression tree for comparisons, boolean composition, existence, and collection predicates. A condition cannot contain undeclared natural-language LLM behavior.
 
 ## Typed step family
 
-Every step has common fields: stable internal ID, human title and optional description, a type discriminator, optional source reference, type-specific configuration, optional result binding, and typed transitions or a terminal outcome.
+Every step has common fields: an artifact-local internal ID, human title and optional description, a type discriminator, required source reference, type-specific configuration, optional result binding, and typed transitions or a terminal outcome.
+
+Business outcomes come from a command or step schema. The engine additionally reserves `input_resolution_failed`, `unavailable`, `contract_violation`, `state_limit_exceeded`, `interrupted`, `timed_out`, and `cancelled`. Step-specific schemas can add reserved outcomes such as LLM budget or provider failures. A step maps every business outcome and either maps each applicable reserved outcome or supplies one visible `runtime_error` target. The graph projector emits labeled edges for every possible outcome even when several labels share a target.
 
 ### CommandStep
 
@@ -176,7 +274,8 @@ Invokes a registered orchestrator command.
   "save_result_as": "review",
   "transitions": {
     "success": "review-branch",
-    "failure": "review-unavailable"
+    "failure": "review-unavailable",
+    "runtime_error": "review-unavailable"
   }
 }
 ```
@@ -187,15 +286,21 @@ The top-level `compiled_against.commands` map is the authoritative fingerprint r
 
 ### LlmStep
 
-Performs an inline LLM request inside the current playbook run. It declares a profile, prompt inputs, output schema, budgets or policy, result binding, and transitions keyed by typed outcomes.
+Performs an inline LLM request inside the current playbook run. It declares a profile, typed prompt inputs, output schema, tool-use policy, retry policy, result binding, and transitions keyed by typed outcomes.
 
 LLM branching must use declared structured output, such as an enum. The graph visibly identifies the node as an AI state and labels every legal outcome edge.
 
+Every LLM step declares `max_calls`, `max_output_tokens`, `max_total_tokens`, and `timeout_seconds`. Token accounting uses provider-reported input and output usage. A provider adapter that cannot report usage cannot run a step with a hard total-token budget. The reserved outcomes are `invalid_output` after schema retries are exhausted, `budget_exceeded`, `provider_error`, `timed_out`, and `cancelled`.
+
+When tool use is enabled, every tool call is authorized by the step principal and routed through the same contracted command or MCP dispatch boundary used outside the LLM. Model-visible schemas are a narrowed projection, not the enforcement mechanism. The transcript and each completed tool turn are persisted at durable boundaries. An interrupted in-flight provider call is never silently replayed; it produces an interrupted receipt and requires an explicit retry attempt.
+
 ### AgentTaskStep
 
-Creates an orchestrated agent task. It declares the profile, objective, input bindings, whether to wait for completion, result binding, timeout, and transitions for completed, failed, and timed-out outcomes.
+Creates an orchestrated agent task. It declares the profile, objective, input bindings, whether to wait for completion, result binding, timeout, cancellation policy, and transitions for `dispatched`, `completed`, `failed`, `timed_out`, and `cancelled` as applicable.
 
 This is separate from `LlmStep` because it has different scheduling, persistence, cost, waiting, cancellation, and failure semantics.
+
+The child session receives a principal derived from the parent run, and its profile must be a capability subset of the parent AI principal when the parent is an AI state. Cancellation does not kill shared or reused work implicitly: `cancel_child` is explicit and defaults to false.
 
 ### DecisionStep
 
@@ -203,11 +308,15 @@ Branches deterministically on an existing typed value or condition. It contains 
 
 ### WaitStep
 
-Pauses for a human response, external event, or task completion. It declares the wait kind, correlation expression, optional timeout, result binding, and timeout transition. Event waits are part of the canonical model and must survive round-trip.
+Pauses for a human response, external event, or task completion. It declares the wait kind, an exact typed correlation key computed at pause time, optional timeout, result binding, and timeout transition. Event waits are part of the canonical model and must survive round-trip.
+
+The engine atomically persists the run snapshot, wait registration, correlation key, and paused status. Event ingestion writes to a durable inbox before matching waits. Registration checks that inbox in the same transaction, eliminating the race in which an event arrives between the wait decision and persisted pause. A dedicated wait scheduler owns `deadline_at`; TimerService triggers are not synthesized for per-run waits. The earlier of the wait deadline and run deadline wins, and the receipt records which deadline fired.
 
 ### ForEachStep
 
-Iterates a declared body over a typed collection with an explicit item binding, completion behavior, failure policy, and continuation. This preserves current loop capability without nesting iteration semantics inside a command dictionary.
+Iterates a declared body sequentially over a typed collection with an explicit item binding, completion behavior, failure policy, and continuation. The allowed failure policies are `halt`, `continue`, and `collect`. The aggregate result contains ordered item results, outcomes, and collected errors.
+
+A `WaitStep` or `AgentTaskStep` is legal inside the body. Because execution is sequential, at most one iteration is active. The run snapshot stores the loop step, current index, item binding, partial aggregate, and resume step. Nested and parallel loops are rejected in initial V2. The run overlay shows a traversal count on the node and exposes individual iterations in the inspector rather than drawing forty copies of the same node.
 
 ### TerminalStep
 
@@ -215,29 +324,48 @@ Completes the rule or playbook with a typed outcome and optional typed result.
 
 ## Command contracts
 
-There is one active contract and handler for each command name.
+V2 starts with the commands used by active playbooks, approximately the current pipeline whitelist plus assignment-routing commands, rather than attempting to contract every registered command at once. A `CommandStep` can reference only a contracted command. Coverage grows when an author needs another command in a playbook.
+
+There is one active contract and handler adapter for each contracted command name.
 
 ```python
 CommandRegistration(
     name="ensure_task",
-    contract=EnsureTaskContract(...),
-    handler=ensure_task,
+    contract=CommandContract(
+        inputs=...,
+        result=...,
+        outcomes=...,
+        guarantees=...,
+        execution=...,
+        security=...,
+        receipt=...,
+        presentation=...,
+    ),
+    invoke=ensure_task_adapter,
+    preview=preview_ensure_task,
 )
 ```
 
-A command cannot register without both parts. The contract declares:
+A command cannot register without an execution contract and invocation adapter. The fingerprint-bearing execution contract declares:
 
-- accepted inputs, types, required fields, and readable field labels;
-- observable behavioral guarantees, including idempotency or deduplication;
-- output schema and possible outcomes;
-- retry, timeout, and side-effect characteristics;
-- safe display behavior for secrets or large values;
-- event, context, and result reference compatibility;
-- semantic facts used by the explanation builder.
+- accepted inputs, types, required fields, and reference compatibility;
+- a closed result schema and closed set of business outcomes;
+- observable guarantees such as idempotency, deduplication, or create-versus-reuse behavior;
+- side-effect class, retry safety, timeout behavior, and an optional idempotency-key field;
+- the orchestrator capability required to invoke the command;
+- receipt projection and sensitive-field classifications.
 
-The contract fingerprint is computed from this public contract. Internal refactors that preserve the contract do not invalidate playbooks. Changes to inputs, outputs, outcomes, behavioral guarantees, or reference support change the fingerprint and require affected playbooks to rebuild.
+Presentation is a separate non-fingerprinted object containing readable field labels, structured effect clauses, examples, and help text. Improving a label cannot stale a playbook.
 
-CI treats observable handler changes without a corresponding contract change as a defect. The system cannot mathematically prove arbitrary implementation code is bug-free, but it can guarantee that the UI neither invents nor omits declared executable behavior.
+Effect clauses are data, not prose guesses. Each clause contains a typed predicate over resolved inputs and a semantic operation such as `create`, `reuse`, `link`, `wait`, or `update`. For `ensure_task`, the explanation can therefore state “create or reuse by this deduplication key” only when `dedup_key` is present. A lossless canonical field/value rendering is always available when no richer clause applies.
+
+Handlers do not return duck-typed success dictionaries to the V2 engine. The adapter returns `CommandResult(outcome, value)`; the engine validates both against the contract before binding a result or selecting an edge. Missing fields, unknown fields, unknown outcomes, or type mismatches produce reserved outcome `contract_violation` and an error receipt. No executor infers success from the presence or absence of a `success` key.
+
+An optional `preview` adapter performs no writes or external side effects. It can use a read-only database snapshot to distinguish effects such as create versus reuse and can return a typed simulated result. A command without preview support remains valid for live execution but becomes an unresolved boundary in dry-run.
+
+The execution fingerprint is SHA-256 over canonical UTF-8 JSON with sorted object keys, normalized schema representation, and no presentation fields. Internal refactors and copy changes do not invalidate playbooks. Changes to inputs, results, outcomes, guarantees, security requirements, retry behavior, or reference support change the fingerprint and require a manually reviewed rebuild.
+
+CI cannot infer arbitrary behavior changes from source diffs. Instead, each contracted command has adapter conformance tests, outcome fixtures, and behavioral tests for its declared guarantees. Review policy requires a contract update when observable behavior changes. This is an explicit engineering discipline, not a mechanically provable invariant.
 
 ## Intent explanation
 
@@ -258,21 +386,64 @@ outcomes:
   Failure -> Review unavailable
 ```
 
-The frontend lays out this structure but does not reinterpret command semantics. The explanation builder is exhaustive: if it cannot account for an executable field, compilation or activation fails. Unknown behavior is never silently hidden behind a friendly summary.
+The frontend lays out this structure but does not reinterpret command semantics. Every executable field contributes to a canonical explanation record generated from the validated step model. CI has an exhaustiveness test that fails when a new step type or executable field lacks a renderer. Runtime activation relies on strict model validation, not on optional copy templates: when rich presentation metadata is absent, the renderer uses a lossless canonical field/value representation. It never hides the field or invents intent.
 
-The intent card is read-only. Editing occurs through the Markdown source or a structured editor that modifies semantic fields and recompiles the artifact. Advanced mode exposes exact typed JSON, expressions, internal IDs, and command fingerprints.
+This separates reliability from copy quality. A label or help-text improvement does not block activation or change an execution fingerprint, while the operator can always see every executable value. Conditional effect clauses are evaluated from the same resolved typed inputs used by the executor.
+
+The intent card is read-only. Editing occurs through the Markdown source or a structured editor that modifies semantic fields and recompiles the artifact. AI cards show the profile, resolved capability namespaces, capability fingerprint, budgets, and delegation policy. Advanced mode exposes exact typed JSON, expressions, artifact-local IDs, execution fingerprints, and redaction decisions.
 
 ## Compilation and activation flow
 
 1. An author edits Markdown.
-2. The compiler agent emits a typed semantic body with source references.
-3. The server merges authoritative metadata.
-4. The validator resolves command registrations, validates value references, checks output bindings and edge targets, and generates fingerprints.
-5. The explanation builder verifies that every executable field is representable.
-6. The server presents a structural diff of rules, steps, and transitions.
-7. Activation atomically installs the fully validated artifact.
+2. The server parses trusted frontmatter and extracts the exact identifier inventory.
+3. The compiler agent emits a proposed typed semantic body with source references.
+4. The server discards proposed authoritative fields and merges trusted metadata.
+5. The validator resolves event schemas, command registrations, profiles, value references, output bindings, loop scopes, and edge targets.
+6. The server resolves capability snapshots and generates execution and profile fingerprints.
+7. The explanation service generates the canonical intent projection using its CI-verified exhaustive renderer.
+8. The server presents source-to-intent and structural diffs of rules, steps, profiles, capabilities, and transitions.
+9. Explicit activation atomically points the playbook at the fully validated immutable artifact.
 
 A failed compilation or rebuild never partially replaces an installed artifact.
+
+## Storage and activation
+
+Compiled JSON remains serialized to disk, but active identity is content-addressed rather than “the latest file at this path.” Canonical artifacts are written under `compiled/artifacts/<sha256>.json`. The server writes and fsyncs a temporary file, renames it to the immutable hash path, and only then updates the database activation pointer in a transaction. A crash can leave an unreferenced immutable file for garbage collection; it cannot expose a half-written active artifact.
+
+The database adds:
+
+- `playbook_artifacts`: artifact hash, path, schema version, source hash, referenced execution/profile digests, creation time, and validation summary;
+- `playbook_activations`: scope and playbook ID, active artifact hash, enabled state, health, reason, and activation time;
+- `playbook_runs`: one row per rule run, artifact hash, lifecycle, current step, typed snapshot, deadline, dispatch/event identity, and summary;
+- `playbook_step_receipts`: immutable step-attempt records;
+- `playbook_waits`: durable correlation keys and deadlines;
+- `playbook_pending_events`: events held while an activation is stale or unavailable.
+
+A run reads its graph from its pinned artifact hash. Historical overlays always render that exact retained artifact, never the current activation. Step IDs need only be stable inside one artifact. Active artifacts and artifacts referenced by retained runs are never collected.
+
+Retention is configurable with these defaults: full receipts and completed run snapshots are retained for 90 days; pinned runs are retained until explicitly unpinned; run summaries and aggregate health metrics are retained indefinitely; unreferenced inactive artifacts are retained for at least 90 days and the most recent ten versions per playbook. Deletion is reference-checked and auditable.
+
+Assignment routing keeps its existing input/options hash cache outside the engine. A cache hit does not create another playbook run or receipt set, preventing scheduler cycles from multiplying identical routing records.
+
+## Run-state persistence
+
+The mutable run snapshot is authoritative for continuation. Receipts are immutable inspection records and are never replayed to reconstruct state.
+
+The snapshot persists at every step boundary and before entering a wait:
+
+- artifact hash, rule ID, current step, lifecycle, attempt, and run deadline;
+- validated event and context values;
+- typed result bindings from all completed predecessor steps;
+- the `ForEachStep` frame: collection digest, current index, item binding, partial aggregate, and resume step;
+- wait kind, correlation key, deadline, and claimed event identity;
+- completed LLM transcript/tool turns and AgentTask identity needed to continue safely;
+- cancellation request and executor-specific acknowledgement state.
+
+A bound result contains only the step's validated declared output, not an arbitrary handler dictionary. One result is limited to 256 KiB of canonical JSON and one run snapshot to 4 MiB by default; exceeding either produces `state_limit_exceeded` before the next step. Contracts mark sensitive fields. Sensitive material is represented by an opaque handle when needed downstream and is never written raw to a receipt. Receipt display is default-deny: an unmarked field is redacted.
+
+State mutation and its receipt commit atomically. A side-effecting command receives the deterministic attempt key `<run_id>:<step_id>:<attempt>` when its contract supports idempotency. After an ambiguous process interruption, a retry-safe command can be replayed with that key; a non-retry-safe command pauses with `operator_decision_required` rather than executing twice. The operator must record one explicit resolution: accept a supplied typed outcome and continue, retry as a new attempt, fail the run, or cancel it. That decision is itself receipted.
+
+There is one lifecycle enum: `running`, `paused`, `cancelling`, `completed`, `failed`, `timed_out`, and `cancelled`. Cancellation is legal from running or paused. A paused run cancels immediately. An in-flight executor enters `cancelling`, receives a best-effort cancellation signal, and becomes `cancelled` after acknowledgement or the cancellation grace deadline. `AgentTaskStep.cancel_child` controls whether owned child work is also cancelled.
 
 ## Unified execution engine
 
@@ -290,7 +461,7 @@ The engine validates artifact compatibility, selects matching first-class rules,
 - `ForEachExecutor`
 - `TerminalExecutor`
 
-Assignment routing uses the same engine and returns a declared typed result for the scheduler. Its role does not introduce a separate graph interpretation path.
+Assignment routing uses the same engine and returns a declared typed `AssignmentRoutingResult` for the scheduler. The routing source declares its prompt inputs, profile, no-tool policy, and response schema on an ordinary `LlmStep`. The scheduler adapter owns candidate construction, task-projection synchronization, and the existing input/options hash cache; those are caller concerns, not hidden runner modes. Engine options control dry-run and tracing only and cannot alter graph semantics.
 
 ### Determinism boundary
 
@@ -298,19 +469,25 @@ The compiled artifact fixes topology, allowed capabilities, value bindings, outp
 
 ### Dry-run
 
-Dry-run uses the same graph selection and traversal. Only executor policy changes:
+Dry-run uses the same graph selection and traversal. Its result is a bounded path tree whose nodes are `resolved`, `simulated`, or `unresolved`, with the reason and possible outgoing outcomes for each unresolved boundary. Default limits are 32 paths and 1,000 visited step instances; reaching either limit returns `truncated`, never a false completion.
 
-- commands validate and describe effects without side effects;
+Only executor policy changes:
+
+- a command validates inputs and calls its pure preview adapter when one exists; previews may read through a database snapshot but cannot write or perform external side effects;
+- a command without preview support is unresolved, and downstream result references remain symbolic;
 - deterministic expressions execute normally;
 - waits are reported without persisting a pause;
-- LLM or agent states are either invoked under an explicit dry-run option or reported as unresolved;
-- unresolved AI outcomes may produce a bounded set of possible paths rather than a false completed path.
+- LLM and agent states are unresolved by default and fork symbolically across their declared outcomes;
+- an explicit `invoke_ai` option can make real, metered AI calls, but command execution remains preview-only;
+- a loop over a resolved collection is expanded sequentially within the global bounds; an unresolved collection stops at an unresolved loop boundary.
 
 Dry-run cannot use a different runner or silently treat an unrecognized node as terminal.
 
 ### Execution receipts
 
-Every run pins the artifact hash and records structured receipts containing the step ID and type, safely redacted resolved inputs, command or AI profile, result or outcome, selected transition, timestamps, retry, and timeout information.
+Every run pins the artifact hash and records structured receipts containing the rule and step ID, step type, redacted resolved inputs, principal and profile fingerprint, command or AI operation, validated outcome, redacted result projection, selected transition, timestamps, attempt, token usage, idempotency key, wait/cancellation facts, and timeout information.
+
+Receipt redaction is driven by contracts and is default-deny. Unmarked inputs and results are redacted; fields appear only when explicitly classified as safe, summarized, or represented by an opaque identifier. The internal run snapshot and user-visible receipt have different projections.
 
 Receipts drive historical run inspection and graph path overlays.
 
@@ -338,87 +515,139 @@ Explain mode displays the important behavior inside each node:
 
 Internal IDs are secondary. Compact mode remains available for dense graphs.
 
-Edges remain first-class and visibly connect outcome ports to target nodes. Labels use exact typed outcomes such as `success`, `failure`, `approve`, `revise`, `completed`, and `timed_out`. Equivalent edges may share a route only when their distinct labels remain visible.
+Edges remain first-class and visibly connect outcome ports to target nodes. Labels use exact typed outcomes such as `success`, `failure`, `approve`, `revise`, `completed`, and `timed_out`. Every transition record produces one selectable edge with a visible label anchored to its source outcome port. Edges may overlap geometrically only when each remains independently selectable and every label remains visible; projection tests assert that rendered edge identity and count match the artifact's transition identity and count.
+
+Because each rule owns a closed subgraph, shared terminals are duplicated inside their rule clusters. The UI never draws cross-cluster terminal spaghetti and never merges semantically distinct steps merely because their labels match.
 
 ### Selected-node inspector
 
 Selecting a node opens the full contract-derived intent card. The inspector is absent or collapsed when nothing is selected, so it does not reserve a large empty portion of the canvas.
 
-The inspector shows operation meaning, input sources, output binding, legal outcomes, and target titles. Exact expressions and raw JSON live in Advanced.
+The inspector shows operation meaning, input sources, output binding, legal outcomes, target titles, profile identity, capability namespaces, budgets, retry/idempotency behavior, and receipt redaction. Exact expressions and raw JSON live in Advanced.
 
 ### Run overlay
 
-A selected historical or live run highlights the exact path from execution receipts and shows outcomes on traversed nodes and edges. The definition and execution trace use the same graph identity.
+A selected historical or live run loads the run's retained artifact hash, highlights the exact path from execution receipts, and shows outcomes on traversed nodes and edges. The overlay is never projected onto a newer activation. For repeated loop traversals, the inspector selects an iteration and receipt while the graph retains one definition node.
 
 ## Compatibility, rebuild, and failure behavior
 
-`enabled` and computed `health` are independent. Health is `ready`, `needs_rebuild`, or `invalid`.
+`enabled` and computed `health` are independent. Health is:
 
-At startup, activation, run start, and resume, the system compares the artifact's per-command fingerprints to the current registry. A changed or removed command marks only affected playbooks `needs_rebuild` and prevents new runs.
+- `ready`: every referenced command and profile is available and fingerprint-compatible;
+- `needs_rebuild`: a referenced execution contract or capability profile changed, or an intentionally removed command/profile no longer exists;
+- `unavailable`: the compatible provider is expected but transiently failed to load or connect;
+- `invalid`: the artifact, metadata, or storage record is corrupt or violates the V2 schema.
 
-The dashboard identifies the changed command and affected nodes and provides a rebuild action. Rebuild recompiles Markdown against the current contracts, validates the result, shows the structural diff, and atomically installs the new artifact.
+At startup, activation, run start, and resume, the system compares stored per-command and per-profile execution fingerprints to the current registries. Presentation metadata is excluded. Registry bootstrap records whether a command provider is loaded, intentionally absent, or expected-but-unavailable, so a plugin startup failure does not masquerade as an API change.
 
-An already-dispatched command may finish. Before the next step executes, compatibility is checked. A mismatch fails the run with structured reason `command_contract_changed`. The run is not resumed against the rebuilt graph; an operator starts a fresh run from the new artifact.
+A mismatch marks the activation `needs_rebuild` and prevents new runs. The dashboard identifies changed commands or profiles and derives affected nodes by scanning the artifact; no per-node compatibility ledger is stored. Rebuild recompiles Markdown against current contracts, validates it, shows the full structural and capability diff, and requires explicit human activation. The system never auto-activates an LLM rebuild.
+
+An already-dispatched command may finish. Before the next step executes, compatibility is checked. A command or profile mismatch fails the run with structured reason `execution_contract_changed` and identifies the changed dependency. The run is not resumed against the rebuilt graph; an operator starts a fresh run from the new artifact.
+
+A transiently unavailable dependency holds new event-driven work in `playbook_pending_events` and pauses an in-progress run at the next boundary with reason `dependency_unavailable`. When compatibility returns, the event or run can continue against the same artifact. A synchronous caller such as assignment routing receives a typed unavailable result and applies its existing caller-owned retry or fallback policy.
+
+Events for a `needs_rebuild` activation are queued rather than dropped. Pending events preserve the original event ID and arrival order, default to a seven-day retention window, and replay subject to rule-level deduplication after activation of the reviewed rebuild. Expiry creates an auditable dropped-event record and operator alert. An operator can explicitly discard or replay a pending event; activation alone never duplicates an event already consumed.
 
 Historical artifacts and traces remain readable. They are not executable against obsolete command contracts.
+
+## Steady-state operations
+
+Command contracts are expected to change rarely. A release that changes a bundled command's execution contract must include freshly compiled, reviewed bundled artifacts. Deployment validation fails before service cutover when those artifacts do not match; production does not attempt an automatic LLM rebuild.
+
+When a plugin fails to load, dependent activations become `unavailable`, not `needs_rebuild`. Events queue and dashboards identify the provider failure. When the same contract returns, work resumes without recompilation. An intentional plugin uninstall is a contract removal and requires affected playbooks to be rebuilt or disabled.
+
+A surprising rebuild diff leaves the old artifact active when still compatible, or leaves the activation in `needs_rebuild` when incompatible. The reviewer can reject the proposal and edit the Markdown; there is no partial activation.
+
+Receipt retention and content-addressed artifact collection run as bounded background maintenance. Health aggregates are computed incrementally from receipts so dashboards do not scan millions of rows. The assignment-routing cache prevents unchanged scheduler cycles from producing duplicate runs.
 
 ## Migration and cutover
 
 Migration avoids a permanent dual-runtime architecture:
 
-1. Introduce the strict V2 model and current command-contract registry.
-2. Register contracts for every command used by active playbooks.
-3. Add the unified engine and type-specific executors.
-4. Compile every active Markdown source into V2 and resolve validation failures.
-5. Enable the rich graph projection for V2 while retaining read-only V1 inspection.
-6. Verify structural fixtures for shipped playbooks.
-7. Atomically switch orchestrator entry points to the unified engine.
-8. Disable V1 execution and remove new V1 artifact production.
+0. **Security baseline:** restore authoritative server-side metadata merge on the live compiler/install path; introduce typed capability namespaces, authenticated principals, dispatch-time authorization, and recursive no-widening tests.
+1. **Contracts and schemas:** add event payload schemas and execution contracts for the approximately 10–15 commands used by active playbooks. Add adapter conformance and preview tests.
+2. **Early operator value:** use the contract registry and explanation service to render read-only rich inspectors for deterministic V1 pipeline nodes. This exercises intent cards before V2 cutover without treating the projection as executable truth or changing V1 execution.
+3. **Durable substrate:** add the strict generated V2 schema, content-addressed artifacts, activation records, run snapshots, receipts, waits, pending events, and unified lifecycle.
+4. **Unified engine:** add type-specific executors, symbolic dry-run, rule-per-run identity, and the single engine boundary while V1 remains the production path.
+5. **Bundled migration:** rewrite bundled Markdown as normative prose without JSON graph blocks, compile it through the agent path, human-review structural and capability diffs, and verify approved fixtures.
+6. **User migration:** compile each project playbook and require a human to review its source-to-intent and structural diff. A project playbook that cannot compile is explicitly disabled with an operator-visible reason; it does not block unrelated playbooks or system cutover after acknowledgement.
+7. **Drain:** stop admitting new V1 runs, while the V1 runtime continues only for already-running or paused runs pinned to V1 graphs. V1 runs are never converted in place. Operators receive a list of remaining waits and choose to resolve or cancel them.
+8. **Cutover:** once no V1 run remains and every enabled playbook is ready V2, atomically switch all orchestrator entry points. Acknowledged-disabled project playbooks are not considered active.
+9. **Removal:** disable V1 execution, remove new V1 artifact production, and retain V1 artifacts and traces for read-only inspection.
 
-Cutover occurs only when every active Markdown playbook has a ready V2 artifact and no active playbook is stale.
+Cutover occurs only when every enabled Markdown playbook has a ready V2 artifact, no V1 run remains, and no enabled activation is stale. The migration window is the only temporary dual-runtime period.
 
 ## Validation and testing
 
 ### Model and schema invariants
 
-- Runtime types and published JSON Schema share one source.
+- Runtime types and the served JSON Schema share one source; CI regeneration keeps the documentation snapshot exact.
 - Every supported step type validates against the published schema.
 - Every supported field survives JSON round-trip.
 - Unknown fields are rejected.
-- Fixtures cover commands, LLM calls, agent tasks, decisions, waits, loops, and terminals.
+- Fixtures cover commands, LLM calls, agent tasks, decisions, waits, list/object/coalesce expressions, loops, and terminals.
+- Every event reference and trigger filter validates against a registered event payload schema.
 - Every shipped playbook validates against the same schema used at activation.
 
 ### Compiler invariants
 
 - Compiler-agent output is valid as a semantic body.
-- Server-owned metadata is merged before full-artifact validation.
+- Server-owned metadata and capability snapshots are reconstructed before full-artifact validation.
+- Compiler-supplied authoritative fields are discarded, and executable identifiers absent from source are rejected.
 - All shipped Markdown sources compile into V2.
 - Source references survive compilation.
-- Invalid references, missing targets, undeclared outputs, and hidden natural-language AI transitions fail compilation.
+- Ambiguous prose returns source-linked questions rather than defaults.
+- Invalid references, missing targets, not-definitely-assigned results, namespace shadowing, undeclared outputs, and hidden natural-language AI transitions fail compilation.
+- Bundled Markdown contains no embedded JSON graph block.
 
 ### Command and explanation invariants
 
-- A handler cannot register without a contract.
-- Public contract changes alter the fingerprint.
-- Every executable field is consumed by the explanation builder.
-- Sensitive fields are redacted according to contract policy.
+- A V2 command cannot register without an execution contract and typed invocation adapter.
+- Adapter results conform to declared outcomes and closed output schemas.
+- Execution-contract changes alter the fingerprint; presentation-only changes do not.
+- Every executable field has a canonical explanation projection, enforced by an exhaustive CI test.
+- Sensitive and unmarked fields are redacted from receipts by default.
 - Golden intent fixtures cover current shipped commands, including `ensure_task`.
 - Changed contracts stale affected playbooks while unrelated playbooks remain ready.
+- A missing expected plugin marks dependents unavailable; an intentional removal marks them needs-rebuild.
+
+### Capability invariants
+
+- Direct LLM schemas contain only the resolved policy, and dispatch rejects an off-list call independently.
+- Empty capability namespaces mean no capabilities.
+- Every CLI and MCP command request carries a server-verifiable execution principal.
+- A child task cannot select a profile broader than its caller in any capability namespace.
+- Missing principal identity or profile resolution fails closed.
+- Changing a profile's capabilities changes its fingerprint and requires rebuild.
 
 ### Engine invariants
 
 - Event, manual, dry-run, assignment, and resume paths call the same engine.
+- Each matched rule has an isolated run and shares only a dispatch ID with sibling matches.
 - Live and dry-run select the same rules, nodes, and edges for identical resolved outcomes.
-- LLM and agent results conform to declared schemas.
-- Wait states serialize and resume without data loss.
-- Execution receipts identify every traversed node and selected edge.
+- Dry-run respects path/step bounds and never reports completed beyond an unresolved boundary.
+- Command, LLM, and agent results conform to declared schemas and reserved outcomes.
+- Wait states, pre-wait bindings, LLM turns, and mid-loop state serialize and resume without data loss.
+- Event arrival before, during, and after wait registration produces one deterministic resume.
+- Cancellation has tested transitions from running, paused, and in-flight agent execution.
+- Execution receipts identify every traversed node, selected edge, loop iteration, and artifact hash.
 - An incompatible in-progress run fails before invoking the changed command.
+- A transiently unavailable dependency pauses or queues without demanding rebuild.
+
+### Storage invariants
+
+- Activation never points to a partially written artifact.
+- A historical run renders only against its pinned retained artifact.
+- Snapshot and receipt commits are atomic at step boundaries.
+- Retention never collects an active, pinned, or otherwise referenced artifact.
+- Pending stale events replay in arrival order under rule-level deduplication or expire with an audit record.
 
 ### UI invariants
 
 - Event filtering preserves every reachable branch.
 - Rich cards cover every step type.
-- Edge labels match typed outcomes.
+- Rendered edge identities, count, ports, and labels match typed transitions exactly.
+- Rule clusters contain no cross-cluster transitions or shared terminal nodes.
 - Node cards and the inspector consume the same explanation payload.
 - Advanced mode exposes canonical data without making it the default explanation.
 - A run overlay matches recorded receipts and artifact hash.
@@ -426,8 +655,9 @@ Cutover occurs only when every active Markdown playbook has a ready V2 artifact 
 ### Cutover acceptance
 
 - No executable V1 artifacts remain.
-- Every active Markdown playbook has a ready V2 artifact.
-- No active playbook has stale command fingerprints.
+- No running or paused V1 run remains.
+- Every enabled Markdown playbook has a ready V2 artifact; every disabled migration failure is acknowledged.
+- No enabled playbook has stale command or profile fingerprints.
 - The default pipeline's rules, nodes, and edges match its approved structural fixture.
 - Focused and full test suites pass.
 
@@ -451,13 +681,16 @@ An LLM-written or separately stored summary can drift from executable code. The 
 
 ## Decision recap
 
-- Markdown remains the authoring source of truth.
+- English Markdown without embedded graph JSON remains the authoring source of truth.
 - Strict V2 JSON is the executable source of truth.
 - Rules, triggers, guards, nodes, values, and edges are typed.
 - Commands, inline LLM requests, and orchestrated agent tasks remain valid playbook states.
-- AI behavior is visible and constrained rather than hidden in natural-language transitions.
-- One current command API is supported; command-contract changes require rebuild.
+- AI behavior is visible, profile-bound, dispatch-authorized, and incapable of widening delegated capabilities.
+- One current command API is supported; rare command or profile contract changes require a manual, human-reviewed rebuild.
 - One engine serves all orchestrator entry points and dry-run.
 - The graph keeps complete topology, scopes by input event, and explains behavior inside rich nodes.
-- Intent rendering is fail-closed and derived from the same artifact that executes.
+- Intent rendering is exhaustive and derived from the same validated artifact and contract objects that execute; copy is not an activation dependency.
+- Mutable run snapshots provide continuation state; immutable receipts provide inspection and overlays.
+- Artifacts are content-addressed, activation is atomic, and historical overlays use the exact pinned graph.
+- Events held during staleness or transient unavailability are queued with explicit retention and audit behavior.
 - V1 remains historical and read-only after migration.
