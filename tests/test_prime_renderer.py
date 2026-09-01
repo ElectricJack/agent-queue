@@ -84,14 +84,65 @@ class TestGoldenAssembly:
         doc = await PrimeRenderer(db, config).render_for_task("task-1")
         by_key = {s.key: s for s in doc.sections}
 
-        assert by_key["role"].body == "You are a careful coder."
+        assert by_key["role"].body == "You are a careful coder.\n\n### Rules\nAlways test."
         assert by_key["project_role"].body == "On this project, prefer small PRs."
 
         markdown = doc.to_markdown()
         assert "## Role" in markdown
         assert "## Project Role Override" in markdown
         assert "You are a careful coder." in markdown
+        assert "Always test." in markdown
         assert "On this project, prefer small PRs." in markdown
+
+    async def test_project_override_carries_rules_too(self, db, config, task):
+        _write(
+            os.path.join(config.vault_agent_types, "coder", "profile.md"),
+            "## Role\nBase role.\n",
+        )
+        _write(
+            os.path.join(
+                config.vault_projects, "proj-1", "agent-types", "coder", "profile.md"
+            ),
+            "## Role\nProject role.\n\n## Rules\nProject rule.\n",
+        )
+
+        doc = await PrimeRenderer(db, config).render_for_task("task-1")
+        by_key = {s.key: s for s in doc.sections}
+        assert by_key["project_role"].body == "Project role.\n\n### Rules\nProject rule."
+
+    async def test_profile_without_rules_renders_role_only(self, db, config, task):
+        _write(
+            os.path.join(config.vault_agent_types, "coder", "profile.md"),
+            "## Role\nJust a role.\n\n## Config\n```json\n{}\n```\n",
+        )
+
+        doc = await PrimeRenderer(db, config).render_for_task("task-1")
+        by_key = {s.key: s for s in doc.sections}
+        assert by_key["role"].body == "Just a role."
+        assert "### Rules" not in doc.to_markdown()
+
+    async def test_machine_only_profile_headings_never_reach_the_agent(self, db, config, task):
+        _write(
+            os.path.join(config.vault_agent_types, "coder", "profile.md"),
+            "## Role\nR.\n\n## Config\nCONFIG-SECRET\n\n## Tools\nTOOLS-BLOB\n"
+            "\n## MCP Servers\nMCP-BLOB\n\n## Reflection\nREFLECT-BLOB\n"
+            "\n## Rules\nRULE-ONE\n",
+        )
+
+        markdown = (await PrimeRenderer(db, config).render_for_task("task-1")).to_markdown()
+        assert "RULE-ONE" in markdown
+        for machine_only in ("CONFIG-SECRET", "TOOLS-BLOB", "MCP-BLOB", "REFLECT-BLOB"):
+            assert machine_only not in markdown
+
+    async def test_rules_only_profile_labels_its_rules(self, db, config, task):
+        _write(
+            os.path.join(config.vault_agent_types, "coder", "profile.md"),
+            "## Rules\nOnly a rule.\n",
+        )
+
+        doc = await PrimeRenderer(db, config).render_for_task("task-1")
+        by_key = {s.key: s for s in doc.sections}
+        assert by_key["role"].body == "### Rules\nOnly a rule."
 
     async def test_missing_profile_files_render_empty_and_are_omitted(self, db, config, task):
         doc = await PrimeRenderer(db, config).render_for_task("task-1")

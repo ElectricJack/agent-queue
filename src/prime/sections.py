@@ -5,10 +5,18 @@ for its slot in the canonical order. Builders are independent — the
 renderer (``renderer.py``) is the only place that assembles them into a
 :class:`~src.prime.models.PrimeDocument`.
 
-Role extraction reuses ``extract_section()`` from ``src/prompt_builder.py``
+Profile extraction reuses ``extract_section()`` from ``src/prompt_builder.py``
 (pulls a ``## Heading`` body out of profile markdown) rather than
 duplicating that parsing logic, per the implementation spec's explicit
 instruction (§2).
+
+**Prime-visible heading contract.** Only the headings named in
+``PRIME_VISIBLE_PROFILE_HEADINGS`` are delivered to the agent by sections 1
+and 2. Everything else in a profile (``## Config``, ``## Tools``,
+``## MCP Servers``, ``## Reflection``, ``## Install``) is machine-only: it
+configures the harness, the tool allow-list or a later playbook stage and
+never reaches the prompt. Adding a heading to that tuple is the single
+place to widen what agents see.
 """
 
 from __future__ import annotations
@@ -27,6 +35,13 @@ logger = logging.getLogger(__name__)
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 
+#: Profile headings delivered verbatim to the agent by prime sections 1 and 2,
+#: in render order. The first entry renders bare (the section title already
+#: says "Role"); every later entry is introduced by its own ``### Heading`` so
+#: the agent can tell identity from constraints. All other profile headings are
+#: machine-only — see the module docstring.
+PRIME_VISIBLE_PROFILE_HEADINGS: tuple[str, ...] = ("Role", "Rules")
+
 
 def _read_text(path: Path) -> str | None:
     """Best-effort markdown file read. Missing/unreadable files degrade to None."""
@@ -37,6 +52,22 @@ def _read_text(path: Path) -> str | None:
     except OSError:
         logger.debug("prime: could not read %s", path, exc_info=True)
         return None
+
+
+def _extract_profile_prompt(content: str) -> str:
+    """Concatenate the prime-visible headings of a profile into one body.
+
+    Returns ``""`` when the profile defines none of them, which keeps a
+    Rules-less (or Role-less) profile rendering cleanly — the section is
+    simply omitted from the assembled document.
+    """
+    parts: list[str] = []
+    for index, heading in enumerate(PRIME_VISIBLE_PROFILE_HEADINGS):
+        body = extract_section(content, heading)
+        if not body:
+            continue
+        parts.append(body if index == 0 else f"### {heading}\n{body}")
+    return "\n\n".join(parts)
 
 
 def _load_template(name: str) -> str:
@@ -50,13 +81,18 @@ def _load_template(name: str) -> str:
 
 
 async def build_role_section(config: Any, profile_id: str | None) -> PrimeSection:
-    """``vault/agent-types/<id>/profile.md`` ``## Role`` (design §5.2 #1)."""
+    """``vault/agent-types/<id>/profile.md`` ``## Role`` + ``## Rules`` (design §5.2 #1).
+
+    Rules are delivered here because the session path (a CLI in tmux) has no
+    other channel for them: the DB ``system_prompt_suffix`` that carries them
+    is only read by the legacy adapter path, which session-routed tasks skip.
+    """
     body = ""
     if profile_id:
         path = Path(config.vault_agent_types) / profile_id / "profile.md"
         content = _read_text(path)
         if content:
-            body = extract_section(content, "Role") or ""
+            body = _extract_profile_prompt(content)
     return PrimeSection(key="role", title=SECTION_TITLES["role"], body=body)
 
 
@@ -68,17 +104,18 @@ async def build_role_section(config: Any, profile_id: str | None) -> PrimeSectio
 async def build_project_role_section(
     config: Any, profile_id: str | None, project_id: str | None
 ) -> PrimeSection:
-    """``vault/projects/<pid>/agent-types/<id>/profile.md`` ``## Role`` (design §5.2 #2).
+    """``vault/projects/<pid>/agent-types/<id>/profile.md`` override (design §5.2 #2).
 
-    Specificity wins (principle #6): this section supplements, it does not
-    replace, section 1 — both render when both files define a Role.
+    Carries the same prime-visible headings as section 1. Specificity wins
+    (principle #6): this section supplements, it does not replace, section 1 —
+    both render when both files define a Role or Rules.
     """
     body = ""
     if profile_id and project_id:
         path = Path(config.vault_projects) / project_id / "agent-types" / profile_id / "profile.md"
         content = _read_text(path)
         if content:
-            body = extract_section(content, "Role") or ""
+            body = _extract_profile_prompt(content)
     return PrimeSection(key="project_role", title=SECTION_TITLES["project_role"], body=body)
 
 
