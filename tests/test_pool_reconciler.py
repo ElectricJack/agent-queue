@@ -6,6 +6,7 @@ import dataclasses
 import logging
 import os
 import time
+import uuid
 
 from unittest.mock import AsyncMock, MagicMock
 
@@ -144,8 +145,15 @@ class TestReconcilePools:
         await orch._reconcile_pools()
         pool = await db.list_sessions(lifecycle="pool", project_id=PROJECT_ID)
         assert len(pool) == 2  # max_active
-        assert all(s.id.startswith("p-worker--proj--") and s.agent_id for s in pool)
+        assert all(s.agent_id for s in pool)
+        assert all(str(uuid.UUID(s.id)) == s.id and s.name.startswith("p-worker--proj--") for s in pool)
         assert all(s.state == "running" for s in pool)
+        provider = orch.session_providers.create("fake", orch.config)
+        assert {spec.session_name for spec in provider.starts} == {s.name for s in pool}
+        sessions_by_name = {session.name: session for session in pool}
+        for spec in provider.starts:
+            argv = list(spec.command)
+            assert argv[argv.index("--session-id") + 1] == sessions_by_name[spec.session_name].id
         agents = await db.list_agents()
         assert sorted(a.state.value for a in agents) == [
             AgentState.IDLE.value,
@@ -196,12 +204,26 @@ class TestReconcilePools:
         # (or possible) to make the session count as idle supply.
         await ready(db, "t1")
         await orch._reconcile_pools()
+        session_id = (await db.list_sessions(lifecycle="pool"))[0].id
         await db.delete_task("t1")
         orch.config.swarm.scale_down_grace = 0
         await orch._reconcile_pools()
         await orch._reconcile_pools()
-        pool = await db.list_sessions(lifecycle="pool")
-        assert [s.desired_state for s in pool] == ["stopped"]
+        assert (await db.get_session(session_id)).desired_state == "stopped"
+
+    async def test_codex_pool_launch_keeps_uuid_id_without_session_id_flag(self, orch, db):
+        await db.update_profile("worker", harness="codex")
+        orch.harness_registry.upsert(Harness(id="codex", name="codex", command="codex"))
+
+        await ready(db, "t1")
+        await orch._reconcile_pools()
+
+        session = (await db.list_sessions(lifecycle="pool", project_id=PROJECT_ID))[0]
+        assert str(uuid.UUID(session.id)) == session.id
+        assert session.name.startswith("p-worker--proj--")
+        provider = orch.session_providers.create("fake", orch.config)
+        assert provider.starts[0].session_name == session.name
+        assert "--session-id" not in provider.starts[0].command
 
     async def test_push_scheduler_ignores_pool_profile_tasks(self, orch, db):
         await ready(db, "t1")
