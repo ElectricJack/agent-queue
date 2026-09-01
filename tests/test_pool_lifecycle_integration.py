@@ -480,6 +480,25 @@ class TestReconcilerInterplay:
         )
         assert "swarm.enabled is false" in detail
 
+    async def test_pool_task_keeps_the_capacity_reasons_that_still_bite(self, orch, db, handler):
+        """Only the *push-supply* codes are filtered, not every capacity code.
+
+        A paused project fails ``_admission_reason`` on the claim itself, so
+        it is the real answer for a pool task too — dropping the whole
+        capacity block would have hidden it behind "awaiting a pool session".
+        """
+        from src.models import ProjectStatus
+
+        await ready(db, "t1")
+        await db.update_project(PROJECT_ID, status=ProjectStatus.PAUSED)
+        # One tick to populate the cached snapshot ``explain`` reads.
+        await orch._schedule()
+
+        res = await handler._cmd_explain_task({"task_id": "t1"})
+        assert "awaiting_pool_session" in res["reason_codes"]
+        assert "project_paused" in res["reason_codes"]
+        assert "no_idle_agent" not in res["reason_codes"]
+
     async def test_push_routed_task_still_gets_capacity_reasons(self, orch, db, handler):
         """The pool branch must not swallow the ordinary push-path answer."""
         await db.create_profile(AgentProfile(id="pusher", name="p", harness="claude"))
