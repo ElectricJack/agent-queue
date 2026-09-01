@@ -27,7 +27,7 @@ export default function LeftRail() {
   const [projectsOpen, setProjectsOpen] = useState(true);
   return (
     <aside className="col-start-1 row-start-2 flex h-full w-64 shrink-0 lg:w-72 flex-col overflow-hidden border-r border-gray-800 bg-gray-900">
-      <nav ref={navRef} className="flex-1 space-y-6 overflow-y-auto p-3">
+      <nav ref={navRef} className="dashboard-scrollbar flex-1 space-y-6 overflow-y-auto p-3">
         <div className="space-y-0.5">
           <Link to={workspaceHref(projectId, tab, search)} data-listnav="1"
             aria-current={isWorkspace ? "page" : undefined} className={linkClass(isWorkspace)}>
