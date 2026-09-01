@@ -3111,10 +3111,28 @@ class Orchestrator(
         # for any project with dispatchable READY tasks, subject to
         # project.max_concurrent_agents.  See spec §4.1.
         classes = dict(self.session_spec_builder._intelligence_classes)
+        # Route freshness is resolved before agent supply. This prevents an
+        # unspecified task from creating a worker from a profile default.
+        task_snapshot = await self.db.list_active_tasks()
+        assignment_routes = await self.assignment_routing.routes_for(task_snapshot)
+        from dataclasses import replace as _replace
+
+        tasks = [
+            _replace(task, intelligence_class=assignment_routes[task.id].intelligence_class)
+            if task.id in assignment_routes else task
+            for task in task_snapshot
+        ]
+        routed_ready = [
+            task for task in tasks
+            if task.status == TaskStatus.READY
+            and not task.is_blocked
+            and task.id in assignment_routes
+        ]
         rep = await self._agent_reconciler.reconcile(
             provider_cooldowns=self._provider_cooldowns,
             harness_registry=self.harness_registry,
             intelligence_classes=classes,
+            ready_tasks=routed_ready,
         )
         if rep.created or rep.reassigned:
             logger.info(
@@ -3133,7 +3151,7 @@ class Orchestrator(
         # ASSIGNED/IN_PROGRESS rows behind busy-agent counts and sync
         # blocking — never completed ones.  The unfiltered table scan was
         # 1.7 s/cycle at 100k tasks (performance-assessment.md §1.1).
-        tasks = await self.db.list_active_tasks()
+        # Reuse the route-consistent task snapshot supplied to the reconciler.
         agents = await self.db.list_agents()
         live_sessions = await self.db.list_sessions(live_only=True)
         occupied = {row.agent_id for row in live_sessions if row.agent_id}
@@ -3250,6 +3268,7 @@ class Orchestrator(
             profiles={profile.id: profile for profile in all_profiles},
             harness_registry=self.harness_registry,
             intelligence_classes=classes,
+            assignment_routes=assignment_routes,
         )
 
         actions = Scheduler.schedule(state)

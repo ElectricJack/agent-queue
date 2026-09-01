@@ -214,10 +214,15 @@ class AssignmentRoutingCoordinator:
 
     def __init__(self, orchestrator, *, batch_size: int = 25):
         self.owner = orchestrator
-        self.db = orchestrator.db
         self.batch_size = batch_size
         self._project_locks: dict[str, asyncio.Lock] = {}
         self._retry: dict[str, tuple[int, float, str]] = {}
+
+    @property
+    def db(self):
+        # Tests and embedded callers may replace ``orchestrator.db`` after
+        # construction; always use the live adapter.
+        return self.owner.db
 
     @property
     def diagnostics(self) -> dict[str, tuple[int, float, str]]:

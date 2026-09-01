@@ -65,9 +65,11 @@ Integration with the orchestrator:
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from collections.abc import Mapping
 
 from src.agents.routing import resolve_agent_profile, resolve_task_profile, task_agent_mismatch
+from src.assignment_routing import EffectiveAssignmentRoute
 from src.models import (
     Agent,
     AgentProfile,
@@ -167,6 +169,9 @@ class SchedulerState:
     profiles: dict[str, AgentProfile] | None = None
     harness_registry: object | None = None
     intelligence_classes: dict | None = None
+    # ``None`` preserves legacy pure-scheduler fixtures. The orchestrator
+    # always supplies a mapping; a missing task key then means "not routed".
+    assignment_routes: Mapping[str, EffectiveAssignmentRoute] | None = None
 
 
 def idle_workers(state: SchedulerState, *, include_cooldown: bool = False) -> list[Agent]:
@@ -189,11 +194,23 @@ def routing_mismatch(task: Task, agent: Agent, state: SchedulerState) -> str | N
     profile = resolve_task_profile(task, project, profiles)
     if state.profiles is not None and task.profile_id and profile is None:
         return f"required profile '{task.profile_id}' is not available"
+    required_provider = None
+    if state.assignment_routes is not None:
+        route = state.assignment_routes.get(task.id)
+        if route is None:
+            return "awaiting intelligence route"
+        task = replace(task, intelligence_class=route.intelligence_class)
+        required_provider = route.provider
+    elif not task.intelligence_class and profile is not None:
+        # Compatibility for direct Scheduler callers that predate route-aware
+        # snapshots. Production always passes assignment_routes.
+        task = replace(task, intelligence_class=profile.default_class or None)
     return task_agent_mismatch(
         task, agent, task_profile=profile,
         agent_profile=resolve_agent_profile(agent, task.project_id, profiles),
         harness_registry=state.harness_registry,
         intelligence_classes=state.intelligence_classes,
+        required_provider=required_provider,
     )
 
 

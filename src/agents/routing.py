@@ -87,6 +87,7 @@ def task_agent_mismatch(
     agent_profile=None,
     harness_registry=None,
     intelligence_classes: Mapping | None = None,
+    required_provider: str | None = None,
 ) -> str | None:
     """Return why this worker cannot fulfill the task's execution requirements.
 
@@ -104,7 +105,7 @@ def task_agent_mismatch(
     None for intelligence_classes means a legacy caller has no class snapshot;
     an explicit empty snapshot instead reports missing requested classes.
     """
-    required_class = _value(task, "intelligence_class") or _value(task_profile, "default_class")
+    required_class = _value(task, "intelligence_class")
     worker_class = _value(agent, "intelligence_class") or _value(agent_profile, "default_class")
     if required_class and worker_class and required_class != worker_class:
         return (
@@ -135,6 +136,12 @@ def task_agent_mismatch(
     if not required_class and not required_model:
         return None
     harness = _harness(worker_harness, _value(task, "project_id"), harness_registry)
+    worker_provider = _value(harness, "provider") or _infer_provider_from_harness(harness)
+    if required_provider and worker_provider != required_provider:
+        return (
+            f"requires provider '{required_provider}'; worker '{agent.id}' "
+            f"uses '{worker_provider or 'unspecified'}'"
+        )
     class_model = _class_model(required_class, harness, intelligence_classes)
     if required_class and intelligence_classes is not None:
         if required_class not in intelligence_classes:

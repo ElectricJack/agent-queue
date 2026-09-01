@@ -43,6 +43,7 @@ class AgentReconciler:
     async def reconcile(
         self, *, provider_cooldowns: dict[str, float] | None = None,
         harness_registry=None, intelligence_classes: dict | None = None,
+        ready_tasks=None,
     ) -> ReconcileReport:
         """Supply durable global workers without changing any existing definition."""
         import time
@@ -88,9 +89,10 @@ class AgentReconciler:
         for project in projects:
             if project.status != ProjectStatus.ACTIVE:
                 continue
+            ready_source = ready_tasks if ready_tasks is not None else tasks
             ready = [
                 task
-                for task in tasks
+                for task in ready_source
                 if task.project_id == project.id and task.status == TaskStatus.READY
                 and not task.is_blocked
             ]
