@@ -217,6 +217,7 @@ class AssignmentRoutingCoordinator:
         self.batch_size = batch_size
         self._project_locks: dict[str, asyncio.Lock] = {}
         self._retry: dict[str, tuple[int, float, str]] = {}
+        self._catalog_hashes: dict[str, str] = {}
 
     @property
     def db(self):
@@ -234,13 +235,20 @@ class AssignmentRoutingCoordinator:
             "_intelligence_classes",
             {},
         ) or {}
-        return build_assignment_options(
+        options = build_assignment_options(
             project_id,
             await self.db.list_profiles(),
             await self.db.list_agents(),
             getattr(self.owner, "harness_registry", None),
             classes,
         )
+        self._catalog_hashes[project_id] = options_hash(options)
+        return options
+
+    def cached_options_hash(self, project_id: str) -> str | None:
+        """Return the last catalog observed by reconciliation without I/O."""
+
+        return self._catalog_hashes.get(project_id)
 
     async def _eligible_candidates(self) -> list[Task]:
         tasks = [

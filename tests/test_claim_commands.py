@@ -12,6 +12,7 @@ import pytest
 from src.commands.handler import CommandHandler
 from src.config import AppConfig, DiscordConfig
 from src.database import Database
+from src.intelligence_classes import IntelligenceClass
 from src.models import (
     Agent,
     AgentProfile,
@@ -59,6 +60,14 @@ def config(tmp_path):
 @pytest.fixture
 async def handler(db, config):
     orch = Orchestrator(config)
+    orch.session_spec_builder._intelligence_classes = {
+        "standard-medium": IntelligenceClass(
+            "standard-medium",
+            "Standard",
+            "",
+            {"anthropic": {"model": "claude-sonnet-5"}},
+        ),
+    }
     orch.db = db
     orch.git = MagicMock()
     orch._worktree_slots = MagicMock(
@@ -79,6 +88,7 @@ async def handler(db, config):
 
 
 async def mktask(db, tid, status=TaskStatus.READY, **kw):
+    kw.setdefault("intelligence_class", "standard-medium")
     await db.create_task(
         Task(id=tid, project_id=PROJECT_ID, title=tid, description=tid, status=status, **kw)
     )
@@ -115,6 +125,9 @@ async def pool_session(db, tmp_path, sid="s1", agent_id="agent-1"):
             started_at=NOW,
             state="running",
             agent_id=agent_id,
+            llm_provider="anthropic",
+            model="claude-sonnet-5",
+            intelligence_class="standard-medium",
         )
     )
     return sid, work_dir
@@ -211,7 +224,13 @@ class TestClaim:
         try:
             await asyncio.wait_for(waiting.wait(), timeout=5)
             await db.update_profile("worker", default_class="fast-low")
-            await mktask(db, "new-fast", status=TaskStatus.DEFINED, profile_id="worker")
+            await mktask(
+                db,
+                "new-fast",
+                status=TaskStatus.DEFINED,
+                profile_id="worker",
+                intelligence_class=None,
+            )
             await db.transition_task("new-fast", TaskStatus.READY, context="profile_changed")
             result = await claim
             assert result["result"] == "no_ready_work"

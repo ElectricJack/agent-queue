@@ -14,6 +14,7 @@ import pytest
 from src.commands.claim_commands import CLAIM_FILE, write_claim_file
 from src.config import AppConfig, DiscordConfig
 from src.database import Database
+from src.intelligence_classes import IntelligenceClass
 from src.models import (
     AgentProfile,
     AgentState,
@@ -94,6 +95,14 @@ async def orch(db, tmp_path):
     cfg.swarm.enabled = True
     cfg.swarm.max_starts_per_tick = 5
     o = Orchestrator(cfg)
+    o.session_spec_builder._intelligence_classes = {
+        "standard-medium": IntelligenceClass(
+            "standard-medium",
+            "Standard",
+            "",
+            {"anthropic": {"model": "claude-sonnet-5"}},
+        ),
+    }
     o.db = db
     # ``AgentReconciler`` was built in ``__init__`` against the (real,
     # uninitialized) db the constructor saw -- point it at the test db too
@@ -114,7 +123,7 @@ async def orch(db, tmp_path):
     return o
 
 
-async def ready(db, tid, *, profile_id="worker"):
+async def ready(db, tid, *, profile_id="worker", intelligence_class=None):
     await db.create_task(
         Task(
             id=tid,
@@ -123,6 +132,7 @@ async def ready(db, tid, *, profile_id="worker"):
             description=tid,
             status=TaskStatus.READY,
             profile_id=profile_id,
+            intelligence_class=intelligence_class,
         )
     )
 
@@ -303,7 +313,9 @@ class TestReconcilePools:
         pool_agent_id = pool_sessions[0].agent_id
 
         await db.create_profile(AgentProfile(id="reviewer", name="r", harness="claude"))
-        await ready(db, "t2", profile_id="reviewer")
+        await ready(
+            db, "t2", profile_id="reviewer", intelligence_class="standard-medium"
+        )
 
         actions = await orch._schedule()
 
@@ -352,7 +364,9 @@ async def test_stopped_pool_worker_can_take_push_task_without_reprofile(orch, db
     row = (await db.list_sessions(lifecycle="pool"))[0]
     await orch._terminate_pool_session(row, reason="rotate")
     await db.create_profile(AgentProfile(id="reviewer", name="Review", harness="claude"))
-    await ready(db, "push", profile_id="reviewer")
+    await ready(
+        db, "push", profile_id="reviewer", intelligence_class="standard-medium"
+    )
     actions = await orch._schedule()
     assert [(a.task_id, a.agent_id) for a in actions] == [("push", row.agent_id)]
     assert (await db.get_agent(row.agent_id)).profile_id == "worker"

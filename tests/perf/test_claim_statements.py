@@ -37,6 +37,7 @@ from src.models import (
     TaskStatus,
     Workspace,
 )
+from src.intelligence_classes import IntelligenceClass
 from tests.perf.test_hierarchy_statements import count_statements, seed_scale
 
 PROJECT_ID = "proj"
@@ -59,6 +60,14 @@ async def build_handler(any_db, tmp_path):
     cfg.swarm.enabled = True
     cfg.swarm.claim_wait_max = 5
     orch = Orchestrator(cfg)
+    orch.session_spec_builder._intelligence_classes = {
+        "standard-medium": IntelligenceClass(
+            "standard-medium",
+            "Standard",
+            "",
+            {"anthropic": {"model": "claude-sonnet-5"}},
+        ),
+    }
     orch.db = any_db
     orch.git = MagicMock()
     orch._worktree_slots = MagicMock(
@@ -113,6 +122,9 @@ async def pool_session(any_db, tmp_path, sid="s1", agent_id="agent-1"):
             started_at=NOW,
             state="running",
             agent_id=agent_id,
+            llm_provider="anthropic",
+            model="claude-sonnet-5",
+            intelligence_class="standard-medium",
         )
     )
     return sid, work_dir
@@ -124,7 +136,9 @@ async def _seed_worker_scale(any_db):
         AgentProfile(id="worker", name="w", lifecycle="pool", needs_workspace=False)
     )
     await any_db.create_project(Project(id=PROJECT_ID, name="p"))
-    await seed_scale(any_db, profile_id="worker")
+    await seed_scale(
+        any_db, profile_id="worker", intelligence_class="standard-medium"
+    )
 
 
 def _require_returning(any_db):

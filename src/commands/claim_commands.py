@@ -316,12 +316,15 @@ class ClaimCommandsMixin:
             return 1
         return getattr(profile, "max_claims_per_session", None)
 
-    def _pool_claim_routing(self, session, profile) -> tuple[str | None, bool]:
+    def _pool_claim_routing(
+        self, session, profile
+    ) -> tuple[str | None, str | None, str | None]:
         """Restrict claims to the recorded live session, not next-launch settings.
 
         A running pool cannot change model or reasoning class between claims.
-        Unknown legacy launch metadata cannot prove an explicit class request;
-        unclassified work keeps its existing behavior.
+        Unknown launch metadata cannot prove compatibility with a route. The
+        option hash is read from the coordinator's reconciliation cache so a
+        claim adds no catalog query to its transaction.
         """
         from src.agents.routing import task_agent_mismatch
         from src.models import Agent, Task
@@ -353,7 +356,15 @@ class ClaimCommandsMixin:
                 intelligence_classes=classes,
             ) is None
 
-        return (live_class if live_class and matches(live_class) else None, matches(None))
+        coordinator = getattr(self.orchestrator, "assignment_routing", None)
+        catalog_hash = (
+            coordinator.cached_options_hash(session.project_id) if coordinator else None
+        )
+        return (
+            live_class if live_class and matches(live_class) else None,
+            session.llm_provider or None,
+            catalog_hash,
+        )
 
     async def _attempt_claim(self, session, want_id, cap, default_profile, *, routing=None) -> dict:
         """Decide the outcome on one ``immediate()`` transaction, on *conn* only.
@@ -425,7 +436,8 @@ class ClaimCommandsMixin:
                     task_id=want_id,
                     enforce_routing=routing is not None,
                     intelligence_class=routing[0] if routing else None,
-                    allow_unclassified=routing[1] if routing else True,
+                    llm_provider=routing[1] if routing else None,
+                    options_hash=routing[2] if routing else None,
                 )
                 task = None
                 if tid is not None:
