@@ -193,18 +193,18 @@ Maps to `MonitoringConfig`. The YAML key is `monitoring`.
 
 Maps to `AutoTaskConfig`. The YAML key is `auto_task`.
 
+Leftovers of the retired plan-to-subtask pipeline that still have live
+consumers: pre-task workspace cleanup deletes files matching
+`plan_file_patterns`, and git verification reopens a task at most
+`max_verification_retries` times. The plan-discovery fields (`enabled`,
+`inherit_repo`, `inherit_approval`, `chain_dependencies`, `max_plan_depth`,
+`max_steps_per_plan`, `use_llm_parser`, `llm_parser_model`) were removed with
+the discovery flow.
+
 | YAML key | Type | Default | Description |
 |---|---|---|---|
-| `enabled` | `bool` | `True` | Whether automatic task generation from plan files is active. |
-| `plan_file_patterns` | `list[str]` | `[".claude/plan.md", "plan.md", "docs/plans/*.md", "plans/*.md", "docs/plan.md"]` | Ordered list of file path patterns (relative to the repo root) to search for implementation plans. Glob patterns are supported. |
-| `inherit_repo` | `bool` | `True` | When `True`, generated subtasks inherit the `repo_id` of the parent task. |
-| `inherit_approval` | `bool` | `True` | When `True`, generated subtasks inherit the `requires_approval` flag of the parent task. |
-| `base_priority` | `int` | `100` | Base priority value assigned to generated tasks. |
-| `chain_dependencies` | `bool` | `True` | When `True`, each generated step depends on the previous step completing before it can start. |
-| `max_plan_depth` | `int` | `1` | Maximum nesting depth for plan-generated tasks. A value of `1` means only one level of plan generation is allowed; a plan-generated task cannot itself trigger further plan generation. |
-| `max_steps_per_plan` | `int` | `20` | Maximum number of steps extracted from a single plan file. Steps beyond this limit are ignored. |
-| `use_llm_parser` | `bool` | `False` | When `True`, an LLM (Claude) is invoked to parse plan files instead of the deterministic parser. |
-| `llm_parser_model` | `str` | `""` | Model name to use when `use_llm_parser` is `True`. An empty string means the system uses its default model. |
+| `plan_file_patterns` | `list[str]` | `[".claude/plan.md", "plan.md", "docs/plans/*.md", "plans/*.md", "docs/plan.md"]` | Ordered list of file path patterns (relative to the repo root) that pre-task workspace cleanup deletes before an agent starts. Glob patterns are supported. |
+| `max_verification_retries` | `int` | `2` | Maximum reopen attempts when git verification fails on task completion. |
 
 ### 4.9 `memory` Section
 
@@ -421,6 +421,25 @@ agree. The daemon logs a warning once at startup when it sees pool profiles
 with the flag off, and `aq doctor` reports the same condition as
 `pools.disabled` (WARN, report-only — flipping the flag is an operator
 decision, not a repair).
+
+### 4.12 `integration` Section
+
+Maps to `IntegrationConfig`. The YAML key is `integration`.
+
+System-wide default integration policy — the last link of the
+integration-policy chain (plan-subtask parent's task-level override → task
+override → project policy `projects.integration_mode` → this).
+
+| YAML key | Type | Default | Description |
+|---|---|---|---|
+| `default_mode` | `str` | `"pull_request"` | Effective integration mode for tasks that inherit all the way down the chain. `"pull_request"`: the worker pushes its branch and opens a PR; the task completes unmerged and the default-pipeline playbook's review policy owns the merge. `"direct"`: the completion pipeline merges the task branch into the default branch on completion — set this only for deployments that explicitly run without a review policy. |
+
+Validation (`IntegrationConfig.validate`): `default_mode` must be one of
+`INTEGRATION_MODES` (`direct`, `pull_request`).
+
+This section replaces the retired per-task `requires_approval` boolean
+(dropped by Alembic revision `c4d5e6f7a8b9`, which backfills it into
+`integration_mode` on `tasks` and `archived_tasks`).
 
 ---
 

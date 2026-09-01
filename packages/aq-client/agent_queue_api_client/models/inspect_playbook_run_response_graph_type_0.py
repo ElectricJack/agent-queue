@@ -6,51 +6,27 @@ from typing import Any, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-T = TypeVar("T", bound="RejectPlanRequest")
+T = TypeVar("T", bound="InspectPlaybookRunResponseGraphType0")
 
 
 @_attrs_define
-class RejectPlanRequest:
-    """
-    Attributes:
-        task_id (str): Task ID whose plan to reject
-        feedback (str): Feedback describing what changes are needed in the plan
-    """
-
-    task_id: str
-    feedback: str
+class InspectPlaybookRunResponseGraphType0:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        task_id = self.task_id
-
-        feedback = self.feedback
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update(
-            {
-                "task_id": task_id,
-                "feedback": feedback,
-            }
-        )
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        task_id = d.pop("task_id")
+        inspect_playbook_run_response_graph_type_0 = cls()
 
-        feedback = d.pop("feedback")
-
-        reject_plan_request = cls(
-            task_id=task_id,
-            feedback=feedback,
-        )
-
-        reject_plan_request.additional_properties = d
-        return reject_plan_request
+        inspect_playbook_run_response_graph_type_0.additional_properties = d
+        return inspect_playbook_run_response_graph_type_0
 
     @property
     def additional_keys(self) -> list[str]:

@@ -193,7 +193,7 @@ class TestFormatterCompatibility:
                 "title": "Fix bug",
                 "assigned_agent": None,
                 "description": "A bug fix",
-                "requires_approval": False,
+                "integration_mode": None,
             }
         )
         panel = format_task_detail(t, deps_on=["dep-1"], dependents=["block-1"])
@@ -543,8 +543,6 @@ class TestStyles:
             "WAITING_INPUT",
             "PAUSED",
             "VERIFYING",
-            "AWAITING_APPROVAL",
-            "AWAITING_PLAN_APPROVAL",
             "COMPLETED",
             "FAILED",
             "BLOCKED",
@@ -610,7 +608,6 @@ class TestAutoCommands:
         assert task_group is not None
         # Hand-crafted (interactive commands)
         assert "create" in task_group.commands
-        assert "approve" in task_group.commands
         assert "search" in task_group.commands
         # Auto-generated (from task category + formatter registry)
         assert "list" in task_group.commands
@@ -741,7 +738,7 @@ class TestCLICommands:
                     "description": "A test task",
                     "assigned_agent": None,
                     "task_type": "feature",
-                    "requires_approval": False,
+                    "integration_mode": None,
                     "depends_on": [],
                     "blocks": [],
                 },

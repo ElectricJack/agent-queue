@@ -49,7 +49,7 @@ class PoolStatusResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.pool_status_row import PoolStatusRow
+        from ..models.pool_status_row import PoolStatusRow  # noqa: PLC0415
 
         d = dict(src_dict)
         success = d.pop("success", UNSET)

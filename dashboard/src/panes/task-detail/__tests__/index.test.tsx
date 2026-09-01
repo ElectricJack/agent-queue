@@ -49,16 +49,15 @@ const fixtureTask: Task = {
   project_id: "demo",
   title: "Fix the thing",
   description: "",
-  status: "AWAITING_APPROVAL",
+  status: "WAITING_INPUT",
   priority: 2,
   assigned_agent: "agent-1",
   retry_count: 0,
   max_retries: 3,
-  requires_approval: true,
+  integration_mode: "pull_request",
   is_plan_subtask: false,
   task_type: "implementation",
   profile_id: "claude-sdk",
-  auto_approve_plan: false,
   skip_verification: false,
   pr_url: null,
   depends_on: [],
@@ -142,10 +141,10 @@ describe("TaskDetailPane — header, description, actions", () => {
     expect(screen.getByText("Some details here")).toBeInTheDocument();
   });
 
-  it("shows the Approve action for an AWAITING_APPROVAL task", () => {
+  it("shows the Answer Question action for a WAITING_INPUT task", () => {
     mockUseTask.mockReturnValue({ data: fixtureTask, isLoading: false, isError: false });
     renderWithRouter(<TaskDetailPane {...noopProps()} />);
-    expect(screen.getByRole("button", { name: /approve/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /answer question/i })).toBeInTheDocument();
   });
 });
 

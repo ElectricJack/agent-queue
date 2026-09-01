@@ -30,7 +30,7 @@ Four Alembic revisions (small, reviewable, each upgradeable on SQLite **and** Po
 
 ### 2.2 Revision 2 — `tasks.is_blocked` + backfill
 
-- `Column("is_blocked", Integer, nullable=False, server_default="0")` on `tasks` (Integer 0/1 matches the table's existing flag style, e.g. `requires_approval`). Same column appended to `archived_tasks` so archiving stays lossless.
+- `Column("is_blocked", Integer, nullable=False, server_default="0")` on `tasks` (Integer 0/1 matches the table's existing flag style, e.g. `is_plan_subtask`; the plan originally cited the since-dropped `requires_approval`). Same column appended to `archived_tasks` so archiving stays lossless.
 - New index `idx_tasks_project_status_blocked (project_id, status, is_blocked)` — serves `_check_defined_tasks`, the scheduler filter, and `aq project ready`. Also `idx_tasks_parent (parent_task_id)` (currently unindexed; group progress and tree queries need it).
 - **Backfill:** the upgrade runs the full blocked-state predicate (§3.2) as one data-migration `UPDATE` over all tasks via `op.get_bind()`. The statement is ANSI SQL (`EXISTS` subqueries only) and runs unchanged on both dialects. At this revision no gates exist and all edges are `'blocks'`, so the backfill reduces to the `blocks` clause.
 
@@ -90,6 +90,12 @@ class BlockedStateMixin:
 ### 3.2 The predicate (both dialects)
 
 One set-based statement per fixpoint wave, built with SQLAlchemy Core (dialect-neutral); shown as SQL for review:
+
+> **Landed note (2026-08-31):** `AWAITING_PLAN_APPROVAL` has since been removed
+> from `TaskStatus`, so the parent-child withholding predicate no longer
+> includes it — `_WITHHOLDING_PARENT_STATUSES` in
+> `src/database/queries/blocked_state.py` is now `('DEFINED',)`. The SQL below
+> is the original plan as written.
 
 ```sql
 UPDATE tasks SET is_blocked = CASE WHEN
@@ -171,7 +177,7 @@ That is exact, not an approximation. `is_blocked` is a pure function of statuses
 
 ### 6.1 Cascade — `src/orchestrator/core.py::run_one_cycle` (line 1658)
 
-Insert step **2b** between `_check_awaiting_approval()` (line 1721) and `_check_defined_tasks()` (line 1729):
+Insert step **2b** between `_check_awaiting_approval()` (line 1721) and `_check_defined_tasks()` (line 1729) *(landed note: `_check_awaiting_approval` has since been deleted — the sweep now runs as cascade step 0)*:
 
 ```python
 # 2b. Sweep gates: resolve satisfied timer/pr-merged/ci-run/event/task gates,
@@ -188,7 +194,7 @@ await self._sweep_gates()
 
 ### 6.3 Approvals and explain
 
-- `src/orchestrator/approval.py::_check_pr_status` (line 145): the `gh` polling body (`self.git.acheck_pr_merged`, checkout-path fallback) is extracted to `_poll_pr_merged(task_or_project_id, pr_url) -> bool | None`; `_check_pr_status` and `_sweep_gates` both call it. `_check_awaiting_approval` (line 43) itself is unchanged in phase 0 (statuses survive until the collapse).
+- `src/orchestrator/approval.py::_check_pr_status` (line 145): the `gh` polling body (`self.git.acheck_pr_merged`, checkout-path fallback) is extracted to `_poll_pr_merged(task_or_project_id, pr_url) -> bool | None`; `_check_pr_status` and `_sweep_gates` both call it. `_check_awaiting_approval` (line 43) itself is unchanged in phase 0 (statuses survive until the collapse). *(Landed note: the collapse has since happened for the approval statuses — `src/orchestrator/approval.py` and `_check_awaiting_approval` are deleted; `_poll_pr_merged` lives in `src/orchestrator/pr_polling.py::PRPollingMixin` with the gate sweep as sole consumer.)*
 - New `src/explain.py`: `Reason` TypedDict `{code: str, detail: str, ref: str | None}`; `build_capacity_reasons(task, state: SchedulerState, workspace_counts, idle_by_project) -> list[Reason]`. `core.py::_describe_task_blocker` (line 2030) is rewritten as a one-line wrapper (`reasons[0]` formatted), so `_log_scheduler_blockers` (line 1978), `_cmd_explain_task`, and the dashboard share one source. The orchestrator caches the last `SchedulerState` snapshot (`self._last_scheduler_state`) so explain can answer between ticks.
 - `src/orchestrator/execution.py`, FAILED branch (lines 1364–1392): before the retry decision, read `failure_class` from `get_task_meta(task_id, "failure_class")`; `"hard"` → `transition_task(..., BLOCKED, context="hard_failure")` immediately (skip retry), else existing retry/backoff path. `AgentResult` mapping unchanged.
 - `src/scheduler.py::Scheduler.schedule`: dispatchable filter gains `and not task.is_blocked` (defense in depth; promotion already respects it).
@@ -227,7 +233,7 @@ Three gaps are known, reproduced, and **deliberately not fixed in WG-1/WG-2**. N
 
 Fix, as part of the flip: an `INSERT … SELECT` creating a `parent-child` edge for every `tasks` row with `is_plan_subtask = 1` and a non-null `parent_task_id` that has no `parent-child` edge to that parent, followed by `recompute_all_blocked()`. Must be written with the same PK-collision guard as §2's retype (`NOT EXISTS` on the target `(task_id, depends_on_task_id, 'parent-child')`).
 
-**P2-5 — a non-released plan parent frees its children.** `_WITHHOLDING_PARENT_STATUSES` is `{DEFINED, AWAITING_PLAN_APPROVAL}`; every other parent status counts as released, so a plan parent that is BLOCKED, FAILED, READY or PAUSED no longer withholds its children. Design §3.1 sanctions this — "released" is defined as *not* withholding, and the withholding set is the closed list — but "the children of a failed plan start running" is a behaviour change that deserves an explicit yes/no rather than arriving as a side effect of a config flip. Decide at flip time whether FAILED/BLOCKED parents join the withholding set. (The legacy scan's answer was narrower: it treated only `AWAITING_PLAN_APPROVAL` as withholding and IN_PROGRESS as satisfied, and had no opinion at all about a FAILED parent.)
+**P2-5 — a non-released plan parent frees its children.** `_WITHHOLDING_PARENT_STATUSES` is `{DEFINED, AWAITING_PLAN_APPROVAL}` *(landed note: now just `{DEFINED}` — the approval status was removed)*; every other parent status counts as released, so a plan parent that is BLOCKED, FAILED, READY or PAUSED no longer withholds its children. Design §3.1 sanctions this — "released" is defined as *not* withholding, and the withholding set is the closed list — but "the children of a failed plan start running" is a behaviour change that deserves an explicit yes/no rather than arriving as a side effect of a config flip. Decide at flip time whether FAILED/BLOCKED parents join the withholding set. (The legacy scan's answer was narrower: it treated only `AWAITING_PLAN_APPROVAL` as withholding and IN_PROGRESS as satisfied, and had no opinion at all about a FAILED parent.)
 
 **P2-6 — PostgreSQL: concurrent sibling completions can leave a fan-in waiter stale.** Two transactions each completing a different `parent-child` child of the same container, both recomputing the `waits-for` waiter, can both read the *other* child as not-yet-COMPLETED: the correlated `EXISTS` lives in the `SET` expression and evaluates under a statement snapshot taken before the other transaction committed. The waiter is then left `is_blocked = 1` with every child COMPLETED. §3.2's "the single UPDATE takes row locks in one statement" covers write ordering between the two, not subquery visibility. Impossible on SQLite (single writer, WAL).
 

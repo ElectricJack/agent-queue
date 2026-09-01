@@ -90,10 +90,6 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "delete_task": "task",
     "skip_task": "task",
     "set_task_status": "task",
-    "approve_task": "task",
-    "approve_plan": "task",
-    "reject_plan": "task",
-    "delete_plan": "task",
     "archive_task": "task",
     "archive_settings": "task",
     "list_archived": "task",
@@ -736,10 +732,15 @@ _ALL_TOOL_DEFINITIONS = [
                     "description": "Priority (lower = higher priority, default 100)",
                     "default": 100,
                 },
-                "requires_approval": {
-                    "type": "boolean",
-                    "description": "If true, agent work creates a PR instead of auto-merging. Human must approve/merge the PR.",
-                    "default": False,
+                "integration_mode": {
+                    "type": "string",
+                    "enum": ["direct", "pull_request"],
+                    "description": (
+                        "Integration-policy override: 'pull_request' pushes the "
+                        "task branch and opens a PR (review pipeline owns the "
+                        "merge); 'direct' merges into the default branch on "
+                        "completion. Omit to inherit the project/system policy."
+                    ),
                 },
                 "task_type": {
                     "type": "string",
@@ -786,14 +787,6 @@ _ALL_TOOL_DEFINITIONS = [
                         "that were downloaded locally. The agent will be told to "
                         "read these files using the Read tool."
                     ),
-                },
-                "auto_approve_plan": {
-                    "type": "boolean",
-                    "description": (
-                        "If true, any plan this task generates will be "
-                        "automatically approved without waiting for human review."
-                    ),
-                    "default": False,
                 },
                 "skip_verification": {
                     "type": "boolean",
@@ -1349,7 +1342,7 @@ _ALL_TOOL_DEFINITIONS = [
         "name": "edit_task",
         "description": (
             "Edit a task's properties: project_id, title, description, priority, task_type, "
-            "status, max_retries, verification_type, profile_id, auto_approve_plan, "
+            "status, max_retries, verification_type, profile_id, integration_mode, "
             "skip_verification, intelligence_class, affinity_agent_id, affinity_reason, "
             "or workspace_mode. Use this "
             "to move a task to a different project, rename tasks, change priority, override status "
@@ -1401,9 +1394,14 @@ _ALL_TOOL_DEFINITIONS = [
                     "type": ["string", "null"],
                     "description": "Intelligence class id; change only while unassigned. Null clears it.",
                 },
-                "auto_approve_plan": {
-                    "type": "boolean",
-                    "description": "If true, any plan this task generates will be automatically approved without human review (optional)",
+                "integration_mode": {
+                    "type": ["string", "null"],
+                    "enum": ["direct", "pull_request", None],
+                    "description": (
+                        "Integration-policy override ('direct' | 'pull_request'). "
+                        "Null clears the override so the task inherits the "
+                        "project/system policy (optional)"
+                    ),
                 },
                 "skip_verification": {
                     "type": "boolean",
@@ -1575,54 +1573,6 @@ _ALL_TOOL_DEFINITIONS = [
                 },
             },
             "required": [],
-        },
-    },
-    {
-        "name": "approve_task",
-        "description": "Manually approve and complete a task that is AWAITING_APPROVAL. Use for tasks on LINK repos that don't have GitHub PRs.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "task_id": {"type": "string", "description": "Task ID to approve"},
-            },
-            "required": ["task_id"],
-        },
-    },
-    {
-        "name": "approve_plan",
-        "description": "Approve a plan for a task in AWAITING_PLAN_APPROVAL status. Creates subtasks from the stored plan and marks the task completed.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "task_id": {"type": "string", "description": "Task ID whose plan to approve"},
-            },
-            "required": ["task_id"],
-        },
-    },
-    {
-        "name": "reject_plan",
-        "description": "Reject a plan for a task in AWAITING_PLAN_APPROVAL status with feedback. Reopens the task so the agent can revise the plan.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "task_id": {"type": "string", "description": "Task ID whose plan to reject"},
-                "feedback": {
-                    "type": "string",
-                    "description": "Feedback describing what changes are needed in the plan",
-                },
-            },
-            "required": ["task_id", "feedback"],
-        },
-    },
-    {
-        "name": "delete_plan",
-        "description": "Delete a plan for a task in AWAITING_PLAN_APPROVAL status. Completes the task without creating any subtasks.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "task_id": {"type": "string", "description": "Task ID whose plan to delete"},
-            },
-            "required": ["task_id"],
         },
     },
     {

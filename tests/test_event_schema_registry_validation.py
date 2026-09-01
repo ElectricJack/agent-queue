@@ -1341,7 +1341,6 @@ class TestAllEventTypesHaveSchemas:
             "notify.task_blocked",
             "notify.task_stopped",
             "notify.agent_question",
-            "notify.plan_awaiting_approval",
             "notify.pr_created",
             "notify.merge_conflict",
             "notify.push_failed",

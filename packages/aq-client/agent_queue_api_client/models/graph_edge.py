@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+
+from ..types import UNSET, Unset
 
 T = TypeVar("T", bound="GraphEdge")
 
@@ -16,11 +18,13 @@ class GraphEdge:
         from_ (str):
         to (str):
         dep_type (str):
+        description (None | str | Unset):
     """
 
     from_: str
     to: str
     dep_type: str
+    description: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -29,6 +33,12 @@ class GraphEdge:
         to = self.to
 
         dep_type = self.dep_type
+
+        description: None | str | Unset
+        if isinstance(self.description, Unset):
+            description = UNSET
+        else:
+            description = self.description
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -39,6 +49,8 @@ class GraphEdge:
                 "dep_type": dep_type,
             }
         )
+        if description is not UNSET:
+            field_dict["description"] = description
 
         return field_dict
 
@@ -51,10 +63,20 @@ class GraphEdge:
 
         dep_type = d.pop("dep_type")
 
+        def _parse_description(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        description = _parse_description(d.pop("description", UNSET))
+
         graph_edge = cls(
             from_=from_,
             to=to,
             dep_type=dep_type,
+            description=description,
         )
 
         graph_edge.additional_properties = d

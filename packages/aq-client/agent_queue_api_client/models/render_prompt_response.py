@@ -52,7 +52,7 @@ class RenderPromptResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.render_prompt_response_variables_used import RenderPromptResponseVariablesUsed
+        from ..models.render_prompt_response_variables_used import RenderPromptResponseVariablesUsed  # noqa: PLC0415
 
         d = dict(src_dict)
         name = d.pop("name", UNSET)

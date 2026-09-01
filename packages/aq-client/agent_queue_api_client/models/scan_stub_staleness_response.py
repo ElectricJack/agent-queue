@@ -31,7 +31,7 @@ class ScanStubStalenessResponse:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.stub_scan_totals import StubScanTotals
+        from ..models.stub_scan_totals import StubScanTotals  # noqa: PLC0415
 
         projects: list[dict[str, Any]] | Unset = UNSET
         if not isinstance(self.projects, Unset):
@@ -64,8 +64,8 @@ class ScanStubStalenessResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.stub_scan_project import StubScanProject
-        from ..models.stub_scan_totals import StubScanTotals
+        from ..models.stub_scan_project import StubScanProject  # noqa: PLC0415
+        from ..models.stub_scan_totals import StubScanTotals  # noqa: PLC0415
 
         d = dict(src_dict)
         _projects = d.pop("projects", UNSET)

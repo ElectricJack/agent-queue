@@ -418,7 +418,7 @@ Validation is deterministic — the daemon never "interprets" a graph:
 the asking task (gates are owned by the work-graph spec). The supervisor's role is the
 inverse: it **resolves** gates, and only on explicit human instruction (§4 Rules). A
 typical planning flow ends with the graph's parent gated on human approval, replacing
-today's `AWAITING_PLAN_APPROVAL` status.
+the old `AWAITING_PLAN_APPROVAL` status (since deleted from `TaskStatus`).
 
 ---
 
@@ -432,10 +432,12 @@ today's `AWAITING_PLAN_APPROVAL` status.
 > `process_task_completion` commands that briefly replaced automatic discovery were
 > themselves deleted outright in a later fix wave (same day) — the LLM plan parser
 > they depended on was gone, so a discovered-but-unparsed plan was an unrecoverable
-> dead end. Nothing discovers or processes plan files anymore; `approve_plan`/
-> `reject_plan`/`delete_plan` (`docs/specs/command-handler.md`,
-> `docs/specs/orchestrator.md` §12) remain only as the remediation path for
-> pre-existing `AWAITING_PLAN_APPROVAL` rows. See
+> dead end. Nothing discovers or processes plan files anymore. The
+> `approve_plan`/`reject_plan`/`delete_plan` remediation commands and the
+> `AWAITING_PLAN_APPROVAL` status itself have since been **removed** as well
+> (with the `integration_mode` cutover); stranded rows are caught by the
+> migration preflight (Alembic `c4d5e6f7a8b9`), which fails the upgrade with
+> per-row remediation SQL — see `docs/guides/upgrade-integration-mode.md`. See
 > `docs/superpowers/specs/2026-08-30-llm-direct-path-design.md` §6.3 and its
 > "Deviations applied during implementation" list.
 
@@ -465,8 +467,10 @@ What gets unwired (kept dormant behind a flag until deleted at the playbook come
 the plan-discovery pipeline phase and `plan.md` scanning; the `AWAITING_PLAN_APPROVAL`
 promotion path in `execution.py`; the `break_plan_into_tasks` call and its
 project-wide plan-processing locks; `Supervisor.on_task_completed()` plan archival.
-Migration: tasks already sitting in `AWAITING_PLAN_APPROVAL` finish under the legacy flag;
-new tasks never enter it. The `plan-parser-system` prompt template is superseded by the
+Migration: tasks already sitting in `AWAITING_PLAN_APPROVAL` were expected to finish under
+the legacy flag; new tasks never enter it. (The status has since been deleted outright —
+the `integration_mode` migration preflight forces any remaining rows to be dispositioned
+before upgrading.) The `plan-parser-system` prompt template is superseded by the
 `planner` profile's Role/Rules, which teach spec-first decomposition instead of plan-file
 parsing.
 

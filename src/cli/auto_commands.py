@@ -36,7 +36,6 @@ HANDCRAFTED_COVERAGE = {
     "get_status",
     # tasks.py — interactive commands only (wizard, search, select, confirmations)
     "create_task",
-    "approve_task",
     "stop_task",
     "restart_task",
     # tasks.py — `aq task create --graph|--from-spec|--dry-run`

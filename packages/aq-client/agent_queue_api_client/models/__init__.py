@@ -13,13 +13,6 @@ from .agent_waiting_question import AgentWaitingQuestion
 from .append_note_request import AppendNoteRequest
 from .append_note_response import AppendNoteResponse
 from .append_note_response_422 import AppendNoteResponse422
-from .approve_plan_request import ApprovePlanRequest
-from .approve_plan_response import ApprovePlanResponse
-from .approve_plan_response_422 import ApprovePlanResponse422
-from .approve_plan_response_subtasks_item import ApprovePlanResponseSubtasksItem
-from .approve_task_request import ApproveTaskRequest
-from .approve_task_response import ApproveTaskResponse
-from .approve_task_response_422 import ApproveTaskResponse422
 from .archive_settings_request import ArchiveSettingsRequest
 from .archive_settings_response import ArchiveSettingsResponse
 from .archive_settings_response_422 import ArchiveSettingsResponse422
@@ -91,6 +84,7 @@ from .create_task_graph_response_422 import CreateTaskGraphResponse422
 from .create_task_request import CreateTaskRequest
 from .create_task_response import CreateTaskResponse
 from .create_task_response_422 import CreateTaskResponse422
+from .create_task_response_depends_on_item import CreateTaskResponseDependsOnItem
 from .db_preflight_hierarchy_request import DbPreflightHierarchyRequest
 from .db_preflight_hierarchy_response_422 import DbPreflightHierarchyResponse422
 from .delete_agent_request import DeleteAgentRequest
@@ -102,9 +96,6 @@ from .delete_mcp_server_response_422 import DeleteMcpServerResponse422
 from .delete_note_request import DeleteNoteRequest
 from .delete_note_response import DeleteNoteResponse
 from .delete_note_response_422 import DeleteNoteResponse422
-from .delete_plan_request import DeletePlanRequest
-from .delete_plan_response import DeletePlanResponse
-from .delete_plan_response_422 import DeletePlanResponse422
 from .delete_playbook_request import DeletePlaybookRequest
 from .delete_playbook_response import DeletePlaybookResponse
 from .delete_playbook_response_422 import DeletePlaybookResponse422
@@ -367,6 +358,7 @@ from .inspect_playbook_run_request import InspectPlaybookRunRequest
 from .inspect_playbook_run_response import InspectPlaybookRunResponse
 from .inspect_playbook_run_response_422 import InspectPlaybookRunResponse422
 from .inspect_playbook_run_response_conversation_history_item import InspectPlaybookRunResponseConversationHistoryItem
+from .inspect_playbook_run_response_graph_type_0 import InspectPlaybookRunResponseGraphType0
 from .inspect_playbook_run_response_node_trace_item import InspectPlaybookRunResponseNodeTraceItem
 from .inspect_playbook_run_response_trigger_event import InspectPlaybookRunResponseTriggerEvent
 from .install_profile_request import InstallProfileRequest
@@ -601,9 +593,6 @@ from .record_file_inspection_response_422 import RecordFileInspectionResponse422
 from .recover_workflow_request import RecoverWorkflowRequest
 from .recover_workflow_response import RecoverWorkflowResponse
 from .recover_workflow_response_422 import RecoverWorkflowResponse422
-from .reject_plan_request import RejectPlanRequest
-from .reject_plan_response import RejectPlanResponse
-from .reject_plan_response_422 import RejectPlanResponse422
 from .release_project_constraint_request import ReleaseProjectConstraintRequest
 from .release_project_constraint_response import ReleaseProjectConstraintResponse
 from .release_project_constraint_response_422 import ReleaseProjectConstraintResponse422
@@ -789,10 +778,10 @@ from .task_heartbeat_response_422 import TaskHeartbeatResponse422
 from .task_progress_request import TaskProgressRequest
 from .task_progress_response import TaskProgressResponse
 from .task_progress_response_422 import TaskProgressResponse422
-from .task_ref import TaskRef
 from .task_recover_request import TaskRecoverRequest
 from .task_recover_response_422 import TaskRecoverResponse422
 from .task_recovery_response import TaskRecoveryResponse
+from .task_ref import TaskRef
 from .task_route_request import TaskRouteRequest
 from .task_route_response import TaskRouteResponse
 from .task_route_response_422 import TaskRouteResponse422
@@ -805,12 +794,14 @@ from .task_set_response_422 import TaskSetResponse422
 from .task_set_response_children_type_0 import TaskSetResponseChildrenType0
 from .task_set_response_context_item import TaskSetResponseContextItem
 from .task_set_response_parent_type_0 import TaskSetResponseParentType0
+from .task_set_response_provenance_item import TaskSetResponseProvenanceItem
 from .task_show_request import TaskShowRequest
 from .task_show_response import TaskShowResponse
 from .task_show_response_422 import TaskShowResponse422
 from .task_show_response_children_type_0 import TaskShowResponseChildrenType0
 from .task_show_response_context_item import TaskShowResponseContextItem
 from .task_show_response_parent_type_0 import TaskShowResponseParentType0
+from .task_show_response_provenance_item import TaskShowResponseProvenanceItem
 from .task_status_summary import TaskStatusSummary
 from .task_status_summary_by_status import TaskStatusSummaryByStatus
 from .task_status_summary_in_progress_item import TaskStatusSummaryInProgressItem
@@ -862,13 +853,6 @@ __all__ = (
     "AppendNoteRequest",
     "AppendNoteResponse",
     "AppendNoteResponse422",
-    "ApprovePlanRequest",
-    "ApprovePlanResponse",
-    "ApprovePlanResponse422",
-    "ApprovePlanResponseSubtasksItem",
-    "ApproveTaskRequest",
-    "ApproveTaskResponse",
-    "ApproveTaskResponse422",
     "ArchiveSettingsRequest",
     "ArchiveSettingsResponse",
     "ArchiveSettingsResponse422",
@@ -940,6 +924,7 @@ __all__ = (
     "CreateTaskRequest",
     "CreateTaskResponse",
     "CreateTaskResponse422",
+    "CreateTaskResponseDependsOnItem",
     "DbPreflightHierarchyRequest",
     "DbPreflightHierarchyResponse422",
     "DeleteAgentRequest",
@@ -951,9 +936,6 @@ __all__ = (
     "DeleteNoteRequest",
     "DeleteNoteResponse",
     "DeleteNoteResponse422",
-    "DeletePlanRequest",
-    "DeletePlanResponse",
-    "DeletePlanResponse422",
     "DeletePlaybookRequest",
     "DeletePlaybookResponse",
     "DeletePlaybookResponse422",
@@ -1212,6 +1194,7 @@ __all__ = (
     "InspectPlaybookRunResponse",
     "InspectPlaybookRunResponse422",
     "InspectPlaybookRunResponseConversationHistoryItem",
+    "InspectPlaybookRunResponseGraphType0",
     "InspectPlaybookRunResponseNodeTraceItem",
     "InspectPlaybookRunResponseTriggerEvent",
     "InstallProfileRequest",
@@ -1442,9 +1425,6 @@ __all__ = (
     "RecoverWorkflowRequest",
     "RecoverWorkflowResponse",
     "RecoverWorkflowResponse422",
-    "RejectPlanRequest",
-    "RejectPlanResponse",
-    "RejectPlanResponse422",
     "ReleaseProjectConstraintRequest",
     "ReleaseProjectConstraintResponse",
     "ReleaseProjectConstraintResponse422",
@@ -1628,6 +1608,9 @@ __all__ = (
     "TaskProgressRequest",
     "TaskProgressResponse",
     "TaskProgressResponse422",
+    "TaskRecoverRequest",
+    "TaskRecoverResponse422",
+    "TaskRecoveryResponse",
     "TaskRef",
     "TaskRouteRequest",
     "TaskRouteResponse",
@@ -1641,12 +1624,14 @@ __all__ = (
     "TaskSetResponseChildrenType0",
     "TaskSetResponseContextItem",
     "TaskSetResponseParentType0",
+    "TaskSetResponseProvenanceItem",
     "TaskShowRequest",
     "TaskShowResponse",
     "TaskShowResponse422",
     "TaskShowResponseChildrenType0",
     "TaskShowResponseContextItem",
     "TaskShowResponseParentType0",
+    "TaskShowResponseProvenanceItem",
     "TaskStatusSummary",
     "TaskStatusSummaryByStatus",
     "TaskStatusSummaryInProgressItem",

@@ -37,8 +37,6 @@ class TaskStatus(Enum):
     IN_PROGRESS = "IN_PROGRESS"
     WAITING_INPUT = "WAITING_INPUT"
     PAUSED = "PAUSED"
-    AWAITING_APPROVAL = "AWAITING_APPROVAL"
-    AWAITING_PLAN_APPROVAL = "AWAITING_PLAN_APPROVAL"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     BLOCKED = "BLOCKED"
@@ -67,8 +65,6 @@ class TaskEvent(Enum):
     HUMAN_REPLIED = "HUMAN_REPLIED"
     INPUT_TIMEOUT = "INPUT_TIMEOUT"
     RESUME_TIMER = "RESUME_TIMER"
-    PR_CREATED = "PR_CREATED"
-    PR_MERGED = "PR_MERGED"
     RETRY = "RETRY"
     MAX_RETRIES = "MAX_RETRIES"
     MERGE_FAILED = "MERGE_FAILED"
@@ -77,11 +73,6 @@ class TaskEvent(Enum):
     ADMIN_SKIP = "ADMIN_SKIP"
     ADMIN_STOP = "ADMIN_STOP"
     ADMIN_RESTART = "ADMIN_RESTART"
-    PR_CLOSED = "PR_CLOSED"
-    PLAN_FOUND = "PLAN_FOUND"
-    PLAN_APPROVED = "PLAN_APPROVED"
-    PLAN_REJECTED = "PLAN_REJECTED"
-    PLAN_DELETED = "PLAN_DELETED"
     SUBTASKS_COMPLETED = "SUBTASKS_COMPLETED"
     # A ``conditional-blocks`` contingency whose dependency succeeded: the
     # edge can never fire again, so the task is disposed of as a no-op
@@ -116,6 +107,73 @@ class TaskType(Enum):
 
 # Convenience set for validation without constructing enum members.
 TASK_TYPE_VALUES = frozenset(t.value for t in TaskType)
+
+
+# ── Integration policy ─────────────────────────────────────────────────────
+#
+# How a task's finished work reaches the project's default branch:
+#
+# ``direct``       — the completion pipeline merges the task branch into the
+#                    default branch (and pushes) as soon as the worker task
+#                    completes.  For projects with zero review policy (docs,
+#                    sandboxes).
+# ``pull_request`` — the worker pushes its branch and opens a PR; the task
+#                    completes *unmerged*.  Review tasks and ``pr-merged``
+#                    gates (default-pipeline playbook) decide when the work
+#                    lands.
+#
+# The value is resolved through a policy chain — task override → project
+# policy → config ``integration.default_mode`` — via
+# :func:`resolve_integration_mode`.  ``None`` at any level means "inherit".
+INTEGRATION_MODE_DIRECT = "direct"
+INTEGRATION_MODE_PULL_REQUEST = "pull_request"
+INTEGRATION_MODES = frozenset({INTEGRATION_MODE_DIRECT, INTEGRATION_MODE_PULL_REQUEST})
+
+
+def resolve_integration_mode_with_source(
+    task_mode: str | None,
+    *,
+    parent_task_mode: str | None = None,
+    project_mode: str | None = None,
+    default_mode: str = INTEGRATION_MODE_PULL_REQUEST,
+) -> tuple[str, str]:
+    """Resolve the effective integration mode and where it came from.
+
+    Chain: plan-subtask parent's task-level override (a plan's subtasks all
+    integrate the way the plan does) → task override → project policy →
+    system default.  Unknown values fall through to the next level so a
+    corrupted row degrades to policy rather than crashing the pipeline.
+
+    Returns ``(mode, source)`` where source is one of ``"parent"``,
+    ``"task"``, ``"project"``, ``"default"``.
+    """
+    for candidate, source in (
+        (parent_task_mode, "parent"),
+        (task_mode, "task"),
+        (project_mode, "project"),
+    ):
+        if candidate in INTEGRATION_MODES:
+            return candidate, source
+    if default_mode in INTEGRATION_MODES:
+        return default_mode, "default"
+    return INTEGRATION_MODE_PULL_REQUEST, "default"
+
+
+def resolve_integration_mode(
+    task_mode: str | None,
+    *,
+    parent_task_mode: str | None = None,
+    project_mode: str | None = None,
+    default_mode: str = INTEGRATION_MODE_PULL_REQUEST,
+) -> str:
+    """Resolve the effective integration mode for a task (see above)."""
+    mode, _ = resolve_integration_mode_with_source(
+        task_mode,
+        parent_task_mode=parent_task_mode,
+        project_mode=project_mode,
+        default_mode=default_mode,
+    )
+    return mode
 
 
 class WorkspaceMode(Enum):
@@ -161,7 +219,7 @@ class DepType(Enum):
         satisfied when the dependency is COMPLETED.
     ``PARENT_CHILD``
         satisfied when the container has been *released* — its status is
-        neither DEFINED nor AWAITING_PLAN_APPROVAL.
+        not DEFINED.
     ``WAITS_FOR``
         dynamic fan-in: satisfied when every task with a ``parent-child``
         edge to the target is COMPLETED (vacuously true with zero children;
@@ -330,6 +388,9 @@ class Project:
     repo_default_branch: str = "main"
     default_profile_id: str | None = None  # fallback profile for tasks in this project
     assignment_playbook_id: str | None = None
+    # Project-level integration policy: "direct" | "pull_request" | None
+    # (None = inherit the system default, config ``integration.default_mode``).
+    integration_mode: str | None = None
 
 
 @dataclass
@@ -388,7 +449,11 @@ class Task:
     assigned_agent_id: str | None = None
     branch_name: str | None = None
     resume_after: float | None = None  # unix timestamp
-    requires_approval: bool = False
+    # Per-task integration-policy override: "direct" | "pull_request" | None
+    # (None = inherit — project policy, then config ``integration.default_mode``).
+    # Resolved via ``resolve_integration_mode``; consumed by the completion
+    # pipeline (_phase_verify/_phase_integrate) and the execution-rules prompt.
+    integration_mode: str | None = None
     pr_url: str | None = None
     plan_source: str | None = None  # path to archived plan file that generated this task
     is_plan_subtask: bool = False  # True if auto-generated from a plan
@@ -400,7 +465,6 @@ class Task:
     attachments: list[str] = field(
         default_factory=list
     )  # absolute paths to attached files (images, etc.)
-    auto_approve_plan: bool = False  # if True, auto-approve any plan this task generates
     skip_verification: bool = False  # if True, skip git verification on completion
     workflow_id: str | None = None  # FK to workflows table (coordination playbooks)
     affinity_agent_id: str | None = None  # preferred agent ID for context continuity

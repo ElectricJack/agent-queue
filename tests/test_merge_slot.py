@@ -416,7 +416,12 @@ async def _seed_wt_project(o, base_repo, *, mode=KIND_MODE_WORKTREE, cap=2):
 
 
 async def _prep_task_in_slot(o, base_repo, task_id="tsk-1", agent_id="a-1"):
-    task = Task(id=task_id, project_id="p1", title=task_id, description="")
+    # These scenarios exercise direct integration (base merge into main);
+    # pull_request-mode integrate coverage lives in test_integration_mode.py.
+    task = Task(
+        id=task_id, project_id="p1", title=task_id, description="",
+        integration_mode="direct",
+    )
     await o.db.create_task(task)
     await o.db.create_agent(Agent(id=agent_id, name=agent_id,
                                   profile_id="test-profile"))
@@ -658,7 +663,8 @@ class TestPhaseVerifySkipsAutoMergeUnderWorktreeMode:
             # Set up a task with a branch that has committed work
             task = Task(id="tsk-ec", project_id="p1", title="ec",
                         description="", branch_name="aq/ec",
-                        status=TaskStatus.IN_PROGRESS)
+                        status=TaskStatus.IN_PROGRESS,
+                        integration_mode="direct")
             await o.db.create_task(task)
             await o.db.create_agent(Agent(id="a-ec", name="a-ec",
                                           profile_id="test-profile"))

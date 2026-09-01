@@ -22,7 +22,6 @@ from src.notifications.events import (
     BudgetWarningEvent,
     ChainStuckEvent,
     MergeConflictEvent,
-    PlanAwaitingApprovalEvent,
     PlaybookRunCompletedEvent,
     PlaybookRunFailedEvent,
     PlaybookRunPausedEvent,
@@ -68,14 +67,13 @@ def _task_proxy(td: Any) -> SimpleNamespace:
         assigned_agent_id=getattr(td, "assigned_agent", None),
         retry_count=getattr(td, "retry_count", 0),
         max_retries=getattr(td, "max_retries", 3),
-        requires_approval=getattr(td, "requires_approval", False),
+        integration_mode=getattr(td, "integration_mode", None),
         is_plan_subtask=getattr(td, "is_plan_subtask", False),
         task_type=SimpleNamespace(value=td.task_type) if getattr(td, "task_type", None) else None,
         parent_task_id=getattr(td, "parent_task_id", None),
         branch_name=None,  # Not in TaskDetail; set by caller if needed
         pr_url=getattr(td, "pr_url", None),
         profile_id=getattr(td, "profile_id", None),
-        auto_approve_plan=getattr(td, "auto_approve_plan", False),
         skip_verification=getattr(td, "skip_verification", False),
     )
 
@@ -154,7 +152,6 @@ class DiscordNotificationHandler:
             ("notify.task_blocked", self._on_task_blocked),
             ("notify.task_stopped", self._on_task_stopped),
             ("notify.agent_question", self._on_agent_question),
-            ("notify.plan_awaiting_approval", self._on_plan_awaiting_approval),
             ("notify.pr_created", self._on_pr_created),
             ("notify.merge_conflict", self._on_merge_conflict),
             ("notify.push_failed", self._on_push_failed),
@@ -427,64 +424,16 @@ class DiscordNotificationHandler:
                 view=view,
             )
 
-    async def _on_plan_awaiting_approval(self, data: dict) -> None:
-        event = PlanAwaitingApprovalEvent(**{k: v for k, v in data.items() if k != "_event_type"})
-
-        from src.discord.notifications import (
-            PlanApprovalView,
-            format_plan_approval_embed,
-        )
-
-        # Resolve thread URL at delivery time — the orchestrator no longer
-        # queries transport-specific URLs; this is the handler's responsibility.
-        thread_url = event.thread_url or ""
-        if not thread_url:
-            try:
-                thread_url = await self.bot.get_thread_last_message_url(event.task.id) or ""
-            except Exception:
-                logger.debug(
-                    "Could not resolve thread URL for task %s", event.task.id, exc_info=True
-                )
-
-        task_p = _task_proxy(event.task)
-        handler_ref = self._get_handler()
-        plan_view = PlanApprovalView(event.task.id, handler=handler_ref)
-
-        embed = format_plan_approval_embed(
-            task_p,
-            raw_content=event.raw_content,
-            plan_url=event.plan_url,
-            parsed_steps=event.subtasks if event.subtasks else None,
-            thread_url=thread_url,
-        )
-        await self.bot._send_message(
-            f"📋 **Plan ready for review:** `{event.task.id}` — {event.task.title}",
-            project_id=event.project_id,
-            embed=embed,
-            view=plan_view,
-        )
-
-        # Also post brief to thread
-        thread_cbs = self._task_threads.get(event.task.id)
-        if thread_cbs:
-            _, notify_main = thread_cbs
-            if notify_main:
-                await notify_main(
-                    f"📋 Plan awaiting approval: {event.task.title} (`{event.task.id}`)"
-                )
 
     async def _on_pr_created(self, data: dict) -> None:
         event = PRCreatedEvent(**{k: v for k, v in data.items() if k != "_event_type"})
 
         from src.discord.notifications import (
-            TaskApprovalView,
             format_pr_created,
             format_pr_created_embed,
         )
 
         task_p = _task_proxy(event.task)
-        handler_ref = self._get_handler()
-        view = TaskApprovalView(event.task.id, handler=handler_ref)
 
         thread_cbs = self._task_threads.get(event.task.id)
         if thread_cbs:
@@ -502,7 +451,6 @@ class DiscordNotificationHandler:
                 format_pr_created(task_p, event.pr_url),
                 project_id=event.project_id,
                 embed=format_pr_created_embed(task_p, event.pr_url),
-                view=view,
             )
 
     async def _on_merge_conflict(self, data: dict) -> None:

@@ -115,7 +115,7 @@ class AgentOutput:
 
 | Value | Meaning | Orchestrator action |
 |-------|---------|---------------------|
-| `COMPLETED` | Agent finished successfully | Transition task to COMPLETED (or AWAITING_APPROVAL / AWAITING_PLAN_APPROVAL / BLOCKED depending on outcome) |
+| `COMPLETED` | Agent finished successfully | Run the completion pipeline and transition task to COMPLETED (or BLOCKED on failure). In `pull_request` integration mode the task completes unmerged with `pr_url` recorded; in `direct` mode the pipeline merges the task branch. |
 | `FAILED` | Agent crashed or could not complete | Retry or transition to FAILED |
 | `PAUSED_TOKENS` | Token budget / quota exhausted | Pause task, auto-resume later |
 | `PAUSED_RATE_LIMIT` | Rate-limited by the API | Pause task, auto-resume later |

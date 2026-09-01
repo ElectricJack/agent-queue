@@ -60,8 +60,10 @@ class ListProjectProfilesResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.list_project_profiles_response_tool_catalog import ListProjectProfilesResponseToolCatalog
-        from ..models.project_profile_row import ProjectProfileRow
+        from ..models.list_project_profiles_response_tool_catalog import (
+            ListProjectProfilesResponseToolCatalog,  # noqa: PLC0415
+        )
+        from ..models.project_profile_row import ProjectProfileRow  # noqa: PLC0415
 
         d = dict(src_dict)
         project_id = d.pop("project_id")

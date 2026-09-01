@@ -386,9 +386,9 @@ async def test_unavailable_initial_session_does_not_attach(setup, unavailable):
     assert not ws.accepted and setup.client.sizes == []
 
 
-async def test_plan_approval_live_task_terminal_remains_interactive(setup):
+async def test_waiting_input_live_task_terminal_remains_interactive(setup):
     from src.models import TaskStatus
-    task_row = SimpleNamespace(id="t", project_id="p", assigned_agent_id="a", status=TaskStatus.AWAITING_PLAN_APPROVAL, claim_epoch=1)
+    task_row = SimpleNamespace(id="t", project_id="p", assigned_agent_id="a", status=TaskStatus.WAITING_INPUT, claim_epoch=1)
     setup.db.row = replace(setup.db.row, task_id="t", project_id="p", lifecycle="task", last_claim_epoch=1)
     setup.db.agent.current_task_id = "t"
     async def get_task(tid):

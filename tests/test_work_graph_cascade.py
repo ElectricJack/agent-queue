@@ -68,7 +68,7 @@ class TestShadowParity:
 
     async def test_deciders_agree_on_a_parent_child_plan_graph(self, orch):
         """The `parent-child` edge reproduces the old special case exactly."""
-        await mktask(orch, "plan", status=TaskStatus.AWAITING_PLAN_APPROVAL)
+        await mktask(orch, "plan", status=TaskStatus.DEFINED)
         for child in ("s1", "s2"):
             await mktask(orch, child, parent_task_id="plan", is_plan_subtask=True)
             await orch.db.add_dependency(child, "plan", DepType.PARENT_CHILD.value)
@@ -85,11 +85,12 @@ class TestShadowParity:
                 set(await orch._projected_promotion_decisions(defined, blocked)),
             )
 
-        # Unapproved plan: both deciders withhold every child.
+        # Unreleased (DEFINED) container: both deciders withhold every child
+        # (the container itself is promotable — it has no dependencies).
         legacy, projected = await decisions()
-        assert legacy == projected == set()
+        assert legacy == projected == {"plan"}
 
-        # Approved (parent IN_PROGRESS): both release the head of the chain.
+        # Released (parent IN_PROGRESS): both release the head of the chain.
         await orch.db.transition_task("plan", TaskStatus.IN_PROGRESS)
         legacy, projected = await decisions()
         assert legacy == projected == {"s1"}
@@ -416,54 +417,6 @@ class TestGateSweepBehavior:
         await orch._sweep_gates()
         assert (await orch.db.get_gate(gid))["status"] == "resolved"
         assert (await orch.db.get_task("t")).is_blocked is False
-
-    async def test_check_pr_status_transitions_to_blocked_when_pr_closed(
-        self, orch, monkeypatch
-    ):
-        """Regression: the no-workspace fallback used to swallow
-        ``acheck_pr_merged``'s ``None`` (closed-without-merge) into
-        ``False``, so closed-unmerged PRs never transitioned to BLOCKED.
-        """
-        await mktask(orch, "t", status=TaskStatus.AWAITING_APPROVAL)
-        await orch.db.update_task("t", pr_url="https://gh/pr/9")
-
-        # Force the no-per-task-workspace branch (per-task workspace
-        # missing so we fall through to ``_poll_pr_merged``).
-        async def _no_ws_for_task(_tid):
-            return None
-
-        async def _acheck(_path, _url):
-            return None  # closed-unmerged
-
-        monkeypatch.setattr(orch.db, "get_workspace_for_task", _no_ws_for_task)
-        # Poll needs a workspace on the project (or any) to run gh;
-        # stub ``list_workspaces`` so it looks like one exists.
-        class _WS:
-            workspace_path = "/tmp/x"
-
-        async def _list_workspaces(project_id=None):
-            return [_WS()]
-
-        monkeypatch.setattr(orch.db, "list_workspaces", _list_workspaces)
-        monkeypatch.setattr(orch.git, "acheck_pr_merged", _acheck, raising=False)
-
-        # ``_check_pr_status`` calls ``_notify_stuck_chain`` / other helpers
-        # on the BLOCKED path — stub the notifiers so we exercise only the
-        # transition logic under test.
-        async def _noop(*a, **k):
-            return None
-
-        monkeypatch.setattr(orch, "_emit_text_notify", _noop)
-        monkeypatch.setattr(orch, "_emit_task_failure", _noop)
-        monkeypatch.setattr(orch, "_notify_stuck_chain", _noop)
-        monkeypatch.setattr(orch, "_resolve_profile", _noop)
-
-        # Bypass the 60s throttle.
-        orch._last_approval_check = 0
-        await orch._check_awaiting_approval()
-
-        # None from acheck_pr_merged → BLOCKED, not stuck at AWAITING_APPROVAL.
-        assert (await orch.db.get_task("t")).status == TaskStatus.BLOCKED
 
     async def test_pr_merged_gate_stays_open_while_pr_open(self, orch, monkeypatch):
         await mktask(orch, "t")

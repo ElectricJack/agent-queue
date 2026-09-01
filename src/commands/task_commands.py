@@ -10,6 +10,7 @@ from dataclasses import asdict
 
 from src.models import (
     BLOCKING_DEP_TYPES,
+    INTEGRATION_MODES,
     DepType,
     Task,
     TaskStatus,
@@ -123,8 +124,7 @@ class TaskCommandsMixin:
     # Tasks are the unit of work assigned to agents.  Beyond basic CRUD this
     # group includes stop (cancel a running task), restart (re-queue a
     # failed/completed task), skip (mark as completed without running),
-    # approve (accept an AWAITING_APPROVAL task's PR), and chain-health
-    # diagnostics for dependency graphs.
+    # and chain-health diagnostics for dependency graphs.
     # -----------------------------------------------------------------------
 
     # Statuses considered "finished" for the include_completed / completed_only
@@ -451,7 +451,7 @@ class TaskCommandsMixin:
                 "is_plan_subtask": t.is_plan_subtask,
                 "task_type": t.task_type.value if t.task_type else None,
                 "pr_url": t.pr_url,
-                "requires_approval": t.requires_approval,
+                "integration_mode": t.integration_mode,
                 "created_at": t.created_at,
                 "updated_at": t.updated_at,
             }
@@ -783,7 +783,7 @@ class TaskCommandsMixin:
             "is_plan_subtask": t.is_plan_subtask,
             "task_type": t.task_type.value if t.task_type else None,
             "pr_url": t.pr_url,
-            "requires_approval": t.requires_approval,
+            "integration_mode": t.integration_mode,
             "created_at": t.created_at,
             "updated_at": t.updated_at,
         }
@@ -1136,7 +1136,13 @@ class TaskCommandsMixin:
         # here keeps the downstream code readable.
         task_id: str = ""
         depth_cap_fallback = False
-        requires_approval = args.get("requires_approval", False)
+        integration_mode = args.get("integration_mode")
+        if integration_mode is not None and integration_mode not in INTEGRATION_MODES:
+            return {
+                "error": f"Invalid integration_mode '{integration_mode}'. "
+                f"Allowed: {', '.join(sorted(INTEGRATION_MODES))} (omit to inherit "
+                "the project/system policy)"
+            }
         # Resolve optional task_type from string to enum.
         raw_task_type = args.get("task_type")
         task_type: TaskType | None = None
@@ -1386,7 +1392,6 @@ class TaskCommandsMixin:
                 if (self._plan_subtask_creation_mode or has_blocking_edge or filing_session is not None)
                 else TaskStatus.READY
             )
-        auto_approve_plan = args.get("auto_approve_plan", False)
         skip_verification = args.get("skip_verification", False)
         workflow_id = args.get("workflow_id")
         task = Task(
@@ -1396,12 +1401,11 @@ class TaskCommandsMixin:
             description=args.get("description", args["title"]),
             priority=args.get("priority", 100),
             status=initial_status,
-            requires_approval=requires_approval,
+            integration_mode=integration_mode,
             task_type=task_type,
             profile_id=profile_id,
             preferred_workspace_id=preferred_workspace_id,
             attachments=attachments,
-            auto_approve_plan=auto_approve_plan,
             skip_verification=skip_verification,
             workflow_id=workflow_id,
             affinity_agent_id=affinity_agent_id,
@@ -1620,8 +1624,8 @@ class TaskCommandsMixin:
             "title": task.title,
             "project_id": task.project_id,
         }
-        if requires_approval:
-            result["requires_approval"] = True
+        if integration_mode:
+            result["integration_mode"] = integration_mode
         if task_type:
             result["task_type"] = task_type.value
         if profile_id:
@@ -1632,8 +1636,6 @@ class TaskCommandsMixin:
             result["preferred_workspace_id"] = preferred_workspace_id
         if attachments:
             result["attachments"] = attachments
-        if auto_approve_plan:
-            result["auto_approve_plan"] = True
         if skip_verification:
             result["skip_verification"] = True
         if workflow_id:
@@ -1865,7 +1867,7 @@ class TaskCommandsMixin:
             "assigned_agent": task.assigned_agent_id,
             "retry_count": task.retry_count,
             "max_retries": task.max_retries,
-            "requires_approval": task.requires_approval,
+            "integration_mode": task.integration_mode,
             # Persisted graph blockedness (work-graph design §4).  Capacity
             # reasons (no agent, workspace busy, budget) are NOT in here —
             # those belong to `task explain`.
@@ -1875,7 +1877,6 @@ class TaskCommandsMixin:
             "parent_task_id": task.parent_task_id,
             "profile_id": task.profile_id,
             "intelligence_class": task.intelligence_class,
-            "auto_approve_plan": task.auto_approve_plan,
             "skip_verification": task.skip_verification,
             "workflow_id": task.workflow_id,
             "affinity_agent_id": task.affinity_agent_id,
@@ -1886,6 +1887,25 @@ class TaskCommandsMixin:
         }
         if task.pr_url:
             info["pr_url"] = task.pr_url
+
+        # Effective integration policy + its source, so surfaces can show
+        # where the mode comes from instead of another ambiguous flag.
+        from src.models import resolve_integration_mode_with_source
+
+        parent_mode = None
+        if task.is_plan_subtask and task.parent_task_id:
+            parent = await self.db.get_task(task.parent_task_id)
+            parent_mode = parent.integration_mode if parent else None
+        project = await self.db.get_project(task.project_id)
+        effective_mode, mode_source = resolve_integration_mode_with_source(
+            task.integration_mode,
+            parent_task_mode=parent_mode,
+            project_mode=project.integration_mode if project else None,
+            default_mode=self.orchestrator.config.integration.default_mode,
+        )
+        info["effective_integration_mode"] = effective_mode
+        info["integration_mode_source"] = mode_source
+
         info["needs_attention"] = await self.db.get_task_meta(task.id, "needs_attention")
         completion = await self.db.get_task_completion(task.id)
         info["completion"] = asdict(completion) if completion else None
@@ -2274,8 +2294,16 @@ class TaskCommandsMixin:
             )
             if class_error:
                 return {"error": class_error}
-        if "auto_approve_plan" in args:
-            updates["auto_approve_plan"] = bool(args["auto_approve_plan"])
+        if "integration_mode" in args:
+            mode = args["integration_mode"]
+            if mode is not None and mode not in INTEGRATION_MODES:
+                return {
+                    "error": f"Invalid integration_mode '{mode}'. "
+                    f"Allowed: {', '.join(sorted(INTEGRATION_MODES))} "
+                    "(null clears the override — the task inherits the "
+                    "project/system policy)"
+                }
+            updates["integration_mode"] = mode  # None clears the override
         if "skip_verification" in args:
             updates["skip_verification"] = bool(args["skip_verification"])
         if "workflow_id" in args:
@@ -2335,7 +2363,7 @@ class TaskCommandsMixin:
                 "error": (
                     "No fields to update. Provide project_id, title, description, priority, "
                     "task_type, status, max_retries, verification_type, profile_id, "
-                    "auto_approve_plan, skip_verification, intelligence_class, affinity_agent_id, "
+                    "integration_mode, skip_verification, intelligence_class, affinity_agent_id, "
                     "affinity_reason, or workspace_mode."
                 )
             }
@@ -2485,8 +2513,9 @@ class TaskCommandsMixin:
         separator = "\n\n---\n**Reopen Feedback:**\n"
         updated_description = task.description + separator + feedback
 
-        # Preserve requires_approval so the agent re-creates a PR on
-        # completion (the field must survive reopen cycles).
+        # ``integration_mode`` is a persisted column the transition does not
+        # touch, so a reopened pull_request-mode task re-creates its PR on
+        # the next completion.
         await self.db.transition_task(
             task_id,
             TaskStatus.READY,
@@ -2495,7 +2524,6 @@ class TaskCommandsMixin:
             retry_count=0,
             assigned_agent_id=None,
             pr_url=None,
-            requires_approval=task.requires_approval,
         )
 
         # Store feedback as a structured task_context entry so agents and
@@ -2569,7 +2597,7 @@ class TaskCommandsMixin:
             "previous_status": old_status,
             "status": "READY",
             "feedback_added": True,
-            "requires_approval": task.requires_approval,
+            "integration_mode": task.integration_mode,
             "cancelled_reviews": cancelled_reviews,
         }
 
@@ -2869,434 +2897,6 @@ class TaskCommandsMixin:
             "task_id": task_id,
             "title": task.title,
             "status": "READY",
-        }
-
-    async def _cmd_approve_task(self, args: dict) -> dict:
-        task = await self.db.get_task(args["task_id"])
-        if not task:
-            return {"error": f"Task '{args['task_id']}' not found"}
-        if task.status != TaskStatus.AWAITING_APPROVAL:
-            return {"error": f"Task is not awaiting approval (status: {task.status.value})"}
-        await self.db.transition_task(
-            args["task_id"],
-            TaskStatus.COMPLETED,
-            context="approve_task",
-        )
-        await self.db.log_event(
-            "task_completed",
-            project_id=task.project_id,
-            task_id=task.id,
-        )
-        return {"approved": args["task_id"], "title": task.title}
-
-    async def _cmd_approve_plan(self, args: dict) -> dict:
-        """Approve a plan and activate its draft subtasks.
-
-        The task must be in AWAITING_PLAN_APPROVAL status.
-
-        ``_cmd_process_plan`` must have already created draft subtasks
-        (stored in ``plan_draft_subtasks`` context); approval transitions
-        the parent to IN_PROGRESS — signaling that the plan is approved and
-        subtasks are running.  The parent will auto-complete when all
-        subtasks finish.
-        """
-        import json as _json
-        import logging
-
-        logger = logging.getLogger(__name__)
-
-        task = await self.db.get_task(args["task_id"])
-        if not task:
-            return {"error": f"Task '{args['task_id']}' not found"}
-        if task.status != TaskStatus.AWAITING_PLAN_APPROVAL:
-            return {"error": f"Task is not awaiting plan approval (status: {task.status.value})"}
-
-        # Retrieve stored plan content
-        contexts = await self.db.get_task_contexts(task.id)
-        raw_ctx = next((c for c in contexts if c["type"] == "plan_raw"), None)
-        if not raw_ctx:
-            return {"error": "No stored plan content found for this task"}
-
-        config = self.orchestrator.config.auto_task
-
-        # ── Check for pre-created draft subtasks (parse-first workflow) ──
-        draft_ctx = next((c for c in contexts if c["type"] == "plan_draft_subtasks"), None)
-
-        created_info: list[dict] = []
-
-        if draft_ctx:
-            # Draft subtasks were already created by _cmd_process_plan.
-            # They are blocked by a dependency on this parent task.
-            # Transitioning the parent to IN_PROGRESS will unblock the chain
-            # (plan subtask dependency checking treats IN_PROGRESS parents as met).
-            created_info = _json.loads(draft_ctx["content"])
-            logger.info(
-                "approve_plan: found %d pre-created draft subtasks for %s",
-                len(created_info),
-                task.id,
-            )
-
-            # Defense-in-depth: draft_ctx should always have subtasks, but
-            # guard against empty list (e.g. data corruption, partial save).
-            if not created_info:
-                logger.warning(
-                    "approve_plan: draft subtasks context exists but is empty "
-                    "for task %s — refusing to approve",
-                    task.id,
-                )
-                return {
-                    "error": (
-                        "Draft subtasks context is empty — no subtasks to activate. "
-                        "Use /reject-plan or /delete-plan to clear this task."
-                    )
-                }
-
-            # Handle downstream dependencies: any task that depends on the
-            # parent task should also depend on the final subtask so
-            # downstream work waits for the full chain to finish.
-            if config.chain_dependencies and created_info:
-                final_subtask_id = created_info[-1]["id"]
-                dependents = await self.db.get_dependents(task.id)
-                # Exclude draft subtasks themselves from downstream dep wiring
-                draft_ids = {t["id"] for t in created_info}
-                for dep_task_id in dependents:
-                    if dep_task_id in draft_ids:
-                        continue
-                    try:
-                        await self.db.add_dependency(dep_task_id, depends_on=final_subtask_id)
-                    except Exception as e:
-                        logger.warning(
-                            "Failed to add downstream dep %s→%s: %s",
-                            dep_task_id,
-                            final_subtask_id,
-                            e,
-                        )
-        else:
-            logger.error(
-                "approve_plan: no draft subtasks found for task %s — "
-                "this row cannot be approved; use reject-plan/delete-plan instead",
-                task.id,
-            )
-            return {
-                "error": (
-                    "No draft subtasks found for this plan. "
-                    "Use /reject-plan or /delete-plan to clear this task."
-                )
-            }
-
-        # Note: no separate channel notification here — the PlanApprovalView
-        # already updates the original embed in-place to show approval status
-        # and subtask count, avoiding duplicate messages.
-
-        # Transition to IN_PROGRESS — the plan is approved and subtasks are
-        # active.  The parent will auto-complete when all subtasks finish
-        # via event-driven container settlement (spec §7, hierarchy_queries.py).
-        # Plan subtask dependency checking treats IN_PROGRESS plan parents
-        # as satisfying the dependency.
-        await self.db.transition_task(
-            args["task_id"],
-            TaskStatus.IN_PROGRESS,
-            context="plan_approved",
-        )
-
-        # Re-check DEFINED tasks so subtasks get promoted to READY
-        await self.orchestrator._check_defined_tasks()
-
-        await self.db.log_event(
-            "plan_approved",
-            project_id=task.project_id,
-            task_id=task.id,
-            payload=f"Activated {len(created_info)} subtask(s)",
-        )
-
-        # Schedule heavy cleanup work (file deletion + git commits) in the
-        # background so the approve command returns immediately and the
-        # Discord UI feels responsive.
-        async def _background_cleanup():
-            try:
-                await self._cleanup_plan_files_after_approval(task)
-            except Exception as e:
-                logger.warning(
-                    "Background plan cleanup failed for task %s: %s",
-                    task.id,
-                    e,
-                )
-
-        asyncio.create_task(_background_cleanup())
-
-        return {
-            "approved": args["task_id"],
-            "title": task.title,
-            "subtask_count": len(created_info),
-            "subtasks": created_info,
-        }
-
-    async def _cleanup_plan_files_after_approval(self, task) -> None:
-        """Delete ALL plan files from all workspaces after a plan is approved/deleted.
-
-        Removes:
-        1. All plan files that were enumerated during ``_cmd_process_plan``
-           (stored in ``plan_all_enumerated_paths`` task context).
-        2. The archived plan file (in ``.claude/plans/``).
-        3. Any original plan files matching configured patterns (safety net).
-
-        Commits the deletions so plan files don't persist on the branch
-        and get picked up by other tasks running in the same workspace.
-        """
-        logger = logging.getLogger(__name__)
-        deleted_any = False
-        workspaces_with_deletions: set[str] = set()
-
-        contexts = await self.db.get_task_contexts(task.id)
-
-        # 1. Delete ALL enumerated plan files (from process_plan discovery)
-        enumerated_ctx = next(
-            (c for c in contexts if c["type"] == "plan_all_enumerated_paths"), None
-        )
-        if enumerated_ctx:
-            import json as _json_cleanup
-
-            try:
-                enumerated_paths = _json_cleanup.loads(enumerated_ctx["content"])
-            except (ValueError, TypeError):
-                enumerated_paths = []
-            for plan_path in enumerated_paths:
-                try:
-                    if os.path.isfile(plan_path):
-                        os.remove(plan_path)
-                        deleted_any = True
-                        # Track the workspace directory for committing
-                        workspaces_with_deletions.add(
-                            os.path.dirname(
-                                os.path.dirname(plan_path) if ".claude" in plan_path else plan_path
-                            )
-                        )
-                        logger.info("Plan cleanup: deleted enumerated plan file %s", plan_path)
-                except OSError as e:
-                    logger.warning(
-                        "Plan cleanup: failed to delete enumerated plan %s: %s", plan_path, e
-                    )
-
-        # 2. Delete the archived plan file if it exists
-        archived_ctx = next((c for c in contexts if c["type"] == "plan_archived_path"), None)
-        if archived_ctx:
-            archived_path = archived_ctx["content"]
-            try:
-                if os.path.isfile(archived_path):
-                    os.remove(archived_path)
-                    deleted_any = True
-                    logger.info("Plan cleanup: deleted archived plan file %s", archived_path)
-            except OSError as e:
-                logger.warning(
-                    "Plan cleanup: failed to delete archived plan %s: %s", archived_path, e
-                )
-
-        # 3. Safety net: also check configured plan patterns in all project workspaces
-        ws = await self.db.get_workspace_for_task(task.id)
-        if ws and ws.workspace_path:
-            workspace = ws.workspace_path
-        else:
-            workspace = await self.db.get_project_workspace_path(task.project_id)
-
-        if workspace:
-            import glob as _glob
-
-            plan_patterns = self.orchestrator.config.auto_task.plan_file_patterns
-            for pattern in plan_patterns:
-                full_pattern = os.path.join(workspace, pattern)
-                matches = _glob.glob(full_pattern)
-                if not matches:
-                    if os.path.isfile(full_pattern):
-                        matches = [full_pattern]
-                for plan_path in matches:
-                    try:
-                        if os.path.isfile(plan_path):
-                            os.remove(plan_path)
-                            deleted_any = True
-                            workspaces_with_deletions.add(workspace)
-                            logger.info("Plan cleanup: deleted plan file %s", plan_path)
-                    except OSError as e:
-                        logger.warning("Plan cleanup: failed to delete plan %s: %s", plan_path, e)
-
-            # Also scan all project workspaces for any remaining plan files
-            all_ws = await self.db.list_workspaces(project_id=task.project_id)
-            for ws_entry in all_ws:
-                if not ws_entry.workspace_path or not os.path.isdir(ws_entry.workspace_path):
-                    continue
-                from src.plan_parser import find_all_plan_files
-
-                remaining = find_all_plan_files(ws_entry.workspace_path)
-                for pf in remaining:
-                    try:
-                        if os.path.isfile(pf["path"]):
-                            os.remove(pf["path"])
-                            deleted_any = True
-                            workspaces_with_deletions.add(ws_entry.workspace_path)
-                            logger.info("Plan cleanup: deleted remaining plan file %s", pf["path"])
-                    except OSError as e:
-                        logger.warning(
-                            "Plan cleanup: failed to delete remaining plan %s: %s", pf["path"], e
-                        )
-
-        # 4. Commit the deletions in each workspace that had files deleted
-        if deleted_any and task.branch_name:
-            # Determine which workspaces to commit in
-            commit_workspaces: set[str] = set()
-            if workspace:
-                commit_workspaces.add(workspace)
-            commit_workspaces.update(workspaces_with_deletions)
-
-            for ws_path in commit_workspaces:
-                if not os.path.isdir(ws_path):
-                    continue
-                try:
-                    if await self.orchestrator.git.avalidate_checkout(ws_path):
-                        await self.orchestrator.git.acommit_all(
-                            ws_path,
-                            f"chore: delete plan files after approval\n\nTask-Id: {task.id}",
-                            event_bus=self.orchestrator.bus,
-                            project_id=task.project_id,
-                            agent_id=task.assigned_agent_id,
-                        )
-                        logger.info(
-                            "Plan cleanup: committed plan file deletion in %s for task %s",
-                            ws_path,
-                            task.id,
-                        )
-                except Exception as e:
-                    logger.warning(
-                        "Plan cleanup: failed to commit deletion in %s for task %s: %s",
-                        ws_path,
-                        task.id,
-                        e,
-                    )
-
-    async def _delete_draft_subtasks(self, parent_task_id: str) -> int:
-        """Delete draft subtasks that were pre-created by ``_cmd_process_plan``.
-
-        Reads the ``plan_draft_subtasks`` task-context entry, deletes each
-        referenced task from the database, and returns the count of deleted
-        tasks.  Safe to call when no drafts exist (returns 0).
-        """
-        import json as _json
-
-        contexts = await self.db.get_task_contexts(parent_task_id)
-        draft_ctx = next((c for c in contexts if c["type"] == "plan_draft_subtasks"), None)
-        if not draft_ctx:
-            return 0
-
-        draft_tasks: list[dict] = _json.loads(draft_ctx["content"])
-        deleted = 0
-        for entry in draft_tasks:
-            tid = entry.get("id")
-            if not tid:
-                continue
-            try:
-                await self.db.delete_task(tid)
-                deleted += 1
-            except Exception as e:
-                logger.warning("delete_draft_subtasks: failed to delete %s: %s", tid, e)
-        logger.info(
-            "delete_draft_subtasks: deleted %d/%d draft subtasks for %s",
-            deleted,
-            len(draft_tasks),
-            parent_task_id,
-        )
-        return deleted
-
-    async def _cmd_reject_plan(self, args: dict) -> dict:
-        """Reject a plan and reopen the task with feedback for revision.
-
-        The task must be in AWAITING_PLAN_APPROVAL status.  The feedback is
-        appended to the task description so the agent sees it on re-execution
-        and can revise the plan accordingly.  Any draft subtasks created
-        during ``_cmd_process_plan`` are deleted.
-        """
-        task_id = args["task_id"]
-        feedback = args.get("feedback", "")
-        if not feedback:
-            return {"error": "Feedback is required when rejecting a plan"}
-
-        task = await self.db.get_task(task_id)
-        if not task:
-            return {"error": f"Task '{task_id}' not found"}
-        if task.status != TaskStatus.AWAITING_PLAN_APPROVAL:
-            return {"error": f"Task is not awaiting plan approval (status: {task.status.value})"}
-
-        # Delete any draft subtasks created during process_plan
-        deleted_count = await self._delete_draft_subtasks(task_id)
-
-        # Append feedback to description (similar to reopen_with_feedback)
-        separator = "\n\n---\n\n**Plan Revision Requested:**\n"
-        updated_description = task.description + separator + feedback
-
-        await self.db.transition_task(
-            task_id,
-            TaskStatus.READY,
-            context="plan_rejected",
-            description=updated_description,
-            retry_count=0,
-            assigned_agent_id=None,
-            pr_url=None,
-        )
-
-        # Store feedback as a structured task_context entry
-        await self.db.add_task_context(
-            task_id,
-            type="plan_revision_feedback",
-            label="Plan Revision Feedback",
-            content=feedback,
-        )
-
-        await self.db.log_event(
-            "plan_rejected",
-            project_id=task.project_id,
-            task_id=task_id,
-            payload=feedback[:500],
-        )
-        return {
-            "rejected": task_id,
-            "title": task.title,
-            "status": "READY",
-            "feedback_added": True,
-            "draft_subtasks_deleted": deleted_count,
-        }
-
-    async def _cmd_delete_plan(self, args: dict) -> dict:
-        """Delete a plan and complete the task without creating subtasks.
-
-        The task must be in AWAITING_PLAN_APPROVAL status.  The task is
-        transitioned to COMPLETED and no subtasks are created.  Any draft
-        subtasks created during ``_cmd_process_plan`` are deleted.
-        """
-        task = await self.db.get_task(args["task_id"])
-        if not task:
-            return {"error": f"Task '{args['task_id']}' not found"}
-        if task.status != TaskStatus.AWAITING_PLAN_APPROVAL:
-            return {"error": f"Task is not awaiting plan approval (status: {task.status.value})"}
-
-        # Delete any draft subtasks created during process_plan
-        deleted_count = await self._delete_draft_subtasks(task.id)
-
-        # Clean up plan files from the workspace
-        await self._cleanup_plan_files_after_approval(task)
-
-        await self.db.transition_task(
-            args["task_id"],
-            TaskStatus.COMPLETED,
-            context="plan_deleted",
-        )
-        await self.db.log_event(
-            "plan_deleted",
-            project_id=task.project_id,
-            task_id=task.id,
-            payload=f"Plan deleted by user — {deleted_count} draft subtask(s) removed",
-        )
-        return {
-            "deleted": args["task_id"],
-            "title": task.title,
-            "status": "COMPLETED",
-            "draft_subtasks_deleted": deleted_count,
         }
 
     async def _cmd_set_task_status(self, args: dict) -> dict:

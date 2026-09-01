@@ -17,8 +17,6 @@ const STATUS_TONE: Record<string, string> = {
   FAILED: "border-red-500 bg-red-950 text-red-100",
   BLOCKED: "border-amber-500 bg-amber-950 text-amber-100",
   WAITING_INPUT: "border-amber-500 bg-amber-950 text-amber-100",
-  AWAITING_APPROVAL: "border-amber-500 bg-amber-950 text-amber-100",
-  AWAITING_PLAN_APPROVAL: "border-amber-500 bg-amber-950 text-amber-100",
   CANCELLED: "border-gray-700 bg-gray-900 text-gray-400",
   CANCELED: "border-gray-700 bg-gray-900 text-gray-400",
 };

@@ -113,6 +113,8 @@ pipeline BEFORE merge (while workspace is still available). Delegates
 to `process_task_completion` command to discover plan files, then runs
 a reflection pass. Returns dict with `plan_found` (bool) so the
 orchestrator can transition to AWAITING_PLAN_APPROVAL if needed.
+(Both the plan-discovery flow and the AWAITING_PLAN_APPROVAL status have
+since been removed from `TaskStatus`; human approval is a `human` gate now.)
 Never raises — returns `{"plan_found": False}` on error.
 
 **break_plan_into_tasks(raw_plan, parent_task_id, project_id, ...) → list[dict]**

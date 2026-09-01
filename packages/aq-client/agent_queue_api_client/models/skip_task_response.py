@@ -57,7 +57,7 @@ class SkipTaskResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.task_ref import TaskRef
+        from ..models.task_ref import TaskRef  # noqa: PLC0415
 
         d = dict(src_dict)
         skipped = d.pop("skipped")

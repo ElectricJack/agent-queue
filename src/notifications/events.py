@@ -112,14 +112,6 @@ class AgentQuestionEvent(NotifyEvent):
     question: str
 
 
-class PlanAwaitingApprovalEvent(NotifyEvent):
-    event_type: str = "notify.plan_awaiting_approval"
-    category: str = "interaction"
-    task: TaskDetail
-    subtasks: list[dict] = []  # [{title, description}, ...]
-    plan_url: str = ""
-    raw_content: str = ""
-    thread_url: str = ""
 
 
 # ---------------------------------------------------------------------------

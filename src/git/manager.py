@@ -55,8 +55,8 @@ Resolved gaps (continued):
   - **G6 (resolved):** ``mid_chain_sync`` pushes intermediate subtask work
     to the remote and rebases the chain branch onto ``origin/<default_branch>``
     between subtask completions.  The orchestrator calls this after each
-    non-final subtask when ``auto_task.rebase_between_subtasks`` is enabled,
-    reducing drift and providing crash safety for long chains.
+    non-final subtask when mid-chain rebasing was enabled (the config knob
+    was retired with the plan-discovery flow), reducing drift for long chains.
 
 See specs/git/git.md for the full behavioral specification.
 """
@@ -515,8 +515,7 @@ class GitManager:
         When *rebase* is ``True``, the branch is rebased onto
         ``origin/<default_branch>`` after switching so subtask chains stay
         closer to main and reduce the chance of merge conflicts when the work
-        is eventually merged back.  Controlled by the
-        ``auto_task.rebase_between_subtasks`` config option.
+        is eventually merged back.
 
         If the branch doesn't exist locally or on the remote (e.g. LINK repos
         with no remote), creates it as a new local branch.
@@ -997,7 +996,7 @@ class GitManager:
         """Check if a PR has been merged via the ``gh`` CLI.
 
         Returns True (merged), False (still open), None (closed without merge).
-        The orchestrator polls this for AWAITING_APPROVAL tasks to detect when
+        The orchestrator polls this for ``pr-merged`` gates to detect when
         a human merges the PR and the task can be marked COMPLETED.
         """
         try:

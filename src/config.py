@@ -178,9 +178,13 @@ class PauseRetryConfig:
 
 @dataclass
 class AutoTaskConfig:
-    """Configuration for auto-generating tasks from implementation plans."""
+    """Leftovers of the retired plan-to-subtask pipeline that still have
+    live consumers: pre-task workspace cleanup deletes files matching
+    ``plan_file_patterns``, and git verification reopens a task at most
+    ``max_verification_retries`` times.  The plan-discovery fields
+    (``enabled``, ``chain_dependencies``, ``max_plan_depth``, …) were
+    removed with the discovery flow (llm-direct-path §6.3)."""
 
-    enabled: bool = True
     plan_file_patterns: list[str] = field(
         default_factory=lambda: [
             ".claude/plan.md",
@@ -190,26 +194,14 @@ class AutoTaskConfig:
             "docs/plan.md",
         ]
     )
-    inherit_repo: bool = True  # Subtasks inherit parent's repo_id
-    inherit_approval: bool = True  # Subtasks inherit parent's requires_approval
-    base_priority: int = 100  # Base priority for generated tasks
-    chain_dependencies: bool = True  # Tasks depend on previous step
-    rebase_between_subtasks: bool = False  # Rebase onto main between subtasks
-    mid_chain_rebase: bool = True  # Rebase onto main between subtasks to reduce drift
-    mid_chain_rebase_push: bool = False  # Push rebased branch to remote between subtasks
-    max_plan_depth: int = 1  # Max nesting of plan-generated tasks
-    max_steps_per_plan: int = 20  # Cap phases from a single plan
-    skip_if_implemented: bool = True  # Skip task generation if branch has substantial code changes
     max_verification_retries: int = 2  # Max reopen attempts for git verification failures
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
-        if self.max_plan_depth < 1:
-            errors.append(ConfigError("auto_task", "max_plan_depth", "must be >= 1"))
-        if self.max_steps_per_plan < 1:
-            errors.append(ConfigError("auto_task", "max_steps_per_plan", "must be >= 1"))
-        if self.base_priority < 0:
-            errors.append(ConfigError("auto_task", "base_priority", "must be >= 0"))
+        if self.max_verification_retries < 0:
+            errors.append(
+                ConfigError("auto_task", "max_verification_retries", "must be >= 0")
+            )
         return errors
 
 
@@ -1293,6 +1285,34 @@ class WorkGraphConfig:
 
 
 @dataclass
+class IntegrationConfig:
+    """System-wide default integration policy.
+
+    ``default_mode`` is the last link of the integration-policy chain
+    (task override → project policy → this).  Shipped as ``pull_request``
+    so a project running the default reviewer/final-reviewer pipeline never
+    auto-merges worker output before review; set ``direct`` only for
+    deployments that explicitly run without a review policy.
+    """
+
+    default_mode: str = "pull_request"
+
+    def validate(self) -> list[ConfigError]:
+        from src.models import INTEGRATION_MODES
+
+        errors: list[ConfigError] = []
+        if self.default_mode not in INTEGRATION_MODES:
+            errors.append(
+                ConfigError(
+                    "integration",
+                    "default_mode",
+                    f"must be one of {sorted(INTEGRATION_MODES)}",
+                )
+            )
+        return errors
+
+
+@dataclass
 class SwarmConfig:
     """Pull-based worker pools (swarm-work-model §10–§12, §17).
 
@@ -1375,6 +1395,7 @@ class AppConfig:
     surface: SurfaceConfig = field(default_factory=SurfaceConfig)
     state_machine: StateMachineConfig = field(default_factory=StateMachineConfig)
     work_graph: WorkGraphConfig = field(default_factory=WorkGraphConfig)
+    integration: IntegrationConfig = field(default_factory=IntegrationConfig)
     swarm: SwarmConfig = field(default_factory=SwarmConfig)
     agent_profiles: list[AgentProfileConfig] = field(default_factory=list)
     global_token_budget_daily: int | None = None
@@ -1547,6 +1568,7 @@ class AppConfig:
         errors.extend(self.surface.validate())
         errors.extend(self.state_machine.validate())
         errors.extend(self.work_graph.validate())
+        errors.extend(self.integration.validate())
         errors.extend(self.swarm.validate())
         # ``supervisor_agent.enabled`` needs the message queue and named
         # sessions to exist (supervisor-agent spec §10).
@@ -1632,6 +1654,7 @@ class AppConfig:
         # trust-and-ops §2).  Inert until their owning lane lands.
         updated.state_machine = fresh.state_machine
         updated.work_graph = fresh.work_graph
+        updated.integration = fresh.integration
         updated.swarm = fresh.swarm
         updated.pricing = fresh.pricing
         updated.surface = fresh.surface
@@ -1660,6 +1683,7 @@ HOT_RELOADABLE_SECTIONS = {
     # -- Framework-overhaul substrate sections (inert until their lane) ----
     "state_machine",
     "work_graph",
+    "integration",
     "swarm",
     "pricing",
     "surface",
@@ -2205,7 +2229,6 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
     if "auto_task" in raw:
         at = raw["auto_task"]
         config.auto_task = AutoTaskConfig(
-            enabled=at.get("enabled", True),
             plan_file_patterns=at.get(
                 "plan_file_patterns",
                 [
@@ -2216,16 +2239,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
                     "docs/plan.md",
                 ],
             ),
-            inherit_repo=at.get("inherit_repo", True),
-            inherit_approval=at.get("inherit_approval", True),
-            base_priority=at.get("base_priority", 100),
-            chain_dependencies=at.get("chain_dependencies", True),
-            rebase_between_subtasks=at.get("rebase_between_subtasks", False),
-            mid_chain_rebase=at.get("mid_chain_rebase", True),
-            mid_chain_rebase_push=at.get("mid_chain_rebase_push", False),
-            max_plan_depth=at.get("max_plan_depth", 1),
-            max_steps_per_plan=at.get("max_steps_per_plan", 20),
-            skip_if_implemented=at.get("skip_if_implemented", True),
+            max_verification_retries=at.get("max_verification_retries", 2),
         )
 
     if "memory" in raw:
@@ -2396,6 +2410,12 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             gate_sweep_interval_seconds=int(wg.get("gate_sweep_interval_seconds", 30)),
             conditional_autoclose=bool(wg.get("conditional_autoclose", True)),
             container_sweep_interval_seconds=int(wg.get("container_sweep_interval_seconds", 60)),
+        )
+
+    if "integration" in raw and isinstance(raw["integration"], dict):
+        integ = raw["integration"]
+        config.integration = IntegrationConfig(
+            default_mode=str(integ.get("default_mode", "pull_request")),
         )
 
     if "swarm" in raw and isinstance(raw["swarm"], dict):

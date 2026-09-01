@@ -21,11 +21,14 @@ class AddDependencyRequest:
             completion, 'parent-child' marks a container that withholds its children until released, 'waits-for' fans in
             over a container's children, 'conditional-blocks' runs only if the dependency terminally failed. The rest are
             provenance only and never block.
+        reason (None | str | Unset): WHY this edge exists. Always provide this when linking spawned work to the task
+            where it was discovered.
     """
 
     task_id: str
     depends_on: str
     dep_type: None | str | Unset = UNSET
+    reason: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -39,6 +42,12 @@ class AddDependencyRequest:
         else:
             dep_type = self.dep_type
 
+        reason: None | str | Unset
+        if isinstance(self.reason, Unset):
+            reason = UNSET
+        else:
+            reason = self.reason
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -49,6 +58,8 @@ class AddDependencyRequest:
         )
         if dep_type is not UNSET:
             field_dict["dep_type"] = dep_type
+        if reason is not UNSET:
+            field_dict["reason"] = reason
 
         return field_dict
 
@@ -68,10 +79,20 @@ class AddDependencyRequest:
 
         dep_type = _parse_dep_type(d.pop("dep_type", UNSET))
 
+        def _parse_reason(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        reason = _parse_reason(d.pop("reason", UNSET))
+
         add_dependency_request = cls(
             task_id=task_id,
             depends_on=depends_on,
             dep_type=dep_type,
+            reason=reason,
         )
 
         add_dependency_request.additional_properties = d

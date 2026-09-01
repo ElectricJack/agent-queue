@@ -3,8 +3,8 @@
 Runs a ~5-second loop that drives the entire task lifecycle: promoting
 DEFINED tasks whose dependencies are met, scheduling READY tasks onto idle
 agents, launching agent execution as background asyncio tasks, managing git
-workspaces (clone/link/init), parsing plan files into chained subtasks,
-handling PR/approval workflows, and monitoring for stuck tasks.
+workspaces (clone/link/init), sweeping gates, and monitoring for stuck
+tasks.
 
 Scheduling and state-machine decisions are deterministic after one narrow
 exception: the assignment-routing playbook selects a task's intelligence
@@ -13,14 +13,11 @@ concrete-agent selection remain algorithmic.
 
 Heavy operations (agent execution, git clones) run as background asyncio
 tasks so the main loop stays responsive and can continue checking heartbeats,
-promoting tasks, and handling approvals while agents work.
+promoting tasks, and sweeping gates while agents work.
 
 Key method call hierarchy (read these to understand the full lifecycle)::
 
     run_one_cycle()                       # Main loop entry (~5s interval)
-    ├── _check_awaiting_approval()        # Poll PR merge status
-    │   ├── _handle_awaiting_no_pr()      # Auto-complete or remind
-    │   └── _check_pr_status()            # Merged/closed/open detection
     ├── _resume_paused_tasks()            # Backoff timer expiry
     ├── _check_defined_tasks()            # Dependency promotion
     ├── _sweep_container_completion()     # backstop only
@@ -112,7 +109,7 @@ from src.orchestrator.workspace import WorkspaceMixin
 from src.orchestrator.execution import ExecutionMixin
 from src.orchestrator.monitoring import MonitoringMixin
 from src.orchestrator.git_ops import GitOpsMixin
-from src.orchestrator.approval import ApprovalMixin
+from src.orchestrator.pr_polling import PRPollingMixin
 from src.orchestrator.context import ContextMixin
 from src.orchestrator.events import EventsMixin
 from src.orchestrator.sync_workflow import SyncWorkflowMixin
@@ -179,7 +176,7 @@ class Orchestrator(
     ExecutionMixin,
     MonitoringMixin,
     GitOpsMixin,
-    ApprovalMixin,
+    PRPollingMixin,
     ContextMixin,
     EventsMixin,
     SyncWorkflowMixin,
@@ -206,7 +203,7 @@ class Orchestrator(
       admin commands like ``stop_task``.
 
     * ``_paused`` — when True, the scheduler is skipped entirely (no new
-      work is assigned) but monitoring, approvals, and promotions continue.
+      work is assigned) but monitoring, gate sweeps, and promotions continue.
     """
 
     def __init__(self, config: AppConfig, runtimes=None):
@@ -285,8 +282,6 @@ class Orchestrator(
         # so exhausting
         # one provider doesn't block others.
         self._provider_cooldowns: dict[str, float] = {}
-        # Throttle: approval polling runs at most once per 60s.
-        self._last_approval_check: float = 0.0
         # LLM interaction logger — records all LLM API calls (both direct
         # chat provider calls and agent sessions) to JSONL files for cost
         # analysis and prompt optimization.  See ``src/llm_logger.py``.
@@ -327,9 +322,6 @@ class Orchestrator(
         # tests can toggle it deterministically.
         self._gate_event_unsub = None
         self._config_watcher: ConfigWatcher | None = None
-        # Tracks the last time we sent a reminder for an AWAITING_APPROVAL
-        # task that has no PR URL (keyed by task_id).
-        self._no_pr_reminded_at: dict[str, float] = {}
         # Tracks the last time a "stuck DEFINED" notification was sent for
         # each task (keyed by task_id) to rate-limit alerts.
         self._stuck_notified_at: dict[str, float] = {}
@@ -1094,7 +1086,7 @@ class Orchestrator(
     def pause(self) -> None:
         """Pause scheduling — no new tasks are assigned, but monitoring continues.
 
-        When paused, ``run_one_cycle`` still runs approvals, dependency
+        When paused, ``run_one_cycle`` still runs gate sweeps, dependency
         promotion, stuck-task detection, playbooks, and archival — only the
         scheduler step (``_schedule``) is skipped.  In-flight agent work
         continues unaffected; this only prevents *new* assignments.
@@ -2450,8 +2442,8 @@ class Orchestrator(
         2. **Resume paused** — bring back rate-limited/token-exhausted tasks
            whose backoff timers have expired.
         3. **Promote DEFINED** — check dependency satisfaction and move tasks
-           to READY.  This must happen after approvals so freshly-completed
-           parent tasks unblock their children immediately.
+           to READY.  This must happen after gate sweeps so freshly-resolved
+           gates unblock their waiters immediately.
         4. **Stuck monitoring** — rate-limited alerts for DEFINED tasks that
            have been waiting too long (runs after promotion so we don't
            false-alarm on tasks that just got promoted).
@@ -2479,8 +2471,8 @@ class Orchestrator(
         10. **Auto-archive** — sweep terminal tasks older than the configured
             threshold into the archive so they no longer clutter active views.
 
-        Ordering invariant: steps 1-3 form a "promotion cascade" where
-        completing an approval can immediately unblock a DEFINED task in
+        Ordering invariant: these steps form a "promotion cascade" where
+        a resolved gate can immediately unblock a DEFINED task in
         the same cycle.  Breaking this order would add a 5s delay to
         dependency chain progression.
 
@@ -2490,13 +2482,9 @@ class Orchestrator(
         """
         try:
             # ── Phase 1: Promotion cascade ──────────────────────────────────
-            # Steps 1-3 form a "promotion cascade": completing an approval can
+            # These steps form a "promotion cascade": a resolved gate can
             # immediately unblock a DEFINED task in the same cycle.  Breaking
             # this order would add a ~5s delay to dependency chain progression.
-
-            # 1. Poll PR merge/close status for AWAITING_APPROVAL tasks.
-            #    Merged PRs → COMPLETED, which may satisfy downstream deps.
-            await self._check_awaiting_approval()
 
             # 2. Promote PAUSED tasks whose backoff timer has expired → READY.
             await self._resume_paused_tasks()
@@ -2512,8 +2500,8 @@ class Orchestrator(
             except Exception:
                 logger.error("Gate sweep error", exc_info=True)
             # 3. Promote DEFINED/BLOCKED tasks whose dependencies are met → READY.
-            #    Runs after step 1 so freshly-completed approvals can unblock
-            #    dependents within the same cycle.
+            #    Runs after the gate sweep so freshly-resolved gates can
+            #    unblock dependents within the same cycle.
             await self._check_defined_tasks()
 
             # 3a. Classify otherwise assignable work in one bounded LLM batch
@@ -2669,7 +2657,7 @@ class Orchestrator(
         Wave 2 lane 2C fills this in — see
         docs/specs/implementation/work-graph.md §6.2 (``_sweep_gates``).
         Expected body: ``expire_open_gates(now)``; resolve ``timer`` and
-        ``task`` gates; poll ``pr-merged``/``ci-run`` on the 60 s approval
+        ``task`` gates; poll ``pr-merged``/``ci-run`` on the sweep
         throttle; re-check ``event`` gates against persisted events; emit
         ``gate.resolved`` / ``gate.expired`` / ``task.unblocked``.
 
@@ -3374,15 +3362,3 @@ class Orchestrator(
         if reasons:
             return reasons[0]["detail"]
         return "ready but not picked this tick (capacity/priority ordering)"
-
-    _NO_PR_REMINDER_INTERVAL: int = 3600  # 1 hour
-    # After this many seconds without approval, escalate the notification
-    # tone from "awaiting review" to "stuck task" with stronger language.
-    _NO_PR_ESCALATION_THRESHOLD: int = 86400  # 24 hours
-    # Tasks that don't require approval and have no PR URL are auto-completed
-    # after this grace period (seconds).  The grace period avoids a race
-    # condition: _complete_workspace transitions the task to AWAITING_APPROVAL
-    # before the PR URL is set, and _create_pr_for_task sets the URL shortly
-    # after.  Without the grace period, we might auto-complete a task that
-    # was about to get a PR URL.
-    _NO_PR_AUTO_COMPLETE_GRACE: int = 120  # 2 minutes

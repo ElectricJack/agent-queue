@@ -32,11 +32,17 @@ Represents the current lifecycle position of a task. A task always holds exactly
 | `IN_PROGRESS` | The agent has acknowledged the task and is actively working on it. |
 | `WAITING_INPUT` | The agent has asked a question and is paused, waiting for a human to reply via Discord. |
 | `PAUSED` | Execution is suspended temporarily, most commonly due to rate-limit or token exhaustion. The task always has a `resume_after` timestamp and will be made READY again automatically when that time passes. |
-| `AWAITING_APPROVAL` | A pull request has been opened for this task. A human must review and merge (or close) the PR before the task can be marked complete. |
-| `COMPLETED` | The task is done and all verification or approval requirements are satisfied. Downstream dependents may now be promoted. |
+| `COMPLETED` | The task is done and all verification requirements are satisfied. Downstream dependents may now be promoted. In `pull_request` integration mode the task completes unmerged with `pr_url` recorded; the review pipeline (a `pr-merged` gate on downstream work) owns the merge. |
 | `FAILED` | The agent run ended with an error. The task may be retried (up to `max_retries`) by transitioning back to READY. |
-| `BLOCKED` | The task has exhausted its retries, was administratively stopped, timed out without recovery, or its PR was closed. No automatic recovery occurs; manual admin action is required to restart it. |
-| `AWAITING_PLAN_APPROVAL` | The agent completed and a plan file was discovered. The plan must be approved, rejected, or deleted by a human before the task can proceed. |
+| `BLOCKED` | The task has exhausted its retries, was administratively stopped, or timed out without recovery. No automatic recovery occurs; manual admin action is required to restart it. |
+
+> **Removed statuses.** `AWAITING_APPROVAL` and `AWAITING_PLAN_APPROVAL` were
+> deleted with the `integration_mode` cutover. Human approval is represented
+> as a `human` gate on a playbook run; waiting for a PR to merge is a
+> `pr-merged` gate resolved by the orchestrator's gate sweep
+> (`src/orchestrator/pr_polling.py`). Alembic revision `c4d5e6f7a8b9`
+> refuses to upgrade while any active task still holds one of the old
+> statuses (see `docs/guides/upgrade-integration-mode.md`).
 
 ---
 
@@ -56,23 +62,22 @@ Events are the inputs to the state machine. Each event, combined with the curren
 | `HUMAN_REPLIED` | A human responded to the agent's question via Discord. |
 | `INPUT_TIMEOUT` | The human did not reply within the allowed window; execution is suspended as if paused. |
 | `RESUME_TIMER` | The PAUSED task's `resume_after` timestamp has passed; it is eligible to run again. |
-| `PR_CREATED` | A pull request was opened for this task's branch. Human approval is now required. |
-| `PR_MERGED` | The pull request was merged by a human. The task may now be marked complete. |
 | `RETRY` | The task failed but is under its retry limit and is being re-queued. |
 | `MAX_RETRIES` | The task has failed and has exhausted all allowed retry attempts. |
 | `ADMIN_SKIP` | An administrator has manually declared the task complete without normal verification. |
 | `ADMIN_STOP` | An administrator has forcibly stopped an in-progress task and moved it to BLOCKED. |
 | `ADMIN_RESTART` | An administrator has manually forced a task back to READY regardless of its current state, except IN_PROGRESS. |
-| `PR_CLOSED` | The pull request was closed without merging; the task becomes BLOCKED. |
 | `TIMEOUT` | The task or agent did not produce a heartbeat within the expected window. |
 | `EXECUTION_ERROR` | An unexpected runtime error occurred during task execution; the assigned task is returned to READY for a new attempt. |
 | `RECOVERY` | The daemon restarted and detected a task that was left in ASSIGNED or IN_PROGRESS with no running agent; it resets the task to READY. |
 | `MERGE_FAILED` | The post-completion merge/rebase operation failed. |
 | `MERGE_SUCCEEDED` | The post-completion merge/rebase operation succeeded. |
-| `PLAN_FOUND` | A plan file was discovered in the task's workspace after completion. |
-| `PLAN_APPROVED` | A human approved the discovered plan; subtasks will be created. |
-| `PLAN_REJECTED` | A human rejected the discovered plan with feedback. |
-| `PLAN_DELETED` | A human deleted the discovered plan without creating subtasks. |
+
+> **Removed events.** `PR_CREATED`/`PR_MERGED`/`PR_CLOSED` and
+> `PLAN_FOUND`/`PLAN_APPROVED`/`PLAN_REJECTED`/`PLAN_DELETED` were deleted
+> together with the approval statuses. PR lifecycle is tracked via `pr_url`
+> on the task row and the `pr-merged` gate sweep; the plan-discovery flow
+> was removed entirely.
 
 ---
 
@@ -220,7 +225,7 @@ The central entity of the system. A task represents a unit of work to be execute
 | `assigned_agent_id` | `str \| None` | The agent currently assigned to this task. `None` when unassigned. |
 | `branch_name` | `str \| None` | The git branch the agent is working on. `None` before assignment. |
 | `resume_after` | `float \| None` | Unix timestamp. When the task is PAUSED, it must not be re-queued until this time has passed. `None` for non-paused tasks. |
-| `requires_approval` | `bool` | If `True`, the task cannot be marked COMPLETED through automated verification alone — it must go through AWAITING_APPROVAL and have its PR merged. Defaults to `False`. |
+| `integration_mode` | `str \| None` | Task-level integration policy override: `"direct"`, `"pull_request"`, or `None` (inherit). The effective mode is resolved down the chain: plan-subtask parent's task-level override → task override → project policy (`projects.integration_mode`) → config `integration.default_mode` (shipped default `pull_request`). Replaces the retired `requires_approval` bool (Alembic `c4d5e6f7a8b9` backfilled `1`→`pull_request`, `0`→`direct`). |
 | `pr_url` | `str \| None` | URL of the pull request created for this task. `None` until a PR exists. |
 | `plan_source` | `str \| None` | Filesystem path to the archived plan file that auto-generated this task. `None` for manually created tasks. |
 | `is_plan_subtask` | `bool` | `True` if this task was automatically generated from a parent task's plan output. Defaults to `False`. |
@@ -448,22 +453,11 @@ stateDiagram-v2
     ASSIGNED --> BLOCKED : TIMEOUT
 
     IN_PROGRESS --> COMPLETED : AGENT_COMPLETED / MERGE_SUCCEEDED
-    IN_PROGRESS --> AWAITING_APPROVAL : PR_CREATED
-    IN_PROGRESS --> AWAITING_PLAN_APPROVAL : PLAN_FOUND
     IN_PROGRESS --> BLOCKED : MERGE_FAILED / TIMEOUT / ADMIN_STOP / MAX_RETRIES
     IN_PROGRESS --> FAILED : AGENT_FAILED
     IN_PROGRESS --> PAUSED : TOKENS_EXHAUSTED
     IN_PROGRESS --> WAITING_INPUT : AGENT_QUESTION
     IN_PROGRESS --> READY : RETRY / RECOVERY
-
-    READY --> AWAITING_PLAN_APPROVAL : PLAN_FOUND
-
-    AWAITING_APPROVAL --> COMPLETED : PR_MERGED
-    AWAITING_APPROVAL --> BLOCKED : PR_CLOSED
-    AWAITING_APPROVAL --> READY : ADMIN_RESTART
-
-    AWAITING_PLAN_APPROVAL --> COMPLETED : PLAN_APPROVED / PLAN_DELETED
-    AWAITING_PLAN_APPROVAL --> READY : PLAN_REJECTED / ADMIN_RESTART
 
     FAILED --> READY : RETRY / ADMIN_RESTART
     FAILED --> BLOCKED : MAX_RETRIES
@@ -492,9 +486,7 @@ These transitions represent the normal, happy-path progression of a task.
 | DEFINED | DEPS_MET | READY | All upstream dependencies completed. |
 | READY | ASSIGNED | ASSIGNED | Scheduler selected an agent. |
 | ASSIGNED | AGENT_STARTED | IN_PROGRESS | Agent process confirmed it started. |
-| IN_PROGRESS | AGENT_COMPLETED | COMPLETED | Agent finished work successfully. |
-| IN_PROGRESS | PR_CREATED | AWAITING_APPROVAL | A PR was opened; human review required. |
-| AWAITING_APPROVAL | PR_MERGED | COMPLETED | Human merged the PR. |
+| IN_PROGRESS | AGENT_COMPLETED | COMPLETED | Agent finished work successfully. In `pull_request` integration mode the task completes unmerged (`pr_url` recorded); in `direct` mode the completion pipeline merges the branch first. |
 
 ---
 
@@ -547,24 +539,19 @@ Administrative events allow a human operator to override the normal lifecycle.
 | PAUSED | ADMIN_RESTART | READY | Admin clears the pause and immediately re-queues. |
 | DEFINED | ADMIN_RESTART | READY | Admin bypasses the dependency check. |
 | ASSIGNED | ADMIN_RESTART | READY | Admin unassigns and re-queues the task. |
-| AWAITING_APPROVAL | ADMIN_RESTART | READY | Admin abandons the PR flow and restarts. |
 | WAITING_INPUT | ADMIN_RESTART | READY | Admin cancels the pending question and restarts. |
 
 Note: `IN_PROGRESS` is the only status from which `ADMIN_RESTART` is not a defined transition. An admin must use `ADMIN_STOP` first to move the task to BLOCKED, then `ADMIN_RESTART` to re-queue it.
 
 ---
 
-### Plan Approval Lifecycle Transitions
+### Subtask Completion Transitions
 
 | From | Event | To | Notes |
 |---|---|---|---|
-| IN_PROGRESS | PLAN_FOUND | AWAITING_PLAN_APPROVAL | A plan file was discovered after agent completion. |
-| READY | PLAN_FOUND | AWAITING_PLAN_APPROVAL | Plan discovered during post-completion processing. |
-| AWAITING_PLAN_APPROVAL | PLAN_APPROVED | IN_PROGRESS | Human approved the plan; subtasks activated. Parent stays IN_PROGRESS until all subtasks complete. |
-| IN_PROGRESS | SUBTASKS_COMPLETED | COMPLETED | All subtasks of a plan have reached COMPLETED; parent auto-completes. |
-| AWAITING_PLAN_APPROVAL | PLAN_REJECTED | READY | Human rejected the plan with feedback; task is re-queued. |
-| AWAITING_PLAN_APPROVAL | PLAN_DELETED | COMPLETED | Human deleted the plan; task marked complete without subtasks. |
-| AWAITING_PLAN_APPROVAL | ADMIN_RESTART | READY | Admin manually resets during plan approval. |
+| IN_PROGRESS | SUBTASKS_COMPLETED | COMPLETED | All subtasks of a parent have reached COMPLETED; parent auto-completes. |
+
+(The `PLAN_FOUND` / `PLAN_APPROVED` / `PLAN_REJECTED` / `PLAN_DELETED` transitions and the `AWAITING_PLAN_APPROVAL` status were removed with the plan-discovery flow.)
 
 ---
 
@@ -574,14 +561,6 @@ Note: `IN_PROGRESS` is the only status from which `ADMIN_RESTART` is not a defin
 |---|---|---|---|
 | IN_PROGRESS | MERGE_FAILED | BLOCKED | Merge/rebase failed; task is blocked pending manual intervention. |
 | IN_PROGRESS | MERGE_SUCCEEDED | COMPLETED | Merge succeeded; task is complete. |
-
----
-
-### PR Lifecycle Transitions
-
-| From | Event | To | Notes |
-|---|---|---|---|
-| AWAITING_APPROVAL | PR_CLOSED | BLOCKED | PR was closed without merging; task is blocked. |
 
 ---
 

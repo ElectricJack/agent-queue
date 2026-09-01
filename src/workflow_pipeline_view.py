@@ -77,8 +77,6 @@ TASK_STATUS_CATEGORY: dict[str, str] = {
     "IN_PROGRESS": "active",
     "WAITING_INPUT": "active",
     "PAUSED": "paused",
-    "AWAITING_APPROVAL": "active",
-    "AWAITING_PLAN_APPROVAL": "active",
     "COMPLETED": "completed",
     "FAILED": "failed",
     "BLOCKED": "blocked",

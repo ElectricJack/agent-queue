@@ -38,7 +38,7 @@ class TranscriptEntryModel:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.transcript_entry_model_usage_type_0 import TranscriptEntryModelUsageType0
+        from ..models.transcript_entry_model_usage_type_0 import TranscriptEntryModelUsageType0  # noqa: PLC0415
 
         uuid = self.uuid
 
@@ -91,7 +91,7 @@ class TranscriptEntryModel:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.transcript_entry_model_usage_type_0 import TranscriptEntryModelUsageType0
+        from ..models.transcript_entry_model_usage_type_0 import TranscriptEntryModelUsageType0  # noqa: PLC0415
 
         d = dict(src_dict)
         uuid = d.pop("uuid")

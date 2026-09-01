@@ -35,7 +35,7 @@ class RenderPromptRequest:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.render_prompt_request_variables_type_0 import RenderPromptRequestVariablesType0
+        from ..models.render_prompt_request_variables_type_0 import RenderPromptRequestVariablesType0  # noqa: PLC0415
 
         project_id: None | str | Unset
         if isinstance(self.project_id, Unset):
@@ -79,7 +79,7 @@ class RenderPromptRequest:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.render_prompt_request_variables_type_0 import RenderPromptRequestVariablesType0
+        from ..models.render_prompt_request_variables_type_0 import RenderPromptRequestVariablesType0  # noqa: PLC0415
 
         d = dict(src_dict)
 

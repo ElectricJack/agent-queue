@@ -26,8 +26,8 @@ class EditTaskRequest:
         verification_type (None | str | Unset): How to verify task output (optional)
         profile_id (None | str | Unset): Agent profile ID (optional, set to null to clear)
         intelligence_class (None | str | Unset): Intelligence class id; change only while unassigned. Null clears it.
-        auto_approve_plan (bool | None | Unset): If true, any plan this task generates will be automatically approved
-            without human review (optional)
+        integration_mode (None | str | Unset): Integration-policy override ('direct' | 'pull_request'). Null clears the
+            override so the task inherits the project/system policy (optional)
         skip_verification (bool | None | Unset): If true, skip git verification on task completion (optional)
         affinity_agent_id (None | str | Unset): Preferred agent ID for context continuity. Set to null to clear
             (optional)
@@ -47,7 +47,7 @@ class EditTaskRequest:
     verification_type: None | str | Unset = UNSET
     profile_id: None | str | Unset = UNSET
     intelligence_class: None | str | Unset = UNSET
-    auto_approve_plan: bool | None | Unset = UNSET
+    integration_mode: None | str | Unset = UNSET
     skip_verification: bool | None | Unset = UNSET
     affinity_agent_id: None | str | Unset = UNSET
     affinity_reason: None | str | Unset = UNSET
@@ -117,11 +117,11 @@ class EditTaskRequest:
         else:
             intelligence_class = self.intelligence_class
 
-        auto_approve_plan: bool | None | Unset
-        if isinstance(self.auto_approve_plan, Unset):
-            auto_approve_plan = UNSET
+        integration_mode: None | str | Unset
+        if isinstance(self.integration_mode, Unset):
+            integration_mode = UNSET
         else:
-            auto_approve_plan = self.auto_approve_plan
+            integration_mode = self.integration_mode
 
         skip_verification: bool | None | Unset
         if isinstance(self.skip_verification, Unset):
@@ -174,8 +174,8 @@ class EditTaskRequest:
             field_dict["profile_id"] = profile_id
         if intelligence_class is not UNSET:
             field_dict["intelligence_class"] = intelligence_class
-        if auto_approve_plan is not UNSET:
-            field_dict["auto_approve_plan"] = auto_approve_plan
+        if integration_mode is not UNSET:
+            field_dict["integration_mode"] = integration_mode
         if skip_verification is not UNSET:
             field_dict["skip_verification"] = skip_verification
         if affinity_agent_id is not UNSET:
@@ -282,14 +282,14 @@ class EditTaskRequest:
 
         intelligence_class = _parse_intelligence_class(d.pop("intelligence_class", UNSET))
 
-        def _parse_auto_approve_plan(data: object) -> bool | None | Unset:
+        def _parse_integration_mode(data: object) -> None | str | Unset:
             if data is None:
                 return data
             if isinstance(data, Unset):
                 return data
-            return cast(bool | None | Unset, data)
+            return cast(None | str | Unset, data)
 
-        auto_approve_plan = _parse_auto_approve_plan(d.pop("auto_approve_plan", UNSET))
+        integration_mode = _parse_integration_mode(d.pop("integration_mode", UNSET))
 
         def _parse_skip_verification(data: object) -> bool | None | Unset:
             if data is None:
@@ -339,7 +339,7 @@ class EditTaskRequest:
             verification_type=verification_type,
             profile_id=profile_id,
             intelligence_class=intelligence_class,
-            auto_approve_plan=auto_approve_plan,
+            integration_mode=integration_mode,
             skip_verification=skip_verification,
             affinity_agent_id=affinity_agent_id,
             affinity_reason=affinity_reason,

@@ -44,7 +44,7 @@ class TaskBatchUpdateRequest:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.task_batch_update_request_payload import TaskBatchUpdateRequestPayload
+        from ..models.task_batch_update_request_payload import TaskBatchUpdateRequestPayload  # noqa: PLC0415
 
         d = dict(src_dict)
         proposal_id = d.pop("proposal_id")

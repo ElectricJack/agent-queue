@@ -21,7 +21,6 @@ def test_task_creation_wizard_reprompts_required_values_and_preserves_defaults(m
         "description": "Description",
         "priority": 100,
         "task_type": "feature",
-        "requires_approval": False,
     }
 
 

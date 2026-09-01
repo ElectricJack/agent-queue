@@ -63,7 +63,7 @@ async def completed_task(db):
 
 @pytest.fixture
 async def approval_task(db):
-    """Create a completed task that requires approval."""
+    """Create a completed pull_request-mode task with an open PR."""
     project_id = "test-proj-approval"
     await db.create_project(Project(id=project_id, name="Approval Project"))
     task = Task(
@@ -71,8 +71,8 @@ async def approval_task(db):
         project_id=project_id,
         title="Feature needing review",
         description="Important feature.",
-        status=TaskStatus.AWAITING_APPROVAL,
-        requires_approval=True,
+        status=TaskStatus.COMPLETED,
+        integration_mode="pull_request",
         pr_url="https://github.com/org/repo/pull/99",
     )
     await db.create_task(task)
@@ -228,42 +228,41 @@ class TestReopenWithFeedback:
         assert len(rows) == 1
         assert "Audit trail test" in rows[0]["payload"]
 
-    async def test_requires_approval_preserved(self, handler, approval_task, db):
-        """requires_approval=True persists through reopen cycles."""
-        # Verify initial state
+    async def test_integration_mode_preserved(self, handler, approval_task, db):
+        """A pull_request-mode override persists through reopen cycles, so
+        the reopened task re-creates a PR on its next completion."""
         task = await db.get_task("t-approval")
-        assert task.requires_approval is True
-        assert task.status == TaskStatus.AWAITING_APPROVAL
+        assert task.integration_mode == "pull_request"
 
         result = await handler.execute(
             "reopen_with_feedback",
             {"task_id": "t-approval", "feedback": "Please fix the edge case"},
         )
         assert "error" not in result
-        assert result["requires_approval"] is True
+        assert result["integration_mode"] == "pull_request"
 
         # Verify in database
         task = await db.get_task("t-approval")
         assert task.status == TaskStatus.READY
-        assert task.requires_approval is True
+        assert task.integration_mode == "pull_request"
         assert task.pr_url is None  # PR cleared for fresh creation
 
-    async def test_requires_approval_preserved_across_multiple_reopens(
+    async def test_integration_mode_preserved_across_multiple_reopens(
         self, handler, approval_task, db
     ):
-        """requires_approval stays True across multiple reopen cycles."""
+        """The pull_request override survives multiple reopen cycles."""
         # First reopen
         await handler.execute(
             "reopen_with_feedback",
             {"task_id": "t-approval", "feedback": "First round of feedback"},
         )
         task = await db.get_task("t-approval")
-        assert task.requires_approval is True
+        assert task.integration_mode == "pull_request"
 
         # Simulate agent completing again
         await db.update_task(
             "t-approval",
-            status=TaskStatus.AWAITING_APPROVAL,
+            status=TaskStatus.COMPLETED,
             pr_url="https://github.com/org/repo/pull/100",
         )
 
@@ -272,19 +271,19 @@ class TestReopenWithFeedback:
             "reopen_with_feedback",
             {"task_id": "t-approval", "feedback": "Second round of feedback"},
         )
-        assert result["requires_approval"] is True
+        assert result["integration_mode"] == "pull_request"
 
         task = await db.get_task("t-approval")
-        assert task.requires_approval is True
+        assert task.integration_mode == "pull_request"
         assert task.pr_url is None
 
-    async def test_requires_approval_false_stays_false(self, handler, completed_task, db):
-        """A task without requires_approval keeps it as False after reopen."""
+    async def test_no_override_stays_unset(self, handler, completed_task, db):
+        """A task with no integration override keeps inheriting policy after reopen."""
         result = await handler.execute(
             "reopen_with_feedback",
             {"task_id": "t-1", "feedback": "Some feedback"},
         )
-        assert result["requires_approval"] is False
+        assert result["integration_mode"] is None
 
         task = await db.get_task("t-1")
-        assert task.requires_approval is False
+        assert task.integration_mode is None

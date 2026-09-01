@@ -82,7 +82,7 @@ class SessionLogsResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.transcript_entry_model import TranscriptEntryModel
+        from ..models.transcript_entry_model import TranscriptEntryModel  # noqa: PLC0415
 
         d = dict(src_dict)
         session_id = d.pop("session_id")

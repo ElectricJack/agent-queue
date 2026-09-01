@@ -59,9 +59,9 @@ They are grouped by category (see `src/tools/registry.py`):
 | Tool | Purpose |
 |------|---------|
 | `list_tasks` | List tasks for a project |
-| `create_task` | Create a new task |
-| `get_task` | Get task details |
-| `edit_task` | Modify task fields |
+| `create_task` | Create a new task (accepts `integration_mode`: `direct` \| `pull_request`) |
+| `get_task` | Get task details (returns `integration_mode`, `effective_integration_mode`, `integration_mode_source`) |
+| `edit_task` | Modify task fields (accepts `integration_mode`, or `null` to clear the override) |
 | `memory_search` | Search project memory |
 
 ### Project Management
@@ -99,10 +99,6 @@ They are grouped by category (see `src/tools/registry.py`):
 | `archive_task` | Archive a single task |
 | `list_archived` | List archived tasks |
 | `restore_task` | Restore an archived task |
-| `approve_task` | Approve a task |
-| `approve_plan` | Approve a plan |
-| `reject_plan` | Reject a plan |
-| `delete_plan` | Delete a plan |
 | `skip_task` | Skip a task |
 | `get_task_dependencies` | Get task dependencies |
 | `add_dependency` | Add a dependency |

@@ -21,8 +21,9 @@ class CreateTaskRequest:
             paths, requirements, error messages, expected behavior, relevant code snippets, and design decisions from this
             conversation. Write as if the agent has never seen this conversation.
         priority (int | Unset): Priority (lower = higher priority, default 100) Default: 100.
-        requires_approval (bool | Unset): If true, agent work creates a PR instead of auto-merging. Human must
-            approve/merge the PR. Default: False.
+        integration_mode (None | str | Unset): Integration-policy override: 'pull_request' pushes the task branch and
+            opens a PR (review pipeline owns the merge); 'direct' merges into the default branch on completion. Omit to
+            inherit the project/system policy.
         task_type (None | str | Unset): Categorize the task type for display and filtering (optional)
         profile_id (None | str | Unset): Agent profile ID to configure the agent with specific tools/capabilities
             (optional)
@@ -35,8 +36,6 @@ class CreateTaskRequest:
         attachments (list[Any] | None | Unset): List of absolute file paths to images or files that the agent should
             have access to when working on this task. These are typically paths to Discord attachment images that were
             downloaded locally. The agent will be told to read these files using the Read tool.
-        auto_approve_plan (bool | Unset): If true, any plan this task generates will be automatically approved without
-            waiting for human review. Default: False.
         skip_verification (bool | Unset): If true, skip git verification on task completion. Use for
             investigation/research tasks that don't produce code changes requiring git cleanup. Default: False.
         affinity_agent_id (None | str | Unset): Preferred agent ID for context continuity. The scheduler will prefer
@@ -53,9 +52,12 @@ class CreateTaskRequest:
             NOT need to be listed. When omitted, the task implicitly requires 'project-repo' — preserving today's single-
             workspace behavior. Each kind must resolve via project-scoped or system-wide vault/workspace-kinds/<id>.md.
         parent_id (None | str | Unset): Create as a child of this container; the id becomes <parent>.<n>
-        depends_on (list[Any] | None | Unset): Task IDs this task depends on (optional).
+        depends_on (list[Any] | None | Unset): Task IDs or described dependency edges (optional).
         discovered_from (None | str | Unset): Task ID this work was discovered from (provenance, swarm-work-model §9; a
             worker-filed caller is restricted to the held task's subtree).
+        reason (None | str | Unset): WHY this task exists: the reason it was spawned, not just what it does. REQUIRED
+            when creating work from inside another task; stored on the parent-child or discovered-from edge back to its
+            origin.
         dedup_key (None | str | Unset): Idempotency key for find-or-create semantics (see ensure_task).
     """
 
@@ -63,13 +65,12 @@ class CreateTaskRequest:
     project_id: None | str | Unset = UNSET
     description: None | str | Unset = UNSET
     priority: int | Unset = 100
-    requires_approval: bool | Unset = False
+    integration_mode: None | str | Unset = UNSET
     task_type: None | str | Unset = UNSET
     profile_id: None | str | Unset = UNSET
     intelligence_class: None | str | Unset = UNSET
     preferred_workspace_id: None | str | Unset = UNSET
     attachments: list[Any] | None | Unset = UNSET
-    auto_approve_plan: bool | Unset = False
     skip_verification: bool | Unset = False
     affinity_agent_id: None | str | Unset = UNSET
     affinity_reason: None | str | Unset = UNSET
@@ -78,6 +79,7 @@ class CreateTaskRequest:
     parent_id: None | str | Unset = UNSET
     depends_on: list[Any] | None | Unset = UNSET
     discovered_from: None | str | Unset = UNSET
+    reason: None | str | Unset = UNSET
     dedup_key: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -98,7 +100,11 @@ class CreateTaskRequest:
 
         priority = self.priority
 
-        requires_approval = self.requires_approval
+        integration_mode: None | str | Unset
+        if isinstance(self.integration_mode, Unset):
+            integration_mode = UNSET
+        else:
+            integration_mode = self.integration_mode
 
         task_type: None | str | Unset
         if isinstance(self.task_type, Unset):
@@ -132,8 +138,6 @@ class CreateTaskRequest:
 
         else:
             attachments = self.attachments
-
-        auto_approve_plan = self.auto_approve_plan
 
         skip_verification = self.skip_verification
 
@@ -185,6 +189,12 @@ class CreateTaskRequest:
         else:
             discovered_from = self.discovered_from
 
+        reason: None | str | Unset
+        if isinstance(self.reason, Unset):
+            reason = UNSET
+        else:
+            reason = self.reason
+
         dedup_key: None | str | Unset
         if isinstance(self.dedup_key, Unset):
             dedup_key = UNSET
@@ -204,8 +214,8 @@ class CreateTaskRequest:
             field_dict["description"] = description
         if priority is not UNSET:
             field_dict["priority"] = priority
-        if requires_approval is not UNSET:
-            field_dict["requires_approval"] = requires_approval
+        if integration_mode is not UNSET:
+            field_dict["integration_mode"] = integration_mode
         if task_type is not UNSET:
             field_dict["task_type"] = task_type
         if profile_id is not UNSET:
@@ -216,8 +226,6 @@ class CreateTaskRequest:
             field_dict["preferred_workspace_id"] = preferred_workspace_id
         if attachments is not UNSET:
             field_dict["attachments"] = attachments
-        if auto_approve_plan is not UNSET:
-            field_dict["auto_approve_plan"] = auto_approve_plan
         if skip_verification is not UNSET:
             field_dict["skip_verification"] = skip_verification
         if affinity_agent_id is not UNSET:
@@ -234,6 +242,8 @@ class CreateTaskRequest:
             field_dict["depends_on"] = depends_on
         if discovered_from is not UNSET:
             field_dict["discovered_from"] = discovered_from
+        if reason is not UNSET:
+            field_dict["reason"] = reason
         if dedup_key is not UNSET:
             field_dict["dedup_key"] = dedup_key
 
@@ -264,7 +274,14 @@ class CreateTaskRequest:
 
         priority = d.pop("priority", UNSET)
 
-        requires_approval = d.pop("requires_approval", UNSET)
+        def _parse_integration_mode(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        integration_mode = _parse_integration_mode(d.pop("integration_mode", UNSET))
 
         def _parse_task_type(data: object) -> None | str | Unset:
             if data is None:
@@ -318,8 +335,6 @@ class CreateTaskRequest:
             return cast(list[Any] | None | Unset, data)
 
         attachments = _parse_attachments(d.pop("attachments", UNSET))
-
-        auto_approve_plan = d.pop("auto_approve_plan", UNSET)
 
         skip_verification = d.pop("skip_verification", UNSET)
 
@@ -402,6 +417,15 @@ class CreateTaskRequest:
 
         discovered_from = _parse_discovered_from(d.pop("discovered_from", UNSET))
 
+        def _parse_reason(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        reason = _parse_reason(d.pop("reason", UNSET))
+
         def _parse_dedup_key(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -416,13 +440,12 @@ class CreateTaskRequest:
             project_id=project_id,
             description=description,
             priority=priority,
-            requires_approval=requires_approval,
+            integration_mode=integration_mode,
             task_type=task_type,
             profile_id=profile_id,
             intelligence_class=intelligence_class,
             preferred_workspace_id=preferred_workspace_id,
             attachments=attachments,
-            auto_approve_plan=auto_approve_plan,
             skip_verification=skip_verification,
             affinity_agent_id=affinity_agent_id,
             affinity_reason=affinity_reason,
@@ -431,6 +454,7 @@ class CreateTaskRequest:
             parent_id=parent_id,
             depends_on=depends_on,
             discovered_from=discovered_from,
+            reason=reason,
             dedup_key=dedup_key,
         )
 

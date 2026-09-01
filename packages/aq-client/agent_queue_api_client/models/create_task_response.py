@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
+
+if TYPE_CHECKING:
+    from ..models.create_task_response_depends_on_item import CreateTaskResponseDependsOnItem
+
 
 T = TypeVar("T", bound="CreateTaskResponse")
 
@@ -18,37 +22,39 @@ class CreateTaskResponse:
         created (str):
         title (str):
         project_id (str):
-        requires_approval (bool | Unset):  Default: False.
+        integration_mode (None | str | Unset):
         task_type (None | str | Unset):
         profile_id (None | str | Unset):
         intelligence_class (None | str | Unset):
         preferred_workspace_id (None | str | Unset):
         attachments (list[str] | None | Unset):
-        auto_approve_plan (bool | Unset):  Default: False.
         skip_verification (bool | Unset):  Default: False.
         warning (None | str | Unset):
         success (bool | None | Unset):
         task_id (None | str | Unset):
         gate_id (None | str | Unset):
         status (None | str | Unset):
+        reason (None | str | Unset):
+        depends_on (list[CreateTaskResponseDependsOnItem] | Unset):
     """
 
     created: str
     title: str
     project_id: str
-    requires_approval: bool | Unset = False
+    integration_mode: None | str | Unset = UNSET
     task_type: None | str | Unset = UNSET
     profile_id: None | str | Unset = UNSET
     intelligence_class: None | str | Unset = UNSET
     preferred_workspace_id: None | str | Unset = UNSET
     attachments: list[str] | None | Unset = UNSET
-    auto_approve_plan: bool | Unset = False
     skip_verification: bool | Unset = False
     warning: None | str | Unset = UNSET
     success: bool | None | Unset = UNSET
     task_id: None | str | Unset = UNSET
     gate_id: None | str | Unset = UNSET
     status: None | str | Unset = UNSET
+    reason: None | str | Unset = UNSET
+    depends_on: list[CreateTaskResponseDependsOnItem] | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -58,7 +64,11 @@ class CreateTaskResponse:
 
         project_id = self.project_id
 
-        requires_approval = self.requires_approval
+        integration_mode: None | str | Unset
+        if isinstance(self.integration_mode, Unset):
+            integration_mode = UNSET
+        else:
+            integration_mode = self.integration_mode
 
         task_type: None | str | Unset
         if isinstance(self.task_type, Unset):
@@ -93,8 +103,6 @@ class CreateTaskResponse:
         else:
             attachments = self.attachments
 
-        auto_approve_plan = self.auto_approve_plan
-
         skip_verification = self.skip_verification
 
         warning: None | str | Unset
@@ -127,6 +135,19 @@ class CreateTaskResponse:
         else:
             status = self.status
 
+        reason: None | str | Unset
+        if isinstance(self.reason, Unset):
+            reason = UNSET
+        else:
+            reason = self.reason
+
+        depends_on: list[dict[str, Any]] | Unset = UNSET
+        if not isinstance(self.depends_on, Unset):
+            depends_on = []
+            for depends_on_item_data in self.depends_on:
+                depends_on_item = depends_on_item_data.to_dict()
+                depends_on.append(depends_on_item)
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -136,8 +157,8 @@ class CreateTaskResponse:
                 "project_id": project_id,
             }
         )
-        if requires_approval is not UNSET:
-            field_dict["requires_approval"] = requires_approval
+        if integration_mode is not UNSET:
+            field_dict["integration_mode"] = integration_mode
         if task_type is not UNSET:
             field_dict["task_type"] = task_type
         if profile_id is not UNSET:
@@ -148,8 +169,6 @@ class CreateTaskResponse:
             field_dict["preferred_workspace_id"] = preferred_workspace_id
         if attachments is not UNSET:
             field_dict["attachments"] = attachments
-        if auto_approve_plan is not UNSET:
-            field_dict["auto_approve_plan"] = auto_approve_plan
         if skip_verification is not UNSET:
             field_dict["skip_verification"] = skip_verification
         if warning is not UNSET:
@@ -162,11 +181,17 @@ class CreateTaskResponse:
             field_dict["gate_id"] = gate_id
         if status is not UNSET:
             field_dict["status"] = status
+        if reason is not UNSET:
+            field_dict["reason"] = reason
+        if depends_on is not UNSET:
+            field_dict["depends_on"] = depends_on
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.create_task_response_depends_on_item import CreateTaskResponseDependsOnItem  # noqa: PLC0415
+
         d = dict(src_dict)
         created = d.pop("created")
 
@@ -174,7 +199,14 @@ class CreateTaskResponse:
 
         project_id = d.pop("project_id")
 
-        requires_approval = d.pop("requires_approval", UNSET)
+        def _parse_integration_mode(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        integration_mode = _parse_integration_mode(d.pop("integration_mode", UNSET))
 
         def _parse_task_type(data: object) -> None | str | Unset:
             if data is None:
@@ -229,8 +261,6 @@ class CreateTaskResponse:
 
         attachments = _parse_attachments(d.pop("attachments", UNSET))
 
-        auto_approve_plan = d.pop("auto_approve_plan", UNSET)
-
         skip_verification = d.pop("skip_verification", UNSET)
 
         def _parse_warning(data: object) -> None | str | Unset:
@@ -278,23 +308,42 @@ class CreateTaskResponse:
 
         status = _parse_status(d.pop("status", UNSET))
 
+        def _parse_reason(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        reason = _parse_reason(d.pop("reason", UNSET))
+
+        _depends_on = d.pop("depends_on", UNSET)
+        depends_on: list[CreateTaskResponseDependsOnItem] | Unset = UNSET
+        if _depends_on is not UNSET:
+            depends_on = []
+            for depends_on_item_data in _depends_on:
+                depends_on_item = CreateTaskResponseDependsOnItem.from_dict(depends_on_item_data)
+
+                depends_on.append(depends_on_item)
+
         create_task_response = cls(
             created=created,
             title=title,
             project_id=project_id,
-            requires_approval=requires_approval,
+            integration_mode=integration_mode,
             task_type=task_type,
             profile_id=profile_id,
             intelligence_class=intelligence_class,
             preferred_workspace_id=preferred_workspace_id,
             attachments=attachments,
-            auto_approve_plan=auto_approve_plan,
             skip_verification=skip_verification,
             warning=warning,
             success=success,
             task_id=task_id,
             gate_id=gate_id,
             status=status,
+            reason=reason,
+            depends_on=depends_on,
         )
 
         create_task_response.additional_properties = d

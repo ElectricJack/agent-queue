@@ -52,7 +52,7 @@ class GetStatusResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.task_status_summary import TaskStatusSummary
+        from ..models.task_status_summary import TaskStatusSummary  # noqa: PLC0415
 
         d = dict(src_dict)
         projects = d.pop("projects", UNSET)

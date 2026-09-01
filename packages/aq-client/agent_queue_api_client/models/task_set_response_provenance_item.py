@@ -6,13 +6,11 @@ from typing import Any, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-T = TypeVar("T", bound="ApprovePlanResponseSubtasksItem")
+T = TypeVar("T", bound="TaskSetResponseProvenanceItem")
 
 
 @_attrs_define
-class ApprovePlanResponseSubtasksItem:
-    """ """
-
+class TaskSetResponseProvenanceItem:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -25,10 +23,10 @@ class ApprovePlanResponseSubtasksItem:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        approve_plan_response_subtasks_item = cls()
+        task_set_response_provenance_item = cls()
 
-        approve_plan_response_subtasks_item.additional_properties = d
-        return approve_plan_response_subtasks_item
+        task_set_response_provenance_item.additional_properties = d
+        return task_set_response_provenance_item
 
     @property
     def additional_keys(self) -> list[str]:

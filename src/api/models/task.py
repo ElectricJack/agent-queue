@@ -42,7 +42,9 @@ class TaskDetail(BaseModel):
     assigned_agent: str | None = None
     retry_count: int = 0
     max_retries: int = 3
-    requires_approval: bool = False
+    integration_mode: str | None = None
+    effective_integration_mode: str | None = None
+    integration_mode_source: str | None = None
     # Persisted graph blockedness (work-graph design §4).
     is_blocked: bool = False
     is_plan_subtask: bool = False
@@ -50,7 +52,6 @@ class TaskDetail(BaseModel):
     parent_task_id: str | None = None
     profile_id: str | None = None
     intelligence_class: str | None = None
-    auto_approve_plan: bool = False
     skip_verification: bool = False
     pr_url: str | None = None
     depends_on: list[TaskRef] = []
@@ -91,13 +92,12 @@ class CreateTaskResponse(BaseModel):
     created: str
     title: str
     project_id: str
-    requires_approval: bool = False
+    integration_mode: str | None = None
     task_type: str | None = None
     profile_id: str | None = None
     intelligence_class: str | None = None
     preferred_workspace_id: str | None = None
     attachments: list[str] | None = None
-    auto_approve_plan: bool = False
     skip_verification: bool = False
     warning: str | None = None
     # Worker-filed work (swarm work model §12) — always present on every
@@ -174,33 +174,6 @@ class DeleteTaskResponse(BaseModel):
     title: str
 
 
-class ApproveTaskResponse(BaseModel):
-    approved: str
-    title: str
-
-
-class ApprovePlanResponse(BaseModel):
-    approved: str
-    title: str
-    subtask_count: int = 0
-    subtasks: list[dict[str, Any]] = []
-
-
-class RejectPlanResponse(BaseModel):
-    rejected: str
-    title: str
-    status: str = "READY"
-    feedback_added: bool = False
-    draft_subtasks_deleted: int = 0
-
-
-class DeletePlanResponse(BaseModel):
-    deleted: str
-    title: str
-    status: str = "COMPLETED"
-    draft_subtasks_deleted: int = 0
-
-
 class TaskControlResponse(BaseModel):
     task_id: str
     status: str
@@ -222,7 +195,6 @@ class ReopenWithFeedbackResponse(BaseModel):
     previous_status: str = ""
     status: str = "READY"
     feedback_added: bool = False
-    requires_approval: bool = False
 
 
 class SkipTaskResponse(BaseModel):
@@ -635,10 +607,6 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "task_comments": TaskCommentsResponse,
     "edit_task": EditTaskResponse,
     "delete_task": DeleteTaskResponse,
-    "approve_task": ApproveTaskResponse,
-    "approve_plan": ApprovePlanResponse,
-    "reject_plan": RejectPlanResponse,
-    "delete_plan": DeletePlanResponse,
     "stop_task": StopTaskResponse,
     "pause_task": TaskControlResponse,
     "resume_task": TaskControlResponse,

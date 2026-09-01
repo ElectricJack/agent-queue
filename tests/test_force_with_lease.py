@@ -330,7 +330,7 @@ class TestCreatePrForTaskForceWithLease:
         git.apush_branch.assert_not_called()
         assert result is None
         assert len(orch._notifications) == 1
-        assert "Approval Required" in orch._notifications[0]  # plain text via _emit_text_notify
+        assert "Review needed" in orch._notifications[0]  # plain text via _emit_text_notify
 
     @pytest.mark.asyncio
     async def test_pr_creation_after_push(self, orch, git):

@@ -28,7 +28,7 @@ interface FormState {
   task_type: string;
   profile_id: string;
   max_retries: string;
-  auto_approve_plan: boolean;
+  integration_mode: string;
   skip_verification: boolean;
 }
 
@@ -36,8 +36,6 @@ const STATUS_OPTIONS = [
   "PENDING",
   "READY",
   "IN_PROGRESS",
-  "AWAITING_APPROVAL",
-  "AWAITING_PLAN_APPROVAL",
   "WAITING_INPUT",
   "COMPLETED",
   "FAILED",
@@ -53,7 +51,7 @@ interface TaskLike {
   task_type?: string | null;
   profile_id?: string | null;
   max_retries?: number;
-  auto_approve_plan?: boolean;
+  integration_mode?: string | null;
   skip_verification?: boolean;
 }
 
@@ -65,7 +63,7 @@ function taskToForm(t: TaskLike | null | undefined): FormState {
     task_type: t?.task_type ?? "",
     profile_id: t?.profile_id ?? "",
     max_retries: t?.max_retries != null ? String(t.max_retries) : "",
-    auto_approve_plan: !!t?.auto_approve_plan,
+    integration_mode: t?.integration_mode ?? "",
     skip_verification: !!t?.skip_verification,
   };
 }
@@ -123,8 +121,8 @@ function TaskDetailContent({ taskId }: { taskId: string }) {
         body.profile_id = form.profile_id || null;
       const retriesNum = parseOptionalInt(form.max_retries);
       if (retriesNum !== parseOptionalInt(baseline.current.max_retries)) body.max_retries = retriesNum;
-      if (form.auto_approve_plan !== baseline.current.auto_approve_plan)
-        body.auto_approve_plan = form.auto_approve_plan;
+      if (form.integration_mode !== baseline.current.integration_mode)
+        body.integration_mode = form.integration_mode || null;
       if (form.skip_verification !== baseline.current.skip_verification)
         body.skip_verification = form.skip_verification;
 
@@ -287,13 +285,15 @@ function TaskDetailContent({ taskId }: { taskId: string }) {
             label="Retries used"
             value={`${task.retry_count ?? 0} / ${task.max_retries ?? 3}`}
           />
-          <ReadField label="Requires Approval" value={task.requires_approval ? "Yes" : "No"} />
-          <EditableCheckbox
-            label="Auto-approve Plan"
+          <EditableSelect
+            label="Integration mode"
             editing={editing}
-            checked={form.auto_approve_plan}
-            displayValue={task.auto_approve_plan ? "Yes" : "No"}
-            onChange={(v) => setForm({ ...form, auto_approve_plan: v })}
+            value={form.integration_mode}
+            displayValue={integrationModeDisplay(task)}
+            options={["", "pull_request", "direct"]}
+            optionLabel={(v) => (v === "" ? "— inherit policy —" : v)}
+            onChange={(v) => setForm({ ...form, integration_mode: v })}
+            hint="pull_request: push branch + open PR, review pipeline merges. direct: merge to default on completion. Inherit uses the project/system policy."
           />
           <EditableCheckbox
             label="Skip verification"
@@ -393,6 +393,16 @@ function labelForBack(from: string): string {
   if (from.match(/^\/projects\/[^/]+\/?$/)) return "Back to project";
   if (from.startsWith("/tasks/")) return "Back";
   return "Back";
+}
+
+function integrationModeDisplay(task: {
+  integration_mode?: string | null;
+  effective_integration_mode?: string | null;
+  integration_mode_source?: string | null;
+}): string {
+  const effective = task.effective_integration_mode ?? task.integration_mode ?? "pull_request";
+  const source = task.integration_mode_source ?? (task.integration_mode ? "task" : "default");
+  return source === "task" ? effective : `${effective} (from ${source} policy)`;
 }
 
 function ReadField({ label, value }: { label: string; value: string }) {

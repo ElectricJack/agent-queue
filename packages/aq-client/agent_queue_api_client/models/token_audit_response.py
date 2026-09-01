@@ -101,9 +101,9 @@ class TokenAuditResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.token_audit_response_by_project_item import TokenAuditResponseByProjectItem
-        from ..models.token_audit_response_daily_item import TokenAuditResponseDailyItem
-        from ..models.token_audit_response_top_tasks_item import TokenAuditResponseTopTasksItem
+        from ..models.token_audit_response_by_project_item import TokenAuditResponseByProjectItem  # noqa: PLC0415
+        from ..models.token_audit_response_daily_item import TokenAuditResponseDailyItem  # noqa: PLC0415
+        from ..models.token_audit_response_top_tasks_item import TokenAuditResponseTopTasksItem  # noqa: PLC0415
 
         d = dict(src_dict)
         total = d.pop("total", UNSET)
