@@ -361,7 +361,7 @@ class TestTaskShowSetListDetailsCLI:
                             "task_type": "feature",
                             "assigned_agent": "ws-1",
                             "pr_url": None,
-                            "requires_approval": False,
+                            "integration_mode": None,
                         }
                     ],
                     "total": 1,

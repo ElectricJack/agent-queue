@@ -70,7 +70,7 @@ class FakeTask:
     branch_name: str = ""
     is_plan_subtask: bool = False
     parent_task_id: str | None = None
-    requires_approval: bool = False
+    integration_mode: str | None = None
     attachments: list | None = None
 
 

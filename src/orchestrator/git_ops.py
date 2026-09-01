@@ -201,9 +201,9 @@ class GitOpsMixin:
         if not await self.git.ahas_remote(workspace):
             # No remote — notify user to review the branch locally
             await self._emit_text_notify(
-                f"**Approval Required:** Task `{task.id}` — {task.title}\n"
-                f"Branch `{task.branch_name}` is ready for review in `{workspace}`.\n"
-                f"Use the `approve_task` command to complete it.",
+                f"**Review needed:** Task `{task.id}` — {task.title}\n"
+                f"Branch `{task.branch_name}` is ready for review in `{workspace}` "
+                f"(no remote — no PR was opened). Merge it locally when accepted.",
                 project_id=task.project_id,
             )
             return None

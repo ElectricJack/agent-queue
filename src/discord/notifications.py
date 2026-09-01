@@ -1171,58 +1171,6 @@ class AgentQuestionView(discord.ui.View):
                 pass
 
 
-# ---------------------------------------------------------------------------
-# Plan approval views
-# ---------------------------------------------------------------------------
-
-
-class PlanChangesModal(discord.ui.Modal, title="Request Plan Changes"):
-    """Modal dialog for providing feedback to revise a plan.
-
-    Opens a text input where the user can type their requested changes.
-    On submit, the feedback is forwarded via
-    ``CommandHandler.execute("reject_plan", …)`` to reopen the task
-    with the feedback appended.
-    """
-
-    feedback_input = discord.ui.TextInput(
-        label="What changes do you want?",
-        style=discord.TextStyle.long,
-        placeholder="Describe the changes you'd like to the plan…",
-        required=True,
-        max_length=2000,
-    )
-
-    def __init__(self, task_id: str, handler=None, plan_message=None) -> None:
-        super().__init__()
-        self.task_id = task_id
-        self._handler = handler
-        self._plan_message = plan_message
-
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        if not self._handler:
-            await interaction.response.send_message("Handler not available.", ephemeral=True)
-            return
-        await interaction.response.defer(ephemeral=True)
-        result = await self._handler.execute(
-            "reject_plan",
-            {"task_id": self.task_id, "feedback": self.feedback_input.value},
-        )
-        if "error" in result:
-            await interaction.followup.send(
-                f"Could not request changes: {result['error']}", ephemeral=True
-            )
-        else:
-            await interaction.followup.send(
-                f"✏️ Changes requested for plan `{self.task_id}`. Task reopened with feedback.",
-                ephemeral=True,
-            )
-            # Delete the plan approval message from the channel
-            if self._plan_message is not None:
-                try:
-                    await self._plan_message.delete()
-                except Exception:
-                    pass
 
 
 

@@ -1320,7 +1320,7 @@ class TestPhaseVerifyNormalTask:
 
 
 class TestPhaseVerifyApprovalTask:
-    """Tests for _phase_verify with requires_approval tasks."""
+    """Tests for _phase_verify with pull_request-mode tasks."""
 
     @pytest.fixture
     async def pipeline_orch(self, tmp_path):

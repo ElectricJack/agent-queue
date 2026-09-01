@@ -62,8 +62,8 @@ def supports_returning(conn) -> bool:
 
 
 #: Statuses that no clause of ``blocked_predicate()`` can distinguish: the
-#: predicate reads only COMPLETED (``blocks`` / ``waits-for``), DEFINED and
-#: AWAITING_PLAN_APPROVAL (``parent-child``) and BLOCKED / terminal FAILED
+#: predicate reads only COMPLETED (``blocks`` / ``waits-for``), DEFINED
+#: (``parent-child``) and BLOCKED / terminal FAILED
 #: (``conditional-blocks``).  A move *between* two of these statuses can
 #: therefore never change any task's ``is_blocked`` — which is exactly the
 #: assertion ``projection_stable=True`` makes (READY→IN_PROGRESS on claim,

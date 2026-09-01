@@ -193,7 +193,7 @@ class TestFormatterCompatibility:
                 "title": "Fix bug",
                 "assigned_agent": None,
                 "description": "A bug fix",
-                "requires_approval": False,
+                "integration_mode": None,
             }
         )
         panel = format_task_detail(t, deps_on=["dep-1"], dependents=["block-1"])
@@ -738,7 +738,7 @@ class TestCLICommands:
                     "description": "A test task",
                     "assigned_agent": None,
                     "task_type": "feature",
-                    "requires_approval": False,
+                    "integration_mode": None,
                     "depends_on": [],
                     "blocks": [],
                 },
