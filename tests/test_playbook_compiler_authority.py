@@ -21,11 +21,7 @@ from pathlib import Path
 
 import pytest
 
-#: The xfail marker is removed by T-5/T-7 (roadmap commit 2).
-pytestmark = [
-    pytest.mark.asyncio,
-    pytest.mark.xfail(strict=True, reason="Package 0 T-2"),
-]
+pytestmark = pytest.mark.asyncio
 
 
 SOURCE_MD = """---
