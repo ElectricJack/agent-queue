@@ -7,6 +7,17 @@ import type {
 
 const COLORS = { fill: "#E3F2FD", stroke: "#1565C0", text: "#000000" };
 
+/** Long enough that a truncating inspector would visibly drop the tail. */
+export const REVIEW_PROMPT = [
+  "Review the diff for correctness.",
+  "",
+  "Check every changed file for:",
+  "- behaviour changes that lack a test",
+  "- error paths that swallow failures",
+  "",
+  "Finish by stating the single riskiest line in the diff.",
+].join("\n");
+
 export function node(
   id: string,
   overrides: Partial<PlaybookGraphNode> = {},
@@ -45,8 +56,33 @@ export const graph: PlaybookGraphNodesEdges = {
       prompt_preview: "Classify the incoming task",
       details: { prompt: "Classify the incoming task", entry: true },
     }),
-    node("review", { prompt_preview: "Review the diff", timeout_seconds: 600, on_timeout: "escalate" }),
-    node("approve", { type: "checkpoint", symbol: "⏸", wait_for_human: true, prompt_preview: "Approve the change" }),
+    node("review", {
+      prompt_preview: "Review the diff",
+      timeout_seconds: 600,
+      on_timeout: "escalate",
+      details: {
+        prompt: REVIEW_PROMPT,
+        transitions: [
+          { goto: "approve", when: "diff_is_clean" },
+          { goto: "escalate", otherwise: true },
+        ],
+        timeout_seconds: 600,
+        pause_timeout_seconds: 120,
+        on_timeout: "escalate",
+        action: { type: "notify", channel: "#reviews" },
+        for_each: { items: "changed_files", as: "file" },
+        output: { verdict: "string", notes: "string" },
+        llm_config: { provider: "anthropic", model: "claude-opus-5", max_tokens: 4096, temperature: 0.2 },
+        transition_llm_config: { provider: "anthropic", model: "claude-haiku-4-5-20251001" },
+      },
+    }),
+    node("approve", {
+      type: "checkpoint",
+      symbol: "⏸",
+      wait_for_human: true,
+      prompt_preview: "Approve the change",
+      details: { prompt: "Approve the change", wait_for_human: true, goto: "done" },
+    }),
     node("escalate", { type: "decision", symbol: "◆", out_degree: 2, prompt_preview: "Decide how to escalate" }),
     node("done", { type: "terminal", symbol: "■", terminal: true, out_degree: 0, details: { terminal: true } }),
   ],

@@ -15,12 +15,13 @@ import {
 } from "../api/hooks";
 import StatusBadge from "../components/StatusBadge";
 import DeletePlaybookModal from "../components/DeletePlaybookModal";
+import PlaybookGraphView from "./playbook-graph/PlaybookGraphView";
 
-type TabId = "source" | "compiled" | "runs";
+type TabId = "source" | "graph" | "runs";
 
 const TABS: { id: TabId; label: string }[] = [
   { id: "source", label: "Source" },
-  { id: "compiled", label: "Compiled" },
+  { id: "graph", label: "Graph" },
   { id: "runs", label: "Runs" },
 ];
 
@@ -98,7 +99,7 @@ export default function PlaybookDetail() {
       </div>
 
       {tab === "source" && <SourceTab playbookId={id} />}
-      {tab === "compiled" && <CompiledTab playbookId={id} />}
+      {tab === "graph" && <PlaybookGraphView playbookId={id} />}
       {tab === "runs" && <RunsTab playbookId={id} />}
     </div>
   );
@@ -226,29 +227,6 @@ function SourceTab({ playbookId }: { playbookId: string }) {
           </ul>
         </div>
       )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Compiled tab — read-only JSON view
-// ---------------------------------------------------------------------------
-
-function CompiledTab({ playbookId }: { playbookId: string }) {
-  const { data: playbooks } = usePlaybooks();
-  const meta = playbooks?.find((p) => p.id === playbookId);
-
-  if (!meta) return <p className="text-sm text-gray-500">Compiled data unavailable.</p>;
-
-  return (
-    <div className="space-y-3">
-      <p className="text-xs text-gray-500">
-        Compiled metadata from the active registry. For full node details, use the Graph tab
-        (coming soon) or the compiled JSON on disk.
-      </p>
-      <pre className="overflow-x-auto rounded-lg border border-gray-800 bg-gray-900 p-4 font-mono text-xs text-gray-300">
-        {JSON.stringify(meta, null, 2)}
-      </pre>
     </div>
   );
 }
