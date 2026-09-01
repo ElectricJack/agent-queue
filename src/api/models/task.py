@@ -54,6 +54,8 @@ class TaskDetail(BaseModel):
     intelligence_class: str | None = None
     skip_verification: bool = False
     pr_url: str | None = None
+    # Absolute paths of files attached to the task (screenshots etc.).
+    attachments: list[str] = []
     depends_on: list[TaskRef] = []
     blocks: list[TaskRef] = []
     subtasks: list[TaskRef] = []

@@ -1882,6 +1882,7 @@ class TaskCommandsMixin:
             "affinity_agent_id": task.affinity_agent_id,
             "affinity_reason": task.affinity_reason,
             "workspace_mode": task.workspace_mode.value if task.workspace_mode else None,
+            "attachments": task.attachments or [],
             "created_at": task.created_at,
             "updated_at": task.updated_at,
         }

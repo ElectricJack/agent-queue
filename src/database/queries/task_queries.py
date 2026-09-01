@@ -371,6 +371,62 @@ class TaskQueryMixin:
                 flipped = await self.recompute_blocked({task_id}, conn=conn)
         await self.log_blocked_flips(flipped)
 
+    async def add_task_attachment(self, task_id: str, path: str) -> list[str]:
+        """Append ``path`` to the task's attachments list atomically.
+
+        The read-modify-write runs inside a write-locked transaction
+        (``BEGIN IMMEDIATE`` on SQLite, row lock on PostgreSQL) so two
+        concurrent uploads can never lose each other's entry.  Idempotent:
+        re-adding an existing path is a no-op.  Returns the updated list.
+        """
+        async with self.immediate() as conn:
+            stmt = select(tasks.c.attachments).where(tasks.c.id == task_id)
+            if self._engine.dialect.name != "sqlite":
+                stmt = stmt.with_for_update()
+            raw = (await conn.execute(stmt)).scalar_one_or_none()
+            if raw is None:
+                exists = (await conn.execute(
+                    select(tasks.c.id).where(tasks.c.id == task_id)
+                )).scalar_one_or_none()
+                if exists is None:
+                    raise ValueError(f"Task '{task_id}' not found")
+            current: list[str] = json.loads(raw) if raw else []
+            if path not in current:
+                current.append(path)
+                await conn.execute(
+                    update(tasks)
+                    .where(tasks.c.id == task_id)
+                    .values(attachments=json.dumps(current), updated_at=time.time())
+                )
+            return current
+
+    async def remove_task_attachment(self, task_id: str, path: str) -> list[str]:
+        """Remove ``path`` from the task's attachments list atomically.
+
+        Raises ``ValueError`` when the task doesn't exist or the path is
+        not in its attachments list.  Returns the updated list.
+        """
+        async with self.immediate() as conn:
+            stmt = select(tasks.c.attachments).where(tasks.c.id == task_id)
+            if self._engine.dialect.name != "sqlite":
+                stmt = stmt.with_for_update()
+            raw = (await conn.execute(stmt)).scalar_one_or_none()
+            exists = raw is not None or (await conn.execute(
+                select(tasks.c.id).where(tasks.c.id == task_id)
+            )).scalar_one_or_none() is not None
+            if not exists:
+                raise ValueError(f"Task '{task_id}' not found")
+            current: list[str] = json.loads(raw) if raw else []
+            if path not in current:
+                raise ValueError(f"Attachment not on task '{task_id}': {path}")
+            current.remove(path)
+            await conn.execute(
+                update(tasks)
+                .where(tasks.c.id == task_id)
+                .values(attachments=json.dumps(current), updated_at=time.time())
+            )
+            return current
+
     async def pause_task(self, task_id: str) -> dict:
         """Persist an operator hold and fence the previous claim in one transaction."""
         async with self.immediate() as conn:
