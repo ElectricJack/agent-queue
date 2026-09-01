@@ -69,28 +69,114 @@ def test_check_names():
     assert all(c.owner == "swarm-work-model" for c in pool_checks.CHECKS)
 
 
-async def test_orphan_agent_detected_and_repaired(db):
-    await db.create_agent(Agent(id="a1", name="a1", profile_id="worker", state=AgentState.IDLE))
-    # ``create_agent`` always stamps ``created_at=time.time()`` server-side
-    # regardless of the dataclass's own field -- backdate it past the
-    # "still mid-launch" staleness window (2x prepare_timeout, default
-    # config gives 240s) so this orphan is old enough to flag.
-    await db.update_agent("a1", created_at=time.time() - 10_000)
+async def _stale_agent(db, agent_id, **kw):
+    """A pool-profile agent old enough to be past the in-flight-launch window.
+
+    ``create_agent`` always stamps ``created_at=time.time()`` server-side
+    regardless of the dataclass's own field, so the backdate is a second
+    write.
+    """
+    kw.setdefault("state", AgentState.IDLE)
+    kw.setdefault("profile_id", "worker")
+    await db.create_agent(Agent(id=agent_id, name=agent_id, **kw))
+    await db.update_agent(agent_id, created_at=time.time() - 10_000)
+
+
+async def _lock_workspace_to(db, agent_id, ws_id="ws"):
     await db.create_workspace(
         Workspace(
-            id="ws",
+            id=ws_id,
             project_id=PROJECT_ID,
             workspace_path="/w",
             source_type=RepoSourceType.CLONE,
             kind_id="project-repo",
-            locked_by_agent_id="a1",
+            locked_by_agent_id=agent_id,
         )
     )
+
+
+async def test_leaked_workspace_lock_released_and_agent_kept_reusable(db):
+    """A rolled-back launch leaves the lock behind, not a bad definition.
+
+    The row itself is a perfectly good idle worker the next
+    ``_launch_pool_session`` will reuse -- only the workspace it never gave
+    back is wrong, so the fix releases the lock and leaves the row IDLE.
+    """
+    await _stale_agent(db, "a1")
+    await _lock_workspace_to(db, "a1")
+
     finding = await pool_checks.run_check(db, "pools.orphan_agents", config=None)
     assert finding.data["count"] == 1
-    await pool_checks.run_check(db, "pools.orphan_agents", config=None, repair=True)
-    assert await db.get_agent("a1") is None
+    assert finding.data["leaked_workspace"] == ["a1"]
+    assert finding.severity is Severity.WARN
+
+    repaired = await pool_checks.run_check(db, "pools.orphan_agents", config=None, repair=True)
+    assert repaired.severity is Severity.OK
     assert (await db.get_workspace("ws")).locked_by_agent_id is None
+    agent = await db.get_agent("a1")
+    assert agent is not None and agent.state is AgentState.IDLE
+
+
+async def test_idle_spare_is_not_an_orphan(db):
+    """An idle, unowned, lock-free pool definition is the reuse pool.
+
+    Flagging it was the false positive that made ``pools.orphan_agents``
+    fire on every healthy install with a pool profile.
+    """
+    await _stale_agent(db, "a1")
+    finding = await pool_checks.run_check(db, "pools.orphan_agents", config=None)
+    assert finding.severity is Severity.OK
+    assert finding.data["count"] == 0
+    assert finding.data["spares"] == ["a1"]
+
+
+async def test_busy_orphan_is_reported_but_never_touched(db):
+    """The push-agent row for a profile that has since become ``lifecycle: pool``.
+
+    No pool session will ever adopt it, but it may still own a task, so
+    ``--fix`` must leave both the state and the row alone.
+    """
+    await db.create_task(
+        Task(
+            id="t1",
+            project_id=PROJECT_ID,
+            title="t",
+            description="d",
+            status=TaskStatus.IN_PROGRESS,
+        )
+    )
+    await _stale_agent(db, "a1", state=AgentState.BUSY, current_task_id="t1")
+
+    finding = await pool_checks.run_check(db, "pools.orphan_agents", config=None)
+    assert finding.severity is Severity.ERROR
+    assert finding.data["stranded"] == ["a1"]
+
+    # ``run_check(repair=True)`` re-runs the check afterwards, so the
+    # post-fix result still reports the same stranded row: the fix declined
+    # to touch it, which is the point.
+    repaired = await pool_checks.run_check(db, "pools.orphan_agents", config=None, repair=True)
+    assert repaired.data["stranded"] == ["a1"]
+    assert repaired.severity is Severity.ERROR
+    agent = await db.get_agent("a1")
+    assert agent is not None
+    assert (agent.state, agent.current_task_id) == (AgentState.BUSY, "t1")
+
+
+async def test_unusable_orphan_is_retired_not_deleted(db):
+    await _stale_agent(db, "a1", state=AgentState.ERROR)
+    await _lock_workspace_to(db, "a1")
+
+    finding = await pool_checks.run_check(db, "pools.orphan_agents", config=None)
+    assert finding.data["retirable"] == ["a1"]
+
+    await pool_checks.run_check(db, "pools.orphan_agents", config=None, repair=True)
+    agent = await db.get_agent("a1")
+    # Retired, not deleted: the ledger keeps its reference and the row keeps
+    # its history.
+    assert agent is not None and agent.state is AgentState.RETIRED
+    assert (await db.get_workspace("ws")).locked_by_agent_id is None
+    events = await db.get_recent_events(event_type="pool.agent_repaired")
+    assert len(events) == 1 and "a1" in events[0]["payload"]
 
 
 async def test_fresh_orphan_agent_not_flagged(db):
@@ -98,7 +184,9 @@ async def test_fresh_orphan_agent_not_flagged(db):
     freshly created agent with no session yet is a healthy in-flight
     launch, not an orphan (swarm-work-model §11's ``_launch_pool_session``
     ordering)."""
-    await db.create_agent(Agent(id="a1", name="a1", profile_id="worker", state=AgentState.IDLE))
+    await db.create_agent(
+        Agent(id="a1", name="a1", profile_id="worker", state=AgentState.ERROR)
+    )
     finding = await pool_checks.run_check(db, "pools.orphan_agents", config=None)
     assert finding.data.get("count", 0) == 0
     assert finding.severity is Severity.OK
@@ -109,7 +197,7 @@ async def test_old_orphan_agent_flagged_with_explicit_config(db):
 
     cfg = AppConfig()
     cfg.swarm.prepare_timeout = 5
-    await db.create_agent(Agent(id="a1", name="a1", profile_id="worker", state=AgentState.IDLE))
+    await db.create_agent(Agent(id="a1", name="a1", profile_id="worker", state=AgentState.ERROR))
     await db.update_agent("a1", created_at=time.time() - (2 * cfg.swarm.prepare_timeout) - 1)
     finding = await pool_checks.run_check(db, "pools.orphan_agents", config=cfg)
     assert finding.data["count"] == 1
@@ -323,11 +411,11 @@ async def test_orphan_agents_sees_project_scoped_pool_profile(db):
     )
     cfg = AppConfig()
     cfg.swarm.prepare_timeout = 5
-    await db.create_agent(Agent(id="a9", name="a9", profile_id="scoped", state=AgentState.IDLE))
+    await db.create_agent(Agent(id="a9", name="a9", profile_id="scoped", state=AgentState.ERROR))
     await db.update_agent("a9", created_at=time.time() - (2 * cfg.swarm.prepare_timeout) - 1)
     finding = await pool_checks.run_check(db, "pools.orphan_agents", config=cfg)
     assert finding.data["count"] == 1
-    assert "a9" in str(finding.data)
+    assert finding.data["retirable"] == ["a9"]
 
 
 async def test_pools_disabled_warns_when_flag_off(db):

@@ -3128,9 +3128,16 @@ class TaskCommandsMixin:
             if route_reason is not None:
                 reasons.append(Reason(**route_reason))
 
-        # 5. Capacity reasons — only relevant when a scheduler snapshot exists.
+        # 5. Pool-routed work never reaches the push scheduler at all, so the
+        # capacity reasons below (which describe *that* path) would answer a
+        # question this task never asks. Say what it is actually waiting on.
+        pool_reason = await self._pool_wait_reason(task)
+        if pool_reason is not None:
+            reasons.append(pool_reason)
+
+        # 6. Capacity reasons — only relevant when a scheduler snapshot exists.
         state = getattr(self.orchestrator, "_last_scheduler_state", None)
-        if state is not None:
+        if state is not None and pool_reason is None:
             ws_counts = getattr(self.orchestrator, "_last_scheduler_workspace_counts", {})
             idle = getattr(self.orchestrator, "_last_scheduler_idle_by_project", {})
             reasons.extend(build_capacity_reasons(task, state, ws_counts, idle))
@@ -3141,6 +3148,92 @@ class TaskCommandsMixin:
             "reason_codes": [reason["code"] for reason in reasons],
             "assignment_route": assignment_route,
         }
+
+    async def _pool_wait_reason(self, task):
+        """``awaiting_pool_session`` for a task routed to a ``lifecycle: pool`` profile.
+
+        ``Orchestrator._schedule`` filters these tasks out and
+        ``_is_session_routed`` refuses to push-launch them (swarm-work-model
+        §11), so a pool-routed task in READY is never "waiting for an idle
+        agent" — it is waiting for a pool worker to claim it, and the only
+        things that can stop that are the swarm flag, a quarantined pool key,
+        and pool bounds.  Without this ``aq task explain`` reported
+        ``no_idle_agent`` and sent operators looking in the wrong place.
+
+        Returns ``None`` for push-routed tasks (the overwhelmingly common
+        case) after one cheap profile-id lookup, so the extra work only
+        happens on installs that actually run pools.
+        """
+        import time
+
+        from src.explain import Reason
+
+        orchestrator = self.orchestrator
+        if orchestrator is None or not hasattr(orchestrator, "_pool_profile_ids"):
+            return None
+        try:
+            pool_ids = await orchestrator._pool_profile_ids(task.project_id)
+        except Exception:
+            return None
+        if not pool_ids:
+            return None
+        profile_id = task.profile_id
+        if not profile_id:
+            project = await self.db.get_project(task.project_id)
+            if project is None:
+                return None
+            profile_id = await orchestrator._effective_default_profile_id(project)
+        if profile_id not in pool_ids:
+            return None
+
+        if not getattr(self.config.swarm, "enabled", True):
+            # The same condition ``pools.disabled`` reports: both push gates
+            # are lifecycle-only while ``_reconcile_pools`` is flag-gated, so
+            # this task is neither pushed nor claimable.
+            return Reason(
+                code="awaiting_pool_session",
+                detail=(
+                    f"routed to pool profile '{profile_id}', but swarm.enabled is false — "
+                    "no pool session will ever claim it"
+                ),
+                ref=profile_id,
+            )
+
+        until, quarantine_reason = orchestrator._pool_quarantine_state(
+            task.project_id, profile_id, time.time()
+        )
+        if until:
+            detail = (
+                f"pool '{profile_id}' is quarantined for another "
+                f"{int(until - time.time())}s"
+            )
+            if quarantine_reason:
+                detail += f": {quarantine_reason}"
+            return Reason(code="awaiting_pool_session", detail=detail, ref=profile_id)
+
+        supply, _demand, bounds, _profiles, _caps, _projects = await orchestrator._measure_pools(
+            {task.project_id}
+        )
+        from src.scheduler import PoolKey
+
+        sup = supply.get(PoolKey(task.project_id, profile_id))
+        if sup is None:
+            return Reason(
+                code="awaiting_pool_session",
+                detail=f"routed to pool profile '{profile_id}', which has no pool in this project",
+                ref=profile_id,
+            )
+        _lo, hi = bounds.get(PoolKey(task.project_id, profile_id), (0, None))
+        live = sup.running_idle + sup.running_busy + sup.starting
+        detail = (
+            f"awaiting a '{profile_id}' pool session to claim it "
+            f"({sup.running_busy} busy, {sup.running_idle} idle, {sup.starting} starting"
+            + (f", max_active={hi}" if hi is not None else "")
+            + ")"
+        )
+        if hi is not None and live >= hi and sup.running_idle == 0:
+            detail += " — the pool is at max_active with no idle worker"
+        return Reason(code="awaiting_pool_session", detail=detail, ref=profile_id)
 
     async def _cmd_project_ready(self, args: dict) -> dict:
         """Ready frontier for a project + withheld tasks with reasons.
