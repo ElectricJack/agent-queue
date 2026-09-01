@@ -236,7 +236,8 @@ The central entity of the system. A task represents a unit of work to be execute
 
 **Constraints:**
 - `retry_count` must never exceed `max_retries`. When they are equal and the task fails again, it transitions to BLOCKED rather than being retried.
-- A PAUSED task must always have a non-`None` `resume_after` value. There is no permanent pause without a scheduled resume time.
+- A PAUSED task must always have a non-`None` `resume_after` value, with exactly one exception: an **operator hold** (`pause_task`), which is *defined* as PAUSED with `resume_after IS NULL` and carries a `manual_pause` metadata snapshot written in the same transaction. `_not_manually_paused` fences every lifecycle write on that pair, so a held task can only leave PAUSED through `resume_task`.
+- Consequently a PAUSED task with `resume_after IS NULL` and **no** `manual_pause` snapshot is unreachable — no timer promotes it and no transition may touch it. `_resume_paused_tasks` treats that as a wedge (a backoff pause whose timer never landed, a partial write) and recovers it through `resume_task`, which restores it to READY. This is the only state where the daemon resumes a task nobody asked it to.
 - An ASSIGNED or IN_PROGRESS task must have a non-`None` `assigned_agent_id`.
 
 ---
