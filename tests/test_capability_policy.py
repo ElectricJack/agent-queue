@@ -14,9 +14,6 @@ from __future__ import annotations
 
 import pytest
 
-#: Removed by T-8 (roadmap commit 3), which implements the module under test.
-pytestmark = pytest.mark.xfail(strict=True, reason="Package 0 T-1")
-
 
 class TestConstruction:
     def test_empty_policy_denies_every_namespace(self):

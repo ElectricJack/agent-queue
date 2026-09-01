@@ -47,10 +47,11 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
 }
 ```
 
-## Tools
+## Capabilities
+
 ```json
 {
-  "allowed": [
+  "harness_tools": [
     "Bash",
     "Read",
     "Write",
@@ -64,7 +65,36 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
     "WebFetch",
     "NotebookEdit"
   ],
-  "denied": []
+  "aq_commands": [
+    "add_dependency",
+    "create_task",
+    "edit_task",
+    "gate_list",
+    "get_schema",
+    "get_task",
+    "list_intelligence_classes",
+    "list_profiles",
+    "list_tasks",
+    "message_inbox",
+    "message_reply",
+    "message_send",
+    "prime",
+    "project_ready",
+    "session_drain_ack",
+    "task_close",
+    "task_comment",
+    "task_comments",
+    "task_handoff",
+    "task_heartbeat",
+    "task_recover",
+    "task_route",
+    "task_set",
+    "task_show"
+  ],
+  "plugin_tools": [
+    "memory_save",
+    "memory_search"
+  ]
 }
 ```
 

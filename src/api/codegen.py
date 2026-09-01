@@ -27,6 +27,7 @@ from src.api.dependencies import get_command_handler
 from src.api.models import get_all_response_models
 from src.api.models.system import EditIntelligenceClassConflictResponse
 from src.api.scope import check_request_scope
+from src.commands.principal import SERVER_OWNED_ARG_KEYS
 from src.cli.auto_commands import _strip_category_prefix
 from src.tools import (
     CATEGORIES,
@@ -378,7 +379,8 @@ def _make_route_handler(cmd_name: str, input_model: type[BaseModel]):
             for field in {"profile_id", "intelligence_class"} & body.model_fields_set:
                 if getattr(body, field) is None:
                     args[field] = None
-        args.pop("_scope", None)
+        for _key in SERVER_OWNED_ARG_KEYS:
+            args.pop(_key, None)
 
         scope: RequestScope = (
             getattr(request.state, "scope", LOCAL_SCOPE) if request is not None else LOCAL_SCOPE
@@ -407,6 +409,11 @@ def _make_route_handler(cmd_name: str, input_model: type[BaseModel]):
                 status_code=409,
             )
         if "error" in result:
+            if result.get("error_code") == "capability_denied":
+                return JSONResponse(
+                    {"error": result["error"], "error_code": "capability_denied"},
+                    status_code=403,
+                )
             return JSONResponse(
                 {"error": result["error"]},
                 status_code=422,

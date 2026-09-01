@@ -17,26 +17,41 @@ tags: [system, review, dv2-phase2]
 }
 ```
 
-## Tools
+## Capabilities
 
 ```json
 {
-  "allowed": [
+  "harness_tools": [
     "Bash",
     "Read",
-    "Write",
-    "Edit",
     "Glob",
     "Grep",
     "Task",
     "TodoWrite",
     "Skill",
     "WebSearch",
-    "WebFetch",
-    "NotebookEdit",
+    "WebFetch"
+  ],
+  "aq_commands": [
+    "get_schema",
     "get_task",
+    "message_inbox",
+    "message_reply",
+    "message_send",
+    "prime",
+    "reopen_with_feedback",
+    "session_drain_ack",
     "task_close",
-    "reopen_with_feedback"
+    "task_comment",
+    "task_comments",
+    "task_handoff",
+    "task_heartbeat",
+    "task_set",
+    "task_show"
+  ],
+  "plugin_tools": [
+    "memory_save",
+    "memory_search"
   ]
 }
 ```

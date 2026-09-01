@@ -863,6 +863,16 @@ class AgentProfile:
     model: str = ""  # override model (empty = use default)
     permission_mode: str = ""  # override (empty = use default)
     allowed_tools: list[str] = field(default_factory=list)  # tool whitelist
+    # -- Normalized capability namespaces (Playbook V2 Package 0 §3.1) -------
+    # Authored in the profile markdown's ``## Capabilities`` block.  ``None``
+    # means "not authored — run the legacy adapter over ``allowed_tools``";
+    # ``[]`` means "explicitly none".  Keeping those two apart is the whole
+    # basis of the audit/enforce split, so nothing may backfill NULL to [].
+    # Resolved into a ``CapabilityPolicy`` by
+    # ``src.profiles.capabilities.capability_policy_for``.
+    harness_tools: list[str] | None = None
+    aq_commands: list[str] | None = None
+    plugin_tools: list[str] | None = None
     # Names of MCP servers this profile uses.  The names are resolved at
     # task launch against the in-memory MCP registry (system + project
     # scope) which is sourced from ``vault/[projects/<pid>/]mcp-servers/*.md``.

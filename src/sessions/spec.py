@@ -31,6 +31,7 @@ import logging
 import re
 from pathlib import Path
 
+from src.profiles.capabilities import HARNESS_TOOL_NAMES
 from src.sessions.env import build_session_env
 from src.sessions.harness_parser import Harness
 from src.sessions.provider import SessionSpec
@@ -588,12 +589,10 @@ class SessionSpecBuilder:
     #: session through the ``aq`` CLI (i.e. through ``Bash``) rather than as
     #: a tool the harness can be told about — sessions are launched without
     #: ``--mcp-config``, so there is no MCP tool surface to restrict.
-    _HARNESS_TOOL_NAMES: frozenset[str] = frozenset(
-        {
-            "Bash", "Read", "Write", "Edit", "Glob", "Grep", "Skill",
-            "WebSearch", "WebFetch", "Task", "TodoWrite", "NotebookEdit",
-        }
-    )
+    #:
+    #: Defined once, in ``src/profiles/capabilities.py``, so the launcher's
+    #: idea of a harness tool and the capability classifier's cannot drift.
+    _HARNESS_TOOL_NAMES: frozenset[str] = HARNESS_TOOL_NAMES
 
     def _resolve_allowed_tools(self, profile, harness) -> list[str]:
         """Tool names to pass to the harness's allowlist flag.

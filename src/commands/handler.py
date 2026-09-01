@@ -107,6 +107,12 @@ _current_scope_var: contextvars.ContextVar[dict | None] = contextvars.ContextVar
 )
 
 
+from src.commands.principal import (  # noqa: E402
+    SERVER_OWNED_ARG_KEYS,
+    _principal_var,
+    current_principal,
+)
+
 # Re-export helper functions from helpers module for backward compatibility
 from src.commands.helpers import (  # noqa: E402, F401
     _build_archive_note,
@@ -457,15 +463,27 @@ class CommandHandler(
 
     @property
     def _caller_profile_id(self) -> str | None:
-        # The profile id of the caller currently invoking commands.  Set by
-        # the playbook runner (and, eventually, the task platform) so that
-        # ``_cmd_create_task`` can:
-        #   1. default-inherit the caller's profile when the LLM omits
-        #      ``profile_id`` — preserves the capability sandbox by default;
-        #   2. reject upward escalation when the LLM explicitly passes a
-        #      ``profile_id`` whose allowed_tools / mcp_servers exceed the
-        #      caller's.
-        # See ``docs/specs/design/sandboxed-playbooks.md``.
+        """Shim over :func:`~src.commands.principal.current_principal`.
+
+        The profile id of the caller currently invoking commands, used by
+        ``_cmd_create_task`` to default-inherit the caller's profile and to
+        reject upward escalation.  Package 0 moved the authoritative answer
+        onto the request-local ``ExecutionPrincipal``, which is derived from
+        the *session row* and therefore also exists for HTTP and MCP callers
+        — the v1 gap that made the escalation check unreachable for real
+        agents.
+
+        The ContextVar is still consulted as a fallback so
+        ``src/playbooks/runner.py`` keeps working untouched.
+
+        **Removal package: Package 4**, when typed executors bind principals
+        directly.  See ``docs/specs/design/sandboxed-playbooks.md``.
+        """
+        from src.commands.principal import current_principal
+
+        principal = current_principal()
+        if principal is not None and principal.profile_id:
+            return principal.profile_id
         return _caller_profile_id_var.get()
 
     @_caller_profile_id.setter
@@ -487,6 +505,12 @@ class CommandHandler(
         enforce profile inheritance and prevent capability escalation.
 
         Pass ``None`` to clear the binding when the call completes.
+
+        Package 0: this also binds a ``PLAYBOOK``-kind principal carrying the
+        profile's capability policy, so playbook-driven commands go through
+        the same authorization path as session-driven ones instead of a
+        parallel one.  The policy is resolved lazily on first use rather than
+        here, because this setter is synchronous and profile lookup is not.
         """
         self._caller_profile_id = profile_id
 
@@ -648,6 +672,122 @@ class CommandHandler(
             return True
         return False
 
+    # -- Execution principal seam (Playbook V2 Package 0 §3.5) -------------
+    #
+    # This is the ONE place a principal is constructed for a request, and the
+    # single thing Package 0 reverts by deleting.  Everything downstream —
+    # dispatch authorization, delegation narrowing, tool-schema filtering —
+    # reads ``current_principal()``.
+
+    #: ``{session_id: (principal_inputs, expires_at)}``.  One extra
+    #: ``get_session`` + ``get_profile`` per command is the cost of deriving
+    #: identity rather than minting it; a short TTL keeps that off the hot
+    #: path without letting a stale-wide policy linger.  Invalidated outright
+    #: by ``sync_profile_to_db`` on a successful upsert, so a profile edit
+    #: takes effect within one vault sync rather than one TTL.
+    _PRINCIPAL_CACHE_TTL: float = 30.0
+
+    def _invalidate_principal_cache(self, session_id: str | None = None) -> None:
+        """Drop cached principal inputs — all of them, or one session's."""
+        cache = getattr(self, "_principal_cache", None)
+        if cache is None:
+            return
+        if session_id is None:
+            cache.clear()
+        else:
+            cache.pop(session_id, None)
+
+    @property
+    def _command_resolver(self):
+        """Tells :mod:`src.commands.authorization` what kind of name it has."""
+        from src.commands.authorization import CommandHandlerResolver
+
+        resolver = getattr(self, "_command_resolver_cached", None)
+        if resolver is None:
+            resolver = CommandHandlerResolver(self)
+            self._command_resolver_cached = resolver
+        return resolver
+
+    async def _principal_from_scope(self, scope: dict | None):
+        """Derive the request's principal from the server-supplied scope.
+
+        Fails closed at every step: an unresolvable identity yields
+        ``DENY_ALL`` with a provenance entry naming why, never a permissive
+        default.
+
+        ``elevated`` is carried onto the principal but is *not* a policy
+        bypass — see the module docstring of ``src.commands.principal``.
+        """
+        from src.commands.principal import (
+            TRUSTED_LOCAL,
+            ExecutionPrincipal,
+            PrincipalKind,
+        )
+        from src.profiles.capabilities import DENY_ALL, capability_policy_for
+
+        if not scope or scope.get("kind") != "session":
+            return TRUSTED_LOCAL
+
+        session_id = scope.get("session_id")
+        common = {
+            "kind": PrincipalKind.SESSION,
+            "session_id": session_id,
+            "task_id": scope.get("task_id"),
+            "project_id": scope.get("project_id"),
+            "elevated": bool(scope.get("elevated")),
+        }
+
+        def _closed(reason: str):
+            logger.warning(
+                "principal_fail_closed reason=%s session_id=%s", reason, session_id
+            )
+            return ExecutionPrincipal(policy=DENY_ALL, provenance=(reason,), **common)
+
+        if not session_id:
+            return _closed("session-not-found")
+
+        cache = getattr(self, "_principal_cache", None)
+        if cache is None:
+            cache = self._principal_cache = {}
+        entry = cache.get(session_id)
+        now = time.monotonic()
+        if entry is not None and entry[1] > now:
+            profile_id, policy, reason = entry[0]
+        else:
+            session = await self.db.get_session(session_id)
+            if session is None:
+                return _closed("session-not-found")
+            profile_id = getattr(session, "profile_id", None)
+            if not profile_id:
+                profile_id, policy, reason = None, DENY_ALL, "session-has-no-profile"
+            else:
+                profile = await self.db.get_profile(profile_id)
+                if profile is None:
+                    policy, reason = DENY_ALL, "profile-not-found"
+                else:
+                    policy = capability_policy_for(
+                        profile, plugin_command_names=self._plugin_command_names()
+                    )
+                    reason = None
+            cache[session_id] = ((profile_id, policy, reason), now + self._PRINCIPAL_CACHE_TTL)
+
+        if reason is not None:
+            logger.warning(
+                "principal_fail_closed reason=%s session_id=%s", reason, session_id
+            )
+            return ExecutionPrincipal(
+                policy=DENY_ALL, profile_id=profile_id, provenance=(reason,), **common
+            )
+        return ExecutionPrincipal(policy=policy, profile_id=profile_id, **common)
+
+    def _plugin_command_names(self) -> frozenset[str]:
+        """Names the plugin registry dispatches, for capability classification."""
+        registry = getattr(self.orchestrator, "plugin_registry", None)
+        names = getattr(registry, "_commands", None) if registry is not None else None
+        if isinstance(names, dict):
+            return frozenset(names)
+        return frozenset()
+
     async def execute(self, name: str, args: dict) -> dict:
         """Execute a command by name and return a structured result dict.
 
@@ -661,9 +801,17 @@ class CommandHandler(
             # Belt-and-braces defense — /api/execute already strips any
             # client-supplied ``_scope`` before forwarding the trusted one.
             scope = None
-            if isinstance(args, dict) and "_scope" in args:
+            if isinstance(args, dict) and any(k in args for k in SERVER_OWNED_ARG_KEYS):
                 args = dict(args)
-                scope = args.pop("_scope")
+                scope = args.pop("_scope", None)
+                # Belt-and-braces defense, mirroring the ``_scope`` comment
+                # above: /api/execute and the generated typed routes already
+                # strip every server-owned key before forwarding the trusted
+                # ones, so this is the second of two independent layers.  A
+                # ``_policy`` claiming every command is inert — the principal
+                # below is built from the session row regardless.
+                for key in SERVER_OWNED_ARG_KEYS[1:]:
+                    args.pop(key, None)
             # Save/restore rather than set/clear: a command can dispatch
             # another one inside its own body (``task_close --claim-next``
             # calls ``_cmd_task_claim``; the playbook runner and supervisor
@@ -671,6 +819,14 @@ class CommandHandler(
             # the ``finally`` would strip the outer command's identity the
             # moment the inner one returned.
             _scope_token = _current_scope_var.set(scope)
+            # The principal follows the same save/restore discipline, and for
+            # the same reason: ``execute`` is re-entrant.  An already-bound
+            # principal (the playbook runner, an orchestrator service call)
+            # wins — only a request that carries none derives one.
+            principal = current_principal()
+            if principal is None:
+                principal = await self._principal_from_scope(scope)
+            _principal_token = _principal_var.set(principal)
             mutating = self._is_mutating(name)
             # Terminal keystrokes may be secrets. They belong only to the
             # terminal, never to general command logs or the activity feed.
@@ -771,6 +927,7 @@ class CommandHandler(
             finally:
                 # Ensure scope does not leak across commands.
                 _current_scope_var.reset(_scope_token)
+                _principal_var.reset(_principal_token)
                 # Emit ``command.invoked`` for dashboard live-activity chips
                 # and future observability surfaces. Gated on the config flag;
                 # any failure is swallowed so a broken bus never breaks

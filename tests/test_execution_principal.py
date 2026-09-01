@@ -16,11 +16,7 @@ import pytest
 
 from src.models import AgentProfile, Project, SessionRecord
 
-#: The xfail marker is removed by T-11 (roadmap commit 3).
-pytestmark = [
-    pytest.mark.asyncio,
-    pytest.mark.xfail(strict=True, reason="Package 0 T-4"),
-]
+pytestmark = pytest.mark.asyncio
 
 
 async def _seed(handler, *, profile: AgentProfile | None, session_id: str = "s1"):
@@ -34,11 +30,15 @@ async def _seed(handler, *, profile: AgentProfile | None, session_id: str = "s1"
             task_id=None,
             project_id="p",
             agent_id=None,
-            profile_id=(profile.id if profile is not None else None),
+            profile_id=(profile.id if profile is not None else ""),
             harness="claude",
             provider="fake",
             name=session_id,
             lifecycle="task",
+            work_dir="/tmp",
+            epoch="e1",
+            instance_token="t1",
+            started_at=0.0,
             state="running",
         )
     )

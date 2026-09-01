@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from src.profiles.capabilities import WILDCARD_CHARS
 from src.models import AgentProfile
 from src.profiles.parser import (
     ParsedProfile,
@@ -294,6 +295,9 @@ async def sync_profile_to_db(
         model=profile_dict.get("model", ""),
         permission_mode=profile_dict.get("permission_mode", ""),
         allowed_tools=profile_dict.get("allowed_tools", []),
+        harness_tools=profile_dict.get("harness_tools"),
+        aq_commands=profile_dict.get("aq_commands"),
+        plugin_tools=profile_dict.get("plugin_tools"),
         mcp_servers=profile_dict.get("mcp_servers", []),
         system_prompt_suffix=profile_dict.get("system_prompt_suffix", ""),
         install=profile_dict.get("install", {}),
@@ -323,6 +327,30 @@ async def sync_profile_to_db(
     if harness_warning:
         warnings.append(harness_warning)
 
+    # Wildcards are a hard failure at sync time, not a warning: a stored
+    # "*" is exactly the "grant everything" value Playbook V2 Package 0
+    # exists to remove, and letting it reach the DB would make the policy
+    # unconstructible later (CapabilityPolicyError at read time).
+    wildcards = sorted(
+        {
+            name
+            for field_name in ("allowed_tools", "harness_tools", "aq_commands", "plugin_tools")
+            for name in (getattr(profile, field_name, None) or [])
+            if isinstance(name, str) and any(ch in name for ch in WILDCARD_CHARS)
+        }
+    )
+    if wildcards:
+        return ProfileSyncResult(
+            success=False,
+            action="none",
+            profile_id=profile_id,
+            name=name,
+            errors=[
+                f"wildcard capabilities are prohibited: {', '.join(wildcards)} — "
+                "list every name explicitly"
+            ],
+        )
+
     if profile.allowed_tools:
         from src.known_tools import validate_tool_names
 
@@ -333,6 +361,11 @@ async def sync_profile_to_db(
     # 6. Upsert into database.
     try:
         action = await db.upsert_profile(profile)
+        # Package 0 §3.5: the principal seam caches (profile_id, policy) per
+        # session for 30s.  Invalidating here means an operator's profile
+        # edit takes effect within one vault sync rather than one TTL — the
+        # documented fix for "my agent is stuck on `capability denied`".
+        _invalidate_principal_caches()
     except Exception as exc:
         logger.error(
             "Database error during profile sync for '%s': %s",
@@ -829,3 +862,15 @@ async def scan_and_sync_existing_profiles(
         pruned,
     )
     return results
+
+
+def _invalidate_principal_caches() -> None:
+    """Drop cached principal inputs on the live CommandHandler, if any."""
+    try:
+        from src.api import dependencies as deps
+
+        handler = deps._command_handler
+        if handler is not None:
+            handler._invalidate_principal_cache()
+    except Exception:  # pragma: no cover — a cold cache is always safe
+        logger.debug("could not invalidate principal cache", exc_info=True)

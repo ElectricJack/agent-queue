@@ -34,10 +34,11 @@ any of the three by switching harness.
 }
 ```
 
-## Tools
+## Capabilities
+
 ```json
 {
-  "allowed": [
+  "harness_tools": [
     "Bash",
     "Read",
     "Write",
@@ -50,6 +51,31 @@ any of the three by switching harness.
     "WebSearch",
     "WebFetch",
     "NotebookEdit"
+  ],
+  "aq_commands": [
+    "create_task",
+    "formula_list",
+    "formula_show",
+    "get_schema",
+    "message_inbox",
+    "message_reply",
+    "message_send",
+    "pr_merge",
+    "prime",
+    "project_ready",
+    "session_drain_ack",
+    "task_claim",
+    "task_close",
+    "task_comment",
+    "task_comments",
+    "task_handoff",
+    "task_heartbeat",
+    "task_set",
+    "task_show"
+  ],
+  "plugin_tools": [
+    "memory_save",
+    "memory_search"
   ]
 }
 ```

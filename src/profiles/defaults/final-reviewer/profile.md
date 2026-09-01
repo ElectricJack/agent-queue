@@ -17,11 +17,11 @@ tags: [system, review, merge-authority, dv2-phase2]
 }
 ```
 
-## Tools
+## Capabilities
 
 ```json
 {
-  "allowed": [
+  "harness_tools": [
     "Bash",
     "Read",
     "Write",
@@ -33,13 +33,31 @@ tags: [system, review, merge-authority, dv2-phase2]
     "Skill",
     "WebSearch",
     "WebFetch",
-    "NotebookEdit",
+    "NotebookEdit"
+  ],
+  "aq_commands": [
+    "get_schema",
     "get_task",
-    "task_close",
-    "task_heartbeat",
-    "reopen_with_feedback",
+    "message_inbox",
+    "message_reply",
+    "message_send",
     "pr_merge",
-    "git_diff"
+    "prime",
+    "reopen_with_feedback",
+    "session_drain_ack",
+    "task_close",
+    "task_comment",
+    "task_comments",
+    "task_handoff",
+    "task_heartbeat",
+    "task_set",
+    "task_show"
+  ],
+  "plugin_tools": [
+    "git_diff",
+    "memory_save",
+    "memory_search",
+    "pr_url"
   ]
 }
 ```

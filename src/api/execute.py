@@ -19,10 +19,15 @@ from pydantic import BaseModel
 from src.api.auth import LOCAL_SCOPE, RequestScope
 from src.api.dependencies import get_command_handler
 from src.api.scope import check_request_scope
+from src.commands.principal import SERVER_OWNED_ARG_KEYS
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+#: Keys the server owns on a command's args.  Stripped here and again inside
+#: ``CommandHandler.execute`` — two independent layers.
+_SERVER_OWNED_ARG_KEYS = SERVER_OWNED_ARG_KEYS
 
 
 class ExecuteRequest(BaseModel):
@@ -52,10 +57,12 @@ async def api_execute(
             status_code=403,
         )
 
-    # aq-surface Phase S2: strip any client-supplied ``_scope`` BEFORE we
-    # inject the middleware-derived one — a client cannot spoof identity.
+    # aq-surface Phase S2 + Playbook V2 Package 0 §3.7: strip every
+    # server-owned key BEFORE we inject the middleware-derived ones — a
+    # client cannot spoof identity, policy, or profile.
     args = dict(body.args)
-    args.pop("_scope", None)
+    for key in _SERVER_OWNED_ARG_KEYS:
+        args.pop(key, None)
 
     scope: RequestScope = (
         getattr(request.state, "scope", LOCAL_SCOPE) if request is not None else LOCAL_SCOPE
@@ -98,7 +105,10 @@ async def api_execute(
         details = {k: v for k, v in result.items() if k != "error"}
         if details:
             payload["details"] = json.loads(json.dumps(details, default=str))
-        return JSONResponse(payload, status_code=200)
+        # A capability denial is an authorization failure, not a command
+        # error; it is the same 403 the scope gate returns.
+        status = 403 if result.get("error_code") == "capability_denied" else 200
+        return JSONResponse(payload, status_code=status)
     return JSONResponse(
         {"ok": True, "result": json.loads(json.dumps(result, default=str))},
         status_code=200,

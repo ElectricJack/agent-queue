@@ -51,6 +51,10 @@ async def _seed_session(handler, profile: AgentProfile, session_id: str = "s1"):
             provider="fake",
             name=session_id,
             lifecycle="task",
+            work_dir="/tmp",
+            epoch="e1",
+            instance_token="t1",
+            started_at=0.0,
             state="running",
         )
     )
