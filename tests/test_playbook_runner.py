@@ -247,6 +247,35 @@ class TestLinearExecution:
         ]
         assert all(call.kwargs["run_id"] == runner.run_id for call in sync.await_args_list)
 
+    async def test_assignment_run_has_no_tools_or_projected_task(
+        self, monkeypatch, mock_services, mock_db, event_data
+    ):
+        sync = AsyncMock()
+        monkeypatch.setattr("src.playbooks.runner.sync_playbook_run_task", sync)
+        graph = {
+            "id": "default-assignment-routing",
+            "version": 1,
+            "kind": "assignment-routing",
+            "nodes": {
+                "choose": {"entry": True, "prompt": "Choose routes.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+        runner = PlaybookRunner(
+            graph,
+            event_data,
+            mock_services,
+            db=mock_db,
+            sync_task_projection=False,
+            tool_overrides=[],
+        )
+
+        await runner.run()
+
+        assert _tools_of(mock_services.llm.run_tools.call_args) == []
+        assert "only job is assignment routing" in runner.messages[0]["content"]
+        sync.assert_not_awaited()
+
     async def test_supervisor_called_with_node_prompt(
         self, mock_services, simple_graph, event_data
     ):

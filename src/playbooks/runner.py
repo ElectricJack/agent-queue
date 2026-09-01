@@ -156,6 +156,8 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
         daily_token_tracker: DailyTokenTracker | None = None,
         daily_token_cap: int | None = None,
         event_bus: EventBus | None = None,
+        sync_task_projection: bool = True,
+        tool_overrides: list[str] | None = None,
     ):
         self.graph = graph
         self.event = event
@@ -165,6 +167,7 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
         self._daily_token_tracker = daily_token_tracker
         self._daily_token_cap = daily_token_cap
         self.event_bus = event_bus
+        self._sync_task_projection = sync_task_projection
         # Optional RuntimeRegistry used by ``_execute_single_node`` to
         # dispatch nodes whose profile declares a ``harness`` — those run as
         # one-shot sessions per node.  When *None* the node runs in-process
@@ -213,7 +216,9 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
         # call (db lookup is async).  ``None`` means the registry's core tools.
         self._profile_id_raw: str | None = graph.get("profile_id")
         self._profile: AgentProfile | None = None
-        self._tool_overrides: list[str] | None = None
+        self._tool_overrides: list[str] | None = (
+            list(tool_overrides) if tool_overrides is not None else None
+        )
         self._profile_loaded: bool = False
 
         # Global daily playbook token cap (roadmap 5.2.8).
@@ -422,6 +427,8 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
         task_handler: CommandHandler | None = None,
     ) -> None:
         """Project this persisted run into the command-center task graph."""
+        if not self._sync_task_projection:
+            return
         task_handler = task_handler or getattr(self.services, "handler", None)
         if task_handler is None:
             return
@@ -535,18 +542,27 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
         # The preamble overrides the system prompt's delegation instinct —
         # playbook nodes must be executed directly using tools, not delegated
         # to agents via create_task (unless the node prompt says to).
-        seed_message = (
-            f"Event received: {json.dumps(self.event)}\n\n"
-            f"You are executing playbook '{self._playbook_id}'. "
-            f"Each step will give you a specific instruction.\n\n"
-            f"**Rules:**\n"
-            f"- Call the tools mentioned in each step directly (they are "
-            f"available in your tool list — do NOT use run_command)\n"
-            f"- Do NOT create tasks unless the step explicitly says to\n"
-            f"- Use `load_tools(category=...)` if a tool is not in your "
-            f"current tool list\n"
-            f"- After completing each step, describe what you did and the results"
-        )
+        if self.graph.get("kind") == "assignment-routing":
+            seed_message = (
+                f"Assignment batch: {json.dumps(self.event)}\n\n"
+                "Your only job is assignment routing. Follow the playbook guidance, "
+                "choose intelligence_class and optional provider from the supplied "
+                "options, and return the required JSON. Do not call tools or perform "
+                "any task work."
+            )
+        else:
+            seed_message = (
+                f"Event received: {json.dumps(self.event)}\n\n"
+                f"You are executing playbook '{self._playbook_id}'. "
+                f"Each step will give you a specific instruction.\n\n"
+                f"**Rules:**\n"
+                f"- Call the tools mentioned in each step directly (they are "
+                f"available in your tool list — do NOT use run_command)\n"
+                f"- Do NOT create tasks unless the step explicitly says to\n"
+                f"- Use `load_tools(category=...)` if a tool is not in your "
+                f"current tool list\n"
+                f"- After completing each step, describe what you did and the results"
+            )
         self._seed_message = seed_message
         self.messages.append({"role": "user", "content": seed_message})
 
@@ -1748,6 +1764,11 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
         return response
 
     def _build_node_system_prompt(self) -> str:
+        if self.graph.get("kind") == "assignment-routing":
+            return (
+                "You route Agent Queue work. Return only the assignment JSON requested "
+                "by the playbook. You have no tools and must not perform the tasks."
+            )
         parts = [
             "You are executing one step of an Agent Queue playbook. Use the tools you are "
             "given to read and change system state. When the step is finished, answer in "

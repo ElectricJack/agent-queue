@@ -240,6 +240,9 @@ class Orchestrator(
         self._agent_reconciler = AgentReconciler(
             self.db, worktrees_enabled=config.worktrees.enabled
         )
+        from src.orchestrator.assignment_routing import AssignmentRoutingCoordinator
+
+        self.assignment_routing = AssignmentRoutingCoordinator(self)
         # Live adapter instances keyed by agent_id.  Stored so we can call
         # adapter.stop() from admin commands (stop_task, timeout recovery).
         self._adapters: dict[str, object] = {}
@@ -2493,15 +2496,17 @@ class Orchestrator(
                 await self._sweep_gates()
             except Exception:
                 logger.error("Gate sweep error", exc_info=True)
-            try:
-                await self._reconcile_triage_tasks()
-            except Exception:
-                logger.error("Triage recovery error", exc_info=True)
-
             # 3. Promote DEFINED/BLOCKED tasks whose dependencies are met → READY.
             #    Runs after step 1 so freshly-completed approvals can unblock
             #    dependents within the same cycle.
             await self._check_defined_tasks()
+
+            # 3a. Classify otherwise assignable work in one bounded LLM batch
+            # per project. Profile and agent selection remain deterministic.
+            try:
+                await self.assignment_routing.reconcile()
+            except Exception:
+                logger.error("Assignment routing reconciliation error", exc_info=True)
 
             # 3b. Backstop sweep for container settlement (spec §7). Settlement
             #     itself is event-driven inside transition_task; this only
