@@ -44,6 +44,31 @@ async def test_meta_absent_until_published(db):
     assert await db.get_layout_meta("p1", "all") is None
 
 
+async def test_next_layout_job_loses_race_cleanly(db):
+    """A concurrent winner leaves the only queued row already 'running'.
+
+    Interleaving two coroutines mid-transaction to hit next_layout_job's
+    SELECT/UPDATE window directly isn't practical against SQLite's
+    single-writer model, so this pre-flips the row the way a winning
+    claimant would have left it, then confirms the loser gets None and
+    does not touch started_at -- i.e. it never double-claims."""
+    from sqlalchemy import update as sa_update
+
+    from src.database.tables import layout_jobs
+
+    job = await db.enqueue_layout_job("p1", "all", "tidy")
+    async with db._engine.begin() as conn:
+        result = await conn.execute(
+            sa_update(layout_jobs)
+            .where(layout_jobs.c.id == job["id"], layout_jobs.c.status == "queued")
+            .values(status="running", started_at=0.0)
+        )
+        assert result.rowcount == 1
+    assert await db.next_layout_job() is None
+    row = await db.get_layout_job(job["id"])
+    assert row["status"] == "running" and row["started_at"] == 0.0
+
+
 def row(tid, x, y, path, container=None, depth=0, w=1.0, h=1.0, kind="card"):
     return LayoutRow(task_id=tid, container_id=container, path=path, depth=depth, rank=0,
                      order_key="U", w=w, h=h, rel_x=x, rel_y=y, abs_x=x, abs_y=y, kind=kind)
@@ -92,20 +117,33 @@ async def test_translation_moves_subtree_and_rewrites_cells(db):
 
 
 async def test_subtree_aggregates(db):
-    for t in ("e", "c1", "c2"):
+    for t in ("e", "c1", "c2", "g", "blocker"):
         await db.create_task(Task(id=t, project_id="p1", title=t, description=""))
     # A DEFINED container withholds its children (blocked-state §3.1); release
-    # it first so c1/c2 start unblocked, matching the aggregates asserted below.
+    # it first so c1/c2/g start unblocked unless independently blocked below.
     await db.transition_task("e", TaskStatus.READY, force=True)
     async with db._engine.begin() as conn:
         await db.set_parent("c1", "e", conn=conn)
         await db.set_parent("c2", "e", conn=conn)
+        await db.set_parent("g", "c2", conn=conn)
     await db.transition_task("c1", TaskStatus.COMPLETED, force=True)
-    ws = WriteSet(upserts=[row("e", 0, 0, "/e/", kind="container"),
-                           row("c1", 0, 0, "/e/c1/", "e", 1), row("c2", 1, 0, "/e/c2/", "e", 1)])
+    await db.transition_task("c2", TaskStatus.IN_PROGRESS, force=True)
+    # g blocks on a DEFINED root task -> g.is_blocked == 1, independent of
+    # the parent-child withholding above (c2 is IN_PROGRESS, so g is not
+    # withheld by its container; the "blocks" edge is what flips it).
+    await db.add_dependency("g", "blocker", "blocks")
+    ws = WriteSet(upserts=[
+        row("e", 0, 0, "/e/", kind="container"),
+        row("c1", 0, 0, "/e/c1/", "e", 1),
+        row("c2", 1, 0, "/e/c2/", "e", 1, kind="container"),
+        row("g", 0, 0, "/e/c2/g/", "c2", 2),
+    ])
     await db.publish_layout("p1", "all", ws, consumed_seq=None, extent=(3, 3), node_count_delta=None)
     agg = await db.subtree_aggregates("p1", "all", "/e/")
-    assert agg == {"children": 2, "descendants": 2, "completed": 1, "running": 0, "blocked": 0, "active": 1}
+    assert agg == {
+        "children": 2, "descendants": 3, "completed": 1, "running": 1,
+        "blocked": 1, "active": 2,
+    }
 
 
 async def test_publish_clears_consumed_dirty_rows(db):

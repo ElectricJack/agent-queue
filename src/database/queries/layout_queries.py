@@ -105,11 +105,16 @@ class LayoutQueryMixin:
             ).mappings().first()
             if not row:
                 return None
-            await conn.execute(
+            result = await conn.execute(
                 update(layout_jobs)
                 .where(layout_jobs.c.id == row["id"], layout_jobs.c.status == "queued")
                 .values(status="running", started_at=time.time())
             )
+            if result.rowcount != 1:
+                # Another caller claimed this job between our SELECT and
+                # UPDATE (or flipped it out of 'queued' entirely) — lose
+                # the race cleanly rather than double-claim it.
+                return None
             return {**dict(row), "status": "running"}
 
     async def finish_layout_job(self, job_id: str, *, error: str | None) -> None:
@@ -270,14 +275,33 @@ class LayoutQueryMixin:
         from src.task_graph.layout.flow import cells_for_box
 
         dialect = self._engine.dialect.name
-        async with self._engine.begin() as conn:
-            meta_q = select(project_layout_meta).where(
+
+        def _meta_query():
+            q = select(project_layout_meta).where(
                 project_layout_meta.c.project_id == project_id,
                 project_layout_meta.c.variant == variant,
             )
-            if dialect == "postgresql":
-                meta_q = meta_q.with_for_update()
-            meta = (await conn.execute(meta_q)).mappings().first()
+            return q.with_for_update() if dialect == "postgresql" else q
+
+        async with self._engine.begin() as conn:
+            meta = (await conn.execute(_meta_query())).mappings().first()
+            if meta is None:
+                # Seed a placeholder row first so a concurrent first-publish
+                # for the same (project, variant) loses the INSERT race
+                # instead of raising IntegrityError — then re-select (with
+                # FOR UPDATE on PostgreSQL) so both callers converge on one
+                # row and one UPDATE-based version bump below.
+                now0 = time.time()
+                seed_ins = (
+                    postgresql.insert if dialect == "postgresql" else sqlite.insert
+                )(project_layout_meta).values(
+                    project_id=project_id, variant=variant, layout_version=0,
+                    extent_w=0, extent_h=0, node_count=0, updated_at=now0, reconciled_at=now0,
+                )
+                await conn.execute(
+                    seed_ins.on_conflict_do_nothing(index_elements=["project_id", "variant"])
+                )
+                meta = (await conn.execute(_meta_query())).mappings().first()
 
             # deletes
             if write_set.deletes:
@@ -352,19 +376,15 @@ class LayoutQueryMixin:
                 select(func.count()).select_from(task_layouts).where(
                     task_layouts.c.project_id == project_id, task_layouts.c.variant == variant)
             )).scalar_one()
-            version = (meta["layout_version"] if meta else 0) + 1
+            version = meta["layout_version"] + 1
             now = time.time()
-            if meta:
-                await conn.execute(update(project_layout_meta).where(
-                    project_layout_meta.c.project_id == project_id,
-                    project_layout_meta.c.variant == variant,
-                ).values(layout_version=version, extent_w=extent[0], extent_h=extent[1],
-                         node_count=count, updated_at=now))
-            else:
-                await conn.execute(insert(project_layout_meta).values(
-                    project_id=project_id, variant=variant, layout_version=version,
-                    extent_w=extent[0], extent_h=extent[1], node_count=count,
-                    updated_at=now, reconciled_at=now))
+            # `meta` is guaranteed present here (existing row, or the seed
+            # row inserted above) — one UPDATE-based bump path, always.
+            await conn.execute(update(project_layout_meta).where(
+                project_layout_meta.c.project_id == project_id,
+                project_layout_meta.c.variant == variant,
+            ).values(layout_version=version, extent_w=extent[0], extent_h=extent[1],
+                     node_count=count, updated_at=now))
 
             if consumed_seq is not None:
                 await self.clear_layout_dirty(project_id, consumed_seq, conn=conn)
