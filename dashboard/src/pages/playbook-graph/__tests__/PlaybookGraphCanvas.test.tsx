@@ -5,7 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import PlaybookGraphCanvas from "../PlaybookGraphCanvas";
 import type { PlaybookGraphNodeData } from "../types";
-import { edge, graph, layout, node } from "./fixtures";
+import { edge, graph, layout, node, pipelineGraph, pipelineLayout } from "./fixtures";
 
 interface FlowProps {
   nodes: Node<PlaybookGraphNodeData>[];
@@ -78,6 +78,25 @@ describe("PlaybookGraphCanvas", () => {
     expect(screen.getByTestId("edge-review-approve-goto")).toHaveTextContent("");
     expect(screen.getByTestId("edge-approve-done-goto")).toBeInTheDocument();
     expect(screen.getByTestId("edges").children).toHaveLength(6);
+  });
+
+  it("renders pipeline outcome edges with labels and the action command preview", () => {
+    render(<PlaybookGraphCanvas graph={pipelineGraph} layout={pipelineLayout} onSelectNode={vi.fn()} />);
+    expect(screen.getByTestId("edge-ensure-review-review-ready-success")).toHaveTextContent("on success");
+    expect(screen.getByTestId("edge-ensure-review-review-failed-failure")).toHaveTextContent("on failure");
+    expect(screen.getByRole("button", { name: "Inspect node ensure-review" })).toHaveTextContent("ensure_task");
+  });
+
+  it("keeps an unknown edge kind visible with a neutral transition treatment", () => {
+    render(
+      <PlaybookGraphCanvas
+        graph={{ nodes: pipelineGraph.nodes, edges: [edge("ensure-review", "review-ready", { edge_type: "retry" })] }}
+        layout={pipelineLayout}
+        onSelectNode={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId("edge-ensure-review-review-ready-retry")).toHaveTextContent("transition");
+    expect(flow.current?.edges[0]?.style?.strokeDasharray).toBe("4 4");
   });
 
   it("is a read-only canvas with zoom controls", () => {

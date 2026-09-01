@@ -14,12 +14,19 @@ interface CardProps {
   selected?: boolean;
 }
 
+function actionCommand(action: unknown): string | null {
+  if (!action || typeof action !== "object" || Array.isArray(action)) return null;
+  const command = (action as Record<string, unknown>).command;
+  return typeof command === "string" && command.length > 0 ? command : null;
+}
+
 /** One compiled step. The whole card is a single button so pointer activation
  *  and Enter/Space go through the same accessible control. */
 export function PlaybookStepCard({ data, selected = false }: CardProps) {
   const { node, onSelect } = data;
   const tone = NODE_TYPE_TONES[node.type] ?? NODE_TYPE_TONES.action;
   const typeLabel = NODE_TYPE_LABELS[node.type] ?? node.type;
+  const preview = actionCommand(node.details.action) ?? node.prompt_preview;
 
   return (
     <button
@@ -41,8 +48,8 @@ export function PlaybookStepCard({ data, selected = false }: CardProps) {
       <span className="w-full">
         <span className="rounded bg-black/40 px-1 py-0.5 text-[9px] uppercase tracking-wide">{typeLabel}</span>
       </span>
-      {node.prompt_preview && (
-        <span className="line-clamp-3 w-full text-[10px] leading-4 opacity-90">{node.prompt_preview}</span>
+      {preview && (
+        <span className="line-clamp-3 w-full text-[10px] leading-4 opacity-90">{preview}</span>
       )}
       <span className="mt-auto flex w-full items-center gap-1 text-[9px] opacity-75">
         {node.timeout_seconds ? <span className="rounded bg-white/10 px-1">{node.timeout_seconds}s timeout</span> : null}

@@ -1,7 +1,7 @@
 import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import PlaybookNodeInspector from "../PlaybookNodeInspector";
-import { REVIEW_PROMPT, graph } from "./fixtures";
+import { REVIEW_PROMPT, graph, pipelineGraph } from "./fixtures";
 
 const byId = Object.fromEntries(graph.nodes!.map((n) => [n.id, n]));
 
@@ -64,6 +64,14 @@ describe("PlaybookNodeInspector", () => {
     expect(within(section("Action")).getByText(/"channel": "#reviews"/)).toBeInTheDocument();
     expect(within(section("For each")).getByText(/"items": "changed_files"/)).toBeInTheDocument();
     expect(within(section("Output")).getByText(/"verdict": "string"/)).toBeInTheDocument();
+  });
+
+  it("renders a pipeline action payload in its labelled inspector section", () => {
+    render(<PlaybookNodeInspector node={pipelineGraph.nodes![0]!} />);
+    const action = section("Action");
+    expect(within(action).getByText(/"command": "ensure_task"/)).toBeInTheDocument();
+    expect(within(action).getByText(/"on_success": "review-ready"/)).toBeInTheDocument();
+    expect(within(action).getByText(/"on_failure": "review-failed"/)).toBeInTheDocument();
   });
 
   it("shows execution timeout, pause timeout and timeout target", () => {

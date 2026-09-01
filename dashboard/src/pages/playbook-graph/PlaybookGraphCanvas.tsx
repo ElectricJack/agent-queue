@@ -4,11 +4,9 @@ import "@xyflow/react/dist/style.css";
 import type { PlaybookGraphLayout, PlaybookGraphNodesEdges } from "../../api/client";
 import PlaybookStepNode from "./PlaybookStepNode";
 import { layoutPlaybookGraph } from "./layout";
-import { EDGE_KIND_LABELS, EDGE_KIND_STYLES, PLAYBOOK_NODE_TYPE } from "./types";
+import { EDGE_KIND_LABELS, EDGE_KIND_STYLES, NEUTRAL_EDGE_STYLE, PLAYBOOK_NODE_TYPE } from "./types";
 
 const nodeTypes = { [PLAYBOOK_NODE_TYPE]: PlaybookStepNode };
-const EDGE_KINDS = ["goto", "condition", "otherwise", "timeout"] as const;
-
 export interface PlaybookGraphCanvasProps {
   graph: PlaybookGraphNodesEdges | undefined;
   layout: PlaybookGraphLayout | undefined;
@@ -48,7 +46,7 @@ export default function PlaybookGraphCanvas({
   );
 
   const edgeKinds = useMemo(
-    () => EDGE_KINDS.filter((kind) => edges.some((edge) => edge.data?.edgeType === kind)),
+    () => [...new Set(edges.map((edge) => String(edge.data?.edgeType ?? "unknown")))],
     [edges],
   );
 
@@ -102,9 +100,9 @@ export default function PlaybookGraphCanvas({
                 {edgeKinds.map((kind) => (
                   <li key={kind} className="flex items-center gap-2">
                     <svg aria-hidden width="30" height="10">
-                      <path d="M0 5h26m-4-3 4 3-4 3" fill="none" style={EDGE_KIND_STYLES[kind]} />
+                      <path d="M0 5h26m-4-3 4 3-4 3" fill="none" style={EDGE_KIND_STYLES[kind] ?? NEUTRAL_EDGE_STYLE} />
                     </svg>
-                    {EDGE_KIND_LABELS[kind]}
+                    {EDGE_KIND_LABELS[kind] ?? "transition"}
                   </li>
                 ))}
               </ul>

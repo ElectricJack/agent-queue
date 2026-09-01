@@ -40,7 +40,7 @@ export const NODE_TYPE_TONES: Record<string, string> = {
   terminal: "border-gray-500 bg-gray-900 text-gray-200",
 };
 
-export type PlaybookEdgeKind = "goto" | "condition" | "otherwise" | "timeout";
+export type PlaybookEdgeKind = "goto" | "condition" | "otherwise" | "timeout" | "success" | "failure";
 
 /** Stroke pattern carries the edge kind on its own, so the four kinds stay
  *  distinguishable for anyone who cannot separate them by color. */
@@ -49,6 +49,16 @@ export const EDGE_KIND_STYLES: Record<string, CSSProperties> = {
   condition: { stroke: "#fbbf24", strokeWidth: 1.5, strokeDasharray: "7 4" },
   otherwise: { stroke: "#f472b6", strokeWidth: 1.5, strokeDasharray: "2 4" },
   timeout: { stroke: "#f87171", strokeWidth: 1.5, strokeDasharray: "10 3 2 3" },
+  success: { stroke: "#34d399", strokeWidth: 2, strokeDasharray: "0" },
+  failure: { stroke: "#fb7185", strokeWidth: 2, strokeDasharray: "7 4" },
+};
+
+/** Unknown server edge kinds remain visible and labelled rather than being
+ * silently treated as a known transition or crashing the graph. */
+export const NEUTRAL_EDGE_STYLE: CSSProperties = {
+  stroke: "#cbd5e1",
+  strokeWidth: 1.5,
+  strokeDasharray: "4 4",
 };
 
 export const EDGE_KIND_LABELS: Record<string, string> = {
@@ -56,6 +66,8 @@ export const EDGE_KIND_LABELS: Record<string, string> = {
   condition: "condition",
   otherwise: "otherwise",
   timeout: "timeout",
+  success: "on success",
+  failure: "on failure",
 };
 
 export interface PlaybookGraphNodeData extends Record<string, unknown> {

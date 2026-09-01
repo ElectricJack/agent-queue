@@ -8,6 +8,7 @@ import {
   COLUMN_GAP,
   EDGE_KIND_LABELS,
   EDGE_KIND_STYLES,
+  NEUTRAL_EDGE_STYLE,
   NODE_HEIGHT,
   NODE_WIDTH,
   PADDING,
@@ -67,14 +68,19 @@ export function layoutPlaybookGraph(
       return;
     }
     const kind = apiEdge.edge_type;
+    const kindLabel = EDGE_KIND_LABELS[kind] ?? "transition";
+    const style = EDGE_KIND_STYLES[kind] ?? NEUTRAL_EDGE_STYLE;
+    const label = kind === "success" || kind === "failure"
+      ? kindLabel
+      : apiEdge.label || (kind === "goto" ? undefined : kindLabel);
     edges.push({
       id: `${index}:${apiEdge.source}->${apiEdge.target}:${kind}`,
       source: apiEdge.source,
       target: apiEdge.target,
-      label: apiEdge.label ? apiEdge.label : undefined,
-      ariaLabel: `${EDGE_KIND_LABELS[kind] ?? kind} edge from ${apiEdge.source} to ${apiEdge.target}`,
-      markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: EDGE_KIND_STYLES[kind]?.stroke as string },
-      style: EDGE_KIND_STYLES[kind] ?? EDGE_KIND_STYLES.goto,
+      label,
+      ariaLabel: `${kindLabel} edge from ${apiEdge.source} to ${apiEdge.target}`,
+      markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: style.stroke as string },
+      style,
       labelBgPadding: [4, 2],
       labelBgBorderRadius: 3,
       labelBgStyle: { fill: "#0b1220", fillOpacity: 0.92 },

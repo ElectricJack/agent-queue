@@ -106,3 +106,38 @@ export const layout: PlaybookGraphLayout = {
     done: { x: 0, y: 3 },
   },
 };
+
+/** A deterministic pipeline action: its outcomes are execution results, not
+ * prompt-derived transitions. */
+export const pipelineGraph: PlaybookGraphNodesEdges = {
+  nodes: [
+    node("ensure-review", {
+      entry: true,
+      out_degree: 2,
+      details: {
+        entry: true,
+        action: {
+          command: "ensure_task",
+          args: { title: "Review the proposal" },
+          on_success: "review-ready",
+          on_failure: "review-failed",
+        },
+      },
+    }),
+    node("review-ready", { terminal: true, out_degree: 0, details: { terminal: true } }),
+    node("review-failed", { terminal: true, out_degree: 0, details: { terminal: true } }),
+  ],
+  edges: [
+    edge("ensure-review", "review-ready", { edge_type: "success", label: "success" }),
+    edge("ensure-review", "review-failed", { edge_type: "failure", label: "failure" }),
+  ],
+};
+
+export const pipelineLayout: PlaybookGraphLayout = {
+  direction: "TD",
+  grid_positions: {
+    "ensure-review": { x: 0, y: 0 },
+    "review-ready": { x: 0, y: 1 },
+    "review-failed": { x: 1, y: 1 },
+  },
+};
