@@ -542,6 +542,10 @@ from .probe_mcp_server_response import ProbeMcpServerResponse
 from .probe_mcp_server_response_422 import ProbeMcpServerResponse422
 from .probed_tool_model import ProbedToolModel
 from .probed_tool_model_input_schema import ProbedToolModelInputSchema
+from .profile_audit_request import ProfileAuditRequest
+from .profile_audit_response_422 import ProfileAuditResponse422
+from .profile_audit_response import ProfileAuditResponse
+from .profile_audit_row import ProfileAuditRow
 from .profile_detail import ProfileDetail
 from .profile_detail_install import ProfileDetailInstall
 from .profile_summary import ProfileSummary
@@ -1374,6 +1378,10 @@ __all__ = (
     "ProbeMcpServerRequest",
     "ProbeMcpServerResponse",
     "ProbeMcpServerResponse422",
+    "ProfileAuditRequest",
+    "ProfileAuditResponse422",
+    "ProfileAuditResponse",
+    "ProfileAuditRow",
     "ProfileDetail",
     "ProfileDetailInstall",
     "ProfileSummary",

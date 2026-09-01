@@ -9,6 +9,7 @@ contract those owners must follow.
 """
 
 from src.doctor.builtin import builtin_checks
+from src.doctor.capability_checks import capability_checks
 from src.doctor.formula_checks import formula_checks
 from src.doctor.hierarchy_checks import hierarchy_checks
 from src.doctor.models import (
@@ -31,6 +32,7 @@ __all__ = [
     "builtin_checks",
     "default_registry",
     "exit_code_for",
+    "capability_checks",
     "formula_checks",
     "run_doctor",
 ]
@@ -46,5 +48,7 @@ def default_registry() -> DoctorRegistry:
     for check in pool_checks():
         registry.register(check)
     for check in formula_checks():
+        registry.register(check)
+    for check in capability_checks():
         registry.register(check)
     return registry

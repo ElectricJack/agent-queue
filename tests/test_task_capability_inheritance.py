@@ -49,16 +49,52 @@ class TestCheckCapabilityEscalation:
         child = _profile("c", tools=["a", "b"], servers=["x"])
         assert _check_capability_escalation(parent, child) == ""
 
-    def test_empty_child_always_allowed(self):
+    def test_child_declaring_nothing_is_not_automatically_narrower(self):
+        """An empty legacy ``allowed_tools`` means the CLI's own defaults.
+
+        The old check treated "child declares nothing" as strictest and
+        always allowed it. That was the wrong reading: under legacy
+        semantics an empty list meant *emit no allowlist flag*, i.e. the
+        harness defaults plus AGENT_COMMAND_SET — broader than a narrow
+        parent, not narrower. Playbook V2 Package 0 §3.3 makes that grant
+        explicit, so delegating to such a profile is correctly refused.
+        """
         parent = _profile("p", tools=["a"], servers=["x"])
         child = _profile("c", tools=[], servers=[])
+        assert _check_capability_escalation(parent, child) != ""
+
+    def test_explicitly_empty_child_is_allowed(self):
+        """``[]`` in an authored ``## Capabilities`` block does mean none."""
+        parent = AgentProfile(
+            id="p", name="p", harness_tools=["Bash"], aq_commands=["a"], plugin_tools=[]
+        )
+        child = AgentProfile(
+            id="c", name="c", harness_tools=[], aq_commands=[], plugin_tools=[]
+        )
         assert _check_capability_escalation(parent, child) == ""
+
+    def test_escalation_is_caught_in_every_namespace(self):
+        base = dict(harness_tools=["Bash"], aq_commands=["a"], plugin_tools=["read_file"])
+        parent = AgentProfile(id="p", name="p", **base)
+        for ns, label in (
+            ("harness_tools", "harness tool"),
+            ("aq_commands", "aq_command"),
+            ("plugin_tools", "plugin_tool"),
+        ):
+            kwargs = dict(base)
+            kwargs[ns] = [*kwargs[ns], "extra"]
+            child = AgentProfile(id="c", name="c", **kwargs)
+            msg = _check_capability_escalation(parent, child)
+            assert label in msg, (ns, msg)
+            assert "'extra'" in msg
 
     def test_extra_tool_rejected(self):
         parent = _profile("p", tools=["a"], servers=[])
         child = _profile("c", tools=["a", "b"], servers=[])
         msg = _check_capability_escalation(parent, child)
-        assert "tool" in msg
+        # The message now names the namespace the escalation happened in,
+        # so an operator can see which kind of capability was widened.
+        assert "aq_command" in msg
         assert "'b'" in msg
 
     def test_extra_server_rejected(self):

@@ -180,3 +180,61 @@ class TestCheckCommandScope:
             "formula_show",
         }
         assert set(AGENT_COMMAND_SET) == expected
+
+
+class TestScopeAndCapabilityCompose:
+    """Playbook V2 Package 0 §3.7 — two independent gates, not one.
+
+    ``check_request_scope`` is a *server-owned* allowlist: the same 23 names
+    for every non-elevated session, regardless of profile. The capability
+    gate is *profile-owned*. A command must pass both. Package 0 deliberately
+    does not relax the scope gate to make room for the new one, and does not
+    widen ``AGENT_COMMAND_SET`` to shrink the §1.5 unreachable set.
+    """
+
+    def test_the_scope_gate_is_unchanged_by_package_0(self):
+        """The scope allowlist is server-owned and stays exactly 23 names."""
+        assert len(AGENT_COMMAND_SET) == 23
+        assert check_command_scope("task_show", {"task_id": "t1"}, SESSION) is None
+        assert check_command_scope("delete_task", {}, SESSION) is not None
+
+    def test_a_profile_policy_cannot_widen_the_scope_gate(self):
+        """Naming a command in a profile does not make the token admit it.
+
+        The capability gate can only *narrow*: a command outside
+        AGENT_COMMAND_SET is refused at the scope boundary before dispatch
+        is reached, whatever the profile says.
+        """
+        from src.profiles.capabilities import CapabilityPolicy
+
+        policy = CapabilityPolicy.from_namespaces(aq_commands=["delete_task"])
+        assert policy.allows_aq_command("delete_task") is True
+        assert check_command_scope("delete_task", {}, SESSION) is not None
+
+    def test_capability_denial_is_a_second_independent_gate(self):
+        """A command the scope gate admits can still be denied by policy."""
+        from src.commands.authorization import authorize_command
+        from src.commands.principal import ExecutionPrincipal, PrincipalKind
+        from src.profiles.capabilities import CapabilityPolicy
+
+        class _Resolver:
+            def is_builtin(self, name):
+                return True
+
+            def is_plugin(self, name):
+                return False
+
+            def plugin_command_names(self):
+                return frozenset()
+
+        assert "task_claim" in AGENT_COMMAND_SET
+        assert check_command_scope("task_claim", {}, SESSION) is None
+
+        principal = ExecutionPrincipal(
+            kind=PrincipalKind.SESSION,
+            policy=CapabilityPolicy.from_namespaces(aq_commands=["task_show"]),
+        )
+        decision = authorize_command(
+            "task_claim", principal, resolver=_Resolver(), mode="enforce"
+        )
+        assert decision.allowed is False

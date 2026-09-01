@@ -53,6 +53,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "delete_profile": "agent",
     "list_available_tools": "agent",
     "check_profile": "agent",
+    "profile_audit": "agent",
     "install_profile": "agent",
     "export_profile": "agent",
     "import_profile": "agent",
@@ -2268,6 +2269,30 @@ _ALL_TOOL_DEFINITIONS = [
                 "profile_id": {"type": "string", "description": "Profile ID to check"},
             },
             "required": ["profile_id"],
+        },
+    },
+    {
+        "name": "profile_audit",
+        "description": (
+            "Report which agent profiles still derive their capabilities from the "
+            "legacy allowed_tools list rather than an explicit ## Capabilities "
+            "block. One row per profile with its source (explicit/legacy), the "
+            "three capability namespaces, and the policy fingerprint — the "
+            "migration list to clear before capability enforcement is set to "
+            "'enforce'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Only audit this project's profiles",
+                },
+                "legacy_only": {
+                    "type": "boolean",
+                    "description": "Only report profiles that still need migration",
+                },
+            },
         },
     },
     {
