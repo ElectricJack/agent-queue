@@ -187,11 +187,11 @@ def named_session_name(profile_id: str, project_id: str | None = None) -> str:
 
 
 def pool_session_name(profile_id: str, project_id: str, nonce: str) -> str:
-    """Provider name for a pool worker session — also its ``session_id``.
+    """Provider name for a pool worker session.
 
-    Unlike task and named sessions, a pool session has no separate id/name
-    split: ``p-<profile>--<project>--<nonce>`` is both (swarm-work-model
-    §11.2), so adoption and ``list_sessions`` can key on either.
+    Pool row IDs are UUIDs so harnesses such as Claude can receive them via
+    ``--session-id``. This readable name remains the provider-facing address
+    used for pool adoption and operator lookup.
     """
     return f"p-{sanitize_name(profile_id)}--{sanitize_name(project_id)}--{sanitize_name(nonce)}"
 
@@ -326,6 +326,7 @@ class SessionSpecBuilder:
         harness: Harness,
         work_dir: str,
         session_id: str,
+        session_name: str,
         instance_token: str,
         epoch: str = "",
         api_url: str = "",
@@ -336,11 +337,11 @@ class SessionSpecBuilder:
     ) -> SessionSpec:
         """Spec for a pool worker session (``lifecycle="pool"``, §11).
 
-        *session_id* **is** the provider name — :func:`pool_session_name`
-        already derived it, so there is no separate id/name split to
-        reconcile the way task and named sessions have.  The bootstrap
-        prompt and env markers identify the launch as a pool worker rather
-        than a one-task or persistent session, per §11.2/§11.3.
+        *session_id* is the durable UUID that may be passed to a harness,
+        while *session_name* is the readable provider-facing name from
+        :func:`pool_session_name`. The bootstrap prompt and env markers
+        identify the launch as a pool worker rather than a one-task or
+        persistent session, per §11.2/§11.3.
         """
         profile_id = getattr(profile, "id", "") or ""
         project_id = getattr(project, "id", "") or ""
@@ -360,7 +361,7 @@ class SessionSpecBuilder:
         return self._build(
             harness=harness,
             profile=profile,
-            session_name=session_id,
+            session_name=session_name,
             work_dir=work_dir,
             session_id=session_id,
             task_id=None,
