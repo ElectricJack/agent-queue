@@ -2092,6 +2092,10 @@ class ExecutionMixin:
                 new_status = TaskStatus.READY
                 context = "retry"
 
+        # Persist a pipeline-discovered PR on the row so the review policy
+        # (final-reviewer trigger, downstream ``pr-merged`` gates) can see
+        # it even when the agent never called ``aq task set --pr-url``.
+        pr_kwargs = {"pr_url": pr_url} if pr_url else {}
         try:
             if verification_reopened:
                 # _reopen_with_verification_feedback performed the state
@@ -2105,6 +2109,7 @@ class ExecutionMixin:
                     retry_count=new_retry,
                     assigned_agent_id=None,
                     expect_claim_epoch=expect_claim_epoch,
+                    **pr_kwargs,
                 )
             else:
                 await self.db.transition_task(
@@ -2113,6 +2118,7 @@ class ExecutionMixin:
                     context=context,
                     assigned_agent_id=None,
                     expect_claim_epoch=expect_claim_epoch,
+                    **pr_kwargs,
                 )
         except HierarchyError as exc:
             # Invariant 6 (spec §7): the task has open children, so it stays
