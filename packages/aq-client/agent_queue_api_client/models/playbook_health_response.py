@@ -75,7 +75,7 @@ class PlaybookHealthResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.playbook_health_response_metrics import PlaybookHealthResponseMetrics  # noqa: PLC0415
+        from ..models.playbook_health_response_metrics import PlaybookHealthResponseMetrics
 
         d = dict(src_dict)
 

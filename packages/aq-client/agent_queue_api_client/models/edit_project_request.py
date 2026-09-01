@@ -23,6 +23,8 @@ class EditProjectRequest:
         discord_channel_id (None | str | Unset): Discord channel ID to link (optional, null to unlink)
         default_profile_id (None | str | Unset): Default agent profile ID for tasks in this project (optional, null to
             clear)
+        assignment_playbook_id (None | str | Unset): Project-scoped assignment-routing playbook ID (optional, null to
+            use the system default)
         repo_default_branch (None | str | Unset): Default git branch for the project (e.g. main, dev, master)
     """
 
@@ -33,6 +35,7 @@ class EditProjectRequest:
     budget_limit: int | None | Unset = UNSET
     discord_channel_id: None | str | Unset = UNSET
     default_profile_id: None | str | Unset = UNSET
+    assignment_playbook_id: None | str | Unset = UNSET
     repo_default_branch: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -75,6 +78,12 @@ class EditProjectRequest:
         else:
             default_profile_id = self.default_profile_id
 
+        assignment_playbook_id: None | str | Unset
+        if isinstance(self.assignment_playbook_id, Unset):
+            assignment_playbook_id = UNSET
+        else:
+            assignment_playbook_id = self.assignment_playbook_id
+
         repo_default_branch: None | str | Unset
         if isinstance(self.repo_default_branch, Unset):
             repo_default_branch = UNSET
@@ -100,6 +109,8 @@ class EditProjectRequest:
             field_dict["discord_channel_id"] = discord_channel_id
         if default_profile_id is not UNSET:
             field_dict["default_profile_id"] = default_profile_id
+        if assignment_playbook_id is not UNSET:
+            field_dict["assignment_playbook_id"] = assignment_playbook_id
         if repo_default_branch is not UNSET:
             field_dict["repo_default_branch"] = repo_default_branch
 
@@ -164,6 +175,15 @@ class EditProjectRequest:
 
         default_profile_id = _parse_default_profile_id(d.pop("default_profile_id", UNSET))
 
+        def _parse_assignment_playbook_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        assignment_playbook_id = _parse_assignment_playbook_id(d.pop("assignment_playbook_id", UNSET))
+
         def _parse_repo_default_branch(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -181,6 +201,7 @@ class EditProjectRequest:
             budget_limit=budget_limit,
             discord_channel_id=discord_channel_id,
             default_profile_id=default_profile_id,
+            assignment_playbook_id=assignment_playbook_id,
             repo_default_branch=repo_default_branch,
         )
 

@@ -46,7 +46,7 @@ class TaskSessionsResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.task_session_attempt import TaskSessionAttempt  # noqa: PLC0415
+        from ..models.task_session_attempt import TaskSessionAttempt
 
         d = dict(src_dict)
         task_id = d.pop("task_id")

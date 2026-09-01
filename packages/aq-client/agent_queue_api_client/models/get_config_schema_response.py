@@ -40,7 +40,7 @@ class GetConfigSchemaResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.get_config_schema_response_schema import GetConfigSchemaResponseSchema  # noqa: PLC0415
+        from ..models.get_config_schema_response_schema import GetConfigSchemaResponseSchema
 
         d = dict(src_dict)
         _schema = d.pop("schema", UNSET)

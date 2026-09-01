@@ -182,6 +182,29 @@ async def test_generated_client_models_round_trip_real_typed_route(live_app):
         assert "no-such-task" in str(err.error)
 
 
+async def test_pool_scale_typed_route_preserves_explicit_null_max(live_app):
+    """``max: null`` is a meaningful unbounded-pool request, not omission."""
+    from src.models import AgentProfile, Project
+
+    app, db = live_app
+    await db.create_project(Project(id="pool-api", name="pool-api", max_concurrent_agents=2))
+    await db.upsert_profile(
+        AgentProfile(id="worker", name="Worker", lifecycle="pool", min_active=1, max_active=2)
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test",
+    ) as client:
+        response = await client.post(
+            "/api/pool/scale",
+            json={"project_id": "pool-api", "profile_id": "worker", "max": None},
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["max_active"] is None
+    assert response.json()["effective_max_active"] == 2
+
+
 def test_codegen_routes_keep_execute_exclusions_off_every_live_router():
     """Plan 3: one route per discovered command; excluded commands get none."""
     from src.api.codegen import API_EXCLUDED, build_category_routers

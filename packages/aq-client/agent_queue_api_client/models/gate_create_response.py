@@ -57,7 +57,7 @@ class GateCreateResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.gate_create_payload import GateCreatePayload  # noqa: PLC0415
+        from ..models.gate_create_payload import GateCreatePayload
 
         d = dict(src_dict)
         gate_id = d.pop("gate_id")

@@ -46,7 +46,7 @@ class ListMcpToolCatalogResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.list_mcp_tool_catalog_response_servers import ListMcpToolCatalogResponseServers  # noqa: PLC0415
+        from ..models.list_mcp_tool_catalog_response_servers import ListMcpToolCatalogResponseServers
 
         d = dict(src_dict)
         _servers = d.pop("servers", UNSET)

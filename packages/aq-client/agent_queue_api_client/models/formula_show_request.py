@@ -33,7 +33,7 @@ class FormulaShowRequest:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.formula_show_request_vars_type_0 import FormulaShowRequestVarsType0  # noqa: PLC0415
+        from ..models.formula_show_request_vars_type_0 import FormulaShowRequestVarsType0
 
         name: None | str | Unset
         if isinstance(self.name, Unset):
@@ -77,7 +77,7 @@ class FormulaShowRequest:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.formula_show_request_vars_type_0 import FormulaShowRequestVarsType0  # noqa: PLC0415
+        from ..models.formula_show_request_vars_type_0 import FormulaShowRequestVarsType0
 
         d = dict(src_dict)
 

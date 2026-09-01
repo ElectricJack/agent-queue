@@ -32,9 +32,7 @@ class DeleteProjectResponse:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.delete_project_response_channel_ids_type_0 import (
-            DeleteProjectResponseChannelIdsType0,  # noqa: PLC0415
-        )
+        from ..models.delete_project_response_channel_ids_type_0 import DeleteProjectResponseChannelIdsType0
 
         deleted = self.deleted
 
@@ -71,9 +69,7 @@ class DeleteProjectResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.delete_project_response_channel_ids_type_0 import (
-            DeleteProjectResponseChannelIdsType0,  # noqa: PLC0415
-        )
+        from ..models.delete_project_response_channel_ids_type_0 import DeleteProjectResponseChannelIdsType0
 
         d = dict(src_dict)
         deleted = d.pop("deleted")

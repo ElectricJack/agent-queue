@@ -240,6 +240,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     # worker pools — sizing and bounds (swarm-work-model §11)
     "pool_status": "pool",
     "pool_scale": "pool",
+    "pool_set_lifecycle": "pool",
     # NOTE: send_message, reply_to_user are intentionally NOT categorized —
     # they are "core" tools always available to the supervisor LLM.
     # NOTE: browse_tools / load_tools are intentionally NOT categorized —
@@ -4515,7 +4516,8 @@ _ALL_TOOL_DEFINITIONS = [
         "name": "pool_scale",
         "description": (
             "Set a pool profile's min/max active-session bounds. Validates "
-            "min >= 0, max >= 1, min <= max. With `now: true`, also terminates "
+            "min >= 0 and max >= min; max may be null for no profile limit. "
+            "With `now: true`, also terminates "
             "idle sessions above the new max, oldest first. Backs `aq pool scale`."
         ),
         "input_schema": {
@@ -4524,7 +4526,10 @@ _ALL_TOOL_DEFINITIONS = [
                 "project_id": {"type": "string", "description": "Project ID."},
                 "profile_id": {"type": "string", "description": "Pool profile (agent-type) ID."},
                 "min": {"type": "integer", "description": "New min_active bound (optional)."},
-                "max": {"type": "integer", "description": "New max_active bound (optional)."},
+                "max": {
+                    "type": ["integer", "null"],
+                    "description": "New max_active bound; null removes the profile limit.",
+                },
                 "now": {
                     "type": "boolean",
                     "description": (
@@ -4533,6 +4538,26 @@ _ALL_TOOL_DEFINITIONS = [
                 },
             },
             "required": ["project_id", "profile_id"],
+        },
+    },
+    {
+        "name": "pool_set_lifecycle",
+        "description": (
+            "Set one project's profile lifecycle to task or pool. Refuses pool when "
+            "swarm.enabled is false. Backs `aq pool set-lifecycle`."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project ID."},
+                "profile_id": {"type": "string", "description": "Profile (agent-type) ID."},
+                "lifecycle": {
+                    "type": "string",
+                    "enum": ["task", "pool"],
+                    "description": "Whether work launches per task or is claimed by a pool.",
+                },
+            },
+            "required": ["project_id", "profile_id", "lifecycle"],
         },
     },
 ]
