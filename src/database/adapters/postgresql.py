@@ -26,6 +26,7 @@ from src.database.queries.agent_queries import AgentQueryMixin
 from src.database.queries.agent_question_queries import AgentQuestionQueriesMixin
 from src.database.queries.api_session_token_queries import ApiSessionTokenQueriesMixin
 from src.database.queries.archive_queries import ArchiveQueryMixin
+from src.database.queries.assignment_route_queries import AssignmentRouteQueryMixin
 from src.database.queries.blocked_state import BlockedStateMixin
 from src.database.queries.chat_queries import ChatQueryMixin
 from src.database.queries.claim_queries import ClaimQueryMixin
@@ -58,6 +59,7 @@ logger = logging.getLogger(__name__)
 
 class PostgreSQLDatabaseAdapter(
     HierarchyQueryMixin,
+    AssignmentRouteQueryMixin,
     ClaimQueryMixin,
     ProjectQueryMixin,
     ProfileQueryMixin,

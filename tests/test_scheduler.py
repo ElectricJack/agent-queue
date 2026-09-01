@@ -1,6 +1,7 @@
 import logging
 import time
 
+from src.assignment_routing import EffectiveAssignmentRoute
 from src.models import (
     Project,
     Task,
@@ -34,6 +35,35 @@ def make_agent(id="a-1", name="claude-1", state=AgentState.IDLE, **kw):
 
 
 class TestScheduler:
+    def test_route_aware_scheduler_skips_task_without_effective_route(self):
+        state = SchedulerState(
+            projects=[make_project()],
+            tasks=[make_task(intelligence_class=None)],
+            agents=[make_agent()],
+            project_token_usage={},
+            project_active_agent_counts={},
+            tasks_completed_in_window={},
+            assignment_routes={},
+        )
+        assert Scheduler.schedule(state) == []
+
+    def test_effective_route_keeps_concrete_agent_choice_algorithmic(self):
+        task = make_task(intelligence_class="fast-low")
+        state = SchedulerState(
+            projects=[make_project()],
+            tasks=[task],
+            agents=[make_agent(id="first"), make_agent(id="second")],
+            project_token_usage={},
+            project_active_agent_counts={},
+            tasks_completed_in_window={},
+            assignment_routes={
+                task.id: EffectiveAssignmentRoute(
+                    task.id, "fast-low", None, "playbook", "hash", "run"
+                )
+            },
+        )
+        assert Scheduler.schedule(state)[0].agent_id == "first"
+
     def test_assign_single_task_to_idle_agent(self):
         state = SchedulerState(
             projects=[make_project()],

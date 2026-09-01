@@ -19,7 +19,14 @@ from src.database.queries.session_queries import _row_to_session
 from src.database.queries.task_queries import (
     ManualPauseActive, TransitionResult, _not_manually_paused, supports_returning,
 )
-from src.database.tables import agents, sessions, task_workspace_requirements, tasks, workspaces
+from src.database.tables import (
+    agents,
+    sessions,
+    task_assignment_routes,
+    task_workspace_requirements,
+    tasks,
+    workspaces,
+)
 from src.models import AgentState, SessionRecord, Task, TaskEvent, TaskStatus, Workspace
 
 
@@ -95,7 +102,7 @@ class ClaimQueryMixin:
 
     async def select_ready_for_profile(
         self, conn, *, project_id, profile_id, default_profile_id, agent_id, task_id=None,
-        enforce_routing=False, intelligence_class=None, allow_unclassified=True,
+        enforce_routing=False, intelligence_class=None, llm_provider=None, options_hash=None,
     ) -> str | None:
         """The §10 work query.  Postgres takes the row FOR UPDATE SKIP LOCKED."""
         profile_ok = tasks.c.profile_id == profile_id
@@ -122,15 +129,38 @@ class ClaimQueryMixin:
         )
         stmt = apply_label_filters(stmt, exclude_hold=True)
         if enforce_routing:
-            # Apply this before LIMIT so a high-priority incompatible task
-            # cannot hide lower-priority work the live session can execute.
-            routing_ok = (
-                tasks.c.intelligence_class == intelligence_class
-                if intelligence_class else false()
+            # Join the persisted playbook decision into the locking query so
+            # selection and claim cannot race an intervening task edit. An
+            # explicit task class wins and does not inherit a provider pin.
+            explicit_class = func.nullif(func.trim(tasks.c.intelligence_class), "")
+            saved_route_is_fresh = and_(
+                task_assignment_routes.c.task_id == tasks.c.id,
+                task_assignment_routes.c.project_id == tasks.c.project_id,
+                task_assignment_routes.c.task_updated_at == tasks.c.updated_at,
+                task_assignment_routes.c.options_hash == options_hash,
             )
-            if allow_unclassified:
-                routing_ok = routing_ok | tasks.c.intelligence_class.is_(None) | (tasks.c.intelligence_class == "")
-            stmt = stmt.where(routing_ok)
+            routed_class = case(
+                (saved_route_is_fresh, task_assignment_routes.c.intelligence_class),
+                else_=None,
+            )
+            effective_class = func.coalesce(explicit_class, routed_class)
+            effective_provider = case(
+                (explicit_class.is_not(None), None),
+                (saved_route_is_fresh, task_assignment_routes.c.provider),
+                else_=None,
+            )
+            provider_ok = effective_provider.is_(None)
+            if llm_provider:
+                provider_ok = provider_ok | (effective_provider == llm_provider)
+            stmt = stmt.select_from(
+                tasks.outerjoin(
+                    task_assignment_routes,
+                    task_assignment_routes.c.task_id == tasks.c.id,
+                )
+            ).where(
+                effective_class == intelligence_class if intelligence_class else false(),
+                provider_ok,
+            )
         if task_id is not None:
             stmt = stmt.where(tasks.c.id == task_id)
         if conn.dialect.name == "postgresql":

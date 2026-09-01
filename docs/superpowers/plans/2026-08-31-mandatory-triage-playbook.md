@@ -1,5 +1,10 @@
 # Mandatory Triage Playbook Implementation Plan
 
+> **Cancelled and superseded — do not continue these tasks.** The approved design
+> no longer introduces a universal triage gate, a triage agent, or a pool-to-push
+> migration. See
+> `docs/superpowers/specs/2026-08-31-playbook-intelligence-routing-design.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Require every ordinary executable task to complete a project-scoped run of the shared default or explicitly selected custom triage playbook before assignment to a matching configured worker.

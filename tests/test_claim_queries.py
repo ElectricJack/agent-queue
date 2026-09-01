@@ -8,14 +8,17 @@ import pytest
 
 from src.database import Database
 from src.database.queries.task_queries import StaleClaim
+from src.assignment_routing import assignment_input_hash
 from src.models import (
     Agent,
     AgentProfile,
     AgentState,
     Project,
+    PlaybookRun,
     RepoSourceType,
     SessionRecord,
     Task,
+    TaskAssignmentRoute,
     TaskStatus,
     Workspace,
 )
@@ -60,6 +63,37 @@ async def mktask(db, tid, status=TaskStatus.READY, **kw):
     await db.create_task(
         Task(id=tid, project_id=PROJECT_ID, title=tid, description=tid, status=status, **kw)
     )
+
+
+async def save_route(
+    db, task_id, *, intelligence_class="fast-low", provider=None, options_hash="catalog-1"
+):
+    task = await db.get_task(task_id)
+    run_id = f"route-{task_id}"
+    await db.create_playbook_run(
+        PlaybookRun(
+            run_id=run_id,
+            playbook_id="default-assignment-routing",
+            playbook_version=1,
+            started_at=NOW,
+        )
+    )
+    route = TaskAssignmentRoute(
+        task_id=task.id,
+        project_id=task.project_id,
+        input_hash=assignment_input_hash(task),
+        task_updated_at=task.updated_at,
+        options_hash=options_hash,
+        intelligence_class=intelligence_class,
+        provider=provider,
+        playbook_id="default-assignment-routing",
+        playbook_version=1,
+        playbook_run_id=run_id,
+        reason="test route",
+        decided_at=NOW,
+    )
+    async with db.immediate() as conn:
+        await db.upsert_task_assignment_routes([route], conn=conn)
 
 
 async def pool_session(db, sid="s1", agent_id="agent-1", **over):
@@ -230,6 +264,57 @@ async def test_record_holder_stamps_and_release_clears_every_agent_workspace_slo
 
 
 class TestClaimTransaction:
+    async def test_work_query_uses_fresh_route_class_and_provider_before_limit(self, db):
+        await mktask(db, "untriaged", profile_id="worker", priority=1)
+        await mktask(db, "wrong-class", profile_id="worker", priority=2)
+        await save_route(db, "wrong-class", intelligence_class="deep-high")
+        await mktask(db, "wrong-provider", profile_id="worker", priority=3)
+        await save_route(db, "wrong-provider", provider="openai")
+        await mktask(db, "compatible", profile_id="worker", priority=4)
+        await save_route(db, "compatible", provider="anthropic")
+
+        async with db.immediate() as conn:
+            selected = await db.select_ready_for_profile(
+                conn,
+                project_id=PROJECT_ID,
+                profile_id="worker",
+                default_profile_id=None,
+                agent_id="agent-1",
+                enforce_routing=True,
+                intelligence_class="fast-low",
+                llm_provider="anthropic",
+                options_hash="catalog-1",
+            )
+
+        assert selected == "compatible"
+
+    async def test_work_query_rejects_stale_route_but_accepts_explicit_class(self, db):
+        await mktask(db, "stale", profile_id="worker", priority=1)
+        await save_route(db, "stale")
+        await db.update_task("stale", title="changed after routing")
+        await mktask(
+            db,
+            "explicit",
+            profile_id="worker",
+            priority=2,
+            intelligence_class="fast-low",
+        )
+
+        async with db.immediate() as conn:
+            selected = await db.select_ready_for_profile(
+                conn,
+                project_id=PROJECT_ID,
+                profile_id="worker",
+                default_profile_id=None,
+                agent_id="agent-1",
+                enforce_routing=True,
+                intelligence_class="fast-low",
+                llm_provider="anthropic",
+                options_hash="catalog-1",
+            )
+
+        assert selected == "explicit"
+
     async def test_claim_records_holder_everywhere(self, db):
         await mktask(db, "t1", profile_id="worker")
         sid = await pool_session(db)

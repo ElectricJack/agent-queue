@@ -213,7 +213,16 @@ class ExecutionMixin:
         finally:
             self._running_tasks.pop(action.task_id, None)
 
-    async def _check_agent_routing(self, task, agent) -> str | None:
+    async def _effective_assignment_task(self, task):
+        """Return a class-hydrated task and its fresh route, or ``(None, None)``."""
+        from dataclasses import replace
+
+        route = (await self.assignment_routing.routes_for([task])).get(task.id)
+        if route is None:
+            return None, None
+        return replace(task, intelligence_class=route.intelligence_class), route
+
+    async def _check_agent_routing(self, task, agent, *, effective_route=None) -> str | None:
         """Validate current routing independently of an earlier scheduler snapshot."""
         from src.agents.routing import (
             resolve_agent_profile, resolve_task_profile, task_agent_mismatch,
@@ -221,6 +230,14 @@ class ExecutionMixin:
 
         if agent is None or not agent.enabled or agent.role != "worker":
             return "worker is unavailable"
+        if effective_route is None:
+            task, effective_route = await self._effective_assignment_task(task)
+            if task is None:
+                return "awaiting intelligence route"
+        else:
+            from dataclasses import replace
+
+            task = replace(task, intelligence_class=effective_route.intelligence_class)
         profiles = {profile.id: profile for profile in await self.db.list_profiles()}
         project = await self.db.get_project(task.project_id)
         task_profile = resolve_task_profile(task, project, profiles)
@@ -233,6 +250,7 @@ class ExecutionMixin:
             intelligence_classes=getattr(
                 getattr(self, "session_spec_builder", None), "_intelligence_classes", None,
             ),
+            required_provider=effective_route.provider,
         )
 
     async def _check_constraints_before_assignment(self, action: AssignAction) -> str | None:
@@ -1726,13 +1744,18 @@ class ExecutionMixin:
             return
         task = current
         agent = await self.db.get_agent(action.agent_id)
-        mismatch = (
-            "task has unresolved gates or dependencies" if task.is_blocked
-            else await self._check_agent_routing(task, agent)
-        )
+        routed_task, effective_route = await self._effective_assignment_task(task)
+        mismatch = "task has unresolved gates or dependencies" if task.is_blocked else None
+        if mismatch is None and routed_task is None:
+            mismatch = "awaiting intelligence route"
+        if mismatch is None:
+            mismatch = await self._check_agent_routing(
+                task, agent, effective_route=effective_route
+            )
         if mismatch:
             await self._fail_session_launch(action, task, f"worker routing changed: {mismatch}")
             return
+        task = routed_task
         # Re-resolve unmodified definitions: workspace preparation may await
         # long enough for either routing or worker settings to change.
         profile = await self._resolve_profile(task)

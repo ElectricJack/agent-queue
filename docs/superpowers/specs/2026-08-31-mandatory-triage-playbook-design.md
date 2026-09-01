@@ -1,5 +1,11 @@
 # Mandatory triage through a shared playbook
 
+> **Superseded — do not implement.** This design expanded routing into a universal
+> admission gate, a dedicated triage execution type, and a push-only scheduling
+> migration. The approved replacement keeps routing at the assignment boundary and
+> is documented in
+> `docs/superpowers/specs/2026-08-31-playbook-intelligence-routing-design.md`.
+
 Date: 2026-08-31
 
 Status: Product direction approved in conversation; implementation design recorded here. No runtime changes are included in this document.

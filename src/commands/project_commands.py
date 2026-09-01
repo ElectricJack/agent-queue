@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import logging
 import os
 
@@ -73,6 +74,8 @@ class ProjectCommandsMixin:
                 info["repo_url"] = p.repo_url
             if p.discord_channel_id:
                 info["discord_channel_id"] = p.discord_channel_id
+            if p.assignment_playbook_id:
+                info["assignment_playbook_id"] = p.assignment_playbook_id
             result.append(info)
         return {"projects": result}
 
@@ -323,6 +326,25 @@ class ProjectCommandsMixin:
                 if not profile:
                     return {"error": f"Profile '{dpid}' not found"}
             updates["default_profile_id"] = dpid  # None clears it
+        if "assignment_playbook_id" in args:
+            playbook_id = args["assignment_playbook_id"]
+            if playbook_id is not None:
+                from src.assignment_routing import (
+                    AssignmentPlaybookError,
+                    select_assignment_playbook,
+                )
+
+                manager = getattr(self.orchestrator, "playbook_manager", None)
+                if manager is None:
+                    return {"error": "Assignment playbook manager is unavailable"}
+                try:
+                    select_assignment_playbook(
+                        manager,
+                        replace(project, assignment_playbook_id=playbook_id),
+                    )
+                except AssignmentPlaybookError as exc:
+                    return {"error": str(exc)}
+            updates["assignment_playbook_id"] = playbook_id
         if "repo_default_branch" in args:
             updates["repo_default_branch"] = args["repo_default_branch"]
         if not updates:
@@ -330,7 +352,7 @@ class ProjectCommandsMixin:
                 "error": (
                     "No fields to update. Provide name, credit_weight, "
                     "max_concurrent_agents, budget_limit, discord_channel_id, "
-                    "default_profile_id, or repo_default_branch."
+                    "default_profile_id, assignment_playbook_id, or repo_default_branch."
                 )
             }
         await self.db.update_project(pid, **updates)
@@ -497,6 +519,8 @@ class ProjectCommandsMixin:
             info["discord_channel_id"] = project.discord_channel_id
         if project.default_profile_id:
             info["default_profile_id"] = project.default_profile_id
+        if project.assignment_playbook_id:
+            info["assignment_playbook_id"] = project.assignment_playbook_id
         return info
 
     async def _cmd_get_project_channels(self, args: dict) -> dict:

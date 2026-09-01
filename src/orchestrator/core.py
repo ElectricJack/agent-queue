@@ -6,9 +6,10 @@ agents, launching agent execution as background asyncio tasks, managing git
 workspaces (clone/link/init), parsing plan files into chained subtasks,
 handling PR/approval workflows, and monitoring for stuck tasks.
 
-Design principle: **zero LLM calls for orchestration**.  All scheduling and
-state-machine logic is purely deterministic.  Every token budget goes to
-actual agent work, not coordination overhead.
+Scheduling and state-machine decisions are deterministic after one narrow
+exception: the assignment-routing playbook selects a task's intelligence
+class and optional provider. Capacity, workspace, fairness, profile, and
+concrete-agent selection remain algorithmic.
 
 Heavy operations (agent execution, git clones) run as background asyncio
 tasks so the main loop stays responsive and can continue checking heartbeats,
@@ -240,6 +241,9 @@ class Orchestrator(
         self._agent_reconciler = AgentReconciler(
             self.db, worktrees_enabled=config.worktrees.enabled
         )
+        from src.orchestrator.assignment_routing import AssignmentRoutingCoordinator
+
+        self.assignment_routing = AssignmentRoutingCoordinator(self)
         # Live adapter instances keyed by agent_id.  Stored so we can call
         # adapter.stop() from admin commands (stop_task, timeout recovery).
         self._adapters: dict[str, object] = {}
@@ -882,6 +886,10 @@ class Orchestrator(
                         if isinstance(rule_metas, (str, dict)):
                             rule_metas = [rule_metas]
                         import copy
+                        from src.playbooks.routing import (
+                            is_deprecated_default_assignment_entry,
+                        )
+
                         for rm_idx, rule_meta in enumerate(rule_metas):
                             if isinstance(rule_meta, str):
                                 rule_entry = rule_meta
@@ -889,6 +897,16 @@ class Orchestrator(
                             else:
                                 rule_entry = rule_meta.get("entry", "")
                                 rule_when = rule_meta.get("when")
+
+                            if is_deprecated_default_assignment_entry(
+                                playbook, rule_entry
+                            ):
+                                logger.info(
+                                    "Pipeline '%s': ignoring superseded assignment rule '%s'",
+                                    playbook.id,
+                                    rule_entry,
+                                )
+                                continue
 
                             if rule_when and not _eval_pipeline_when(
                                 rule_when, hydrated_event
@@ -2493,15 +2511,17 @@ class Orchestrator(
                 await self._sweep_gates()
             except Exception:
                 logger.error("Gate sweep error", exc_info=True)
-            try:
-                await self._reconcile_triage_tasks()
-            except Exception:
-                logger.error("Triage recovery error", exc_info=True)
-
             # 3. Promote DEFINED/BLOCKED tasks whose dependencies are met → READY.
             #    Runs after step 1 so freshly-completed approvals can unblock
             #    dependents within the same cycle.
             await self._check_defined_tasks()
+
+            # 3a. Classify otherwise assignable work in one bounded LLM batch
+            # per project. Profile and agent selection remain deterministic.
+            try:
+                await self.assignment_routing.reconcile()
+            except Exception:
+                logger.error("Assignment routing reconciliation error", exc_info=True)
 
             # 3b. Backstop sweep for container settlement (spec §7). Settlement
             #     itself is event-driven inside transition_task; this only
@@ -3106,10 +3126,28 @@ class Orchestrator(
         # for any project with dispatchable READY tasks, subject to
         # project.max_concurrent_agents.  See spec §4.1.
         classes = dict(self.session_spec_builder._intelligence_classes)
+        # Route freshness is resolved before agent supply. This prevents an
+        # unspecified task from creating a worker from a profile default.
+        task_snapshot = await self.db.list_active_tasks()
+        assignment_routes = await self.assignment_routing.routes_for(task_snapshot)
+        from dataclasses import replace as _replace
+
+        tasks = [
+            _replace(task, intelligence_class=assignment_routes[task.id].intelligence_class)
+            if task.id in assignment_routes else task
+            for task in task_snapshot
+        ]
+        routed_ready = [
+            task for task in tasks
+            if task.status == TaskStatus.READY
+            and not task.is_blocked
+            and task.id in assignment_routes
+        ]
         rep = await self._agent_reconciler.reconcile(
             provider_cooldowns=self._provider_cooldowns,
             harness_registry=self.harness_registry,
             intelligence_classes=classes,
+            ready_tasks=routed_ready,
         )
         if rep.created or rep.reassigned:
             logger.info(
@@ -3128,7 +3166,7 @@ class Orchestrator(
         # ASSIGNED/IN_PROGRESS rows behind busy-agent counts and sync
         # blocking — never completed ones.  The unfiltered table scan was
         # 1.7 s/cycle at 100k tasks (performance-assessment.md §1.1).
-        tasks = await self.db.list_active_tasks()
+        # Reuse the route-consistent task snapshot supplied to the reconciler.
         agents = await self.db.list_agents()
         live_sessions = await self.db.list_sessions(live_only=True)
         occupied = {row.agent_id for row in live_sessions if row.agent_id}
@@ -3245,6 +3283,7 @@ class Orchestrator(
             profiles={profile.id: profile for profile in all_profiles},
             harness_registry=self.harness_registry,
             intelligence_classes=classes,
+            assignment_routes=assignment_routes,
         )
 
         actions = Scheduler.schedule(state)

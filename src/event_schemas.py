@@ -61,10 +61,9 @@ META_FIELDS: frozenset[str] = frozenset({"_plugin", "event_id"})
 # via _emit_task_event, plus event-specific extras.
 
 _TASK_SCHEMAS: dict[str, EventSchema] = {
-    # dv2 phase 1 — emitted by ``_cmd_create_task`` immediately after the
-    # task row is written.  Triggers the default routing pipeline (see
-    # ``src/prompts/default_playbooks/default-pipeline.md``) so every fresh
-    # task gets a routing gate + coalesced triage task.
+    # Emitted by ``_cmd_create_task`` immediately after the task row is
+    # written. Assignment routing reconciles from persisted tasks and does
+    # not depend on this event; custom pipelines may subscribe to it.
     "task.created": {
         "required": ["task_id", "project_id", "title"],
         "optional": [
@@ -74,8 +73,7 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
             # (kind/id), which profile was running when it filed, the
             # discovered-from origin (root filings only), and the parent
             # (child filings only). Always present on the emit, ``None``
-            # when not applicable — the default pipeline's
-            # ``worker-filed-triage`` rule keys off these.
+            # when not applicable. Custom subscribers may key off these.
             "created_by_kind",
             "created_by_id",
             "filed_by_profile_id",

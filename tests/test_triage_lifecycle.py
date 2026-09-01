@@ -347,7 +347,7 @@ async def test_reusable_triage_survives_auto_archive(setup):
     assert await db.get_task(tid) is not None
 
 
-async def test_shipped_pipeline_routes_and_coalesces_real_pending_work(setup):
+async def test_shipped_pipeline_does_not_create_legacy_triage_work(setup):
     handler, db, _ = setup
     await db.create_task(Task(id="unrouted", project_id="p", title="New work", description=""))
     markdown = Path("src/prompts/default_playbooks/default-pipeline.md").read_text()
@@ -357,8 +357,8 @@ async def test_shipped_pipeline_routes_and_coalesces_real_pending_work(setup):
         compiled.playbook.to_dict(), {"project_id": "p", "task_id": "unrouted"}, handler
     ).run()
     assert result.status == "completed"
-    assert len(await triage_rows(db)) == 1
-    assert any(g["status"] == "open" for g in await db.get_gates_for_task("unrouted"))
+    assert await triage_rows(db) == []
+    assert await db.get_gates_for_task("unrouted") == []
 
 
 async def test_auto_archive_still_handles_ordinary_unprofiled_tasks(setup):
@@ -476,15 +476,13 @@ def install_default_pipeline(orch):
     return manager, pb
 
 
-async def test_first_wakeup_recovers_from_persisted_gate_when_event_was_lost(setup):
+async def test_default_pipeline_does_not_wake_historical_triage_for_persisted_gate(setup):
     _, db, orch = setup
     install_default_pipeline(orch)
     await add_routing_work(db, "lost-event")
     assert await triage_rows(db) == []
     await orch._reconcile_triage_tasks()
-    rows = await triage_rows(db)
-    assert len(rows) == 1
-    assert rows[0].status == TaskStatus.READY
+    assert await triage_rows(db) == []
 
 
 async def test_project_override_can_disable_recovery_of_old_default_triage(setup):

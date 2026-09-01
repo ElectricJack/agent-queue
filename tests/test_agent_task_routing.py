@@ -8,6 +8,7 @@ import pytest
 from src.intelligence_classes import IntelligenceClass
 from src.models import Agent, AgentProfile, AgentState, Project, Task, TaskStatus
 from src.scheduler import Scheduler, SchedulerState
+from src.assignment_routing import EffectiveAssignmentRoute
 
 
 def routing_profiles():
@@ -114,6 +115,17 @@ def test_profile_default_class_prevents_downgrade_when_task_class_is_absent():
     task = requested_task(intelligence_class=None)
     actions = Scheduler.schedule(routing_state(task))
     assert [action.agent_id for action in actions] == ["sol"]
+
+
+def test_provider_pin_filters_a_class_compatible_worker():
+    task = requested_task(profile_id=None)
+    state = routing_state(task, [workers()[1], workers()[2]])
+    state.assignment_routes = {
+        task.id: EffectiveAssignmentRoute(
+            task.id, "deep-high", "openai", "playbook", "hash", "run"
+        )
+    }
+    assert [action.agent_id for action in Scheduler.schedule(state)] == ["sol"]
 
 
 def test_worker_profile_default_class_is_respected_without_agent_override():
@@ -282,6 +294,14 @@ async def test_reconciler_does_not_create_supply_for_a_blocked_ready_task(routin
     assert await routing_db.list_agents() == []
 
 
+async def test_reconciler_does_not_create_supply_for_unrouted_snapshot(routing_db):
+    from src.orchestrator.agent_reconciler import AgentReconciler
+
+    report = await AgentReconciler(routing_db).reconcile(ready_tasks=[])
+    assert report.created == []
+    assert await routing_db.list_agents() == []
+
+
 async def test_reconciler_reuses_matching_worker_without_changing_definition(routing_db):
     from src.orchestrator.agent_reconciler import AgentReconciler
 
@@ -290,6 +310,26 @@ async def test_reconciler_reuses_matching_worker_without_changing_definition(rou
     before = await routing_db.get_agent("sol")
     assert (await AgentReconciler(routing_db).reconcile()).created == []
     assert await routing_db.get_agent("sol") == before
+
+
+async def test_prelaunch_recheck_rejects_task_without_effective_route(routing_db, tmp_path):
+    from src.config import AppConfig, DiscordConfig
+    from src.orchestrator import Orchestrator
+
+    agent = workers()[-1]
+    await routing_db.create_agent(agent)
+    task = replace(await routing_db.get_task("task"), intelligence_class=None)
+    config = AppConfig(
+        discord=DiscordConfig(bot_token="test", guild_id="1"),
+        database_path=str(tmp_path / "unused.db"),
+        data_dir=str(tmp_path / "data"),
+        workspace_dir=str(tmp_path / "work"),
+    )
+    orch = Orchestrator(config)
+    orch.db = routing_db
+    orch.session_spec_builder._intelligence_classes = routing_classes()
+
+    assert await orch._check_agent_routing(task, agent) == "awaiting intelligence route"
 
 
 @pytest.mark.parametrize("interactive", [False, True])

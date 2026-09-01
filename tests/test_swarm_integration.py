@@ -16,6 +16,7 @@ import pytest
 from src.commands.handler import CommandHandler
 from src.config import AppConfig, DiscordConfig
 from src.database import Database
+from src.intelligence_classes import IntelligenceClass
 from src.models import (
     AgentProfile,
     AgentState,
@@ -31,12 +32,10 @@ from src.sessions.harness_parser import Harness
 
 PROJECT_ID = "proj"
 
-#: The ``worker-filed-triage`` rule's ``when`` clause, verbatim from
-#: ``src/prompts/default_playbooks/default-pipeline.md`` (id
-#: ``worker-filed-triage``, on ``task.created``) -- kept here as a literal
-#: rather than parsed from the markdown so this test fails loudly (wrong
-#: assertion, not a silent skip) if the two ever drift.
-WORKER_FILED_TRIAGE_WHEN = {
+#: Provenance predicate used to verify the worker-filed event payload. Custom
+#: task.created subscribers can still use these fields even though the bundled
+#: pipeline no longer performs worker-filed triage.
+WORKER_FILED_EVENT_WHEN = {
     "all": [
         {"field": "event.created_by_kind", "equals": "session"},
         {"field": "event.parent_task_id", "is_null": True},
@@ -56,6 +55,7 @@ async def db(tmp_path):
             harness="claude",
             max_active=1,
             max_claims_per_session=2,
+            default_class="fast-low",
             needs_workspace=False,
         )
     )
@@ -87,6 +87,14 @@ async def orch(db, tmp_path):
     cfg.swarm.claim_wait_max = 5
     cfg.swarm.max_starts_per_tick = 5
     o = Orchestrator(cfg)
+    o.session_spec_builder._intelligence_classes = {
+        "fast-low": IntelligenceClass(
+            "fast-low",
+            "Fast",
+            "",
+            {"anthropic": {"model": "claude-haiku"}},
+        )
+    }
     o.db = db
     # AgentReconciler and SessionReconciler were both built in __init__
     # against the (real, uninitialized) db the constructor saw -- point
@@ -151,6 +159,7 @@ async def mktask(db, tid, **kw):
             description=tid,
             status=TaskStatus.READY,
             profile_id="worker",
+            intelligence_class="fast-low",
             **kw,
         )
     )
@@ -292,7 +301,10 @@ class TestSwarmWorkerLoopEndToEnd:
         claimed = await h._cmd_task_claim({"next": True})
         assert claimed["result"] == "claimed"
 
-        res = await h._cmd_create_task({"title": "found a bug while working t1"})
+        res = await h._cmd_create_task({
+            "title": "found a bug while working t1",
+            "reason": "The active task uncovered a separate defect.",
+        })
         assert res["success"] is True
         filed_id = res["task_id"]
         assert res["status"] == TaskStatus.DEFINED.value
@@ -307,4 +319,4 @@ class TestSwarmWorkerLoopEndToEnd:
 
         created_payloads = emitted_payloads(orch, "task.created")
         payload = next(p for p in created_payloads if p["task_id"] == filed_id)
-        assert _eval_pipeline_when(WORKER_FILED_TRIAGE_WHEN, payload) is True
+        assert _eval_pipeline_when(WORKER_FILED_EVENT_WHEN, payload) is True

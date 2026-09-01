@@ -38,6 +38,8 @@ TABLE_ORDER = [
     "repos",
     "agents",
     "tasks",
+    "playbook_runs",
+    "task_assignment_routes",
     "task_criteria",
     "task_dependencies",
     "task_context",

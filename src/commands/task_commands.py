@@ -1540,18 +1540,14 @@ class TaskCommandsMixin:
         if routing_policy is not None or gate_id is not None:
             await self._emit_admitted_routing_gates(task_id)
 
-        # dv2 phase 1 — emit ``task.created`` on the EventBus so the default
-        # pipeline playbook (and any other subscribers) can fire the routing
-        # gate + triage flow.  Uses the shared ``_emit_task_event`` helper so
-        # the base triple (task_id, project_id, title) is populated and
-        # matches the registered schema.
+        # Emit ``task.created`` for configured pipeline subscribers. The
+        # bundled default no longer performs assignment here; the independent
+        # assignment coordinator routes eligible tasks at the scheduler
+        # boundary. A custom project pipeline may still use this event.
         #
         # NON-OBVIOUS INVARIANT: ``ensure_task`` passes ``_suppress_created_event``
-        # so control-plane bookkeeping tasks (e.g. the triage task the default
-        # pipeline creates) do NOT re-fire the pipeline against themselves.
-        # Emitting there would attach a routing gate to the triage task —
-        # and routing gates are only resolved BY the triage agent, so the
-        # triage task would deadlock blocked on its own gate.
+        # so control-plane bookkeeping tasks do not recursively fire pipeline
+        # rules against themselves.
         if not args.get("_suppress_created_event"):
             try:
                 extras: dict[str, object] = {}
@@ -1560,14 +1556,10 @@ class TaskCommandsMixin:
                 if task_type:
                     extras["task_type"] = task_type.value
                 # Worker-filed work (swarm work model §12): always present,
-                # ``None`` when not applicable — the default pipeline's
-                # ``worker-filed-triage`` rule keys off ``created_by_kind``
-                # and ``parent_task_id``. ``parent_id``/``depth_cap_fallback``
+                # ``None`` when not applicable. Custom subscribers may use
+                # these provenance fields. ``parent_id``/``depth_cap_fallback``
                 # reflect the real edge written above; ``task.parent_task_id``
-                # itself is never updated in-memory (``set_parent``/
-                # ``create_task_under`` own the DB column, not the object).
-                # Persisted Task provenance includes all authenticated sessions;
-                # these event markers retain their worker-only triage meaning.
+                # itself is never updated in-memory.
                 extras["created_by_kind"] = task.created_by_kind if filing_session is not None else None
                 extras["created_by_id"] = task.created_by_id if filing_session is not None else None
                 extras["filed_by_profile_id"] = (
@@ -1583,9 +1575,9 @@ class TaskCommandsMixin:
             except AttributeError as e:  # orchestrator missing hook (test doubles)
                 logger.warning("create_task: failed to emit task.created (missing hook): %s", e)
             except Exception as e:
-                # Narrow-log the emission failure loudly — this is the wire that
-                # kicks off the default pipeline (routing gate + triage).  Losing
-                # it silently means every new task will just sit in READY unrouted.
+                # Narrow-log the emission failure loudly for custom pipeline
+                # subscribers. Assignment routing itself reconciles from the DB
+                # and does not depend on this event being delivered.
                 logger.error(
                     "create_task: task.created emission failed (task=%s project=%s): %s",
                     task_id,
@@ -3519,14 +3511,36 @@ class TaskCommandsMixin:
                     )
                 )
 
-        # 4. Capacity reasons — only relevant when the task is READY.
+        # 4. Assignment route state. The coordinator uses the same resolver
+        # as scheduling and pool claims, so this cannot disagree with actual
+        # eligibility after an edit or option-catalog change.
+        assignment_route = None
+        coordinator = getattr(self.orchestrator, "assignment_routing", None)
+        if coordinator is not None:
+            try:
+                assignment_route, route_reason = await coordinator.explain(task)
+            except Exception as exc:
+                route_reason = Reason(
+                    code="assignment_playbook_unavailable",
+                    detail=f"could not inspect assignment route: {exc}",
+                    ref=task.project_id,
+                )
+            if route_reason is not None:
+                reasons.append(Reason(**route_reason))
+
+        # 5. Capacity reasons — only relevant when a scheduler snapshot exists.
         state = getattr(self.orchestrator, "_last_scheduler_state", None)
         if state is not None:
             ws_counts = getattr(self.orchestrator, "_last_scheduler_workspace_counts", {})
             idle = getattr(self.orchestrator, "_last_scheduler_idle_by_project", {})
             reasons.extend(build_capacity_reasons(task, state, ws_counts, idle))
 
-        return {"success": True, "reasons": reasons}
+        return {
+            "success": True,
+            "reasons": reasons,
+            "reason_codes": [reason["code"] for reason in reasons],
+            "assignment_route": assignment_route,
+        }
 
     async def _cmd_project_ready(self, args: dict) -> dict:
         """Ready frontier for a project + withheld tasks with reasons.
@@ -3719,8 +3733,8 @@ class TaskCommandsMixin:
     async def _cmd_task_route(self, args: dict) -> dict:
         """Route a task: assign profile + intelligence class (+ workspace).
 
-        dv2 phase 1 — the ONLY resolver for ``routing`` gates.  Writes
-        ``profile_id``, optional ``intelligence_class`` and optional
+        Compatibility command and the only manual resolver for ``routing``
+        gates. Writes ``profile_id``, an explicit ``intelligence_class``, and optional
         ``preferred_workspace_id`` onto the task, then resolves every open
         ``routing`` gate attached to the task via the orchestrator helper
         (so ``gate.resolved`` + blocked-flip bus events fire the same way
@@ -3729,9 +3743,10 @@ class TaskCommandsMixin:
         Args:
             task_id: Target task id (required).
             profile_id: AgentProfile id (required).
-            intelligence_class: Optional vault class id. Preserves the task's
-                existing class when omitted, then falls back to the profile
-                default. Routing a running or claimed task is refused.
+            intelligence_class: Vault class id. May be omitted only when the
+                task already has an explicit class. Profile defaults never
+                establish assignment eligibility. Routing a running or
+                claimed task is refused.
             workspace_id: Optional workspace id.  When supplied, must belong
                 to the task's project (deadlock-safe & scope-safe).
 
@@ -3752,9 +3767,14 @@ class TaskCommandsMixin:
         if profile is None:
             return {"success": False, "error": f"profile '{profile_id}' not found"}
 
-        cls_id = (
-            args.get("intelligence_class") or task.intelligence_class or profile.default_class or None
-        )
+        cls_id = args.get("intelligence_class") or task.intelligence_class or None
+        if not cls_id:
+            return {
+                "success": False,
+                "error": (
+                    "intelligence_class is required when the task has no explicit class"
+                ),
+            }
         class_error = self._validate_routing_class(cls_id, profile)
         if class_error:
             return {"success": False, "error": class_error}

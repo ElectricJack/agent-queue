@@ -104,7 +104,11 @@ PLAN_NODES = 200
 
 
 async def seed_scale(
-    db, n_tasks: int = SEED_TASKS, n_edges: int = SEED_EDGES, profile_id: str | None = None
+    db,
+    n_tasks: int = SEED_TASKS,
+    n_edges: int = SEED_EDGES,
+    profile_id: str | None = None,
+    intelligence_class: str | None = None,
 ) -> None:
     """Bulk-insert a §15.2-scale queue (raw inserts — this is fixture cost).
 
@@ -154,6 +158,9 @@ async def seed_scale(
             "status": _status(i),
             # Stamped on every READY task, as the docstring says.
             "profile_id": profile_id if _status(i) == TaskStatus.READY.value else None,
+            "intelligence_class": (
+                intelligence_class if _status(i) == TaskStatus.READY.value else None
+            ),
             "is_blocked": 1 if i in blocked_dependents else 0,
             "created_at": now,
             "updated_at": now,

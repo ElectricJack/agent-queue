@@ -11,6 +11,7 @@ background task.
 """
 
 import pytest
+from unittest.mock import AsyncMock
 
 from src.config import AppConfig
 from src.models import (
@@ -37,6 +38,9 @@ async def orch(tmp_path):
     )
     o = Orchestrator(config)
     await o.initialize()
+    # This suite isolates project constraints; assignment-route admission has
+    # its own focused tests.
+    o._check_agent_routing = AsyncMock(return_value=None)
     yield o
     await o.shutdown()
 

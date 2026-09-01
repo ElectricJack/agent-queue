@@ -45,6 +45,7 @@ projects = Table(
     Column("repo_url", Text, nullable=True, server_default="''"),
     Column("repo_default_branch", Text, nullable=True, server_default="'main'"),
     Column("default_profile_id", Text, ForeignKey("agent_profiles.id"), nullable=True),
+    Column("assignment_playbook_id", Text, nullable=True),
     Column("created_at", Float, nullable=False),
 )
 
@@ -922,6 +923,34 @@ playbook_runs = Table(
     ),
     Index("idx_playbook_runs_playbook_id", "playbook_id"),
     Index("idx_playbook_runs_status", "status"),
+)
+
+task_assignment_routes = Table(
+    "task_assignment_routes",
+    metadata,
+    Column(
+        "task_id",
+        Text,
+        ForeignKey("tasks.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column("project_id", Text, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False),
+    Column("input_hash", Text, nullable=False),
+    Column("task_updated_at", Float, nullable=False),
+    Column("options_hash", Text, nullable=False),
+    Column("intelligence_class", Text, nullable=False),
+    Column("provider", Text, nullable=True),
+    Column("playbook_id", Text, nullable=False),
+    Column("playbook_version", Integer, nullable=False),
+    Column(
+        "playbook_run_id",
+        Text,
+        ForeignKey("playbook_runs.run_id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("reason", Text, nullable=False),
+    Column("decided_at", Float, nullable=False),
+    Index("idx_task_assignment_routes_project", "project_id"),
 )
 
 workflows = Table(
