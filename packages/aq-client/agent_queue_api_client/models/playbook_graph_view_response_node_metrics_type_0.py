@@ -6,11 +6,11 @@ from typing import Any, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-T = TypeVar("T", bound="PlaybookGraphViewResponseEdgesItem")
+T = TypeVar("T", bound="PlaybookGraphViewResponseNodeMetricsType0")
 
 
 @_attrs_define
-class PlaybookGraphViewResponseEdgesItem:
+class PlaybookGraphViewResponseNodeMetricsType0:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -23,10 +23,10 @@ class PlaybookGraphViewResponseEdgesItem:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        playbook_graph_view_response_edges_item = cls()
+        playbook_graph_view_response_node_metrics_type_0 = cls()
 
-        playbook_graph_view_response_edges_item.additional_properties = d
-        return playbook_graph_view_response_edges_item
+        playbook_graph_view_response_node_metrics_type_0.additional_properties = d
+        return playbook_graph_view_response_node_metrics_type_0
 
     @property
     def additional_keys(self) -> list[str]:

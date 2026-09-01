@@ -44,6 +44,7 @@ class AgentSummary:
         subagent_count_complete (bool | Unset):  Default: False.
         aq_subagent_count (int | Unset):  Default: 0.
         native_subagent_count (int | None | Unset):
+        subagents_spawned_total (int | Unset):  Default: 0.
         last_heartbeat (float | None | Unset):
         session_tokens_used (int | Unset):  Default: 0.
     """
@@ -72,6 +73,7 @@ class AgentSummary:
     subagent_count_complete: bool | Unset = False
     aq_subagent_count: int | Unset = 0
     native_subagent_count: int | None | Unset = UNSET
+    subagents_spawned_total: int | Unset = 0
     last_heartbeat: float | None | Unset = UNSET
     session_tokens_used: int | Unset = 0
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -189,6 +191,8 @@ class AgentSummary:
         else:
             native_subagent_count = self.native_subagent_count
 
+        subagents_spawned_total = self.subagents_spawned_total
+
         last_heartbeat: float | None | Unset
         if isinstance(self.last_heartbeat, Unset):
             last_heartbeat = UNSET
@@ -247,6 +251,8 @@ class AgentSummary:
             field_dict["aq_subagent_count"] = aq_subagent_count
         if native_subagent_count is not UNSET:
             field_dict["native_subagent_count"] = native_subagent_count
+        if subagents_spawned_total is not UNSET:
+            field_dict["subagents_spawned_total"] = subagents_spawned_total
         if last_heartbeat is not UNSET:
             field_dict["last_heartbeat"] = last_heartbeat
         if session_tokens_used is not UNSET:
@@ -421,6 +427,8 @@ class AgentSummary:
 
         native_subagent_count = _parse_native_subagent_count(d.pop("native_subagent_count", UNSET))
 
+        subagents_spawned_total = d.pop("subagents_spawned_total", UNSET)
+
         def _parse_last_heartbeat(data: object) -> float | None | Unset:
             if data is None:
                 return data
@@ -457,6 +465,7 @@ class AgentSummary:
             subagent_count_complete=subagent_count_complete,
             aq_subagent_count=aq_subagent_count,
             native_subagent_count=native_subagent_count,
+            subagents_spawned_total=subagents_spawned_total,
             last_heartbeat=last_heartbeat,
             session_tokens_used=session_tokens_used,
         )
