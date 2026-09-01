@@ -11,6 +11,29 @@ from src.event_bus import EventBus
 from src.playbooks.conditions import eval_pipeline_when
 
 
+_DEPRECATED_DEFAULT_ASSIGNMENT_RULES = (
+    "task-created-routing",
+    "worker-filed-triage",
+)
+
+
+def is_deprecated_default_assignment_entry(playbook, entry: str) -> bool:
+    """Identify cached system-default rule entries superseded by the router."""
+
+    scope = getattr(playbook, "scope", "")
+    scope = getattr(scope, "value", scope)
+    if (
+        getattr(playbook, "id", "") != "default-pipeline"
+        or getattr(playbook, "kind", "") != "pipeline"
+        or scope != "system"
+    ):
+        return False
+    return any(
+        entry == rule_id or entry.startswith(f"{rule_id}-")
+        for rule_id in _DEPRECATED_DEFAULT_ASSIGNMENT_RULES
+    )
+
+
 def _selected_pipelines(manager, event, *, match_filter=True):
     if manager is None:
         return []
@@ -50,6 +73,11 @@ def _rule_actions(pb, event, *, check_when=True):
     elif isinstance(rules, (str, dict)):
         rules = [rules]
     rules = [{"entry": rule} if isinstance(rule, str) else rule for rule in rules]
+    rules = [
+        rule
+        for rule in rules
+        if not is_deprecated_default_assignment_entry(pb, rule.get("entry", ""))
+    ]
     visited = set()
     pending = [
         rule["entry"]

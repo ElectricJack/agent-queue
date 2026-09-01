@@ -19,11 +19,20 @@ mode, and returns a detailed report.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import shutil
 
 logger = logging.getLogger(__name__)
+
+
+# The unmodified system default immediately before assignment routing moved to
+# its own LLM playbook. Only this known source is replaced during upgrade;
+# edited copies remain user-owned.
+_LEGACY_DEFAULT_PIPELINE_HASHES = frozenset(
+    {"d9db24f3c3dcc02c377287ff386df463f23d6dbe53e2a1aafbe5001e7874e6ce"}
+)
 
 
 # ---------------------------------------------------------------------------
@@ -1466,21 +1475,23 @@ def ensure_default_playbooks(data_dir: str) -> dict:
       Triggered on ``timer.24h``.
 
     The operation is **idempotent**: existing files in the vault are never
-    overwritten.  Users can customise or disable playbooks without losing
-    changes on restart.
+    overwritten, except for a byte-for-byte known legacy ``default-pipeline``
+    whose assignment rules have moved to ``default-assignment-routing``.
+    Users can customise or disable playbooks without losing changes on restart.
 
     Args:
         data_dir: The root data directory (e.g. ``~/.agent-queue``).
 
     Returns:
-        Dict with ``created`` (list of filenames written) and
-        ``skipped`` (list of filenames that already existed).
+        Dict with ``created`` (list of filenames written), ``updated`` (known
+        shipped legacy defaults replaced), and ``skipped`` (user-owned or
+        already-current files).
     """
     defaults_dir = os.path.join(os.path.dirname(__file__), "prompts", "default_playbooks")
     playbooks_dir = os.path.join(data_dir, "vault", "system", "playbooks")
     os.makedirs(playbooks_dir, exist_ok=True)
 
-    result: dict = {"created": [], "skipped": []}
+    result: dict = {"created": [], "updated": [], "skipped": []}
 
     if not os.path.isdir(defaults_dir):
         logger.debug("No default playbooks directory found at %s", defaults_dir)
@@ -1493,6 +1504,18 @@ def ensure_default_playbooks(data_dir: str) -> dict:
         dst_path = os.path.join(playbooks_dir, filename)
 
         if os.path.exists(dst_path):
+            if filename == "default-pipeline.md":
+                with open(dst_path, encoding="utf-8") as existing_file:
+                    existing_source = existing_file.read().replace("\r\n", "\n")
+                existing_hash = hashlib.sha256(existing_source.encode("utf-8")).hexdigest()
+                if existing_hash in _LEGACY_DEFAULT_PIPELINE_HASHES:
+                    shutil.copy2(src_path, dst_path)
+                    result["updated"].append(filename)
+                    logger.info(
+                        "Updated known legacy default playbook: %s",
+                        filename,
+                    )
+                    continue
             result["skipped"].append(filename)
             logger.debug("Default playbook already exists, skipping: %s", filename)
             continue

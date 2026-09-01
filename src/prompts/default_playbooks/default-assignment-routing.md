@@ -5,7 +5,9 @@ role: assignment-routing
 scope: system
 triggers:
   - assignment.route.requested
-max_tokens: 1024
+max_tokens: 4096
+llm_config:
+  intelligence_class: fast-low
 ---
 
 # Default assignment routing

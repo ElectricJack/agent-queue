@@ -2,7 +2,6 @@
 
 import asyncio
 from dataclasses import replace
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -31,6 +30,23 @@ triggers: [task.created]
 {"rules":[{"id":"legacy-routing","on":"task.created","when":{"field":"event.task.profile_id","is_null":true},"entry":"gate","nodes":{"gate":{"command":"gate_create","args":{"project_id":"{{event.project_id}}","gate_type":"routing","title":"Route task","waiter_task_ids":["{{event.task_id}}"]},"on_success":"triage","on_failure":"done"},"triage":{"command":"ensure_task","args":{"project_id":"{{event.project_id}}","dedup_key":"triage-open","title":"Triage","profile_id":"triage"},"on_success":"done","on_failure":"done"},"done":{"terminal":true}}}]}
 ```
 """
+
+
+def test_cached_system_default_does_not_restore_legacy_assignment_admission():
+    from src.playbooks.routing import requires_routing_gate
+
+    config = AppConfig()
+    manager = PlaybookManager(config=config)
+    playbook = compile_pipeline(
+        LEGACY_ROUTING_PIPELINE.replace(
+            "id: legacy-routing-pipeline", "id: default-pipeline"
+        )
+    ).playbook
+    manager._active[playbook.id] = playbook
+    manager._index_triggers(playbook)
+
+    task = Task(id="new", project_id="p", title="New", description="")
+    assert not requires_routing_gate(manager, task)
 
 
 @pytest.fixture(params=["sqlite", "postgres"])
@@ -360,14 +376,14 @@ async def test_worker_filed_child_is_gated_before_created_event(setup):
         "project_id": "p",
         "elevated": False,
     }
-        result = await handler._cmd_create_task(
-            {
-                "project_id": "p",
-                "title": "Discovered subtask",
-                "parent_id": "held",
-                "reason": "The held task discovered additional required work.",
-            }
-        )
+    result = await handler._cmd_create_task(
+        {
+            "project_id": "p",
+            "title": "Discovered subtask",
+            "parent_id": "held",
+            "reason": "The held task discovered additional required work.",
+        }
+    )
     assert result.get("success"), result
     assert (await db.get_task(result["created"])).is_blocked
     assert len(await db.get_gates_for_task(result["created"])) == 1

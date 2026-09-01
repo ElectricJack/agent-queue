@@ -3733,8 +3733,8 @@ class TaskCommandsMixin:
     async def _cmd_task_route(self, args: dict) -> dict:
         """Route a task: assign profile + intelligence class (+ workspace).
 
-        dv2 phase 1 — the ONLY resolver for ``routing`` gates.  Writes
-        ``profile_id``, optional ``intelligence_class`` and optional
+        Compatibility command and the only manual resolver for ``routing``
+        gates. Writes ``profile_id``, an explicit ``intelligence_class``, and optional
         ``preferred_workspace_id`` onto the task, then resolves every open
         ``routing`` gate attached to the task via the orchestrator helper
         (so ``gate.resolved`` + blocked-flip bus events fire the same way
@@ -3743,9 +3743,10 @@ class TaskCommandsMixin:
         Args:
             task_id: Target task id (required).
             profile_id: AgentProfile id (required).
-            intelligence_class: Optional vault class id. Preserves the task's
-                existing class when omitted, then falls back to the profile
-                default. Routing a running or claimed task is refused.
+            intelligence_class: Vault class id. May be omitted only when the
+                task already has an explicit class. Profile defaults never
+                establish assignment eligibility. Routing a running or
+                claimed task is refused.
             workspace_id: Optional workspace id.  When supplied, must belong
                 to the task's project (deadlock-safe & scope-safe).
 
@@ -3766,9 +3767,14 @@ class TaskCommandsMixin:
         if profile is None:
             return {"success": False, "error": f"profile '{profile_id}' not found"}
 
-        cls_id = (
-            args.get("intelligence_class") or task.intelligence_class or profile.default_class or None
-        )
+        cls_id = args.get("intelligence_class") or task.intelligence_class or None
+        if not cls_id:
+            return {
+                "success": False,
+                "error": (
+                    "intelligence_class is required when the task has no explicit class"
+                ),
+            }
         class_error = self._validate_routing_class(cls_id, profile)
         if class_error:
             return {"success": False, "error": class_error}

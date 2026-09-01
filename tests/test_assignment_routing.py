@@ -70,6 +70,8 @@ def test_assignment_hashes_are_canonical_and_include_material_changes() -> None:
     option_b = AssignmentOption("fast-low", "anthropic", 1, 1, 0, "unknown")
 
     assert options_hash([option_a, option_b]) == options_hash([option_b, option_a])
+    assert options_hash([option_a]) == options_hash([
+        replace(option_a, idle_count=0, busy_count=2)
+    ])
     assert assignment_input_hash(task) != assignment_input_hash(replace(task, priority=21))
     assert assignment_input_hash(task) == assignment_input_hash(replace(task, retry_count=2))
-

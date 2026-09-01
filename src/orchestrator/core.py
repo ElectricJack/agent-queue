@@ -886,6 +886,10 @@ class Orchestrator(
                         if isinstance(rule_metas, (str, dict)):
                             rule_metas = [rule_metas]
                         import copy
+                        from src.playbooks.routing import (
+                            is_deprecated_default_assignment_entry,
+                        )
+
                         for rm_idx, rule_meta in enumerate(rule_metas):
                             if isinstance(rule_meta, str):
                                 rule_entry = rule_meta
@@ -893,6 +897,16 @@ class Orchestrator(
                             else:
                                 rule_entry = rule_meta.get("entry", "")
                                 rule_when = rule_meta.get("when")
+
+                            if is_deprecated_default_assignment_entry(
+                                playbook, rule_entry
+                            ):
+                                logger.info(
+                                    "Pipeline '%s': ignoring superseded assignment rule '%s'",
+                                    playbook.id,
+                                    rule_entry,
+                                )
+                                continue
 
                             if rule_when and not _eval_pipeline_when(
                                 rule_when, hydrated_event

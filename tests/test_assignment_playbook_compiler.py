@@ -39,6 +39,13 @@ def test_assignment_markdown_compiles_to_one_llm_node() -> None:
     assert result.playbook.validate() == []
 
 
+def test_assignment_compiler_default_budget_fits_a_full_batch() -> None:
+    result = compile_playbook(ASSIGNMENT_MARKDOWN.replace("max_tokens: 1024\n", ""))
+
+    assert result.success
+    assert result.playbook.max_tokens == 4096
+
+
 @pytest.mark.asyncio
 async def test_manager_installs_assignment_playbook_without_compile_task() -> None:
     manager = PlaybookManager(config=None)
@@ -116,3 +123,19 @@ def test_default_assignment_playbook_is_seeded_write_if_absent(tmp_path: Path) -
     assert "default-assignment-routing.md" in first["created"]
     assert "default-assignment-routing.md" in second["skipped"]
     assert path.exists()
+
+
+def test_default_assignment_playbook_uses_fast_low_router() -> None:
+    source = (
+        Path(__file__).parent.parent
+        / "src"
+        / "prompts"
+        / "default_playbooks"
+        / "default-assignment-routing.md"
+    )
+
+    result = compile_playbook(source.read_text(encoding="utf-8"))
+
+    assert result.success
+    assert result.playbook.llm_config.intelligence_class == "fast-low"
+    assert result.playbook.max_tokens == 4096

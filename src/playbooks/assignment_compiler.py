@@ -81,7 +81,7 @@ def compile_assignment_playbook(
             ),
             "done": PlaybookNode(terminal=True),
         },
-        max_tokens=frontmatter.get("max_tokens", 1024),
+        max_tokens=frontmatter.get("max_tokens", 4096),
         llm_config=LlmConfig.from_dict(llm_config) if llm_config else None,
         compiled_at=datetime.now(timezone.utc).isoformat(),
         enabled=bool(frontmatter.get("enabled", True)),

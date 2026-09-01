@@ -39,6 +39,18 @@ DEFAULT_PIPELINE_PATH = (
 
 PLAYBOOK_ID = "default-pipeline"
 
+LEGACY_CACHED_DEFAULT = """---
+id: default-pipeline
+kind: pipeline
+role: default-pipeline
+scope: system
+triggers: [task.created]
+---
+```json
+{"rules":[{"id":"task-created-routing","on":"task.created","entry":"gate","nodes":{"gate":{"command":"gate_create","args":{"project_id":"{{event.project_id}}","gate_type":"routing","title":"Route task","waiter_task_ids":["{{event.task_id}}"]},"on_success":"done","on_failure":"done"},"done":{"terminal":true}}}]}
+```
+"""
+
 
 @pytest.fixture
 def dispatch_env(tmp_path):
@@ -121,6 +133,20 @@ async def _emit_completed_and_wait(orch, task_id: str, event_id: str):
 
 async def _tasks_by_profile(db, profile_id: str) -> list[Task]:
     return [t for t in await db.list_tasks(project_id="p") if t.profile_id == profile_id]
+
+
+@pytest.mark.asyncio
+async def test_cached_system_default_does_not_dispatch_legacy_assignment_rule(dispatch_env):
+    orch, _handler = await dispatch_env()
+    stale = compile_pipeline(LEGACY_CACHED_DEFAULT).playbook
+    assert stale is not None
+
+    await orch._on_playbook_trigger(
+        stale,
+        {"type": "task.created", "event_id": "legacy-created", "project_id": "p"},
+    )
+
+    assert await orch.db.get_playbook_run_by_event(stale.id, "legacy-created") is None
 
 
 @pytest.mark.asyncio

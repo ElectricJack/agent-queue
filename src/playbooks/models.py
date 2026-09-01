@@ -186,12 +186,14 @@ class LlmConfig:
 
     * ``provider`` — chat provider name (e.g. ``"anthropic"``, ``"gemini"``).
     * ``model`` — model identifier (e.g. ``"claude-sonnet-4-20250514"``).
+    * ``intelligence_class`` — provider-neutral model/reasoning class.
     * ``max_tokens`` — maximum response tokens per LLM call.
     * ``temperature`` — sampling temperature (0.0–1.0).
     """
 
     provider: str = ""  # e.g. "anthropic", "google", "openai"
     model: str = ""  # e.g. "claude-sonnet-4-20250514", "gemini-2.0-flash"
+    intelligence_class: str = ""  # e.g. "fast-low", "standard-medium"
     max_tokens: int | None = None  # e.g. 1024, 4096
     temperature: float | None = None  # e.g. 0.0, 0.7
 
@@ -203,6 +205,8 @@ class LlmConfig:
             d["provider"] = self.provider
         if self.model:
             d["model"] = self.model
+        if self.intelligence_class:
+            d["intelligence_class"] = self.intelligence_class
         if self.max_tokens is not None:
             d["max_tokens"] = self.max_tokens
         if self.temperature is not None:
@@ -214,6 +218,7 @@ class LlmConfig:
         return cls(
             provider=data.get("provider", ""),
             model=data.get("model", ""),
+            intelligence_class=data.get("intelligence_class", ""),
             max_tokens=data.get("max_tokens"),
             temperature=data.get("temperature"),
         )

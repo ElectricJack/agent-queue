@@ -98,6 +98,14 @@ async def test_rejects_unknown_class(handler):
     assert "class" in r["error"].lower()
 
 
+async def test_requires_explicit_or_existing_intelligence_class(handler):
+    r = await handler.execute(
+        "task_route", {"task_id": "t1", "profile_id": "coder"}
+    )
+    assert r["success"] is False
+    assert "intelligence_class is required" in r["error"]
+
+
 async def test_workspace_must_belong_to_project(handler, db):
     await db.create_project(Project(id="other-project", name="Other"))
     await db.create_workspace(

@@ -312,6 +312,26 @@ async def test_reconciler_reuses_matching_worker_without_changing_definition(rou
     assert await routing_db.get_agent("sol") == before
 
 
+async def test_prelaunch_recheck_rejects_task_without_effective_route(routing_db, tmp_path):
+    from src.config import AppConfig, DiscordConfig
+    from src.orchestrator import Orchestrator
+
+    agent = workers()[-1]
+    await routing_db.create_agent(agent)
+    task = replace(await routing_db.get_task("task"), intelligence_class=None)
+    config = AppConfig(
+        discord=DiscordConfig(bot_token="test", guild_id="1"),
+        database_path=str(tmp_path / "unused.db"),
+        data_dir=str(tmp_path / "data"),
+        workspace_dir=str(tmp_path / "work"),
+    )
+    orch = Orchestrator(config)
+    orch.db = routing_db
+    orch.session_spec_builder._intelligence_classes = routing_classes()
+
+    assert await orch._check_agent_routing(task, agent) == "awaiting intelligence route"
+
+
 @pytest.mark.parametrize("interactive", [False, True])
 async def test_orchestrator_snapshot_enforces_matching_and_live_terminal_ownership(
     routing_db, tmp_path, interactive,

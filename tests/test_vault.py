@@ -4,8 +4,11 @@ and vault migrations (vault spec §6, Phase 1).
 
 from __future__ import annotations
 
+import hashlib
+from pathlib import Path
 import time
 
+import src.vault as vault_module
 from src.vault import (
     SUPERVISOR_PROFILE,
     PLAYBOOK_TEMPLATE,
@@ -939,7 +942,11 @@ def test_ensure_default_playbooks_installs_all_defaults(tmp_path):
     result = ensure_default_playbooks(str(tmp_path))
 
     playbooks_dir = tmp_path / "vault" / "system" / "playbooks"
-    expected_files = ["default-pipeline.md", "memory-consolidation.md"]
+    expected_files = [
+        "default-assignment-routing.md",
+        "default-pipeline.md",
+        "memory-consolidation.md",
+    ]
 
     # All expected files must exist on disk
     for filename in expected_files:
@@ -981,6 +988,43 @@ def test_ensure_default_playbooks_idempotent(tmp_path):
 
     assert playbook_path.read_text() == custom_content
     assert "memory-consolidation.md" in result["skipped"]
+
+
+def test_ensure_default_playbooks_upgrades_known_legacy_pipeline(tmp_path, monkeypatch):
+    playbooks_dir = tmp_path / "vault" / "system" / "playbooks"
+    playbooks_dir.mkdir(parents=True)
+    pipeline_path = playbooks_dir / "default-pipeline.md"
+    legacy_source = "known unmodified legacy default\n"
+    pipeline_path.write_text(legacy_source, encoding="utf-8")
+    monkeypatch.setattr(
+        vault_module,
+        "_LEGACY_DEFAULT_PIPELINE_HASHES",
+        frozenset({hashlib.sha256(legacy_source.encode()).hexdigest()}),
+    )
+
+    result = ensure_default_playbooks(str(tmp_path))
+
+    bundled = (
+        Path(vault_module.__file__).parent
+        / "prompts"
+        / "default_playbooks"
+        / "default-pipeline.md"
+    ).read_text(encoding="utf-8")
+    assert "default-pipeline.md" in result["updated"]
+    assert pipeline_path.read_text(encoding="utf-8") == bundled
+
+
+def test_ensure_default_playbooks_preserves_custom_default_pipeline(tmp_path):
+    playbooks_dir = tmp_path / "vault" / "system" / "playbooks"
+    playbooks_dir.mkdir(parents=True)
+    pipeline_path = playbooks_dir / "default-pipeline.md"
+    custom_source = "# custom default pipeline\n"
+    pipeline_path.write_text(custom_source, encoding="utf-8")
+
+    result = ensure_default_playbooks(str(tmp_path))
+
+    assert pipeline_path.read_text(encoding="utf-8") == custom_source
+    assert "default-pipeline.md" in result["skipped"]
 
 
 def test_ensure_default_playbooks_partial_existing(tmp_path):

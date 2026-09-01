@@ -32,12 +32,10 @@ from src.sessions.harness_parser import Harness
 
 PROJECT_ID = "proj"
 
-#: The ``worker-filed-triage`` rule's ``when`` clause, verbatim from
-#: ``src/prompts/default_playbooks/default-pipeline.md`` (id
-#: ``worker-filed-triage``, on ``task.created``) -- kept here as a literal
-#: rather than parsed from the markdown so this test fails loudly (wrong
-#: assertion, not a silent skip) if the two ever drift.
-WORKER_FILED_TRIAGE_WHEN = {
+#: Provenance predicate used to verify the worker-filed event payload. Custom
+#: task.created subscribers can still use these fields even though the bundled
+#: pipeline no longer performs worker-filed triage.
+WORKER_FILED_EVENT_WHEN = {
     "all": [
         {"field": "event.created_by_kind", "equals": "session"},
         {"field": "event.parent_task_id", "is_null": True},
@@ -321,4 +319,4 @@ class TestSwarmWorkerLoopEndToEnd:
 
         created_payloads = emitted_payloads(orch, "task.created")
         payload = next(p for p in created_payloads if p["task_id"] == filed_id)
-        assert _eval_pipeline_when(WORKER_FILED_TRIAGE_WHEN, payload) is True
+        assert _eval_pipeline_when(WORKER_FILED_EVENT_WHEN, payload) is True

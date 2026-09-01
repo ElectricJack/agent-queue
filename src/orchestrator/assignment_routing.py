@@ -25,6 +25,7 @@ from src.assignment_routing import (
     select_assignment_playbook,
 )
 from src.database.tables import projects as projects_table, tasks as tasks_table
+from src.database.queries.blocked_state import apply_label_filters
 from src.models import (
     AgentState,
     AssignmentOption,
@@ -254,20 +255,28 @@ class AssignmentRoutingCoordinator:
         return self._catalog_hashes.get(project_id)
 
     async def _eligible_candidates(self) -> list[Task]:
-        tasks = [
-            task for task in await self.db.list_active_tasks_all_projects()
-            if task.status in _ACTIVE_ROUTE_STATUSES and task.assigned_agent_id is None
-        ]
+        statement = select(tasks_table).where(
+            tasks_table.c.status.in_([status.value for status in _ACTIVE_ROUTE_STATUSES]),
+            tasks_table.c.assigned_agent_id.is_(None),
+            tasks_table.c.is_plan_subtask == 0,
+        )
+        statement = apply_label_filters(statement, exclude_hold=True)
+        async with self.db._engine.begin() as connection:
+            rows = (await connection.execute(statement)).mappings().fetchall()
+        tasks = [self.db._row_to_task(row) for row in rows]
         candidates: list[Task] = []
         for task in tasks:
-            labels = await self.db.get_task_labels(task.id)
-            if any(label.startswith("hold:") for label in labels):
-                continue
             if task.is_blocked:
-                if await self.db.tasks_with_graph_blockers([task.id]):
+                if await self.db.get_blocking_dependencies(task.id):
                     continue
-                gates = [g for g in await self.db.get_gates_for_task(task.id) if g["status"] == "open"]
-                if not gates or any(g["gate_type"] != "routing" for g in gates):
+                gates = [
+                    gate for gate in await self.db.get_gates_for_task(task.id)
+                    if gate["status"] != "resolved"
+                ]
+                if not gates or any(
+                    gate["status"] != "open" or gate["gate_type"] != "routing"
+                    for gate in gates
+                ):
                     continue
             candidates.append(task)
         return candidates
@@ -383,6 +392,17 @@ class AssignmentRoutingCoordinator:
         try:
             decisions = validate_assignment_response(response or "", tasks, options)
         except AssignmentRoutingValidationError as exc:
+            # The graph completed, but its application-level output is not a
+            # valid assignment decision. Persist that terminal failure so the
+            # next reconciliation advances the event attempt ordinal instead
+            # of replaying this same completed response forever.
+            if run_id is not None:
+                await self.db.update_playbook_run(
+                    run_id,
+                    status="failed",
+                    completed_at=time.time(),
+                    error=f"invalid assignment response: {exc}",
+                )
             self._note_failure(batch_key, str(exc), tasks)
             return {}
         committed = await self._commit(project, playbook, tasks, options, decisions, run_id)
@@ -473,6 +493,15 @@ class AssignmentRoutingCoordinator:
             async with lock:
                 project = await self.db.get_project(project_id)
                 if project is None:
+                    continue
+                try:
+                    select_assignment_playbook(self.owner.playbook_manager, project)
+                except AssignmentPlaybookError as exc:
+                    logger.warning(
+                        "assignment routing unavailable for project %s: %s",
+                        project_id,
+                        exc,
+                    )
                     continue
                 options = await self._options(project_id)
                 tasks = sorted(by_project[project_id], key=lambda task: (task.priority, task.id))
