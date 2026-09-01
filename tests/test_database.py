@@ -1399,3 +1399,17 @@ class TestTokenLedgerPricingColumns:
         async with db._engine.begin() as conn:
             current = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar()
         assert current in script.get_heads()
+
+
+async def test_layout_tables_exist(tmp_path):
+    from sqlalchemy import inspect
+    from src.database import Database
+
+    db = Database(str(tmp_path / "layout.db"))
+    await db.initialize()
+    async with db._engine.connect() as conn:
+        names = await conn.run_sync(lambda c: inspect(c).get_table_names())
+    await db.close()
+    for t in ("task_layouts", "task_layout_cells", "project_layout_meta",
+              "layout_dirty", "layout_jobs"):
+        assert t in names
