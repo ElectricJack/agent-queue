@@ -414,10 +414,9 @@ class CompiledPlaybook:
     # disabling is "stop new starts", not "cancel existing". Authored in
     # frontmatter as ``enabled: false``; flipped via ``set_playbook_enabled``.
     enabled: bool = True
-    # Playbook kind — "" (default; LLM playbook) or "pipeline" (deterministic
-    # action-graph). Governs whether nodes carry ``prompt`` (LLM) or
-    # ``action`` (pipeline). Persisted so store round-trip preserves the
-    # execution model.
+    # Playbook kind — "" (ordinary LLM playbook), "pipeline" (deterministic
+    # action graph), or "assignment-routing" (fixed one-node LLM graph).
+    # Persisted so store round-trip preserves the execution model.
     kind: str = ""
     # Optional role name for pipeline playbooks (from frontmatter).
     role: str = ""
@@ -792,6 +791,8 @@ class CompiledPlaybook:
             d["compiled_at"] = self.compiled_at
         if self.profile_id is not None:
             d["profile_id"] = self.profile_id
+        if not self.enabled:
+            d["enabled"] = False
         if self.kind:
             d["kind"] = self.kind
         if self.role:
@@ -824,6 +825,7 @@ class CompiledPlaybook:
             transition_llm_config=trans_cfg,
             compiled_at=data.get("compiled_at"),
             profile_id=data.get("profile_id"),
+            enabled=data.get("enabled", True),
             kind=data.get("kind", ""),
             role=data.get("role", ""),
             pipeline_rules=data.get("pipeline_rules", {}),

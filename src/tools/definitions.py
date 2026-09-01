@@ -418,7 +418,8 @@ _ALL_TOOL_DEFINITIONS = [
         "name": "edit_project",
         "description": (
             "Edit a project's properties: name, credit_weight, max_concurrent_agents, "
-            "budget_limit, discord_channel_id, default_profile_id, or repo_default_branch. "
+            "budget_limit, discord_channel_id, default_profile_id, assignment_playbook_id, "
+            "or repo_default_branch. "
             "Use this to rename projects, adjust scheduling weight, set token budgets, "
             "link Discord channels, set a default agent profile, or change the default git branch."
         ),
@@ -446,6 +447,13 @@ _ALL_TOOL_DEFINITIONS = [
                 "default_profile_id": {
                     "type": ["string", "null"],
                     "description": "Default agent profile ID for tasks in this project (optional, null to clear)",
+                },
+                "assignment_playbook_id": {
+                    "type": ["string", "null"],
+                    "description": (
+                        "Project-scoped assignment-routing playbook ID "
+                        "(optional, null to use the system default)"
+                    ),
                 },
                 "repo_default_branch": {
                     "type": "string",

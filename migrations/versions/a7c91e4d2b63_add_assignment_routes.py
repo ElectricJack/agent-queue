@@ -10,6 +10,9 @@ depends_on = None
 
 
 def upgrade():
+    op.add_column(
+        "projects", sa.Column("assignment_playbook_id", sa.Text(), nullable=True)
+    )
     op.create_table(
         "task_assignment_routes",
         sa.Column("task_id", sa.Text(), nullable=False),
@@ -41,3 +44,5 @@ def upgrade():
 def downgrade():
     op.drop_index("idx_task_assignment_routes_project", table_name="task_assignment_routes")
     op.drop_table("task_assignment_routes")
+    with op.batch_alter_table("projects") as batch:
+        batch.drop_column("assignment_playbook_id")

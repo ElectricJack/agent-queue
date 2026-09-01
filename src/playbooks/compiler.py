@@ -110,6 +110,11 @@ def compile_playbook(markdown: str, *, existing_version: int = 0) -> "Compilatio
 
         return _cp(markdown, existing_version=existing_version)
 
+    if kind == "assignment-routing":
+        from src.playbooks.assignment_compiler import compile_assignment_playbook
+
+        return compile_assignment_playbook(markdown, existing_version=existing_version)
+
     return CompilationResult(
         success=False,
         errors=[
@@ -152,6 +157,13 @@ class PlaybookCompiler:
         from src.playbooks.pipeline_compiler import compile_pipeline as _cp
 
         return _cp(markdown, existing_version=existing_version)
+
+    def compile_assignment(
+        self, markdown: str, *, existing_version: int = 0
+    ) -> CompilationResult:
+        from src.playbooks.assignment_compiler import compile_assignment_playbook
+
+        return compile_assignment_playbook(markdown, existing_version=existing_version)
 
     # -- frontmatter ---------------------------------------------------------
 

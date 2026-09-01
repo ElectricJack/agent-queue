@@ -47,6 +47,7 @@ class ProjectQueryMixin:
                     repo_url=project.repo_url,
                     repo_default_branch=project.repo_default_branch,
                     default_profile_id=project.default_profile_id,
+                    assignment_playbook_id=project.assignment_playbook_id,
                     created_at=time.time(),
                 )
             )
@@ -236,4 +237,5 @@ class ProjectQueryMixin:
             if row.get("repo_default_branch")
             else "main",
             default_profile_id=row.get("default_profile_id"),
+            assignment_playbook_id=row.get("assignment_playbook_id"),
         )

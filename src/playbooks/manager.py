@@ -80,23 +80,23 @@ from typing import TYPE_CHECKING, Any, Callable
 
 import yaml
 
-from src.playbooks.compiler import CompilationResult, PlaybookCompiler
+from src.playbooks.compiler import CompilationResult, PlaybookCompiler, compile_playbook as _compile
 from src.playbooks.models import CompiledPlaybook, PlaybookScope, PlaybookTrigger
-from src.playbooks.pipeline_compiler import compile_pipeline as _compile_pipeline
 
 
-def _is_pipeline_markdown(md: str) -> bool:
-    """Peek at frontmatter to detect ``kind: pipeline`` playbooks."""
+def _deterministic_kind(md: str) -> str:
+    """Return the kind for playbooks compiled directly by the framework."""
     if not md.startswith("---"):
-        return False
+        return ""
     parts = md.split("---", 2)
     if len(parts) < 3:
-        return False
+        return ""
     try:
         fm = yaml.safe_load(parts[1]) or {}
     except Exception:
-        return False
-    return fm.get("kind") == "pipeline"
+        return ""
+    kind = str(fm.get("kind") or "")
+    return kind if kind in {"pipeline", "assignment-routing"} else ""
 
 
 if TYPE_CHECKING:
@@ -1448,9 +1448,9 @@ class PlaybookManager:
             compilation is skipped, ``result.skipped`` is ``True`` and
             ``result.playbook`` is the existing active version.
         """
-        is_pipeline = _is_pipeline_markdown(markdown)
+        deterministic_kind = _deterministic_kind(markdown)
 
-        if not is_pipeline:
+        if not deterministic_kind:
             # Phase 6: non-pipeline playbooks are compiled by the
             # playbook-compiler agent-type (see
             # ``docs/specs/design/playbooks.md`` §4.6).  The framework
@@ -1499,8 +1499,9 @@ class PlaybookManager:
                     skipped=True,
                 )
 
-        # Compile — deterministic path for pipelines (only path left).
-        result = _compile_pipeline(markdown, existing_version=existing_version)
+        # Compile through the deterministic dispatcher. Pipelines and the
+        # fixed assignment-routing graph are the only in-process kinds.
+        result = _compile(markdown, existing_version=existing_version)
 
         if result.success and result.playbook is not None:
             # Success — update active version, trigger map, and persist

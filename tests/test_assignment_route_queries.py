@@ -81,3 +81,16 @@ async def test_task_delete_cascades_assignment_route(db):
 
     assert await db.get_task_assignment_route(task.id) is None
 
+
+@pytest.mark.asyncio
+async def test_project_assignment_playbook_round_trips(db):
+    project = Project(
+        id="project-route",
+        name="Project Route",
+        assignment_playbook_id="custom-router",
+    )
+    await db.create_project(project)
+
+    assert (await db.get_project(project.id)).assignment_playbook_id == "custom-router"
+    await db.update_project(project.id, assignment_playbook_id=None)
+    assert (await db.get_project(project.id)).assignment_playbook_id is None

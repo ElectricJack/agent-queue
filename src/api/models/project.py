@@ -16,6 +16,7 @@ class ProjectSummary(BaseModel):
     workspace: str | None = None
     repo_url: str | None = None
     discord_channel_id: str | None = None
+    assignment_playbook_id: str | None = None
 
 
 class GetProjectResponse(BaseModel):
@@ -32,6 +33,7 @@ class GetProjectResponse(BaseModel):
     budget_limit: int | None = None
     discord_channel_id: str | None = None
     default_profile_id: str | None = None
+    assignment_playbook_id: str | None = None
 
 
 class WorkspaceSummary(BaseModel):

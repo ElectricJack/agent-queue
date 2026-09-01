@@ -329,6 +329,7 @@ class Project:
     repo_url: str = ""
     repo_default_branch: str = "main"
     default_profile_id: str | None = None  # fallback profile for tasks in this project
+    assignment_playbook_id: str | None = None
 
 
 @dataclass
