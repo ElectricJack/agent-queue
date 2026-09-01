@@ -78,10 +78,17 @@ class AgentSummary(BaseModel):
     session_state: str | None = None
     session_provider: str | None = None
     waiting_question: AgentWaitingQuestion | None = None
+    #: AQ-delegated + native children currently running. ``None`` means a
+    #: live session was launched without its harness hooks wired, so the
+    #: native half is unobserved and no honest total exists.
     active_subagent_count: int | None = None
     subagent_count_complete: bool = False
     aq_subagent_count: int = 0
     native_subagent_count: int | None = None
+    #: Lifetime native sub-agents this agent has spawned, across every
+    #: session it has ever owned. Native only — AQ delegation is a task
+    #: graph and is counted there, not folded into a launch tally.
+    subagents_spawned_total: int = 0
     settings: AgentSettings
     last_heartbeat: float | None = None
     session_tokens_used: int = 0
@@ -99,10 +106,31 @@ class ProfileSummary(BaseModel):
     has_system_prompt: bool = False
 
 
+class SubagentRollup(BaseModel):
+    """Sub-agent totals across a set of agents.
+
+    ``complete`` is a conjunction: one live session without harness hooks
+    makes every number here a lower bound, and callers must say so rather
+    than present a floor as a total.
+    """
+
+    active_total: int = 0
+    native_total: int = 0
+    aq_total: int = 0
+    spawned_total: int = 0
+    complete: bool = True
+
+
+class ProfileSubagentRollup(SubagentRollup):
+    profile_id: str = ""
+
+
 class ListAgentsResponse(BaseModel):
     agents: list[AgentSummary] = []
     count: int = 0
     project_id: str | None = None
+    subagents: SubagentRollup | None = None
+    subagents_by_profile: list[ProfileSubagentRollup] = []
 
 
 class DeleteAgentResponse(BaseModel):
@@ -265,7 +293,22 @@ class ShowEffectiveProfileResponse(BaseModel):
     source: str | None = None  # "project" | "global" | None
 
 
+class SubagentEventResponse(BaseModel):
+    """Receipt for one ``SubagentStart`` / ``SubagentStop`` hook delivery."""
+
+    success: bool = True
+    session_id: str
+    event: str
+    subagent_id: str
+    #: False when this exact event had already been recorded — a duplicate
+    #: delivery, not an error the harness should surface to the agent.
+    recorded: bool = True
+    active_subagent_count: int = 0
+    subagents_spawned_total: int = 0
+
+
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
+    "subagent_event": SubagentEventResponse,
     "question_list": QuestionListResponse,
     "question_answer": AgentQuestionDetail,
     "question_escalate": AgentQuestionDetail,

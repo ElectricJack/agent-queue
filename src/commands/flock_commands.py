@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from src.agents.configuration import SUPERVISOR_AGENT_ID
 from src.agents.service import list_agent_flock
+from src.agents.subagents import flock_rollup
 from src.models import Agent
 
 
@@ -22,7 +23,17 @@ class FlockCommandsMixin:
         if project_id and await self.db.get_project(project_id) is None:
             return {"error": f"Project '{project_id}' not found"}
         rows = await list_agent_flock(self.orchestrator, project_id=project_id)
-        return {"agents": rows, "count": len(rows), "project_id": project_id}
+        rollup = flock_rollup(rows)
+        return {
+            "agents": rows,
+            "count": len(rows),
+            "project_id": project_id,
+            # The flock header shows one number; computing it here means the
+            # dashboard, the CLI and any API caller agree on it — and on
+            # whether it is a total or a floor.
+            "subagents": rollup["totals"],
+            "subagents_by_profile": rollup["by_profile"],
+        }
 
     async def _cmd_get_agent(self, args: dict) -> dict:
         agent_id = args.get("agent_id")

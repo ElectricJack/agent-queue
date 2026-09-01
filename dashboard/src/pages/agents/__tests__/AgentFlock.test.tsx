@@ -26,6 +26,7 @@ function agent(id: string, name: string): FlockAgent {
     session_provider: "tmux", project_id: null, workspace_id: null,
     active_subagent_count: 0 as number | null, subagent_count_complete: true,
     aq_subagent_count: 0, native_subagent_count: 0 as number | null,
+    subagents_spawned_total: 0,
     settings: { name, profile_id: "implementer", harness: null, model: null,
       intelligence_class: null, enabled: true },
   };
@@ -33,6 +34,12 @@ function agent(id: string, name: string): FlockAgent {
 
 let roster = [agent("a", "Supervisor"), agent("b", "Builder"), agent("c", "Reviewer"),
   agent("d", "Tester"), agent("e", "Writer")];
+// The daemon's own rollup over that roster — the rail renders it rather than
+// re-summing rows in the browser.
+let rollup: {
+  active_total: number; native_total: number; aq_total: number;
+  spawned_total: number; complete: boolean;
+} | null = null;
 const clients: QueryClient[] = [];
 
 function Location() {
@@ -69,6 +76,7 @@ beforeEach(() => {
     native_subagent_count: null, subagent_count_complete: false };
   roster[1] = { ...roster[1]!, active_subagent_count: null, native_subagent_count: null,
     subagent_count_complete: false };
+  rollup = null;
   api.getAgent.mockImplementation(async ({ body }: { body: { agent_id: string } }) => ({ data: roster.find((a) => a.id === body.agent_id) }));
   api.editAgent.mockImplementation(async ({ body }: { body: Record<string, unknown> }) => {
     roster = roster.map((row) => row.id === body.agent_id
@@ -93,7 +101,9 @@ beforeEach(() => {
       : row);
     return { data: roster.find((row) => row.id === body.agent_id) };
   });
-  api.listAgents.mockImplementation(async () => ({ data: { agents: roster, count: roster.length } }));
+  api.listAgents.mockImplementation(async () => ({
+    data: { agents: roster, count: roster.length, subagents: rollup },
+  }));
   api.listProjects.mockResolvedValue({ data: { projects: [] } });
   api.listIntelligenceClasses.mockResolvedValue({ data: { classes: [{ id: "standard-high", name: "Standard high" }, { id: "deep-high", name: "Deep high" }] } });
   api.listProfiles.mockResolvedValue({ data: { profiles: [{ id: "implementer", name: "Implementer" }, { id: "supervisor", name: "Supervisor" }] } });
@@ -210,6 +220,24 @@ describe("Agent flock sidebar", () => {
     expect(within(row).getByText("Review deployment")).toBeInTheDocument();
     expect(within(screen.getByRole("region", { name: "Agent flock" })).queryByText(/sub-agents/i)).not.toBeInTheDocument();
     expect(api.listAgents).toHaveBeenCalledWith({ body: {}, throwOnError: true });
+  });
+
+  it("shows the flock's own sub-agent total in the rail header", async () => {
+    rollup = { active_total: 6, native_total: 4, aq_total: 2, spawned_total: 9, complete: true };
+    renderFlock();
+    await screen.findByRole("button", { name: /open supervisor/i });
+    const header = screen.getByRole("button", { name: /agent flock/i });
+    expect(within(header).getByText("6 sub")).toBeInTheDocument();
+    // The roster count stays beside it — they answer different questions.
+    expect(within(header).getByText("5")).toBeInTheDocument();
+  });
+
+  it("marks the rail total as a floor when some live session lacks hooks", async () => {
+    rollup = { active_total: 3, native_total: 0, aq_total: 3, spawned_total: 0, complete: false };
+    renderFlock();
+    await screen.findByRole("button", { name: /open supervisor/i });
+    const header = screen.getByRole("button", { name: /agent flock/i });
+    expect(within(header).getByText("≥3 sub")).toBeInTheDocument();
   });
 
   it("remembers collapse without changing the open agent selection", async () => {

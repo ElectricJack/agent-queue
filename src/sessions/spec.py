@@ -421,6 +421,14 @@ class SessionSpecBuilder:
         )
 
         files.extend(hook_files)
+        # Mirrors the two argv branches above.  Recorded on the session row so
+        # the flock can distinguish "no native subagents" from "we cannot see
+        # native subagents" without re-reading a harness file that may have
+        # changed since launch.
+        hooks_provisioned = bool(hook_files) and (
+            bool(harness.settings_flag)
+            or (bool(harness.hook_trust_flag) and allow_skip_permissions)
+        )
 
         launch_env = dict(extra_env or {})
         provider = getattr(harness, "provider", "") or _infer_provider_from_harness(harness)
@@ -467,6 +475,7 @@ class SessionSpecBuilder:
             skip_escape_before_enter=harness.skip_escape_before_enter,
             files=tuple(files),
             instance_token=instance_token,
+            hooks_provisioned=hooks_provisioned,
         )
 
     def _compose_argv(
@@ -548,6 +557,19 @@ class SessionSpecBuilder:
         # advertised ``supports_hooks: true`` and shipped a dead file.
         if hook_files and harness.settings_flag:
             argv.extend([harness.settings_flag, hook_files[0][0]])
+
+        # Codex discovers ``<cwd>/.codex/hooks.json`` on its own -- there is no
+        # settings flag to point it at -- but it refuses to *run* a hook file
+        # it has not been shown in an interactive review screen (verified on
+        # codex-cli 0.151.0: project ``trust_level = "trusted"`` is not
+        # enough).  ``--dangerously-bypass-hook-trust`` is the CLI's own
+        # documented escape hatch for "automation that already vets hook
+        # sources", which is exactly this daemon writing its own file.  It
+        # rides ``allow_skip_permissions`` rather than being unconditional:
+        # where we would not hand the harness a sandbox bypass, we also do not
+        # pre-trust hook files a checked-out repo might carry.
+        if hook_files and harness.hook_trust_flag and allow_skip_permissions:
+            argv.append(harness.hook_trust_flag)
 
         if resume_key and harness.resume.style == "flag":
             argv.extend([harness.resume.flag, resume_key])

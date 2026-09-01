@@ -1,20 +1,5 @@
 {
   "hooks": {
-    "SessionStart": [
-      {
-        "matcher": "resume|compact",
-        "hooks": [
-          {"type": "command", "command": "aq prime --hook-json", "timeout": 30}
-        ]
-      }
-    ],
-    "PreCompact": [
-      {
-        "hooks": [
-          {"type": "command", "command": "aq handoff --auto", "timeout": 30}
-        ]
-      }
-    ],
     "SubagentStart": [
       {
         "hooks": [

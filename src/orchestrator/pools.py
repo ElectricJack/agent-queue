@@ -413,6 +413,7 @@ class PoolsMixin:
                         agent_id=agent.id,
                         **resolve_launch_settings(profile, harness, self.session_spec_builder),
                         last_activity=now,
+                        hooks_provisioned=spec.hooks_provisioned,
                     ),
                     release_agent_reservation=True,
                 )

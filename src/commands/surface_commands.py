@@ -397,3 +397,65 @@ class SurfaceCommandsMixin:
             "handoff_id": handoff_id,
             "restart_requested": restart_requested,
         }
+
+    # ------------------------------------------------------------------
+    # subagent_event — backs `aq subagent event --hook-json`
+    # ------------------------------------------------------------------
+
+    async def _cmd_subagent_event(self, args: dict) -> dict:
+        """Record one ``SubagentStart`` / ``SubagentStop`` from a harness hook.
+
+        The session is taken from the bearer token's scope, never from the
+        payload: the hook runs inside the session's own process tree with
+        that session's ``AQ_API_TOKEN``, and a session must not be able to
+        write another session's telemetry by naming it.  A local (untokened)
+        caller may pass ``session_id`` explicitly — that is the test and
+        replay path.
+
+        Duplicate deliveries collapse onto the row they already wrote
+        (``subagent_event_id``), and a ``stop`` with no matching ``start`` is
+        stored rather than rejected: the fold clamps at zero, so a lost Start
+        under-counts for a moment instead of pinning a session at "one child
+        running" forever.
+        """
+        event = str(args.get("event") or "").strip().lower()
+        if event not in {"start", "stop"}:
+            return {"error": "event must be 'start' or 'stop'"}
+        subagent_id = str(args.get("subagent_id") or "").strip()
+        if not subagent_id:
+            return {"error": "subagent_id is required"}
+
+        scope = getattr(self, "_current_scope", None) or {}
+        session_id = scope.get("session_id") or args.get("session_id")
+        if not session_id:
+            return {"error": "session_id is required (no session in scope)"}
+        session = await self.db.get_session(str(session_id))
+        if session is None:
+            return {"error": f"No session '{session_id}'"}
+
+        recorded = await self.db.record_subagent_event(
+            session_id=session.id,
+            harness=session.harness,
+            event=event,
+            subagent_id=subagent_id,
+            project_id=session.project_id,
+            task_id=session.task_id,
+            agent_type=(str(args.get("agent_type")).strip() or None)
+            if args.get("agent_type") else None,
+            turn_id=(str(args.get("turn_id")).strip() or None)
+            if args.get("turn_id") else None,
+        )
+        counts = (await self.db.subagent_counts_by_session([session.id])).get(
+            session.id, {"starts": 0, "stops": 0}
+        )
+        return {
+            "success": True,
+            "session_id": session.id,
+            "event": event,
+            "subagent_id": subagent_id,
+            # False means "already had this one" — the hook fired twice, not
+            # an error the harness should surface to the agent.
+            "recorded": recorded,
+            "active_subagent_count": max(0, counts["starts"] - counts["stops"]),
+            "subagents_spawned_total": counts["starts"],
+        }

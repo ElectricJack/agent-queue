@@ -1,13 +1,14 @@
 import { useId, useState } from "react";
 import { ChevronDownIcon, ChevronRightIcon, UsersIcon, PlusIcon } from "@heroicons/react/24/outline";
-import { useAgentFlock } from "../api/agents";
+import { useAgentFlock, useFlockSubagents } from "../api/agents";
 import { useAgentSelection } from "../pages/agents/useAgentSelection";
-import { AgentState, AgentEligibility, AgentWaitingQuestion } from "../pages/agents/AgentMetadata";
+import { AgentState, AgentEligibility, AgentWaitingQuestion, FlockSubagents } from "../pages/agents/AgentMetadata";
 
 const COLLAPSED_KEY = "aq:flock:collapsed";
 
 export default function AgentFlock() {
   const { data: agents = [], isLoading, error, refetch } = useAgentFlock();
+  const { data: subagents } = useFlockSubagents();
   const selection = useAgentSelection();
   const [collapsed, setCollapsed] = useState(() => {
     try { return localStorage.getItem(COLLAPSED_KEY) === "true"; }
@@ -38,7 +39,10 @@ export default function AgentFlock() {
           <Chevron className="h-3 w-3" />
           <UsersIcon className="h-4 w-4" />
           <span>Agent flock</span>
-          <span className="ml-auto font-mono text-[10px] text-gray-500">{agents.length}</span>
+          <span className="ml-auto flex items-center gap-1.5">
+            <FlockSubagents rollup={subagents} />
+            <span className="font-mono text-[10px] text-gray-500">{agents.length}</span>
+          </span>
         </button>
         <button type="button" data-listnav="1" aria-label="Add agent" title="Add agent"
           onClick={() => selection.setAdding(true)}
