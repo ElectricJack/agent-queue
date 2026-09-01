@@ -1,0 +1,75 @@
+from __future__ import annotations
+
+from dataclasses import replace
+
+from src.assignment_routing import (
+    EffectiveAssignmentRoute,
+    assignment_input_hash,
+    options_hash,
+    resolve_effective_route,
+)
+from src.models import AssignmentOption, Task, TaskAssignmentRoute
+
+
+def _task(**changes) -> Task:
+    values = {
+        "id": "task-1",
+        "project_id": "project-1",
+        "title": "Fix flaky checkout",
+        "description": "Find and repair the checkout race.",
+        "priority": 20,
+        "updated_at": 100.0,
+    }
+    values.update(changes)
+    return Task(**values)
+
+
+def _saved(task: Task, *, catalog_hash: str = "catalog-v1") -> TaskAssignmentRoute:
+    return TaskAssignmentRoute(
+        task_id=task.id,
+        project_id=task.project_id,
+        input_hash=assignment_input_hash(task),
+        task_updated_at=task.updated_at,
+        options_hash=catalog_hash,
+        intelligence_class="standard-medium",
+        provider="openai",
+        playbook_id="default-assignment-routing",
+        playbook_version=3,
+        playbook_run_id="run-1",
+        reason="Needs ordinary code reasoning.",
+        decided_at=110.0,
+    )
+
+
+def test_explicit_class_wins_over_saved_route() -> None:
+    task = _task(intelligence_class="deep-high")
+
+    route = resolve_effective_route(task, _saved(task), "catalog-v2")
+
+    assert route == EffectiveAssignmentRoute(
+        task_id=task.id,
+        intelligence_class="deep-high",
+        provider=None,
+        source="explicit",
+    )
+
+
+def test_saved_route_requires_matching_task_revision_input_and_options() -> None:
+    task = _task()
+    saved = _saved(task)
+
+    assert resolve_effective_route(task, saved, "catalog-v1") is not None
+    assert resolve_effective_route(task, replace(saved, task_updated_at=99.0), "catalog-v1") is None
+    assert resolve_effective_route(task, replace(saved, input_hash="old"), "catalog-v1") is None
+    assert resolve_effective_route(task, saved, "catalog-v2") is None
+
+
+def test_assignment_hashes_are_canonical_and_include_material_changes() -> None:
+    task = _task()
+    option_a = AssignmentOption("standard-medium", "openai", 2, 1, 1, "available")
+    option_b = AssignmentOption("fast-low", "anthropic", 1, 1, 0, "unknown")
+
+    assert options_hash([option_a, option_b]) == options_hash([option_b, option_a])
+    assert assignment_input_hash(task) != assignment_input_hash(replace(task, priority=21))
+    assert assignment_input_hash(task) == assignment_input_hash(replace(task, retry_count=2))
+

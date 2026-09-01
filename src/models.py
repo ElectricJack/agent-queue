@@ -424,6 +424,36 @@ class Task:
     updated_at: float = 0.0  # unix timestamp when the task was last updated
 
 
+@dataclass(frozen=True)
+class AssignmentOption:
+    """One class/provider route the ordinary worker flock can execute."""
+
+    intelligence_class: str
+    provider: str
+    configured_capacity: int
+    idle_count: int
+    busy_count: int
+    availability: str = "unknown"
+
+
+@dataclass(frozen=True)
+class TaskAssignmentRoute:
+    """The current successful playbook-derived assignment decision."""
+
+    task_id: str
+    project_id: str
+    input_hash: str
+    task_updated_at: float
+    options_hash: str
+    intelligence_class: str
+    provider: str | None
+    playbook_id: str
+    playbook_version: int
+    playbook_run_id: str
+    reason: str
+    decided_at: float
+
+
 @dataclass
 class TaskCompletion:
     """Append-only account of one accepted ``task_close`` invocation."""

@@ -33,6 +33,7 @@ from src.models import (
     RepoConfig,
     SessionRecord,
     Task,
+    TaskAssignmentRoute,
     TaskCompletion,
     TaskStatus,
     Workflow,
@@ -134,6 +135,15 @@ class DatabaseBackend(Protocol):
         self, task_id: str, *, cascade: bool = False, conn=None
     ) -> "TransitionResult | None": ...
     async def get_task_updated_at(self, task_id: str) -> float | None: ...
+    async def get_task_assignment_route(
+        self, task_id: str, *, conn=None
+    ) -> TaskAssignmentRoute | None: ...
+    async def list_task_assignment_routes(
+        self, task_ids, *, conn=None
+    ) -> list[TaskAssignmentRoute]: ...
+    async def upsert_task_assignment_routes(
+        self, routes, *, conn
+    ) -> None: ...
     async def get_task_created_at(self, task_id: str) -> float | None: ...
     async def add_task_context(
         self,
