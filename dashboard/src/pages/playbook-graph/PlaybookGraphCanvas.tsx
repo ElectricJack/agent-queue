@@ -1,4 +1,10 @@
-import { useCallback, useMemo, useRef, type KeyboardEvent } from "react";
+import {
+  useCallback,
+  useMemo,
+  useRef,
+  type KeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
+} from "react";
 import { Background, Controls, Panel, ReactFlow, ReactFlowProvider } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import type { PlaybookGraphLayout, PlaybookGraphNodesEdges } from "../../api/client";
@@ -34,6 +40,17 @@ export default function PlaybookGraphCanvas({
   );
 
   const select = useCallback((nodeId: string) => onSelectNode(nodeId), [onSelectNode]);
+  /** React Flow only gives a node wrapper `pointer-events: all` when the node is
+   *  selectable, draggable, or the flow has a node pointer handler. This canvas
+   *  is none of the first two on purpose, so without `onNodeClick` every card is
+   *  covered by `pointer-events: none` and no click ever reaches the button
+   *  inside it. Passing it both restores pointer events and makes the padding
+   *  around the card clickable; the card's own handler still serves keyboard
+   *  activation and stops the event, so a node is never selected twice. */
+  const onNodeClick = useCallback(
+    (_event: ReactMouseEvent, node: { id: string }) => onSelectNode(node.id),
+    [onSelectNode],
+  );
   const clearSelection = useCallback(() => onSelectNode(null), [onSelectNode]);
 
   const decorated = useMemo(
@@ -90,6 +107,7 @@ export default function PlaybookGraphCanvas({
           panOnScroll
           zoomOnScroll={false}
           proOptions={{ hideAttribution: true }}
+          onNodeClick={onNodeClick}
           onPaneClick={clearSelection}
         >
           <Background gap={24} color="#1f2937" />

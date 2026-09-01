@@ -3,6 +3,7 @@ import type { Edge, Node } from "@xyflow/react";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { PlaybookGraphEdge } from "../../../api/client";
 import PlaybookGraphCanvas from "../PlaybookGraphCanvas";
 import type { PlaybookGraphNodeData } from "../types";
 import { edge, graph, layout, node, pipelineGraph, pipelineLayout } from "./fixtures";
@@ -90,7 +91,7 @@ describe("PlaybookGraphCanvas", () => {
   it("keeps an unknown edge kind visible with a neutral transition treatment", () => {
     render(
       <PlaybookGraphCanvas
-        graph={{ nodes: pipelineGraph.nodes, edges: [edge("ensure-review", "review-ready", { edge_type: "retry" })] }}
+        graph={{ nodes: pipelineGraph.nodes, edges: [edge("ensure-review", "review-ready", { edge_type: "retry" as PlaybookGraphEdge["edge_type"] })] }}
         layout={pipelineLayout}
         onSelectNode={vi.fn()}
       />,
