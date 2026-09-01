@@ -13430,6 +13430,171 @@
         "type": "object",
         "title": "CompilePlaybookResponse"
       },
+      "CompiledPlaybookNode": {
+        "properties": {
+          "prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompt"
+          },
+          "entry": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entry"
+          },
+          "terminal": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Terminal"
+          },
+          "transitions": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/PlaybookTransitionDetail"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Transitions"
+          },
+          "goto": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Goto"
+          },
+          "wait_for_human": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wait For Human"
+          },
+          "timeout_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timeout Seconds"
+          },
+          "pause_timeout_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pause Timeout Seconds"
+          },
+          "on_timeout": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "On Timeout"
+          },
+          "llm_config": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PlaybookNodeLlmConfig"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "transition_llm_config": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PlaybookNodeLlmConfig"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "for_each": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "For Each"
+          },
+          "output": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output"
+          },
+          "action": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Action"
+          }
+        },
+        "type": "object",
+        "title": "CompiledPlaybookNode",
+        "description": "The serializable fields produced by ``PlaybookNode.to_dict()``.\n\nEach field is optional according to the compiled-node rules: a key is\npresent only when the compiler set it.  This is what the dashboard node\ninspector renders, so the prompt here is the full untruncated text."
+      },
       "CountProjectMemoryFilesRequest": {
         "properties": {
           "project_id": {
@@ -23369,6 +23534,287 @@
         ],
         "title": "PauseTaskRequest"
       },
+      "PlaybookGraphEdge": {
+        "properties": {
+          "source": {
+            "type": "string",
+            "title": "Source"
+          },
+          "target": {
+            "type": "string",
+            "title": "Target"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label",
+            "default": ""
+          },
+          "edge_type": {
+            "type": "string",
+            "title": "Edge Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "source",
+          "target",
+          "edge_type"
+        ],
+        "title": "PlaybookGraphEdge",
+        "description": "One directed, labelled edge between two compiled nodes."
+      },
+      "PlaybookGraphIdentity": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version",
+            "default": 0
+          },
+          "scope": {
+            "type": "string",
+            "title": "Scope",
+            "default": ""
+          },
+          "triggers": {
+            "items": {
+              "$ref": "#/components/schemas/PlaybookGraphTrigger"
+            },
+            "type": "array",
+            "title": "Triggers",
+            "default": []
+          },
+          "node_count": {
+            "type": "integer",
+            "title": "Node Count",
+            "default": 0
+          },
+          "compiled_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Compiled At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "title": "PlaybookGraphIdentity",
+        "description": "Identity block of the graph view \u2014 the compiled playbook itself."
+      },
+      "PlaybookGraphLayout": {
+        "properties": {
+          "direction": {
+            "type": "string",
+            "title": "Direction",
+            "default": "TD"
+          },
+          "grid_positions": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/PlaybookGraphPosition"
+            },
+            "type": "object",
+            "title": "Grid Positions",
+            "default": {}
+          }
+        },
+        "type": "object",
+        "title": "PlaybookGraphLayout"
+      },
+      "PlaybookGraphNode": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "type": {
+            "type": "string",
+            "title": "Type"
+          },
+          "symbol": {
+            "type": "string",
+            "title": "Symbol",
+            "default": ""
+          },
+          "label": {
+            "type": "string",
+            "title": "Label",
+            "default": ""
+          },
+          "position": {
+            "$ref": "#/components/schemas/PlaybookGraphPosition",
+            "default": {
+              "x": 0,
+              "y": 0
+            }
+          },
+          "colors": {
+            "$ref": "#/components/schemas/PlaybookGraphNodeColors"
+          },
+          "entry": {
+            "type": "boolean",
+            "title": "Entry",
+            "default": false
+          },
+          "terminal": {
+            "type": "boolean",
+            "title": "Terminal",
+            "default": false
+          },
+          "wait_for_human": {
+            "type": "boolean",
+            "title": "Wait For Human",
+            "default": false
+          },
+          "prompt_preview": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompt Preview"
+          },
+          "timeout_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timeout Seconds"
+          },
+          "on_timeout": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "On Timeout"
+          },
+          "out_degree": {
+            "type": "integer",
+            "title": "Out Degree",
+            "default": 0
+          },
+          "details": {
+            "$ref": "#/components/schemas/CompiledPlaybookNode"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "type",
+          "colors",
+          "details"
+        ],
+        "title": "PlaybookGraphNode",
+        "description": "One positioned, classified node in the compiled graph."
+      },
+      "PlaybookGraphNodeColors": {
+        "properties": {
+          "fill": {
+            "type": "string",
+            "title": "Fill"
+          },
+          "stroke": {
+            "type": "string",
+            "title": "Stroke"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          }
+        },
+        "type": "object",
+        "required": [
+          "fill",
+          "stroke",
+          "text"
+        ],
+        "title": "PlaybookGraphNodeColors"
+      },
+      "PlaybookGraphNodesEdges": {
+        "properties": {
+          "nodes": {
+            "items": {
+              "$ref": "#/components/schemas/PlaybookGraphNode"
+            },
+            "type": "array",
+            "title": "Nodes",
+            "default": []
+          },
+          "edges": {
+            "items": {
+              "$ref": "#/components/schemas/PlaybookGraphEdge"
+            },
+            "type": "array",
+            "title": "Edges",
+            "default": []
+          }
+        },
+        "type": "object",
+        "title": "PlaybookGraphNodesEdges"
+      },
+      "PlaybookGraphPosition": {
+        "properties": {
+          "x": {
+            "type": "integer",
+            "title": "X",
+            "default": 0
+          },
+          "y": {
+            "type": "integer",
+            "title": "Y",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "PlaybookGraphPosition",
+        "description": "A stable grid coordinate produced by the backend layout."
+      },
+      "PlaybookGraphTrigger": {
+        "properties": {
+          "event_type": {
+            "type": "string",
+            "title": "Event Type"
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filter"
+          }
+        },
+        "type": "object",
+        "required": [
+          "event_type"
+        ],
+        "title": "PlaybookGraphTrigger",
+        "description": "One compiled trigger on the visualized playbook."
+      },
       "PlaybookGraphViewRequest": {
         "properties": {
           "playbook_id": {
@@ -23438,44 +23884,87 @@
             "title": "Success",
             "default": true
           },
-          "playbook_id": {
-            "type": "string",
-            "title": "Playbook Id",
-            "default": ""
+          "playbook": {
+            "$ref": "#/components/schemas/PlaybookGraphIdentity"
           },
-          "nodes": {
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "type": "array",
-            "title": "Nodes",
-            "default": []
+          "graph": {
+            "$ref": "#/components/schemas/PlaybookGraphNodesEdges",
+            "default": {
+              "nodes": [],
+              "edges": []
+            }
           },
-          "edges": {
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "type": "array",
-            "title": "Edges",
-            "default": []
+          "layout": {
+            "$ref": "#/components/schemas/PlaybookGraphLayout",
+            "default": {
+              "direction": "TD",
+              "grid_positions": {}
+            }
           },
-          "direction": {
-            "type": "string",
-            "title": "Direction",
-            "default": "TD"
-          },
-          "overlays": {
+          "legend": {
             "additionalProperties": true,
             "type": "object",
-            "title": "Overlays",
+            "title": "Legend",
             "default": {}
+          },
+          "live_state": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Live State"
+          },
+          "run_overlay": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Overlay"
+          },
+          "run_history": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run History"
+          },
+          "node_metrics": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Node Metrics"
           }
         },
         "type": "object",
+        "required": [
+          "playbook"
+        ],
         "title": "PlaybookGraphViewResponse",
-        "description": "Build-graph-view output \u2014 keeps the wire shape loose because the\npayload is consumed wholesale by the dashboard renderer."
+        "description": "``build_graph_view`` output \u2014 the nested shape the builder actually\nproduces (design spec \u00a74).\n\nThe overlay blocks (``live_state``, ``run_overlay``, ``run_history``,\n``node_metrics``) stay loosely typed: they are opt-in, richly dynamic,\nand not part of the first Graph tab.  They are declared here so the\nresponse model never silently drops them."
       },
       "PlaybookHealthRequest": {
         "properties": {
@@ -23640,6 +24129,57 @@
           "status"
         ],
         "title": "PlaybookLastRun"
+      },
+      "PlaybookNodeLlmConfig": {
+        "properties": {
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "max_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Tokens"
+          },
+          "temperature": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Temperature"
+          }
+        },
+        "type": "object",
+        "title": "PlaybookNodeLlmConfig",
+        "description": "``LlmConfig.to_dict()`` \u2014 every field omitted when unset."
       },
       "PlaybookRunPathEntry": {
         "properties": {
@@ -23881,6 +24421,46 @@
           "scope"
         ],
         "title": "PlaybookSummary"
+      },
+      "PlaybookTransitionDetail": {
+        "properties": {
+          "goto": {
+            "type": "string",
+            "title": "Goto"
+          },
+          "when": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "When"
+          },
+          "otherwise": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Otherwise"
+          }
+        },
+        "type": "object",
+        "required": [
+          "goto"
+        ],
+        "title": "PlaybookTransitionDetail",
+        "description": "One compiled transition as serialized by ``PlaybookTransition.to_dict``."
       },
       "PlaybookValidateRequest": {
         "properties": {

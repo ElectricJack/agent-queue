@@ -303,6 +303,12 @@ def build_nodes(
         out_edges = len(node.transitions) + (1 if node.goto else 0)
         node_data["out_degree"] = out_edges
 
+        # Full compiled configuration for the node inspector — untruncated
+        # prompt plus every optional compiled field (design spec §4).  The
+        # dashboard must never reconstruct this from the rendered edges or
+        # the markdown source.
+        node_data["details"] = node.to_dict()
+
         nodes.append(node_data)
 
     return nodes
@@ -661,9 +667,11 @@ def build_graph_view(
     dict
         A JSON-serializable dict with keys:
 
-        - ``playbook``: identity (id, version, scope, triggers)
-        - ``graph``: nodes and edges
-        - ``layout``: layout metadata (direction, positions)
+        - ``playbook``: identity (id, version, scope, triggers, node_count,
+          compiled_at)
+        - ``graph``: nodes and edges — each node carries ``details``, the full
+          compiled node configuration from ``PlaybookNode.to_dict()``
+        - ``layout``: layout metadata (direction, grid_positions)
         - ``live_state``: (optional) active instance overlay
         - ``run_overlay``: (optional) specific run path highlight
         - ``run_history``: (optional) timeline of past runs
@@ -672,13 +680,9 @@ def build_graph_view(
     """
     if not playbook.nodes:
         return {
-            "playbook": {
-                "id": playbook.id,
-                "version": playbook.version,
-                "scope": playbook.scope,
-            },
+            "playbook": _build_identity(playbook),
             "graph": {"nodes": [], "edges": []},
-            "layout": {"direction": direction},
+            "layout": {"direction": direction, "grid_positions": {}},
             "legend": _build_legend(),
         }
 
@@ -694,26 +698,8 @@ def build_graph_view(
     )
     edges = build_edges(playbook)
 
-    # Build trigger list
-    triggers = []
-    for t in playbook.triggers:
-        if hasattr(t, "event_type"):
-            trigger_data: dict[str, Any] = {"event_type": t.event_type}
-            if hasattr(t, "filter") and t.filter:
-                trigger_data["filter"] = t.filter
-            triggers.append(trigger_data)
-        else:
-            triggers.append({"event_type": str(t)})
-
     result: dict[str, Any] = {
-        "playbook": {
-            "id": playbook.id,
-            "version": playbook.version,
-            "scope": playbook.scope,
-            "triggers": triggers,
-            "node_count": len(playbook.nodes),
-            "compiled_at": playbook.compiled_at,
-        },
+        "playbook": _build_identity(playbook),
         "graph": {
             "nodes": nodes,
             "edges": edges,
@@ -744,6 +730,32 @@ def build_graph_view(
 # ---------------------------------------------------------------------------
 # Legend
 # ---------------------------------------------------------------------------
+
+
+def _build_identity(playbook: CompiledPlaybook) -> dict[str, Any]:
+    """Build the ``playbook`` identity block of the graph view.
+
+    The same keys are produced for empty and populated playbooks so the
+    response shape never depends on whether the graph has nodes.
+    """
+    triggers: list[dict[str, Any]] = []
+    for t in playbook.triggers:
+        if hasattr(t, "event_type"):
+            trigger_data: dict[str, Any] = {"event_type": t.event_type}
+            if getattr(t, "filter", None):
+                trigger_data["filter"] = t.filter
+            triggers.append(trigger_data)
+        else:
+            triggers.append({"event_type": str(t)})
+
+    return {
+        "id": playbook.id,
+        "version": playbook.version,
+        "scope": playbook.scope,
+        "triggers": triggers,
+        "node_count": len(playbook.nodes),
+        "compiled_at": playbook.compiled_at,
+    }
 
 
 def _build_legend() -> dict[str, Any]:
