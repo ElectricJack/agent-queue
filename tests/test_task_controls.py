@@ -1011,3 +1011,68 @@ async def test_backoff_resume_clears_needs_attention(env):
     await env.orch._resume_paused_tasks()
     assert (await env.db.get_task("t")).status == TaskStatus.READY
     assert await env.db.get_task_meta("t", "needs_attention") is None
+
+
+# ── The recovery write is guarded under the row lock ──────────────────────
+#
+# The cascade reads the status and the ``manual_pause`` snapshot in separate
+# transactions.  An operator hold that commits between the scan and the
+# recovery write looks exactly like a wedge from the orchestrator, and an
+# unconditional ``resume_task`` would tear that fresh hold down.  So the
+# write is ``recover_orphaned_pause``: it re-checks all three conditions
+# after taking the task-row lock, inside the transaction that transitions.
+
+
+async def test_hold_landing_after_the_scan_is_not_recovered(env, monkeypatch):
+    """The regression: a pause committing after the scan decided 'wedge'."""
+    await _wedge(env)
+    real = env.db.recover_orphaned_pause
+
+    async def hold_lands_first(task_id):
+        # The operator's pause commits after the cascade's reads and before
+        # the recovery write — the window the old two-step check had.
+        await env.db.pause_task(task_id)
+        return await real(task_id)
+
+    monkeypatch.setattr(env.db, "recover_orphaned_pause", hold_lands_first)
+    await env.orch._resume_paused_tasks()
+    task = await env.db.get_task("t")
+    assert task.status == TaskStatus.PAUSED and task.resume_after is None
+    assert await env.db.get_task_meta("t", "manual_pause") is not None
+    assert await env.db.assign_task_to_agent("t", "agent") is False
+
+
+async def test_recover_orphaned_pause_resumes_a_wedge(env):
+    await _wedge(env)
+    task = await env.db.recover_orphaned_pause("t")
+    assert task is not None
+    assert task.status == TaskStatus.READY
+    assert task.assigned_agent_id is None
+    assert (await env.db.get_task("t")).status == TaskStatus.READY
+
+
+async def test_recover_orphaned_pause_declines_an_operator_hold(env):
+    await pause(env)
+    assert await env.db.recover_orphaned_pause("t") is None
+    task = await env.db.get_task("t")
+    assert task.status == TaskStatus.PAUSED and task.resume_after is None
+    assert await env.db.get_task_meta("t", "manual_pause") is not None
+    # The hold is still the operator's to lift.
+    assert (await env.orch.resume_task("t")).status == TaskStatus.READY
+
+
+async def test_recover_orphaned_pause_declines_a_backoff_timer(env):
+    import time as _time
+
+    later = _time.time() + 3600
+    await env.db.transition_task("t", TaskStatus.PAUSED, force=True, resume_after=later)
+    assert await env.db.recover_orphaned_pause("t") is None
+    task = await env.db.get_task("t")
+    assert task.status == TaskStatus.PAUSED and task.resume_after == pytest.approx(later)
+
+
+async def test_recover_orphaned_pause_declines_anything_not_paused(env):
+    assert (await env.db.get_task("t")).status == TaskStatus.READY
+    assert await env.db.recover_orphaned_pause("t") is None
+    assert await env.db.recover_orphaned_pause("no-such-task") is None
+    assert (await env.db.get_task("t")).status == TaskStatus.READY
