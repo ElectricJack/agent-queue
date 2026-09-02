@@ -6,12 +6,12 @@ from __future__ import annotations
 
 import pytest
 
-from src.api.codegen import API_EXCLUDED, _CODEGEN_INPUT_SCHEMAS, _make_input_model
+from src.api.codegen import API_EXCLUDED, _make_input_model
 from src.api.models import get_all_response_models
 from src.api.models.message import MessageModel
 from src.api.models.session import SessionSummary
 from src.api.models.task import TaskShowResponse
-from src.tools import _CLI_CATEGORY_OVERRIDES, _TOOL_CATEGORIES
+from src.tools import _CLI_CATEGORY_OVERRIDES, _FALLBACK_INPUT_SCHEMAS, _TOOL_CATEGORIES
 
 # Commands that intentionally return an unstructured dict (extra="allow") and
 # are declared with model_config={"extra": "allow"} elsewhere.  Add here only
@@ -88,7 +88,7 @@ def test_message_model_from_alias_round_trips() -> None:
 
 # ---------------------------------------------------------------------------
 # Guard against the empty-schema silent-drop defect fixed in this commit.
-# See src/api/codegen.py::_CODEGEN_INPUT_SCHEMAS for the underlying story.
+# See src/tools/definitions.py::_FALLBACK_INPUT_SCHEMAS for the underlying story.
 # ---------------------------------------------------------------------------
 
 
@@ -137,22 +137,22 @@ def _tool_input_schema(cmd_name: str) -> dict:
     for defn in _ALL_TOOL_DEFINITIONS:
         if defn["name"] == cmd_name:
             return defn["input_schema"]
-    raise AssertionError(f"{cmd_name} has neither a codegen override nor a tool definition")
+    raise AssertionError(f"{cmd_name} has neither a fallback schema nor a tool definition")
 
 
 @pytest.mark.parametrize("cmd_name", sorted(_REQUIRED_FIELDS_BY_COMMAND))
 def test_codegen_request_model_has_expected_fields(cmd_name: str) -> None:
     """The codegen request model must expose the properties the ``_cmd_*``
     method actually reads from its ``args`` dict.  Without this the FastAPI
-    body model silently drops client fields — see the ``_CODEGEN_INPUT_SCHEMAS``
+    body model silently drops client fields — see the ``_FALLBACK_INPUT_SCHEMAS``
     docstring for the reproducer that motivated this guard.
 
-    The schema comes from the codegen override when there is one, else from
-    the command's real ``_ALL_TOOL_DEFINITIONS`` entry — ``project_ready``
+    The schema comes from the fallback table when there is one, else from the
+    command's real ``_ALL_TOOL_DEFINITIONS`` entry — ``project_ready``
     graduated to a full tool definition (so the CLI exposes it) and no longer
-    needs an override.
+    needs a fallback.
     """
-    schema = _CODEGEN_INPUT_SCHEMAS.get(cmd_name) or _tool_input_schema(cmd_name)
+    schema = _FALLBACK_INPUT_SCHEMAS.get(cmd_name) or _tool_input_schema(cmd_name)
     model = _make_input_model(cmd_name, schema)
     fields = set(model.model_fields.keys())
     required = {name for name, field in model.model_fields.items() if field.is_required()}
