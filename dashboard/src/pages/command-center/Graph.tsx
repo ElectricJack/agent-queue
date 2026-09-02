@@ -7,13 +7,15 @@ import { useLayoutExtents } from "../../api/graphLayout";
 import GraphCanvas from "./GraphCanvas";
 import MobileCardList from "./MobileCardList";
 import LayoutCanvas from "./layout-v2/LayoutCanvas";
-import MobileLayoutList from "./layout-v2/MobileLayoutList";
+import { MobileLayoutLists } from "./layout-v2/MobileLayoutList";
 import { useExpandedTaskIds } from "./useGraphHierarchy";
 import { useJumpTarget } from "./layout-v2/useJumpToResult";
 import { useTaskWorkspace } from "./TaskWorkspace";
 import { matchesTask } from "./taskFilters";
 import { useTaskSelection } from "./useTaskSelection";
 import type { SelectableTask } from "./types";
+
+const NOOP = () => {};
 
 function usePortraitMobile() {
   const query = "(max-width: 768px) and (orientation: portrait)";
@@ -162,7 +164,7 @@ function LayoutGraph() {
       matchingCount={null} totalCount={nodeCount} playbookCount={chrome.playbooks.length}
       loadingPlaybooks={chrome.loadingPlaybooks} loading={loading} overlay={false}>
       {mobile
-        ? <MobileLayoutList projectId={projectId ?? projectIds[0] ?? ""} variant={variant} filters={filters}
+        ? <MobileLayoutLists projectIds={projectIds} projectNames={projectNames} variant={variant} filters={filters}
             expanded={expandedTaskIds} toggleExpanded={toggleExpanded} onFocus={setFocus}
             onTaskClick={selectTaskById} selectedTaskId={chrome.selectedTaskId} />
         : <LayoutCanvas projectIds={projectIds} projectNames={projectNames} variant={variant} filters={filters}
@@ -175,8 +177,14 @@ function LayoutGraph() {
 }
 
 export default function CommandCenterGraph() {
-  // The flag decides which data path runs at all: the legacy hook must not
-  // fetch a full snapshot behind the tiled canvas.
-  const layoutV2 = useSystemStatus().data?.graph_layout_enabled === true;
-  return layoutV2 ? <LayoutGraph /> : <LegacyGraph />;
+  // The flag decides which data path runs at all, so neither branch may mount
+  // before the answer is in: reading `undefined` as "off" would fire the legacy
+  // full-graph fetch on every cold load, behind the tiled canvas.
+  const status = useSystemStatus();
+  if (status.isPending) {
+    return <GraphShell clearSelection={NOOP} loadFailed={false} hasContent={false}
+      playbooksError={null} retryPlaybooks={NOOP} matchingCount={null} totalCount={0}
+      playbookCount={0} loadingPlaybooks={false} loading overlay><div /></GraphShell>;
+  }
+  return status.data?.graph_layout_enabled === true ? <LayoutGraph /> : <LegacyGraph />;
 }

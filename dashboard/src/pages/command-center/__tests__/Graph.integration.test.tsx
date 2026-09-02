@@ -6,12 +6,17 @@ import type { PlaybookSummary } from "../../../api/hooks";
 const mocks = vi.hoisted(() => ({
   playbooks: [] as PlaybookSummary[], open: vi.fn(), close: vi.fn(), pane: { kind: "closed" } as { kind: string; view?: string; args?: unknown },
   mounts: 0, query: "", taskCount: 1, loading: false, layoutV2: false, showCompleted: false,
+  statusPending: false, projectIds: ["alpha"],
   project: { id: "alpha", name: "Alpha" },
-  graphs: vi.fn(), layoutProps: { current: null as Record<string, unknown> | null }, selectTask: vi.fn(),
+  graphs: vi.fn(), layoutProps: { current: null as Record<string, unknown> | null },
+  listProps: { current: null as Record<string, unknown> | null }, selectTask: vi.fn(),
 }));
 vi.mock("../../../api/hooks", () => ({
   usePlaybooks: () => ({ data: mocks.playbooks, isLoading: false }),
-  useSystemStatus: () => ({ data: { graph_layout_enabled: mocks.layoutV2 } }),
+  useSystemStatus: () => ({
+    data: mocks.statusPending ? undefined : { graph_layout_enabled: mocks.layoutV2 },
+    isPending: mocks.statusPending,
+  }),
 }));
 vi.mock("../../../api/graphLayout", () => ({
   useLayoutExtents: (ids: string[]) => ids.map(() => ({ layout_version: 1, extent_w: 4, extent_h: 4, node_count: 7 })),
@@ -20,9 +25,15 @@ vi.mock("../layout-v2/LayoutCanvas", () => ({ default: (props: Record<string, un
   mocks.layoutProps.current = props;
   return <div data-testid="layout-canvas" />;
 } }));
-vi.mock("../layout-v2/MobileLayoutList", () => ({ default: () => <div data-testid="layout-list" /> }));
+vi.mock("../layout-v2/MobileLayoutList", () => ({
+  default: () => <div data-testid="layout-list" />,
+  MobileLayoutLists: (props: Record<string, unknown>) => {
+    mocks.listProps.current = props;
+    return <div data-testid="layout-lists" />;
+  },
+}));
 vi.mock("../../../panes/store", () => ({ useShellPaneStore: () => ({ state: mocks.pane, open: mocks.open, close: mocks.close }) }));
-vi.mock("../TaskWorkspace", () => ({ useTaskWorkspace: () => ({ projectId: "alpha", projectIds: ["alpha"], projects: [mocks.project],
+vi.mock("../TaskWorkspace", () => ({ useTaskWorkspace: () => ({ projectId: "alpha", projectIds: mocks.projectIds, projects: [mocks.project],
   filters: { query: mocks.query, status: "", showCompleted: mocks.showCompleted, focus: "" }, focusId: null, setFocus: vi.fn(),
   isLoadingProjects: false, projectsError: null }) }));
 vi.mock("../../../api/graph", () => ({ useProjectGraphs: (...args: unknown[]) => { mocks.graphs(...args); return ({ data: {
@@ -34,7 +45,8 @@ vi.mock("../GraphCanvas", () => ({ default: function Canvas({ matchingTaskIds, p
   return <div data-testid="canvas" data-mount={mount}>{matchingTaskIds.size}{playbooks.map(p => <button key={p.id} onClick={() => onPlaybookClick(p.id)}>{p.id}</button>)}</div>;
 } }));
 vi.mock("../MobileCardList", () => ({ default: () => null }));
-beforeEach(() => { mocks.playbooks = []; mocks.pane = { kind: "closed" }; mocks.open.mockClear(); mocks.close.mockClear(); mocks.mounts = 0; mocks.loading = false; mocks.query = ""; mocks.taskCount = 1; mocks.layoutV2 = false; mocks.showCompleted = false; mocks.graphs.mockClear(); mocks.selectTask.mockClear(); mocks.layoutProps.current = null; vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() })); });
+beforeEach(() => { mocks.playbooks = []; mocks.pane = { kind: "closed" }; mocks.open.mockClear(); mocks.close.mockClear(); mocks.mounts = 0; mocks.loading = false; mocks.query = ""; mocks.taskCount = 1; mocks.layoutV2 = false; mocks.showCompleted = false; mocks.graphs.mockClear(); mocks.selectTask.mockClear(); mocks.layoutProps.current = null;
+  mocks.listProps.current = null; mocks.statusPending = false; mocks.projectIds = ["alpha"]; vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() })); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 it("keeps the canvas mounted across empty search results and temporary empty snapshots", () => {
   const view = render(<Graph />);
@@ -95,12 +107,25 @@ it("uses the layout canvas when the flag is on and maps Show completed to the va
   expect(mocks.layoutProps.current).toMatchObject({ variant: "all" });
 });
 
-it("uses the mobile layout list behind the flag on portrait phones", () => {
+it("uses the mobile layout list behind the flag on portrait phones, one per project", () => {
   mocks.layoutV2 = true;
+  mocks.projectIds = ["alpha", "beta"];
   vi.stubGlobal("matchMedia", () => ({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() }));
   render(<Graph />);
-  expect(screen.getByTestId("layout-list")).toBeInTheDocument();
+  expect(screen.getByTestId("layout-lists")).toBeInTheDocument();
   expect(screen.queryByTestId("layout-canvas")).toBeNull();
+  expect(mocks.listProps.current).toMatchObject({ projectIds: ["alpha", "beta"] });
+});
+
+it("mounts neither branch while the system status is still loading", () => {
+  mocks.statusPending = true;
+  render(<Graph />);
+  // Guessing "flag off" here would fire the legacy full-graph fetch on every
+  // cold load, behind the tiled canvas.
+  expect(mocks.graphs).not.toHaveBeenCalled();
+  expect(screen.queryByTestId("canvas")).toBeNull();
+  expect(screen.queryByTestId("layout-canvas")).toBeNull();
+  expect(screen.getByRole("status")).toHaveTextContent("Loading tasks…");
 });
 
 it("routes a clicked card that belongs to a playbook run through its own payload", () => {

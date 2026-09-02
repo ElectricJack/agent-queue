@@ -493,7 +493,12 @@ def _build_default_router() -> APIRouter:
         orch = deps._orchestrator
         if orch is None:
             raise HTTPException(status_code=503, detail="orchestrator not ready")
-        return build_graph_layout_router(db=orch.db, command_handler=orch.command_handler)
+        # The orchestrator keeps its handler private and lets the messaging
+        # adapter swap it after startup, so read the live one the same way
+        # ``deps.get_command_handler`` does.
+        return build_graph_layout_router(
+            db=orch.db, command_handler=getattr(orch, "_command_handler", None)
+        )
 
     async def _call(path: str, method: str, **kwargs):
         for route in _inner().routes:

@@ -415,7 +415,9 @@ async def test_default_router_delegates_to_the_orchestrator_db(db, monkeypatch):
 
     orch = _Orch()
     orch.db = db
-    orch.command_handler = None
+    # The real Orchestrator keeps its handler private and exposes no
+    # `command_handler` attribute, so the fake must not invent one.
+    orch._command_handler = None
     monkeypatch.setattr(deps, "_orchestrator", orch, raising=False)
 
     app = FastAPI()
