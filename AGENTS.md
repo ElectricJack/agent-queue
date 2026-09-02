@@ -31,6 +31,30 @@ Rules:
 - **One broader run at the end of a task, not during:** the area suite for what you changed (e.g. `aq test tests/test_playbook*.py tests/test_pipeline*.py`). The whole-repo run is for CI and explicit review gates only.
 - Ruff on changed files only: `ruff check <paths>`.
 
+## Never migrate the operator's database
+
+Migrations against the database in `~/.agent-queue/config.yaml` are
+**daemon-only**. Inside a worktree slot you must never run `alembic upgrade`,
+`alembic stamp`, or `aq start`: on 2026-09-02 a worker did exactly that and
+stamped `alembic_version` with an unmerged branch's revision, after which the
+daemon refused to boot until an operator hand-wrote a merge revision.
+
+- Your session carries `AQ_DB_SCOPE=worker` and `AQ_DATABASE_URL` /
+  `AGENT_QUEUE_DB` pointing at a per-slot scratch SQLite file. Leave all
+  three alone. Tests build their own temporary databases and are unaffected.
+- `run_schema_setup` refuses to migrate the production URL from any scope but
+  `daemon`/`operator`, and instead raises **"schema behind code; ask the
+  operator to upgrade"**. That is the guard working — report it, do not
+  upgrade around it.
+- Only an operator, outside a slot, runs `aq db upgrade`. `aq db current` is
+  the read-only "am I behind?" answer and is always safe.
+- If a database is already stamped with a revision this checkout does not
+  have, `aq doctor --check db.alembic_orphan` names the branch and file that
+  define it and can repair it with `--fix`.
+
+See [docs/guides/migrations.md](docs/guides/migrations.md) and
+`src/database/migration_guard.py`.
+
 ## Working as an aq worker
 
 - Run `aq prime` first and follow it: it carries your task, role, rules, and the completion protocol.

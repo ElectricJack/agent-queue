@@ -98,6 +98,14 @@ profile's harness would make its id stop describing what actually runs.
   include a `reason` explaining why it exists. Describe the discovery or split,
   not merely the new task's subject; the reason is stored on the edge back to
   the task you were working on.
+- **Never migrate the operator's database.** Do not run `alembic upgrade`,
+  `alembic stamp`, or `aq start` in your worktree slot: they act on the
+  production DB in `~/.agent-queue/config.yaml`, and stamping it with an
+  unmerged branch's revision stops the daemon from booting. Your session is
+  given `AQ_DB_SCOPE=worker` and a scratch DB (`AQ_DATABASE_URL`) — leave
+  them alone, and let tests build their own temporary databases. If you see
+  "schema behind code; ask the operator to upgrade", that is the guard
+  working: report it, do not upgrade.
 - **Test what you change.** Run the focused test suite for the code you
   touched; run the broader suite once before closing.
 - **Commit and push.** Every task closes with commits pushed to its

@@ -458,6 +458,17 @@ class PluginClient:
             from src.database import Database
 
             if not os.path.exists(self._db_url):
+                if os.environ.get("AQ_DB_SCOPE") == "worker":
+                    # A worker session is deliberately pointed at a per-slot
+                    # scratch database (src.sessions.env.session_db_isolation),
+                    # which is empty until something creates it.  Saying so
+                    # beats "is Agent Q running?", which it is.
+                    raise FileNotFoundError(
+                        f"Database not found at {self._db_url}. This session is scoped "
+                        "AQ_DB_SCOPE=worker and points at a per-slot scratch database, "
+                        "not the daemon's — plugin state belongs to the operator. Ask "
+                        "them to run this outside a worktree slot."
+                    )
                 raise FileNotFoundError(
                     f"Database not found at {self._db_url}. "
                     "Is Agent Q running? Set AGENT_QUEUE_DB to override."
@@ -520,8 +531,13 @@ def _resolve_db_config() -> dict | None:
 
 
 def _resolve_db_url() -> str:
-    """Resolve the database URL (DSN or file path) for CLI operations."""
-    env_url = os.environ.get("AGENT_QUEUE_DB")
+    """Resolve the database URL (DSN or file path) for CLI operations.
+
+    ``AQ_DATABASE_URL`` is the name worker sessions are given (see
+    :func:`src.sessions.env.session_db_isolation`); ``AGENT_QUEUE_DB`` is the
+    older spelling and still wins when both are set.
+    """
+    env_url = os.environ.get("AGENT_QUEUE_DB") or os.environ.get("AQ_DATABASE_URL")
     if env_url:
         return env_url
 

@@ -31,6 +31,7 @@ import sys
 import time
 
 from src.config import ConfigValidationError, load_config
+from src.database.migration_guard import DAEMON, set_process_scope
 from src.logging_config import setup_logging
 from src.messaging import create_messaging_adapter
 from src.runtimes import default_registry
@@ -79,6 +80,13 @@ async def _run_scheduler_cycles(orch: Orchestrator, shutdown_event: asyncio.Even
 
 async def run(config_path: str, profile: str | None = None) -> bool:
     """Run the daemon. Returns True if a restart was requested."""
+    # The daemon owns the schema: this is what lets ``run_schema_setup``
+    # migrate the production database.  ``AQ_DB_SCOPE=worker`` in the
+    # environment still overrides it, so a daemon booted from inside a
+    # worktree slot refuses instead of stamping production with an unmerged
+    # branch's revisions (src/database/migration_guard.py).
+    set_process_scope(DAEMON)
+
     # Set up structured logging early (before any other import logs)
     setup_logging(
         level=os.environ.get("AGENT_QUEUE_LOG_LEVEL", "INFO"),

@@ -16,6 +16,34 @@ from src.models import TaskContext  # noqa: F401  (re-exported for test modules)
 os.environ.setdefault("AQ_SCHEMA_CACHE", "1")
 
 
+def _refuse_production_database() -> None:
+    """Fail collection if the suite is pointed at the daemon's real database.
+
+    The suite runs Alembic — that is the point of ``disable_schema_cache``
+    and of every ``tmp_path`` database it builds.  On 2026-09-02 a worker
+    session's pytest run migrated the operator's production database and
+    stamped ``alembic_version`` with an unmerged branch's revisions; the
+    daemon then refused to start until someone hand-wrote a merge revision.
+
+    ``src.database.migration_guard`` refuses the migration itself, at the
+    engine.  This is the outer fence: whatever the environment says, the
+    test suite never *addresses* the production database in the first place.
+    Set ``AQ_ALLOW_PRODUCTION_TEST_DB=1`` only if you mean it.
+    """
+    if os.environ.get("AQ_ALLOW_PRODUCTION_TEST_DB") == "1":
+        return
+
+    from src.database.migration_guard import assert_not_production_database
+
+    for name in ("POSTGRES_TEST_DSN", "AGENT_QUEUE_DB", "AQ_DATABASE_URL"):
+        value = os.environ.get(name)
+        if value:
+            assert_not_production_database(value, actor=f"pytest ({name})")
+
+
+_refuse_production_database()
+
+
 @pytest.fixture
 def disable_schema_cache(monkeypatch):
     """Force a test through the real Alembic chain instead of the template."""
