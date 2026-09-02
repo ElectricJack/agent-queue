@@ -1009,6 +1009,7 @@ class ExecutionMixin:
             default_branch=default_branch,
             project=project,
             close_session_live=session_live,
+            work_outcome=work_outcome,
         )
 
         pr_url = None

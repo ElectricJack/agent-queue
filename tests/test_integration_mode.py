@@ -389,3 +389,112 @@ class TestVerificationRetryKeepsTheSessionAlive:
         # Left IN_PROGRESS for the caller to block — _phase_verify itself
         # never transitions on the exhausted leg.
         assert (await orch.db.get_task(task.id)).status is TaskStatus.IN_PROGRESS
+
+
+class TestNoCodeTasksSkipThePrGate:
+    """Regression cover for read-only tasks tripping the require-a-PR gate.
+
+    Timeline (review task keen-willow, reviewing PR #76): the reviewer
+    profile says "Never edit code. Your workspace is read-only." — it makes
+    no commits and opens no PR on its own ``aq/<id>`` branch.  Yet
+    ``aq task close --outcome pass`` was refused twice with ``No open PR
+    found for branch 'aq/keen-willow'``, burning both verification retries
+    and appending misleading feedback to the review task, and the third
+    close landed BLOCKED / ``pipeline_ok=false``.
+
+    A task that produces no code has nothing to push, PR or merge: the
+    reviewer / final-reviewer stage profiles, and any task closed with
+    ``--work-outcome no-op``, pass git verification (and skip integration)
+    outright.
+    """
+
+    async def _no_pr_ctx(self, orch, task_id, branch, **task_kw):
+        task = _pr_task(task_id, branch_name=branch, **task_kw)
+        await orch.db.create_task(task)
+        await orch.db.transition_task(task.id, TaskStatus.IN_PROGRESS)
+        orch.git.aget_current_branch = AsyncMock(return_value=branch)
+        orch.git.afind_open_pr = AsyncMock(return_value=None)
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = _ctx(orch, task, ws.workspace_path)
+        ctx.close_session_live = True
+        return task, ctx
+
+    async def _assert_clean_pass(self, orch, task, ctx):
+        assert await orch._phase_verify(ctx) == PhaseResult.CONTINUE
+        assert ctx.verification_retry_in_session is False
+        assert ctx.verification_reopened is False
+        assert ctx.verification_issues == []
+        # The PR lookup is the whole gate — a no-code task never consults it.
+        orch.git.afind_open_pr.assert_not_awaited()
+        row = await orch.db.get_task(task.id)
+        assert row.status is TaskStatus.IN_PROGRESS
+        assert "Git Verification Feedback" not in row.description
+        contexts = await orch.db.get_task_contexts(task.id)
+        assert [c for c in contexts if c.get("type") == "verification_feedback"] == []
+
+    async def test_reviewer_profile_closes_without_a_pr(self, orch):
+        task, ctx = await self._no_pr_ctx(
+            orch, "t-review", "aq/t-review", profile_id="reviewer"
+        )
+        await self._assert_clean_pass(orch, task, ctx)
+
+    async def test_final_reviewer_profile_closes_without_a_pr(self, orch):
+        task, ctx = await self._no_pr_ctx(
+            orch, "t-final", "aq/t-final", profile_id="final-reviewer"
+        )
+        await self._assert_clean_pass(orch, task, ctx)
+
+    async def test_no_op_work_outcome_closes_without_a_pr(self, orch):
+        """Any profile: ``aq task close --work-outcome no-op`` means no code."""
+        task, ctx = await self._no_pr_ctx(orch, "t-noop", "aq/t-noop")
+        ctx.work_outcome = "no-op"
+        await self._assert_clean_pass(orch, task, ctx)
+
+    async def test_shipped_worker_still_needs_a_pr(self, orch):
+        """The gate itself is unchanged for tasks that claim to have shipped."""
+        _task, ctx = await self._no_pr_ctx(
+            orch, "t-shipped", "aq/t-shipped"
+        )
+        ctx.work_outcome = "shipped"
+        assert await orch._phase_verify(ctx) == PhaseResult.STOP
+        assert ctx.verification_retry_in_session is True
+        assert any("No open PR" in msg for msg in ctx.verification_issues)
+
+    async def test_no_code_task_still_sweeps_uncommitted_changes(self, orch, monkeypatch):
+        """Skipping the gate must not leave a dirty slot for the next task."""
+        task, ctx = await self._no_pr_ctx(orch, "t-dirty", "aq/t-dirty", profile_id="reviewer")
+        orch.git.ahas_uncommitted_changes = AsyncMock(return_value=True)
+        sweep = AsyncMock(return_value=False)
+        monkeypatch.setattr(orch, "_auto_remediate_uncommitted", sweep)
+
+        assert await orch._phase_verify(ctx) == PhaseResult.CONTINUE
+        sweep.assert_awaited_once()
+        assert sweep.await_args.args[1] == task.id
+        assert sweep.await_args.args[2] == "aq/t-dirty"
+
+    async def test_no_code_task_skips_integration(self, orch, monkeypatch):
+        """Nothing to rebase, push or merge — integrate is not run either.
+
+        Without this the worktree integrate phase force-pushes an empty
+        ``aq/<id>`` branch to origin for every review.
+        """
+        _task, ctx = await self._no_pr_ctx(orch, "t-int", "aq/t-int", profile_id="reviewer")
+        monkeypatch.setattr(orch, "_task_is_worktree_mode", AsyncMock(return_value=True))
+        integrate = AsyncMock(return_value=PhaseResult.CONTINUE)
+        monkeypatch.setattr(orch, "_phase_integrate", integrate)
+
+        assert await orch._run_completion_pipeline(ctx) == (None, True)
+        integrate.assert_not_awaited()
+
+    async def test_shipped_worktree_task_still_integrates(self, orch, monkeypatch):
+        _task, ctx = await self._no_pr_ctx(orch, "t-int-ship", "aq/t-int-ship")
+        orch.git.afind_open_pr = AsyncMock(return_value="https://github.com/org/repo/pull/9")
+        monkeypatch.setattr(orch, "_task_is_worktree_mode", AsyncMock(return_value=True))
+        integrate = AsyncMock(return_value=PhaseResult.CONTINUE)
+        monkeypatch.setattr(orch, "_phase_integrate", integrate)
+
+        assert await orch._run_completion_pipeline(ctx) == (
+            "https://github.com/org/repo/pull/9",
+            True,
+        )
+        integrate.assert_awaited_once()
