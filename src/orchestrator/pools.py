@@ -322,7 +322,11 @@ class PoolsMixin:
             return None
 
         token_store = getattr(self, "token_store", None)
-        session_id = pool_session_name(profile.id, project.id, uuid.uuid4().hex[:8])
+        # Claude accepts only canonical UUIDs for ``--session-id``. Keep the
+        # durable/session-token identity separate from the readable provider
+        # name used to address this pool worker.
+        session_id = str(uuid.uuid4())
+        session_name = pool_session_name(profile.id, project.id, uuid.uuid4().hex[:8])
         minted_token = False
 
         async def _rollback(reason: str, *, quarantine: bool) -> None:
@@ -379,6 +383,7 @@ class PoolsMixin:
                 harness=harness,
                 work_dir=work_dir,
                 session_id=session_id,
+                session_name=session_name,
                 instance_token=instance_token,
                 epoch=self.daemon_epoch,
                 api_token=api_token,

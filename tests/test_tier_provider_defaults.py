@@ -118,11 +118,13 @@ def test_deep_off_fable_never_disables_thinking_in_generated_launch(tmp_path, mo
     if lifecycle == "named":
         spec = builder.build_named_spec(project_id=None, **kwargs)
     elif lifecycle == "pool":
-        spec = builder.build_pool_spec(project=SimpleNamespace(id="p", name="Project"), agent_id="a", **kwargs)
+        spec = builder.build_pool_spec(
+            project=SimpleNamespace(id="p", name="Project"), agent_id="a",
+            session_name="p-worker--p--test", **kwargs,
+        )
     else:
         spec = builder.build_task_spec(task=SimpleNamespace(id="t", project_id="p", intelligence_class=None), **kwargs)
     assert spec.command[spec.command.index("--model") + 1] == "claude-fable-5"
     assert spec.command[spec.command.index("--effort") + 1] == "low"
     assert spec.env["CLAUDE_CODE_EFFORT_LEVEL"] == "low"
     assert "MAX_THINKING_TOKENS" not in spec.env
-
