@@ -497,7 +497,8 @@ class MessageCommandsMixin:
         if not message_id:
             return {"error": "message_id is required"}
         message = await self.db.get_message(message_id)
-        if message is None:
+        project_id = args.get("project_id")
+        if message is None or (project_id is not None and message.project_id != project_id):
             return {"error": f"Message '{message_id}' not found"}
         state = "acknowledged" if message.read_at is not None else (
             "delivered" if message.delivered_at is not None else "queued"

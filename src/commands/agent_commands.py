@@ -34,8 +34,9 @@ class AgentCommandsMixin(FlockCommandsMixin):
         if wait is not None and (type(wait) is not int or not 0 <= wait <= 60):
             return {"error": "wait must be an integer from 0 to 60"}
 
+        project_id = args.get("project_id")
         if args.get("all_running"):
-            sessions = await self.db.list_sessions(live_only=True)
+            sessions = await self.db.list_sessions(live_only=True, project_id=project_id)
             profile = args.get("profile")
             if profile:
                 sessions = [session for session in sessions if session.profile_id == profile]
@@ -48,7 +49,9 @@ class AgentCommandsMixin(FlockCommandsMixin):
         target = args.get("target")
         if not isinstance(target, str) or not target.strip():
             return {"error": "target is required unless all_running=true"}
-        session, task_id, error = await self._resolve_live_message_target(target.strip())
+        session, task_id, error = await self._resolve_live_message_target(
+            target.strip(), project_id=project_id
+        )
         if error:
             return {"error": error}
         result = await self._queue_supervisor_message(session, body, wait)
@@ -56,10 +59,17 @@ class AgentCommandsMixin(FlockCommandsMixin):
             result["target"] = {"task_id": task_id, "session_id": session.id}
         return result
 
-    async def _resolve_live_message_target(self, target: str):
-        """Resolve task, agent id/name, or session id to one live session."""
+    async def _resolve_live_message_target(self, target: str, *, project_id: str | None = None):
+        """Resolve a target to one live session within the caller's project scope."""
+        scoped_miss = (
+            f"No live worker target '{target}' in project '{project_id}'"
+            if project_id is not None
+            else f"No task, agent, or session matches '{target}'"
+        )
         task = await self.db.get_task(target)
         if task is not None:
+            if project_id is not None and task.project_id != project_id:
+                return None, None, scoped_miss
             session = await self.db.get_session_for_task(task.id)
             if (
                 session is None
@@ -71,6 +81,8 @@ class AgentCommandsMixin(FlockCommandsMixin):
 
         session = await self.db.get_session(target)
         if session is not None:
+            if project_id is not None and session.project_id != project_id:
+                return None, None, scoped_miss
             if session.state not in {"starting", "running"}:
                 return None, session.task_id, f"Session '{target}' is not live"
             return session, session.task_id, None
@@ -79,9 +91,13 @@ class AgentCommandsMixin(FlockCommandsMixin):
         if len(agents) > 1:
             return None, None, f"Agent target '{target}' is ambiguous; use its agent id"
         if not agents:
-            return None, None, f"No task, agent, or session matches '{target}'"
-        sessions = await self.db.list_sessions(agent_id=agents[0].id, live_only=True)
+            return None, None, scoped_miss
+        sessions = await self.db.list_sessions(
+            agent_id=agents[0].id, live_only=True, project_id=project_id
+        )
         if len(sessions) != 1:
+            if project_id is not None:
+                return None, None, scoped_miss
             return None, None, f"Agent '{target}' has no unique live worker session"
         return sessions[0], sessions[0].task_id, None
 
@@ -105,7 +121,9 @@ class AgentCommandsMixin(FlockCommandsMixin):
         if wait:
             deadline = time.monotonic() + wait
             while time.monotonic() < deadline:
-                status = await self._cmd_message_status({"message_id": queued["message_id"]})
+                status = await self._cmd_message_status(
+                    {"message_id": queued["message_id"], "project_id": session.project_id}
+                )
                 if status.get("state") != "queued":
                     queued.update(status)
                     break

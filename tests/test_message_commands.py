@@ -68,6 +68,47 @@ def _send_args(**overrides) -> dict:
     return args
 
 
+async def _create_live_worker(db, *, project_id: str, suffix: str) -> SessionRecord:
+    agent_id = f"agent-{suffix}"
+    task_id = f"task-{suffix}"
+    session = SessionRecord(
+        id=f"session-{suffix}",
+        task_id=task_id,
+        agent_id=agent_id,
+        project_id=project_id,
+        profile_id="worker",
+        harness="codex",
+        provider="fake",
+        name=f"s-{task_id}",
+        lifecycle="task",
+        work_dir="/tmp",
+        epoch="test",
+        instance_token=f"token-{suffix}",
+        started_at=1,
+        state="running",
+    )
+    await db.create_agent(
+        Agent(
+            id=agent_id,
+            name=f"worker-{suffix}",
+            profile_id="worker",
+            state=AgentState.BUSY,
+        )
+    )
+    await db.create_task(
+        Task(
+            id=task_id,
+            project_id=project_id,
+            title="work",
+            description="do work",
+            status=TaskStatus.IN_PROGRESS,
+            assigned_agent_id=agent_id,
+        )
+    )
+    await db.create_session(session)
+    return session
+
+
 # ---------------------------------------------------------------------------
 # Rollout gate
 # ---------------------------------------------------------------------------
@@ -210,6 +251,35 @@ class TestSupervisorAgentMessage:
 
         assert result == {"error": "Task 'task-1' has no live worker session"}
 
+    @pytest.mark.parametrize("target", ["task-p2", "session-p2", "worker-p2"])
+    async def test_project_scope_rejects_foreign_targets(self, setup, target):
+        handler, db, _bus = setup
+        await db.create_project(Project(id="p2", name="other"))
+        await _create_live_worker(db, project_id="p2", suffix="p2")
+
+        result = await handler._cmd_agent_message(
+            {"target": target, "body": "cross-project", "project_id": "p1"}
+        )
+
+        assert result == {"error": f"No live worker target '{target}' in project 'p1'"}
+        assert await db.list_messages(project_id="p2") == []
+        assert (await db.list_task_comments("task-p2", project_id="p2"))["comments"] == []
+
+    async def test_project_scoped_broadcast_only_targets_its_project(self, setup):
+        handler, db, _bus = setup
+        own_session = await _create_live_worker(db, project_id="p1", suffix="p1")
+        await db.create_project(Project(id="p2", name="other"))
+        await _create_live_worker(db, project_id="p2", suffix="p2")
+
+        result = await handler._cmd_agent_message(
+            {"all_running": True, "body": "project guidance", "project_id": "p1"}
+        )
+
+        assert result["count"] == 1
+        assert [row["session_id"] for row in result["recipients"]] == [own_session.id]
+        assert len(await db.list_messages(project_id="p1")) == 1
+        assert await db.list_messages(project_id="p2") == []
+
     async def test_status_reports_queued_delivered_and_acknowledged(self, setup):
         handler, db, _bus = setup
         sent = await handler._cmd_message_send(_send_args())
@@ -221,6 +291,17 @@ class TestSupervisorAgentMessage:
         assert delivered["via"] == "nudge"
         await db.mark_read(sent["message_id"])
         assert (await handler._cmd_message_status({"message_id": sent["message_id"]}))["state"] == "acknowledged"
+
+    async def test_status_hides_messages_from_other_projects(self, setup):
+        handler, db, _bus = setup
+        await db.create_project(Project(id="p2", name="other"))
+        sent = await handler._cmd_message_send(_send_args(project_id="p2"))
+
+        result = await handler._cmd_message_status(
+            {"message_id": sent["message_id"], "project_id": "p1"}
+        )
+
+        assert result == {"error": f"Message '{sent['message_id']}' not found"}
 
 
 # ---------------------------------------------------------------------------
