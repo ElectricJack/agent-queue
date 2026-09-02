@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import sys
 from io import BytesIO
 from pathlib import Path
-import sys
 from unittest.mock import MagicMock
 
 import pytest
@@ -20,7 +20,6 @@ from src.event_bus import EventBus
 from src.models import Project, Task
 from src.orchestrator import Orchestrator
 from src.prime.renderer import PrimeRenderer
-
 
 PNG_BYTES = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUB"
