@@ -9,6 +9,7 @@ interface FlowProps {
   children: ReactNode;
   onlyRenderVisibleElements?: boolean;
   onMove?: (event: unknown, viewport: { x: number; y: number; zoom: number }) => void;
+  onNodeClick?: (event: unknown, node: { id: string; type?: string; data: Record<string, unknown> }) => void;
 }
 
 const flow = vi.hoisted(() => ({ current: null as FlowProps | null }));
@@ -146,6 +147,18 @@ describe("LayoutCanvas", () => {
     extents.pending = false;
     view.rerender(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
     expect(tiles.refetchVisible).toHaveBeenCalled();
+  });
+
+  it("hands the clicked card's payload to onTaskClick so run tasks keep their routing", () => {
+    tiles.store = mergeTiles(emptyStore(), ["0:0"], {
+      nodes: [n("z", "card", 0, 0, { playbook_run_id: "run-1" })],
+      edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+    } as unknown as TilesResponse);
+    const onTaskClick = vi.fn();
+    render(<MemoryRouter><LayoutCanvas {...base} onTaskClick={onTaskClick} /></MemoryRouter>);
+    const node = flow.current!.nodes.find((candidate) => candidate.id === "z")!;
+    act(() => flow.current!.onNodeClick!(null, node));
+    expect(onTaskClick).toHaveBeenCalledWith("z", expect.objectContaining({ id: "z", playbook_run_id: "run-1" }));
   });
 
   it("fits the viewport to a located search result", () => {

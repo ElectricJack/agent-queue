@@ -7,7 +7,7 @@ const mocks = vi.hoisted(() => ({
   playbooks: [] as PlaybookSummary[], open: vi.fn(), close: vi.fn(), pane: { kind: "closed" } as { kind: string; view?: string; args?: unknown },
   mounts: 0, query: "", taskCount: 1, loading: false, layoutV2: false, showCompleted: false,
   project: { id: "alpha", name: "Alpha" },
-  graphs: vi.fn(), layoutProps: { current: null as Record<string, unknown> | null },
+  graphs: vi.fn(), layoutProps: { current: null as Record<string, unknown> | null }, selectTask: vi.fn(),
 }));
 vi.mock("../../../api/hooks", () => ({
   usePlaybooks: () => ({ data: mocks.playbooks, isLoading: false }),
@@ -28,13 +28,13 @@ vi.mock("../TaskWorkspace", () => ({ useTaskWorkspace: () => ({ projectId: "alph
 vi.mock("../../../api/graph", () => ({ useProjectGraphs: (...args: unknown[]) => { mocks.graphs(...args); return ({ data: {
   tasks: mocks.taskCount ? [{ id: "task-a", title: "Checkout", status: "READY" }] : [], taskProject: { "task-a": "alpha" }, edges: [], gates: [], agents: [],
 }, isLoading: mocks.loading, errors: [] }); } }));
-vi.mock("../useTaskSelection", () => ({ useTaskSelection: () => ({ selectedTaskId: null, selectTask: vi.fn(), clearTask: vi.fn() }) }));
+vi.mock("../useTaskSelection", () => ({ useTaskSelection: () => ({ selectedTaskId: null, selectTask: mocks.selectTask, clearTask: vi.fn() }) }));
 vi.mock("../GraphCanvas", () => ({ default: function Canvas({ matchingTaskIds, playbooks, onPlaybookClick }: { matchingTaskIds: ReadonlySet<string>; playbooks: PlaybookSummary[]; onPlaybookClick: (id: string) => void }) {
   const [mount] = useState(() => ++mocks.mounts);
   return <div data-testid="canvas" data-mount={mount}>{matchingTaskIds.size}{playbooks.map(p => <button key={p.id} onClick={() => onPlaybookClick(p.id)}>{p.id}</button>)}</div>;
 } }));
 vi.mock("../MobileCardList", () => ({ default: () => null }));
-beforeEach(() => { mocks.playbooks = []; mocks.pane = { kind: "closed" }; mocks.open.mockClear(); mocks.close.mockClear(); mocks.mounts = 0; mocks.loading = false; mocks.query = ""; mocks.taskCount = 1; mocks.layoutV2 = false; mocks.showCompleted = false; mocks.graphs.mockClear(); mocks.layoutProps.current = null; vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() })); });
+beforeEach(() => { mocks.playbooks = []; mocks.pane = { kind: "closed" }; mocks.open.mockClear(); mocks.close.mockClear(); mocks.mounts = 0; mocks.loading = false; mocks.query = ""; mocks.taskCount = 1; mocks.layoutV2 = false; mocks.showCompleted = false; mocks.graphs.mockClear(); mocks.selectTask.mockClear(); mocks.layoutProps.current = null; vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() })); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 it("keeps the canvas mounted across empty search results and temporary empty snapshots", () => {
   const view = render(<Graph />);
@@ -101,4 +101,15 @@ it("uses the mobile layout list behind the flag on portrait phones", () => {
   render(<Graph />);
   expect(screen.getByTestId("layout-list")).toBeInTheDocument();
   expect(screen.queryByTestId("layout-canvas")).toBeNull();
+});
+
+it("routes a clicked card that belongs to a playbook run through its own payload", () => {
+  mocks.layoutV2 = true;
+  render(<Graph />);
+  const onTaskClick = mocks.layoutProps.current!.onTaskClick as (id: string, task?: unknown) => void;
+  // The tiled canvas holds the card, so the run id has to travel with the click.
+  onTaskClick("task-a", { id: "task-a", playbook_run_id: "run-1" });
+  expect(mocks.selectTask).toHaveBeenCalledWith({ id: "task-a", playbook_run_id: "run-1" });
+  onTaskClick("task-b");
+  expect(mocks.selectTask).toHaveBeenLastCalledWith({ id: "task-b" });
 });

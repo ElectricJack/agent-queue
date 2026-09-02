@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { LayoutNode } from "@aq/ts-client";
 import { fetchList, type Variant } from "../../../api/graphLayout";
 import { TaskCard } from "../TaskNode";
+import type { SelectableTask } from "../types";
 import type { TaskFilters } from "../taskFilters";
 import { taskNodeData } from "./flowNodes";
 import { registerLayoutRefetch } from "./liveRegistry";
@@ -15,7 +16,7 @@ interface Props {
   filters: TaskFilters;
   expanded: ReadonlySet<string>;
   toggleExpanded: (id: string) => void;
-  onTaskClick: (id: string) => void;
+  onTaskClick: (id: string, task?: SelectableTask) => void;
   onFocus?: (id: string) => void;
   selectedTaskId?: string | null;
 }

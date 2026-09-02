@@ -20,12 +20,15 @@ export interface MergedGraph {
   taskProject: Record<string, string>;
 }
 
+/** What a click needs in order to route: the card's id and its playbook run. */
+export type SelectableTask = { id: string; playbook_run_id?: string | null };
+
 export interface GraphViewProps {
   graph: MergedGraph;
   playbooks?: PlaybookSummary[];
   selectedPlaybookId?: string | null;
   onPlaybookClick?: (playbookId: string) => void;
-  onTaskClick: (taskId: string) => void;
+  onTaskClick: (taskId: string, task?: SelectableTask) => void;
   selectedTaskId?: string | null;
   onBackgroundClick?: () => void;
   matchingTaskIds?: ReadonlySet<string>;
@@ -52,7 +55,7 @@ export interface TaskNodeData extends Record<string, unknown> {
   gates: GraphGate[];
   projectId: string;
   hierarchy: TaskHierarchy;
-  onOpenTask?: (taskId: string) => void;
+  onOpenTask?: (taskId: string, task?: SelectableTask) => void;
   onToggleChildren?: (taskId: string) => void;
   onFocus?: (taskId: string) => void;
 }
@@ -62,7 +65,7 @@ export interface ContainerNodeData extends Record<string, unknown> {
   projectId: string;
   onFocus?: (taskId: string) => void;
   onToggleChildren?: (taskId: string) => void;
-  onOpenTask?: (taskId: string) => void;
+  onOpenTask?: (taskId: string, task?: SelectableTask) => void;
 }
 
 export interface StubNodeData extends Record<string, unknown> {

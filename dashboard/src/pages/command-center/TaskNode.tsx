@@ -58,7 +58,7 @@ export function TaskCard({ data, selected = false, fluid = false }: CardProps) {
         onClick={(event) => {
           if (onOpenTask) {
             event.stopPropagation();
-            onOpenTask(task.id);
+            onOpenTask(task.id, task);
           }
         }}
       >

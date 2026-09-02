@@ -13,6 +13,7 @@ import { useJumpTarget } from "./layout-v2/useJumpToResult";
 import { useTaskWorkspace } from "./TaskWorkspace";
 import { matchesTask } from "./taskFilters";
 import { useTaskSelection } from "./useTaskSelection";
+import type { SelectableTask } from "./types";
 
 function usePortraitMobile() {
   const query = "(max-width: 768px) and (orientation: portrait)";
@@ -134,7 +135,12 @@ function LayoutGraph() {
   const { projectId, projectIds, projects, filters, focusId, setFocus, isLoadingProjects, projectsError } = useTaskWorkspace();
   const chrome = useGraphChrome();
   const { selectTask } = chrome;
-  const selectTaskById = useCallback((taskId: string) => selectTask({ id: taskId }), [selectTask]);
+  // The tiled canvas hands back the clicked card's payload, so a task that
+  // belongs to a playbook run still opens the run inspector.
+  const selectTaskById = useCallback(
+    (taskId: string, task?: SelectableTask) => selectTask(task ?? { id: taskId }),
+    [selectTask],
+  );
   const mobile = usePortraitMobile();
   const variant = filters.showCompleted || focusId ? "all" : "active";
   const extents = useLayoutExtents(projectIds, variant);

@@ -55,4 +55,27 @@ describe("toFlowElements", () => {
     const z = nodes.find((x) => x.id === "z");
     expect((z?.data as { gates: unknown[] }).gates).toMatchObject([{ id: "g1" }]);
   });
+  it("labels stubs from other projects with the project name and docks them at the left edge", () => {
+    const store = mergeTiles(emptyStore(), ["0:0"], { nodes: [n("z", "card", 0, 0)],
+      edges: [{ from: "z", to: "peer", dep_type: "blocks", description: null, count: 1 }],
+      stubs: [{ id: "peer", project_id: "p2", x: 3, y: 3, w: 1, h: 1, title: "Peer" }],
+      stub_overflow: [], workers: [], gates: [], layout_version: 1 } as never);
+    const { nodes } = toFlowElements(store, { ...ctx, projectNames: new Map([["p2", "Other"]]) });
+    const stub = nodes.find((x) => x.id === "peer")!;
+    expect((stub.data as { task: { title: string } }).task.title).toBe("Other · Peer");
+    expect(stub.position.x).toBe(-1.2 * 240);
+  });
+  it("falls back to the project id when the name is unknown and leaves same-project stubs in place", () => {
+    const store = mergeTiles(emptyStore(), ["0:0"], { nodes: [n("z", "card", 0, 0)],
+      edges: [],
+      stubs: [{ id: "peer", project_id: "p2", x: 3, y: 3, w: 1, h: 1, title: "Peer" },
+              { id: "mine", project_id: "p1", x: 4, y: 2, w: 1, h: 1, title: "Mine" }],
+      stub_overflow: [], workers: [], gates: [], layout_version: 1 } as never);
+    const { nodes } = toFlowElements(store, ctx);
+    const peer = nodes.find((x) => x.id === "peer")!;
+    const mine = nodes.find((x) => x.id === "mine")!;
+    expect((peer.data as { task: { title: string } }).task.title).toBe("p2 · Peer");
+    expect((mine.data as { task: { title: string } }).task.title).toBe("Mine");
+    expect(mine.position.x).toBe(4 * 240);
+  });
 });

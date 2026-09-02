@@ -337,11 +337,12 @@ All endpoints are project-scoped. `tiles` and `list` are POST because their inpu
 
 ### 5.1 `GET /api/projects/{id}/graph/extent?variant=`
 
-Returns `layout_version`, `extent_w`, `extent_h`, `node_count`, the header-band content
-(playbook definition cards), and, if a Tidy or backfill job is queued or running, its
-`layout_jobs` row. A project with a meta row and zero nodes is a valid empty layout and
-returns `200`. A project with no meta row returns `202 {status: "layout_pending"}` and
-enqueues a backfill job.
+Returns `layout_version`, `extent_w`, `extent_h`, `node_count`, and, if a Tidy or
+backfill job is queued or running, its `layout_jobs` row. It does not return the
+header-band content (playbook definition cards) — the dashboard fetches playbook
+definitions through its existing `usePlaybooks` hook instead. A project with a meta row
+and zero nodes is a valid empty layout and returns `200`. A project with no meta row
+returns `202 {status: "layout_pending"}` and enqueues a backfill job.
 
 ### 5.2 `POST /api/projects/{id}/graph/tiles`
 
@@ -631,6 +632,7 @@ Changes made after an external review of the first draft, with the finding each 
 - Validation rules, empty-layout semantics, and POST bodies for large inputs (17).
 
 - §9 incremental batch budget amended from 200 ms to 300 ms after measurement (Stage 1 implementation).
+- §5.1: extent no longer carries header-band content; the dashboard's existing playbooks hook supplies it (Stage 2 implementation).
 
 Not adopted: nothing was rejected outright. The reviewer's suggestion of a separate
 graph-data version for fine-grained invalidation was replaced by the simpler

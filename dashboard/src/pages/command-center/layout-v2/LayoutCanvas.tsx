@@ -15,7 +15,9 @@ import { useLayoutTiles } from "./useLayoutTiles";
 import { refetchLayout, registerLayoutRefetch } from "./liveRegistry";
 import { toFlowElements, type FlowHandlers } from "./flowNodes";
 import { maxDepthForZoom, sizePx, toPx, worldRectFromViewport, type Rect } from "./units";
-import { NODE_HEIGHT, NODE_WIDTH, type GraphViewProps, type GraphWorker } from "../types";
+import {
+  NODE_HEIGHT, NODE_WIDTH, type GraphViewProps, type GraphWorker, type SelectableTask, type TaskNodeData,
+} from "../types";
 import type { TaskFilters } from "../taskFilters";
 import type { LocateHit } from "@aq/ts-client";
 
@@ -65,6 +67,7 @@ interface LayerElements {
 
 interface LayerProps {
   projectId: string;
+  projectNames: ReadonlyMap<string, string>;
   offsetY: number;
   params: TilesParams;
   viewport: Viewport | null;
@@ -98,7 +101,7 @@ function nearestIn(nodes: Node[], from: Node, dir: "up" | "down" | "left" | "rig
  * project isolated: only the layer whose store changed re-runs its conversion.
  */
 function ProjectLayer({
-  projectId, offsetY, params, viewport, width, height, expanded, handlers, onBudgetExceeded, onElements,
+  projectId, projectNames, offsetY, params, viewport, width, height, expanded, handlers, onBudgetExceeded, onElements,
 }: LayerProps) {
   // Memoised per layer: `useLayoutTiles` re-runs its viewport effect on every
   // new rect identity, so a fresh object per render would refetch needlessly.
@@ -119,7 +122,7 @@ function ProjectLayer({
   );
 
   useEffect(() => {
-    const { nodes, edges } = toFlowElements(store, { projectId, offsetY, expanded, handlers });
+    const { nodes, edges } = toFlowElements(store, { projectId, offsetY, expanded, handlers, projectNames });
     // Docking is resolved server-side, so a worker's `docked_at` is already a
     // visible node id.
     const workers: GraphWorker[] = store.workers.map((worker) => ({
@@ -127,7 +130,7 @@ function ProjectLayer({
       in_collapsed: worker.in_collapsed, profile_id: null, session_id: null,
     }));
     onElements(projectId, { nodes, edges, workers, pending, loaded });
-  }, [store, pending, loaded, projectId, offsetY, expanded, handlers, onElements]);
+  }, [store, pending, loaded, projectId, projectNames, offsetY, expanded, handlers, onElements]);
 
   return null;
 }
@@ -240,10 +243,12 @@ function Inner(props: LayoutCanvasProps) {
     if (selectedTaskId !== undefined || selectedPlaybookId !== undefined) setKbFocusId(selectedId);
   }, [selectedTaskId, selectedPlaybookId, selectedId]);
 
-  const openTask = useCallback((id: string) => {
+  const openTask = useCallback((id: string, task?: SelectableTask) => {
     setKbFocusId(id);
     setLocalSelectedId(id);
-    onTaskClick(id);
+    // The card's own payload rides along so a task that belongs to a playbook
+    // run still opens the run inspector, as it does in the legacy graph.
+    onTaskClick(id, task);
   }, [onTaskClick]);
   const openPlaybook = useCallback((id: string) => {
     setKbFocusId(`playbook:${id}`);
@@ -338,7 +343,7 @@ function Inner(props: LayoutCanvasProps) {
 
   const openNode = (node: Node) => {
     if (node.type === "playbook") openPlaybook(String((node.data.playbook as { id: string }).id));
-    else if (node.type !== "projectHeader") openTask(node.id);
+    else if (node.type !== "projectHeader") openTask(node.id, (node.data as Partial<TaskNodeData>).task);
   };
 
   function onKeyDown(event: KeyboardEvent<HTMLDivElement>) {
@@ -385,7 +390,7 @@ function Inner(props: LayoutCanvasProps) {
       <div ref={wrapRef} role="region" aria-label="Task graph" tabIndex={0} onKeyDown={onKeyDown}
         className="relative min-h-0 flex-1 outline-none">
         {projectIds.map((pid) => (
-          <ProjectLayer key={pid} projectId={pid} offsetY={offsets.get(pid) ?? 0} params={params}
+          <ProjectLayer key={pid} projectId={pid} projectNames={projectNames} offsetY={offsets.get(pid) ?? 0} params={params}
             viewport={viewport} width={size.w} height={size.h} expanded={expandedTaskIds} handlers={handlers}
             onBudgetExceeded={onBudgetExceeded} onElements={onElements} />
         ))}

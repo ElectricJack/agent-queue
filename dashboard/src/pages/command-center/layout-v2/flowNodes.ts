@@ -1,12 +1,22 @@
 import { MarkerType, type Edge, type Node } from "@xyflow/react";
 import type { GraphGate, LayoutNode } from "@aq/ts-client";
 import { edgeStyleForType } from "../layout";
-import type { ContainerNodeData, TaskNodeData } from "../types";
+import type { ContainerNodeData, SelectableTask, TaskNodeData } from "../types";
 import type { LayoutStore } from "./layoutStore";
 import { sizePx, toPx } from "./units";
 
-export interface FlowHandlers { onOpenTask: (id: string) => void; onToggleChildren: (id: string) => void; onFocus: (id: string) => void }
-export interface FlowContext { projectId: string; offsetY: number; expanded: ReadonlySet<string>; handlers: FlowHandlers }
+/** Where a stub belonging to another project is docked, in world units. */
+const STUB_PORT_X = -1.2;
+
+export interface FlowHandlers { onOpenTask: (id: string, task?: SelectableTask) => void; onToggleChildren: (id: string) => void; onFocus: (id: string) => void }
+export interface FlowContext {
+  projectId: string;
+  offsetY: number;
+  expanded: ReadonlySet<string>;
+  handlers: FlowHandlers;
+  /** Display names by project id, for stubs that live in another project. */
+  projectNames?: ReadonlyMap<string, string>;
+}
 
 /** The card payload for one layout node; shared with the flat mobile list. */
 export function taskNodeData(n: LayoutNode, ctx: FlowContext, gates: GraphGate[]): TaskNodeData {
@@ -43,10 +53,17 @@ export function toFlowElements(store: LayoutStore, ctx: FlowContext): { nodes: N
   }
   for (const s of store.stubs.values()) {
     if (store.nodes.has(s.id)) continue;
-    pos.set(s.id, { x: s.x, y: s.y });
-    const stub: LayoutNode = { id: s.id, title: s.title ?? s.id, status: "PENDING", priority: 100, is_blocked: false, x: s.x, y: s.y, w: 1, h: 1, depth: 0,
+    // A stub from another project carries coordinates in that project's frame,
+    // so it is drawn as a labelled port just outside this project's left edge.
+    const foreign = s.project_id !== ctx.projectId;
+    const x = foreign ? STUB_PORT_X : s.x;
+    const title = foreign
+      ? `${ctx.projectNames?.get(s.project_id) ?? s.project_id} · ${s.title ?? s.id}`
+      : s.title ?? s.id;
+    pos.set(s.id, { x, y: s.y });
+    const stub: LayoutNode = { id: s.id, title, status: "PENDING", priority: 100, is_blocked: false, x, y: s.y, w: 1, h: 1, depth: 0,
       container_id: null, kind: "stub", context_only: true, agg_children: 0, agg_descendants: 0, agg_completed: 0, agg_running: 0, agg_blocked: 0, agg_active: 0 } as LayoutNode;
-    nodes.push({ id: s.id, type: "task", className: "aq-stub", position: toPx(s.x, s.y + ctx.offsetY), ...sizePx(1, 1), zIndex: 5, draggable: false, connectable: false, data: taskNodeData(stub, ctx, gatesFor(s.id)) });
+    nodes.push({ id: s.id, type: "task", className: "aq-stub", position: toPx(x, s.y + ctx.offsetY), ...sizePx(1, 1), zIndex: 5, draggable: false, connectable: false, data: taskNodeData(stub, ctx, gatesFor(s.id)) });
   }
   const edges: Edge[] = [];
   for (const e of store.edges.values()) {
