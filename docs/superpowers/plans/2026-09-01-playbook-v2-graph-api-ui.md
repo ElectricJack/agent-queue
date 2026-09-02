@@ -132,7 +132,7 @@ python -c "from src.playbooks.activation import ActivationHealth; print(sorted(v
 ls dashboard/src/pages/playbook-graph/ src/playbooks/graph_view.py
 ```
 
-**If any line reports a mismatch, stop and amend this document in the same commit as the code that reconciles it.** Roadmap §7: "Changes to locked interfaces require updating all not-yet-completed child plans." Record the amendment in §16.
+**If any line reports a mismatch, stop and amend this document in the same commit as the code that reconciles it.** Roadmap §7: "Changes to locked interfaces require updating all not-yet-completed child plans." Record the amendment in §16 (done — see §16).
 
 ### 3.3 The one thing this package must not do
 
@@ -1626,7 +1626,81 @@ Milestone **M5 — Operator legible** is claimed only when every command in §13
 
 ---
 
-## 16. Open items for the next child plans
+## 16. Reconciliation record — §3.2 run on 2026-09-02
+
+The §3.2 checklist was run against `origin/main` at `f0e03446` before commit 1,
+as §3.2 requires. **Result: every Package 1-4 symbol this plan consumes is
+absent.** Packages 1, 2, 3 and 4 have merged their *child plan documents* only;
+`origin/feature/playbook-v2-pkg3` and `-pkg4` carry docs commits and nothing
+else. Package 0 has landed (`src/profiles/capabilities.py`,
+`src/commands/principal.py`, `src/commands/authorization.py` all exist).
+
+| Checklist item | Expected | Found |
+|---|---|---|
+| `src/playbooks/definition.py` (`PlaybookDefinition`, `Rule`, `SourceRef`) | P2 | absent |
+| `src/playbooks/expressions.py` typed value union | P2 | absent |
+| `src/playbooks/explanation.py` (`explain_step`, `StepExplanation`, `EffectClause`) | P1 | absent |
+| `src/commands/contracts/registry.py` (`get_contract`) | P1 | package directory absent |
+| `src/playbooks/artifact_store.py` (`ArtifactRef`, `ArtifactStore`) | P3 | absent |
+| `src/playbooks/activation.py` (`ActivationHealth`) | P3 | absent |
+| `src/playbooks/receipts.py`, `run_state.py`, `waits.py` | P3 | absent |
+| `src/playbooks/engine.py` (`PlaybookEngine.dispatch_event`) | P4 | absent |
+| `src/database/queries/playbook_artifact_queries.py` | P3 | absent |
+| `src/database/queries/playbook_run_queries.py` | P3 | absent |
+| `playbook_activations` / `playbook_pending_events` tables (§3.2 check 2) | P3 | absent — §9 cannot run and is deferred with the storage that owns those tables |
+| `src/profiles/capabilities.py::CapabilityPolicy` | P0 | present |
+| V1 surfaces still present (§3.2 check 4) | yes | `dashboard/src/pages/playbook-graph/` and `src/playbooks/graph_view.py` untouched |
+
+### 16.1 What commit 1 shipped under that reconciliation
+
+The frozen §4 contract does not depend on any Package 1-4 symbol, and roadmap
+§7 makes it the precondition for every parallel task in this package. It was
+therefore shipped in full, together with everything that carries it to a
+client:
+
+- `src/api/models/playbook_v2.py` — §4 verbatim, all six DTO families,
+  `extra="forbid"` throughout, activation block ordered above the graph block
+  per §4.8.
+- Registration: `src/api/models/__init__.py`, `src/tools/definitions.py`
+  (`_TOOL_CATEGORIES` **and** `_ALL_TOOL_DEFINITIONS`), `PAUSED_PLAYBOOK_COMMANDS`
+  and the `CommandHandler` bases in `src/commands/handler.py`.
+- `src/config.py` — both §8 flags, defaulting to `False`.
+- `src/commands/playbook_v2_commands.py` — the seven commands of §5.4 with
+  their argument validation, both feature gates, and the exact error strings.
+- Regenerated `openapi.json` (7 new paths, 58 new schemas, **zero** removals)
+  and `packages/aq-client/`; the TS client regenerates cleanly and produces the
+  seven §4.9 SDK function names (its output tree is gitignored).
+- `tests/test_playbook_v2_api_dtos.py`, `tests/test_api_playbook_v2_commands.py`.
+
+### 16.2 What is deferred, and to whom
+
+`src/playbooks/graph_projection.py`, `artifact_diff.py` and `run_overlay.py`
+(§5.1-§5.3) each take a `PlaybookDefinition` and an `explain_step` result as
+**input**. Writing them now would mean inventing Packages 2's artifact model and
+Package 1's explanation payload inside a projector — precisely what §3.3 forbids
+("If a projection needs a fact the artifact does not carry, the fix belongs in
+Package 2 or 3 — not in a projector that infers it"), and a guaranteed conflict
+with those packages.
+
+Every command therefore validates its arguments, honours both flags, and then
+returns one honest error at a single named seam,
+`PlaybookV2CommandsMixin._v2_storage_unavailable`:
+
+```
+playbook v2 artifact storage is unavailable: the typed artifact model,
+artifact store and run receipts (playbook V2 roadmap packages 2-4) are not
+present in this build
+```
+
+The task that lands the artifact store replaces that one method and fills in the
+three projectors **behind the already-frozen wire contract**. Tasks T-4 to T-9,
+T-27, T-28, T-32 and T-36 to T-41, the §10 fixtures, and the §9 migration move
+with it. Commits 2-6 of §12 (the dashboard slice) are unaffected: they consume
+§4, which is checked in.
+
+---
+
+## 17. Open items for the next child plans
 
 - **Package 3 must emit the six-value `ActivationHealth`** of §4.4 (`ready`, `question_required`, `invalid`, `disabled`, `stale_contract`, `unavailable`), and must decide whether the design spec's `needs_rebuild` name survives as an alias. This plan assumes `stale_contract` is the wire value. Raise it in Package 3's child plan.
 - **Package 3 should ship the operator-audit columns** (`playbook_activations.activated_by`, `playbook_pending_events.resolved_at`/`resolved_by`/`resolution`) with its own tables, which makes §9 unnecessary. If it does, delete §9 in the reconciliation commit.
