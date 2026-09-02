@@ -21,6 +21,8 @@ class AssignmentPlaybookError(ValueError):
 def select_assignment_playbook(manager, project):
     """Resolve the system default or a project-scoped explicit override."""
 
+    if manager is None:
+        raise AssignmentPlaybookError("assignment playbook manager is unavailable")
     playbook_id = project.assignment_playbook_id or DEFAULT_ASSIGNMENT_PLAYBOOK_ID
     playbook = manager.get_playbook(playbook_id)
     if playbook is None:
