@@ -108,6 +108,28 @@ class TestFiling:
         events = await db.get_recent_events(limit=50, task_id=new.id)
         assert "task.blocked" in [e["event_type"] for e in events]
 
+    async def test_filed_task_is_an_assignment_routing_candidate(self, handler, db):
+        """The gate a root filing is born with must not hide it from the router.
+
+        A filing is DEFINED and blocked by its own routing gate; if the
+        assignment coordinator does not consider that shape, nothing ever
+        picks a class and nothing ever resolves the gate.
+        """
+        sid = await holding_session(db)
+        root = await scoped(handler, sid)._cmd_create_task({
+            "title": "found a bug", "description": "d",
+            "reason": "The held task exposed a parser defect",
+        })
+        child = await scoped(handler, sid)._cmd_create_task({
+            "title": "sub", "description": "d", "parent_id": "held",
+            "reason": "This can ship independently",
+        })
+        assert root["success"] and child["success"]
+
+        candidates = await handler.orchestrator.assignment_routing._eligible_candidates()
+
+        assert {root["task_id"], child["task_id"]} <= {task.id for task in candidates}
+
     async def test_child_filing_under_held_task_has_no_gate(self, handler, db):
         sid = await holding_session(db)
         res = await scoped(handler, sid)._cmd_create_task({"title": "sub", "description": "d",

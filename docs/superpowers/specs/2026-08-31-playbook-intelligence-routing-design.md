@@ -88,6 +88,13 @@ playbook decision. For an unspecified class, the route is valid only when the sa
 decision's task-input hash still matches the current task and its class/provider is
 still present in the current compatible option catalog.
 
+Freshness is exactly those two hashes. A route must not be revoked by a write that
+changes no routed input: the reservation that moves a task from READY to ASSIGNED
+bumps `tasks.updated_at`, and treating that revision as part of the freshness test
+made every playbook-sourced route die at the moment of assignment, failing the
+launch check with "awaiting intelligence route", pausing the task on a backoff, and
+returning its worker to IDLE on every cycle.
+
 The effective route is an input to existing matching. It does not mutate
 `profile_id`, `affinity_agent_id`, or `assigned_agent_id`. Launch configuration must
 receive the effective class so an unpinned compatible worker actually launches at
@@ -104,7 +111,7 @@ Add one current-decision table, `task_assignment_routes`, with:
 | `task_id` | Primary key and foreign key to the routed task. |
 | `project_id` | Project-scoped lookup and integrity check. |
 | `input_hash` | Hash of the material task snapshot used by the LLM. |
-| `task_updated_at` | Redundant task revision used for an inexpensive freshness join in scheduling and claims. |
+| `task_updated_at` | Redundant task revision used for an inexpensive freshness join in the pool-claim SQL, which cannot hash a task row. It is *not* part of the effective-route test — see §4 — and the coordinator re-stamps it when a write moves the revision without changing a routed input. |
 | `options_hash` | Hash of the compatible class/provider catalog used by the LLM. |
 | `intelligence_class` | Required class selected by the playbook. |
 | `provider` | Nullable hard provider constraint. |
@@ -205,7 +212,10 @@ therefore cannot force the rest of a batch through another LLM call.
 Assignment routing runs as a small coordinator inside the orchestrator cycle:
 
 1. Existing status, dependency, approval, blocked-state, and timing checks identify
-   tasks that are close enough to assignment to need a route.
+   tasks that are close enough to assignment to need a route. That includes an
+   unblocked DEFINED task — the shape every worker filing starts in — so filed work
+   is routed in the cycle it is created rather than after the promotion cascade,
+   while a DEFINED task still waiting on the graph produces no router traffic.
 2. Tasks with an explicit class or a fresh saved route are skipped.
 3. Remaining tasks are grouped by project and current playbook selection.
 4. Up to 25 tasks are sent in one PlaybookRunner call per project.
@@ -239,7 +249,7 @@ No task-edit hook is required. The coordinator computes `input_hash` from a
 canonical serialization of the material fields it gave the LLM. Before committing a
 decision, the transaction reloads each task and recomputes that hash. A task whose
 hash changed is skipped as stale while decisions for other unchanged tasks can
-commit.
+commit. The hash is the whole staleness test; a bare revision bump is not.
 
 The scheduler and claim paths perform the same freshness check when reading a saved
 decision. This closes the race where a task changes immediately after a successful

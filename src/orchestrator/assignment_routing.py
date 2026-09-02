@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import json
 import logging
@@ -11,7 +11,7 @@ import time
 from collections import defaultdict
 from collections.abc import Sequence
 
-from sqlalchemy import select
+from sqlalchemy import and_, literal, or_, select
 from sqlalchemy.exc import IntegrityError
 
 from src.assignment_routing import (
@@ -24,7 +24,12 @@ from src.assignment_routing import (
     resolve_effective_route,
     select_assignment_playbook,
 )
-from src.database.tables import projects as projects_table, tasks as tasks_table
+from src.database.tables import (
+    gates as gates_table,
+    projects as projects_table,
+    task_gates as task_gates_table,
+    tasks as tasks_table,
+)
 from src.database.queries.blocked_state import apply_label_filters
 from src.models import (
     AgentState,
@@ -41,7 +46,19 @@ logger = logging.getLogger(__name__)
 _CONTROL_PROFILES = frozenset(
     {"supervisor", "triage", "reviewer", "final-reviewer", "playbook-compiler", "spec-ingest"}
 )
-_ACTIVE_ROUTE_STATUSES = frozenset({TaskStatus.READY, TaskStatus.BLOCKED})
+#: Statuses a route may be decided for and stay valid across.  DEFINED is
+#: included because that is the status every worker filing starts in, and a
+#: root filing is *born* holding an open routing gate (swarm work model §12,
+#: ``_create_worker_filed_task``).  Without DEFINED here the coordinator
+#: never saw those tasks, so it never chose a class and never resolved the
+#: gate that was waiting on it — filed work sat unrouted until a supervisor
+#: hand-routed it.  ``_eligible_candidates`` keeps the population tight: a
+#: DEFINED task qualifies only when it is already unblocked or its sole
+#: blocker is that routing gate, so a dependency backlog is never router
+#: traffic.
+_ACTIVE_ROUTE_STATUSES = frozenset(
+    {TaskStatus.READY, TaskStatus.BLOCKED, TaskStatus.DEFINED}
+)
 
 
 class AssignmentRoutingValidationError(ValueError):
@@ -255,8 +272,30 @@ class AssignmentRoutingCoordinator:
         return self._catalog_hashes.get(project_id)
 
     async def _eligible_candidates(self) -> list[Task]:
+        open_routing_gate = (
+            select(literal(1))
+            .select_from(
+                task_gates_table.join(
+                    gates_table, gates_table.c.id == task_gates_table.c.gate_id
+                )
+            )
+            .where(
+                task_gates_table.c.task_id == tasks_table.c.id,
+                gates_table.c.status == "open",
+                gates_table.c.gate_type == "routing",
+            )
+            .exists()
+        )
         statement = select(tasks_table).where(
-            tasks_table.c.status.in_([status.value for status in _ACTIVE_ROUTE_STATUSES]),
+            or_(
+                tasks_table.c.status.in_(
+                    [TaskStatus.READY.value, TaskStatus.BLOCKED.value]
+                ),
+                and_(
+                    tasks_table.c.status == TaskStatus.DEFINED.value,
+                    or_(tasks_table.c.is_blocked == 0, open_routing_gate),
+                ),
+            ),
             tasks_table.c.assigned_agent_id.is_(None),
             tasks_table.c.is_plan_subtask == 0,
         )
@@ -423,7 +462,6 @@ class AssignmentRoutingCoordinator:
         current_hash = options_hash(current_options)
         if current_hash != options_hash(options):
             return {}
-        original = {task.id: task for task in original_tasks}
         saved: list[TaskAssignmentRoute] = []
         async with self.db.immediate() as conn:
             rows = (
@@ -445,14 +483,15 @@ class AssignmentRoutingCoordinator:
                 return {}
             for decision in decisions:
                 task = current.get(decision.task_id)
-                before = original[decision.task_id]
+                # ``input_hash`` is the whole staleness test: an edit during
+                # the LLM call changes it, while a status flip or a note only
+                # moves ``updated_at`` and must not throw the decision away.
                 if (
                     task is None
                     or task.project_id != project.id
                     or task.assigned_agent_id is not None
                     or task.status not in _ACTIVE_ROUTE_STATUSES
                     or (task.intelligence_class or "").strip()
-                    or task.updated_at != before.updated_at
                     or assignment_input_hash(task) != decision.input_hash
                 ):
                     continue
@@ -479,6 +518,39 @@ class AssignmentRoutingCoordinator:
                 result[task.id] = effective
                 await self._resolve_routing_gates(task.id, run_id=run_id)
         return result
+
+    async def _restamp_route_revisions(self, drifted: dict[str, TaskAssignmentRoute]) -> None:
+        """Realign a content-fresh route row with the task's current revision.
+
+        ``resolve_effective_route`` treats ``input_hash`` as the authority,
+        but the pool claim query joins on ``task_updated_at`` because SQL
+        cannot hash a task row.  Any write that moves ``updated_at`` without
+        touching the routed inputs — a status flip, a note, a released
+        assignment — would otherwise hide the task from every claim until an
+        edit forced a fresh decision.  Re-stamping is free: no LLM call, and
+        the decision itself is unchanged.
+        """
+        if not drifted:
+            return
+        async with self.db.immediate() as conn:
+            rows = (
+                await conn.execute(
+                    select(tasks_table)
+                    .where(tasks_table.c.id.in_(sorted(drifted)))
+                    .with_for_update()
+                )
+            ).mappings().fetchall()
+            saved: list[TaskAssignmentRoute] = []
+            for row in rows:
+                task = self.db._row_to_task(row)
+                route = drifted[task.id]
+                if (
+                    route.task_updated_at == task.updated_at
+                    or route.input_hash != assignment_input_hash(task)
+                ):
+                    continue
+                saved.append(replace(route, task_updated_at=task.updated_at))
+            await self.db.upsert_task_assignment_routes(saved, conn=conn)
 
     async def reconcile(self) -> dict[str, EffectiveAssignmentRoute]:
         candidates = await self._eligible_candidates()
@@ -511,15 +583,20 @@ class AssignmentRoutingCoordinator:
                     for row in await self.db.list_task_assignment_routes([task.id for task in tasks])
                 }
                 catalog_hash = options_hash(options)
+                drifted: dict[str, TaskAssignmentRoute] = {}
                 for task in tasks:
-                    effective = resolve_effective_route(task, saved_rows.get(task.id), catalog_hash)
+                    row = saved_rows.get(task.id)
+                    effective = resolve_effective_route(task, row, catalog_hash)
                     if effective is not None:
                         resolved[task.id] = effective
                         self._task_retry.pop(task.id, None)
                         if effective.source == "explicit":
                             await self._resolve_routing_gates(task.id, run_id=None)
+                        elif row is not None and row.task_updated_at != task.updated_at:
+                            drifted[task.id] = row
                     else:
                         pending.append(task)
+                await self._restamp_route_revisions(drifted)
                 if not pending or not options:
                     continue
                 for start in range(0, len(pending), self.batch_size):

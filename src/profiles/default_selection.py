@@ -26,10 +26,11 @@ reconciliation-design.md`` §2, "Auto-picking a project default profile"):
 
 1. ``claude-opus``
 2. ``claude-sonnet``
-3. any remaining general-purpose profile, alphabetically by id
-4. any remaining non-supervisor profile, alphabetically by id
+3. ``worker-standard``
+4. any remaining general-purpose profile, alphabetically by id
+5. any remaining non-supervisor profile, alphabetically by id
 
-Steps 3 and 4 differ only in whether special-purpose profiles (reviewer,
+Steps 4 and 5 differ only in whether special-purpose profiles (reviewer,
 planner, triage, …) are eligible: they are a poor default because they
 are written for one pipeline stage, but they beat returning ``None`` and
 stalling the queue.
@@ -40,7 +41,15 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 #: Tried first, in this exact order, when picking a project default.
-PREFERRED_DEFAULT_PROFILE_IDS: tuple[str, ...] = ("claude-opus", "claude-sonnet")
+#: ``worker-standard`` is named explicitly because the alphabetical
+#: fallback below picked ``worker-deep`` out of the shipped worker ladder
+#: (deep < fast < standard), quietly making the most expensive tier every
+#: project's default for tasks that carry no profile of their own.
+PREFERRED_DEFAULT_PROFILE_IDS: tuple[str, ...] = (
+    "claude-opus",
+    "claude-sonnet",
+    "worker-standard",
+)
 
 #: Profiles written for one specific pipeline stage.  Usable as a
 #: last-resort default (better than stalling) but never preferred.

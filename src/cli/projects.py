@@ -134,6 +134,7 @@ def project_set(ctx: click.Context, project_id: str, key: str, value: str) -> No
         "credit-weight": "credit_weight",
         "budget-limit": "budget_limit",
         "branch": "default_branch",
+        "default-profile": "default_profile_id",
     }
 
     field = KEY_MAP.get(key)
@@ -150,6 +151,10 @@ def project_set(ctx: click.Context, project_id: str, key: str, value: str) -> No
         coerced = float(value)
     elif field == "budget_limit":
         coerced = None if value.lower() in ("none", "null", "unlimited") else int(value)
+    elif field == "default_profile_id":
+        # Clearing falls the task back to the profile-resolution chain rather
+        # than pinning every unpinned task to one lane.
+        coerced = None if value.lower() in ("none", "null", "clear") else value
 
     if field == "default_branch":
         cmd = "set_default_branch"
