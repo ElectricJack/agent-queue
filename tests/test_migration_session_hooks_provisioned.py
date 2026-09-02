@@ -87,32 +87,39 @@ def test_sqlite_backfills_existing_sessions_as_not_provisioned():
 
 
 @pytest.mark.skipif(not os.environ.get("POSTGRES_TEST_DSN"), reason="POSTGRES_TEST_DSN not set")
-def test_postgres_upgrade_and_downgrade_use_a_boolean_default():
+async def test_postgres_upgrade_and_downgrade_use_a_boolean_default():
     """Run this revision's real DDL against PostgreSQL, not just offline SQL."""
     import asyncpg
 
     from tests.pg_dsn import create_scratch_database
 
-    dsn = asyncio.run(create_scratch_database("session_hooks_migration"))
+    dsn = await create_scratch_database("session_hooks_migration")
     cfg = _alembic_config(dsn)
 
-    command.upgrade(cfg, PRIOR_REVISION)
-    command.upgrade(cfg, HOOKS_REVISION)
+    # migrations/env.py uses asyncio.run() for its async engine.  Running the
+    # Alembic commands in a thread keeps that loop separate from pytest's loop.
+    await asyncio.to_thread(command.upgrade, cfg, PRIOR_REVISION)
+    await asyncio.to_thread(command.upgrade, cfg, HOOKS_REVISION)
 
-    async def column_default() -> str | None:
-        conn = await asyncpg.connect(dsn.replace("postgresql+asyncpg://", "postgresql://"))
-        try:
-            return await conn.fetchval(
-                "SELECT column_default FROM information_schema.columns "
-                "WHERE table_name = 'sessions' AND column_name = 'hooks_provisioned'"
-            )
-        finally:
-            await conn.close()
+    plain_dsn = dsn.replace("postgresql+asyncpg://", "postgresql://")
+    conn = await asyncpg.connect(plain_dsn)
+    try:
+        assert await conn.fetchval(
+            "SELECT column_default FROM information_schema.columns "
+            "WHERE table_name = 'sessions' AND column_name = 'hooks_provisioned'"
+        ) == "false"
+    finally:
+        await conn.close()
 
-    assert asyncio.run(column_default()) == "false"
-
-    command.downgrade(cfg, PRIOR_REVISION)
-    assert asyncio.run(column_default()) is None
+    await asyncio.to_thread(command.downgrade, cfg, PRIOR_REVISION)
+    conn = await asyncpg.connect(plain_dsn)
+    try:
+        assert await conn.fetchval(
+            "SELECT column_default FROM information_schema.columns "
+            "WHERE table_name = 'sessions' AND column_name = 'hooks_provisioned'"
+        ) is None
+    finally:
+        await conn.close()
 
 
 def _numeric_boolean_defaults(path: Path) -> list[str]:
