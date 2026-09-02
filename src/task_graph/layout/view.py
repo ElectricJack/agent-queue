@@ -1,4 +1,9 @@
-"""Viewport resolution over persisted layout rows (spec §5.2-§5.5)."""
+"""Viewport resolution over persisted layout rows (spec §5.2-§5.5).
+
+Stub payloads produced by `cap_stubs` are minimal (`id`, `x`, `y`, `w`, `h`);
+the router enriches them with `project_id` and `title` before returning them
+to clients.
+"""
 
 from __future__ import annotations
 
@@ -24,6 +29,17 @@ def resolve_visible(
     rows: dict[str, LayoutRow], *, expanded: set[str], max_depth: int | None,
     root: str | None, forced_expanded: set[str],
 ) -> Visible:
+    """Resolve which rows are visible under the given viewport state.
+
+    `max_depth`, when set, is measured in absolute depth (row.depth), not
+    depth relative to `root`. The router does not pass `max_depth` when
+    `root` is set (controller ruling) — both may be combined here for
+    completeness, but callers should not rely on that combination.
+
+    A row whose ancestor chain includes an id missing from `rows` is never
+    visible, regardless of `max_depth` (defensive: we cannot verify an
+    ancestor we don't have a row for).
+    """
     out = Visible()
     opened = set(expanded) | set(forced_expanded)
     if root is not None:
@@ -36,11 +52,14 @@ def resolve_visible(
             continue
         anc = ancestors_of(r.path)
         if out.root_path:
-            anc = anc[anc.index(root) + 1:] if root in anc else anc
+            if root in anc:
+                anc = anc[anc.index(root) + 1:]
+            elif tid == root:
+                anc = []
         ok = True
         for a in anc:
             ar = rows.get(a)
-            if a not in opened or (max_depth is not None and (ar is None or ar.depth >= max_depth)):
+            if a not in opened or ar is None or (max_depth is not None and ar.depth >= max_depth):
                 ok = False
                 break
         if not ok or (max_depth is not None and r.depth > max_depth and tid != root):
@@ -67,7 +86,9 @@ def depth_first_order(rows: dict[str, LayoutRow]) -> list[str]:
 DRAWN_TYPES = frozenset({"blocks", "waits-for", "conditional-blocks", "discovered-from"})
 
 
-def owner_map(rows_in_collapsed: dict[str, LayoutRow], collapsed_paths: dict[str, str]) -> dict[str, str]:
+def owner_map(
+    rows_in_collapsed: dict[str, LayoutRow], collapsed_paths: dict[str, str],
+) -> dict[str, str]:
     by_len = sorted(collapsed_paths.items(), key=lambda kv: -len(kv[1]))
     out: dict[str, str] = {}
     for tid, r in rows_in_collapsed.items():
@@ -78,7 +99,11 @@ def owner_map(rows_in_collapsed: dict[str, LayoutRow], collapsed_paths: dict[str
     return out
 
 
-def remap_edges(edges, visible, hidden_owner):
+def remap_edges(
+    edges: list[tuple[str, str, str, str | None]],
+    visible: dict[str, str],
+    hidden_owner: dict[str, str],
+) -> tuple[list[dict], set[str]]:
     agg: dict[tuple[str, str, str], dict] = {}
     orphans: set[str] = set()
 
@@ -109,11 +134,27 @@ def remap_edges(edges, visible, hidden_owner):
     return wire, {o for o in orphans if o in used}
 
 
-def cap_stubs(edges, stub_rows, visible, limit=8):
-    per_node_dir: dict[tuple[str, str], int] = defaultdict(int)
+def cap_stubs(
+    edges: list[dict],
+    stub_rows: dict[str, LayoutRow],
+    visible: set[str],
+    limit: int = 8,
+) -> tuple[list[dict], list[dict], list[dict]]:
+    """Cap the number of distinct off-screen (stub) nodes drawn per visible
+    anchor and direction.
+
+    Counts distinct FAR node ids per (anchor, direction), not edges: multiple
+    edges (e.g. different dep types) to the same far node consume a single
+    slot. `more` reports the count of additional distinct far nodes beyond
+    `limit`, per (anchor, direction).
+
+    Each stub payload is `{id, x, y, w, h}`; the router enriches it with
+    `project_id` and `title` before returning it to clients.
+    """
+    far_nodes: dict[tuple[str, str], set[str]] = defaultdict(set)
     kept: list[dict] = []
     stubs: dict[str, dict] = {}
-    more: dict[tuple[str, str], int] = defaultdict(int)
+    more: dict[tuple[str, str], set[str]] = defaultdict(set)
     for e in edges:
         f, t = e["from"], e["to"]
         far = None
@@ -124,22 +165,31 @@ def cap_stubs(edges, stub_rows, visible, limit=8):
         elif t in visible and f not in visible:
             far, anchor, direction = f, t, "in"
         if far is None:
-            kept.append(e)
+            if f in visible and t in visible:
+                kept.append(e)
             continue
         if far not in stub_rows:
             continue  # far endpoint has no row in this variant: drop
-        if per_node_dir[(anchor, direction)] >= limit:
-            more[(anchor, direction)] += 1
+        slot_key = (anchor, direction)
+        already_counted = far in far_nodes[slot_key]
+        if not already_counted and len(far_nodes[slot_key]) >= limit:
+            more[slot_key].add(far)
             continue
-        per_node_dir[(anchor, direction)] += 1
+        if not already_counted:
+            far_nodes[slot_key].add(far)
         kept.append(e)
         r = stub_rows[far]
         stubs.setdefault(far, {"id": far, "x": r.abs_x, "y": r.abs_y, "w": r.w, "h": r.h})
-    more_list = [{"node_id": n, "direction": d, "more": c} for (n, d), c in sorted(more.items())]
+    more_list = [
+        {"node_id": n, "direction": d, "more": len(far_ids)}
+        for (n, d), far_ids in sorted(more.items())
+    ]
     return kept, list(stubs.values()), more_list
 
 
-def dock_workers(agents, visible, hidden_owner):
+def dock_workers(
+    agents: list[dict], visible: set[str], hidden_owner: dict[str, str],
+) -> list[dict]:
     out = []
     for a in agents:
         cur = a.get("current_task_id")
@@ -152,7 +202,7 @@ def dock_workers(agents, visible, hidden_owner):
     return out
 
 
-def forced_expansion_for(matches, rows):
+def forced_expansion_for(matches: set[str], rows: dict[str, LayoutRow]) -> set[str]:
     out: set[str] = set()
     for m in matches:
         r = rows.get(m)

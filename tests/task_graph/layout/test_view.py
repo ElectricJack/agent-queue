@@ -53,6 +53,11 @@ def test_root_restricts_and_expands_itself():
     assert v.root_path == "/e/"
 
 
+def test_root_below_top_level_keeps_root_row_itself():
+    v = resolve_visible(ROWS, expanded=set(), max_depth=None, root="p", forced_expanded=set())
+    assert v.visible == {"p": "container", "t": "card"}
+
+
 def test_forced_expanded_acts_like_expanded():
     v = resolve_visible(ROWS, expanded=set(), max_depth=None, root=None, forced_expanded={"e", "p"})
     assert "t" in v.visible
@@ -90,15 +95,44 @@ def test_remap_reports_orphans_for_stubs():
 
 def test_cap_stubs_keeps_eight_then_summarizes():
     hub = {"hub": "card"}
-    edges = [{"from": f"d{i}", "to": "hub", "dep_type": "blocks", "description": None, "count": 1} for i in range(12)]
+    edges = [
+        {"from": f"d{i}", "to": "hub", "dep_type": "blocks", "description": None, "count": 1}
+        for i in range(12)
+    ]
     stub_rows = {f"d{i}": row(f"d{i}", f"/d{i}/", 0, x=float(i)) for i in range(12)}
     kept, stubs, more = cap_stubs(edges, stub_rows, set(hub), limit=8)
     assert len(kept) == 8 and len(stubs) == 8
     assert more == [{"node_id": "hub", "direction": "in", "more": 4}]
 
 
+def test_cap_stubs_drops_edges_with_no_visible_endpoint():
+    kept, stubs, _more = cap_stubs(
+        [{"from": "x", "to": "y", "dep_type": "blocks", "description": None, "count": 1}],
+        {},
+        {"z"},
+    )
+    assert kept == [] and stubs == []
+
+
+def test_cap_stubs_counts_distinct_far_nodes_not_edges():
+    hub = {"hub": "card"}
+    dep_types = ["blocks", "waits-for", "conditional-blocks", "discovered-from"]
+    edges = [
+        {"from": "far", "to": "hub", "dep_type": t, "description": None, "count": 1}
+        for t in dep_types
+    ]
+    stub_rows = {"far": row("far", "/far/", 0)}
+    kept, stubs, more = cap_stubs(edges, stub_rows, set(hub), limit=2)
+    assert len(kept) == 4 and len(stubs) == 1
+    assert more == []
+
+
 def test_dock_workers_on_visible_ancestor():
-    agents = [{"id": "a1", "current_task_id": "t"}, {"id": "a2", "current_task_id": "z"}, {"id": "a3", "current_task_id": None}]
+    agents = [
+        {"id": "a1", "current_task_id": "t"},
+        {"id": "a2", "current_task_id": "z"},
+        {"id": "a3", "current_task_id": None},
+    ]
     docked = dock_workers(agents, {"e", "z"}, {"t": "e"})
     assert [(d["docked_at"], d["in_collapsed"]) for d in docked] == [("e", True), ("z", False)]
 
