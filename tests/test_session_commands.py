@@ -10,6 +10,7 @@ See docs/specs/implementation/session-runtime.md §3.8, §8.
 from __future__ import annotations
 
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -73,6 +74,7 @@ class _StubOrchestrator:
         # task never constructs a runtime.
         self._runtimes = None
         self.llm_logger = None
+        self.assignment_routing = _StaticAssignmentRouting()
         self.session_reconciler = SessionReconciler(
             db, config, providers, harnesses=harnesses, bus=self.bus, epoch="epoch-test"
         )
@@ -92,6 +94,24 @@ class _StubOrchestrator:
         )
         await self.db.transition_task(task.id, status, context="session_close")
         return {"status": status.value, "pr_url": None, "pipeline_ok": True}
+
+
+class _StaticAssignmentRouting:
+    """Minimal route provider for direct execution-path tests.
+
+    The full coordinator is exercised in its own test module. These tests
+    need only a fresh, non-LLM route so their real launch path can pass the
+    assignment-time recheck introduced before execution starts.
+    """
+
+    async def routes_for(self, tasks):
+        return {
+            task.id: SimpleNamespace(
+                intelligence_class=task.intelligence_class or "",
+                provider=None,
+            )
+            for task in tasks
+        }
 
 
 @pytest.fixture
@@ -876,6 +896,15 @@ class TestEndToEndOnFakeProvider:
         config.sessions.enabled = True
         assert real_orch._is_session_routed(AgentProfile(id="y", name="y")) is False
         assert real_orch._is_session_routed(None) is False
+
+    async def test_disabled_sessions_fail_instead_of_using_a_runtime(
+        self, db, real_orch, config, tmp_path
+    ):
+        await self._setup(db, tmp_path, ready=True)
+        config.sessions.enabled = False
+
+        with pytest.raises(RuntimeError, match="legacy runtime dispatch was removed"):
+            await real_orch._execute_task(AssignAction("a1", "t1", "p1"))
 
     async def test_full_lifecycle(
         self, db, real_orch, real_handler, provider, tmp_path, config, monkeypatch
