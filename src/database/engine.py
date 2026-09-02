@@ -7,14 +7,21 @@ running Alembic migrations on startup.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import logging
 import os
-from functools import lru_cache
-from pathlib import Path
 import shutil
 import sqlite3
+import stat
 import tempfile
+from functools import lru_cache
+from pathlib import Path
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows
+    fcntl = None
 
 from sqlalchemy import event, inspect, text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
@@ -60,15 +67,54 @@ def _alembic_head_revisions() -> tuple[str, ...]:
     return tuple(sorted(ScriptDirectory.from_config(Config(str(_ALEMBIC_INI))).get_heads()))
 
 
+def _schema_cache_directory() -> Path:
+    """The per-user template directory under the temp root, created ``0700``.
+
+    The temp root is shared, so a fixed world-readable path would let any
+    local user plant a template that passes ``quick_check`` and carries the
+    right ``alembic_version`` rows.  The directory is suffixed with the uid,
+    created private, and refused (``OSError``, which the caller turns into
+    the plain Alembic path) when it is a symlink or owned by someone else.
+    """
+    name = _SCHEMA_CACHE_DIRNAME
+    if hasattr(os, "getuid"):
+        name = f"{name}-{os.getuid()}"
+    directory = Path(tempfile.gettempdir()).resolve() / name
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    info = directory.lstat()
+    if not stat.S_ISDIR(info.st_mode):
+        raise OSError(f"schema cache path {directory} is not a plain directory")
+    if hasattr(os, "getuid"):
+        if info.st_uid != os.getuid():
+            raise OSError(f"schema cache directory {directory} is owned by uid {info.st_uid}")
+        if info.st_mode & 0o077:
+            os.chmod(directory, 0o700)
+    return directory
+
+
+def _schema_cache_inputs() -> list[Path]:
+    """Every file whose content decides what a fully migrated schema looks like.
+
+    ``migrations/env.py`` configures how revisions run (batch mode, the
+    per-migration transaction) and revision ``b2c3d4e5f6a7`` imports
+    ``src.database.hierarchy_migration``, so a change to either has to
+    invalidate the template exactly as a changed revision file does.
+    """
+    database = _PROJECT_ROOT / "src" / "database"
+    migrations = _PROJECT_ROOT / "migrations"
+    return [
+        database / "tables.py",
+        database / "hierarchy_migration.py",
+        migrations / "env.py",
+        *sorted((migrations / "versions").glob("*.py")),
+    ]
+
+
 @lru_cache(maxsize=1)
 def _schema_cache_key() -> tuple[str, tuple[str, ...]]:
     """Hash schema inputs so a changed migration never reuses an old template."""
     digest = hashlib.sha256()
-    schema_inputs = [
-        _PROJECT_ROOT / "src" / "database" / "tables.py",
-        *sorted((_PROJECT_ROOT / "migrations" / "versions").glob("*.py")),
-    ]
-    for source in schema_inputs:
+    for source in _schema_cache_inputs():
         digest.update(str(source.relative_to(_PROJECT_ROOT)).encode())
         digest.update(b"\0")
         with source.open("rb") as handle:
@@ -83,7 +129,7 @@ def _cached_template_is_valid(template: Path, expected_heads: tuple[str, ...]) -
     try:
         if template.stat().st_size == 0:
             return False
-        with sqlite3.connect(str(template)) as connection:
+        with contextlib.closing(sqlite3.connect(str(template))) as connection:
             if connection.execute("PRAGMA quick_check").fetchone() != ("ok",):
                 return False
             rows = connection.execute("SELECT version_num FROM alembic_version").fetchall()
@@ -92,35 +138,54 @@ def _cached_template_is_valid(template: Path, expected_heads: tuple[str, ...]) -
     return {row[0] for row in rows} == set(expected_heads)
 
 
+def _remove_sqlite_sidecars(database: Path) -> None:
+    """Drop the ``-wal``/``-shm``/``-journal`` files that belong to *database*."""
+    for suffix in ("-wal", "-shm", "-journal"):
+        Path(f"{database}{suffix}").unlink(missing_ok=True)
+
+
 def _copy_sqlite_database(source: Path, destination: Path) -> None:
-    """Copy a checkpointed SQLite template without its transient WAL files."""
+    """Copy a checkpointed SQLite template without its transient WAL files.
+
+    Stale sidecars next to *destination* go first: SQLite would otherwise
+    replay a leftover ``-wal`` from whatever database used that path before
+    into the freshly copied template.
+    """
     destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.exists():
         destination.unlink()
+    _remove_sqlite_sidecars(destination)
     shutil.copyfile(source, destination)
 
 
 async def _build_schema_template(template: Path) -> bool:
-    """Build a fully migrated SQLite template without consulting the cache."""
+    """Build a fully migrated SQLite template without consulting the cache.
+
+    The build happens in a ``<key>.<pid>.building.db`` scratch file that is
+    checkpointed, closed, and renamed over *template*.  The checkpoint
+    connection is closed *before* the rename (a ``sqlite3`` context manager
+    only commits), and the scratch file's ``-wal``/``-shm`` sidecars are
+    removed whichever way the build ends -- they were piling up in the temp
+    root.
+    """
     temporary = template.with_suffix(f".{os.getpid()}.building.db")
     temporary.unlink(missing_ok=True)
-    template_engine = create_sqlite_engine(str(temporary))
+    _remove_sqlite_sidecars(temporary)
     try:
-        await _run_schema_setup_without_cache(template_engine)
+        template_engine = create_sqlite_engine(str(temporary))
+        try:
+            await _run_schema_setup_without_cache(template_engine)
+        finally:
+            await template_engine.dispose()
+        with contextlib.closing(sqlite3.connect(str(temporary))) as connection:
+            connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        os.replace(temporary, template)
     except Exception:
         logger.warning("Could not build SQLite schema cache template", exc_info=True)
         return False
     finally:
-        await template_engine.dispose()
-
-    try:
-        with sqlite3.connect(str(temporary)) as connection:
-            connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        os.replace(temporary, template)
-    except (OSError, sqlite3.Error):
-        logger.warning("Could not store SQLite schema cache template", exc_info=True)
         temporary.unlink(missing_ok=True)
-        return False
+        _remove_sqlite_sidecars(temporary)
     return True
 
 
@@ -129,31 +194,25 @@ async def _restore_schema_from_cache(database_path: Path) -> bool:
     if database_path.exists() and database_path.stat().st_size > 0:
         return False
 
-    cache_directory = Path(tempfile.gettempdir()) / _SCHEMA_CACHE_DIRNAME
     try:
-        cache_directory.mkdir(parents=True, exist_ok=True)
+        cache_directory = _schema_cache_directory()
         key, heads = _schema_cache_key()
         template = cache_directory / f"{key}.db"
         lock_path = cache_directory / f"{key}.lock"
         with lock_path.open("a+") as lock:
-            try:
-                import fcntl
-
+            if fcntl is not None:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-            except ImportError:
-                pass
             try:
                 if not _cached_template_is_valid(template, heads):
                     template.unlink(missing_ok=True)
+                    _remove_sqlite_sidecars(template)
                     if not await _build_schema_template(template):
                         return False
                 _copy_sqlite_database(template, database_path)
                 return True
             finally:
-                try:
+                if fcntl is not None:
                     fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
-                except (ImportError, UnboundLocalError):
-                    pass
     except (OSError, sqlite3.Error):
         logger.warning("Could not restore SQLite schema cache", exc_info=True)
         database_path.unlink(missing_ok=True)

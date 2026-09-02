@@ -14,9 +14,9 @@ What it does, in order:
    with no config still gets gating.
 2. Take one of N ``flock`` slots, printing a "waiting" line every poll so a
    queued agent looks queued rather than hung.
-3. Exec pytest with ``-n <cap>`` and the default marker deselects folded in
-   — only when the caller did not pass their own, so an explicit
-   ``-n 0`` / ``-m perf`` is always honoured.
+3. Exec pytest with ``-n <cap> --dist loadfile`` and the default marker
+   deselects folded in — only when the caller did not pass their own, so
+   an explicit ``-n 0`` / ``-p no:xdist`` / ``-m perf`` is always honoured.
 
 Option names are all ``--aq-``-prefixed on purpose: everything else on the
 command line is pytest's, and a wrapper that quietly ate ``-k`` or ``-x``
@@ -128,8 +128,14 @@ def _compose_pytest_argv(
 ) -> list[str]:
     """The full pytest command line, with caps folded in where absent."""
     argv = [sys.executable, "-m", "pytest"]
-    if not _has_flag(args, "-n", "--numprocesses") and not _xdist_disabled(args):
-        argv.extend(["-n", str(workers)])
+    if not _xdist_disabled(args):
+        if not _has_flag(args, "-n", "--numprocesses"):
+            argv.extend(["-n", str(workers)])
+        # Keep a module's tests on one worker (its database fixtures are
+        # per-module).  This cannot live in pyproject's ``addopts``:
+        # ``-p no:xdist`` unloads the option with the plugin.
+        if not _has_flag(args, "--dist"):
+            argv.extend(["--dist", "loadfile"])
     if apply_markers and markers and not _has_flag(args, "-m"):
         argv.extend(["-m", markers])
     argv.extend(args)
