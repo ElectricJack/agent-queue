@@ -127,6 +127,7 @@ def test_registry_has_categories(registry):
         "discord",
         "pool",
         "formula",
+        "graph",
     }
 
     for cat in categories:

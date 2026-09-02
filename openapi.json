@@ -3712,6 +3712,100 @@
         }
       }
     },
+    "/api/graph/layout-rebuild": {
+      "post": {
+        "tags": [
+          "graph"
+        ],
+        "summary": "Rebuild the server-side task graph layout for a project (both variants) synchronously. Not available to agent sessions.",
+        "description": "Rebuild the server-side task graph layout for a project (both variants) synchronously. Not available to agent sessions.",
+        "operationId": "graph_layout_rebuild",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GraphLayoutRebuildRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GraphLayoutResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/graph/tidy": {
+      "post": {
+        "tags": [
+          "graph"
+        ],
+        "summary": "Enqueue a Tidy layout job for a project. Breaks spatial memory; user-triggered only.",
+        "description": "Enqueue a Tidy layout job for a project. Breaks spatial memory; user-triggered only.",
+        "operationId": "graph_tidy",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GraphTidyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GraphLayoutResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/mcp/create-server": {
       "post": {
         "tags": [
@@ -6394,8 +6488,8 @@
         "tags": [
           "project"
         ],
-        "summary": "Edit a project's properties: name, credit_weight, max_concurrent_agents, budget_limit, discord_channel_id, default_profile_id, or repo_default_branch. Use this to rename projects, adjust scheduling weight, set token budgets, link Discord channels, set a default agent profile, or change the default git branch.",
-        "description": "Edit a project's properties: name, credit_weight, max_concurrent_agents, budget_limit, discord_channel_id, default_profile_id, or repo_default_branch. Use this to rename projects, adjust scheduling weight, set token budgets, link Discord channels, set a default agent profile, or change the default git branch.",
+        "summary": "Edit a project's properties: name, credit_weight, max_concurrent_agents, budget_limit, discord_channel_id, default_profile_id, assignment_playbook_id, or repo_default_branch. Use this to rename projects, adjust scheduling weight, set token budgets, link Discord channels, set a default agent profile, or change the default git branch.",
+        "description": "Edit a project's properties: name, credit_weight, max_concurrent_agents, budget_limit, discord_channel_id, default_profile_id, assignment_playbook_id, or repo_default_branch. Use this to rename projects, adjust scheduling weight, set token budgets, link Discord channels, set a default agent profile, or change the default git branch.",
         "operationId": "edit_project",
         "requestBody": {
           "content": {
@@ -12422,6 +12516,84 @@
         ],
         "title": "AskHumanRequest"
       },
+      "AssignmentRouteDetail": {
+        "properties": {
+          "source": {
+            "type": "string",
+            "title": "Source"
+          },
+          "intelligence_class": {
+            "type": "string",
+            "title": "Intelligence Class"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "playbook_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Playbook Id"
+          },
+          "playbook_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Playbook Version"
+          },
+          "playbook_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Playbook Run Id"
+          },
+          "freshness": {
+            "type": "string",
+            "title": "Freshness"
+          }
+        },
+        "type": "object",
+        "required": [
+          "source",
+          "intelligence_class",
+          "freshness"
+        ],
+        "title": "AssignmentRouteDetail"
+      },
       "CancelPlaybookRunRequest": {
         "properties": {
           "run_id": {
@@ -16228,6 +16400,18 @@
             "title": "Default Profile Id",
             "description": "Default agent profile ID for tasks in this project (optional, null to clear)"
           },
+          "assignment_playbook_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignment Playbook Id",
+            "description": "Project-scoped assignment-routing playbook ID (optional, null to use the system default)"
+          },
           "repo_default_branch": {
             "anyOf": [
               {
@@ -16832,6 +17016,24 @@
             "type": "array",
             "title": "Reasons",
             "default": []
+          },
+          "reason_codes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Reason Codes",
+            "default": []
+          },
+          "assignment_route": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AssignmentRouteDetail"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -18988,6 +19190,17 @@
               }
             ],
             "title": "Default Profile Id"
+          },
+          "assignment_playbook_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignment Playbook Id"
           }
         },
         "type": "object",
@@ -20681,6 +20894,85 @@
         ],
         "title": "GraphGate"
       },
+      "GraphLayoutRebuildRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": "Project id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id"
+        ],
+        "title": "GraphLayoutRebuildRequest"
+      },
+      "GraphLayoutResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "versions": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Versions"
+          },
+          "jobs": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Jobs"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "GraphLayoutResponse",
+        "description": "Response for ``graph_layout_rebuild`` / ``graph_tidy`` (spatial-layout design \u00a75.6, \u00a710)."
+      },
       "GraphTaskNode": {
         "properties": {
           "id": {
@@ -20779,6 +21071,32 @@
           "status"
         ],
         "title": "GraphTaskNode"
+      },
+      "GraphTidyRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": "Project id"
+          },
+          "variant": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Variant",
+            "description": "Omit for both"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id"
+        ],
+        "title": "GraphTidyRequest"
       },
       "GrepRequest": {
         "properties": {
@@ -25343,6 +25661,17 @@
               }
             ],
             "title": "Discord Channel Id"
+          },
+          "assignment_playbook_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignment Playbook Id"
           }
         },
         "type": "object",

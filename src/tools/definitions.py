@@ -109,6 +109,9 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "formula_list": "formula",
     "formula_show": "formula",
     "formula_cook": "formula",
+    # graph — server-side spatial task-graph layout (spatial-layout design §5.6, §10)
+    "graph_layout_rebuild": "graph",
+    "graph_tidy": "graph",
     # playbook — compilation, run management, human-in-the-loop resume
     "compile_playbook": "playbook",
     "run_playbook": "playbook",
@@ -4205,6 +4208,28 @@ _ALL_TOOL_DEFINITIONS = [
                 },
             },
             "required": ["name", "project_id"],
+        },
+    },
+    # graph — server-side spatial task-graph layout (spatial-layout design §5.6, §10)
+    {
+        "name": "graph_layout_rebuild",
+        "description": "Rebuild the server-side task graph layout for a project (both variants) synchronously. Not available to agent sessions.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"project_id": {"type": "string", "description": "Project id"}},
+            "required": ["project_id"],
+        },
+    },
+    {
+        "name": "graph_tidy",
+        "description": "Enqueue a Tidy layout job for a project. Breaks spatial memory; user-triggered only.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project id"},
+                "variant": {"type": "string", "enum": ["all", "active"], "description": "Omit for both"},
+            },
+            "required": ["project_id"],
         },
     },
     # dv2 phase 2 — review-policy commands

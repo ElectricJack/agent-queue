@@ -346,7 +346,14 @@ from .glob_files_response_422 import GlobFilesResponse422
 from .graph_agent import GraphAgent
 from .graph_edge import GraphEdge
 from .graph_gate import GraphGate
+from .graph_layout_rebuild_request import GraphLayoutRebuildRequest
+from .graph_layout_rebuild_response_422 import GraphLayoutRebuildResponse422
+from .graph_layout_response import GraphLayoutResponse
+from .graph_layout_response_jobs_type_0_item import GraphLayoutResponseJobsType0Item
+from .graph_layout_response_versions_type_0 import GraphLayoutResponseVersionsType0
 from .graph_task_node import GraphTaskNode
+from .graph_tidy_request import GraphTidyRequest
+from .graph_tidy_response_422 import GraphTidyResponse422
 from .grep_request import GrepRequest
 from .grep_response import GrepResponse
 from .grep_response_422 import GrepResponse422
@@ -1182,7 +1189,14 @@ __all__ = (
     "GraphAgent",
     "GraphEdge",
     "GraphGate",
+    "GraphLayoutRebuildRequest",
+    "GraphLayoutRebuildResponse422",
+    "GraphLayoutResponse",
+    "GraphLayoutResponseJobsType0Item",
+    "GraphLayoutResponseVersionsType0",
     "GraphTaskNode",
+    "GraphTidyRequest",
+    "GraphTidyResponse422",
     "GrepRequest",
     "GrepResponse",
     "GrepResponse422",
