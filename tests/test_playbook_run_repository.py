@@ -37,6 +37,7 @@ from src.playbooks.run_state import (
     deserialize_snapshot,
     serialize_snapshot,
 )
+from src.playbooks.waits import WaitChangeSet, WaitSpec
 from tests.pg_dsn import ensure_worker_postgres_dsn
 
 POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
@@ -521,6 +522,41 @@ async def test_paused_run_cancels_immediately(db):
     )
     assert cancelled.lifecycle is RunLifecycle.CANCELLED
     assert cancelled.completed_at is not None
+
+
+async def test_paused_run_cancellation_clears_wait_before_events_can_claim(db):
+    snapshot = await db.create_run(make_snapshot())
+    paused = await db.commit_boundary(
+        replace(snapshot, lifecycle=RunLifecycle.PAUSED, current_step_id="await-merge"),
+        make_receipt(snapshot, step_id="await-merge"),
+        WaitChangeSet(
+            register=(
+                WaitSpec(
+                    wait_id="wait-1",
+                    run_id=snapshot.run_id,
+                    step_id="await-merge",
+                    event_type="pr.merged",
+                    match={"pr.number": 41},
+                ),
+            )
+        ),
+    )
+
+    cancelled = await db.request_cancel(
+        snapshot.run_id,
+        expected_version=paused.version,
+        reason="operator cancelled",
+        requested_by="user:jack",
+    )
+
+    assert cancelled.lifecycle is RunLifecycle.CANCELLED
+    assert await db.list_active(snapshot.run_id) == []
+    event = type(
+        "Event",
+        (),
+        {"event_type": "pr.merged", "event_id": "event-1", "fields": {"pr": {"number": 41}}},
+    )()
+    assert await db.claim_for_event(event, now=NOW + 1) == []
 
 
 async def test_cancel_requires_the_current_version(db):
