@@ -187,6 +187,21 @@ async def test_tiles_culled_collapsed_container_becomes_the_stub(db, client_fact
     assert [(s["id"], s["title"]) for s in body["stubs"]] == [("e", "Title e")]
 
 
+async def test_tiles_no_worker_docks_at_a_culled_container(db, client_factory):
+    """The pre-cull owner map must not dock a worker at an absent node."""
+    await seed(db)
+    await db.create_agent(
+        Agent(id="a2", name="bot2", profile_id="p", state=AgentState.BUSY, current_task_id="c0")
+    )
+    async with client_factory() as ac:
+        first = (await ac.post("/api/projects/p1/graph/tiles", json=ALL)).json()["nodes"]
+        z = next(n for n in first if n["id"] == "z")
+        rect = {"x0": z["x"], "y0": z["y"], "x1": z["x"] + 0.5, "y1": z["y"] + 0.5}
+        body = (await ac.post("/api/projects/p1/graph/tiles", json={**ALL, "rect": rect})).json()
+    assert {n["id"] for n in body["nodes"]} == {"z"}
+    assert body["workers"] == []  # a1 (on g0) and a2 (on c0) both dock at the culled e
+
+
 async def test_tiles_root_focus_forces_all_and_expands_root(db, client_factory):
     await seed(db)
     async with client_factory() as ac:
@@ -294,6 +309,55 @@ async def test_locate_returns_positions_capped(db, client_factory):
     body = r.json()
     assert len(body["hits"]) == 3 and body["truncated"] is True
     assert all({"id", "x", "y", "w", "h"} <= set(h) for h in body["hits"])
+    # reading order: top-to-bottom, then left-to-right
+    assert [(h["y"], h["x"]) for h in body["hits"]] == sorted(
+        (h["y"], h["x"]) for h in body["hits"]
+    )
+    assert [h["id"] for h in body["hits"]] == ["d0", "d1", "d2"]
+
+
+async def test_list_status_filter_is_case_insensitive(db, client_factory):
+    await seed(db)
+    async with client_factory() as ac:
+        r = await ac.post(
+            "/api/projects/p1/graph/list",
+            json={"variant": "active", "status": "completed", "limit": 50},
+        )
+    assert {n["id"] for n in r.json()["nodes"]} == {"e", "c1"}
+
+
+async def test_list_never_loads_the_whole_project(db, client_factory, monkeypatch):
+    """`list` pages over open containers only, never the whole variant."""
+    for n in (1, 2, 3):
+        await db.create_task(
+            Task(id=f"e{n}", project_id="p1", title=f"Epic {n}", description="")
+        )
+        for k in range(5):
+            kid = f"e{n}c{k}"
+            await db.create_task(
+                Task(id=kid, project_id="p1", title=f"Child {kid}", description="")
+            )
+            async with db._engine.begin() as conn:
+                await db.set_parent(kid, f"e{n}", conn=conn)
+    await LayoutDriver(db).full_layout("p1", "all")
+
+    def boom(*a, **kw):
+        raise AssertionError("list must not load the whole variant")
+
+    monkeypatch.setattr(db, "load_all_rows_with_tasks", boom)
+
+    async with client_factory() as ac:
+        collapsed = await ac.post(
+            "/api/projects/p1/graph/list", json={"variant": "all", "expanded": [], "limit": 50}
+        )
+        opened = await ac.post(
+            "/api/projects/p1/graph/list",
+            json={"variant": "all", "expanded": ["e1"], "limit": 50},
+        )
+    assert {n["id"] for n in collapsed.json()["nodes"]} == {"e1", "e2", "e3"}
+    ids = {n["id"] for n in opened.json()["nodes"]}
+    assert {f"e1c{k}" for k in range(5)} <= ids
+    assert not any(i.startswith("e2c") for i in ids)
 
 
 async def test_tidy_enqueues_and_jobs_reports(db, client_factory):
@@ -335,5 +399,23 @@ async def test_default_router_delegates_to_the_orchestrator_db(db, monkeypatch):
         ready = await ac.get("/api/projects/p1/graph/extent?variant=all")
         assert ready.status_code == 200
         tiles = await ac.post("/api/projects/p1/graph/tiles", json=ALL)
-    assert tiles.status_code == 200
-    assert "e" in {n["id"] for n in tiles.json()["nodes"]}
+        assert tiles.status_code == 200
+        assert "e" in {n["id"] for n in tiles.json()["nodes"]}
+        # every route, so `_call`'s path+method dispatch is exercised
+        lst = await ac.post(
+            "/api/projects/p1/graph/list", json={"variant": "all", "expanded": [], "limit": 10}
+        )
+        assert lst.status_code == 200 and "e" in {n["id"] for n in lst.json()["nodes"]}
+        node = await ac.get("/api/projects/p1/graph/node/g0?variant=all")
+        assert node.status_code == 200 and node.json()["node"]["id"] == "g0"
+        loc = await ac.get("/api/projects/p1/graph/locate?variant=all&q=title e")
+        assert loc.status_code == 200 and [h["id"] for h in loc.json()["hits"]] == ["e"]
+        tidy = await ac.post("/api/projects/p1/graph/tidy", json={"variant": "all"})
+        assert tidy.status_code == 200
+        job_id = tidy.json()["jobs"][0]["id"]
+        job = await ac.get(f"/api/projects/p1/graph/jobs/{job_id}")
+    # the extent 202 above already queued a backfill for `all`, and
+    # `enqueue_layout_job` dedupes onto it — hence no `kind` assertion here
+    # (`test_tidy_enqueues_and_jobs_reports` covers that).
+    assert job.status_code == 200
+    assert job.json()["id"] == job_id and job.json()["status"] == "queued"

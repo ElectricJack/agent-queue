@@ -254,7 +254,15 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
             {"id": a.id, "name": a.name, "current_task_id": a.current_task_id}
             for a in await db.list_agents()
         ]
-        docked = dock_workers(agents, set(vis.visible), hidden_owner)
+        # `hidden_owner` is the PRE-cull map (it has to be, for edge
+        # remapping), so it can dock a worker at a container the rect or the
+        # filter culled away.  A worker may only dock at a node we actually
+        # return.
+        docked = [
+            d
+            for d in dock_workers(agents, set(vis.visible), hidden_owner)
+            if d["docked_at"] in vis.visible
+        ]
         workers = [
             LayoutWorker(
                 agent_id=d["agent"]["id"],
@@ -338,13 +346,24 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
         meta = await _meta_or_pending(project_id, variant)
         if meta is None:
             return JSONResponse(status_code=202, content={"status": "layout_pending"})
-        all_rows = await db.load_all_rows_with_tasks(project_id, variant)
-        rows = {t: rt[0] for t, rt in all_rows.items()}
+        # Only the rows that can possibly be visible: the roots plus the
+        # direct children of every open container.  Under `max_depth=None,
+        # root=None` that set IS the visible set, so a page costs
+        # |expanded| + |matches| rather than a whole project (design §5.3).
+        all_rows = await db.load_rows_for_containers(
+            project_id, variant, [None, *req.expanded]
+        )
         matches: set[str] | None = None
         forced: set[str] = set()
         if req.q.strip() or status:
             matches = await db.load_matching_ids(project_id, variant, q=req.q.strip(), status=status)
-            forced = forced_expansion_for(matches, rows)
+            match_rows = await db.load_rows_with_tasks(project_id, variant, sorted(matches))
+            all_rows.update(match_rows)
+            forced = forced_expansion_for(matches, {t: rt[0] for t, rt in match_rows.items()})
+            missing = sorted(forced - set(all_rows))
+            if missing:
+                all_rows.update(await db.load_rows_with_tasks(project_id, variant, missing))
+        rows = {t: rt[0] for t, rt in all_rows.items()}
         vis = resolve_visible(
             rows, expanded=set(req.expanded), max_depth=None, root=None, forced_expanded=forced
         )
@@ -412,7 +431,10 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
         limit = max(1, min(limit, LOCATE_CAP))
         ids = await db.load_matching_ids(project_id, variant, q=q.strip(), status=status)
         rows = await db.load_layout_rows(project_id, variant, sorted(ids))
-        ordered = depth_first_order(rows)
+        # Reading order, not `depth_first_order`: only the match rows are
+        # loaded, so their ancestors are absent and the depth-first sort keys
+        # would be incomplete.
+        ordered = sorted(rows, key=lambda t: (rows[t].abs_y, rows[t].abs_x, t))
         hits = [
             LocateHit(
                 id=t,
@@ -438,7 +460,7 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
             )
             if not res.get("success"):
                 raise HTTPException(status_code=400, detail=res.get("error", "tidy failed"))
-            jobs = res["jobs"]
+            jobs = res.get("jobs", [])
         else:
             variants = [req.variant] if req.variant else list(VARIANTS)
             jobs = [await db.enqueue_layout_job(project_id, v, "tidy") for v in variants]

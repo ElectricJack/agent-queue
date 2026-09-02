@@ -771,6 +771,49 @@ class LayoutQueryMixin:
                     out[m["task_id"]] = (self._row_from_mapping(m), self._task_dict_from_mapping(m))
             return out
 
+    async def load_rows_for_containers(self, project_id, variant, container_ids):
+        """Rows directly inside any of *container_ids*, joined to their tasks.
+
+        ``None`` in the list selects the project roots (``container_id IS
+        NULL``).  This is what the ``list`` endpoint pages over: its cost is
+        bounded by the number of open containers, so it never has to load a
+        whole project (design §5.3).
+        """
+        from sqlalchemy import or_
+
+        from src.database.tables import task_layouts, tasks
+
+        ids = list(dict.fromkeys(container_ids))
+        if not ids:
+            return {}
+        want_root = None in ids
+        named = [c for c in ids if c is not None]
+        batches = _chunks(named) or ([[]] if want_root else [])
+        cols = [getattr(tasks.c, f) for f in self._TASK_FIELDS]
+        out: dict = {}
+        async with self._engine.begin() as conn:
+            for i, chunk in enumerate(batches):
+                clauses = []
+                if chunk:
+                    clauses.append(task_layouts.c.container_id.in_(chunk))
+                # The roots ride along with the first batch only.
+                if want_root and i == 0:
+                    clauses.append(task_layouts.c.container_id.is_(None))
+                if not clauses:
+                    continue
+                res = await conn.execute(
+                    select(task_layouts, *cols)
+                    .select_from(task_layouts.join(tasks, tasks.c.id == task_layouts.c.task_id))
+                    .where(
+                        task_layouts.c.project_id == project_id,
+                        task_layouts.c.variant == variant,
+                        or_(*clauses),
+                    )
+                )
+                for m in res.mappings():
+                    out[m["task_id"]] = (self._row_from_mapping(m), self._task_dict_from_mapping(m))
+            return out
+
     async def load_all_rows_with_tasks(self, project_id, variant):
         from src.database.tables import task_layouts, tasks
 
