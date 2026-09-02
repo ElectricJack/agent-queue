@@ -201,6 +201,25 @@ class TestAsyncFindOpenPr:
         await mgr.acreate_branch(clone, "feature-x")
         assert await mgr.ais_ancestor(clone, "feature-x", "main") is True
 
+    @pytest.mark.asyncio
+    async def test_count_ahead_is_zero_for_a_fresh_branch(self, mgr, clone):
+        await mgr.acreate_branch(clone, "feature-x")
+        assert await mgr.acount_commits_ahead(clone, "feature-x", "main") == 0
+
+    @pytest.mark.asyncio
+    async def test_count_ahead_counts_commits(self, mgr, clone):
+        await mgr.acreate_branch(clone, "feature-x")
+        for i in range(2):
+            (pathlib.Path(clone) / f"f{i}.txt").write_text("x")
+            await mgr._arun(["add", "-A"], cwd=clone)
+            await mgr._arun(["commit", "-m", f"c{i}"], cwd=clone)
+        assert await mgr.acount_commits_ahead(clone, "feature-x", "main") == 2
+
+    @pytest.mark.asyncio
+    async def test_count_ahead_returns_none_for_a_missing_ref(self, mgr, clone):
+        """An unknown base is "unknown", never a silent zero."""
+        assert await mgr.acount_commits_ahead(clone, "main", "origin/nope") is None
+
 
 class TestAsyncGetStatus:
     @pytest.mark.asyncio
