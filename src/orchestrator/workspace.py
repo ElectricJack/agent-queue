@@ -592,7 +592,7 @@ class WorkspaceMixin:
                 kind=attachment.kind,
             )
         except Exception as e:
-            if _is_branch_busy_error(e):
+            if _is_branch_busy_error(e) and resume_branch:
                 # Two plan subtasks of the same parent resume the *same*
                 # branch, and git refuses to check one branch out in two
                 # worktrees.  That is a scheduling wait, not a git error:
@@ -600,6 +600,12 @@ class WorkspaceMixin:
                 # (worktree-execution §4.4), and the loser retries after the
                 # normal PAUSED backoff.  Reporting it as a Git Error once per
                 # attempt is pure noise.
+                #
+                # Only a *resume* can have a sibling: without ``resume_branch``
+                # the task owns ``aq/<task_id>`` alone, so a branch-busy error
+                # there is a stuck slot, not scheduling.  Calling that a
+                # sibling wait logged "waits for branch None" and silently
+                # looped forever.
                 logger.info(
                     "Task %s waits for branch %s — a sibling holds it in another "
                     "slot; retrying after the no-workspace backoff",
@@ -607,6 +613,26 @@ class WorkspaceMixin:
                     resume_branch,
                 )
                 self._workspace_wait_reasons[task.id] = "branch_busy"
+            elif _is_branch_busy_error(e):
+                from src.orchestrator.worktree_manager import task_branch_name
+
+                # The task's own branch is checked out in another slot.  A
+                # released slot deliberately stays on its last task's branch
+                # (worktree-execution §3.4), so a retry that lands on a
+                # *different* slot collides with its own predecessor — and a
+                # slot left on a deleted task's branch pins it for good.
+                # Nothing frees this on its own: say so instead of retrying
+                # in silence.  ``aq doctor --check worktrees.orphans`` names
+                # the slot still holding it.
+                logger.warning(
+                    "Task %s cannot take slot %s: branch %s is checked out in "
+                    "another worktree (%s)",
+                    task.id,
+                    slot_dir,
+                    task_branch_name(task.id),
+                    e,
+                )
+                self._workspace_wait_reasons[task.id] = "branch_held"
             else:
                 logger.error(
                     "Worktree slot reset failed for task %s in %s: %s",

@@ -97,9 +97,22 @@ async def client(command_handler_factory, monkeypatch):
     app = FastAPI()
     for router in build_category_routers():
         app.include_router(router)
-    assert any(
-        getattr(r, "path", "") == "/api/playbook/graph-view" for r in app.routes
-    ), "playbook graph-view route is not generated"
+    # FastAPI 0.141 keeps included routers as lazy wrappers in ``app.routes``;
+    # older versions flatten their contained routes.  Check both layouts so
+    # this remains a route-generation assertion rather than a version-specific
+    # implementation detail.
+    route_paths = {
+        getattr(route, "path", "")
+        for route in app.routes
+    }
+    route_paths.update(
+        nested.path
+        for route in app.routes
+        for router in (getattr(route, "original_router", None),)
+        if router is not None
+        for nested in router.routes
+    )
+    assert "/api/playbook/graph-view" in route_paths, "playbook graph-view route is not generated"
 
     with TestClient(app) as c:
         yield c

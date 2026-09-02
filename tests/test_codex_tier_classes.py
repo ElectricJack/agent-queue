@@ -46,7 +46,10 @@ def test_current_codex_tiers_reach_launch_and_flock_snapshot(tmp_path, tier, mod
     if lifecycle == "named":
         spec = specs.build_named_spec(project_id=None, **kwargs)
     elif lifecycle == "pool":
-        spec = specs.build_pool_spec(project=SimpleNamespace(id="p", name="Project"), agent_id="a", **kwargs)
+        spec = specs.build_pool_spec(
+            project=SimpleNamespace(id="p", name="Project"), agent_id="a",
+            session_name="p-worker--p--test", **kwargs,
+        )
     else:
         spec = specs.build_task_spec(task=SimpleNamespace(id="t", project_id="p", intelligence_class=None), **kwargs)
     assert spec.command[spec.command.index("-m") + 1] == model

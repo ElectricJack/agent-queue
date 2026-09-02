@@ -34,7 +34,7 @@ class ProjectProfileRow:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.profile_detail import ProfileDetail  # noqa: PLC0415
+        from ..models.profile_detail import ProfileDetail
 
         agent_type = self.agent_type
 
@@ -84,7 +84,7 @@ class ProjectProfileRow:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.profile_detail import ProfileDetail  # noqa: PLC0415
+        from ..models.profile_detail import ProfileDetail
 
         d = dict(src_dict)
         agent_type = d.pop("agent_type")

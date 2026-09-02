@@ -322,7 +322,11 @@ class PoolsMixin:
             return None
 
         token_store = getattr(self, "token_store", None)
-        session_id = pool_session_name(profile.id, project.id, uuid.uuid4().hex[:8])
+        # Claude accepts only canonical UUIDs for ``--session-id``. Keep the
+        # durable/session-token identity separate from the readable provider
+        # name used to address this pool worker.
+        session_id = str(uuid.uuid4())
+        session_name = pool_session_name(profile.id, project.id, uuid.uuid4().hex[:8])
         minted_token = False
 
         async def _rollback(reason: str, *, quarantine: bool) -> None:
@@ -379,6 +383,7 @@ class PoolsMixin:
                 harness=harness,
                 work_dir=work_dir,
                 session_id=session_id,
+                session_name=session_name,
                 instance_token=instance_token,
                 epoch=self.daemon_epoch,
                 api_token=api_token,
@@ -459,6 +464,16 @@ class PoolsMixin:
             harness.id,
             work_dir,
         )
+        await self.bus.emit(
+            "pool.session_started",
+            {
+                "project_id": project.id,
+                "profile_id": profile.id,
+                "session_id": session_id,
+                "name": spec.session_name,
+                "state": "running",
+            },
+        )
         return session_id
 
     def _pool_teardown_lock(self, session_id):
@@ -533,3 +548,13 @@ class PoolsMixin:
             )
         if session.agent_id and not other_live and still_owned:
             await self.db.update_agent(session.agent_id, state=AgentState.IDLE, current_task_id=None)
+        await self.bus.emit(
+            "pool.session_drained",
+            {
+                "project_id": session.project_id,
+                "profile_id": session.profile_id,
+                "session_id": session.id,
+                "name": session.name,
+                "reason": reason,
+            },
+        )

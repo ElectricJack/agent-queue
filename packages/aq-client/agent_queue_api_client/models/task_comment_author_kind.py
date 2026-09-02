@@ -1,7 +1,7 @@
-from enum import StrEnum
+from enum import Enum
 
 
-class TaskCommentAuthorKind(StrEnum):
+class TaskCommentAuthorKind(str, Enum):
     AGENT = "agent"
     SUPERVISOR = "supervisor"
     USER = "user"

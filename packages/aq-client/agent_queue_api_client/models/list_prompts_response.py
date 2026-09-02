@@ -65,7 +65,7 @@ class ListPromptsResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.list_prompts_response_prompts_item import ListPromptsResponsePromptsItem  # noqa: PLC0415
+        from ..models.list_prompts_response_prompts_item import ListPromptsResponsePromptsItem
 
         d = dict(src_dict)
         project_id = d.pop("project_id")

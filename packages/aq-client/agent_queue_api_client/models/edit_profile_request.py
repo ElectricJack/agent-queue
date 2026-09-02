@@ -40,7 +40,7 @@ class EditProfileRequest:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.edit_profile_request_mcp_servers_type_0 import EditProfileRequestMcpServersType0  # noqa: PLC0415
+        from ..models.edit_profile_request_mcp_servers_type_0 import EditProfileRequestMcpServersType0
 
         profile_id = self.profile_id
 
@@ -117,7 +117,7 @@ class EditProfileRequest:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.edit_profile_request_mcp_servers_type_0 import EditProfileRequestMcpServersType0  # noqa: PLC0415
+        from ..models.edit_profile_request_mcp_servers_type_0 import EditProfileRequestMcpServersType0
 
         d = dict(src_dict)
         profile_id = d.pop("profile_id")

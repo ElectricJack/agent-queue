@@ -45,8 +45,8 @@ class EditMcpServerRequest:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.edit_mcp_server_request_env_type_0 import EditMcpServerRequestEnvType0  # noqa: PLC0415
-        from ..models.edit_mcp_server_request_headers_type_0 import EditMcpServerRequestHeadersType0  # noqa: PLC0415
+        from ..models.edit_mcp_server_request_env_type_0 import EditMcpServerRequestEnvType0
+        from ..models.edit_mcp_server_request_headers_type_0 import EditMcpServerRequestHeadersType0
 
         name = self.name
 
@@ -141,8 +141,8 @@ class EditMcpServerRequest:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.edit_mcp_server_request_env_type_0 import EditMcpServerRequestEnvType0  # noqa: PLC0415
-        from ..models.edit_mcp_server_request_headers_type_0 import EditMcpServerRequestHeadersType0  # noqa: PLC0415
+        from ..models.edit_mcp_server_request_env_type_0 import EditMcpServerRequestEnvType0
+        from ..models.edit_mcp_server_request_headers_type_0 import EditMcpServerRequestHeadersType0
 
         d = dict(src_dict)
         name = d.pop("name")

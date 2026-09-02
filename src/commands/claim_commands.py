@@ -217,6 +217,13 @@ class ClaimCommandsMixin:
                 "result": ClaimResult.OUT_OF_SCOPE.value,
                 "error": "project_id mismatch",
             }
+        # A pool profile can be converted back to task lifecycle while a
+        # worker is finishing current work.  The conversion marks each live
+        # worker stopped; reject a fresh claim before it can take new work.
+        if session.lifecycle == "pool" and session.desired_state == "stopped":
+            return self._simple(
+                ClaimResult.DRAIN_REQUESTED, "pool is draining", session
+            )
         want_id = args.get("task_id")
         if not want_id and not args.get("next"):
             return {"success": False, "error": "task_id or next=true is required"}
@@ -553,6 +560,18 @@ class ClaimCommandsMixin:
             claim_epoch=epoch,
         )
         await self.orchestrator._emit_task_event("task.started", task, agent_id=row.agent_id)
+        if session.lifecycle == "pool":
+            await self.orchestrator.bus.emit(
+                "pool.session_claimed",
+                {
+                    "project_id": session.project_id,
+                    "profile_id": session.profile_id,
+                    "session_id": session.id,
+                    "name": session.name,
+                    "task_id": task.id,
+                    "task_title": task.title,
+                },
+            )
         # ``activate_claim`` returned the row it just wrote — no re-read.
         return await self._claimed_response(task, epoch, fresh, cap)
 

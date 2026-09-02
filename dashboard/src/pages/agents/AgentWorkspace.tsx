@@ -1,12 +1,15 @@
 import { PlusIcon, UsersIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import { useAgentFlock } from "../../api/agents";
-import { useAgentSelection } from "./useAgentSelection";
+import { selectionAddress, useAgentSelection } from "./useAgentSelection";
 import AgentWindow from "./AgentWindow";
 import AddAgent from "./AddAgent";
+import PoolWindow from "./PoolWindow";
+import { usePoolFlock } from "./pools";
 
 export default function AgentWorkspace() {
   const { data: agents = [], isLoading, error, refetch } = useAgentFlock();
-  const { selectedIds, select, close, resetToken, adding, setAdding } = useAgentSelection();
+  const { selectedIds, selections, select, close, setInstance, resetToken, adding, setAdding } = useAgentSelection();
+  const { entries: pools } = usePoolFlock();
   const columns = selectedIds.length > 1 ? "lg:grid-cols-2" : "grid-cols-1";
   const rows = selectedIds.length > 2 ? "lg:grid-rows-2" : "lg:grid-rows-1";
 
@@ -40,8 +43,19 @@ export default function AgentWorkspace() {
         </div>
       ) : (
         <div className={"grid min-h-0 flex-1 auto-rows-[minmax(20rem,1fr)] gap-3 overflow-y-auto lg:auto-rows-auto " + columns + " " + rows}>
-          {selectedIds.map((id) => {
-            const agent = agents.find((item) => item.id === id);
+          {selections.map((selection) => {
+            const id = selection.key;
+            if (selection.kind === "pool") {
+              const entry = pools.find((pool) => pool.key === selectionAddress(id));
+              if (entry) {
+                return (
+                  <PoolWindow key={entry.key} entry={entry} instanceId={selection.instanceId}
+                    onInstanceChange={(instanceId) => setInstance(id, instanceId)}
+                    onClose={() => close(id)} resetToken={resetToken} />
+                );
+              }
+            }
+            const agent = selection.kind === "agent" ? agents.find((item) => item.id === selection.agentId) : undefined;
             return agent ? (
               <AgentWindow key={id} agent={agent} onClose={() => close(id)} resetToken={resetToken} />
             ) : (
@@ -53,7 +67,8 @@ export default function AgentWorkspace() {
                     <XMarkIcon className="h-4 w-4" />
                   </button>
                 </div>
-                <p className="m-auto text-sm text-gray-500">{isLoading ? "Loading agent…" : error ? "Agent unavailable." : "Agent not found."}</p>
+                <p className="m-auto text-sm text-gray-500">{isLoading ? "Loading agent…" : error ? "Agent unavailable."
+                    : selection.kind === "pool" ? "This pool is no longer configured." : "Agent not found."}</p>
               </section>
             );
           })}

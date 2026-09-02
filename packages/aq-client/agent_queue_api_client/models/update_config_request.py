@@ -51,7 +51,7 @@ class UpdateConfigRequest:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.update_config_request_data import UpdateConfigRequestData  # noqa: PLC0415
+        from ..models.update_config_request_data import UpdateConfigRequestData
 
         d = dict(src_dict)
         section = d.pop("section")

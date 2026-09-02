@@ -239,7 +239,7 @@ doctor never hangs and never dies on one bad check.
 | `harness.binaries` | required binaries respond. **As landed:** `git` required; `gh`, `claude`, `acpx` optional. Narrowed from "per configured harness" — deriving the set means mapping every active profile's `runtime`/`agent_name` to a binary, and that mapping lives in `acpx`, not here | error (`git`) / warn (optional) | no |
 | `tmux.server` | tmux socket probe (contributed by [[session-runtime]]) | error when sessions enabled; info otherwise | no |
 | `sessions.stale` | session rows vs process table (contributed by [[session-runtime]]) | warn | yes — reconcile rows through the exit classifier |
-| `worktrees.orphans` | orphan worktree dirs, stale `.git/worktrees` entries (contributed by [[worktree-execution]]) | warn | partial — `git worktree prune` only; never deletes directories |
+| `worktrees.orphans` | orphan worktree dirs, stale `.git/worktrees` entries (contributed by [[worktree-execution]]). **As landed:** slot worktrees whose `.aq-worktree.json` names a task no longer in `tasks` — a released slot stays on its last task's branch (worktree-execution §3.4), so a deleted task leaves `aq/<task_id>` checked out and git refuses it to every other slot. Report-only: `git worktree prune` does not clear a live worktree's own checkout, and resetting a slot off a branch is an operator call | warn | no — see "as landed" |
 | `leases.stale` | leases past TTL with no live session | warn | yes — clear lease, task re-enters stall handling |
 | `db.wal_size` | SQLite WAL above threshold | warn | yes — `PRAGMA wal_checkpoint(TRUNCATE)` |
 | `logs.llm_size` | `logs/llm/` size / dirs older than retention | warn | yes — `LLMLogger.cleanup_old_logs()` (enforces configured retention) |

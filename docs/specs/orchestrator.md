@@ -221,7 +221,7 @@ logs unexpected errors with a full traceback but does not crash the loop.
 
 ```
 Step 0   _sweep_resolve_pr_ci_gates     — resolve satisfied pr-merged/ci-run gates (polls `gh` via `_poll_pr_merged`, `src/orchestrator/pr_polling.py`)
-Step 1   _resume_paused_tasks           — promote PAUSED tasks whose resume_after has elapsed
+Step 1   _resume_paused_tasks           — promote PAUSED tasks whose resume_after has elapsed; also recovers tasks wedged in PAUSED with no resume_after and no operator hold
 Step 2   _check_defined_tasks           — promote DEFINED tasks whose deps are all COMPLETED
 Step 2b  _check_stuck_defined_tasks     — alert on DEFINED tasks stuck beyond threshold
 Step 3   _schedule                      — ask Scheduler for assignment actions (skipped if paused)

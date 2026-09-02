@@ -1,5 +1,6 @@
 import { CommandLineIcon } from "@heroicons/react/24/outline";
 import { useStartAgentTerminal, type FlockAgent } from "../../api/agents";
+import type { SessionSummary } from "../../api/hooks";
 import InteractiveTerminal from "../../components/InteractiveTerminal";
 
 export default function AgentTerminal({ agent }: { agent: FlockAgent }) {
@@ -55,4 +56,35 @@ export default function AgentTerminal({ agent }: { agent: FlockAgent }) {
     );
   }
   return <InteractiveTerminal key={agent.session_id} sessionId={agent.session_id!} name={agent.name} />;
+}
+
+/**
+ * The tmux pane of one pool instance.
+ *
+ * A pool session belongs to the daemon's sizer, not to the viewer: there is no
+ * start button here, because starting a worker is what raising ``min_active``
+ * on the Settings tab does.
+ */
+export function PoolInstanceTerminal({ instance }: { instance: SessionSummary | null }) {
+  const live = instance && (instance.state === "running" || instance.state === "draining");
+  // `SessionSummary.provider` is the session transport (tmux), not the LLM one.
+  const tmux = !instance?.provider || instance.provider === "tmux";
+  if (!live || !tmux) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
+        <CommandLineIcon className="mb-1 h-8 w-8 text-gray-600" />
+        <p className="text-sm text-gray-300">
+          {!instance ? "No live pool instance" : !live ? "Instance is not running" : "Tmux view unavailable"}
+        </p>
+        <p className="max-w-sm text-xs leading-relaxed text-gray-500">
+          {!instance
+            ? "The daemon starts a worker when this pool has demand and its bounds allow it."
+            : !live
+              ? "Session state: " + (instance.state || "unknown") + ". Pool sessions are started and stopped by the daemon."
+              : "This session uses " + instance.provider + "; no tmux pane is available."}
+        </p>
+      </div>
+    );
+  }
+  return <InteractiveTerminal key={instance.id} sessionId={instance.id} name={instance.name} />;
 }

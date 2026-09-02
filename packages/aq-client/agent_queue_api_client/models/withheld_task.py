@@ -51,7 +51,7 @@ class WithheldTask:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.explain_reason import ExplainReason  # noqa: PLC0415
+        from ..models.explain_reason import ExplainReason
 
         d = dict(src_dict)
         task_id = d.pop("task_id")

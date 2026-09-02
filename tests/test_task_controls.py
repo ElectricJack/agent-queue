@@ -820,3 +820,72 @@ async def test_reconciler_old_cleanup_cannot_release_a_resumed_claim(env, tmp_pa
     await rec._release_task(stale, old_session)
     assert (await env.db.get_agent("agent")).current_task_id == "t"
     assert (await env.db.get_workspace("workspace")).locked_by_task_id == "t"
+
+
+# ── Orphaned pauses ───────────────────────────────────────────────────────
+#
+# ``PAUSED`` with ``resume_after IS NULL`` is the operator-hold sentinel:
+# ``_not_manually_paused`` fences every lifecycle write on it, so a task in
+# that state can only leave PAUSED through ``resume_task``.  A genuine hold
+# always carries the ``manual_pause`` snapshot, written in ``pause_task``'s
+# own transaction.  One *without* the snapshot is a wedge — a backoff pause
+# whose timer never landed, or a partial write — and nothing in the daemon
+# used to look at it again.
+#
+# Observed live (calm-flare, 2026-09-01): PAUSED, ``resume_after=None``, and
+# still there across a daemon restart.
+
+
+async def _wedge(env, task_id="t"):
+    """PAUSE a task with no timer and no hold — the unreachable state."""
+    await env.db.transition_task(
+        task_id, TaskStatus.PAUSED, force=True, resume_after=None, assigned_agent_id=None
+    )
+    task = await env.db.get_task(task_id)
+    assert task.status == TaskStatus.PAUSED and task.resume_after is None
+    assert await env.db.get_task_meta(task_id, "manual_pause") is None
+
+
+async def test_pause_with_no_timer_and_no_hold_is_recovered(env):
+    await _wedge(env)
+    await env.orch._resume_paused_tasks()
+    assert (await env.db.get_task("t")).status == TaskStatus.READY
+
+
+async def test_wedged_pause_is_recovered_after_a_restart(env):
+    """The cascade runs every cycle, so a fresh daemon picks it up too."""
+    await _wedge(env)
+    reloaded = Orchestrator(env.config)
+    reloaded.db = env.db
+    await reloaded._resume_paused_tasks()
+    task = await env.db.get_task("t")
+    assert task.status == TaskStatus.READY
+    assert task.assigned_agent_id is None
+
+
+async def test_recovered_pause_is_schedulable_again(env):
+    """The point of the recovery: the manual-pause fence stops rejecting it."""
+    await _wedge(env)
+    await env.orch._resume_paused_tasks()
+    assert await env.db.assign_task_to_agent("t", "agent") is True
+
+
+async def test_operator_hold_is_never_recovered(env):
+    """A real hold looks identical apart from the snapshot — leave it alone."""
+    await pause(env)
+    await env.orch._resume_paused_tasks()
+    assert (await env.db.get_task("t")).status == TaskStatus.PAUSED
+    assert await env.db.get_task_meta("t", "manual_pause") is not None
+
+
+async def test_recovery_leaves_other_paused_tasks_alone(env):
+    """One wedge does not disturb a peer waiting out a real backoff."""
+    import time as _time
+
+    await env.db.transition_task(
+        "peer", TaskStatus.PAUSED, force=True, resume_after=_time.time() + 3600
+    )
+    await _wedge(env)
+    await env.orch._resume_paused_tasks()
+    assert (await env.db.get_task("t")).status == TaskStatus.READY
+    assert (await env.db.get_task("peer")).status == TaskStatus.PAUSED

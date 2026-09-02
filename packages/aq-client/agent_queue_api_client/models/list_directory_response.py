@@ -75,7 +75,7 @@ class ListDirectoryResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.file_entry import FileEntry  # noqa: PLC0415
+        from ..models.file_entry import FileEntry
 
         d = dict(src_dict)
         project_id = d.pop("project_id", UNSET)

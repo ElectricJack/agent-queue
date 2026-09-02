@@ -100,6 +100,14 @@ def test_pool_commands_defined():
     )
 
 
+def test_pool_lifecycle_command_is_part_of_the_generated_surface():
+    d = defs()
+    assert _TOOL_CATEGORIES["pool_set_lifecycle"] == "pool"
+    assert {"project_id", "profile_id", "lifecycle"} <= set(
+        d["pool_set_lifecycle"]["input_schema"]["properties"]
+    )
+
+
 def test_read_claim_epoch_prefers_file(tmp_path, monkeypatch):
     from src.cli.agent_surface import read_claim_epoch
 
@@ -408,3 +416,117 @@ async def test_pool_scale_updates_an_existing_override(pool_handler, tmp_path):
     assert parsed.config["max_active"] == 8
     assert parsed.config["min_active"] == 1, "min must be left alone when only max is passed"
     assert "Keep notes." in text
+
+
+async def test_pool_lifecycle_is_project_scoped_durable_and_guarded(pool_handler, tmp_path):
+    """A project may opt a system profile in/out without a later sync reverting it."""
+    import time
+
+    from src.models import SessionRecord
+    from src.profiles.parser import parse_profile
+
+    await pool_handler.db.create_session(
+        SessionRecord(
+            id="drain-on-task-lifecycle",
+            project_id=PROJECT_ID,
+            profile_id="worker",
+            harness="fake",
+            provider="fake",
+            name="p-worker--proj--drain",
+            lifecycle="pool",
+            work_dir="/tmp/drain-on-task-lifecycle",
+            epoch="test",
+            instance_token="token",
+            started_at=time.time(),
+            state="running",
+        )
+    )
+    changed = await pool_handler._cmd_pool_set_lifecycle(
+        {"project_id": PROJECT_ID, "profile_id": "worker", "lifecycle": "task"}
+    )
+    assert changed == {
+        "success": True,
+        "project_id": PROJECT_ID,
+        "profile_id": "worker",
+        "lifecycle": "task",
+    }
+    override = _override_path(tmp_path)
+    assert parse_profile(override.read_text(encoding="utf-8")).config["lifecycle"] == "task"
+    from src.profiles.sync import sync_profile_text_to_db
+
+    resynced = await sync_profile_text_to_db(
+        override.read_text(encoding="utf-8"),
+        pool_handler.db,
+        source_path=str(override),
+        fallback_id=f"project:{PROJECT_ID}:worker",
+    )
+    assert resynced.success, resynced.errors
+    scoped = await pool_handler.db.get_profile(f"project:{PROJECT_ID}:worker")
+    assert scoped.min_active is scoped.max_active is scoped.max_claims_per_session is None
+    drained = await pool_handler.db.get_session("drain-on-task-lifecycle")
+    assert drained.desired_state == "stopped"
+
+    pool_handler.config.swarm.enabled = False
+    refused = await pool_handler._cmd_pool_set_lifecycle(
+        {"project_id": PROJECT_ID, "profile_id": "worker", "lifecycle": "pool"}
+    )
+    assert refused == {
+        "success": False,
+        "error": "cannot set lifecycle to pool while swarm.enabled is false",
+    }
+
+
+async def test_pool_scale_allows_zero_and_reports_project_cap(pool_handler):
+    """A zero-sized pool is valid; a project cap remains the effective maximum."""
+    zero = await pool_handler._cmd_pool_scale(
+        {"project_id": PROJECT_ID, "profile_id": "worker", "min": 0, "max": 0}
+    )
+    assert zero["success"], zero
+    assert zero["max_active"] == zero["effective_max_active"] == 0
+    assert zero["project_cap"] == 2
+
+    capped = await pool_handler._cmd_pool_scale(
+        {"project_id": PROJECT_ID, "profile_id": "worker", "min": 0, "max": 8}
+    )
+    assert capped["success"], capped
+    assert capped["max_active"] == 8
+    assert capped["project_cap"] == capped["effective_max_active"] == 2
+
+
+async def test_pool_status_includes_live_instance_detail(pool_handler):
+    """The dashboard needs the actual worker behind each aggregate row."""
+    import time
+
+    from src.models import SessionRecord
+
+    now = time.time()
+    await pool_handler.db.create_session(
+        SessionRecord(
+            id="pool-1",
+            project_id=PROJECT_ID,
+            profile_id="worker",
+            harness="fake",
+            provider="fake",
+            name="p-worker--proj--deadbeef",
+            lifecycle="pool",
+            work_dir="/tmp/pool-1",
+            epoch="test",
+            instance_token="token",
+            started_at=now - 30,
+            last_activity=now - 12,
+            state="running",
+        )
+    )
+
+    result = await pool_handler._cmd_pool_status({"project_id": PROJECT_ID})
+    instance = result["pools"][0]["instances"][0]
+    assert instance == {
+        "session_id": "pool-1",
+        "name": "p-worker--proj--deadbeef",
+        "state": "running",
+        "task_id": None,
+        "task_title": None,
+        "idle_seconds": pytest.approx(12, abs=2),
+        "started_at": pytest.approx(now - 30, abs=2),
+        "quarantine_reason": None,
+    }

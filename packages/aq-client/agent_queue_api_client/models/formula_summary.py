@@ -77,7 +77,7 @@ class FormulaSummary:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.formula_summary_vars import FormulaSummaryVars  # noqa: PLC0415
+        from ..models.formula_summary_vars import FormulaSummaryVars
 
         d = dict(src_dict)
         name = d.pop("name")

@@ -1,5 +1,6 @@
 import { useId } from "react";
-import { useProfiles } from "../../api/hooks";
+import { usePoolStatus, useProfiles } from "../../api/hooks";
+import { poolProfileIds } from "./pools";
 import { useAgentIntelligenceClasses } from "../../api/agents";
 
 export interface DefinitionForm {
@@ -28,6 +29,10 @@ export default function AgentDefinitionFields({
   const id = useId();
   const { data: profiles = [] } = useProfiles();
   const { data: classes } = useAgentIntelligenceClasses();
+  // pool_status is the only surface that reports a profile's lifecycle;
+  // ProfileSummary does not carry it.
+  const poolIds = poolProfileIds(usePoolStatus().data ?? []);
+  const lifecycle = value.profile_id ? (poolIds.has(value.profile_id) ? "pool" : "task") : null;
   const availableProfiles = profiles.filter((profile) => allowSupervisor || profile.id !== "supervisor");
   const set = <K extends keyof DefinitionForm>(key: K, next: DefinitionForm[K]) => onChange({ ...value, [key]: next });
   return (
@@ -45,6 +50,14 @@ export default function AgentDefinitionFields({
           )}
           {availableProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name || profile.id}</option>)}
         </select>
+        {lifecycle && (
+          <span className="mt-1 block text-[10px] text-gray-500">
+            Lifecycle: <span className={lifecycle === "pool" ? "text-sky-300" : "text-gray-300"}>{lifecycle}</span>
+            {lifecycle === "pool"
+              ? " — the daemon sizes this profile as a worker pool and its sessions claim their own tasks."
+              : " — sessions are started per assigned task."}
+          </span>
+        )}
       </label>
       <label className="text-xs text-gray-400" htmlFor={id + "-harness"}>
         Provider / harness

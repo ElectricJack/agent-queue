@@ -20,6 +20,8 @@ class PoolScaleResponse:
         profile_id (None | str | Unset):
         min_active (int | None | Unset):
         max_active (int | None | Unset):
+        project_cap (int | None | Unset):
+        effective_max_active (int | None | Unset):
         terminated (list[str] | Unset):
         error (None | str | Unset):
     """
@@ -29,6 +31,8 @@ class PoolScaleResponse:
     profile_id: None | str | Unset = UNSET
     min_active: int | None | Unset = UNSET
     max_active: int | None | Unset = UNSET
+    project_cap: int | None | Unset = UNSET
+    effective_max_active: int | None | Unset = UNSET
     terminated: list[str] | Unset = UNSET
     error: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -60,6 +64,18 @@ class PoolScaleResponse:
         else:
             max_active = self.max_active
 
+        project_cap: int | None | Unset
+        if isinstance(self.project_cap, Unset):
+            project_cap = UNSET
+        else:
+            project_cap = self.project_cap
+
+        effective_max_active: int | None | Unset
+        if isinstance(self.effective_max_active, Unset):
+            effective_max_active = UNSET
+        else:
+            effective_max_active = self.effective_max_active
+
         terminated: list[str] | Unset = UNSET
         if not isinstance(self.terminated, Unset):
             terminated = self.terminated
@@ -85,6 +101,10 @@ class PoolScaleResponse:
             field_dict["min_active"] = min_active
         if max_active is not UNSET:
             field_dict["max_active"] = max_active
+        if project_cap is not UNSET:
+            field_dict["project_cap"] = project_cap
+        if effective_max_active is not UNSET:
+            field_dict["effective_max_active"] = effective_max_active
         if terminated is not UNSET:
             field_dict["terminated"] = terminated
         if error is not UNSET:
@@ -133,6 +153,24 @@ class PoolScaleResponse:
 
         max_active = _parse_max_active(d.pop("max_active", UNSET))
 
+        def _parse_project_cap(data: object) -> int | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(int | None | Unset, data)
+
+        project_cap = _parse_project_cap(d.pop("project_cap", UNSET))
+
+        def _parse_effective_max_active(data: object) -> int | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(int | None | Unset, data)
+
+        effective_max_active = _parse_effective_max_active(d.pop("effective_max_active", UNSET))
+
         terminated = cast(list[str], d.pop("terminated", UNSET))
 
         def _parse_error(data: object) -> None | str | Unset:
@@ -150,6 +188,8 @@ class PoolScaleResponse:
             profile_id=profile_id,
             min_active=min_active,
             max_active=max_active,
+            project_cap=project_cap,
+            effective_max_active=effective_max_active,
             terminated=terminated,
             error=error,
         )

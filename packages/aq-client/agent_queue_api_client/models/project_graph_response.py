@@ -79,10 +79,10 @@ class ProjectGraphResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.graph_agent import GraphAgent  # noqa: PLC0415
-        from ..models.graph_edge import GraphEdge  # noqa: PLC0415
-        from ..models.graph_gate import GraphGate  # noqa: PLC0415
-        from ..models.graph_task_node import GraphTaskNode  # noqa: PLC0415
+        from ..models.graph_agent import GraphAgent
+        from ..models.graph_edge import GraphEdge
+        from ..models.graph_gate import GraphGate
+        from ..models.graph_task_node import GraphTaskNode
 
         d = dict(src_dict)
         _tasks = d.pop("tasks", UNSET)

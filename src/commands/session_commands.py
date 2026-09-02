@@ -605,6 +605,16 @@ class SessionCommandsMixin:
             await self.db.update_session(
                 session.id, state="draining", desired_state="stopped"
             )
+            await self.orchestrator.bus.emit(
+                "pool.session_drained",
+                {
+                    "project_id": session.project_id,
+                    "profile_id": session.profile_id,
+                    "session_id": session.id,
+                    "name": session.name,
+                    "reason": "drain_ack",
+                },
+            )
         else:
             await self.db.update_session(session.id, state="draining")
         return {
