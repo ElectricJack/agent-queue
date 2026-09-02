@@ -31,6 +31,7 @@ from src.playbooks.run_state import (
     RunLifecycle,
     RunSnapshot,
     SnapshotVersionConflict,
+    WaitVersionMismatch,
 )
 from src.playbooks.waits import WaitChangeSet, WaitSpec, matches
 from tests.pg_dsn import ensure_worker_postgres_dsn
@@ -246,6 +247,26 @@ async def test_a_non_matching_event_claims_nothing(db):
     assert len(await db.list_active("run-1")) == 1
 
 
+async def test_stale_snapshot_version_is_rejected_before_registration(db):
+    await db.create_run(make_snapshot())
+
+    with pytest.raises(WaitVersionMismatch) as caught:
+        await db.register(make_wait(), 999)
+
+    assert caught.value.code == "wait_version_mismatch"
+    assert caught.value.wait_id == "wait-1"
+    assert caught.value.run_id == "run-1"
+    assert caught.value.expected == 1
+    assert caught.value.actual == 999
+    assert await db.list_active("run-1") == []
+    assert (
+        await db.claim_for_event(
+            Event("pr.merged", "evt-stale", {"pr": {"number": 41}}), now=NOW
+        )
+        == []
+    )
+
+
 async def test_a_second_active_wait_for_a_step_is_rejected(db):
     await db.create_run(make_snapshot())
     await db.register(make_wait(), 1)
@@ -264,9 +285,10 @@ async def test_a_second_iteration_of_the_same_step_may_wait(db):
 
 
 async def test_a_cleared_wait_frees_the_step_for_a_new_one(db):
-    await db.create_run(make_snapshot())
+    snapshot = await db.create_run(make_snapshot())
     await db.register(make_wait(), 1)
     assert await db.clear_for_run("run-1") == 1
+    await db.commit_boundary(snapshot, make_receipt(snapshot))
     await db.register(make_wait(wait_id="wait-2"), 2)
     assert [w.wait_id for w in await db.list_active("run-1")] == ["wait-2"]
 
