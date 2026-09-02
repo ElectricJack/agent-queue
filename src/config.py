@@ -863,6 +863,18 @@ class PlaybooksConfig:
 
     enabled: bool = False
 
+    #: Playbook V2 semantic-graph read surface (graph, activation health,
+    #: artifact diff, pending events, run overlay).  Package 5 owns it;
+    #: Package 7 removes the flag together with the V1 graph command.
+    v2_api: bool = False
+
+    #: Playbook V2 operator *writes* (activate an artifact, resolve a pending
+    #: event).  Deliberately separate from ``v2_api`` so the whole review
+    #: surface stays readable with writes disabled — roadmap Package 5's
+    #: rollback boundary: "Activation writes are independently feature-gated
+    #: from graph reads."  Removed in Package 7.
+    v2_activation_writes: bool = False
+
     def validate(self) -> list[ConfigError]:
         return []
 

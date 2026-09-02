@@ -49,6 +49,10 @@ from src.commands.profile_commands import ProfileCommandsMixin
 from src.commands.mcp_commands import McpCommandsMixin
 from src.commands.notes_commands import NotesCommandsMixin
 from src.commands.playbook_commands import PlaybookCommandsMixin
+from src.commands.playbook_v2_commands import (
+    PLAYBOOK_V2_COMMANDS,
+    PlaybookV2CommandsMixin,
+)
 from src.commands.workflow_commands import WorkflowCommandsMixin
 from src.commands.plugin_commands import PluginCommandsMixin
 from src.commands.tool_commands import ToolCommandsMixin
@@ -190,6 +194,10 @@ PAUSED_PLAYBOOK_COMMANDS: frozenset[str] = frozenset(
         "advance_workflow_stage",
         "workflow_pipeline_view",
     }
+    # src/commands/playbook_v2_commands.py (7) -- the V2 semantic-graph
+    # surface pauses with the rest of the subsystem, on top of its own
+    # ``playbooks.v2_api`` / ``playbooks.v2_activation_writes`` flags.
+    | PLAYBOOK_V2_COMMANDS
 )
 
 #: Memory command names not caught by the prefix rule below.  The names are
@@ -320,6 +328,7 @@ class CommandHandler(
     McpCommandsMixin,
     NotesCommandsMixin,
     PlaybookCommandsMixin,
+    PlaybookV2CommandsMixin,
     WorkflowCommandsMixin,
     PluginCommandsMixin,
     ToolCommandsMixin,
@@ -378,6 +387,7 @@ class CommandHandler(
     - :class:`ProfileCommandsMixin` — agent profile CRUD
     - :class:`NotesCommandsMixin` — note path helpers
     - :class:`PlaybookCommandsMixin` — playbook compile, run, health
+    - :class:`PlaybookV2CommandsMixin` — V2 semantic graph, diff, activation
     - :class:`WorkflowCommandsMixin` — workflow CRUD, stage advancement
     - :class:`PluginCommandsMixin` — plugin lifecycle
     - :class:`ToolCommandsMixin` — tool discovery

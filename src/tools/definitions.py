@@ -131,6 +131,14 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "create_playbook": "playbook",
     "delete_playbook": "playbook",
     "set_playbook_enabled": "playbook",
+    # playbook V2 semantic graph -- src/commands/playbook_v2_commands.py
+    "playbook_v2_graph": "playbook",
+    "playbook_activation_health": "playbook",
+    "playbook_activate": "playbook",
+    "playbook_artifact_diff": "playbook",
+    "playbook_pending_events": "playbook",
+    "playbook_pending_event_action": "playbook",
+    "playbook_run_overlay": "playbook",
     # plugin — installation, configuration, lifecycle
     "plugin_list": "plugin",
     "plugin_info": "plugin",
@@ -3161,6 +3169,262 @@ _ALL_TOOL_DEFINITIONS = [
                 },
             },
             "required": ["playbook_id"],
+        },
+    },
+    # ------------------------------------------------------------------
+    # Playbook V2 semantic graph -- src/commands/playbook_v2_commands.py
+    # Child plan: docs/superpowers/plans/2026-09-01-playbook-v2-graph-api-ui.md
+    # ------------------------------------------------------------------
+    {
+        "name": "playbook_v2_graph",
+        "description": (
+            "Get the Playbook V2 semantic graph for one immutable artifact: "
+            "rules grouped by triggering event, one node per typed step with a "
+            "contract-derived explanation of what it does, and one edge per "
+            "declared transition with a stable content-derived id. Defaults to "
+            "the playbook's active artifact; pass artifact_sha256 to project an "
+            "exact one (this is how a run overlay pins its graph)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "playbook_id": {
+                    "type": "string",
+                    "description": "The playbook identifier to project.",
+                },
+                "artifact_sha256": {
+                    "type": "string",
+                    "description": (
+                        "Project this exact artifact instead of the active one. "
+                        "Full 'sha256:<64 hex>' form."
+                    ),
+                },
+                "event_type": {
+                    "type": "string",
+                    "description": (
+                        "Narrow rules/nodes/edges to the rules this event triggers. "
+                        "event_groups still lists every event and no reachable "
+                        "branch is dropped."
+                    ),
+                },
+                "direction": {
+                    "type": "string",
+                    "description": (
+                        "Layout direction: 'TD' (top-down) or 'LR' (left-right). Default: TD."
+                    ),
+                    "enum": ["TD", "LR"],
+                    "default": "TD",
+                },
+                "include_advanced": {
+                    "type": "boolean",
+                    "description": (
+                        "Include the canonical typed step body in advanced.typed_step. "
+                        "Default: true; false leaves the field present but empty so "
+                        "the response type never changes."
+                    ),
+                    "default": True,
+                },
+            },
+            "required": ["playbook_id"],
+        },
+    },
+    {
+        "name": "playbook_activation_health",
+        "description": (
+            "List playbook V2 activations with their computed health (ready, "
+            "question_required, invalid, disabled, stale_contract, unavailable), "
+            "the active artifact hash, machine-readable reasons, and pending/"
+            "running counts. Enabled and health are independent: a disabled "
+            "activation still reports the health it would have."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "playbook_id": {
+                    "type": "string",
+                    "description": "Restrict to one playbook. All activations when absent.",
+                },
+                "scope": {
+                    "type": "string",
+                    "description": "Filter by activation scope.",
+                    "enum": ["system", "project", "agent_type"],
+                },
+                "health": {
+                    "type": "string",
+                    "description": "Filter to one health value.",
+                    "enum": [
+                        "ready",
+                        "question_required",
+                        "invalid",
+                        "disabled",
+                        "stale_contract",
+                        "unavailable",
+                    ],
+                },
+            },
+        },
+    },
+    {
+        "name": "playbook_activate",
+        "description": (
+            "Activate one reviewed Playbook V2 artifact hash. Activation is an "
+            "explicit operation against a reviewed artifact -- compilation never "
+            "activates. Refused when playbooks.v2_activation_writes is off, when "
+            "the artifact's health is invalid, or when the diff against the "
+            "currently active artifact carries an executable change and "
+            "acknowledge_diff was not supplied. Every refusal returns "
+            "blocked=true with machine-readable blockers."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "playbook_id": {
+                    "type": "string",
+                    "description": "The playbook to activate against.",
+                },
+                "artifact_sha256": {
+                    "type": "string",
+                    "description": "The reviewed artifact hash, full 'sha256:<64 hex>' form.",
+                },
+                "enabled": {
+                    "type": "boolean",
+                    "description": "Whether the activation is enabled. Default: true.",
+                    "default": True,
+                },
+                "acknowledge_diff": {
+                    "type": "string",
+                    "description": (
+                        "Required when the diff against the active artifact is "
+                        "executable. Must equal artifact_sha256, so an "
+                        "acknowledgement cannot be replayed against another artifact."
+                    ),
+                },
+            },
+            "required": ["playbook_id", "artifact_sha256"],
+        },
+    },
+    {
+        "name": "playbook_artifact_diff",
+        "description": (
+            "Semantically diff two Playbook V2 artifacts before activation. "
+            "Rules match by rule_id, steps by (rule_id, step_id) and edges by "
+            "edge id, so reordering an unordered map reads as unchanged. "
+            "Presentation-only changes (titles, labels, help text) report "
+            "executable=false and do not block activation. Read-only: the diff "
+            "never activates anything."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "playbook_id": {
+                    "type": "string",
+                    "description": "The playbook that owns both artifacts.",
+                },
+                "target_sha256": {
+                    "type": "string",
+                    "description": "The artifact under review, full 'sha256:<64 hex>' form.",
+                },
+                "base_sha256": {
+                    "type": "string",
+                    "description": (
+                        "The artifact to diff against. Defaults to the currently "
+                        "active artifact; absent entirely for a playbook's first "
+                        "artifact, which reports every element as added."
+                    ),
+                },
+            },
+            "required": ["playbook_id", "target_sha256"],
+        },
+    },
+    {
+        "name": "playbook_pending_events",
+        "description": (
+            "List events held because no artifact could run them -- a stale "
+            "contract, an invalid artifact, a disabled activation, an "
+            "unavailable artifact file, or an unanswered compile question. "
+            "Pending events are retained, visible and operable; they are never "
+            "silently dropped."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "playbook_id": {
+                    "type": "string",
+                    "description": "Restrict to one playbook. All playbooks when absent.",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Filter by the reason the event is held.",
+                    "enum": [
+                        "stale_contract",
+                        "invalid_artifact",
+                        "disabled",
+                        "unavailable",
+                        "question_required",
+                    ],
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max events to return (default 100).",
+                    "default": 100,
+                },
+            },
+        },
+    },
+    {
+        "name": "playbook_pending_event_action",
+        "description": (
+            "Dispatch or discard held playbook pending events. 'dispatch' "
+            "re-enters the engine's own event dispatch with the server-derived "
+            "principal of this request -- it never re-implements matching and "
+            "never adopts a principal from the stored event. 'discard' records "
+            "the resolution without dispatching."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "description": "What to do with the listed events.",
+                    "enum": ["dispatch", "discard"],
+                },
+                "pending_event_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Non-empty list of pending event ids to act on.",
+                },
+            },
+            "required": ["action", "pending_event_ids"],
+        },
+    },
+    {
+        "name": "playbook_run_overlay",
+        "description": (
+            "Return one Playbook V2 run's execution overlay, pinned to the "
+            "artifact the run actually executed -- never the playbook's current "
+            "activation, so an overlay is never projected onto a newer artifact. "
+            "artifact_is_active=false is how a viewer knows the run used an "
+            "older artifact. Loop iterations are listed individually rather than "
+            "collapsed into one misleading status."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "run_id": {
+                    "type": "string",
+                    "description": "The V2 run to overlay.",
+                },
+                "receipt_limit": {
+                    "type": "integer",
+                    "description": (
+                        "Max receipts returned, newest first (default 500). "
+                        "'truncated' reports when more exist; receipts are never "
+                        "silently dropped."
+                    ),
+                    "default": 500,
+                },
+            },
+            "required": ["run_id"],
         },
     },
     {

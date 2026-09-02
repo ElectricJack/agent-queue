@@ -5605,6 +5605,147 @@
         }
       }
     },
+    "/api/playbook/activate": {
+      "post": {
+        "tags": [
+          "playbook"
+        ],
+        "summary": "Activate one reviewed Playbook V2 artifact hash. Activation is an explicit operation against a reviewed artifact -- compilation never activates. Refused when playbooks.v2_activation_writes is off, when the artifact's health is invalid, or when the diff against the currently active artifact carries an executable change and acknowledge_diff was not supplied. Every refusal returns blocked=true with machine-readable blockers.",
+        "description": "Activate one reviewed Playbook V2 artifact hash. Activation is an explicit operation against a reviewed artifact -- compilation never activates. Refused when playbooks.v2_activation_writes is off, when the artifact's health is invalid, or when the diff against the currently active artifact carries an executable change and acknowledge_diff was not supplied. Every refusal returns blocked=true with machine-readable blockers.",
+        "operationId": "playbook_activate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaybookActivateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetPlaybookActivationResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/playbook/activation-health": {
+      "post": {
+        "tags": [
+          "playbook"
+        ],
+        "summary": "List playbook V2 activations with their computed health (ready, question_required, invalid, disabled, stale_contract, unavailable), the active artifact hash, machine-readable reasons, and pending/running counts. Enabled and health are independent: a disabled activation still reports the health it would have.",
+        "description": "List playbook V2 activations with their computed health (ready, question_required, invalid, disabled, stale_contract, unavailable), the active artifact hash, machine-readable reasons, and pending/running counts. Enabled and health are independent: a disabled activation still reports the health it would have.",
+        "operationId": "playbook_activation_health",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaybookActivationHealthRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybookActivationHealthResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/playbook/artifact-diff": {
+      "post": {
+        "tags": [
+          "playbook"
+        ],
+        "summary": "Semantically diff two Playbook V2 artifacts before activation. Rules match by rule_id, steps by (rule_id, step_id) and edges by edge id, so reordering an unordered map reads as unchanged. Presentation-only changes (titles, labels, help text) report executable=false and do not block activation. Read-only: the diff never activates anything.",
+        "description": "Semantically diff two Playbook V2 artifacts before activation. Rules match by rule_id, steps by (rule_id, step_id) and edges by edge id, so reordering an unordered map reads as unchanged. Presentation-only changes (titles, labels, help text) report executable=false and do not block activation. Read-only: the diff never activates anything.",
+        "operationId": "playbook_artifact_diff",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaybookArtifactDiffRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybookArtifactDiffResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/playbook/graph-view": {
       "post": {
         "tags": [
@@ -5724,6 +5865,194 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PlaybookInstallResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/playbook/pending-event-action": {
+      "post": {
+        "tags": [
+          "playbook"
+        ],
+        "summary": "Dispatch or discard held playbook pending events. 'dispatch' re-enters the engine's own event dispatch with the server-derived principal of this request -- it never re-implements matching and never adopts a principal from the stored event. 'discard' records the resolution without dispatching.",
+        "description": "Dispatch or discard held playbook pending events. 'dispatch' re-enters the engine's own event dispatch with the server-derived principal of this request -- it never re-implements matching and never adopts a principal from the stored event. 'discard' records the resolution without dispatching.",
+        "operationId": "playbook_pending_event_action",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaybookPendingEventActionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybookPendingEventActionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/playbook/pending-events": {
+      "post": {
+        "tags": [
+          "playbook"
+        ],
+        "summary": "List events held because no artifact could run them -- a stale contract, an invalid artifact, a disabled activation, an unavailable artifact file, or an unanswered compile question. Pending events are retained, visible and operable; they are never silently dropped.",
+        "description": "List events held because no artifact could run them -- a stale contract, an invalid artifact, a disabled activation, an unavailable artifact file, or an unanswered compile question. Pending events are retained, visible and operable; they are never silently dropped.",
+        "operationId": "playbook_pending_events",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaybookPendingEventsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListPlaybookPendingEventsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/playbook/run-overlay": {
+      "post": {
+        "tags": [
+          "playbook"
+        ],
+        "summary": "Return one Playbook V2 run's execution overlay, pinned to the artifact the run actually executed -- never the playbook's current activation, so an overlay is never projected onto a newer artifact. artifact_is_active=false is how a viewer knows the run used an older artifact. Loop iterations are listed individually rather than collapsed into one misleading status.",
+        "description": "Return one Playbook V2 run's execution overlay, pinned to the artifact the run actually executed -- never the playbook's current activation, so an overlay is never projected onto a newer artifact. artifact_is_active=false is how a viewer knows the run used an older artifact. Loop iterations are listed individually rather than collapsed into one misleading status.",
+        "operationId": "playbook_run_overlay",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaybookRunOverlayRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybookRunOverlayResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/playbook/v2-graph": {
+      "post": {
+        "tags": [
+          "playbook"
+        ],
+        "summary": "Get the Playbook V2 semantic graph for one immutable artifact: rules grouped by triggering event, one node per typed step with a contract-derived explanation of what it does, and one edge per declared transition with a stable content-derived id. Defaults to the playbook's active artifact; pass artifact_sha256 to project an exact one (this is how a run overlay pins its graph).",
+        "description": "Get the Playbook V2 semantic graph for one immutable artifact: rules grouped by triggering event, one node per typed step with a contract-derived explanation of what it does, and one edge per declared transition with a stable content-derived id. Defaults to the playbook's active artifact; pass artifact_sha256 to project an exact one (this is how a run overlay pins its graph).",
+        "operationId": "playbook_v2_graph",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaybookV2GraphRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybookV2GraphResponse"
                 }
               }
             }
@@ -12033,6 +12362,158 @@
   },
   "components": {
     "schemas": {
+      "ActivationHealthReasonDTO": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "title": "Code"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          },
+          "subject": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subject"
+          },
+          "expected_fingerprint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Fingerprint"
+          },
+          "actual_fingerprint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actual Fingerprint"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "ActivationHealthReasonDTO"
+      },
+      "ActivationStateDTO": {
+        "properties": {
+          "playbook_id": {
+            "type": "string",
+            "title": "Playbook Id"
+          },
+          "scope": {
+            "type": "string",
+            "title": "Scope"
+          },
+          "scope_identifier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Identifier"
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "default": false
+          },
+          "active_artifact_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active Artifact Sha256"
+          },
+          "health": {
+            "type": "string",
+            "enum": [
+              "ready",
+              "question_required",
+              "invalid",
+              "disabled",
+              "stale_contract",
+              "unavailable"
+            ],
+            "title": "Health",
+            "default": "disabled"
+          },
+          "reasons": {
+            "items": {
+              "$ref": "#/components/schemas/ActivationHealthReasonDTO"
+            },
+            "type": "array",
+            "title": "Reasons",
+            "default": []
+          },
+          "activated_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Activated At"
+          },
+          "activated_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Activated By"
+          },
+          "pending_event_count": {
+            "type": "integer",
+            "title": "Pending Event Count",
+            "default": 0
+          },
+          "running_count": {
+            "type": "integer",
+            "title": "Running Count",
+            "default": 0
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "playbook_id",
+          "scope"
+        ],
+        "title": "ActivationStateDTO",
+        "description": "``enabled`` and ``health`` are independent (design spec).  A disabled\nactivation still reports its computed health; ``health=\"disabled\"`` is used\nonly when there is no active artifact at all."
+      },
       "AddDependencyRequest": {
         "properties": {
           "task_id": {
@@ -12869,6 +13350,145 @@
         ],
         "title": "AgentWaitingQuestion"
       },
+      "AiBudgetDTO": {
+        "properties": {
+          "max_calls": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Calls"
+          },
+          "max_output_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Output Tokens"
+          },
+          "max_total_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Total Tokens"
+          },
+          "timeout_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timeout Seconds"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "AiBudgetDTO"
+      },
+      "AiNodeDetailDTO": {
+        "properties": {
+          "profile_id": {
+            "type": "string",
+            "title": "Profile Id"
+          },
+          "intelligence_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intelligence Class"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "capabilities": {
+            "$ref": "#/components/schemas/CapabilityNamespacesDTO"
+          },
+          "capability_fingerprint": {
+            "type": "string",
+            "title": "Capability Fingerprint"
+          },
+          "budget": {
+            "$ref": "#/components/schemas/AiBudgetDTO"
+          },
+          "output_schema": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Schema"
+          },
+          "tool_use_enabled": {
+            "type": "boolean",
+            "title": "Tool Use Enabled",
+            "default": false
+          },
+          "delegation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DelegationPolicyDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "profile_id",
+          "capabilities",
+          "capability_fingerprint",
+          "budget"
+        ],
+        "title": "AiNodeDetailDTO",
+        "description": "Everything an operator needs about an AI state (design spec: \"AI cards\nshow the profile, resolved capability namespaces, capability fingerprint,\nbudgets, and delegation policy\")."
+      },
       "AppendNoteRequest": {
         "properties": {
           "project_id": {
@@ -13025,6 +13645,62 @@
         ],
         "title": "ArchiveTaskResponse"
       },
+      "ArtifactRefDTO": {
+        "properties": {
+          "playbook_id": {
+            "type": "string",
+            "title": "Playbook Id"
+          },
+          "artifact_sha256": {
+            "type": "string",
+            "title": "Artifact Sha256"
+          },
+          "schema_generation": {
+            "type": "integer",
+            "title": "Schema Generation"
+          },
+          "contract_fingerprint": {
+            "type": "string",
+            "title": "Contract Fingerprint"
+          },
+          "source_digest": {
+            "type": "string",
+            "title": "Source Digest"
+          },
+          "compiler_build": {
+            "type": "string",
+            "title": "Compiler Build"
+          },
+          "compiled_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Compiled At"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version",
+            "default": 0
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "playbook_id",
+          "artifact_sha256",
+          "schema_generation",
+          "contract_fingerprint",
+          "source_digest",
+          "compiler_build"
+        ],
+        "title": "ArtifactRefDTO",
+        "description": "Roadmap \u00a74 ``ArtifactRef``, projected.  Identifies exactly one\nimmutable artifact; every graph, diff and overlay response carries one."
+      },
       "AskHumanRequest": {
         "properties": {
           "question": {
@@ -13180,6 +13856,68 @@
           "status"
         ],
         "title": "CancelPlaybookRunResponse"
+      },
+      "CancellationFactsDTO": {
+        "properties": {
+          "requested_at": {
+            "type": "number",
+            "title": "Requested At"
+          },
+          "acknowledged_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Acknowledged At"
+          },
+          "cancelled_child": {
+            "type": "boolean",
+            "title": "Cancelled Child",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "requested_at"
+        ],
+        "title": "CancellationFactsDTO"
+      },
+      "CapabilityNamespacesDTO": {
+        "properties": {
+          "harness_tools": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Harness Tools",
+            "default": []
+          },
+          "aq_commands": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Aq Commands",
+            "default": []
+          },
+          "plugin_tools": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Plugin Tools",
+            "default": []
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "CapabilityNamespacesDTO",
+        "description": "``CapabilityPolicy`` projected.  Sorted; empty list means deny-all."
       },
       "CatalogEntryModel": {
         "properties": {
@@ -13599,6 +14337,36 @@
         "additionalProperties": true,
         "type": "object",
         "title": "ClaudeUsageResponse"
+      },
+      "ClusterBoundsDTO": {
+        "properties": {
+          "x": {
+            "type": "integer",
+            "title": "X"
+          },
+          "y": {
+            "type": "integer",
+            "title": "Y"
+          },
+          "width": {
+            "type": "integer",
+            "title": "Width"
+          },
+          "height": {
+            "type": "integer",
+            "title": "Height"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "x",
+          "y",
+          "width",
+          "height"
+        ],
+        "title": "ClusterBoundsDTO",
+        "description": "Grid-unit bounding box of one rule cluster."
       },
       "CommitChangesRequest": {
         "properties": {
@@ -14050,6 +14818,53 @@
         "type": "object",
         "title": "CompiledPlaybookNode",
         "description": "The serializable fields produced by ``PlaybookNode.to_dict()``.\n\nEach field is optional according to the compiled-node rules: a key is\npresent only when the compiler set it.  This is what the dashboard node\ninspector renders, so the prompt here is the full untruncated text."
+      },
+      "ContractChangeDTO": {
+        "properties": {
+          "command": {
+            "type": "string",
+            "title": "Command"
+          },
+          "fingerprint_before": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fingerprint Before"
+          },
+          "fingerprint_after": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fingerprint After"
+          },
+          "change": {
+            "type": "string",
+            "enum": [
+              "added",
+              "removed",
+              "modified",
+              "unchanged"
+            ],
+            "title": "Change"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "command",
+          "change"
+        ],
+        "title": "ContractChangeDTO"
       },
       "CountProjectMemoryFilesRequest": {
         "properties": {
@@ -15423,6 +16238,42 @@
         "type": "object",
         "title": "DbPreflightHierarchyRequest"
       },
+      "DelegationPolicyDTO": {
+        "properties": {
+          "child_profile_id": {
+            "type": "string",
+            "title": "Child Profile Id"
+          },
+          "wait_for_completion": {
+            "type": "boolean",
+            "title": "Wait For Completion",
+            "default": true
+          },
+          "cancel_child": {
+            "type": "boolean",
+            "title": "Cancel Child",
+            "default": false
+          },
+          "narrowed_from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Narrowed From"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "child_profile_id"
+        ],
+        "title": "DelegationPolicyDTO",
+        "description": "AgentTaskStep only."
+      },
       "DeleteAgentRequest": {
         "properties": {
           "agent_id": {
@@ -16229,6 +17080,81 @@
           "status"
         ],
         "title": "DryRunPlaybookResponse"
+      },
+      "EdgeDiffDTO": {
+        "properties": {
+          "edge_id": {
+            "type": "string",
+            "title": "Edge Id"
+          },
+          "rule_id": {
+            "type": "string",
+            "title": "Rule Id"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source"
+          },
+          "target": {
+            "type": "string",
+            "title": "Target"
+          },
+          "outcome": {
+            "type": "string",
+            "title": "Outcome"
+          },
+          "change": {
+            "type": "string",
+            "enum": [
+              "added",
+              "removed",
+              "modified",
+              "unchanged"
+            ],
+            "title": "Change"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "edge_id",
+          "rule_id",
+          "source",
+          "target",
+          "outcome",
+          "change"
+        ],
+        "title": "EdgeDiffDTO"
+      },
+      "EdgeOverlayDTO": {
+        "properties": {
+          "edge_id": {
+            "type": "string",
+            "title": "Edge Id"
+          },
+          "traversal_count": {
+            "type": "integer",
+            "title": "Traversal Count",
+            "default": 0
+          },
+          "last_traversed_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Traversed At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "edge_id"
+        ],
+        "title": "EdgeOverlayDTO"
       },
       "EditAgentRequest": {
         "properties": {
@@ -17365,6 +18291,64 @@
         ],
         "title": "EditWorkspaceResponse"
       },
+      "EffectClauseDTO": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "creates",
+              "updates",
+              "deletes",
+              "reads",
+              "sends",
+              "schedules",
+              "waits",
+              "branches",
+              "binds",
+              "invokes_ai",
+              "delegates",
+              "noop"
+            ],
+            "title": "Kind"
+          },
+          "subject": {
+            "type": "string",
+            "title": "Subject"
+          },
+          "detail": {
+            "type": "string",
+            "title": "Detail"
+          },
+          "arguments": {
+            "items": {
+              "$ref": "#/components/schemas/ExplanationRowDTO"
+            },
+            "type": "array",
+            "title": "Arguments",
+            "default": []
+          },
+          "conditional_on": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conditional On"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "kind",
+          "subject",
+          "detail"
+        ],
+        "title": "EffectClauseDTO",
+        "description": "One typed effect clause from the command contract.\n\n``detail`` is rendered by the backend from the clause and its resolved\ninputs.  The frontend lays this out; it never re-derives command meaning\n(design spec: \"The frontend lays out this structure but does not\nreinterpret command semantics\")."
+      },
       "EnsureTaskRequest": {
         "properties": {
           "project_id": {
@@ -17500,6 +18484,38 @@
         ],
         "title": "EnvVarReference"
       },
+      "EventGroupDTO": {
+        "properties": {
+          "event_type": {
+            "type": "string",
+            "title": "Event Type"
+          },
+          "rule_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Rule Ids",
+            "default": []
+          },
+          "node_count": {
+            "type": "integer",
+            "title": "Node Count",
+            "default": 0
+          },
+          "edge_count": {
+            "type": "integer",
+            "title": "Edge Count",
+            "default": 0
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "event_type"
+        ],
+        "title": "EventGroupDTO"
+      },
       "EventTrigger": {
         "properties": {
           "name": {
@@ -17617,6 +18633,111 @@
         "type": "object",
         "title": "ExplainTaskResponse"
       },
+      "ExplanationRowDTO": {
+        "properties": {
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "value": {
+            "$ref": "#/components/schemas/ExplanationValueDTO"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "event",
+              "binding",
+              "loop",
+              "literal",
+              "template",
+              "profile",
+              "policy",
+              "derived"
+            ],
+            "title": "Source"
+          },
+          "required": {
+            "type": "boolean",
+            "title": "Required",
+            "default": true
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "label",
+          "value",
+          "source"
+        ],
+        "title": "ExplanationRowDTO",
+        "description": "A labelled input/output row: ``Project -> this event's project``."
+      },
+      "ExplanationValueDTO": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "literal",
+              "event_ref",
+              "binding_ref",
+              "loop_ref",
+              "template",
+              "expression",
+              "redacted",
+              "unresolved"
+            ],
+            "title": "Kind"
+          },
+          "display": {
+            "type": "string",
+            "title": "Display"
+          },
+          "canonical": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Canonical"
+          },
+          "redacted": {
+            "type": "boolean",
+            "title": "Redacted",
+            "default": false
+          },
+          "type_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Type Name"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "kind",
+          "display"
+        ],
+        "title": "ExplanationValueDTO",
+        "description": "One typed value, in both its human and canonical forms.\n\n``display`` is always present and always safe to render.  ``canonical`` is\nthe Advanced-view payload and is ``None`` whenever ``redacted`` is true."
+      },
       "ExportProfileRequest": {
         "properties": {
           "profile_id": {
@@ -17675,6 +18796,45 @@
         },
         "type": "object",
         "title": "ExportProfileResponse"
+      },
+      "FieldChangeDTO": {
+        "properties": {
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "before": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExplanationValueDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "after": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExplanationValueDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "executable": {
+            "type": "boolean",
+            "title": "Executable",
+            "default": true
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "path"
+        ],
+        "title": "FieldChangeDTO"
       },
       "FileEntry": {
         "properties": {
@@ -21415,6 +22575,69 @@
         ],
         "title": "GraphAgent"
       },
+      "GraphDiagnosticDTO": {
+        "properties": {
+          "severity": {
+            "type": "string",
+            "enum": [
+              "error",
+              "warning",
+              "question",
+              "info"
+            ],
+            "title": "Severity"
+          },
+          "code": {
+            "type": "string",
+            "title": "Code"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          },
+          "rule_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rule Id"
+          },
+          "step_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Step Id"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SourceRefDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "severity",
+          "code",
+          "message"
+        ],
+        "title": "GraphDiagnosticDTO",
+        "description": "A compile question, invalid reference, stale contract or disabled\nactivation.  Diagnostics annotate the graph; they never hide it."
+      },
       "GraphEdge": {
         "properties": {
           "from": {
@@ -21449,6 +22672,86 @@
         ],
         "title": "GraphEdge"
       },
+      "GraphEdgeDTO": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "rule_id": {
+            "type": "string",
+            "title": "Rule Id"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source"
+          },
+          "source_port": {
+            "type": "string",
+            "title": "Source Port"
+          },
+          "target": {
+            "type": "string",
+            "title": "Target"
+          },
+          "outcome": {
+            "type": "string",
+            "title": "Outcome"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "success",
+              "failure",
+              "decision_case",
+              "decision_default",
+              "loop_body",
+              "loop_exit",
+              "loop_back",
+              "timeout",
+              "wait_matched",
+              "runtime_error",
+              "cancelled",
+              "terminal"
+            ],
+            "title": "Kind"
+          },
+          "reserved": {
+            "type": "boolean",
+            "title": "Reserved",
+            "default": false
+          },
+          "condition": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Condition"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "rule_id",
+          "source",
+          "source_port",
+          "target",
+          "outcome",
+          "label",
+          "kind"
+        ],
+        "title": "GraphEdgeDTO",
+        "description": "One transition record.  ``id`` is derived from artifact content, so it\nis stable across recompiles that do not change the transition, and unique\nwithin the artifact: ``f\"{rule_id}::{source}::{outcome}\"``."
+      },
       "GraphGate": {
         "properties": {
           "id": {
@@ -21479,6 +22782,196 @@
           "status"
         ],
         "title": "GraphGate"
+      },
+      "GraphLayoutDTO": {
+        "properties": {
+          "direction": {
+            "type": "string",
+            "enum": [
+              "TD",
+              "LR"
+            ],
+            "title": "Direction",
+            "default": "TD"
+          },
+          "grid_positions": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/GridPositionDTO"
+            },
+            "type": "object",
+            "title": "Grid Positions",
+            "default": {}
+          },
+          "cluster_bounds": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ClusterBoundsDTO"
+            },
+            "type": "object",
+            "title": "Cluster Bounds",
+            "default": {}
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "GraphLayoutDTO"
+      },
+      "GraphLegendDTO": {
+        "properties": {
+          "step_kinds": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Step Kinds",
+            "default": {}
+          },
+          "edge_kinds": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Edge Kinds",
+            "default": {}
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "GraphLegendDTO"
+      },
+      "GraphNodeDTO": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "rule_id": {
+            "type": "string",
+            "title": "Rule Id"
+          },
+          "step_kind": {
+            "type": "string",
+            "enum": [
+              "command",
+              "llm",
+              "agent_task",
+              "decision",
+              "wait",
+              "foreach",
+              "terminal"
+            ],
+            "title": "Step Kind"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "entry": {
+            "type": "boolean",
+            "title": "Entry",
+            "default": false
+          },
+          "terminal_outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Terminal Outcome"
+          },
+          "explanation": {
+            "$ref": "#/components/schemas/StepExplanationDTO"
+          },
+          "badges": {
+            "items": {
+              "$ref": "#/components/schemas/NodeBadgeDTO"
+            },
+            "type": "array",
+            "title": "Badges",
+            "default": []
+          },
+          "ai": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AiNodeDetailDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "loop": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LoopNodeDetailDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "wait": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WaitNodeDetailDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source": {
+            "$ref": "#/components/schemas/SourceRefDTO"
+          },
+          "advanced": {
+            "$ref": "#/components/schemas/NodeAdvancedDTO"
+          },
+          "diagnostics": {
+            "items": {
+              "$ref": "#/components/schemas/GraphDiagnosticDTO"
+            },
+            "type": "array",
+            "title": "Diagnostics",
+            "default": []
+          },
+          "out_degree": {
+            "type": "integer",
+            "title": "Out Degree",
+            "default": 0
+          },
+          "position": {
+            "$ref": "#/components/schemas/GridPositionDTO",
+            "default": {
+              "x": 0,
+              "y": 0
+            }
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "rule_id",
+          "step_kind",
+          "title",
+          "explanation",
+          "source",
+          "advanced"
+        ],
+        "title": "GraphNodeDTO"
       },
       "GraphTaskNode": {
         "properties": {
@@ -21651,6 +23144,23 @@
         "type": "object",
         "title": "GrepResponse"
       },
+      "GridPositionDTO": {
+        "properties": {
+          "x": {
+            "type": "integer",
+            "title": "X",
+            "default": 0
+          },
+          "y": {
+            "type": "integer",
+            "title": "Y",
+            "default": 0
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "GridPositionDTO"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -21663,6 +23173,34 @@
         },
         "type": "object",
         "title": "HTTPValidationError"
+      },
+      "IdempotencyDTO": {
+        "properties": {
+          "supported": {
+            "type": "boolean",
+            "title": "Supported",
+            "default": false
+          },
+          "key_template": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Key Template"
+          },
+          "retry_safe": {
+            "type": "boolean",
+            "title": "Retry Safe",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "IdempotencyDTO"
       },
       "ImportProfileRequest": {
         "properties": {
@@ -22513,6 +24051,50 @@
         ],
         "title": "ListNotesResponse"
       },
+      "ListPlaybookPendingEventsResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/PendingEventDTO"
+            },
+            "type": "array",
+            "title": "Events",
+            "default": []
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count",
+            "default": 0
+          },
+          "oldest_received_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oldest Received At"
+          },
+          "by_reason": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "By Reason",
+            "default": {}
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "ListPlaybookPendingEventsResponse"
+      },
       "ListPlaybookRunsRequest": {
         "properties": {
           "playbook_id": {
@@ -23046,6 +24628,111 @@
         "additionalProperties": true,
         "type": "object",
         "title": "LogEntry"
+      },
+      "LoopIterationOverlayDTO": {
+        "properties": {
+          "index": {
+            "type": "integer",
+            "title": "Index"
+          },
+          "item_display": {
+            "type": "string",
+            "title": "Item Display"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "receipt_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Receipt Ids",
+            "default": []
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "index",
+          "item_display"
+        ],
+        "title": "LoopIterationOverlayDTO"
+      },
+      "LoopNodeDetailDTO": {
+        "properties": {
+          "collection": {
+            "$ref": "#/components/schemas/ExplanationValueDTO"
+          },
+          "item_binding": {
+            "type": "string",
+            "title": "Item Binding"
+          },
+          "failure_policy": {
+            "type": "string",
+            "enum": [
+              "halt",
+              "continue",
+              "collect"
+            ],
+            "title": "Failure Policy"
+          },
+          "body_entry_step_id": {
+            "type": "string",
+            "title": "Body Entry Step Id"
+          },
+          "continuation_step_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Continuation Step Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "collection",
+          "item_binding",
+          "failure_policy",
+          "body_entry_step_id"
+        ],
+        "title": "LoopNodeDetailDTO",
+        "description": "ForEachStep only."
       },
       "MachineMetrics": {
         "properties": {
@@ -24234,6 +25921,179 @@
         "type": "object",
         "title": "ModelTokens"
       },
+      "NodeAdvancedDTO": {
+        "properties": {
+          "typed_step": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Typed Step"
+          },
+          "resolved_inputs": {
+            "items": {
+              "$ref": "#/components/schemas/ExplanationRowDTO"
+            },
+            "type": "array",
+            "title": "Resolved Inputs",
+            "default": []
+          },
+          "result_schema": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Schema"
+          },
+          "retry": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RetryPolicyDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "idempotency": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IdempotencyDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "redaction": {
+            "items": {
+              "$ref": "#/components/schemas/RedactionRowDTO"
+            },
+            "type": "array",
+            "title": "Redaction",
+            "default": []
+          },
+          "execution_fingerprint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Execution Fingerprint"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "typed_step"
+        ],
+        "title": "NodeAdvancedDTO",
+        "description": "Advanced view.  Canonical data, never the default explanation."
+      },
+      "NodeBadgeDTO": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "profile",
+              "budget",
+              "capability",
+              "timeout",
+              "retry",
+              "idempotency",
+              "loop",
+              "wait",
+              "redaction",
+              "diagnostic"
+            ],
+            "title": "Kind"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "value": {
+            "type": "string",
+            "title": "Value"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "kind",
+          "label",
+          "value"
+        ],
+        "title": "NodeBadgeDTO",
+        "description": "One compact chip on the card.  Ordered by the backend."
+      },
+      "NodeOverlayDTO": {
+        "properties": {
+          "step_id": {
+            "type": "string",
+            "title": "Step Id"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "not_visited",
+              "running",
+              "completed",
+              "failed",
+              "paused",
+              "cancelled",
+              "timed_out",
+              "skipped"
+            ],
+            "title": "State",
+            "default": "not_visited"
+          },
+          "visit_count": {
+            "type": "integer",
+            "title": "Visit Count",
+            "default": 0
+          },
+          "last_outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Outcome"
+          },
+          "receipt_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Receipt Ids",
+            "default": []
+          },
+          "iterations": {
+            "items": {
+              "$ref": "#/components/schemas/LoopIterationOverlayDTO"
+            },
+            "type": "array",
+            "title": "Iterations",
+            "default": []
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "step_id"
+        ],
+        "title": "NodeOverlayDTO"
+      },
       "NoteSummary": {
         "properties": {
           "name": {
@@ -24279,6 +26139,50 @@
         },
         "type": "object",
         "title": "NoteSummary"
+      },
+      "OperatorDecisionDTO": {
+        "properties": {
+          "step_id": {
+            "type": "string",
+            "title": "Step Id"
+          },
+          "attempt": {
+            "type": "integer",
+            "title": "Attempt"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          },
+          "options": {
+            "items": {
+              "type": "string",
+              "enum": [
+                "accept_outcome",
+                "retry",
+                "fail",
+                "cancel"
+              ]
+            },
+            "type": "array",
+            "title": "Options",
+            "default": []
+          },
+          "raised_at": {
+            "type": "number",
+            "title": "Raised At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "step_id",
+          "attempt",
+          "reason",
+          "raised_at"
+        ],
+        "title": "OperatorDecisionDTO",
+        "description": "A run paused with ``operator_decision_required`` after an ambiguous\ninterruption of a non-retry-safe command (design spec, run-state \u00a7)."
       },
       "OrchestratorControlRequest": {
         "properties": {
@@ -24327,6 +26231,64 @@
         "type": "object",
         "title": "OrchestratorControlResponse"
       },
+      "OutcomeExplanationDTO": {
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "title": "Outcome"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "target_step_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Step Id"
+          },
+          "target_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Title"
+          },
+          "reserved": {
+            "type": "boolean",
+            "title": "Reserved",
+            "default": false
+          },
+          "terminal_outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Terminal Outcome"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "outcome",
+          "label"
+        ],
+        "title": "OutcomeExplanationDTO",
+        "description": "One legal outcome of a step and where it goes."
+      },
       "PauseProjectRequest": {
         "properties": {
           "project_id": {
@@ -24372,6 +26334,322 @@
           "task_id"
         ],
         "title": "PauseTaskRequest"
+      },
+      "PendingEventDTO": {
+        "properties": {
+          "pending_event_id": {
+            "type": "string",
+            "title": "Pending Event Id"
+          },
+          "playbook_id": {
+            "type": "string",
+            "title": "Playbook Id"
+          },
+          "event_type": {
+            "type": "string",
+            "title": "Event Type"
+          },
+          "event": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Event",
+            "default": {}
+          },
+          "received_at": {
+            "type": "number",
+            "title": "Received At"
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "stale_contract",
+              "invalid_artifact",
+              "disabled",
+              "unavailable",
+              "question_required"
+            ],
+            "title": "Reason"
+          },
+          "attempts": {
+            "type": "integer",
+            "title": "Attempts",
+            "default": 0
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "pending_event_id",
+          "playbook_id",
+          "event_type",
+          "received_at",
+          "reason"
+        ],
+        "title": "PendingEventDTO"
+      },
+      "PlaybookActivateRequest": {
+        "properties": {
+          "playbook_id": {
+            "type": "string",
+            "title": "Playbook Id",
+            "description": "The playbook to activate against."
+          },
+          "artifact_sha256": {
+            "type": "string",
+            "title": "Artifact Sha256",
+            "description": "The reviewed artifact hash, full 'sha256:<64 hex>' form."
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "description": "Whether the activation is enabled. Default: true.",
+            "default": true
+          },
+          "acknowledge_diff": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Acknowledge Diff",
+            "description": "Required when the diff against the active artifact is executable. Must equal artifact_sha256, so an acknowledgement cannot be replayed against another artifact."
+          }
+        },
+        "type": "object",
+        "required": [
+          "playbook_id",
+          "artifact_sha256"
+        ],
+        "title": "PlaybookActivateRequest"
+      },
+      "PlaybookActivationHealthRequest": {
+        "properties": {
+          "playbook_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Playbook Id",
+            "description": "Restrict to one playbook. All activations when absent."
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope",
+            "description": "Filter by activation scope."
+          },
+          "health": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Health",
+            "description": "Filter to one health value."
+          }
+        },
+        "type": "object",
+        "title": "PlaybookActivationHealthRequest"
+      },
+      "PlaybookActivationHealthResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "activations": {
+            "items": {
+              "$ref": "#/components/schemas/ActivationStateDTO"
+            },
+            "type": "array",
+            "title": "Activations",
+            "default": []
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count",
+            "default": 0
+          },
+          "by_health": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "By Health",
+            "default": {}
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "PlaybookActivationHealthResponse"
+      },
+      "PlaybookArtifactDiffRequest": {
+        "properties": {
+          "playbook_id": {
+            "type": "string",
+            "title": "Playbook Id",
+            "description": "The playbook that owns both artifacts."
+          },
+          "target_sha256": {
+            "type": "string",
+            "title": "Target Sha256",
+            "description": "The artifact under review, full 'sha256:<64 hex>' form."
+          },
+          "base_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Sha256",
+            "description": "The artifact to diff against. Defaults to the currently active artifact; absent entirely for a playbook's first artifact, which reports every element as added."
+          }
+        },
+        "type": "object",
+        "required": [
+          "playbook_id",
+          "target_sha256"
+        ],
+        "title": "PlaybookArtifactDiffRequest"
+      },
+      "PlaybookArtifactDiffResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "base": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ArtifactRefDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "target": {
+            "$ref": "#/components/schemas/ArtifactRefDTO"
+          },
+          "executable_change": {
+            "type": "boolean",
+            "title": "Executable Change",
+            "default": false
+          },
+          "semantic_change_count": {
+            "type": "integer",
+            "title": "Semantic Change Count",
+            "default": 0
+          },
+          "presentation_change_count": {
+            "type": "integer",
+            "title": "Presentation Change Count",
+            "default": 0
+          },
+          "rules": {
+            "items": {
+              "$ref": "#/components/schemas/RuleDiffDTO"
+            },
+            "type": "array",
+            "title": "Rules",
+            "default": []
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/StepDiffDTO"
+            },
+            "type": "array",
+            "title": "Steps",
+            "default": []
+          },
+          "edges": {
+            "items": {
+              "$ref": "#/components/schemas/EdgeDiffDTO"
+            },
+            "type": "array",
+            "title": "Edges",
+            "default": []
+          },
+          "contracts": {
+            "items": {
+              "$ref": "#/components/schemas/ContractChangeDTO"
+            },
+            "type": "array",
+            "title": "Contracts",
+            "default": []
+          },
+          "diagnostics": {
+            "items": {
+              "$ref": "#/components/schemas/GraphDiagnosticDTO"
+            },
+            "type": "array",
+            "title": "Diagnostics",
+            "default": []
+          },
+          "activation_blocked": {
+            "type": "boolean",
+            "title": "Activation Blocked",
+            "default": false
+          },
+          "activation_blockers": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Activation Blockers",
+            "default": []
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "target"
+        ],
+        "title": "PlaybookArtifactDiffResponse",
+        "description": "``executable_change=False`` with ``presentation_change_count>0`` is the\nspec's \"a label or help-text improvement does not block activation or change\nan execution fingerprint\".  The diff is computed from the two\n``PlaybookDefinition`` objects, **not** from their JSON bytes."
       },
       "PlaybookGraphEdge": {
         "properties": {
@@ -25028,6 +27306,303 @@
         "title": "PlaybookNodeLlmConfig",
         "description": "``LlmConfig.to_dict()`` \u2014 every field omitted when unset."
       },
+      "PlaybookPendingEventActionRequest": {
+        "properties": {
+          "action": {
+            "type": "string",
+            "title": "Action",
+            "description": "What to do with the listed events."
+          },
+          "pending_event_ids": {
+            "items": {},
+            "type": "array",
+            "title": "Pending Event Ids",
+            "description": "Non-empty list of pending event ids to act on."
+          }
+        },
+        "type": "object",
+        "required": [
+          "action",
+          "pending_event_ids"
+        ],
+        "title": "PlaybookPendingEventActionRequest"
+      },
+      "PlaybookPendingEventActionResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "dispatch",
+              "discard"
+            ],
+            "title": "Action"
+          },
+          "requested": {
+            "type": "integer",
+            "title": "Requested",
+            "default": 0
+          },
+          "dispatched_run_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Dispatched Run Ids",
+            "default": []
+          },
+          "discarded_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Discarded Ids",
+            "default": []
+          },
+          "skipped": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Skipped",
+            "default": []
+          },
+          "errors": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Errors",
+            "default": []
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "action"
+        ],
+        "title": "PlaybookPendingEventActionResponse"
+      },
+      "PlaybookPendingEventsRequest": {
+        "properties": {
+          "playbook_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Playbook Id",
+            "description": "Restrict to one playbook. All playbooks when absent."
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason",
+            "description": "Filter by the reason the event is held."
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "description": "Max events to return (default 100).",
+            "default": 100
+          }
+        },
+        "type": "object",
+        "title": "PlaybookPendingEventsRequest"
+      },
+      "PlaybookRunOverlayRequest": {
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "title": "Run Id",
+            "description": "The V2 run to overlay."
+          },
+          "receipt_limit": {
+            "type": "integer",
+            "title": "Receipt Limit",
+            "description": "Max receipts returned, newest first (default 500). 'truncated' reports when more exist; receipts are never silently dropped.",
+            "default": 500
+          }
+        },
+        "type": "object",
+        "required": [
+          "run_id"
+        ],
+        "title": "PlaybookRunOverlayRequest"
+      },
+      "PlaybookRunOverlayResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "artifact": {
+            "$ref": "#/components/schemas/ArtifactRefDTO"
+          },
+          "artifact_is_active": {
+            "type": "boolean",
+            "title": "Artifact Is Active",
+            "default": false
+          },
+          "rule_id": {
+            "type": "string",
+            "title": "Rule Id"
+          },
+          "lifecycle": {
+            "type": "string",
+            "enum": [
+              "running",
+              "paused",
+              "cancelling",
+              "completed",
+              "failed",
+              "timed_out",
+              "cancelled"
+            ],
+            "title": "Lifecycle"
+          },
+          "current_step_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Step Id"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "deadline_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deadline At"
+          },
+          "trigger_event": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Trigger Event",
+            "default": {}
+          },
+          "nodes": {
+            "items": {
+              "$ref": "#/components/schemas/NodeOverlayDTO"
+            },
+            "type": "array",
+            "title": "Nodes",
+            "default": []
+          },
+          "edges": {
+            "items": {
+              "$ref": "#/components/schemas/EdgeOverlayDTO"
+            },
+            "type": "array",
+            "title": "Edges",
+            "default": []
+          },
+          "receipts": {
+            "items": {
+              "$ref": "#/components/schemas/ReceiptDTO"
+            },
+            "type": "array",
+            "title": "Receipts",
+            "default": []
+          },
+          "bindings": {
+            "items": {
+              "$ref": "#/components/schemas/ExplanationRowDTO"
+            },
+            "type": "array",
+            "title": "Bindings",
+            "default": []
+          },
+          "operator_decision": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OperatorDecisionDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "budget": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunBudgetDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "truncated": {
+            "type": "boolean",
+            "title": "Truncated",
+            "default": false
+          },
+          "receipt_total": {
+            "type": "integer",
+            "title": "Receipt Total",
+            "default": 0
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "run_id",
+          "artifact",
+          "rule_id",
+          "lifecycle"
+        ],
+        "title": "PlaybookRunOverlayResponse",
+        "description": "Carries the artifact ref of the **pinned** artifact and nothing else.\nThe dashboard fetches the graph for ``overlay.artifact.artifact_sha256``,\nnever for the playbook's current activation; ``artifact_is_active=False``\nrenders a persistent banner.  This is the single mechanism satisfying \"Run\noverlays are pinned to the exact artifact executed\"."
+      },
       "PlaybookRunPathEntry": {
         "properties": {
           "node_id": {
@@ -25308,6 +27883,139 @@
         ],
         "title": "PlaybookTransitionDetail",
         "description": "One compiled transition as serialized by ``PlaybookTransition.to_dict``."
+      },
+      "PlaybookV2GraphRequest": {
+        "properties": {
+          "playbook_id": {
+            "type": "string",
+            "title": "Playbook Id",
+            "description": "The playbook identifier to project."
+          },
+          "artifact_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artifact Sha256",
+            "description": "Project this exact artifact instead of the active one. Full 'sha256:<64 hex>' form."
+          },
+          "event_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Type",
+            "description": "Narrow rules/nodes/edges to the rules this event triggers. event_groups still lists every event and no reachable branch is dropped."
+          },
+          "direction": {
+            "type": "string",
+            "title": "Direction",
+            "description": "Layout direction: 'TD' (top-down) or 'LR' (left-right). Default: TD.",
+            "default": "TD"
+          },
+          "include_advanced": {
+            "type": "boolean",
+            "title": "Include Advanced",
+            "description": "Include the canonical typed step body in advanced.typed_step. Default: true; false leaves the field present but empty so the response type never changes.",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "playbook_id"
+        ],
+        "title": "PlaybookV2GraphRequest"
+      },
+      "PlaybookV2GraphResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "artifact": {
+            "$ref": "#/components/schemas/ArtifactRefDTO"
+          },
+          "activation": {
+            "$ref": "#/components/schemas/ActivationStateDTO"
+          },
+          "purpose": {
+            "type": "string",
+            "title": "Purpose",
+            "default": "routine"
+          },
+          "event_groups": {
+            "items": {
+              "$ref": "#/components/schemas/EventGroupDTO"
+            },
+            "type": "array",
+            "title": "Event Groups",
+            "default": []
+          },
+          "rules": {
+            "items": {
+              "$ref": "#/components/schemas/RuleClusterDTO"
+            },
+            "type": "array",
+            "title": "Rules",
+            "default": []
+          },
+          "nodes": {
+            "items": {
+              "$ref": "#/components/schemas/GraphNodeDTO"
+            },
+            "type": "array",
+            "title": "Nodes",
+            "default": []
+          },
+          "edges": {
+            "items": {
+              "$ref": "#/components/schemas/GraphEdgeDTO"
+            },
+            "type": "array",
+            "title": "Edges",
+            "default": []
+          },
+          "layout": {
+            "$ref": "#/components/schemas/GraphLayoutDTO",
+            "default": {
+              "direction": "TD",
+              "grid_positions": {},
+              "cluster_bounds": {}
+            }
+          },
+          "diagnostics": {
+            "items": {
+              "$ref": "#/components/schemas/GraphDiagnosticDTO"
+            },
+            "type": "array",
+            "title": "Diagnostics",
+            "default": []
+          },
+          "legend": {
+            "$ref": "#/components/schemas/GraphLegendDTO",
+            "default": {
+              "step_kinds": {},
+              "edge_kinds": {}
+            }
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "artifact",
+          "activation"
+        ],
+        "title": "PlaybookV2GraphResponse",
+        "description": "Filtering is server-side and lossless.  ``playbook_v2_graph(event_type=...)``\nnarrows ``rules``/``nodes``/``edges`` to the rules triggered by that event and\nevery node reachable from them.  ``event_groups`` always lists all events, so\nthe selector never depends on the current filter."
       },
       "PlaybookValidateRequest": {
         "properties": {
@@ -27612,6 +30320,206 @@
         "title": "ReadyTask",
         "description": "One frontier row.\n\nTwo shapes share this model: the default (``task_id``, ``title``,\n``priority``) and ``brief: true`` (``id``, ``title``, ``status``,\n``priority``, ``is_blocked``, ``profile_id``).  Both keys are optional so\neither projection validates."
       },
+      "ReceiptDTO": {
+        "properties": {
+          "receipt_id": {
+            "type": "string",
+            "title": "Receipt Id"
+          },
+          "step_id": {
+            "type": "string",
+            "title": "Step Id"
+          },
+          "rule_id": {
+            "type": "string",
+            "title": "Rule Id"
+          },
+          "step_kind": {
+            "type": "string",
+            "enum": [
+              "command",
+              "llm",
+              "agent_task",
+              "decision",
+              "wait",
+              "foreach",
+              "terminal"
+            ],
+            "title": "Step Kind"
+          },
+          "attempt": {
+            "type": "integer",
+            "title": "Attempt",
+            "default": 1
+          },
+          "iteration_index": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Iteration Index"
+          },
+          "outcome": {
+            "type": "string",
+            "title": "Outcome"
+          },
+          "selected_edge_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selected Edge Id"
+          },
+          "started_at": {
+            "type": "number",
+            "title": "Started At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "duration_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Seconds"
+          },
+          "inputs": {
+            "items": {
+              "$ref": "#/components/schemas/ExplanationRowDTO"
+            },
+            "type": "array",
+            "title": "Inputs",
+            "default": []
+          },
+          "result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExplanationValueDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "token_usage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TokenUsageDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "principal_fingerprint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Principal Fingerprint"
+          },
+          "profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Id"
+          },
+          "contract_fingerprint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contract Fingerprint"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "wait": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WaitFactsDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cancellation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CancellationFactsDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "receipt_id",
+          "step_id",
+          "rule_id",
+          "step_kind",
+          "outcome",
+          "started_at"
+        ],
+        "title": "ReceiptDTO"
+      },
       "RecordFileInspectionRequest": {
         "properties": {
           "project_id": {
@@ -27774,6 +30682,31 @@
         "type": "object",
         "title": "RecoverWorkflowResponse",
         "description": "Shape mirrors OrphanWorkflowRecovery.recover_workflow output."
+      },
+      "RedactionRowDTO": {
+        "properties": {
+          "field": {
+            "type": "string",
+            "title": "Field"
+          },
+          "policy": {
+            "type": "string",
+            "enum": [
+              "safe",
+              "summarized",
+              "opaque_handle",
+              "redacted"
+            ],
+            "title": "Policy"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "field",
+          "policy"
+        ],
+        "title": "RedactionRowDTO"
       },
       "ReleaseProjectConstraintRequest": {
         "properties": {
@@ -28464,6 +31397,201 @@
           "task_id"
         ],
         "title": "ResumeTaskRequest"
+      },
+      "RetryPolicyDTO": {
+        "properties": {
+          "max_attempts": {
+            "type": "integer",
+            "title": "Max Attempts",
+            "default": 1
+          },
+          "backoff_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Backoff Seconds"
+          },
+          "retry_on": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Retry On",
+            "default": []
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "RetryPolicyDTO"
+      },
+      "RuleClusterDTO": {
+        "properties": {
+          "rule_id": {
+            "type": "string",
+            "title": "Rule Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "event_type": {
+            "type": "string",
+            "title": "Event Type"
+          },
+          "trigger_filter": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trigger Filter"
+          },
+          "entry_step_id": {
+            "type": "string",
+            "title": "Entry Step Id"
+          },
+          "step_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Step Ids",
+            "default": []
+          },
+          "source": {
+            "$ref": "#/components/schemas/SourceRefDTO"
+          },
+          "diagnostics": {
+            "items": {
+              "$ref": "#/components/schemas/GraphDiagnosticDTO"
+            },
+            "type": "array",
+            "title": "Diagnostics",
+            "default": []
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "rule_id",
+          "name",
+          "event_type",
+          "entry_step_id",
+          "source"
+        ],
+        "title": "RuleClusterDTO",
+        "description": "One first-class rule.  A rule owns a closed subgraph \u2014 no edge in\n``GraphEdgeDTO`` ever crosses ``rule_id``."
+      },
+      "RuleDiffDTO": {
+        "properties": {
+          "rule_id": {
+            "type": "string",
+            "title": "Rule Id"
+          },
+          "change": {
+            "type": "string",
+            "enum": [
+              "added",
+              "removed",
+              "modified",
+              "unchanged"
+            ],
+            "title": "Change"
+          },
+          "event_type_before": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Type Before"
+          },
+          "event_type_after": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Type After"
+          },
+          "step_ids_added": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Step Ids Added",
+            "default": []
+          },
+          "step_ids_removed": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Step Ids Removed",
+            "default": []
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "rule_id",
+          "change"
+        ],
+        "title": "RuleDiffDTO"
+      },
+      "RunBudgetDTO": {
+        "properties": {
+          "llm_calls": {
+            "type": "integer",
+            "title": "Llm Calls",
+            "default": 0
+          },
+          "total_tokens": {
+            "type": "integer",
+            "title": "Total Tokens",
+            "default": 0
+          },
+          "max_total_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Total Tokens"
+          },
+          "cost_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Usd"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "RunBudgetDTO"
       },
       "RunPlaybookRequest": {
         "properties": {
@@ -30172,6 +33300,53 @@
         ],
         "title": "SetDefaultBranchResponse"
       },
+      "SetPlaybookActivationResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "activation": {
+            "$ref": "#/components/schemas/ActivationStateDTO"
+          },
+          "previous_artifact_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Previous Artifact Sha256"
+          },
+          "changed": {
+            "type": "boolean",
+            "title": "Changed",
+            "default": false
+          },
+          "blocked": {
+            "type": "boolean",
+            "title": "Blocked",
+            "default": false
+          },
+          "blockers": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Blockers",
+            "default": []
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "activation"
+        ],
+        "title": "SetPlaybookActivationResponse"
+      },
       "SetPlaybookEnabledRequest": {
         "properties": {
           "playbook_id": {
@@ -30682,6 +33857,53 @@
         "title": "SlotMetrics",
         "description": "Worktree slots.  ``cap`` is null when worktree execution is off."
       },
+      "SourceRefDTO": {
+        "properties": {
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "start_line": {
+            "type": "integer",
+            "title": "Start Line"
+          },
+          "end_line": {
+            "type": "integer",
+            "title": "End Line"
+          },
+          "heading": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Heading"
+          },
+          "excerpt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Excerpt"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "path",
+          "start_line",
+          "end_line"
+        ],
+        "title": "SourceRefDTO",
+        "description": "Where in the authoring Markdown this element came from."
+      },
       "SpecApproveRequest": {
         "properties": {
           "project_id": {
@@ -30749,6 +33971,186 @@
           "agent_id"
         ],
         "title": "StartAgentTerminalRequest"
+      },
+      "StepDiffDTO": {
+        "properties": {
+          "step_id": {
+            "type": "string",
+            "title": "Step Id"
+          },
+          "rule_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rule Id"
+          },
+          "change": {
+            "type": "string",
+            "enum": [
+              "added",
+              "removed",
+              "modified",
+              "unchanged"
+            ],
+            "title": "Change"
+          },
+          "step_kind": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "command",
+                  "llm",
+                  "agent_task",
+                  "decision",
+                  "wait",
+                  "foreach",
+                  "terminal"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Step Kind"
+          },
+          "title_before": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title Before"
+          },
+          "title_after": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title After"
+          },
+          "field_changes": {
+            "items": {
+              "$ref": "#/components/schemas/FieldChangeDTO"
+            },
+            "type": "array",
+            "title": "Field Changes",
+            "default": []
+          },
+          "explanation_before": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StepExplanationDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "explanation_after": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StepExplanationDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "step_id",
+          "change"
+        ],
+        "title": "StepDiffDTO"
+      },
+      "StepExplanationDTO": {
+        "properties": {
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "effect_summary": {
+            "type": "string",
+            "title": "Effect Summary"
+          },
+          "effects": {
+            "items": {
+              "$ref": "#/components/schemas/EffectClauseDTO"
+            },
+            "type": "array",
+            "title": "Effects",
+            "default": []
+          },
+          "inputs": {
+            "items": {
+              "$ref": "#/components/schemas/ExplanationRowDTO"
+            },
+            "type": "array",
+            "title": "Inputs",
+            "default": []
+          },
+          "result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExplanationRowDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "outcomes": {
+            "items": {
+              "$ref": "#/components/schemas/OutcomeExplanationDTO"
+            },
+            "type": "array",
+            "title": "Outcomes",
+            "default": []
+          },
+          "contract_fingerprint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contract Fingerprint"
+          },
+          "renderer": {
+            "type": "string",
+            "enum": [
+              "contract",
+              "canonical"
+            ],
+            "title": "Renderer",
+            "default": "contract"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "title",
+          "effect_summary"
+        ],
+        "title": "StepExplanationDTO",
+        "description": "The contract-derived intent card.  Node card and inspector consume\nthis same object (design spec UI invariant).\n\n``renderer=\"canonical\"`` is the spec's lossless fallback: presentation\nmetadata was absent, so every executable field is shown as a field/value\npair.  It is a display fact, never a reason to hide a field, and never\nblocks activation."
       },
       "StopTaskRequest": {
         "properties": {
@@ -33931,6 +37333,33 @@
         "title": "TokenMetrics",
         "description": "Rates over the trailing 60 seconds of the token ledger.\n\n``unattributed_per_min`` is ledger volume that carried no input/output\nsplit \u2014 reported separately rather than folded into a model's rate, the\nsame honesty rule ``get_costs`` applies to pricing."
       },
+      "TokenUsageDTO": {
+        "properties": {
+          "input_tokens": {
+            "type": "integer",
+            "title": "Input Tokens",
+            "default": 0
+          },
+          "output_tokens": {
+            "type": "integer",
+            "title": "Output Tokens",
+            "default": 0
+          },
+          "total_tokens": {
+            "type": "integer",
+            "title": "Total Tokens",
+            "default": 0
+          },
+          "estimated": {
+            "type": "boolean",
+            "title": "Estimated",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "TokenUsageDTO"
+      },
       "TranscriptEntryModel": {
         "properties": {
           "uuid": {
@@ -34352,6 +37781,136 @@
           "type"
         ],
         "title": "ValidationError"
+      },
+      "WaitFactsDTO": {
+        "properties": {
+          "wait_kind": {
+            "type": "string",
+            "enum": [
+              "event",
+              "human",
+              "task",
+              "timer"
+            ],
+            "title": "Wait Kind"
+          },
+          "correlation_key": {
+            "type": "string",
+            "title": "Correlation Key"
+          },
+          "registered_at": {
+            "type": "number",
+            "title": "Registered At"
+          },
+          "deadline_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deadline At"
+          },
+          "deadline_source": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "wait",
+                  "run"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deadline Source"
+          },
+          "matched_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Matched At"
+          },
+          "matched_event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Matched Event Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "wait_kind",
+          "correlation_key",
+          "registered_at"
+        ],
+        "title": "WaitFactsDTO"
+      },
+      "WaitNodeDetailDTO": {
+        "properties": {
+          "wait_kind": {
+            "type": "string",
+            "enum": [
+              "event",
+              "human",
+              "task",
+              "timer"
+            ],
+            "title": "Wait Kind"
+          },
+          "awaited": {
+            "type": "string",
+            "title": "Awaited"
+          },
+          "correlation_key": {
+            "$ref": "#/components/schemas/ExplanationValueDTO"
+          },
+          "timeout_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timeout Seconds"
+          },
+          "timeout_step_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timeout Step Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "wait_kind",
+          "awaited",
+          "correlation_key"
+        ],
+        "title": "WaitNodeDetailDTO",
+        "description": "WaitStep only."
       },
       "WithheldTask": {
         "properties": {

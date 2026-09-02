@@ -1181,6 +1181,15 @@ class TestAllPlaybookCommandsRegistered:
         "playbook_graph_view",
         "playbook_health",
         "set_playbook_enabled",
+        # Playbook V2 semantic graph (src/commands/playbook_v2_commands.py) --
+        # gated behind playbooks.v2_api / playbooks.v2_activation_writes.
+        "playbook_v2_graph",
+        "playbook_activation_health",
+        "playbook_activate",
+        "playbook_artifact_diff",
+        "playbook_pending_events",
+        "playbook_pending_event_action",
+        "playbook_run_overlay",
     ]
 
     def test_all_cmd_methods_exist(self):
