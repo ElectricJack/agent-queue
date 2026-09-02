@@ -280,7 +280,7 @@ class TestRunSchemaSetup:
         finally:
             await engine.dispose()
         with sqlite3.connect(str(production_config)) as conn:
-            conn.execute("UPDATE alembic_version SET version_num = 'f2a4c6e8b0d2'")
+            conn.execute("UPDATE alembic_version SET version_num = 'doesnotexist'")
 
         monkeypatch.setenv("AQ_DB_SCOPE", WORKER)
         engine = create_sqlite_engine(str(production_config))
