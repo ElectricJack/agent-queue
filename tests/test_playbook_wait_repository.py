@@ -21,12 +21,14 @@ from typing import Any
 
 import pytest
 from sqlalchemy import insert, select, update
+from sqlalchemy.exc import IntegrityError
 
 from src.database import Database
 from src.database.tables import playbook_artifacts, playbook_pending_events, playbook_waits
 from src.playbooks.receipts import StepReceipt
 from src.playbooks.run_state import (
     DuplicateWait,
+    PendingEventIntegrityError,
     PendingEventQuotaExceeded,
     RunLifecycle,
     RunSnapshot,
@@ -523,6 +525,16 @@ async def test_pending_event_is_deduplicated_by_the_index(db):
     # Resolving the first frees the dedup key for the next occurrence.
     await db.resolve_pending_event(first, resolution="discarded", resolved_by="op", now=NOW + 2)
     assert await retain(db, event_id="evt-2", now=NOW + 3) is not None
+
+
+async def test_pending_event_integrity_failure_is_not_reported_as_deduplication(db):
+    with pytest.raises(PendingEventIntegrityError) as caught:
+        await retain(db, dedup_key="unique", reason="not-a-retention-reason")
+
+    assert caught.value.code == "pending_event_integrity_error"
+    assert caught.value.playbook_id == "task-review"
+    assert isinstance(caught.value.__cause__, IntegrityError)
+    assert await db.list_pending_events(playbook_id="task-review") == []
 
 
 async def test_an_empty_dedup_key_never_deduplicates(db):

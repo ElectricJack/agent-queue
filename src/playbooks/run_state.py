@@ -175,6 +175,16 @@ class PendingEventQuotaExceeded(PlaybookStorageError):
         self.limit = limit
 
 
+class PendingEventIntegrityError(PlaybookStorageError):
+    """The database rejected a pending event for a reason other than deduplication."""
+
+    code = "pending_event_integrity_error"
+
+    def __init__(self, playbook_id: str) -> None:
+        super().__init__(f"database rejected a pending event for playbook {playbook_id}")
+        self.playbook_id = playbook_id
+
+
 # --------------------------------------------------------------------------
 # Lifecycle
 # --------------------------------------------------------------------------

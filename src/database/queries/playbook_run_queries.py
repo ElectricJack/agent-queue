@@ -27,7 +27,9 @@ from contextlib import asynccontextmanager
 from dataclasses import replace
 from typing import Any
 
-from sqlalchemy import and_, delete, func, insert, or_, select, update
+from sqlalchemy import and_, delete, func, insert, or_, select, text, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
@@ -44,6 +46,7 @@ from src.playbooks.run_state import (
     DuplicateAttempt,
     DuplicateWait,
     IllegalLifecycleTransition,
+    PendingEventIntegrityError,
     PendingEventQuotaExceeded,
     RunLifecycle,
     RunSnapshot,
@@ -847,8 +850,10 @@ class PlaybookRunQueryMixin:
                 if int(unresolved) >= quota:
                     _warn_pending_quota(playbook_id, quota, now)
                     raise PendingEventQuotaExceeded(playbook_id, quota)
-                await conn.execute(
-                    insert(playbook_pending_events).values(
+                insert_fn = pg_insert if conn.dialect.name == "postgresql" else sqlite_insert
+                result = await conn.execute(
+                    insert_fn(playbook_pending_events)
+                    .values(
                         pending_event_id=pending_event_id,
                         playbook_id=playbook_id,
                         scope=scope,
@@ -866,10 +871,18 @@ class PlaybookRunQueryMixin:
                         resolved_by=None,
                         resolution=None,
                     )
+                    .on_conflict_do_nothing(
+                        index_elements=[
+                            playbook_pending_events.c.playbook_id,
+                            playbook_pending_events.c.dedup_key,
+                        ],
+                        index_where=text("resolved_at IS NULL AND dedup_key <> ''"),
+                    )
                 )
-        except IntegrityError:
-            # The transaction rolled back; only the SELECT preceded the insert.
-            return None
+                if result.rowcount == 0:
+                    return None
+        except IntegrityError as exc:
+            raise PendingEventIntegrityError(playbook_id) from exc
         return pending_event_id
 
     async def resolve_pending_event(
