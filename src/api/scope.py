@@ -454,21 +454,26 @@ async def check_request_scope(
             return None
         reviewed_branch = await reviewed_branch_for_final_reviewer(db, scope)
         if reviewed_branch is None:
-            return error
-        worker_ids, pr_url = reviewed_branch
-        if args.get("project_id") not in (None, scope.project_id):
-            return "out of scope: project_id mismatch"
-        if args.get("session_id") not in (None, scope.session_id):
-            return "out of scope: session_id mismatch"
-        if command == "pr_merge":
-            if args.get("pr_url") != pr_url:
-                return "out of scope: a final reviewer may only merge its review branch PR"
-        elif command in {"reopen_with_feedback", "task_show", "get_task", "task_comments"}:
-            if args.get("task_id") not in worker_ids:
-                return "out of scope: a final reviewer may only act on tasks from its review branch"
-        args["project_id"] = scope.project_id
-        args["session_id"] = scope.session_id
-        return None
+            # ``task_show``/``get_task`` are also triage capabilities.  A
+            # triage session will not resolve a final-review branch, but it
+            # must still reach the triage carve-out below.
+            if command not in _TRIAGE_COMMANDS:
+                return error
+        else:
+            worker_ids, pr_url = reviewed_branch
+            if args.get("project_id") not in (None, scope.project_id):
+                return "out of scope: project_id mismatch"
+            if args.get("session_id") not in (None, scope.session_id):
+                return "out of scope: session_id mismatch"
+            if command == "pr_merge":
+                if args.get("pr_url") != pr_url:
+                    return "out of scope: a final reviewer may only merge its review branch PR"
+            elif command in {"reopen_with_feedback", "task_show", "get_task", "task_comments"}:
+                if args.get("task_id") not in worker_ids:
+                    return "out of scope: a final reviewer may only act on tasks from its review branch"
+            args["project_id"] = scope.project_id
+            args["session_id"] = scope.session_id
+            return None
 
     if scope.kind != "session" or scope.elevated or command not in _TRIAGE_COMMANDS:
         return check_command_scope(command, args, scope)

@@ -44,7 +44,9 @@ async def api(tmp_path, monkeypatch, request, generated_routers):
     handler = CommandHandler(orch, config)
     for pid in ("p", "other"):
         await db.create_project(Project(id=pid, name=pid))
-    for profile_id in ("triage", "coder", "project:p:coder", "project:other:coder"):
+    for profile_id in (
+        "triage", "coder", "reviewer", "final-reviewer", "project:p:coder", "project:other:coder",
+    ):
         await db.upsert_profile(AgentProfile(
             id=profile_id, name=profile_id, harness="codex", needs_workspace=False,
             default_class="fast-low" if profile_id == "triage" else "deep-high",
@@ -69,7 +71,36 @@ async def api(tmp_path, monkeypatch, request, generated_routers):
         await db.create_task(Task(
             id=tid, project_id=pid, title=tid, description="Needs routing",
             status=TaskStatus.DEFINED,
+            branch_name="feature/target" if tid == "target" else None,
+            pr_url="https://example.invalid/pr/target" if tid == "target" else None,
         ))
+    # Keep a valid final-review graph in this fixture. A triage request is
+    # not a final-review request, so its failed lookup must still fall through
+    # to triage's project-wide read grant.
+    for agent_id, profile_id, task_id in (
+        ("reviewer", "reviewer", "review-job"),
+        ("final-reviewer", "final-reviewer", "final-review-job"),
+    ):
+        await db.create_agent(Agent(id=agent_id, name=agent_id, profile_id=profile_id))
+    await db.create_task(Task(
+        id="review-job", project_id="p", title="review", description="Review target",
+        status=TaskStatus.IN_PROGRESS, profile_id="reviewer", assigned_agent_id="reviewer",
+    ))
+    await db.create_task(Task(
+        id="final-review-job", project_id="p", title="final review", description="Final review",
+        status=TaskStatus.IN_PROGRESS, profile_id="final-reviewer", branch_name="feature/target",
+        assigned_agent_id="final-reviewer",
+    ))
+    for agent_id, task_id in (("reviewer", "review-job"), ("final-reviewer", "final-review-job")):
+        await db.update_agent(agent_id, state=AgentState.BUSY, current_task_id=task_id)
+    await db.create_session(SessionRecord(
+        id="s-final-reviewer", task_id="final-review-job", project_id="p",
+        agent_id="final-reviewer", profile_id="final-reviewer", harness="codex", provider="fake",
+        name="s-final-reviewer", lifecycle="task", state="running", work_dir=str(tmp_path),
+        epoch="test", instance_token="instance-final-reviewer", started_at=time.time(),
+    ))
+    await db.add_dependency("review-job", "target", "discovered-from")
+    await db.add_dependency("final-review-job", "review-job", "blocks")
     gate, _ = await db.create_gate(
         project_id="p", gate_type="routing", title="Route target",
         waiter_task_ids=["target"],
@@ -173,8 +204,8 @@ async def test_triage_reads_only_open_routing_gates_in_its_project(api):
 async def test_triage_reads_global_and_own_project_profiles(api):
     result = api.result(await api.post("list_profiles"))
     ids = {profile["id"] for profile in result["profiles"]}
-    assert ids == {"triage", "coder", "project:p:coder"}
-    assert result["count"] == 3
+    assert ids == {"triage", "coder", "reviewer", "final-reviewer", "project:p:coder"}
+    assert result["count"] == 5
 
 
 async def test_triage_reads_intelligence_classes(api):
