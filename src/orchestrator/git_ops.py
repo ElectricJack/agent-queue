@@ -31,11 +31,9 @@ logger = logging.getLogger(__name__)
 #: (work-graph design §"outcome metadata").
 WORK_OUTCOME_NO_OP = "no-op"
 
-#: Stage profiles whose prompt forbids editing code ("Never edit code. Your
-#: workspace is read-only.").  They never commit, push or open a PR on their
-#: own task branch, so the git-verification and integration phases have
-#: nothing to check for them.  Mirrors the review-producer set in
-#: ``task_commands.reopen_with_feedback``.
+#: Legacy stage profile ids used only when profile resolution is unavailable.
+#: The declarative ``AgentProfile.read_only`` flag is the normal no-code
+#: signal; these preserve the old safe skip for unsynced profile rows.
 NO_CODE_PROFILE_IDS = frozenset({"reviewer", "final-reviewer"})
 
 
@@ -355,18 +353,20 @@ class GitOpsMixin:
     # The completion pipeline runs: commit → verify → integrate.
     # Each phase receives a PipelineContext and returns a PhaseResult.
 
-    def _task_produces_no_code(self, ctx: PipelineContext) -> bool:
+    async def _task_produces_no_code(self, ctx: PipelineContext) -> bool:
         """True when the task by construction leaves no commits behind.
 
         Two signals, either is enough:
 
         * the agent closed with ``--work-outcome no-op`` — its own statement
           that nothing was produced;
-        * the task runs one of the read-only review stage profiles
-          (``reviewer`` / ``final-reviewer``): their prompt forbids editing
-          code, they report verdicts through ``reopen_with_feedback`` and
-          ``pr_merge``, and they never push or open a PR on their own
-          ``aq/<id>`` branch.
+        * its effective profile declares ``read_only: true``: such profiles
+          do not commit, push, or open a PR on their own task branch.
+
+        Profile resolution follows the regular task path, including a
+        project-scoped override.  The legacy review ids are retained only
+        while a profile is unavailable (for example, during profile sync),
+        so a custom read-only review profile receives the same treatment.
 
         Such a task has nothing to push, PR or merge, so
         :meth:`_phase_verify` waves it through and
@@ -376,6 +376,15 @@ class GitOpsMixin:
         """
         if (ctx.work_outcome or "").strip().lower() == WORK_OUTCOME_NO_OP:
             return True
+        try:
+            profile = await self._resolve_profile(ctx.task)
+        except Exception as exc:
+            logger.warning(
+                "Task %s: unable to resolve profile for no-code check: %s", ctx.task.id, exc
+            )
+            profile = None
+        if profile is not None:
+            return bool(profile.read_only)
         return (ctx.task.profile_id or "") in NO_CODE_PROFILE_IDS
 
     async def _sweep_uncommitted_before_skip(self, ctx: PipelineContext) -> None:
@@ -457,7 +466,7 @@ class GitOpsMixin:
         # A no-code task (reviewer stage, ``--work-outcome no-op``) has
         # nothing to integrate — running it would only force-push an empty
         # ``aq/<id>`` branch to origin.
-        if self._task_produces_no_code(ctx):
+        if await self._task_produces_no_code(ctx):
             logger.info(
                 "Task %s: no-code task (profile=%s, work_outcome=%s), skipping integration",
                 ctx.task.id,
@@ -520,12 +529,12 @@ class GitOpsMixin:
             logger.info("Task %s: skip_verification=True, skipping git verification", task.id)
             return PhaseResult.CONTINUE
 
-        # A task that produces no code — a reviewer / final-reviewer stage
-        # task, or any task closed with ``--work-outcome no-op`` — has
+        # A task that produces no code — a read-only profile or any task
+        # closed with ``--work-outcome no-op`` — has
         # nothing to push, PR or merge.  The require-a-PR gate below would
         # only burn its verification retries and append misleading feedback
         # to a clean review verdict.  Sweep dirty state and pass.
-        if self._task_produces_no_code(ctx):
+        if await self._task_produces_no_code(ctx):
             logger.info(
                 "Task %s: no-code task (profile=%s, work_outcome=%s), "
                 "skipping git verification",

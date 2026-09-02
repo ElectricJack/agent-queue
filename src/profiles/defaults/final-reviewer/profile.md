@@ -9,7 +9,7 @@ tags: [system, review, merge-authority, dv2-phase2]
 ```json
 {
   "needs_workspace": true,
-  "read_only": false,
+  "read_only": true,
   "default_class": "standard-medium",
   "description": "Runs once per branch after all per-task reviews complete. Reads the aggregate PR, verifies CI is green, and merges the PR (this is the only profile with merge authority).",
   "harness": "claude",
