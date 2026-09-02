@@ -138,6 +138,68 @@ def test_load_verifies_hash_before_parsing_and_rejects_invalid_identifiers(tmp_p
         store.load("../artifact")
 
 
+def _tampered(store, text):
+    """Write ``text`` under the digest of its own bytes and return that digest."""
+    import hashlib
+    from pathlib import Path
+
+    data = text.encode("utf-8")
+    sha = "sha256:" + hashlib.sha256(data).hexdigest()
+    path = Path(store.path_for(sha))
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path.write_bytes(data)
+    return sha
+
+
+def test_load_rejects_a_hash_valid_artifact_that_carries_a_duplicate_key(tmp_path):
+    """§7.1's loader, not ``model_validate_json``, is what ``load`` parses with.
+
+    Content addressing proves only that the bytes are the bytes that were
+    asked for.  A duplicate object key survives that check intact, and a
+    lenient parse resolves it to the *last* occurrence — which is how a
+    hash-valid artifact could be loaded here as ``schema_version=2`` while
+    ``aq playbook v2 validate`` rejected the same file outright.
+    """
+    import json
+
+    from src.playbooks.artifact_store import ArtifactStore
+    from src.playbooks.definition import DuplicateJsonKey, PlaybookDefinition
+
+    store = ArtifactStore(str(tmp_path))
+    text = json.dumps(twin()).replace(
+        '"schema_version": 2', '"schema_version": 1, "schema_version": 2', 1
+    )
+    # The lenient parse is what made this a bug: it accepts the smuggled key.
+    assert PlaybookDefinition.model_validate_json(text).schema_version == 2
+
+    sha = _tampered(store, text)
+    with pytest.raises(DuplicateJsonKey) as caught:
+        store.load(sha)
+    assert caught.value.key == "schema_version"
+
+
+def test_load_rejects_a_hash_valid_artifact_with_duplicate_step_ids(tmp_path):
+    """The collision Pydantic cannot see: ``steps`` is a dict by the time it looks."""
+    import json
+
+    from src.playbooks.artifact_store import ArtifactStore
+    from src.playbooks.definition import DuplicateJsonKey
+
+    store = ArtifactStore(str(tmp_path))
+    text = json.dumps(twin()).replace(
+        '"end": {',
+        '"end": {"type": "terminal", "rule": "r1", "title": "x", '
+        '"outcome": "completed", "source": {"path": "p", "start_line": 1, '
+        '"end_line": 1}}, "end": {',
+        1,
+    )
+    sha = _tampered(store, text)
+
+    with pytest.raises(DuplicateJsonKey) as caught:
+        store.load(sha)
+    assert caught.value.code == "duplicate_step_id"
+
+
 # ---------------------------------------------------------------------------
 # A-9 — retention sweep, file half (child plan §12).
 #

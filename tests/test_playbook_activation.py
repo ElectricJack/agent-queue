@@ -898,6 +898,97 @@ async def test_read_path_command_and_doctors_report_a_mutated_artifact_sha_misma
     assert integrity.data["faults"][0]["problem"] == "hash_mismatch"
 
 
+async def _activate_tampered_artifact(db, tmp_path, text):
+    """Activate ``text`` as an artifact addressed by the digest of its own bytes.
+
+    Deliberately not routed through ``ArtifactStore.put``: the point is a file
+    the store would never have written, whose row and filename still agree with
+    its content, so the SHA check cannot be what rejects it.
+    """
+    import hashlib
+    from pathlib import Path
+
+    from src.playbooks.activation import profile_fingerprint
+    from src.playbooks.artifact_ref import ARTIFACT_SCHEMA_GENERATION, ArtifactRef
+    from src.playbooks.artifact_store import ArtifactStore
+    from tests.playbook_v2_helpers import stub_policies
+
+    policies = stub_policies()
+    profiles = {"worker": policies["worker"].fingerprint()}
+    aggregate = profile_fingerprint(profiles)
+    data = text.encode("utf-8")
+    sha = "sha256:" + hashlib.sha256(data).hexdigest()
+    store = ArtifactStore(str(tmp_path))
+    path = Path(store.path_for(sha))
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path.write_bytes(data)
+    ref = ArtifactRef(
+        playbook_id="twin",
+        artifact_sha256=sha,
+        schema_generation=ARTIFACT_SCHEMA_GENERATION,
+        contract_fingerprint="sha256:" + "b" * 64,
+        source_digest="sha256:" + "c" * 64,
+        compiler_build="test-build",
+        version=1,
+    )
+    await db.upsert_playbook_artifact(
+        ref,
+        scope="system",
+        profile_fingerprint=aggregate,
+        path=str(path),
+        size_bytes=len(data),
+    )
+    await db.set_playbook_activation(
+        playbook_id=ref.playbook_id,
+        scope="system",
+        scope_identifier="",
+        artifact_sha256=sha,
+        enabled=True,
+        activated_by="operator",
+        health="ready",
+        reasons="[]",
+    )
+    return ref
+
+
+@pytest.mark.asyncio
+async def test_read_path_never_reports_ready_for_a_duplicate_key_artifact(db, tmp_path):
+    """Health parses stored artifacts with §7.1's loader, not a lenient one.
+
+    A duplicate key is invisible to ``model_validate_json`` -- it keeps the
+    last occurrence -- so before Package 2's loader was routed in, this
+    activation read as ``ready`` off an artifact ``aq playbook v2 validate``
+    rejects.  The ``db`` fixture runs the regression on SQLite and PostgreSQL.
+    """
+    from src.playbooks.activation import (
+        ActivationHealth,
+        _load_definition,
+        load_activation_health,
+    )
+    from src.playbooks.definition import DuplicateJsonKey, canonical_bytes, load_definition_json
+    from tests.playbook_v2_helpers import StubContracts, StubProfiles, stub_policies
+
+    policies = stub_policies()
+    definition = _definition({"worker": policies["worker"].fingerprint()})
+    # The canonical text is key-sorted, so prefixing the root object is the
+    # smallest way to give it a second ``schema_version`` without moving bytes.
+    text = canonical_bytes(definition).decode("utf-8").replace(
+        "{", '{"schema_version":2,', 1
+    )
+    with pytest.raises(DuplicateJsonKey):
+        load_definition_json(text)
+
+    ref = await _activate_tampered_artifact(db, tmp_path, text)
+    stored = str(tmp_path / "artifacts" / f"{ref.digest}.json")
+    assert _load_definition(stored, ref.artifact_sha256) is None
+
+    records = await load_activation_health(
+        db, contracts=StubContracts(), profiles=StubProfiles(), enabled_only=True
+    )
+    assert [record.health for record in records] == [ActivationHealth.UNAVAILABLE]
+    assert [reason.code for reason in records[0].reasons] == ["artifact_missing"]
+
+
 # -- doctor: playbooks.activation_stale --------------------------------------
 
 

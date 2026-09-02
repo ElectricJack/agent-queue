@@ -12,6 +12,7 @@ from src.playbooks.definition import (
     PlaybookDefinition,
     artifact_sha256 as definition_artifact_sha256,
     canonical_bytes as definition_canonical_bytes,
+    load_definition_json,
 )
 from src.playbooks.run_state import (
     ArtifactHashCollision,
@@ -107,11 +108,20 @@ class ArtifactStore:
         )
 
     def load(self, artifact_sha256: str) -> PlaybookDefinition:
+        """Verify the bytes, then parse them through the strict Package 2 loader.
+
+        The hash check alone does not make stored text safe to parse loosely:
+        a file whose bytes hash to what the caller asked for can still carry a
+        duplicate object key, and ``model_validate_json`` silently keeps the
+        last one.  ``load_definition_json`` is the one parse §7.1 defines, so
+        an artifact that ``aq playbook v2 validate`` rejects cannot be loaded
+        here as though it were well-formed.
+        """
         path = Path(self.path_for(artifact_sha256))
         data = path.read_bytes()
         if self._sha(data) != artifact_sha256:
             raise ArtifactVerificationFailed(f"artifact at {path} does not match {artifact_sha256}")
-        return PlaybookDefinition.model_validate_json(data)
+        return load_definition_json(data.decode("utf-8"))
 
     def delete(self, artifact_sha256: str) -> bool:
         path = Path(self.path_for(artifact_sha256))
