@@ -41,13 +41,25 @@ Ships five rules:
   proposal so the approved batch is written into the task graph.
 
 Both review rules also require `event.no_code` to be falsy. The session close
-path sets `no_code: true` on `task.completed` when the task by construction
-left no commits behind — a `read_only: true` profile (the shipped `reviewer`
-and `final-reviewer`) or a close with `--work-outcome no-op`. Reviewer tasks
-run on a slot checked out on their own `aq/<id>` branch, so they carry a
-`branch_name` like any other session task; without this guard every finished
-review spawned a review *of the review*, recursively. Emitters that do not set
-the key (container settlement, custom pipelines) still fire the review.
+path sets `no_code: true` on `task.completed` when the task left no commits
+behind. Two things say so:
+
+- **by construction** — a `read_only: true` profile (the shipped `reviewer`
+  and `final-reviewer`) or a close with `--work-outcome no-op`;
+- **in fact** — the task branch carried no commits ahead of its base when the
+  completion pipeline asked, just before integration could merge it away
+  (`_branch_left_no_commits`). A branch with an empty diff has nothing for a
+  reviewer to read whatever produced it, including an ordinary worker that
+  closed `pass` having committed nothing. The question is only asked where
+  the answer survives the close — a worktree slot or `pull_request` mode; on
+  the legacy direct path verification has already merged the branch into the
+  default, so the review still fires there.
+
+Reviewer tasks run on a slot checked out on their own `aq/<id>` branch, so
+they carry a `branch_name` like any other session task; without this guard
+every finished review spawned a review *of the review*, recursively. Emitters
+that do not set the key (container settlement, custom pipelines) still fire
+the review.
 
 Both review rules also require `event.review_task` to be falsy. `no_code` is
 only as reliable as the reviewer profile's `read_only` flag: a project that
