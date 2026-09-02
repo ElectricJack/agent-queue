@@ -5,6 +5,7 @@ Mirrors key tests from test_git_manager.py but exercises the async methods
 """
 
 import asyncio
+import json
 import pathlib
 import subprocess
 
@@ -1042,3 +1043,127 @@ async def test_async_merge_pr_handles_invalid_method_timeout_and_sha(mgr, monkey
     result = await mgr.amerge_pr("/repo", pr_url, method="rebase")
     assert result == {"success": True, "sha": sha, "error": None}
     assert calls[-1] == ["gh", "pr", "merge", pr_url, "--rebase", "--delete-branch"]
+
+
+# ------------------------------------------------------------------
+# afind_open_pr — name match, then commit match
+# ------------------------------------------------------------------
+
+
+class TestAfindOpenPr:
+    """A PR delivers commits, not a branch name.
+
+    The task branch is the daemon's handle on the work, but a task
+    description that names a different delivery branch (or an agent that
+    opens the PR from a second ref pointed at the same tip) publishes the
+    very same commits under another head name.  Failing verification for
+    that sends a correct, pushed task into a pointless retry, so the tip
+    counts as well as the name.
+    """
+
+    @staticmethod
+    def _fake_gh(mgr, monkeypatch, *, by_name: str = "", prs: list[dict] | None = None):
+        from types import SimpleNamespace
+
+        calls: list[list[str]] = []
+        real = mgr._arun_subprocess
+
+        async def fake_subprocess(args, cwd=None, timeout=None, **kwargs):
+            if args[:3] != ["gh", "pr", "list"]:
+                return await real(args, cwd=cwd, timeout=timeout, **kwargs)
+            calls.append(args)
+            if "--head" in args:
+                return SimpleNamespace(returncode=0, stdout=by_name, stderr="")
+            return SimpleNamespace(returncode=0, stdout=json.dumps(prs or []), stderr="")
+
+        monkeypatch.setattr(mgr, "_arun_subprocess", fake_subprocess)
+        return calls
+
+    @pytest.mark.asyncio
+    async def test_head_name_match_wins_without_a_second_query(
+        self, clone, mgr, monkeypatch
+    ):
+        calls = self._fake_gh(mgr, monkeypatch, by_name="https://gh/org/repo/pull/1\n")
+        url = await mgr.afind_open_pr(clone, "main")
+        assert url == "https://gh/org/repo/pull/1"
+        assert len(calls) == 1, "a name match must not cost a second gh call"
+
+    @pytest.mark.asyncio
+    async def test_open_pr_from_another_branch_at_the_same_tip_counts(
+        self, clone, mgr, monkeypatch
+    ):
+        _git(["checkout", "-b", "aq/t-1"], cwd=clone)
+        _commit_file(clone, "work.txt", "done", "work")
+        tip = _git(["rev-parse", "aq/t-1"], cwd=clone)
+        _git(["branch", "feature/delivery", "aq/t-1"], cwd=clone)
+        _git(["checkout", "main"], cwd=clone)
+
+        self._fake_gh(
+            mgr,
+            monkeypatch,
+            by_name="",
+            prs=[
+                {
+                    "url": "https://gh/org/repo/pull/43",
+                    "headRefName": "feature/delivery",
+                    "headRefOid": tip,
+                }
+            ],
+        )
+        assert await mgr.afind_open_pr(clone, "aq/t-1") == "https://gh/org/repo/pull/43"
+
+    @pytest.mark.asyncio
+    async def test_open_prs_at_other_commits_are_not_accepted(
+        self, clone, mgr, monkeypatch
+    ):
+        _git(["checkout", "-b", "aq/t-1"], cwd=clone)
+        _commit_file(clone, "work.txt", "done", "work")
+        _git(["checkout", "main"], cwd=clone)
+
+        self._fake_gh(
+            mgr,
+            monkeypatch,
+            by_name="",
+            prs=[
+                {
+                    "url": "https://gh/org/repo/pull/44",
+                    "headRefName": "someone-else",
+                    "headRefOid": "0" * 40,
+                }
+            ],
+        )
+        assert await mgr.afind_open_pr(clone, "aq/t-1") is None
+
+    @pytest.mark.asyncio
+    async def test_head_commit_counts_when_the_task_branch_never_moved(
+        self, clone, mgr, monkeypatch
+    ):
+        """The agent committed on its own delivery branch and left the
+        workspace there; ``aq/<task>`` still points at the start point."""
+        _git(["branch", "aq/t-1"], cwd=clone)
+        _git(["checkout", "-b", "feature/delivery"], cwd=clone)
+        tip = _commit_file(clone, "work.txt", "done", "work")
+
+        self._fake_gh(
+            mgr,
+            monkeypatch,
+            by_name="",
+            prs=[
+                {
+                    "url": "https://gh/org/repo/pull/45",
+                    "headRefName": "feature/delivery",
+                    "headRefOid": tip,
+                }
+            ],
+        )
+        assert await mgr.afind_open_pr(clone, "aq/t-1") == "https://gh/org/repo/pull/45"
+
+    @pytest.mark.asyncio
+    async def test_unparseable_gh_output_is_not_an_error(self, clone, mgr, monkeypatch):
+        from types import SimpleNamespace
+
+        async def fake_subprocess(args, cwd=None, timeout=None, **kwargs):
+            return SimpleNamespace(returncode=1, stdout="not json", stderr="boom")
+
+        monkeypatch.setattr(mgr, "_arun_subprocess", fake_subprocess)
+        assert await mgr.afind_open_pr(clone, "aq/t-1") is None
