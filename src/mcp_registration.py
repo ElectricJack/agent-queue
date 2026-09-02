@@ -60,6 +60,15 @@ DEFAULT_EXCLUDED_COMMANDS = {
     # is loopback + elevated-only.  Dev/e2e facility; see
     # ``SessionCommandsMixin._cmd_session_token``.
     "session_token",
+    # Harness-hook telemetry writer, not an agent action.  ``subagent_event``
+    # records one SubagentStart/SubagentStop emitted by the harness's own hook
+    # process, and it takes the session identity from the bearer token's scope
+    # rather than the payload (see
+    # ``SurfaceCommandsMixin._cmd_subagent_event``).  Its callers are the
+    # harness hook via ``aq subagent event --hook-json`` and the HTTP surface
+    # that backs it; an LLM has no reason to hand-write its own subagent
+    # telemetry, and exposing it would only invite fabricated counts.
+    "subagent_event",
 }
 
 
