@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
-from fastapi.testclient import TestClient
+from httpx import ASGITransport, AsyncClient
 
 from tests.pg_dsn import ensure_worker_postgres_dsn
 
@@ -70,6 +70,7 @@ async def pool_api(tmp_path, monkeypatch):
         data_dir=str(data_dir),
         workspace_dir=str(tmp_path / "workspaces"),
     )
+    config.swarm.enabled = True
     orch = Orchestrator(config)
     orch.db = db
     orch.git = MagicMock()
@@ -81,7 +82,10 @@ async def pool_api(tmp_path, monkeypatch):
         deps._require_session_token,
     )
     try:
-        with TestClient(create_app(orch, config)) as client:
+        async with AsyncClient(
+            transport=ASGITransport(app=create_app(orch, config)),
+            base_url="http://test",
+        ) as client:
             yield client, Path(data_dir)
     finally:
         (
@@ -94,11 +98,11 @@ async def pool_api(tmp_path, monkeypatch):
         await db.close()
 
 
-def test_pool_management_routes_round_trip_on_postgres(pool_api):
+async def test_pool_management_routes_round_trip_on_postgres(pool_api):
     """Lifecycle, bounds, and status use the same typed API over Postgres."""
     client, data_dir = pool_api
 
-    lifecycle = client.post(
+    lifecycle = await client.post(
         "/api/pool/set-lifecycle",
         json={"project_id": "pool-project", "profile_id": "worker", "lifecycle": "task"},
     )
@@ -108,20 +112,20 @@ def test_pool_management_routes_round_trip_on_postgres(pool_api):
         data_dir / "vault" / "projects" / "pool-project" / "agent-types" / "worker" / "profile.md"
     ).read_text(encoding="utf-8")
 
-    enabled = client.post(
+    enabled = await client.post(
         "/api/pool/set-lifecycle",
         json={"project_id": "pool-project", "profile_id": "worker", "lifecycle": "pool"},
     )
     assert enabled.status_code == 200, enabled.text
 
-    scaled = client.post(
+    scaled = await client.post(
         "/api/pool/scale",
         json={"project_id": "pool-project", "profile_id": "worker", "min": 0, "max": None},
     )
     assert scaled.status_code == 200, scaled.text
     assert scaled.json()["project_cap"] == scaled.json()["effective_max_active"] == 2
 
-    status = client.post("/api/pool/status", json={"project_id": "pool-project"})
+    status = await client.post("/api/pool/status", json={"project_id": "pool-project"})
     assert status.status_code == 200, status.text
     assert status.json()["pools"] == [
         {
@@ -136,6 +140,7 @@ def test_pool_management_routes_round_trip_on_postgres(pool_api):
             "draining": 0,
             "ready": 0,
             "quarantined_until": None,
+            "quarantined_reason": None,
             "instances": [],
         }
     ]
