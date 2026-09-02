@@ -50,6 +50,7 @@ vault watcher; no restart, no release.
     {
       "name": "trust-folder",
       "pattern": "Do you trust the files in this folder|Is this a project you created or one you trust",
+      "is_regex": true,
       "keys": [
         "Enter"
       ]
@@ -152,9 +153,15 @@ absent: resuming a session and returning from a PreCompact.
 
 **There is no `UserPromptSubmit` hook** (removed 2026-08-27). It ran
 `aq inbox --inject` at every prompt boundary, which cost ~1.3 s of Python
-interpreter startup per prompt and delivered nothing: `aq inbox` is a
-Phase S1 stub that returns immediately (`src/cli/agent_surface.py`) and
-was never repointed at the real `aq message inbox --inject`.
+interpreter startup per prompt for a delivery path the cascade's nudge
+already covers.
+
+(The 2026-08-27 note here also claimed `aq inbox` delivered nothing
+because it was a Phase S1 stub. That was wrong: two modules registered
+`aq inbox` on the click root group and `src/cli/messages.py`'s real
+command won in the normal import order — the stub only won in a process
+that imported `src.cli.agent_surface` first. The stub has since been
+deleted, so `aq inbox` is unambiguously the real `messages.py` command.)
 
 Nothing is lost. A message queued while the session is mid-turn is
 delivered by the cascade's nudge as soon as the session goes idle — which

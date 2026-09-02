@@ -110,6 +110,19 @@ Under the base git mutex:
 
 Slots are created lazily up to the cap, on demand when acquisition finds fewer free slots than the cap allows.
 
+**The dispatch that grows the pool takes the slot it grew.** Growth runs immediately before acquisition, with no intervening await, and the new slot's `workspaces` id is passed to acquisition as its preference. Otherwise the growth-triggering task funds a slot and then loses it to whichever concurrent dispatch reaches `acquire_one_unlocked` first — observed 2026-09-02 as a priority-3 task starving for ~40 minutes behind lower-priority work that kept taking the slots it provisioned. The preference is still soft: an explicit `preferred_workspace_id`, and the branch-affinity hint of §3.4, both outrank it, because those are correctness constraints and this is a fairness one.
+
+A dispatch that finds nothing to acquire is PAUSED with a backoff, and the reason it waited decides what happens next:
+
+| Wait | Meaning | Handling |
+|---|---|---|
+| `slot_lost_race` | this dispatch created a slot and another took it | short backoff (one cycle) — nothing is being built, the task just has to be visible to priority ordering again |
+| `slot_stalled` | growth was needed and produced no row | full backoff, logged loudly — unlike a ramp this never clears itself |
+| `slot_warming` | the pool is genuinely mid-ramp | full backoff, logged quietly |
+| `slots_full` | the pool is at cap, every slot busy | full backoff, logged quietly — honest contention, and not something `/add-workspace` can fix |
+
+All four end the moment *any* in-cap slot frees, so the cascade returns every task on one of them to READY in that same cycle rather than waiting out its timer. The scheduler then picks by `(priority, id)` as it always does — which is what makes the highest-priority waiter, not the one whose backoff happened to expire first, the one that takes a freed slot. Waits a free slot does **not** resolve (a branch checked out in another worktree, an exhausted clone pool) keep their timer.
+
 ### 3.2 Reset (every assignment)
 
 A slot is reused across tasks; per assignment it is reset to a pristine per-task state:

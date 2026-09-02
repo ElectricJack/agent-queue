@@ -14,7 +14,6 @@ from src.profiles.capabilities import CapabilityPolicy
 from src.profiles.parser import parse_profile
 from src.vault import ensure_default_profiles, ensure_vault_layout
 
-
 SHIPPED_PROFILE_IDS = ("supervisor", "planner", "reviewer", "final-reviewer")
 WORKER_PROFILE_IDS = ("worker-fast", "worker-standard", "worker-deep")
 
@@ -246,3 +245,29 @@ def test_playbook_compiler_profile_shape():
     tools = (parsed.capabilities or {}).get("aq_commands", [])
     assert "playbook_validate" in tools
     assert "playbook_install" in tools
+
+
+# ---------------------------------------------------------------------------
+# Reviewer protocol: a task that produced no code can never have a PR
+# ---------------------------------------------------------------------------
+
+
+def test_reviewer_profile_does_not_reject_solely_for_a_missing_pr():
+    """The reviewer must not demand a PR from a task that left no commits.
+
+    Reviews, plans, ``no-op`` closes and empty branches have nothing to
+    push, so "reject: open a PR first" reopens them into a dead end and
+    the reopen → re-review loop is what grew the ``Review: Review: ...``
+    chains (task solid-bridge-31).
+    """
+    src = Path("src/profiles/defaults/reviewer/profile.md").read_text(encoding="utf-8")
+    parsed = parse_profile(src)
+    assert parsed.is_valid, parsed.errors
+    prompt = f"{parsed.role}\n{parsed.rules}".lower()
+
+    assert "open a pr first" not in prompt
+    assert "a missing pr is not" in prompt
+    assert "no commits ahead of its base" in prompt
+    # The reviewer is told how to tell the two cases apart with tools it has.
+    assert "task_show" in prompt
+    assert "task_comments" in prompt

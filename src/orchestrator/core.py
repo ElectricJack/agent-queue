@@ -100,6 +100,7 @@ from src.models import (
     Task,
     TaskStatus,
 )
+from src.review_keys import flag_review_task_event
 from src.scheduler import AssignAction, Scheduler, SchedulerState, idle_workers
 from src.tokens.budget import BudgetManager
 from src.vault_manager import VaultManager
@@ -483,6 +484,15 @@ class Orchestrator(
         # Read and cleared by _execute_task's no-workspace backoff so it can
         # stay quiet about an expected wait.  Keyed by task id.
         self._workspace_wait_reasons: dict[str, str] = {}
+        # Tasks parked in the no-workspace backoff purely because every
+        # worktree slot was taken — ``{task_id: project_id}``.  That wait ends
+        # the moment any slot frees, so the cascade cuts the backoff short
+        # (see ``MonitoringMixin._resume_slot_starved_tasks``) rather than
+        # leaving a high-priority task invisible to the scheduler's priority
+        # ordering for a full backoff window while lower-priority READY tasks
+        # keep taking the slots it waited for.  In-memory by design: losing it
+        # across a restart only costs the ordinary backoff.
+        self._slot_starved_pauses: dict[str, str] = {}
 
     def _git_mutex(self, workspace_path: str) -> asyncio.Lock:
         """Get or create an asyncio.Lock for shared git operations on a workspace."""
@@ -868,6 +878,15 @@ class Orchestrator(
                             hydrated_event.get("task_id"),
                             exc_info=True,
                         )
+                # A task the pipeline itself created as a review (``review:task:``
+                # / ``branch-review:`` dedup key) is a review whatever the emitter
+                # said: the close path flags ``review_task`` too, but the rules'
+                # ``truthy: false`` guard passes on a missing key, so an emitter
+                # that omits it (older daemon code, container settlement, a
+                # hand-written event) would review the review again — and so on.
+                task_dict = hydrated_event.get("task")
+                if isinstance(task_dict, dict):
+                    flag_review_task_event(hydrated_event, task_dict.get("dedup_key"))
 
                 # Multi-rule pipelines store a trigger → list of rule metas
                 # mapping in ``pipeline_rules``.  When present, we dispatch

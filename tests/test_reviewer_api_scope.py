@@ -23,6 +23,7 @@ from src.api.auth import SessionTokenStore
 from src.api.codegen import build_category_routers
 from src.api.execute import router as execute_router
 from src.api.middleware import TokenAuthMiddleware
+from src.api.scope import _FINAL_REVIEWER_COMMANDS, _TRIAGE_COMMANDS
 from src.commands.handler import CommandHandler
 from src.config import AppConfig, DiscordConfig
 from src.database import Database
@@ -225,6 +226,20 @@ async def test_final_reviewer_can_reopen_workers_from_its_review_branch(api):
 async def test_final_reviewer_can_read_workers_from_its_review_branch(api):
     result = api.result(await api.post(
         "task_show", {"task_id": "reviewed"}, worker="final-reviewer-agent",
+    ))
+    assert result["id"] == "reviewed"
+
+
+@pytest.mark.parametrize("command", sorted(_FINAL_REVIEWER_COMMANDS & _TRIAGE_COMMANDS))
+async def test_final_reviewer_keeps_its_carve_out_for_commands_triage_also_claims(api, command):
+    """The shared read commands must not cost the final reviewer its grant.
+
+    The mirror of the triage-side regression: making the final-reviewer block
+    fall through when the session is not a final reviewer must not weaken the
+    branch-bound grant for a session that *is* one.
+    """
+    result = api.result(await api.post(
+        command, {"task_id": "reviewed"}, worker="final-reviewer-agent",
     ))
     assert result["id"] == "reviewed"
 

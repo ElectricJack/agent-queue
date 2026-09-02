@@ -176,31 +176,23 @@ def handoff(ctx: click.Context, subject, detail, auto, task_id, session_id, clai
 # ---------------------------------------------------------------------------
 # aq inbox --inject — design §6.2, implementation §5.3
 #
-# STUB (Phase S1): the `messages` table query layer (supervisor-agent) is
-# being built in a parallel lane and does not exist at this branch point.
-# Per the implementation spec's own S1 note, this ships as a no-op: always
-# prints nothing and exits 0.
+# There is no `inbox` command here any more. This module used to carry the
+# Phase S1 no-op stub, kept "so an already-launched session whose rendered
+# hook file still names it does not start failing" long after the real
+# query layer landed. But `src/cli/messages.py` registers `aq inbox` on the
+# same click root group, so the two names collided: `app.py` imports this
+# module first and the real command normally won, yet any process that
+# imported `src.cli.agent_surface` directly finished this module's body
+# last and silently downgraded `aq inbox` to the no-op. That is the same
+# shadowing that cost CI `aq logs -F` (dceb2c3f), and
+# tests/test_cli_module_entry.py now guards both.
 #
-# 2026-08-27: the query layer landed long ago under `aq message inbox
-# --inject` and this was never repointed at it.  The UserPromptSubmit hook
-# that called this has been removed rather than left paying ~1.3 s of
-# interpreter startup per prompt for a command that returns immediately.
-# The stub stays so an already-launched session whose rendered hook file
-# still names it does not start failing; anything wanting real prompt-
-# boundary injection should call `aq message inbox --inject` and be
-# measured against the nudge path first.
+# The stub's compatibility job is covered by the surviving command:
+# `src/cli/messages.py`'s `aq inbox` takes `--inject` and is hook-safe by
+# design (daemon down, no recipient, or a command error all exit 0 with no
+# stdout), so a stale hook file naming `aq inbox --inject` keeps working —
+# and now actually delivers messages.
 # ---------------------------------------------------------------------------
-
-
-@cli.command("inbox")
-@click.option(
-    "--inject",
-    is_flag=True,
-    help="UserPromptSubmit hook body: print pending messages for prompt injection.",
-)
-def inbox(inject: bool) -> None:
-    """Print pending messages for this session's task (stub — see module docstring)."""
-    return
 
 
 # ---------------------------------------------------------------------------

@@ -15,7 +15,8 @@ The daemon's message bus carries three kinds of frames: agent → user
 
 ```bash
 aq message inbox                              # your session's pending messages
-aq message inbox --json                       # structured
+aq --json message inbox                       # structured (--json is a
+                                              # top-level flag, before the group)
 aq message list --project <pid>               # everything sent in a project
 aq message list --thread-id dashboard:<pid>   # filter to a chat thread
 ```
@@ -43,31 +44,29 @@ Use `aq session nudge` only for low-level diagnostics; it is not a reliable
 supervisor-to-worker delivery surface.
 
 ```bash
-# To the human via the project's Discord / dashboard channel:
-aq message send --to user --project <pid> \
+# To the human via the project's Discord / dashboard channel.  The canonical
+# human-operator recipient is user:dashboard:
+aq message send --to user:dashboard --project <pid> \
   --body "Blocked on the API key rotation — details in task xyz."
 
 # To another session (e.g. the supervisor):
-aq message send --to session --to-id supervisor-<pid> \
+aq message send --to session:supervisor-<pid> \
   --body "Please clear the merge conflict on branch aq/foo."
 
 # To a specific task's assigned agent:
-aq message send --to task --to-id <task_id> \
+aq message send --to task:<task_id> \
   --body "Rebase your branch on main before continuing."
 ```
 
-Recipients are `user`, `session`, or `task`. `to-id` disambiguates:
-- `user` → project id or Discord channel id.
-- `session` → session name (e.g. `supervisor-demo`, `s-my-task`).
-- `task` → task id.
+Recipients use `KIND:ID` syntax. `dashboard` is the canonical ID for the
+human operator; other recipient IDs identify the specific session or task.
 
 ## Reply
 
 Replies preserve threading so the receiver can trace the exchange:
 
 ```bash
-aq message reply --message-id <original_msg_id> \
-  --body "Yes, proceed. I've cleared the gate."
+aq message reply <original_msg_id> "Yes, proceed. I've cleared the gate."
 ```
 
 ## Report a blocker
@@ -76,7 +75,7 @@ The ask_human command is not available in the current build. For a mid-task
 blocking question, report the blocker through the supported message queue:
 
 ```bash
-aq message send --to user --project <pid> --body "Blocked: should I use the v1 or v2 schema for the migration?"
+aq message send --to user:dashboard --project <pid> --body "Blocked: should I use the v1 or v2 schema for the migration?"
 ```
 
 Include the task id and the decision needed in the message body so the

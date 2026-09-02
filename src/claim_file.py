@@ -1,12 +1,16 @@
-"""The on-disk claim file — pure filesystem helpers, no package imports.
+"""The worktree claim file — pure filesystem helpers for the claim fence.
 
-``.aq/claim.json`` inside a worker's work_dir is the swarm claim fence: it
-records which task a pool session holds and at which ``claim_epoch``.  Both
-``src.commands.claim_commands`` (which writes it) and
-``src.sessions.reconciler`` (which reads it during release) need these
-helpers, and the reconciler is imported *by* the command package's session
-mixin.  Keeping them here — a leaf module that imports nothing from ``src``
-— is what stops that from being an import cycle.
+``aq task claim`` writes ``.aq/claim.json`` into the worker's work_dir; the
+reconciler and the close path read it back to decide whether a claim still
+belongs to the task they are cleaning up (swarm-work-model §10).
+
+This module exists as a **leaf** on purpose. Both
+:mod:`src.commands.claim_commands` (the CLI/MCP surface) and
+:mod:`src.sessions.reconciler` (the cascade step) need these helpers, and
+importing anything from ``src.commands`` pulls in the whole
+``CommandHandler`` mixin graph — which imports ``src.sessions.reconciler``
+straight back.  Keeping the helpers here, with nothing but stdlib imports,
+is what breaks that cycle.  Do not add project imports to this module.
 """
 
 from __future__ import annotations

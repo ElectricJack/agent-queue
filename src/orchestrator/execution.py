@@ -12,7 +12,7 @@ from src.orchestrator.base_workspace import base_checkout_refusal
 from src.logging_config import CorrelationContext
 from src.discord.notifications import format_task_started
 from src.notifications.builder import build_agent_summary, build_task_detail
-from src.api.models.agent import AgentSummary
+from src.api.models.agent import AgentSettings, AgentSummary
 from src.notifications.events import (
     TaskBlockedEvent,
     TaskCompletedEvent,
@@ -21,6 +21,7 @@ from src.notifications.events import (
     TaskThreadOpenEvent,
 )
 from src.profiles.sync import underlying_agent_type
+from src.review_keys import is_review_completion
 from src.models import (
     AgentOutput,
     AgentResult,
@@ -33,6 +34,23 @@ from src.models import (
 from src.scheduler import AssignAction
 
 logger = logging.getLogger(__name__)
+
+#: Backoff for a dispatch that found no workspace at all.  Long, because
+#: nothing about the wait is under the daemon's control.
+NO_WORKSPACE_BACKOFF_SECONDS = 60
+
+#: Backoff for a dispatch that *provisioned* a worktree slot and then lost it
+#: to a concurrent dispatch.  One orchestrator cycle: the task must be READY
+#: again before the next scheduling round, or priority ordering never sees it.
+LOST_RACE_BACKOFF_SECONDS = 5
+
+#: Wait reasons that a freed worktree slot resolves.  A task parked for one of
+#: these is resumed early by the cascade as soon as the project has an
+#: acquirable slot again, so the highest-priority waiter wins it rather than
+#: whichever task's backoff happened to expire first.
+_SLOT_WAIT_REASONS = frozenset(
+    {"slot_lost_race", "slot_warming", "slot_stalled", "slots_full"}
+)
 
 
 class ExecutionMixin:
@@ -397,7 +415,28 @@ class ExecutionMixin:
             # orchestrator cycle (~5s).  PAUSED + resume_after lets
             # _resume_paused_tasks() promote it back to READY after a delay,
             # giving time for workspaces to free up.
-            no_ws_backoff = 60  # seconds before retrying workspace acquisition
+            #
+            # Why the task waited decides both how long it waits and how
+            # loudly that is reported, so read it up front: some waits are
+            # expected and self-clearing.  Telling the operator to
+            # "/add-workspace" while the slot pool is simply ramping — one
+            # slot per dispatch, so a cold cap-N project needs N-1 rounds —
+            # is both wrong and, at one notice per round, noisy.  Same for
+            # two plan subtasks queueing on their shared parent branch
+            # (worktree-execution §4.4).
+            wait_reason = self._workspace_wait_reasons.pop(action.task_id, None)
+
+            # A task that triggered slot growth and then lost the new slot to
+            # a concurrent dispatch is not waiting for anything to be built —
+            # it needs to be back in the READY pool before the next tick, so
+            # that *priority*, not backoff order, picks the next winner.  The
+            # 60 s default is what let a priority-3 task starve for 40 minutes
+            # behind a steady inflow of priority-30 work.
+            no_ws_backoff = (
+                LOST_RACE_BACKOFF_SECONDS
+                if wait_reason == "slot_lost_race"
+                else NO_WORKSPACE_BACKOFF_SECONDS
+            )
             await self.db.transition_task(
                 action.task_id,
                 TaskStatus.PAUSED,
@@ -414,17 +453,49 @@ class ExecutionMixin:
             await self.db.update_agent(
                 action.agent_id, state=AgentState.IDLE, current_task_id=None
             )
-            # Some waits are expected and self-clearing.  Telling the
-            # operator to "/add-workspace" while the slot pool is simply
-            # ramping — one slot per dispatch, so a cold cap-N project
-            # needs N-1 rounds — is both wrong and, at one notice per
-            # round, noisy.  Same for two plan subtasks queueing on their
-            # shared parent branch (worktree-execution §4.4).
-            wait_reason = self._workspace_wait_reasons.pop(action.task_id, None)
-            if wait_reason == "slot_warming":
+            # Slot waits clear as soon as *any* slot frees, so the cascade
+            # cuts the backoff short rather than leaving the task invisible
+            # to priority ordering for a full window
+            # (``MonitoringMixin._resume_slot_starved_tasks``).
+            if wait_reason in _SLOT_WAIT_REASONS:
+                self._slot_starved_pauses[action.task_id] = action.project_id
+            else:
+                self._slot_starved_pauses.pop(action.task_id, None)
+
+            if wait_reason == "slot_lost_race":
+                logger.info(
+                    "Task %s paused %ds — it provisioned a worktree slot for "
+                    "project %s and a concurrent dispatch took it first; "
+                    "retrying by priority on the next tick",
+                    task.id,
+                    no_ws_backoff,
+                    action.project_id,
+                )
+            elif wait_reason == "slot_warming":
                 logger.info(
                     "Task %s paused %ds — worktree slot pool for project %s is "
                     "still warming up (one slot is provisioned per dispatch)",
+                    task.id,
+                    no_ws_backoff,
+                    action.project_id,
+                )
+            elif wait_reason == "slot_stalled":
+                # Unlike the ramp above this never clears itself: growth was
+                # needed and produced nothing, so no later dispatch will do
+                # any better.  Loud, because only the operator can fix it.
+                logger.warning(
+                    "Task %s paused %ds — worktree slot growth for project %s "
+                    "produced no slot; the pool is not ramping. Check the "
+                    "daemon log for the failing `git worktree add`/setup and "
+                    "run `aq doctor --check worktrees.orphans`",
+                    task.id,
+                    no_ws_backoff,
+                    action.project_id,
+                )
+            elif wait_reason == "slots_full":
+                logger.info(
+                    "Task %s paused %ds — every worktree slot for project %s "
+                    "is busy (pool is at the agent cap)",
                     task.id,
                     no_ws_backoff,
                     action.project_id,
@@ -775,7 +846,7 @@ class ExecutionMixin:
         # the claim file the agent's ``.aq`` tooling reads, and hand the
         # epoch to the harness as ``AQ_CLAIM_EPOCH`` so its writes are
         # fenced identically.
-        from src.commands.claim_commands import write_claim_file
+        from src.claim_file import write_claim_file
 
         claim_epoch = await self.db.bump_claim_epoch(task.id)
         write_claim_file(
@@ -1187,13 +1258,40 @@ class ExecutionMixin:
                 # ``truthy: false`` in the guard means an emitter that does
                 # not set the key (container settlement, hand-written events)
                 # still fires the review, so this only ever narrows.
-                no_code = await self._task_produces_no_code(ctx)
+                #
+                # ``review_task`` is the structural half of the same guard.
+                # ``no_code`` is only as good as the reviewer profile's
+                # ``read_only`` flag: an operator who hands the reviewer
+                # Write/Edit tools (``read_only: false``) turns it off and the
+                # recursion is back (task sound-horizon-77.18.2).  So
+                # ``is_review_completion`` ORs two signals no profile edit can
+                # reach: the ``review:task:`` / ``branch-review:`` dedup key
+                # this pipeline stamps on every review it creates, and the
+                # ``reviewer`` / ``final-reviewer`` profile id.  The second
+                # exists because the first is only the *shipped* pipeline's
+                # mark — a project routing reviews through its own pipeline
+                # keys the rows however it likes, and with a non-read-only
+                # reviewer that left every guard blind and the chain grew
+                # again (task solid-beacon-50).
+                #
+                # ``_on_playbook_trigger`` derives the dedup-key signal from
+                # the task row too, so an emitter that predates this flag
+                # cannot reopen the recursion (task prime-cascade-64).
+                # ``ctx.branch_no_commits`` is the final layer: the
+                # branch itself carried no commits ahead of its base when the
+                # completion pipeline asked, so there is literally nothing for
+                # a reviewer to read (task bright-forge-78).  It catches what
+                # the structural signals cannot — a renamed reviewer profile
+                # used by a custom pipeline, or an ordinary worker that closed
+                # ``pass`` having committed nothing.
+                no_code = await self._task_produces_no_code(ctx) or ctx.branch_no_commits
                 await self._emit_task_event(
                     "task.completed",
                     task,
                     agent_id=task.assigned_agent_id,
                     agent_type=task.profile_id,
                     no_code=no_code,
+                    review_task=is_review_completion(task.dedup_key, task.profile_id),
                 )
             except Exception:
                 # Best-effort, exactly like the notification below it: a
@@ -1302,6 +1400,10 @@ class ExecutionMixin:
                 id=task.assigned_agent_id or "",
                 name=task.assigned_agent_id or "unknown",
                 profile_id=task.profile_id or "",
+                settings=AgentSettings(
+                    name=task.assigned_agent_id or "unknown",
+                    profile_id=task.profile_id or "",
+                ),
             )
         )
 

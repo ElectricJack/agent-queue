@@ -866,7 +866,7 @@ class SessionReconciler:
                     f"`aq task close {row.task_id} --outcome pass|fail --summary \"...\"` "
                     "then `aq session drain-ack`; if it is not done, keep working and "
                     f"run `aq task heartbeat {row.task_id}`; if you are blocked, say so "
-                    'with `aq message send --to user --project "$AQ_PROJECT_ID" '
+                    'with `aq message send --to user:dashboard --project "$AQ_PROJECT_ID" '
                     '--body "Blocked: <question>"`.',
                 )
                 if delivered is None:

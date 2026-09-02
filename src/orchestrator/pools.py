@@ -262,13 +262,14 @@ class PoolsMixin:
                     await self.db.update_session(sid, desired_state="stopped")
                     executed += 1
             if executed:
-                # Persist *and* emit.  The bus is in-process only and
-                # ``pool.`` is not among the WebSocket's forwarded prefixes,
-                # so without the audit row a scaling decision left no trace
-                # any operator surface could read: ``aq pool status`` shows
+                # Persist *and* emit.  The bus is in-process and its
+                # WebSocket forward is live-only -- a client not connected at
+                # the moment of the scale never sees it -- so without the
+                # audit row a scaling decision left no trace any operator
+                # surface could read after the fact: ``aq pool status`` shows
                 # the current shape, never the fact that it changed or when.
-                # ``aq events --event-type pool.scaled`` is the answer to
-                # "why did a worker appear at 03:14?".
+                # ``aq system get-recent-events --event-type pool.scaled`` is
+                # the answer to "why did a worker appear at 03:14?".
                 await self.db.log_event(
                     "pool.scaled",
                     project_id=action.key.project_id,
@@ -407,8 +408,13 @@ class PoolsMixin:
                 return None
 
             worktrees_enabled = self._worktrees_enabled()
+            fresh_slot: str | None = None
             if worktrees_enabled and kind.is_git_repo:
-                await self._ensure_worktree_slots(project, kind.id)
+                # Prefer the slot this launch just paid for, so a concurrent
+                # dispatch cannot take it out from under us (the pool launch
+                # has the same growth-then-lose race task dispatch had).
+                growth = await self._ensure_worktree_slots(project, kind.id)
+                fresh_slot = growth.created.get(kind.id)
 
             workspace = await self.db.acquire_one_unlocked(
                 project_id=project.id,
@@ -416,7 +422,7 @@ class PoolsMixin:
                 mode=kind.default_lock_mode,
                 locked_by_task_id=None,
                 locked_by_agent_id=agent.id,
-                prefer_workspace_id=None,
+                prefer_workspace_id=fresh_slot,
                 kind_mode=(kind.mode if worktrees_enabled and kind.is_git_repo else None),
                 worktree_slot_cap=(self._project_slot_cap(project) if worktrees_enabled else None),
             )
@@ -635,7 +641,7 @@ class PoolsMixin:
         still_owned = agent is None or agent.current_task_id in (None, session.task_id)
         if not other_live and still_owned:
             await self.db.terminate_pool_session(session.id, reason=reason, task_status=task_status)
-            from src.commands.claim_commands import remove_claim_file
+            from src.claim_file import remove_claim_file
             try:
                 remove_claim_file(session.work_dir)
             except Exception:

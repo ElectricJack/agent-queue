@@ -54,6 +54,8 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "list_available_tools": "agent",
     "check_profile": "agent",
     "profile_audit": "agent",
+    "profile_drift": "agent",
+    "profile_reseed": "agent",
     "agent_message": "agent",
     "install_profile": "agent",
     "export_profile": "agent",
@@ -131,6 +133,14 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "create_playbook": "playbook",
     "delete_playbook": "playbook",
     "set_playbook_enabled": "playbook",
+    # playbook V2 semantic graph -- src/commands/playbook_v2_commands.py
+    "playbook_v2_graph": "playbook",
+    "playbook_activation_health": "playbook",
+    "playbook_activate": "playbook",
+    "playbook_artifact_diff": "playbook",
+    "playbook_pending_events": "playbook",
+    "playbook_pending_event_action": "playbook",
+    "playbook_run_overlay": "playbook",
     # plugin — installation, configuration, lifecycle
     "plugin_list": "plugin",
     "plugin_info": "plugin",
@@ -262,6 +272,364 @@ _CLI_CATEGORY_OVERRIDES: dict[str, str] = {
     "list_tasks": "task",
     "get_task": "task",
     "edit_task": "task",
+}
+
+
+# ---------------------------------------------------------------------------
+# Fallback input schemas for commands deliberately absent from
+# ``_ALL_TOOL_DEFINITIONS``
+# ---------------------------------------------------------------------------
+#
+# These commands have a ``CommandHandler._cmd_*`` method but no entry above.
+# ``src.mcp_registration._discover_all_commands`` synthesises a tool dict for
+# them so they still reach MCP, the CLI and the HTTP API — but the synthesised
+# schema is ``{"type": "object", "properties": {}}``, which means *no
+# arguments at all*.  On the API that made the generated request model drop
+# every client field (``POST /api/task/explain {"task_id": "x"}`` ->
+# ``{"error": "task_id is required"}``); on the CLI it produced commands whose
+# only option was ``--help`` (``aq task explain``, ``aq task gate-show``, ...),
+# so there was no way to name the task or gate to act on.
+#
+# Keeping the schemas here rather than in ``_ALL_TOOL_DEFINITIONS`` preserves
+# LLM tool exposure: ``ToolRegistry`` is built from the master list, so these
+# commands stay out of ``load_tools("task")`` / ``load_tools("system")``, which
+# they historically were.  Every *transport* surface, however, resolves its
+# schema through ``_discover_all_commands`` and therefore sees the real
+# properties.
+#
+# A command that needs arguments and appears in neither table is a bug, not a
+# no-argument command — ``_discover_all_commands`` logs a warning naming it.
+_FALLBACK_INPUT_SCHEMAS: dict[str, dict] = {
+    # -- explain + ready frontier (work-graph WG-4) ------------------------
+    "explain_task": {
+        "type": "object",
+        "properties": {
+            "task_id": {"type": "string", "description": "Task id to explain"},
+        },
+        "required": ["task_id"],
+    },
+    # ``project_ready`` used to live here too.  It now carries a real entry in
+    # ``_ALL_TOOL_DEFINITIONS`` (so the auto-generated CLI exposes
+    # ``aq project ready --profile-id X --brief``), which makes a fallback
+    # redundant: a typed definition wins on every surface.
+    # -- gate operator surface (work-graph WG-3) ---------------------------
+    "gate_create": {
+        "type": "object",
+        "properties": {
+            "project_id": {"type": "string", "description": "Project id that owns the gate"},
+            # Mirrors ``src.database.tables.GATE_TYPES``, which the gates table
+            # enforces with a CHECK constraint.  Spelled out rather than
+            # imported: this module is pure data with no database imports.
+            "gate_type": {
+                "type": "string",
+                "enum": ["human", "timer", "pr-merged", "ci-run", "event", "task", "routing"],
+                "description": "Gate kind. 'routing' gates resolve only via task_route.",
+            },
+            "title": {"type": "string", "description": "Human-readable gate title"},
+            "question": {
+                "type": "string",
+                "description": "Optional prompt shown to the resolver",
+            },
+            "await_id": {
+                "type": "string",
+                "description": "Optional external id the gate is waiting on",
+            },
+            "timeout_at": {
+                "type": "number",
+                "description": "Optional epoch after which the gate is considered expired",
+            },
+            "waiter_task_ids": {
+                "type": "array",
+                "description": "Task ids that should be blocked by this gate",
+                "items": {"type": "string"},
+            },
+        },
+        "required": ["project_id", "gate_type", "title"],
+    },
+    "gate_list": {
+        "type": "object",
+        "properties": {
+            "project_id": {"type": "string", "description": "Filter by project"},
+            "status": {
+                "type": "string",
+                "enum": ["open", "resolved", "expired"],
+                "description": "Filter by gate status",
+            },
+            "gate_type": {
+                "type": "string",
+                "enum": ["human", "timer", "pr-merged", "ci-run", "event", "task", "routing"],
+                "description": "Filter by gate kind",
+            },
+        },
+    },
+    "gate_show": {
+        "type": "object",
+        "properties": {
+            "gate_id": {"type": "string", "description": "Gate id to fetch"},
+        },
+        "required": ["gate_id"],
+    },
+    "gate_resolve": {
+        "type": "object",
+        "properties": {
+            "gate_id": {"type": "string", "description": "Gate id to resolve"},
+            "resolved_by": {
+                "type": "string",
+                "description": "Identity of the resolver (user id or session)",
+            },
+            "resolution": {
+                "type": "string",
+                "description": "Optional free-text explanation stored with the resolve event",
+            },
+        },
+        "required": ["gate_id", "resolved_by"],
+    },
+    # -- session operator surface (session-runtime spec §3, §5) ------------
+    "session_list": {
+        "type": "object",
+        "properties": {
+            "state": {
+                "type": "string",
+                "description": "Filter by session state (starting|running|draining|...)",
+            },
+            "lifecycle": {
+                "type": "string",
+                "description": "Filter by lifecycle (task|named)",
+            },
+            "project_id": {
+                "type": "string",
+                "description": "Filter by project (falls back to the active project)",
+            },
+            "live_only": {
+                "type": "boolean",
+                "description": "Only include sessions that are not stopped/quarantined",
+                "default": False,
+            },
+        },
+    },
+    "session_show": {
+        "type": "object",
+        "properties": {
+            "session_id": {"type": "string", "description": "Session id (uuid4 hex)"},
+            "id": {"type": "string", "description": "Alias for session_id"},
+            "name": {"type": "string", "description": "Session name (provider name)"},
+            "task_id": {"type": "string", "description": "Resolve session from this task id"},
+        },
+    },
+    "session_peek": {
+        "type": "object",
+        "properties": {
+            "session_id": {"type": "string", "description": "Session id (uuid4 hex)"},
+            "id": {"type": "string", "description": "Alias for session_id"},
+            "name": {"type": "string", "description": "Session name"},
+            "task_id": {"type": "string", "description": "Resolve session from this task id"},
+            "lines": {
+                "type": "integer",
+                "description": "Number of tail lines to return (default 60)",
+            },
+            "n": {"type": "integer", "description": "Alias for lines"},
+        },
+    },
+    "session_attach": {
+        "type": "object",
+        "properties": {
+            "session_id": {"type": "string", "description": "Session id (uuid4 hex)"},
+            "id": {"type": "string", "description": "Alias for session_id"},
+            "name": {"type": "string", "description": "Session name"},
+            "task_id": {"type": "string", "description": "Resolve session from this task id"},
+        },
+    },
+    "session_nudge": {
+        "type": "object",
+        "properties": {
+            "session_id": {"type": "string", "description": "Session id (uuid4 hex)"},
+            "id": {"type": "string", "description": "Alias for session_id"},
+            "name": {"type": "string", "description": "Session name"},
+            "task_id": {"type": "string", "description": "Resolve session from this task id"},
+            "text": {"type": "string", "description": "Text to inject and submit"},
+            "message": {"type": "string", "description": "Alias for text"},
+        },
+    },
+    "session_logs": {
+        "type": "object",
+        "properties": {
+            "attempt_id": {
+                "type": "string",
+                "description": "Read only this task execution attempt",
+            },
+            "session_id": {"type": "string", "description": "Session id (uuid4 hex)"},
+            "id": {"type": "string", "description": "Alias for session_id"},
+            "name": {"type": "string", "description": "Session name"},
+            "task_id": {"type": "string", "description": "Resolve session from this task id"},
+            "limit": {
+                "type": "integer",
+                "description": "Max transcript entries to return (default 100)",
+            },
+            "lines": {"type": "integer", "description": "Alias for limit"},
+            "n": {"type": "integer", "description": "Alias for limit"},
+        },
+    },
+    "session_sleep": {
+        "type": "object",
+        "properties": {
+            "session_id": {"type": "string", "description": "Session id (uuid4 hex)"},
+            "id": {"type": "string", "description": "Alias for session_id"},
+            "name": {"type": "string", "description": "Session name"},
+            "task_id": {"type": "string", "description": "Resolve session from this task id"},
+        },
+    },
+    "session_wake": {
+        "type": "object",
+        "properties": {
+            "session_id": {"type": "string", "description": "Session id (uuid4 hex)"},
+            "id": {"type": "string", "description": "Alias for session_id"},
+            "name": {"type": "string", "description": "Session name"},
+            "task_id": {"type": "string", "description": "Resolve session from this task id"},
+        },
+    },
+    "session_token": {
+        "type": "object",
+        "properties": {
+            "session_id": {"type": "string", "description": "Session id (uuid4 hex)"},
+            "id": {"type": "string", "description": "Alias for session_id"},
+            "name": {"type": "string", "description": "Session name"},
+            "task_id": {"type": "string", "description": "Resolve session from this task id"},
+        },
+    },
+    "session_kill": {
+        "type": "object",
+        "properties": {
+            "session_id": {"type": "string", "description": "Session id (uuid4 hex)"},
+            "id": {"type": "string", "description": "Alias for session_id"},
+            "name": {"type": "string", "description": "Session name"},
+            "task_id": {"type": "string", "description": "Resolve session from this task id"},
+            "grace": {
+                "type": "number",
+                "description": "Seconds to wait between signal and force-kill (default 2.0)",
+            },
+        },
+    },
+    "session_drain_ack": {
+        "type": "object",
+        "properties": {
+            "session_id": {"type": "string", "description": "Session id (uuid4 hex)"},
+            "id": {"type": "string", "description": "Alias for session_id"},
+            "name": {"type": "string", "description": "Session name"},
+            "task_id": {"type": "string", "description": "Resolve session from this task id"},
+        },
+    },
+    # -- workflow coordination (agent-coordination spec) -------------------
+    "create_workflow": {
+        "type": "object",
+        "properties": {
+            "workflow_id": {"type": "string", "description": "Unique identifier for the workflow"},
+            "playbook_id": {"type": "string", "description": "Source coordination playbook id"},
+            "playbook_run_id": {
+                "type": "string",
+                "description": "The PlaybookRun driving this workflow",
+            },
+            "project_id": {"type": "string", "description": "Project this workflow operates in"},
+            "current_stage": {"type": "string", "description": "Optional initial stage name"},
+        },
+        "required": ["workflow_id", "playbook_id", "playbook_run_id", "project_id"],
+    },
+    "get_workflow": {
+        "type": "object",
+        "properties": {
+            "workflow_id": {"type": "string", "description": "The workflow to retrieve"},
+        },
+        "required": ["workflow_id"],
+    },
+    "list_workflows": {
+        "type": "object",
+        "properties": {
+            "project_id": {"type": "string", "description": "Filter to one project"},
+            "playbook_id": {"type": "string", "description": "Filter to one source playbook"},
+            "status": {"type": "string", "description": "Filter by workflow status"},
+            "limit": {"type": "integer", "description": "Max results (default 50)", "default": 50},
+        },
+    },
+    "advance_workflow_stage": {
+        "type": "object",
+        "properties": {
+            "workflow_id": {"type": "string", "description": "The workflow to advance"},
+            "stage_name": {"type": "string", "description": "Name of the new stage"},
+            "task_ids": {
+                "type": "array",
+                "description": "Optional task ids belonging to the new stage",
+                "items": {"type": "string"},
+            },
+        },
+        "required": ["workflow_id", "stage_name"],
+    },
+    "workflow_pipeline_view": {
+        "type": "object",
+        "properties": {
+            "workflow_id": {"type": "string", "description": "The workflow to visualize"},
+            "direction": {
+                "type": "string",
+                "enum": ["LR", "TD"],
+                "description": "Layout direction — left-right or top-down (default LR)",
+                "default": "LR",
+            },
+            "include_task_details": {
+                "type": "boolean",
+                "description": "Include individual task cards (default true)",
+                "default": True,
+            },
+            "include_affinity": {
+                "type": "boolean",
+                "description": "Include the agent-affinity overlay (default true)",
+                "default": True,
+            },
+        },
+        "required": ["workflow_id"],
+    },
+    # -- one-shot maintenance ---------------------------------------------
+    "migrate_profiles": {
+        "type": "object",
+        "properties": {
+            "dry_run": {
+                "type": "boolean",
+                "description": "Preview what would be migrated without writing",
+                "default": False,
+            },
+            "verify": {
+                "type": "boolean",
+                "description": "Verify round-trip fidelity after writing (default true)",
+                "default": True,
+            },
+            "force": {
+                "type": "boolean",
+                "description": "Overwrite existing vault files",
+                "default": False,
+            },
+        },
+    },
+    "vault_rebuild_index": {
+        "type": "object",
+        "properties": {
+            "with_summaries": {
+                "type": "boolean",
+                "description": (
+                    "Generate an LLM summary for each hub (requires config.llm)"
+                ),
+                "default": False,
+            },
+        },
+    },
+    # -- aq-surface prime rendering ----------------------------------------
+    "prime": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": "Task to prime for (defaults to the caller's token scope)",
+            },
+            "session_id": {"type": "string", "description": "Session id, when known"},
+            "work_dir": {"type": "string", "description": "Work-dir override"},
+        },
+    },
 }
 
 
@@ -2310,6 +2678,54 @@ _ALL_TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "profile_drift",
+        "description": (
+            "Report which vault system profiles have drifted from the defaults "
+            "shipped in src/profiles/defaults/. Startup seeding never overwrites "
+            "an existing vault profile.md, so an old copy keeps old semantics: a "
+            "stale read_only re-arms the require-a-PR close gate. Reports "
+            "divergence on the semantic Config fields (read_only, harness, "
+            "lifecycle, needs_workspace) and missing/renamed sections. Read-only "
+            "— repair with profile_reseed."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "profile_id": {
+                    "type": "string",
+                    "description": "Only report this system profile",
+                },
+                "drifted_only": {
+                    "type": "boolean",
+                    "description": "Only report profiles that diverge",
+                },
+            },
+        },
+    },
+    {
+        "name": "profile_reseed",
+        "description": (
+            "Overwrite one vault system profile with the version shipped in "
+            "src/profiles/defaults/, keeping a .bak-<epoch> copy of the old file. "
+            "The explicit repair for profile_drift findings — startup seeding is "
+            "write-if-absent and will never do this for you."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "profile_id": {
+                    "type": "string",
+                    "description": "System profile ID to reseed",
+                },
+                "backup": {
+                    "type": "boolean",
+                    "description": "Keep a .bak-<epoch> copy of the replaced file (default true)",
+                },
+            },
+            "required": ["profile_id"],
+        },
+    },
+    {
         "name": "install_profile",
         "description": (
             "Install missing npm/pip dependencies for a profile's install manifest. "
@@ -3161,6 +3577,262 @@ _ALL_TOOL_DEFINITIONS = [
                 },
             },
             "required": ["playbook_id"],
+        },
+    },
+    # ------------------------------------------------------------------
+    # Playbook V2 semantic graph -- src/commands/playbook_v2_commands.py
+    # Child plan: docs/superpowers/plans/2026-09-01-playbook-v2-graph-api-ui.md
+    # ------------------------------------------------------------------
+    {
+        "name": "playbook_v2_graph",
+        "description": (
+            "Get the Playbook V2 semantic graph for one immutable artifact: "
+            "rules grouped by triggering event, one node per typed step with a "
+            "contract-derived explanation of what it does, and one edge per "
+            "declared transition with a stable content-derived id. Defaults to "
+            "the playbook's active artifact; pass artifact_sha256 to project an "
+            "exact one (this is how a run overlay pins its graph)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "playbook_id": {
+                    "type": "string",
+                    "description": "The playbook identifier to project.",
+                },
+                "artifact_sha256": {
+                    "type": "string",
+                    "description": (
+                        "Project this exact artifact instead of the active one. "
+                        "Full 'sha256:<64 hex>' form."
+                    ),
+                },
+                "event_type": {
+                    "type": "string",
+                    "description": (
+                        "Narrow rules/nodes/edges to the rules this event triggers. "
+                        "event_groups still lists every event and no reachable "
+                        "branch is dropped."
+                    ),
+                },
+                "direction": {
+                    "type": "string",
+                    "description": (
+                        "Layout direction: 'TD' (top-down) or 'LR' (left-right). Default: TD."
+                    ),
+                    "enum": ["TD", "LR"],
+                    "default": "TD",
+                },
+                "include_advanced": {
+                    "type": "boolean",
+                    "description": (
+                        "Include the canonical typed step body in advanced.typed_step. "
+                        "Default: true; false leaves the field present but empty so "
+                        "the response type never changes."
+                    ),
+                    "default": True,
+                },
+            },
+            "required": ["playbook_id"],
+        },
+    },
+    {
+        "name": "playbook_activation_health",
+        "description": (
+            "List playbook V2 activations with their computed health (ready, "
+            "question_required, invalid, disabled, stale_contract, unavailable), "
+            "the active artifact hash, machine-readable reasons, and pending/"
+            "running counts. Enabled and health are independent: a disabled "
+            "activation still reports the health it would have."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "playbook_id": {
+                    "type": "string",
+                    "description": "Restrict to one playbook. All activations when absent.",
+                },
+                "scope": {
+                    "type": "string",
+                    "description": "Filter by activation scope.",
+                    "enum": ["system", "project", "agent_type"],
+                },
+                "health": {
+                    "type": "string",
+                    "description": "Filter to one health value.",
+                    "enum": [
+                        "ready",
+                        "question_required",
+                        "invalid",
+                        "disabled",
+                        "stale_contract",
+                        "unavailable",
+                    ],
+                },
+            },
+        },
+    },
+    {
+        "name": "playbook_activate",
+        "description": (
+            "Activate one reviewed Playbook V2 artifact hash. Activation is an "
+            "explicit operation against a reviewed artifact -- compilation never "
+            "activates. Refused when playbooks.v2_activation_writes is off, when "
+            "the artifact's health is invalid, or when the diff against the "
+            "currently active artifact carries an executable change and "
+            "acknowledge_diff was not supplied. Every refusal returns "
+            "blocked=true with machine-readable blockers."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "playbook_id": {
+                    "type": "string",
+                    "description": "The playbook to activate against.",
+                },
+                "artifact_sha256": {
+                    "type": "string",
+                    "description": "The reviewed artifact hash, full 'sha256:<64 hex>' form.",
+                },
+                "enabled": {
+                    "type": "boolean",
+                    "description": "Whether the activation is enabled. Default: true.",
+                    "default": True,
+                },
+                "acknowledge_diff": {
+                    "type": "string",
+                    "description": (
+                        "Required when the diff against the active artifact is "
+                        "executable. Must equal artifact_sha256, so an "
+                        "acknowledgement cannot be replayed against another artifact."
+                    ),
+                },
+            },
+            "required": ["playbook_id", "artifact_sha256"],
+        },
+    },
+    {
+        "name": "playbook_artifact_diff",
+        "description": (
+            "Semantically diff two Playbook V2 artifacts before activation. "
+            "Rules match by rule_id, steps by (rule_id, step_id) and edges by "
+            "edge id, so reordering an unordered map reads as unchanged. "
+            "Presentation-only changes (titles, labels, help text) report "
+            "executable=false and do not block activation. Read-only: the diff "
+            "never activates anything."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "playbook_id": {
+                    "type": "string",
+                    "description": "The playbook that owns both artifacts.",
+                },
+                "target_sha256": {
+                    "type": "string",
+                    "description": "The artifact under review, full 'sha256:<64 hex>' form.",
+                },
+                "base_sha256": {
+                    "type": "string",
+                    "description": (
+                        "The artifact to diff against. Defaults to the currently "
+                        "active artifact; absent entirely for a playbook's first "
+                        "artifact, which reports every element as added."
+                    ),
+                },
+            },
+            "required": ["playbook_id", "target_sha256"],
+        },
+    },
+    {
+        "name": "playbook_pending_events",
+        "description": (
+            "List events held because no artifact could run them -- a stale "
+            "contract, an invalid artifact, a disabled activation, an "
+            "unavailable artifact file, or an unanswered compile question. "
+            "Pending events are retained, visible and operable; they are never "
+            "silently dropped."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "playbook_id": {
+                    "type": "string",
+                    "description": "Restrict to one playbook. All playbooks when absent.",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Filter by the reason the event is held.",
+                    "enum": [
+                        "stale_contract",
+                        "invalid_artifact",
+                        "disabled",
+                        "unavailable",
+                        "question_required",
+                    ],
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max events to return (default 100).",
+                    "default": 100,
+                },
+            },
+        },
+    },
+    {
+        "name": "playbook_pending_event_action",
+        "description": (
+            "Dispatch or discard held playbook pending events. 'dispatch' "
+            "re-enters the engine's own event dispatch with the server-derived "
+            "principal of this request -- it never re-implements matching and "
+            "never adopts a principal from the stored event. 'discard' records "
+            "the resolution without dispatching."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "description": "What to do with the listed events.",
+                    "enum": ["dispatch", "discard"],
+                },
+                "pending_event_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Non-empty list of pending event ids to act on.",
+                },
+            },
+            "required": ["action", "pending_event_ids"],
+        },
+    },
+    {
+        "name": "playbook_run_overlay",
+        "description": (
+            "Return one Playbook V2 run's execution overlay, pinned to the "
+            "artifact the run actually executed -- never the playbook's current "
+            "activation, so an overlay is never projected onto a newer artifact. "
+            "artifact_is_active=false is how a viewer knows the run used an "
+            "older artifact. Loop iterations are listed individually rather than "
+            "collapsed into one misleading status."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "run_id": {
+                    "type": "string",
+                    "description": "The V2 run to overlay.",
+                },
+                "receipt_limit": {
+                    "type": "integer",
+                    "description": (
+                        "Max receipts returned, newest first (default 500). "
+                        "'truncated' reports when more exist; receipts are never "
+                        "silently dropped."
+                    ),
+                    "default": 500,
+                },
+            },
+            "required": ["run_id"],
         },
     },
     {

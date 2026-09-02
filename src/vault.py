@@ -36,6 +36,19 @@ _LEGACY_DEFAULT_PIPELINE_HASHES = frozenset(
         # Review rules without the ``event.no_code`` guard: a finished review
         # task spawned a review of itself (fix/pr-46-review-recursion).
         "008efc9350b3bd57ac37212f92dfebd59a2d8b65625a2ebb207b63162474b9cd",
+        # Review rules with ``no_code`` but without the ``event.review_task``
+        # guard: inert once the reviewer profiles are ``read_only: false``
+        # (task sound-horizon-77.18.2).
+        "9d00dee48cb3d031cf24ef6f7edac4b83ad71f5773baf2aede6f4701ffe226a3",
+        # Review rules with both guards, before the prose recorded profile-id
+        # recognition, dispatch's derived ``review_task``, and empty branches
+        # as ``no_code`` (tasks crisp-summit-88, prime-cascade-64, and
+        # bright-forge-78). Rules unchanged; prose only.
+        "561434cc02575456cc722c46ba5563ee46e9df564fa2062c841333034b97e553",
+        # Both guards and the dispatch-derivation prose, before the prose
+        # recorded the ``ensure_task`` creation-point refusal (task
+        # solid-harbor-68).  Rules unchanged; prose only.
+        "21ff23549f6df0b908aecb73e54bd516610fd662eddf3a89760060a1b8fd2c5f",
     }
 )
 
@@ -1573,7 +1586,7 @@ def ensure_default_intelligence_classes(data_dir: str) -> dict:
 
 
 def ensure_default_harnesses(data_dir: str) -> dict:
-    """Install bundled harness files into ``vault/harnesses/`` if absent.
+    """Install bundled harness files into ``vault/harnesses/``; refresh stale copies.
 
     A harness is one CLI coding agent described as markdown
     (``command``, prompt delivery, resume style, readiness prompt, startup
@@ -1581,43 +1594,24 @@ def ensure_default_harnesses(data_dir: str) -> dict:
     ``claude.md`` means a fresh install can run the session runtime without
     the operator authoring anything.
 
-    **Idempotent**: an existing file is never overwritten.  The vault copy
-    is the source of truth once it exists; edits survive upgrades, and a
-    user who wants the shipped version back deletes their copy.
+    **Idempotent, edit-preserving**: a vault copy that is byte-identical
+    to the current shipped file is left alone; one that matches an *older*
+    shipped version (per ``src/sessions/harness_manifest.py``) is refreshed
+    in place so shipped fixes reach existing installs; anything else is an
+    operator edit — never overwritten, logged at WARNING, and visible in
+    ``aq doctor --check harness.drift``.  ``aq vault reset-harness <name>``
+    restores the shipped file on request.
 
     Args:
         data_dir: The root data directory (e.g. ``~/.agent-queue``).
 
     Returns:
-        Dict with ``created`` and ``skipped`` filename lists.
+        Dict with ``created``, ``refreshed``, ``skipped`` (left untouched:
+        current or edited) and ``edited`` filename lists.
     """
-    defaults_dir = os.path.join(os.path.dirname(__file__), "sessions", "default_harnesses")
-    harness_dir = os.path.join(data_dir, "vault", "harnesses")
-    os.makedirs(harness_dir, exist_ok=True)
+    from src.sessions.harness_manifest import sync_vault_harnesses
 
-    result: dict = {"created": [], "skipped": []}
-    if not os.path.isdir(defaults_dir):
-        logger.debug("No default harnesses directory found at %s", defaults_dir)
-        return result
-
-    for filename in sorted(os.listdir(defaults_dir)):
-        if not filename.endswith(".md"):
-            continue
-        dst_path = os.path.join(harness_dir, filename)
-        if os.path.exists(dst_path):
-            result["skipped"].append(filename)
-            continue
-        shutil.copy2(os.path.join(defaults_dir, filename), dst_path)
-        result["created"].append(filename)
-
-    if result["created"]:
-        logger.info(
-            "Installed %d default harness(es) to %s: %s",
-            len(result["created"]),
-            harness_dir,
-            ", ".join(result["created"]),
-        )
-    return result
+    return sync_vault_harnesses(data_dir)
 
 
 def ensure_default_aq_skills(data_dir: str) -> dict:
@@ -1724,6 +1718,13 @@ def ensure_default_profiles(data_dir: str) -> dict:
     vault copy is the source of truth once it exists; operator edits
     survive upgrades, and a user who wants the shipped version back
     deletes their copy.
+
+    The cost of that rule is drift: a copy seeded by an older release keeps
+    that release's schema and semantics forever, including load-bearing
+    ``## Config`` fields like ``read_only``.  ``src/profiles/drift.py``
+    detects it (doctor check ``profiles.system_drift``, command
+    ``aq agent profile-drift``) and ``aq agent profile-reseed <id>`` is the
+    explicit, backup-taking way to restore one shipped default.
 
     Args:
         data_dir: The root data directory (e.g. ``~/.agent-queue``).

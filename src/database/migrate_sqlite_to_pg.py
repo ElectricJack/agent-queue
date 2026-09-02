@@ -34,6 +34,8 @@ from src.database.tables import (
     messages,
     message_discord_receipts,
     metrics_samples,
+    playbook_activations,
+    playbook_artifacts,
     playbook_runs,
     plugin_data,
     plugins,
@@ -85,6 +87,7 @@ _ORDERED_TABLES = [
     events,
     workspace_kinds,
     playbook_runs,
+    playbook_artifacts,
     api_session_tokens,
     chat_analyzer_suggestions,
     archived_tasks,
@@ -94,6 +97,8 @@ _ORDERED_TABLES = [
     agent_questions,
     subagent_events,
     metrics_samples,
+    # FK → playbook_artifacts
+    playbook_activations,
     # FK → agent_profiles
     projects,
     # FK → projects

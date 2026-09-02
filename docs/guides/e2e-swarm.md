@@ -66,7 +66,7 @@ swarm e2e (Tier 1) — daemon at http://127.0.0.1:8099
 PASS S1 pool sizing (8.7s)
      2 sessions for 3 ready tasks; pool.scaled = 'start 2 worker'
 PASS S2 claim loop as a worker (20.1s)
-     claimed 2/2 then session_exhausted; p-worker--e2e--cc2b0e3f retired, replaced by p-worker--e2e--ec70910c
+     claimed 1/1 then drain_requested; p-worker--e2e--cc2b0e3f retired, replaced by p-worker--e2e--ec70910c
 PASS S3 worker-filed work (13.4s)
      stark-summit DEFINED + discovered-from calm-journey + routing gate gate-028dab6bd36e resolved
 PASS S4 formulas (26.9s)
@@ -82,6 +82,12 @@ PASS S7 PostgreSQL claim race (26.4s)
 ```
 
 The runner exits non-zero if any scenario fails.
+
+Tier 1 keeps assignment deterministic without an LLM: its generated execution
+profiles carry fixed `default_class` values, and the runner and formula fixtures
+write those intelligence classes explicitly onto tasks. This mirrors a completed
+assignment-routing decision and makes pool claims exercise the live session's
+class and model constraints.
 
 ### What the pieces are
 
@@ -151,19 +157,20 @@ supervisor token can reach it.
 
 **S1 — pool sizing.** Three READY tasks routed to the `worker` pool profile.
 Within a few 5s cascades `aq pool status` shows exactly two live sessions —
-`max_active`, not "one per task" — and `aq events --event-type pool.scaled`
-carries the audit row for the scale-up. *Regression it catches: a sizer that
-ignores its bounds, or one that never fires at all.*
+`max_active`, not "one per task" — and
+`aq system get-recent-events --event-type pool.scaled` carries the audit row
+for the scale-up. *Regression it catches: a sizer that ignores its bounds, or
+one that never fires at all.*
 
 **S2 — the claim loop.** The whole worker lifecycle through one session's own
 token: `task claim --next` returns `claimed` with a `claim_epoch`;
 `task heartbeat` with a wrong epoch is refused as `stale_claim` and with the
 right one is accepted; `task close --claim-next` closes and immediately
-claims again; the second close hits `max_claims_per_session` and answers
-`session_exhausted`; `aq session drain-ack` retires the worker and the sizer
-starts a replacement for the still-unclaimed third task. *Regression it
-catches: the epoch fence not fencing, `--claim-next` losing its scope, an
-exhausted worker stranding its workspace.*
+answers `drain_requested` because `swarm.fresh_context_per_task` limits the
+session to one claim; `aq session drain-ack` retires the worker and the sizer
+starts a replacement for the still-unclaimed work. *Regression it catches:
+the epoch fence not fencing, `--claim-next` losing its scope, or a fresh-context
+worker stranding its workspace.*
 
 `agents.state == RETIRED` has no public reader (`aq agent list` reports
 *workspace slots*, not agent rows), so S2 asserts the three consequences that
@@ -172,11 +179,13 @@ clean — that check *does* read agent rows and would flag one left behind —
 and a replacement session appears.
 
 **S3 — worker-filed work.** A worker holding a task files another. It lands
-DEFINED (never READY — nobody has decided who should do it), pinned to the
-session's project, with a `discovered-from` edge back to the held task and an
-open `routing` gate. `aq task route` — the only resolver for a routing gate,
-and what a triage agent would call — then writes the profile and resolves the
-gate, and `aq task explain` stops reporting the task as gate-blocked.
+with a DEFINED creation result, pinned to the session's project, and inherits
+the caller's profile as its capability ceiling. Its `discovered-from` edge and
+open `routing` gate keep `is_blocked` true; with this fixture's non-authoritative
+blocked-state projection, its status may promote to READY before the next read.
+`aq task route` — the only resolver for a routing gate, and what a triage agent
+would call — then writes the explicit intelligence class and resolves the gate;
+`aq task explain` stops reporting the task as gate-blocked.
 *Regression it catches: filings escaping their project, arriving unrouted-but-
 runnable, or losing their provenance.*
 
@@ -216,7 +225,7 @@ what they were waiting for and what they last saw, so start there. Then:
 ```bash
 scripts/e2e-daemon.sh logs 200                      # the daemon's own account
 AQ_API_URL=http://127.0.0.1:8099 aq doctor           # what the system thinks of itself
-AQ_API_URL=http://127.0.0.1:8099 aq events --limit 40
+AQ_API_URL=http://127.0.0.1:8099 aq system get-recent-events --limit 40
 AQ_API_URL=http://127.0.0.1:8099 aq pool status
 AQ_API_URL=http://127.0.0.1:8099 aq session list
 ```
@@ -307,11 +316,11 @@ What to watch for, in order:
    `heartbeat` and `close`; if it is stale or missing, every fenced call is
    refused and that is the first thing to check.
 4. **`close --claim-next`.** The loop's hinge. One call closes and claims
-   again, so the workspace is reset for the next task without a session
-   restart. Watch the same pane pick up a second task.
-5. **`session_exhausted` → `aq session drain-ack`.** After two claims the
-   worker is spent. It should ack, the pane should die, and a *new* pool
-   session should appear for the third task with a fresh workspace.
+   again when context reuse is enabled. In this fixture, the default
+   `swarm.fresh_context_per_task: true` instead returns `drain_requested`.
+5. **`drain_requested` → `aq session drain-ack`.** After one claim the
+   conversation is spent. It should ack, the pane should die, and a *new*
+   pool session should appear for the next task with a fresh context.
 
 Failure modes that only show up here: a bootstrap prompt the model
 misreads (it asks a question instead of claiming), a harness that swallows

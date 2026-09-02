@@ -103,3 +103,50 @@ async def test_boolean_columns_added_by_migrations_default_correctly_on_postgres
         ) is False
     finally:
         await conn.close()
+
+
+async def test_autogenerate_against_a_fresh_head_database_is_empty():
+    """``tables.py`` and the migrated schema agree — no autogenerate drift.
+
+    The documented workflow for a schema change is "edit ``tables.py``,
+    then ``alembic revision --autogenerate``".  That only works if a
+    database at head already matches the metadata exactly: any standing
+    drift is silently folded into the *next* developer's revision.  One
+    such drift shipped for real — ``task_dependencies``' self-dependency
+    guard was declared *unnamed* in ``tables.py``, which makes it
+    invisible to autogenerate's comparison, so every run wanted to drop
+    the ``task_dependencies_check`` it found in the live schema.
+
+    This runs the same comparison ``alembic revision --autogenerate``
+    runs (same ``compare_type`` opt as ``migrations/env.py``) and
+    demands it produce nothing.
+    """
+    if not POSTGRES_DSN:
+        pytest.skip("POSTGRES_TEST_DSN not set")
+    from alembic.autogenerate import compare_metadata
+    from alembic.migration import MigrationContext
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from src.database.tables import metadata
+    from tests.pg_dsn import create_scratch_database
+
+    dsn = await create_scratch_database("updrift")
+    res = _alembic_pg(dsn, "upgrade", "head")
+    assert res.returncode == 0, res.stderr
+
+    def _diff(sync_conn) -> list:
+        ctx = MigrationContext.configure(sync_conn, opts={"compare_type": True})
+        return compare_metadata(ctx, metadata)
+
+    engine = create_async_engine(dsn)
+    try:
+        async with engine.connect() as conn:
+            diffs = await conn.run_sync(_diff)
+    finally:
+        await engine.dispose()
+
+    assert diffs == [], (
+        "alembic autogenerate is not empty against a database at head — "
+        "src/database/tables.py has drifted from the migration chain:\n"
+        + "\n".join(f"  {d}" for d in diffs)
+    )

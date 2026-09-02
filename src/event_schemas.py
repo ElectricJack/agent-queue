@@ -99,11 +99,17 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
     },
     "task.completed": {
         "required": ["task_id", "project_id", "title"],
-        # ``no_code``: set by the session close path when the task by
-        # construction left no commits behind (``read_only`` profile or
-        # ``--work-outcome no-op``).  The default pipeline's review rules
-        # skip such tasks; emitters that omit it are treated as code-bearing.
-        "optional": ["agent_id", "agent_type", "no_code"],
+        # ``no_code``: set by the session close path when the task left no
+        # commits behind — by construction (``read_only`` profile or
+        # ``--work-outcome no-op``) or in fact (the task branch carried no
+        # commits ahead of its base when the completion pipeline asked).
+        # The default pipeline's review rules skip such tasks; emitters that
+        # omit it are treated as code-bearing.
+        # ``review_task``: set by every emitter when either the task's dedup
+        # key or its reviewer profile identifies it as a review (see
+        # ``src/review_keys.py``).  The pipeline dispatch path also re-derives
+        # the dedup-key signal from the hydrated row for older emitters.
+        "optional": ["agent_id", "agent_type", "no_code", "review_task"],
         "fields": {
             "task_id": {"type": "string", "description": "the completed task"},
             "project_id": {"type": "string", "description": "the project the task belongs to"},
@@ -111,9 +117,19 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
             "agent_id": {"type": "string", "description": "the agent that completed the task"},
             "agent_type": {"type": "string", "description": "the profile id of that agent"},
             "no_code": {"type": "boolean", "description": "whether the task produced code"},
-            "task": {"type": "object", "description": "the completed task row", "hydrated": True,
-                     "fields": {"branch_name": {"type": "string", "description": "task branch"},
-                                "pr_url": {"type": "string", "description": "task pull request"}}},
+            "review_task": {
+                "type": "boolean",
+                "description": "whether the completed task is itself a review task",
+            },
+            "task": {
+                "type": "object",
+                "description": "the completed task row",
+                "hydrated": True,
+                "fields": {
+                    "branch_name": {"type": "string", "description": "task branch"},
+                    "pr_url": {"type": "string", "description": "task pull request"},
+                },
+            },
         },
     },
     "task.failed": {

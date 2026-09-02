@@ -363,3 +363,272 @@ async def test_no_op_close_is_flagged_no_code(orchestrator_factory, pipeline_eng
 
     await engine.dispatch("task.completed", completed[0], event_id="no-op-closed")
     assert await _review_rows(h, task_id) == []
+
+
+@pytest.mark.asyncio
+async def test_review_task_close_is_never_reviewed_even_if_profile_writes(
+    orchestrator_factory, pipeline_engine_factory
+):
+    """The recursion guard must not depend on the reviewer profile's flags.
+
+    ``no_code`` comes from ``profile.read_only``; an operator who hands the
+    reviewer Write/Edit tools (``read_only: false``) silently disarmed it and
+    the queue filled with "Review: Review: ..." again (task
+    sound-horizon-77.18.2).  A task the pipeline itself created as a review —
+    recognisable by its ``review:task:`` / ``branch-review:`` dedup key — is
+    flagged ``review_task`` on ``task.completed`` regardless of profile, and
+    both review rules stand down on it.
+    """
+    orch = await orchestrator_factory()
+    h = orch.command_handler
+    await _seed(h)
+    await h.db.upsert_profile(AgentProfile(id="reviewer", name="Reviewer", read_only=False))
+    await h.db.upsert_profile(AgentProfile(id="final-reviewer", name="Final", read_only=False))
+    engine = pipeline_engine_factory(handler=h)
+
+    reviewed_id = (
+        await h.execute(
+            "create_task",
+            {"project_id": "p", "title": "Do work", "profile_id": "worker"},
+        )
+    )["created"]
+    # Exactly the row ``per-task-review`` writes for the reviewed task.
+    review_id = (
+        await h.execute(
+            "ensure_task",
+            {
+                "project_id": "p",
+                "dedup_key": f"review:task:{reviewed_id}",
+                "title": "Review: Do work",
+                "profile_id": "reviewer",
+            },
+        )
+    )["task_id"]
+    await h.db.update_task(review_id, branch_name=f"aq/{review_id}")
+
+    await _close_pass(h, review_id)
+
+    completed = _emitted(orch.bus, "task.completed")
+    assert len(completed) == 1
+    assert completed[0]["no_code"] is False, "read_only=false profile: the old guard is inert"
+    assert completed[0]["review_task"] is True
+
+    await engine.dispatch("task.completed", completed[0], event_id="review-closed")
+
+    assert await _review_rows(h, review_id) == [], "spawned a review of the review"
+    tasks = await h.db.list_tasks(project_id="p")
+    assert [t for t in tasks if t.profile_id == "final-reviewer"] == []
+
+
+@pytest.mark.asyncio
+async def test_final_review_close_is_never_reviewed_even_if_profile_writes(
+    orchestrator_factory, pipeline_engine_factory
+):
+    """Same guard for the branch's final review (``branch-review:<branch>``)."""
+    orch = await orchestrator_factory()
+    h = orch.command_handler
+    await _seed(h)
+    await h.db.upsert_profile(AgentProfile(id="reviewer", name="Reviewer", read_only=False))
+    await h.db.upsert_profile(AgentProfile(id="final-reviewer", name="Final", read_only=False))
+    engine = pipeline_engine_factory(handler=h)
+
+    final_id = (
+        await h.execute(
+            "ensure_task",
+            {
+                "project_id": "p",
+                "dedup_key": "branch-review:aq/do-work",
+                "title": "Final review: aq/do-work",
+                "profile_id": "final-reviewer",
+            },
+        )
+    )["task_id"]
+    await h.db.update_task(
+        final_id, branch_name=f"aq/{final_id}", pr_url="https://github.com/o/r/pull/7"
+    )
+
+    await _close_pass(h, final_id)
+
+    completed = _emitted(orch.bus, "task.completed")
+    assert len(completed) == 1
+    assert completed[0]["review_task"] is True
+
+    await engine.dispatch("task.completed", completed[0], event_id="final-closed")
+
+    assert await _review_rows(h, final_id) == []
+    tasks = await h.db.list_tasks(project_id="p")
+    assert [t for t in tasks if t.dedup_key == f"branch-review:aq/{final_id}"] == []
+
+
+@pytest.mark.asyncio
+async def test_worker_close_is_not_flagged_review_task(orchestrator_factory):
+    """An ordinary worker task, dedup-keyed or not, is still reviewed."""
+    orch = await orchestrator_factory()
+    h = orch.command_handler
+    await _seed(h)
+
+    keyed = (
+        await h.execute(
+            "ensure_task",
+            {
+                "project_id": "p",
+                "dedup_key": "spec-ingest:docs/specs/x.md",
+                "title": "Ingest",
+                "profile_id": "worker",
+            },
+        )
+    )["task_id"]
+    await h.db.update_task(keyed, branch_name=f"aq/{keyed}")
+    await _close_pass(h, keyed)
+
+    completed = _emitted(orch.bus, "task.completed")
+    assert len(completed) == 1
+    assert completed[0]["review_task"] is False
+
+
+@pytest.mark.asyncio
+async def test_empty_branch_close_is_flagged_no_code(
+    orchestrator_factory, pipeline_engine_factory
+):
+    """A branch that ends with no commits is not worth reviewing.
+
+    The completion pipeline settles that question before integration can
+    merge the branch away and leaves the verdict on the context
+    (``_branch_left_no_commits``); the close path folds it into ``no_code``.
+    It is the guard that survives what the other two cannot: this worker has
+    a writing profile and no review dedup key, so ``read_only`` and
+    ``review_task`` both read False — and there is still nothing to review
+    (task bright-forge-78).
+    """
+    orch = await orchestrator_factory()
+    h = orch.command_handler
+    await _seed(h)
+    await h.db.upsert_profile(AgentProfile(id="reviewer", name="Reviewer"))
+    await h.db.upsert_profile(AgentProfile(id="final-reviewer", name="Final"))
+    engine = pipeline_engine_factory(handler=h)
+
+    async def _empty_branch_pipeline(ctx):
+        ctx.branch_no_commits = True
+        return (getattr(ctx.task, "pr_url", None) or "", True)
+
+    orch._run_completion_pipeline = _empty_branch_pipeline
+
+    task_id = (
+        await h.execute(
+            "create_task",
+            {"project_id": "p", "title": "Do work", "profile_id": "worker"},
+        )
+    )["created"]
+    await h.db.update_task(
+        task_id,
+        branch_name=f"aq/{task_id}",
+        pr_url="https://github.com/o/r/pull/9",
+    )
+    await _close_pass(h, task_id)
+
+    completed = _emitted(orch.bus, "task.completed")
+    assert len(completed) == 1
+    assert completed[0]["no_code"] is True
+    assert completed[0]["review_task"] is False, "not a pipeline-created review"
+
+    await engine.dispatch("task.completed", completed[0], event_id="empty-branch")
+
+    assert await _review_rows(h, task_id) == [], "reviewed a branch with an empty diff"
+    tasks = await h.db.list_tasks(project_id="p")
+    assert [t for t in tasks if t.profile_id == "final-reviewer"] == []
+
+
+@pytest.mark.asyncio
+async def test_branch_with_commits_close_is_still_reviewed(
+    orchestrator_factory, pipeline_engine_factory
+):
+    """The new guard only ever narrows: real work still spawns its review."""
+    orch = await orchestrator_factory()
+    h = orch.command_handler
+    await _seed(h)
+    await h.db.upsert_profile(AgentProfile(id="reviewer", name="Reviewer"))
+    await h.db.upsert_profile(AgentProfile(id="final-reviewer", name="Final"))
+    engine = pipeline_engine_factory(handler=h)
+
+    task_id = (
+        await h.execute(
+            "create_task",
+            {"project_id": "p", "title": "Do work", "profile_id": "worker"},
+        )
+    )["created"]
+    await h.db.update_task(
+        task_id,
+        branch_name=f"aq/{task_id}",
+        pr_url="https://github.com/o/r/pull/10",
+    )
+    await _close_pass(h, task_id)
+
+    completed = _emitted(orch.bus, "task.completed")
+    assert completed[0]["no_code"] is False
+
+    await engine.dispatch("task.completed", completed[0], event_id="with-commits")
+
+    assert await _review_rows(h, task_id), "per-task-review no longer fires"
+
+
+@pytest.mark.asyncio
+async def test_keyless_review_close_is_flagged_by_its_profile(
+    orchestrator_factory, pipeline_engine_factory
+):
+    """A review created outside ``ensure_task`` is recognised by profile id."""
+    orch = await orchestrator_factory()
+    h = orch.command_handler
+    await _seed(h)
+    await h.db.upsert_profile(AgentProfile(id="reviewer", name="Reviewer", read_only=False))
+    await h.db.upsert_profile(AgentProfile(id="final-reviewer", name="Final", read_only=False))
+    engine = pipeline_engine_factory(handler=h)
+
+    review_id = (
+        await h.execute(
+            "create_task",
+            {"project_id": "p", "title": "Review: Do work", "profile_id": "reviewer"},
+        )
+    )["created"]
+    await h.db.update_task(
+        review_id, branch_name=f"aq/{review_id}", pr_url="https://github.com/o/r/pull/9"
+    )
+
+    await _close_pass(h, review_id)
+
+    completed = _emitted(orch.bus, "task.completed")
+    assert len(completed) == 1
+    assert completed[0]["no_code"] is False, "read_only=false profile: old guard is inert"
+    assert completed[0]["review_task"] is True
+
+    await engine.dispatch("task.completed", completed[0], event_id="keyless-review-closed")
+    assert await _review_rows(h, review_id) == [], "spawned a review of the review"
+
+
+@pytest.mark.asyncio
+async def test_container_settlement_flags_a_settled_review(orchestrator_factory):
+    """The common completion emitter recognises settled reviews by profile."""
+    orch = await orchestrator_factory()
+    h = orch.command_handler
+    await _seed(h)
+    await h.db.upsert_profile(AgentProfile(id="reviewer", name="Reviewer", read_only=False))
+    orch._emit_text_notify = AsyncMock()
+    orch._check_workflow_stage_completion = AsyncMock()
+
+    review_id = (
+        await h.execute(
+            "create_task",
+            {"project_id": "p", "title": "Review: Do work", "profile_id": "reviewer"},
+        )
+    )["created"]
+    worker_id = (
+        await h.execute(
+            "create_task", {"project_id": "p", "title": "Do work", "profile_id": "worker"}
+        )
+    )["created"]
+
+    await orch._on_containers_settled([review_id, worker_id])
+
+    completed = _emitted(orch.bus, "task.completed")
+    by_task = {payload["task_id"]: payload for payload in completed}
+    assert by_task[review_id]["review_task"] is True
+    assert by_task[worker_id]["review_task"] is False

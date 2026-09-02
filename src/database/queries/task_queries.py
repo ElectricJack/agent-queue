@@ -89,6 +89,33 @@ _READY_REASONS = {
 }
 
 
+#: ``task_metadata`` key marking a task whose *latest* entry into BLOCKED
+#: was a terminal decision rather than a graph condition.  Its value is the
+#: transition context that wrote it.  The BLOCKED-recovery rule of design
+#: §4.4 skips marked rows: the projection clearing (``is_blocked`` 1 -> 0)
+#: says nothing about a hard failure, and every child of a container carries
+#: a ``parent-child`` edge, so "has a blocking edge" alone cannot tell the
+#: two apart.  Written and removed inside ``_apply_transition`` so the mark
+#: can never be observed out of step with the status.
+TERMINAL_BLOCKED_META_KEY = "blocked_terminal"
+
+#: Transition contexts that make an entry into BLOCKED terminal: the session
+#: close's three BLOCKED legs, merge conflicts, the execution timeout, and an
+#: operator stop. Leaving BLOCKED by any route (restart, reopen, supervisor
+#: recovery, admin skip) clears the mark; only an explicit decision brings the
+#: task back.
+TERMINAL_BLOCKED_CONTEXTS = frozenset(
+    {
+        "session_close_hard_failure",
+        "max_retries",
+        "session_close_pipeline_stop",
+        "merge_conflict",
+        "timeout",
+        "stop_task",
+    }
+)
+
+
 def _ready_reason(context: str) -> str:
     """Resolve a ``transition_task`` context to its ``task.ready`` reason."""
     if context in _READY_REASONS:
@@ -487,39 +514,84 @@ class TaskQueryMixin:
     async def resume_task(self, task_id: str) -> Task:
         """Remove only the explicit hold; keep approval and dependency state."""
         async with self.immediate() as conn:
-            row = (await conn.execute(
-                select(tasks).where(tasks.c.id == task_id).with_for_update()
-            )).mappings().fetchone()
+            row = await self._lock_task_row(conn, task_id)
             if row is None:
                 raise ValueError(f"Task '{task_id}' not found")
             if row["status"] != TaskStatus.PAUSED.value:
                 raise ValueError(f"Task is not paused (status: {row['status']})")
-            encoded = (await conn.execute(select(task_metadata.c.value).where(
-                task_metadata.c.task_id == task_id, task_metadata.c.key == "manual_pause"
-            ))).scalar_one_or_none()
-            saved = json.loads(encoded) if encoded is not None else {}
-            if saved.get("cleanup_pending"):
-                raise ValueError("Task is paused but its session has not stopped; retry Resume.")
-            prior = TaskStatus(saved.get("status", "READY"))
-            if prior in (TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS, TaskStatus.PAUSED):
-                prior = (
-                    TaskStatus.IN_PROGRESS if await self.is_container(task_id, conn=conn)
-                    else TaskStatus.READY
-                )
-            await conn.execute(delete(task_metadata).where(
-                task_metadata.c.task_id == task_id,
-                task_metadata.c.key == "manual_pause_withholds_children",
-            ))
-            result = await self._apply_transition(
-                conn, task_id, prior, context="manual_resume", force=True,
-                _manual_pause_control=True, resume_after=None, assigned_agent_id=None,
-            )
-            await conn.execute(delete(task_metadata).where(
-                task_metadata.c.task_id == task_id, task_metadata.c.key == "manual_pause"
-            ))
+            encoded = await self._read_manual_pause(conn, task_id)
+            result = await self._resume_locked(conn, task_id, encoded)
         await self.log_blocked_flips(result.flipped)
         await self._notify_ready(result.ready)
         return await self.get_task(task_id)
+
+    async def recover_orphaned_pause(self, task_id: str) -> Task | None:
+        """Resume a task wedged in PAUSED with no timer and no operator hold.
+
+        ``PAUSED`` + ``resume_after IS NULL`` is the operator-hold sentinel,
+        and a real hold always carries the ``manual_pause`` snapshot written
+        in :meth:`pause_task`'s own transaction.  That state *without* the
+        snapshot is unreachable: no timer promotes it and the manual-pause
+        fence rejects every other lifecycle write.
+
+        Unlike :meth:`resume_task` this is guarded, not forced.  The status,
+        the timer and the snapshot are all checked *after* the task-row lock
+        is taken, in the same transaction as the write, so a hold (or a
+        backoff timer) that landed after the caller looked is left exactly
+        as it was — the cascade's own reads happen in separate transactions
+        and cannot tell a fresh hold from a wedge.  Returns the resumed task,
+        or ``None`` when the task was not orphaned.
+        """
+        async with self.immediate() as conn:
+            row = await self._lock_task_row(conn, task_id)
+            if (
+                row is None
+                or row["status"] != TaskStatus.PAUSED.value
+                or row["resume_after"] is not None
+            ):
+                return None
+            if await self._read_manual_pause(conn, task_id) is not None:
+                return None
+            result = await self._resume_locked(conn, task_id, None)
+        await self.log_blocked_flips(result.flipped)
+        await self._notify_ready(result.ready)
+        return await self.get_task(task_id)
+
+    async def _lock_task_row(self, conn, task_id: str):
+        """The task row under ``FOR UPDATE``, or ``None`` when it does not exist."""
+        return (await conn.execute(
+            select(tasks).where(tasks.c.id == task_id).with_for_update()
+        )).mappings().fetchone()
+
+    async def _read_manual_pause(self, conn, task_id: str) -> str | None:
+        """The encoded ``manual_pause`` snapshot on *conn*, or ``None`` without a hold."""
+        return (await conn.execute(select(task_metadata.c.value).where(
+            task_metadata.c.task_id == task_id, task_metadata.c.key == "manual_pause"
+        ))).scalar_one_or_none()
+
+    async def _resume_locked(self, conn, task_id: str, encoded: str | None) -> TransitionResult:
+        """Restore a PAUSED task from its hold snapshot; the caller holds the row lock."""
+        saved = json.loads(encoded) if encoded is not None else {}
+        if saved.get("cleanup_pending"):
+            raise ValueError("Task is paused but its session has not stopped; retry Resume.")
+        prior = TaskStatus(saved.get("status", "READY"))
+        if prior in (TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS, TaskStatus.PAUSED):
+            prior = (
+                TaskStatus.IN_PROGRESS if await self.is_container(task_id, conn=conn)
+                else TaskStatus.READY
+            )
+        await conn.execute(delete(task_metadata).where(
+            task_metadata.c.task_id == task_id,
+            task_metadata.c.key == "manual_pause_withholds_children",
+        ))
+        result = await self._apply_transition(
+            conn, task_id, prior, context="manual_resume", force=True,
+            _manual_pause_control=True, resume_after=None, assigned_agent_id=None,
+        )
+        await conn.execute(delete(task_metadata).where(
+            task_metadata.c.task_id == task_id, task_metadata.c.key == "manual_pause"
+        ))
+        return result
 
     def set_state_machine_enforcement(self, enforce: bool) -> None:
         """Toggle state-machine enforcement in ``transition_task``.
@@ -826,6 +898,24 @@ class TaskQueryMixin:
                 return result
             if not stable:
                 result.flipped = await self.recompute_blocked({task_id}, conn=conn)
+
+            # Terminal-BLOCKED bookkeeping (see TERMINAL_BLOCKED_META_KEY).
+            # Same transaction as the status write, so the promotion cascade
+            # never sees a hard-failed BLOCKED row without its mark.
+            if new_status == TaskStatus.BLOCKED:
+                if context in TERMINAL_BLOCKED_CONTEXTS:
+                    await self._upsert_meta(
+                        task_id, TERMINAL_BLOCKED_META_KEY, context, conn=conn
+                    )
+            elif current_status == TaskStatus.BLOCKED:
+                await conn.execute(
+                    delete(task_metadata).where(
+                        and_(
+                            task_metadata.c.task_id == task_id,
+                            task_metadata.c.key == TERMINAL_BLOCKED_META_KEY,
+                        )
+                    )
+                )
 
             if not was_frontier:
                 reason = _ready_reason(context)
@@ -1286,6 +1376,28 @@ class TaskQueryMixin:
                     )
                 )
             )
+
+    async def task_ids_with_meta(self, task_ids: list[str], key: str) -> set[str]:
+        """Of *task_ids*, which carry metadata *key* (any value)?
+
+        One query for a whole candidate set — the promotion cascade asks this
+        every cycle for every BLOCKED task, where a per-task ``get_task_meta``
+        would be one round-trip each.
+        """
+        if not task_ids:
+            return set()
+        async with self._engine.begin() as conn:
+            rows = (
+                await conn.execute(
+                    select(task_metadata.c.task_id).where(
+                        and_(
+                            task_metadata.c.task_id.in_(sorted(set(task_ids))),
+                            task_metadata.c.key == key,
+                        )
+                    )
+                )
+            ).fetchall()
+        return {r[0] for r in rows}
 
     # ---- task_labels (free-text tags — aq-surface spec `task_set`) ----
 

@@ -24,6 +24,7 @@ from src.orchestrator.merge_slot import (
     release_merge_slot,
     renew_merge_slot,
 )
+from src.review_keys import REVIEW_PROFILE_IDS
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +35,9 @@ WORK_OUTCOME_NO_OP = "no-op"
 #: Legacy stage profile ids used only when profile resolution is unavailable.
 #: The declarative ``AgentProfile.read_only`` flag is the normal no-code
 #: signal; these preserve the old safe skip for unsynced profile rows.
-NO_CODE_PROFILE_IDS = frozenset({"reviewer", "final-reviewer"})
+#: ``src/review_keys.py`` owns the set — the close path's ``review_task``
+#: guard reads the same ids, and the two must not drift apart.
+NO_CODE_PROFILE_IDS = REVIEW_PROFILE_IDS
 
 
 class GitOpsMixin:
@@ -387,6 +390,53 @@ class GitOpsMixin:
             return bool(profile.read_only)
         return (ctx.task.profile_id or "") in NO_CODE_PROFILE_IDS
 
+    async def _branch_left_no_commits(self, ctx: PipelineContext) -> bool:
+        """True when this task's branch ended with no commits ahead of its base.
+
+        The third guard against the review pipeline reviewing nothing (task
+        bright-forge-78).  ``_task_produces_no_code`` asks about *intent* (a
+        ``read_only`` profile, ``--work-outcome no-op``) and the pipeline's
+        ``review_task`` flag asks about *provenance* (a dedup key this
+        pipeline stamped); both can be dodged by a project that renames or
+        rewrites its reviewer profiles.  This asks the branch itself, so an
+        empty diff is recognised whatever produced it — including a worker
+        that closed ``pass`` having committed nothing.
+
+        Asked only where the answer survives the rest of the close:
+
+        * **worktree mode** — integration merges the branch into the default
+          under the merge slot, after this;
+        * **pull_request mode** — the PR is merged later, by the final
+          reviewer.
+
+        The legacy direct path is deliberately excluded: ``_phase_verify``
+        auto-merges the task branch into the default branch there, so by this
+        point a branch full of work counts zero commits ahead and would be
+        misread as empty.  Unknown stays False, exactly as in
+        :meth:`_abranch_has_no_commits` — "cannot tell" must never disarm a
+        review.
+        """
+        workspace = ctx.workspace_path
+        branch = ctx.task.branch_name
+        if not workspace or not branch:
+            return False
+        pr_mode = (
+            await self._effective_integration_mode(ctx.task) == INTEGRATION_MODE_PULL_REQUEST
+        )
+        if not pr_mode and not await self._task_is_worktree_mode(ctx):
+            return False
+        try:
+            return await self._abranch_has_no_commits(
+                workspace, branch, ctx.default_branch or "main"
+            )
+        except Exception as e:
+            logger.warning(
+                "Task %s: empty-branch check failed (assuming it has work): %s",
+                ctx.task.id,
+                e,
+            )
+            return False
+
     async def _sweep_uncommitted_before_skip(self, ctx: PipelineContext) -> None:
         """Best-effort dirty-slot cleanup on a verification path that skips the checks.
 
@@ -458,6 +508,14 @@ class GitOpsMixin:
             return (ctx.pr_url, False)
         if result == PhaseResult.ERROR:
             return (ctx.pr_url, False)
+
+        # Whether the branch carries any work has to be settled *here*:
+        # verification is done (auto-commit and auto-push have run, so the
+        # answer is final) and integration has not yet merged the branch into
+        # the default branch, which would make a real code task look empty.
+        # The close path reads it off the context to flag ``task.completed``
+        # as ``no_code`` — see ``_branch_left_no_commits``.
+        ctx.branch_no_commits = await self._branch_left_no_commits(ctx)
 
         # Phase 2: Integration (worktree-mode only).  For exclusive-clone
         # tasks the verify phase already handled the merge; for worktree
@@ -1367,6 +1425,23 @@ class GitOpsMixin:
             await self._effective_integration_mode(task) == INTEGRATION_MODE_PULL_REQUEST
         )
 
+        # Review-only tasks leave their branch exactly where they found it.
+        # There is nothing to rebase, nothing to push and nothing to merge,
+        # so taking the merge slot would only serialise the project's other
+        # integrations behind a no-op and force-push an empty branch to the
+        # remote.  Verification already accepts such a branch without a PR
+        # (``_abranch_has_no_commits`` in ``_phase_verify``); integration
+        # agrees with it.
+        if await self._abranch_has_no_commits(workspace, branch, default_branch):
+            logger.info(
+                "Task %s: branch '%s' has no commits ahead of '%s' — "
+                "skipping integration",
+                task.id,
+                branch,
+                default_branch,
+            )
+            return PhaseResult.CONTINUE
+
         ttl = float(self.config.worktrees.merge_slot_ttl_seconds)
         acquired = await acquire_merge_slot(self.db, task.project_id, task.id, ttl)
         if not acquired:
@@ -1432,7 +1507,9 @@ class GitOpsMixin:
                     )
 
                 try:
-                    await self.db.update_task(task.id, status=TaskStatus.BLOCKED.value)
+                    await self.db.transition_task(
+                        task.id, TaskStatus.BLOCKED, context="merge_conflict"
+                    )
                 except Exception as db_err:
                     logger.warning(
                         "Task %s: failed to transition to BLOCKED: %s", task.id, db_err
@@ -1549,8 +1626,8 @@ class GitOpsMixin:
                         await self.db.set_task_meta(
                             task.id, "rejection_reason", reason
                         )
-                        await self.db.update_task(
-                            task.id, status=TaskStatus.BLOCKED.value
+                        await self.db.transition_task(
+                            task.id, TaskStatus.BLOCKED, context="merge_conflict"
                         )
                     except Exception:
                         pass
