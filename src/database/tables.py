@@ -636,7 +636,7 @@ agent_profiles = Table(
         "allow_base_checkout",
         Boolean,
         nullable=False,
-        server_default=text("0"),
+        server_default=false(),
     ),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
