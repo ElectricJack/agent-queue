@@ -30,6 +30,7 @@ from src.state_machine import (
     validate_waits_for,
 )
 from src.database.queries.hierarchy_queries import HierarchyError
+from src.database.queries.task_queries import TERMINAL_BLOCKED_META_KEY
 from src.task_names import (
     MAX_NAMING_DEPTH,
     MAX_STRUCTURAL_DEPTH,
@@ -3140,6 +3141,17 @@ class TaskCommandsMixin:
         if needs_attention:
             reasons.append(Reason(
                 code="needs_attention", detail=str(needs_attention), ref=str(task_id),
+            ))
+        # A terminal close (hard failure, retry budget spent, pipeline stop,
+        # timeout, operator stop).  The promotion cascade deliberately skips
+        # it even once the graph is clear; only a restart/reopen brings it
+        # back, so say so rather than answer with an empty graph.
+        blocked_terminal = await self.db.get_task_meta(str(task_id), TERMINAL_BLOCKED_META_KEY)
+        if blocked_terminal:
+            reasons.append(Reason(
+                code="blocked_terminal",
+                detail=f"{blocked_terminal}; not auto-recovered, restart or reopen to retry",
+                ref=str(task_id),
             ))
 
         # A cooling-down PAUSED task is not blocked by anything in the graph

@@ -16,6 +16,7 @@ from src.notifications.events import (
     StuckDefinedTaskEvent,
 )
 from src.models import DepType, Task, TaskStatus
+from src.database.queries.task_queries import TERMINAL_BLOCKED_META_KEY
 from src.task_summary import write_task_summary
 
 logger = logging.getLogger(__name__)
@@ -178,6 +179,18 @@ class MonitoringMixin:
             task for task in blocked
             if not await self.db.get_task_meta(task.id, "needs_attention")
         ]
+        # A terminal close (hard failure, retry budget spent, pipeline stop,
+        # timeout, operator stop) is BLOCKED by decision, not by the graph.
+        # Neither decider may recover it: the projection clearing says
+        # nothing about the failure, and every child of a container carries
+        # a ``parent-child`` edge, so "has a blocking edge" cannot tell a
+        # hard-failed child from a graph-blocked one (crisp-pinnacle-54).
+        # Only an explicit restart/reopen — which clears the mark — brings
+        # the task back.
+        terminal = await self.db.task_ids_with_meta(
+            [task.id for task in blocked], TERMINAL_BLOCKED_META_KEY
+        )
+        blocked = [task for task in blocked if task.id not in terminal]
 
         legacy, deferred = await self._legacy_promotion_decisions(defined, blocked)
         projected = await self._projected_promotion_decisions(defined, blocked)
@@ -294,8 +307,10 @@ class MonitoringMixin:
 
         - ``DEFINED ∧ is_blocked = 0`` → READY.
         - ``BLOCKED ∧ is_blocked = 0`` → READY **only** when the task carries
-          at least one blocking edge or gate; a failure-BLOCKED task has no
-          graph blocker and must stay put.
+          at least one blocking edge or gate; a failure-BLOCKED task with no
+          graph blocker stays put.  (A terminal close *with* a graph edge —
+          any child of a container — is filtered out of ``blocked`` before
+          this runs; see ``_check_defined_tasks``.)
         """
         decisions: dict[str, str] = {task.id: "deps_met" for task in defined if not task.is_blocked}
 

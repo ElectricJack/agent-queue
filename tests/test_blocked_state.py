@@ -767,3 +767,53 @@ class TestMigrationPredicateParity:
 def test_unique_ids_helper():
     """Guard against accidental id collisions in the property test."""
     assert len({uuid.uuid4().hex for _ in range(100)}) == 100
+
+
+# ── Terminal BLOCKED bookkeeping (crisp-pinnacle-54) ─────────────────────
+
+
+class TestTerminalBlockedMark:
+    """``_apply_transition`` records *why* a task entered BLOCKED.
+
+    The BLOCKED-recovery rule needs to tell "BLOCKED by a terminal close"
+    from "BLOCKED with a graph reason".  The transition context is not
+    otherwise persisted, so a terminal context leaves a ``blocked_terminal``
+    metadata mark that any transition out of BLOCKED removes.
+    """
+
+    @pytest.mark.parametrize(
+        "context",
+        [
+            "session_close_hard_failure",
+            "max_retries",
+            "session_close_pipeline_stop",
+            "timeout",
+            "stop_task",
+        ],
+    )
+    async def test_terminal_context_is_marked(self, db, context):
+        await mktask(db, "t", status=TaskStatus.IN_PROGRESS)
+        await db.transition_task("t", TaskStatus.BLOCKED, context=context)
+        assert await db.get_task_meta("t", "blocked_terminal") == context
+
+    async def test_non_terminal_context_is_not_marked(self, db):
+        await mktask(db, "t", status=TaskStatus.IN_PROGRESS)
+        await db.transition_task("t", TaskStatus.BLOCKED, context="")
+        assert await db.get_task_meta("t", "blocked_terminal") is None
+
+    @pytest.mark.parametrize("target", [TaskStatus.READY, TaskStatus.COMPLETED])
+    async def test_leaving_blocked_clears_the_mark(self, db, target):
+        await mktask(db, "t", status=TaskStatus.IN_PROGRESS)
+        await db.transition_task("t", TaskStatus.BLOCKED, context="session_close_hard_failure")
+        await db.transition_task("t", target, context="restart_task", force=True)
+        assert await db.get_task_meta("t", "blocked_terminal") is None
+
+    async def test_bulk_lookup(self, db):
+        await mktask(db, "hard", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "graph", status=TaskStatus.IN_PROGRESS)
+        await db.transition_task("hard", TaskStatus.BLOCKED, context="max_retries")
+        await db.transition_task("graph", TaskStatus.BLOCKED, context="")
+        assert await db.task_ids_with_meta(["hard", "graph", "missing"], "blocked_terminal") == {
+            "hard"
+        }
+        assert await db.task_ids_with_meta([], "blocked_terminal") == set()
