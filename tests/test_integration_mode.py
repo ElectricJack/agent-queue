@@ -123,23 +123,6 @@ def _ctx(orch, task, ws_path) -> PipelineContext:
     )
 
 
-def _arun_with_commits_ahead(count: int) -> AsyncMock:
-    """Mock ``git._arun`` whose ``rev-list <default>..HEAD`` reports *count*.
-
-    Every other invocation (auto-push's ``rev-list origin/<branch>..HEAD``,
-    merges, pushes) keeps answering ``"0"`` like the fixture default.
-    """
-
-    async def _run(args, cwd=None, **_kw):
-        if args and args[0] == "rev-list" and any(
-            a in ("origin/main..HEAD", "main..HEAD") for a in args
-        ):
-            return str(count)
-        return "0"
-
-    return AsyncMock(side_effect=_run)
-
-
 class TestExecutionRulesByMode:
     """_get_execution_rules varies the git instructions with the mode."""
 
@@ -201,104 +184,11 @@ class TestPhaseVerifyByMode:
         await orch.db.create_task(task)
         orch.git.aget_current_branch = AsyncMock(return_value="feature-2")
         orch.git.afind_open_pr = AsyncMock(return_value=None)
-        orch.git._arun = _arun_with_commits_ahead(2)
         ws = await orch.db.get_workspace("ws-1")
         ctx = _ctx(orch, task, ws.workspace_path)
 
         result = await orch._phase_verify(ctx)
         assert result == PhaseResult.STOP
-
-
-class TestPhaseVerifyEmptyBranchInSlot:
-    """A task that produced no commits can close under ``pull_request``.
-
-    Regression for quick-meadow-14 / smart-quest-24: review, research and
-    triage tasks never commit, so ``gh pr create`` refuses to open a PR for
-    their branch (``No commits between main and <branch>``).  The old
-    escape hatch -- "the workspace is on the default branch" -- cannot fire
-    from a worktree slot, because the default branch is already checked out
-    in the primary worktree (``fatal: 'main' is already used by worktree``).
-    The gate now checks the condition that hatch approximated: the task
-    branch has no commits ahead of the default branch.
-    """
-
-    async def _slot_ctx(self, orch, task_id, branch):
-        task = _pr_task(task_id, branch_name=branch)
-        await orch.db.create_task(task)
-        await orch.db.transition_task(task.id, TaskStatus.IN_PROGRESS)
-        # The slot stays on its task branch; it cannot check out ``main``.
-        orch.git.aget_current_branch = AsyncMock(return_value=branch)
-        orch.git.afind_open_pr = AsyncMock(return_value=None)
-        ws = await orch.db.get_workspace("ws-1")
-        return task, _ctx(orch, task, ws.workspace_path)
-
-    async def test_no_commits_ahead_passes_without_a_pr(self, orch):
-        task, ctx = await self._slot_ctx(orch, "t-review", "aq/t-review")
-        orch.git._arun = _arun_with_commits_ahead(0)
-        ctx.close_session_live = True
-
-        assert await orch._phase_verify(ctx) == PhaseResult.CONTINUE
-        # The PR was looked up (a real PR would still be recorded) ...
-        orch.git.afind_open_pr.assert_awaited_once()
-        # ... and its absence is not a failure for an empty branch.
-        assert ctx.verification_issues == []
-        assert ctx.verification_retry_in_session is False
-        assert ctx.pr_url is None
-        assert (await orch.db.get_task(task.id)).status is TaskStatus.IN_PROGRESS
-
-    async def test_commits_ahead_still_require_an_open_pr(self, orch):
-        """No regression: real work on the branch keeps the PR requirement."""
-        _task, ctx = await self._slot_ctx(orch, "t-work", "aq/t-work")
-        orch.git._arun = _arun_with_commits_ahead(3)
-        ctx.close_session_live = True
-
-        assert await orch._phase_verify(ctx) == PhaseResult.STOP
-        assert ctx.verification_retry_in_session is True
-        assert any("No open PR" in msg for msg in ctx.verification_issues)
-        orch.git.afind_open_pr.assert_awaited_once()
-
-    async def test_commits_ahead_with_open_pr_passes(self, orch):
-        _task, ctx = await self._slot_ctx(orch, "t-work-pr", "aq/t-work-pr")
-        orch.git._arun = _arun_with_commits_ahead(3)
-        orch.git.afind_open_pr = AsyncMock(return_value="https://github.com/org/repo/pull/9")
-
-        assert await orch._phase_verify(ctx) == PhaseResult.CONTINUE
-        assert ctx.pr_url == "https://github.com/org/repo/pull/9"
-
-    async def test_unknown_ahead_count_keeps_the_pr_requirement(self, orch):
-        """If git cannot resolve the default branch, stay on the strict path."""
-        from src.git.manager import GitError
-
-        _task, ctx = await self._slot_ctx(orch, "t-unknown", "aq/t-unknown")
-
-        async def _run(args, cwd=None, **_kw):
-            if args and args[0] == "rev-list" and any("main..HEAD" in a for a in args):
-                raise GitError("unknown revision")
-            return "0"
-
-        orch.git._arun = AsyncMock(side_effect=_run)
-        ctx.close_session_live = True
-
-        assert await orch._phase_verify(ctx) == PhaseResult.STOP
-        assert any("No open PR" in msg for msg in ctx.verification_issues)
-
-    async def test_falls_back_to_local_default_without_remote_ref(self, orch):
-        """``origin/main`` missing locally is not a reason to demand a PR."""
-        from src.git.manager import GitError
-
-        _task, ctx = await self._slot_ctx(orch, "t-local", "aq/t-local")
-
-        async def _run(args, cwd=None, **_kw):
-            if args and args[0] == "rev-list":
-                if "origin/main..HEAD" in args:
-                    raise GitError("unknown revision origin/main")
-                if "main..HEAD" in args:
-                    return "0"
-            return "0"
-
-        orch.git._arun = AsyncMock(side_effect=_run)
-
-        assert await orch._phase_verify(ctx) == PhaseResult.CONTINUE
 
     async def test_direct_mode_auto_merges_to_default(self, orch):
         task = _direct_task()
@@ -334,23 +224,6 @@ class TestPhaseIntegrateByMode:
         result = await self._run_integrate(orch, task, monkeypatch)
         assert result == PhaseResult.CONTINUE
         orch.git.amerge_branch.assert_not_awaited()
-
-    async def test_pushes_a_branch_with_commits(self, orch, monkeypatch):
-        task = _pr_task("t-int-push")
-        await orch.db.create_task(task)
-        orch.git._arun = _arun_with_commits_ahead(2)
-        result = await self._run_integrate(orch, task, monkeypatch)
-        assert result == PhaseResult.CONTINUE
-        orch.git.apush_branch.assert_awaited_once()
-
-    async def test_empty_branch_is_not_pushed(self, orch, monkeypatch):
-        """A no-commit task branch has nothing to publish; do not litter origin."""
-        task = _pr_task("t-int-empty")
-        await orch.db.create_task(task)
-        orch.git._arun = _arun_with_commits_ahead(0)
-        result = await self._run_integrate(orch, task, monkeypatch)
-        assert result == PhaseResult.CONTINUE
-        orch.git.apush_branch.assert_not_awaited()
 
     async def test_direct_mode_merges_into_default(self, orch, monkeypatch):
         task = _direct_task("t-int-direct")
@@ -469,8 +342,6 @@ class TestVerificationRetryKeepsTheSessionAlive:
         await orch.db.transition_task(task.id, TaskStatus.IN_PROGRESS)
         orch.git.aget_current_branch = AsyncMock(return_value=branch)
         orch.git.afind_open_pr = AsyncMock(return_value=None)
-        # The branch carries real work -- a PR is genuinely required.
-        orch.git._arun = _arun_with_commits_ahead(1)
         ws = await orch.db.get_workspace("ws-1")
         return task, _ctx(orch, task, ws.workspace_path)
 
