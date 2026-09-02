@@ -11,7 +11,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("../../../api/hooks", () => ({ usePlaybooks: () => ({ data: mocks.playbooks, isLoading: false }) }));
 vi.mock("../../../panes/store", () => ({ useShellPaneStore: () => ({ state: mocks.pane, open: mocks.open, close: mocks.close }) }));
 vi.mock("../TaskWorkspace", () => ({ useTaskWorkspace: () => ({ projectId: "alpha", projectIds: ["alpha"], projects: [mocks.project],
-  filters: { query: mocks.query, status: "", showCompleted: false }, isLoadingProjects: false, projectsError: null }) }));
+  filters: { query: mocks.query, status: "", showCompleted: false, focus: "" }, isLoadingProjects: false, projectsError: null }) }));
 vi.mock("../../../api/graph", () => ({ useProjectGraphs: () => ({ data: {
   tasks: mocks.taskCount ? [{ id: "task-a", title: "Checkout", status: "READY" }] : [], taskProject: { "task-a": "alpha" }, edges: [], gates: [], agents: [],
 }, isLoading: mocks.loading, errors: [] }) }));
