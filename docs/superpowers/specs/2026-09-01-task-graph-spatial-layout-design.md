@@ -638,3 +638,20 @@ Not adopted: nothing was rejected outright. The reviewer's suggestion of a separ
 graph-data version for fine-grained invalidation was replaced by the simpler
 viewport-refetch rule in 6.4, which is bounded by the same quantity and needs no new
 event payloads.
+
+### Known limitations at the end of Stage 3
+
+Shipped behind `dashboard.graph_layout.enabled`, with these gaps recorded rather than fixed:
+
+- Containers are allocated at growth-band sizes, so a box can look roughly twice as large as
+  its contents; focus therefore fits to a half-empty rectangle and the cards inside render small.
+- All-projects focus resolves the focused node against the first project in scope, so a
+  `?focus=` deep link into any other project's node does not resolve.
+- The status strip shows no matching count under the flag (`matchingCount={null}`): filtering is
+  a server parameter, and the tiled client never holds the whole graph to count against.
+- Cross-project stub labels and their docking port are implemented and unit-tested but
+  unreachable end to end, because the engine lays out one project at a time and stamps every
+  stub with the requesting project's id.
+- `POST /api/task/set-status` publishes no forwarded bus event, so a status change made through
+  that route reaches the canvas only on the next event or the extent's 60 s poll. Task creation,
+  deletion and the `notify.task_*` family do drive the live path.
