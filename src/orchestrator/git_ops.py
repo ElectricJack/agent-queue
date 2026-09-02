@@ -480,45 +480,6 @@ class GitOpsMixin:
 
         return (ctx.pr_url, True)
 
-    async def _branch_has_no_commits(
-        self,
-        workspace: str,
-        branch: str,
-        default_branch: str,
-        *,
-        has_remote: bool,
-    ) -> bool:
-        """True when *branch* introduces no commits over the default branch.
-
-        A read-only task — a review, an investigation, or any worker that
-        legitimately finishes with nothing to ship — ends on its task branch
-        with a clean tree and zero commits.  No PR can ever exist for such a
-        branch (``gh pr create`` refuses with "No commits between ..."), so
-        the PR gate has to recognise it as a no-change task rather than
-        demand something unobtainable.
-
-        Compared against ``origin/<default>`` as well as the local
-        ``<default>``: a worktree slot's local default ref is routinely
-        stale, so requiring both to be zero would misclassify a branch cut
-        from an up-to-date remote.  Zero against *either* ref means the
-        branch carries nothing new.  Returns False when neither comparison
-        can be made — an unknown state keeps the existing gate.
-        """
-        refs = ([f"origin/{default_branch}"] if has_remote else []) + [default_branch]
-        for ref in refs:
-            try:
-                out = await self.git._arun(
-                    ["rev-list", f"{ref}..{branch}", "--count"], cwd=workspace
-                )
-            except GitError as e:
-                logger.debug(
-                    "no-change check: rev-list %s..%s failed: %s", ref, branch, e
-                )
-                continue
-            if out.strip() == "0":
-                return True
-        return False
-
     async def _phase_verify(self, ctx: PipelineContext) -> PhaseResult:
         """Pipeline phase: verify the agent left the workspace in the expected git state.
 
@@ -534,11 +495,7 @@ class GitOpsMixin:
           branch, branch pushed, PR exists.
         * **Final task / final subtask, direct mode** — expect: on default
           branch, no uncommitted, in sync with origin.
-        * **No-change task** — nothing to ship: either sitting on the
-          default branch with no diff, or on the task branch with a clean
-          tree and no commits over the default branch (a review or other
-          read-only worker).  Both pass, and both skip integration — an
-          empty branch can neither get a PR nor be merged.
+        * **No-change task** — on default branch with no diff → pass.
         """
         workspace = ctx.workspace_path
         task = ctx.task
@@ -854,31 +811,7 @@ class GitOpsMixin:
             # Allow being on default if no changes were made (research task)
             if current_branch == default_branch:
                 # No-change task — acceptable, skip PR checks
-                ctx.no_change = True
-            elif (
-                not has_uncommitted
-                and current_branch == task.branch_name
-                and await self._branch_has_no_commits(
-                    workspace,
-                    task.branch_name,
-                    default_branch,
-                    has_remote=has_remote,
-                )
-            ):
-                # Same no-change task, reached from the task branch.  A
-                # worktree slot cannot check out the default branch — git
-                # refuses while the primary checkout holds it — so read-only
-                # tasks in a slot can never satisfy the test above.  A clean
-                # tree plus zero commits over the default branch is the same
-                # state and equally un-PR-able.
-                ctx.no_change = True
-                logger.info(
-                    "Task %s: branch '%s' has no commits over '%s' and the tree is "
-                    "clean — treating as a no-change task, skipping the PR check",
-                    task.id,
-                    task.branch_name,
-                    default_branch,
-                )
+                pass
             else:
                 if has_remote:
                     pr_url = await self.git.afind_open_pr(workspace, task.branch_name)
@@ -1385,19 +1318,6 @@ class GitOpsMixin:
         # of the plan does integration.  Intermediates commit and stop.
         is_intermediate = task.is_plan_subtask and not await self._is_last_subtask(task)
         if is_intermediate:
-            return PhaseResult.CONTINUE
-
-        # Nothing to integrate: ``_phase_verify`` found a clean tree and a
-        # branch with no commits over the default branch.  Rebasing is a
-        # no-op, and pushing would publish an empty branch for every
-        # read-only task — so skip without ever taking the merge slot.
-        if ctx.no_change:
-            logger.info(
-                "Task %s: no commits on '%s' over '%s' — skipping integration",
-                task.id,
-                branch,
-                default_branch,
-            )
             return PhaseResult.CONTINUE
 
         pr_mode = (

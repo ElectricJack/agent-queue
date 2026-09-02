@@ -417,14 +417,12 @@ async def _seed_wt_project(o, base_repo, *, mode=KIND_MODE_WORKTREE, cap=2):
     )
 
 
-async def _prep_task_in_slot(
-    o, base_repo, task_id="tsk-1", agent_id="a-1", integration_mode="direct",
-):
+async def _prep_task_in_slot(o, base_repo, task_id="tsk-1", agent_id="a-1"):
     # These scenarios exercise direct integration (base merge into main);
     # pull_request-mode integrate coverage lives in test_integration_mode.py.
     task = Task(
         id=task_id, project_id="p1", title=task_id, description="",
-        integration_mode=integration_mode,
+        integration_mode="direct",
     )
     await o.db.create_task(task)
     await o.db.create_agent(Agent(id=agent_id, name=agent_id,
@@ -688,46 +686,6 @@ class TestPhaseVerifySkipsAutoMergeUnderWorktreeMode:
             assert result == PhaseResult.CONTINUE
             head = _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=base_repo)
             assert head == "main"
-        finally:
-            await o.shutdown()
-
-
-class TestReadOnlyTaskInASlotCanComplete:
-    """Regression: a reviewer in a worktree slot leaves zero commits.
-
-    Read-only workers are instructed never to edit, commit or push, and a
-    slot can never check out the default branch — git refuses while the
-    primary checkout holds it.  Before the no-change arm existed, the
-    pull_request gate demanded a PR that ``gh pr create`` would itself
-    refuse ("No commits between main and aq/tsk-1"), so the task could
-    never close.
-    """
-
-    async def test_pr_mode_empty_branch_completes_the_pipeline(
-        self, tmp_path, base_repo_for_integrate,
-    ):
-        base_repo = base_repo_for_integrate
-        o = await _make_worktree_orch(tmp_path)
-        try:
-            await _seed_wt_project(o, base_repo)
-            task, agent, slot = await _prep_task_in_slot(
-                o, base_repo, integration_mode="pull_request"
-            )
-            # Exactly what a reviewer leaves behind.
-            assert _git(["status", "--porcelain"], cwd=slot) == ""
-            assert _git(["rev-list", "main..HEAD", "--count"], cwd=slot) == "0"
-            assert _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=slot) == "aq/tsk-1"
-
-            ws = await o.db.get_workspace_for_task(task.id)
-            ctx = _make_pipeline_ctx(task, agent, slot, ws.id)
-
-            pr_url, ok = await o._run_completion_pipeline(ctx)
-
-            assert ok is True, "read-only task must be allowed to complete"
-            assert ctx.no_change is True
-            assert pr_url is None
-            # The empty branch is never published.
-            assert "aq/tsk-1" not in _git(["branch", "-r"], cwd=slot)
         finally:
             await o.shutdown()
 

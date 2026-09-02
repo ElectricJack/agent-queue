@@ -1368,11 +1368,6 @@ class PipelineContext:
     verification_issues: list[str] = field(default_factory=list)
     #: Rendered feedback text handed back to the agent on an in-session retry.
     verification_feedback: str = ""
-    #: Set by ``_phase_verify`` when the task ships nothing: a clean tree and
-    #: a branch with no commits over the default branch (a review or other
-    #: read-only task).  Such a branch cannot get a PR, and there is nothing
-    #: for ``_phase_integrate`` to rebase, push or merge.
-    no_change: bool = False
     #: ``--work-outcome`` from ``aq task close`` (``shipped`` | ``no-op`` |
     #: ``blocked`` | ``abandoned``), empty when the agent gave none.  Git
     #: verification reads ``no-op`` as "this task produced no code": there is

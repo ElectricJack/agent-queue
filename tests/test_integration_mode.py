@@ -30,19 +30,6 @@ from src.models import (
 from src.orchestrator import Orchestrator
 
 
-async def _arun_branch_has_commits(args, cwd=None, **kwargs):
-    """``git`` stub whose task branches carry one commit over the default.
-
-    ``rev-list <base>..<branch> --count`` is ``_phase_verify``'s no-change
-    probe; answering "0" for it would classify every PR-mode task in these
-    fixtures as a no-change task and skip the PR gate.  Every other
-    rev-list (ahead/behind of origin) stays at "0".
-    """
-    if args and args[0] == "rev-list" and args[1].split("..")[-1].startswith("feature-"):
-        return "1"
-    return "0"
-
-
 class _NullRuntimeFactory:
     def create(self, agent_type, profile=None, llm_logger=None):
         raise AssertionError("no runtime should be created in these tests")
@@ -78,7 +65,7 @@ async def orch(tmp_path):
     mock_git.aget_current_branch = AsyncMock(return_value="feature-1")
     mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
     mock_git.afind_open_pr = AsyncMock(return_value="https://github.com/org/repo/pull/42")
-    mock_git._arun = AsyncMock(side_effect=_arun_branch_has_commits)
+    mock_git._arun = AsyncMock(return_value="0")
     mock_git.acommit_all = AsyncMock(return_value=True)
     mock_git.apush_branch = AsyncMock(return_value=None)
     mock_git.amerge_branch = AsyncMock(return_value=True)
@@ -217,87 +204,6 @@ class TestPhaseVerifyByMode:
         assert merge_calls, "direct mode should auto-merge the task branch into default"
 
 
-class TestPhaseVerifyNoChangeTask:
-    """A branch with no commits is a no-change task, not a missing PR.
-
-    Read-only workers (reviewers, investigations) are told never to commit,
-    so they end on their task branch with zero commits.  ``gh pr create``
-    refuses such a branch ("No commits between ..."), and a worktree slot
-    cannot check out the default branch — the primary checkout holds it —
-    so the older ``current_branch == default_branch`` escape is unreachable
-    from a slot.  Without this arm those tasks can never close.
-    """
-
-    async def test_pr_mode_empty_branch_closes_without_a_pr(self, orch):
-        task = _pr_task("t-pr-empty", branch_name="feature-empty")
-        await orch.db.create_task(task)
-        orch.git.aget_current_branch = AsyncMock(return_value="feature-empty")
-        orch.git.afind_open_pr = AsyncMock(return_value=None)
-        orch.git._arun = AsyncMock(return_value="0")  # zero commits over main
-        ws = await orch.db.get_workspace("ws-1")
-        ctx = _ctx(orch, task, ws.workspace_path)
-
-        assert await orch._phase_verify(ctx) == PhaseResult.CONTINUE
-        assert ctx.no_change is True
-        orch.git.afind_open_pr.assert_not_awaited()
-
-    async def test_stale_local_default_falls_back_to_origin(self, orch):
-        """A slot's local `main` is routinely behind; `origin/main` decides."""
-        task = _pr_task("t-pr-stale", branch_name="feature-stale")
-        await orch.db.create_task(task)
-        orch.git.aget_current_branch = AsyncMock(return_value="feature-stale")
-        orch.git.afind_open_pr = AsyncMock(return_value=None)
-
-        async def _arun(args, cwd=None, **kwargs):
-            if args and args[0] == "rev-list":
-                # Zero against origin/main, but the stale local main is
-                # missing the commits the branch was cut from.
-                return "0" if args[1].startswith("origin/main..") else "4"
-            return "0"
-
-        orch.git._arun = AsyncMock(side_effect=_arun)
-        ws = await orch.db.get_workspace("ws-1")
-        ctx = _ctx(orch, task, ws.workspace_path)
-
-        assert await orch._phase_verify(ctx) == PhaseResult.CONTINUE
-        assert ctx.no_change is True
-
-    async def test_unreadable_refs_keep_the_pr_gate(self, orch):
-        """If neither comparison can be made, the gate stays as it was."""
-        from src.git.manager import GitError
-
-        task = _pr_task("t-pr-unknown", branch_name="feature-unknown")
-        await orch.db.create_task(task)
-        orch.git.aget_current_branch = AsyncMock(return_value="feature-unknown")
-        orch.git.afind_open_pr = AsyncMock(return_value=None)
-
-        async def _arun(args, cwd=None, **kwargs):
-            if args and args[0] == "rev-list" and ".." in args[1]:
-                raise GitError("unknown revision")
-            return "0"
-
-        orch.git._arun = AsyncMock(side_effect=_arun)
-        ws = await orch.db.get_workspace("ws-1")
-        ctx = _ctx(orch, task, ws.workspace_path)
-
-        assert await orch._phase_verify(ctx) == PhaseResult.STOP
-        assert ctx.no_change is False
-
-    async def test_wrong_branch_still_requires_a_pr(self, orch):
-        """Empty task branch but the workspace sits somewhere else entirely —
-        that is a broken workspace, not a no-change task."""
-        task = _pr_task("t-pr-elsewhere", branch_name="feature-mine")
-        await orch.db.create_task(task)
-        orch.git.aget_current_branch = AsyncMock(return_value="someone-elses")
-        orch.git.afind_open_pr = AsyncMock(return_value=None)
-        orch.git._arun = AsyncMock(return_value="0")
-        ws = await orch.db.get_workspace("ws-1")
-        ctx = _ctx(orch, task, ws.workspace_path)
-
-        assert await orch._phase_verify(ctx) == PhaseResult.STOP
-        assert ctx.no_change is False
-
-
 class TestPhaseIntegrateByMode:
     """_phase_integrate merges into default only in direct mode."""
 
@@ -325,25 +231,6 @@ class TestPhaseIntegrateByMode:
         result = await self._run_integrate(orch, task, monkeypatch)
         assert result == PhaseResult.CONTINUE
         orch.git.amerge_branch.assert_awaited_once()
-
-    async def test_no_change_task_skips_integration(self, orch, monkeypatch):
-        """Nothing to rebase, push or merge — and no merge slot is taken."""
-        from src.orchestrator import git_ops
-
-        acquire = AsyncMock(return_value=True)
-        monkeypatch.setattr(git_ops, "acquire_merge_slot", acquire)
-        monkeypatch.setattr(git_ops, "renew_merge_slot", AsyncMock(return_value=True))
-        monkeypatch.setattr(git_ops, "release_merge_slot", AsyncMock(return_value=None))
-        task = _pr_task("t-int-empty")
-        await orch.db.create_task(task)
-        ws = await orch.db.get_workspace("ws-1")
-        ctx = _ctx(orch, task, ws.workspace_path)
-        ctx.no_change = True
-
-        assert await orch._phase_integrate(ctx) == PhaseResult.CONTINUE
-        acquire.assert_not_awaited()
-        orch.git.apush_branch.assert_not_awaited()
-        orch.git.amerge_branch.assert_not_awaited()
 
 
 class TestSessionCloseCompletion:
