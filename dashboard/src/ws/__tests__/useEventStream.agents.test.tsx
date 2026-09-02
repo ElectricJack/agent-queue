@@ -20,7 +20,7 @@ describe("Agent flock live invalidation", () => {
   it.each(["agent.created", "agent.updated", "agent.question", "agent.question.updated", "session.started", "session.exited", "session.adopted", "task.claimed", "task.blocked", "message.sent", "message.replied"])(
     "refreshes the roster when %s changes assignments, settings, or subagent activity", (eventType) => {
       const client = new QueryClient();
-      client.setQueryData(["agents", "flock"], [{ id: "a" }]);
+      client.setQueryData(["agents", "flock"], { agents: [{ id: "a" }], count: 1 });
       renderHook(() => useEventStream(), { wrapper: ({ children }: { children: ReactNode }) => (
         <QueryClientProvider client={client}>{children}</QueryClientProvider>
       ) });

@@ -190,7 +190,7 @@ class CreateTaskResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.create_task_response_depends_on_item import CreateTaskResponseDependsOnItem  # noqa: PLC0415
+        from ..models.create_task_response_depends_on_item import CreateTaskResponseDependsOnItem
 
         d = dict(src_dict)
         created = d.pop("created")

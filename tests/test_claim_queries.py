@@ -264,6 +264,35 @@ async def test_record_holder_stamps_and_release_clears_every_agent_workspace_slo
 
 
 class TestClaimTransaction:
+    async def test_routed_work_query_locks_only_tasks_on_postgres(self, db):
+        """The routing LEFT OUTER JOIN must remain claimable without a route.
+
+        PostgreSQL rejects ``FOR UPDATE`` on an outer join's nullable side.
+        This fixture's PostgreSQL arm executes the actual locking query,
+        while the SQLite arm keeps the portable selection behavior covered.
+        """
+        await mktask(
+            db,
+            "unrouted",
+            profile_id="worker",
+            intelligence_class="fast-low",
+        )
+
+        async with db.immediate() as conn:
+            selected = await db.select_ready_for_profile(
+                conn,
+                project_id=PROJECT_ID,
+                profile_id="worker",
+                default_profile_id=None,
+                agent_id="agent-1",
+                enforce_routing=True,
+                intelligence_class="fast-low",
+                llm_provider="anthropic",
+                options_hash="catalog-1",
+            )
+
+        assert selected == "unrouted"
+
     async def test_work_query_uses_fresh_route_class_and_provider_before_limit(self, db):
         await mktask(db, "untriaged", profile_id="worker", priority=1)
         await mktask(db, "wrong-class", profile_id="worker", priority=2)

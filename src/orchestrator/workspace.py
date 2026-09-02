@@ -87,7 +87,9 @@ class WorkspaceMixin:
 
         Steps:
         1. Under worktree mode, lazily ensure the project's slots exist
-           (worktree-execution §3.1) so acquisition has something to take.
+           (worktree-execution §3.1) so acquisition has something to take,
+           then compute the branch-affinity hint (§3.4) that steers a retry
+           back to the slot still holding its branch.
         2. Call ``acquire_for_task`` to obtain a :class:`WorkspaceAttachmentSet`.
            For tasks with no explicit ``requires_kinds``, this synthesizes a
            ``project-repo`` requirement preserving today's behavior.
@@ -128,11 +130,16 @@ class WorkspaceMixin:
 
         worktrees_enabled = self._worktrees_enabled()
         pool_warming = False
+        slot_affinity: dict[str, str] = {}
         if worktrees_enabled:
             # Slots are created lazily, on demand, when acquisition would
             # otherwise find fewer free slots than the cap allows
             # (worktree-execution §3.1 / §6.3).
             pool_warming = await self._ensure_worktree_slots_for_task(task, project)
+            # ...and once they exist, prefer the one that already has this
+            # task's branch checked out, so a retry cannot collide with its
+            # own predecessor slot (§3.4).
+            slot_affinity = await self._slot_branch_affinity(task, project)
 
         self._workspace_wait_reasons.pop(task.id, None)
         # T3 reviewer follow-up: resolve the profile so ``read_only`` can be
@@ -169,6 +176,7 @@ class WorkspaceMixin:
                     self._project_slot_cap(project) if worktrees_enabled else None
                 ),
                 read_only=read_only,
+                preferred_workspaces=slot_affinity or None,
             )
         except AcquisitionFailed:
             if pool_warming:
@@ -510,6 +518,83 @@ class WorkspaceMixin:
                 warming = True
         return warming
 
+    async def _resume_branch_for(self, task: Task) -> str | None:
+        """The branch a task *resumes* rather than creates, if any.
+
+        Plan subtasks accumulate onto their parent's branch so the whole plan
+        lands as one PR — that maps to the continuation/resume path rather
+        than a fresh ``aq/<task_id>`` (worktree-execution §6.1).
+        """
+        if not (task.is_plan_subtask and task.parent_task_id):
+            return None
+        parent = await self.db.get_task(task.parent_task_id)
+        if parent is None:
+            return None
+        return parent.branch_name or None
+
+    async def _slot_branch_affinity(self, task: Task, project) -> dict[str, str]:
+        """``{kind_id: workspace_id}`` for slots already holding this task's branch.
+
+        Design §3.4 leaves a released slot **on its last task's branch**, so a
+        retry that the scheduler hands a *different* slot collides with its
+        own predecessor: ``git switch aq/<task_id>`` is refused, the task
+        pauses for the no-workspace backoff, retries, and collides again —
+        indefinitely, because nothing moves the old slot off the branch.
+        Preferring the slot that already holds the branch removes the
+        collision at its source instead of reporting it.
+
+        The preference is a *hint*, computed fresh from ``git worktree list``
+        per acquisition (see
+        :meth:`WorktreeSlotManager.find_slot_holding_branch`) — nothing is
+        recorded on the task, so nothing can go stale.  When the holder is
+        busy, acquisition falls back to any free slot: a hard wait would park
+        the task behind an unrelated long-running one, and the branch-held
+        reporting still covers the collision that follows.
+
+        For a plan subtask the branch in question is the *parent's* shared
+        branch (§4.4).  A running sibling holds its slot locked, so the hint
+        cannot be taken and the existing sibling wait is unchanged; when no
+        sibling is running the next subtask lands back on the slot that last
+        advanced the plan branch, which is strictly better than colliding.
+        """
+        from src.orchestrator.workspace_attachments import effective_requirements
+        from src.orchestrator.worktree_manager import task_branch_name
+
+        branch = await self._resume_branch_for(task) or task_branch_name(task.id)
+        cap = self._project_slot_cap(project)
+        affinity: dict[str, str] = {}
+        seen: set[str] = set()
+        for req in await effective_requirements(self.db, task):
+            if req.kind_id in seen or req.preferred_workspace_id:
+                continue
+            seen.add(req.kind_id)
+            try:
+                kind = await self.db.resolve_workspace_kind(project.id, req.kind_id)
+                if kind is None or not kind.is_git_repo or kind.mode != KIND_MODE_WORKTREE:
+                    continue
+                base = await self.db.find_worktree_base(project.id, kind.id)
+                if base is None:
+                    continue
+                slots = [
+                    s
+                    for s in await self.db.list_slots_for_base(base.id)
+                    if (s.slot_index or 0) < cap
+                ]
+                holder = await self._worktree_slots().find_slot_holding_branch(
+                    base, slots, branch
+                )
+            except Exception as e:  # a hint is never worth failing dispatch over
+                logger.debug(
+                    "Task %s: branch affinity lookup failed for kind %s: %s",
+                    task.id,
+                    req.kind_id,
+                    e,
+                )
+                continue
+            if holder:
+                affinity[req.kind_id] = holder
+        return affinity
+
     def _register_slot_bases(self, slots, base_path: str) -> None:
         """Record ``slot_path -> base_path`` for the sync git-lock resolver.
 
@@ -575,14 +660,7 @@ class WorkspaceMixin:
         if base is not None:
             self._register_slot_bases([ws], base.workspace_path)
 
-        # Plan subtasks accumulate onto their parent's branch so the whole
-        # plan lands as one PR — that maps to the continuation/resume path
-        # rather than a fresh branch (worktree-execution §6.1).
-        resume_branch = None
-        if task.is_plan_subtask and task.parent_task_id:
-            parent = await self.db.get_task(task.parent_task_id)
-            if parent is not None and parent.branch_name:
-                resume_branch = parent.branch_name
+        resume_branch = await self._resume_branch_for(task)
 
         try:
             branch_name = await self._worktree_slots().reset_slot_for_task(
@@ -592,7 +670,7 @@ class WorkspaceMixin:
                 kind=attachment.kind,
             )
         except Exception as e:
-            if _is_branch_busy_error(e):
+            if _is_branch_busy_error(e) and resume_branch:
                 # Two plan subtasks of the same parent resume the *same*
                 # branch, and git refuses to check one branch out in two
                 # worktrees.  That is a scheduling wait, not a git error:
@@ -600,6 +678,12 @@ class WorkspaceMixin:
                 # (worktree-execution §4.4), and the loser retries after the
                 # normal PAUSED backoff.  Reporting it as a Git Error once per
                 # attempt is pure noise.
+                #
+                # Only a *resume* can have a sibling: without ``resume_branch``
+                # the task owns ``aq/<task_id>`` alone, so a branch-busy error
+                # there is a stuck slot, not scheduling.  Calling that a
+                # sibling wait logged "waits for branch None" and silently
+                # looped forever.
                 logger.info(
                     "Task %s waits for branch %s — a sibling holds it in another "
                     "slot; retrying after the no-workspace backoff",
@@ -607,6 +691,26 @@ class WorkspaceMixin:
                     resume_branch,
                 )
                 self._workspace_wait_reasons[task.id] = "branch_busy"
+            elif _is_branch_busy_error(e):
+                from src.orchestrator.worktree_manager import task_branch_name
+
+                # The task's own branch is checked out in another slot.  A
+                # released slot deliberately stays on its last task's branch
+                # (worktree-execution §3.4), so a retry that lands on a
+                # *different* slot collides with its own predecessor — and a
+                # slot left on a deleted task's branch pins it for good.
+                # Nothing frees this on its own: say so instead of retrying
+                # in silence.  ``aq doctor --check worktrees.orphans`` names
+                # the slot still holding it.
+                logger.warning(
+                    "Task %s cannot take slot %s: branch %s is checked out in "
+                    "another worktree (%s)",
+                    task.id,
+                    slot_dir,
+                    task_branch_name(task.id),
+                    e,
+                )
+                self._workspace_wait_reasons[task.id] = "branch_held"
             else:
                 logger.error(
                     "Worktree slot reset failed for task %s in %s: %s",

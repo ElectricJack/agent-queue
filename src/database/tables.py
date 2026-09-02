@@ -689,6 +689,13 @@ sessions = Table(
     Column("llm_provider", Text, nullable=True),
     Column("model", Text, nullable=True),
     Column("intelligence_class", Text, nullable=True),
+    # Did this launch actually wire the harness's subagent hooks?  Written
+    # once at insert from the SessionSpec, never inferred later: whether a
+    # live session reports native subagents depends on the argv it was
+    # launched with, and today's harness file may have been edited since.
+    # This is what lets ``subagent_counts`` say "complete" instead of
+    # "unknown" -- and say "unknown" honestly for the sessions that lack it.
+    Column("hooks_provisioned", Boolean, nullable=False, server_default=text("0")),
     Index("idx_sessions_agent", "agent_id", "state"),
     Index("idx_sessions_task_id", "task_id"),
     Index("idx_sessions_state", "state"),
@@ -1028,6 +1035,37 @@ agent_questions = Table(
     CheckConstraint("state IN ('supervisor','human','answered','delivered','resolved','stale')", name="ck_agent_question_state"),
     Index("idx_agent_questions_pending", "state", "created_at"),
     Index("idx_agent_questions_session", "session_id", "instance_token"),
+)
+
+# Authoritative native subagent lifecycle, delivered by the harness's own
+# SubagentStart / SubagentStop hooks (``aq subagent event --hook-json``).
+# Append-only: an event is a fact about a moment, and the derived "how many
+# are running" is a fold over the facts rather than a mutable counter that a
+# duplicate delivery or a lost Stop could corrupt.
+#
+# ``id`` is a deterministic digest of (session_id, event, subagent_id) so a
+# re-delivered hook collapses onto the row it already wrote.  Provenance is
+# soft text, like ``task_session_attempts``: the events outlive the session
+# row's deletion and stay readable as history.
+subagent_events = Table(
+    "subagent_events", metadata,
+    Column("id", Text, primary_key=True),
+    Column("session_id", Text, nullable=False),
+    Column("harness", Text, nullable=False),
+    Column("project_id", Text, nullable=True),
+    Column("task_id", Text, nullable=True),
+    # The harness's own id for the child agent.  Both Claude Code and Codex
+    # send one on Start *and* Stop, which is what makes the pairing exact.
+    Column("subagent_id", Text, nullable=False),
+    Column("agent_type", Text, nullable=True),
+    Column("turn_id", Text, nullable=True),
+    # "start" | "stop" -- the two halves of one child's lifetime.
+    Column("event", Text, nullable=False),
+    #: When the harness fired the hook (daemon clock, at receipt).
+    Column("occurred_at", Float, nullable=False),
+    CheckConstraint("event IN ('start','stop')", name="ck_subagent_events_event"),
+    Index("idx_subagent_events_session", "session_id", "event"),
+    Index("idx_subagent_events_occurred", "occurred_at"),
 )
 
 message_discord_receipts = Table(

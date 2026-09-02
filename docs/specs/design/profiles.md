@@ -114,6 +114,33 @@ After completing a task, consider:
 This split means misconfigured MCP servers are caught by JSON parse errors (not
 LLM misinterpretation), while behavioral guidance stays natural and editable.
 
+### Which headings reach the agent
+
+Every agent runs as a session (a CLI in tmux) and receives its prompt from
+`aq prime`, not from the DB `system_prompt_suffix` (that field is read only by
+the legacy adapter path, which session-routed tasks skip). Prime therefore
+defines the delivery contract:
+
+| Heading | Reaches the agent? | Consumed by |
+| --- | --- | --- |
+| `## Role` | **yes** — prime section 1/2, rendered bare | prime |
+| `## Rules` | **yes** — prime section 1/2, under a `### Rules` sub-heading | prime |
+| `## Config` | no | harness/session launcher |
+| `## Tools` | no | tool allow-list |
+| `## MCP Servers` | no | MCP registry |
+| `## Reflection` | no | post-task reflection playbook |
+| anything else | no | nothing — machine-only or documentation |
+
+The prime-visible set is the single tuple
+`src/prime/sections.PRIME_VISIBLE_PROFILE_HEADINGS`; widening what agents see
+means adding a heading there (and, for a project override profile, the same
+headings apply — section 2 supplements section 1, it does not replace it).
+
+Author `## Rules` as tight, imperative bullets: they are paid for on every
+prime render. Across the shipped agent types the Rules block costs ~290 tokens
+on average and ~700 at the largest, against a whole prime document of a few
+thousand — cheap, but not free.
+
 ---
 
 ## 3. Sync Model

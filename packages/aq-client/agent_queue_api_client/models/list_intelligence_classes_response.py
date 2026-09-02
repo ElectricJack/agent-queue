@@ -49,7 +49,7 @@ class ListIntelligenceClassesResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.intelligence_class_model import IntelligenceClassModel  # noqa: PLC0415
+        from ..models.intelligence_class_model import IntelligenceClassModel
 
         d = dict(src_dict)
         success = d.pop("success", UNSET)

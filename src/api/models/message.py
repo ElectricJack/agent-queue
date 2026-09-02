@@ -68,9 +68,19 @@ class MessageListResponse(BaseModel):
     messages: list[MessageModel] = []
 
 
+class MessageStatusResponse(BaseModel):
+    message_id: str
+    state: str
+    via: str | None = None
+    delivered_at: float | None = None
+    acknowledged_at: float | None = None
+    message: MessageModel
+
+
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     # message_send is API_EXCLUDED — see module docstring.
     "message_reply": MessageReplyResponse,
     "message_inbox": MessageInboxResponse,
     "message_list": MessageListResponse,
+    "message_status": MessageStatusResponse,
 }

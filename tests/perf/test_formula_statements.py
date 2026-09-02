@@ -13,6 +13,8 @@ from src.commands.handler import CommandHandler
 from src.task_graph.formulas import FormulaRegistry, load_from_vault
 from tests.perf.test_hierarchy_statements import PLAN_NODES, PROJECT_ID, _graph, count_statements, db, seed_scale  # noqa: F401
 
+pytestmark = pytest.mark.perf
+
 
 def _formula_text(n):
     doc = _graph(n)

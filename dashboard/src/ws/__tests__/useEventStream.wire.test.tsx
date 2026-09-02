@@ -46,4 +46,31 @@ describe("WebSocket wire discriminators", () => {
     expect(seen).toHaveBeenCalledWith(expect.objectContaining({ event_type: "future.error", error: "retry later", extra: { retained: true } }));
     client.clear();
   });
+
+  it("invalidates pool supply and instance queries when a pool event arrives", () => {
+    const client = new QueryClient();
+    client.setQueryData(["pools", "all"], []);
+    client.setQueryData(["sessions", "pool"], []);
+    client.setQueryData(["sessions", "task"], []);
+    renderHook(() => useEventStream(), {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      ),
+    });
+
+    transport.instance.onmessage?.({
+      data: JSON.stringify({
+        _event_type: "pool.bounds_changed",
+        project_id: "p1",
+        profile_id: "worker",
+        min_active: 1,
+        max_active: 3,
+      }),
+    });
+
+    expect(client.getQueryState(["pools", "all"])?.isInvalidated).toBe(true);
+    expect(client.getQueryState(["sessions", "pool"])?.isInvalidated).toBe(true);
+    expect(client.getQueryState(["sessions", "task"])?.isInvalidated).toBe(false);
+    client.clear();
+  });
 });

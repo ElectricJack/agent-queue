@@ -81,11 +81,20 @@ async def flow(tmp_path, request):
                             last_claim_epoch=7)
     await db.create_session(session)
     base = tmp_path / "home"
-    path = base / ".codex/sessions/2026/08/30/rollout-2026-08-30T22-00-58-01a05631-2ba0-75b0-8c0b-38806072f86f.jsonl"
+    launch_date = datetime.fromtimestamp(now, timezone.utc).strftime("%Y/%m/%d")
+    path = (
+        base
+        / ".codex/sessions"
+        / launch_date
+        / "rollout-2026-08-30T22-00-58-01a05631-2ba0-75b0-8c0b-38806072f86f.jsonl"
+    )
     path.parent.mkdir(parents=True)
-    ts = datetime.fromtimestamp(now, timezone.utc).isoformat()
+    # Keep the metadata safely inside CodexTranscriptReader's launch-time
+    # matching window. Formatting through ISO-8601 can otherwise round a
+    # timestamp just beyond the exact ``started_at + 60`` boundary.
+    ts = datetime.fromtimestamp(now - 1, timezone.utc).isoformat()
     rows = [
-        {"type":"session_meta", "payload":{"id":"01a05631-2ba0-75b0-8c0b-38806072f86f", "cwd":"/workspace"}},
+        {"type":"session_meta", "timestamp":ts, "payload":{"id":"01a05631-2ba0-75b0-8c0b-38806072f86f", "cwd":"/workspace"}},
         {"type":"event_msg", "timestamp":ts, "payload":{"type":"task_started", "turn_id":"turn-one"}},
         {"type":"response_item", "timestamp":ts, "payload":{"type":"message", "role":"assistant", "phase":"final_answer",
             "content":[{"type":"output_text", "text":QUESTION}]}},

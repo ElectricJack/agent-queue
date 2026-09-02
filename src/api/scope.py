@@ -24,6 +24,11 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         "task_progress",
         "task_heartbeat",
         "task_handoff",
+        # The two subagent lifecycle hooks report through here.  A session
+        # may only write its own telemetry: ``_cmd_subagent_event`` binds
+        # the row to ``scope.session_id`` and ignores any session named in
+        # the payload.
+        "subagent_event",
         "ask_human",
         "message_send",
         "message_inbox",
@@ -106,7 +111,13 @@ def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | 
     # A manually opened worker terminal has no task/project assignment.
     # Its absent project must not grant access to every project's mutations.
     # Assigned task/pool sessions always carry a concrete project scope.
-    if scope.project_id is None and command not in {"prime", "get_schema"}:
+    # ``subagent_event`` joins prime/get_schema here because it carries no
+    # project data at all: it writes one row keyed by the caller's own
+    # ``session_id``.  A manually opened terminal that could not report its
+    # sub-agents would be silently mis-counted rather than protected.
+    if scope.project_id is None and command not in {
+        "prime", "get_schema", "subagent_event",
+    }:
         return "out of scope: this interactive agent has no assigned project"
     if command not in AGENT_COMMAND_SET:
         return f"out of scope: {command}"

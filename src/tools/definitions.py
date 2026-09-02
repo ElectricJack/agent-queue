@@ -54,6 +54,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "list_available_tools": "agent",
     "check_profile": "agent",
     "profile_audit": "agent",
+    "agent_message": "agent",
     "install_profile": "agent",
     "export_profile": "agent",
     "import_profile": "agent",
@@ -76,6 +77,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "message_reply": "message",
     "message_inbox": "message",
     "message_list": "message",
+    "message_status": "message",
     # vault — reference stub management
     "scan_stub_staleness": "system",
     # memory — provided by the external aq-memory plugin (install via `aq plugin install`)
@@ -241,6 +243,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     # worker pools — sizing and bounds (swarm-work-model §11)
     "pool_status": "pool",
     "pool_scale": "pool",
+    "pool_set_lifecycle": "pool",
     # NOTE: send_message, reply_to_user are intentionally NOT categorized —
     # they are "core" tools always available to the supervisor LLM.
     # NOTE: browse_tools / load_tools are intentionally NOT categorized —
@@ -4069,6 +4072,33 @@ _ALL_TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "message_status",
+        "description": "Report whether a queued message is queued, delivered, or acknowledged.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"message_id": {"type": "string", "description": "Message id"}},
+            "required": ["message_id"],
+        },
+    },
+    {
+        "name": "agent_message",
+        "description": (
+            "Send durable supervisor guidance to a live worker. A target may be a task id, "
+            "agent id/name, or session id; all_running broadcasts to every live worker."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "target": {"type": "string", "description": "Task, agent, or session id"},
+                "body": {"type": "string", "description": "Message body"},
+                "all_running": {"type": "boolean", "default": False},
+                "profile": {"type": "string", "description": "Optional profile filter for broadcast"},
+                "wait": {"type": "integer", "description": "Wait up to 60 seconds for delivery"},
+            },
+            "required": ["body"],
+        },
+    },
+    {
         "name": "memory_save",
         "description": (
             "Save a fact to memory. Returns {paused: true} while memory.enabled is false "
@@ -4540,7 +4570,8 @@ _ALL_TOOL_DEFINITIONS = [
         "name": "pool_scale",
         "description": (
             "Set a pool profile's min/max active-session bounds. Validates "
-            "min >= 0, max >= 1, min <= max. With `now: true`, also terminates "
+            "min >= 0 and max >= min; max may be null for no profile limit. "
+            "With `now: true`, also terminates "
             "idle sessions above the new max, oldest first. Backs `aq pool scale`."
         ),
         "input_schema": {
@@ -4549,7 +4580,10 @@ _ALL_TOOL_DEFINITIONS = [
                 "project_id": {"type": "string", "description": "Project ID."},
                 "profile_id": {"type": "string", "description": "Pool profile (agent-type) ID."},
                 "min": {"type": "integer", "description": "New min_active bound (optional)."},
-                "max": {"type": "integer", "description": "New max_active bound (optional)."},
+                "max": {
+                    "type": ["integer", "null"],
+                    "description": "New max_active bound; null removes the profile limit.",
+                },
                 "now": {
                     "type": "boolean",
                     "description": (
@@ -4558,6 +4592,26 @@ _ALL_TOOL_DEFINITIONS = [
                 },
             },
             "required": ["project_id", "profile_id"],
+        },
+    },
+    {
+        "name": "pool_set_lifecycle",
+        "description": (
+            "Set one project's profile lifecycle to task or pool. Refuses pool when "
+            "swarm.enabled is false. Backs `aq pool set-lifecycle`."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project ID."},
+                "profile_id": {"type": "string", "description": "Profile (agent-type) ID."},
+                "lifecycle": {
+                    "type": "string",
+                    "enum": ["task", "pool"],
+                    "description": "Whether work launches per task or is claimed by a pool.",
+                },
+            },
+            "required": ["project_id", "profile_id", "lifecycle"],
         },
     },
 ]

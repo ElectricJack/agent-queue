@@ -32,6 +32,7 @@ import re
 from pathlib import Path
 
 from src.profiles.capabilities import HARNESS_TOOL_NAMES
+from src.resources.limits import session_env_caps, wrap_session_argv
 from src.sessions.env import build_session_env
 from src.sessions.harness_parser import Harness
 from src.sessions.provider import SessionSpec
@@ -188,11 +189,11 @@ def named_session_name(profile_id: str, project_id: str | None = None) -> str:
 
 
 def pool_session_name(profile_id: str, project_id: str, nonce: str) -> str:
-    """Provider name for a pool worker session — also its ``session_id``.
+    """Provider name for a pool worker session.
 
-    Unlike task and named sessions, a pool session has no separate id/name
-    split: ``p-<profile>--<project>--<nonce>`` is both (swarm-work-model
-    §11.2), so adoption and ``list_sessions`` can key on either.
+    Pool row IDs are UUIDs so harnesses such as Claude can receive them via
+    ``--session-id``. This readable name remains the provider-facing address
+    used for pool adoption and operator lookup.
     """
     return f"p-{sanitize_name(profile_id)}--{sanitize_name(project_id)}--{sanitize_name(nonce)}"
 
@@ -327,6 +328,7 @@ class SessionSpecBuilder:
         harness: Harness,
         work_dir: str,
         session_id: str,
+        session_name: str,
         instance_token: str,
         epoch: str = "",
         api_url: str = "",
@@ -337,11 +339,11 @@ class SessionSpecBuilder:
     ) -> SessionSpec:
         """Spec for a pool worker session (``lifecycle="pool"``, §11).
 
-        *session_id* **is** the provider name — :func:`pool_session_name`
-        already derived it, so there is no separate id/name split to
-        reconcile the way task and named sessions have.  The bootstrap
-        prompt and env markers identify the launch as a pool worker rather
-        than a one-task or persistent session, per §11.2/§11.3.
+        *session_id* is the durable UUID that may be passed to a harness,
+        while *session_name* is the readable provider-facing name from
+        :func:`pool_session_name`. The bootstrap prompt and env markers
+        identify the launch as a pool worker rather than a one-task or
+        persistent session, per §11.2/§11.3.
         """
         profile_id = getattr(profile, "id", "") or ""
         project_id = getattr(project, "id", "") or ""
@@ -361,7 +363,7 @@ class SessionSpecBuilder:
         return self._build(
             harness=harness,
             profile=profile,
-            session_name=session_id,
+            session_name=session_name,
             work_dir=work_dir,
             session_id=session_id,
             task_id=None,
@@ -422,6 +424,14 @@ class SessionSpecBuilder:
         )
 
         files.extend(hook_files)
+        # Mirrors the two argv branches above.  Recorded on the session row so
+        # the flock can distinguish "no native subagents" from "we cannot see
+        # native subagents" without re-reading a harness file that may have
+        # changed since launch.
+        hooks_provisioned = bool(hook_files) and (
+            bool(harness.settings_flag)
+            or (bool(harness.hook_trust_flag) and allow_skip_permissions)
+        )
 
         launch_env = dict(extra_env or {})
         provider = getattr(harness, "provider", "") or _infer_provider_from_harness(harness)
@@ -436,6 +446,15 @@ class SessionSpecBuilder:
                 # Claude's environment takes precedence over --effort. Keep
                 # inherited daemon settings from overriding the chosen class.
                 launch_env["CLAUDE_CODE_EFFORT_LEVEL"] = thinking
+
+        # Resource gating layer 1 (docs/guides/resource-gating.md).  Passing
+        # the harness's own env map as ``skip`` keeps an operator-pinned
+        # value authoritative — the derived cap fills the gap, it does not
+        # overrule a deliberate one.
+        launch_env.update(
+            session_env_caps(self.config, skip=getattr(harness, "env_map", None) or {})
+        )
+        argv = wrap_session_argv(argv, self.config, scope_name=session_name)
 
         env = build_session_env(
             session_id=session_id,
@@ -468,6 +487,7 @@ class SessionSpecBuilder:
             skip_escape_before_enter=harness.skip_escape_before_enter,
             files=tuple(files),
             instance_token=instance_token,
+            hooks_provisioned=hooks_provisioned,
         )
 
     def _compose_argv(
@@ -549,6 +569,19 @@ class SessionSpecBuilder:
         # advertised ``supports_hooks: true`` and shipped a dead file.
         if hook_files and harness.settings_flag:
             argv.extend([harness.settings_flag, hook_files[0][0]])
+
+        # Codex discovers ``<cwd>/.codex/hooks.json`` on its own -- there is no
+        # settings flag to point it at -- but it refuses to *run* a hook file
+        # it has not been shown in an interactive review screen (verified on
+        # codex-cli 0.151.0: project ``trust_level = "trusted"`` is not
+        # enough).  ``--dangerously-bypass-hook-trust`` is the CLI's own
+        # documented escape hatch for "automation that already vets hook
+        # sources", which is exactly this daemon writing its own file.  It
+        # rides ``allow_skip_permissions`` rather than being unconditional:
+        # where we would not hand the harness a sandbox bypass, we also do not
+        # pre-trust hook files a checked-out repo might carry.
+        if hook_files and harness.hook_trust_flag and allow_skip_permissions:
+            argv.append(harness.hook_trust_flag)
 
         if resume_key and harness.resume.style == "flag":
             argv.extend([harness.resume.flag, resume_key])

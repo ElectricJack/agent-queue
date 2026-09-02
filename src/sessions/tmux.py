@@ -32,7 +32,7 @@ if os.name != "posix":  # pragma: no cover - the registry's gate
     raise ImportError("the tmux session provider requires a POSIX host")
 
 from src.sessions import proctable
-from src.sessions.dialogs import DialogBudget, run_dialog_dismissal
+from src.sessions.dialogs import DialogBudget, first_match, run_dialog_dismissal
 from src.sessions.provider import (
     Cap,
     NotSubmitted,
@@ -99,6 +99,11 @@ class TmuxProvider(SessionProvider):
         self.socket: str = getattr(sessions_cfg, "tmux_socket", None) or "aq"
         self.nudge_debounce_ms: int = getattr(sessions_cfg, "nudge_debounce_ms", 500)
         self.dialog_budget_seconds: float = getattr(sessions_cfg, "dialog_budget_seconds", 8)
+        #: How long the pane must stay dialog-free before startup accepts
+        #: it.  Both Claude and Codex paint their trust screen *after* the
+        #: first frames, so a zero-length window declares a blocked
+        #: session ready.
+        self.dialog_settle_seconds: float = getattr(sessions_cfg, "dialog_settle_seconds", 1.5)
         ttl = getattr(sessions_cfg, "state_cache_ttl_seconds", 2)
         self._cache = TmuxStateCache(self._tmux, ttl=ttl)
         self._nudge_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
@@ -318,42 +323,72 @@ class TmuxProvider(SessionProvider):
                 break  # non-fatal: slow paint, live process
             await asyncio.sleep(0.1)
 
-        # Phase 2: dialogs may cover the prompt — dismiss before waiting
-        # for it, and again after (§3.2 "interleave").
-        outcome = await run_dialog_dismissal(
-            capture=capture,
-            send_keys=send,
-            dialogs=spec.dialogs,
-            budget=dialog_budget,
-            fired=fired,
+        # Phase 2+3: dialogs may cover the prompt — dismiss before waiting
+        # for it, and again after (§3.2 "interleave").  Both halves run in
+        # one loop because the two are not independent: a dialog glyph line
+        # (Codex's "› 1. Yes, continue", Claude's "❯ No, exit") starts with
+        # the very prefix the readiness poll looks for, so readiness is only
+        # believable on a capture where *no* declared dialog is on screen.
+        # And because the trust screen is painted late, the last pass holds
+        # its "quiet" verdict open for ``dialog_settle_seconds`` and, if a
+        # dialog does turn up in that window, goes back to waiting for the
+        # composer.  Both clocks are bounded, so this terminates.
+        settle = max(0.0, float(self.dialog_settle_seconds))
+        # Only a harness that actually declares dialogs earns the extra
+        # dialog-budget headroom; a dialog-free spec keeps §3.2's deadline.
+        ready_deadline = (
+            max(deadline, time.monotonic() + dialog_budget.remaining())
+            if spec.dialogs
+            else deadline
         )
-        if outcome.quarantined is not None:
-            await die(f"quarantine dialog {outcome.quarantined.name!r} matched during startup")
 
-        if spec.ready_prompt_prefix:
-            prefix = _normalize(spec.ready_prompt_prefix)
-            while time.monotonic() <= deadline:
-                if await pane_dead():
-                    await die("process died while waiting for the ready prompt")
-                text = _normalize(await capture())
-                if any(line.lstrip().startswith(prefix) for line in text.splitlines()):
-                    break
-                await asyncio.sleep(0.2)
-            # Timeout: non-fatal with a live pane.
-        elif spec.ready_delay_ms:
+        async def dismiss(quiet_seconds: float = 0.0):
+            outcome = await run_dialog_dismissal(
+                capture=capture,
+                send_keys=send,
+                dialogs=spec.dialogs,
+                budget=dialog_budget,
+                fired=fired,
+                quiet_seconds=quiet_seconds,
+            )
+            if outcome.quarantined is not None:
+                await die(f"quarantine dialog {outcome.quarantined.name!r} matched during startup")
+            return outcome
+
+        await dismiss()
+
+        prefix = _normalize(spec.ready_prompt_prefix) if spec.ready_prompt_prefix else ""
+        if not prefix and spec.ready_delay_ms:
             await asyncio.sleep(min(spec.ready_delay_ms, budget_ms) / 1000.0)
             if await pane_dead():
                 await die("process died inside the ready delay")
 
-        outcome = await run_dialog_dismissal(
-            capture=capture,
-            send_keys=send,
-            dialogs=spec.dialogs,
-            budget=dialog_budget,
-            fired=fired,
-        )
-        if outcome.quarantined is not None:
-            await die(f"quarantine dialog {outcome.quarantined.name!r} matched during startup")
+        while True:
+            if prefix:
+                while time.monotonic() <= ready_deadline:
+                    if await pane_dead():
+                        await die("process died while waiting for the ready prompt")
+                    raw = await capture()
+                    if first_match(spec.dialogs, raw, fired=fired) is not None:
+                        # A dialog is up: answer it rather than mistaking one
+                        # of its menu rows for the composer.
+                        if (await dismiss()).budget_exhausted:
+                            break
+                        continue
+                    text = _normalize(raw)
+                    if any(line.lstrip().startswith(prefix) for line in text.splitlines()):
+                        break
+                    await asyncio.sleep(0.2)
+                # Timeout: non-fatal with a live pane.
+
+            outcome = await dismiss(quiet_seconds=settle)
+            if not outcome.fired or outcome.budget_exhausted:
+                break
+            if not prefix or dialog_budget.exhausted():
+                break
+            # A late dialog was answered — the composer has not been seen
+            # since, so look for it again on the remaining budget.
+            ready_deadline = max(ready_deadline, time.monotonic() + dialog_budget.remaining())
 
     async def stop(self, h: SessionHandle, *, grace: float = 2.0) -> None:
         if not await self._fenced(h):

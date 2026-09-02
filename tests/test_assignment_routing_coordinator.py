@@ -243,6 +243,119 @@ async def test_plan_subtask_is_not_an_assignment_candidate(coordinator_system):
 
 
 @pytest.mark.asyncio
+async def test_unblocked_defined_task_is_routed_before_promotion(coordinator_system):
+    """A worker files work as DEFINED; it must not wait for the cascade."""
+    coordinator, services, db = coordinator_system
+    await db.create_task(Task(
+        id="filed",
+        project_id="p",
+        title="Follow-up found while working",
+        description="File it, route it, then promote it",
+        status=TaskStatus.DEFINED,
+    ))
+    await db.create_task(Task(
+        id="upstream",
+        project_id="p",
+        title="Upstream work",
+        description="Must finish first",
+        status=TaskStatus.IN_PROGRESS,
+    ))
+    await db.create_task(Task(
+        id="waiting",
+        project_id="p",
+        title="Blocked child",
+        description="Still waiting on a dependency",
+        status=TaskStatus.DEFINED,
+    ))
+    await db.add_dependency("waiting", "upstream")
+    assert (await db.get_task("waiting")).is_blocked
+    filed = await db.get_task("filed")
+    services.llm.run_tools.return_value = LLMRunResult(
+        text=json.dumps({"decisions": [_decision(filed)]}),
+        transcript=[],
+        turns=1,
+        stopped_by="done",
+    )
+
+    committed = await coordinator.reconcile()
+
+    assert set(committed) == {"filed"}
+    event = json.loads((await db.list_playbook_runs())[0].trigger_event)
+    assert [task["task_id"] for task in event["tasks"]] == ["filed"]
+    assert (await db.get_task_assignment_route("filed")).intelligence_class == "fast-low"
+    assert await db.get_task_assignment_route("waiting") is None
+
+
+@pytest.mark.asyncio
+async def test_worker_filed_task_born_gated_is_routed_and_released(coordinator_system):
+    """A root worker filing is DEFINED *and* holds an open routing gate.
+
+    It used to be invisible to the coordinator, so nothing ever chose a
+    class and nothing ever resolved the gate waiting on that choice — every
+    filed task needed a supervisor to hand-route it.
+    """
+    coordinator, services, db = coordinator_system
+    await db.create_task(Task(
+        id="filed",
+        project_id="p",
+        title="Found a parser defect",
+        description="Filed while working on the held task",
+        status=TaskStatus.DEFINED,
+    ))
+    gate_id, _ = await db.create_gate(
+        "p", "routing", "Route: Found a parser defect", waiter_task_ids=["filed"]
+    )
+    filed = await db.get_task("filed")
+    assert filed.status == TaskStatus.DEFINED and filed.is_blocked
+    services.llm.run_tools.return_value = LLMRunResult(
+        text=json.dumps({"decisions": [_decision(filed)]}),
+        transcript=[],
+        turns=1,
+        stopped_by="done",
+    )
+
+    committed = await coordinator.reconcile()
+
+    assert set(committed) == {"filed"}
+    assert (await db.get_task_assignment_route("filed")).intelligence_class == "fast-low"
+    coordinator.owner._resolve_gate_and_emit.assert_awaited_once()
+    assert coordinator.owner._resolve_gate_and_emit.await_args.args == (gate_id,)
+
+
+@pytest.mark.asyncio
+async def test_revision_bump_restamps_the_route_instead_of_rerouting(coordinator_system):
+    """The claim query joins on ``task_updated_at``; keep it in step."""
+    coordinator, services, db = coordinator_system
+    await db.create_task(Task(
+        id="filed",
+        project_id="p",
+        title="Follow-up",
+        description="Route once",
+        status=TaskStatus.DEFINED,
+    ))
+    filed = await db.get_task("filed")
+    services.llm.run_tools.return_value = LLMRunResult(
+        text=json.dumps({"decisions": [_decision(filed)]}),
+        transcript=[],
+        turns=1,
+        stopped_by="done",
+    )
+    await coordinator.reconcile()
+    assert services.llm.run_tools.await_count == 1
+
+    # Promotion moves the revision without touching a single routed input.
+    await db.transition_task("filed", TaskStatus.READY, context="deps_met_no_deps")
+    promoted = await db.get_task("filed")
+    assert promoted.updated_at != (await db.get_task_assignment_route("filed")).task_updated_at
+
+    resolved = await coordinator.reconcile()
+
+    assert services.llm.run_tools.await_count == 1  # no second decision
+    assert resolved["filed"].intelligence_class == "fast-low"
+    assert (await db.get_task_assignment_route("filed")).task_updated_at == promoted.updated_at
+
+
+@pytest.mark.asyncio
 async def test_invalid_response_waits_for_retry_without_fallback(coordinator_system):
     coordinator, services, db = coordinator_system
     await db.create_task(Task(

@@ -75,7 +75,9 @@ class TestRegistry:
         from src.doctor.capability_checks import capability_checks
         from src.doctor.formula_checks import formula_checks
         from src.doctor.hierarchy_checks import hierarchy_checks
+        from src.doctor.integration_checks import integration_checks
         from src.doctor.pool_checks import pool_checks
+        from src.doctor.resource_checks import resource_checks
 
         reg = default_registry()
         expected = (
@@ -83,6 +85,8 @@ class TestRegistry:
             | {c.id for c in hierarchy_checks()}
             | {c.id for c in pool_checks()}
             | {c.id for c in formula_checks()}
+            | {c.id for c in resource_checks()}
+            | {c.id for c in integration_checks()}
             | {c.id for c in capability_checks()}
         )
         assert set(reg.ids()) == expected

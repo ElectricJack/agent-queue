@@ -65,9 +65,7 @@ class InspectPlaybookRunResponse:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.inspect_playbook_run_response_graph_type_0 import (
-            InspectPlaybookRunResponseGraphType0,  # noqa: PLC0415
-        )
+        from ..models.inspect_playbook_run_response_graph_type_0 import InspectPlaybookRunResponseGraphType0
 
         run_id = self.run_id
 
@@ -195,17 +193,11 @@ class InspectPlaybookRunResponse:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.inspect_playbook_run_response_conversation_history_item import (
-            InspectPlaybookRunResponseConversationHistoryItem,  # noqa: PLC0415
+            InspectPlaybookRunResponseConversationHistoryItem,
         )
-        from ..models.inspect_playbook_run_response_graph_type_0 import (
-            InspectPlaybookRunResponseGraphType0,  # noqa: PLC0415
-        )
-        from ..models.inspect_playbook_run_response_node_trace_item import (
-            InspectPlaybookRunResponseNodeTraceItem,  # noqa: PLC0415
-        )
-        from ..models.inspect_playbook_run_response_trigger_event import (
-            InspectPlaybookRunResponseTriggerEvent,  # noqa: PLC0415
-        )
+        from ..models.inspect_playbook_run_response_graph_type_0 import InspectPlaybookRunResponseGraphType0
+        from ..models.inspect_playbook_run_response_node_trace_item import InspectPlaybookRunResponseNodeTraceItem
+        from ..models.inspect_playbook_run_response_trigger_event import InspectPlaybookRunResponseTriggerEvent
 
         d = dict(src_dict)
         run_id = d.pop("run_id")

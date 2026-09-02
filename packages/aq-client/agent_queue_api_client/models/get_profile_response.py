@@ -109,7 +109,7 @@ class GetProfileResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.get_profile_response_install import GetProfileResponseInstall  # noqa: PLC0415
+        from ..models.get_profile_response_install import GetProfileResponseInstall
 
         d = dict(src_dict)
         id = d.pop("id")

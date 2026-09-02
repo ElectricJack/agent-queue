@@ -5,26 +5,14 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 import logging
-import os
 import time
-from typing import Any
-
-from src.database.queries.task_queries import ManualPauseActive
 
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.logging_config import CorrelationContext
-from src.task_summary import write_task_summary
 from src.discord.notifications import format_task_started
 from src.notifications.builder import build_agent_summary, build_task_detail
 from src.notifications.events import (
-    AgentQuestionEvent,
-    PRCreatedEvent,
-    TaskBlockedEvent,
-    TaskCompletedEvent,
-    TaskFailedEvent,
-    TaskMessageEvent,
     TaskStartedEvent,
-    TaskThreadCloseEvent,
     TaskThreadOpenEvent,
 )
 from src.profiles.sync import underlying_agent_type
@@ -34,36 +22,12 @@ from src.models import (
     AgentState,
     PipelineContext,
     RepoConfig,
-    RepoSourceType,
-    TaskContext,
     TaskStatus,
     TaskType,
 )
 from src.scheduler import AssignAction
 
 logger = logging.getLogger(__name__)
-
-
-def _render_workspaces_block(attachments: list) -> str:
-    """Render the per-task Workspaces block for the agent prompt.
-
-    See workspaces-v2 spec §8.3.  Each attachment is shown with its kind,
-    capability flags, and absolute path so the agent can reason about
-    where it can read, write, and lock.
-    """
-    lines = ["## Workspaces"]
-    for a in attachments:
-        flags: list[str] = []
-        if a.writable:
-            flags.append("writable")
-        else:
-            flags.append("read-only")
-        if a.lockable and a.workspace.locked_by_task_id is not None:
-            flags.append("locked")
-        flag_str = ", ".join(flags)
-        alias_str = f" ({a.alias})" if a.alias else ""
-        lines.append(f"- **{a.kind_id}**{alias_str} ({flag_str}) → {a.workspace_path}")
-    return "\n".join(lines)
 
 
 class ExecutionMixin:
@@ -327,33 +291,16 @@ class ExecutionMixin:
     async def _execute_task(self, action: AssignAction) -> None:
         """The full task execution pipeline (layer 3 of 3), run as a background asyncio task.
 
-        This is the core method that drives a single task from assignment to
-        completion.  It runs as an ``asyncio.Task`` concurrently with the main
-        loop, so multiple tasks can execute in parallel (one per agent).
+        This launches a session-routed task after assignment and workspace
+        preparation. Completion is handled separately by ``aq task close``.
 
         Steps:
         1. **Assign** — mark task IN_PROGRESS and agent BUSY in the DB.
         2. **Workspace setup** — clone/link/init the repo, create or switch
            to the task branch (see ``_prepare_workspace``).  If no workspace
            is available, the task is returned to READY for retry next cycle.
-        3. **Agent context assembly** — build a structured markdown prompt.
-        4. **Memory recall** — inject semantically relevant historical context.
-        5. **Agent launch** — create an adapter and start the agent process.
-        6. **Stream + wait** — forward agent output messages to Discord thread.
-        7. **Token accounting** — record tokens used, check budget warnings.
-        8. **Result handling** — branch on the ``AgentResult`` enum.
-        9. **Cleanup** — release workspace lock, free agent, remove adapter.
+        3. **Session launch** — construct the session and return immediately.
         """
-        from src.orchestrator.core import _parse_reset_time
-
-        if not self._runtimes and not self.config.sessions.enabled:
-            logger.error("Cannot execute task %s: no platforms registry configured", action.task_id)
-            await self._emit_text_notify(
-                f"**Error:** Cannot execute task `{action.task_id}` — no agent adapter configured.",
-                project_id=action.project_id,
-            )
-            return
-
         # ── Pre-assignment constraint check ─────────────────────────────
         # The scheduler checked constraints with a point-in-time snapshot,
         # but this background task may execute seconds later.  Re-check
@@ -393,9 +340,7 @@ class ExecutionMixin:
             await self._execute_sync_workflow(action, task, agent)
             return
 
-        # Resolve the agent profile up front so we know which platform to
-        # dispatch through and whether a workspace is needed.  Tool-call-only
-        # platforms (e.g. supervisor) skip workspace prep entirely.
+        # Resolve the agent profile before preparing its session workspace.
         profile = await self._resolve_profile(task)
         from src.agents.configuration import apply_agent_overrides
         if profile:
@@ -405,12 +350,7 @@ class ExecutionMixin:
             )
             profile = apply_agent_overrides(profile, agent, agent_profile=worker_profile)
         if profile:
-            # Report the route actually taken.  This used to print
-            # ``platform=<profile.runtime>`` unconditionally, which was
-            # actively misleading: a session-routed task logged
-            # ``platform=claude_sdk`` while launching tmux, and after runtime
-            # stripping it prints an empty field for every task. The routing
-            # decision is what a reader needs.
+            # Report the selected session CLI rather than the removed runtime.
             _routed = self._is_session_routed(profile)
             logger.info(
                 "Task %s: profile='%s' via=%s tools=%s mcp=%s",
@@ -419,7 +359,7 @@ class ExecutionMixin:
                 (
                     f"session/{getattr(profile, 'harness', '') or '?'}"
                     if _routed
-                    else f"runtime/{profile.runtime or 'none'}"
+                    else "session/unconfigured"
                 ),
                 profile.allowed_tools or "(default)",
                 list(profile.mcp_servers) if profile.mcp_servers else "(none)",
@@ -427,102 +367,91 @@ class ExecutionMixin:
         else:
             logger.info("Task %s: no profile (using system defaults)", task.id)
 
-        # ── Session-runtime routing (session-runtime spec §6.2) ──────────
-        # Session path iff ``sessions.enabled`` AND the resolved profile
-        # declares a ``harness``.  Per-profile and per-project opt-in falls
-        # out of that for free, because profiles are project-scoped.  A
-        # profile without ``harness`` keeps its ``runtime:`` verbatim.
+        # ── Session-runtime routing ──────────────────────────────────────
+        # A task worker must select a session harness. There is no runtime
+        # fallback after the runtime subsystem removal.
         session_routed = self._is_session_routed(profile)
 
-        # No in-tree runtime remains: ``create`` is reached only when a test
-        # or a plugin has registered one on the registry seam, and the name is
-        # not carried by the profile any more.
-        platform_name = ""
-        platform = None
         if not session_routed:
-            logger.debug(
-                "Task %s: profile is not session-routed — dispatching through "
-                "the runtime seam",
-                task.id,
+            raise RuntimeError(
+                f"Task {task.id} has no session harness; legacy runtime dispatch was removed"
             )
-            platform = self._runtimes.create(
-                platform_name, profile=profile, llm_logger=self.llm_logger
-            )
-            # Store platform reference so admin commands (stop_task, timeout
-            # handler) can call platform.stop() to terminate the agent process.
-            self._adapters[action.agent_id] = platform
 
-        project = await self.db.get_project(action.project_id)
-        if getattr(platform, "requires_workspace", True):
-            # Prepare workspace (repo checkout/worktree/init)
-            try:
-                workspace = await self._prepare_workspace(task, agent)
-            except Exception as e:
+        # Prepare workspace (repo checkout/worktree/init)
+        try:
+            workspace = await self._prepare_workspace(task, agent)
+        except Exception as e:
+            await self._emit_text_notify(
+                f"**Workspace Error:** Task `{task.id}` — {e}",
+                project_id=action.project_id,
+            )
+            workspace = None
+
+        if not workspace:
+            # No workspace available — PAUSE the task with a backoff timer
+            # instead of returning to READY.  Returning to READY causes an
+            # infinite assign→fail→READY→assign loop that spams Discord every
+            # orchestrator cycle (~5s).  PAUSED + resume_after lets
+            # _resume_paused_tasks() promote it back to READY after a delay,
+            # giving time for workspaces to free up.
+            no_ws_backoff = 60  # seconds before retrying workspace acquisition
+            await self.db.transition_task(
+                action.task_id,
+                TaskStatus.PAUSED,
+                context="no_workspace_available",
+                resume_after=time.time() + no_ws_backoff,
+                assigned_agent_id=None,
+            )
+            await self._emit_task_event(
+                "task.paused",
+                task,
+                reason="no_workspace",
+                resume_after=time.time() + no_ws_backoff,
+            )
+            await self.db.update_agent(
+                action.agent_id, state=AgentState.IDLE, current_task_id=None
+            )
+            # Some waits are expected and self-clearing.  Telling the
+            # operator to "/add-workspace" while the slot pool is simply
+            # ramping — one slot per dispatch, so a cold cap-N project
+            # needs N-1 rounds — is both wrong and, at one notice per
+            # round, noisy.  Same for two plan subtasks queueing on their
+            # shared parent branch (worktree-execution §4.4).
+            wait_reason = self._workspace_wait_reasons.pop(action.task_id, None)
+            if wait_reason == "slot_warming":
+                logger.info(
+                    "Task %s paused %ds — worktree slot pool for project %s is "
+                    "still warming up (one slot is provisioned per dispatch)",
+                    task.id,
+                    no_ws_backoff,
+                    action.project_id,
+                )
+            elif wait_reason == "branch_busy":
+                logger.info(
+                    "Task %s paused %ds — a sibling plan subtask holds the "
+                    "shared plan branch in another slot",
+                    task.id,
+                    no_ws_backoff,
+                )
+            elif wait_reason == "branch_held":
+                # The task's own branch sits in a slot nobody will move:
+                # unlike the two waits above this never clears itself, so
+                # it has to reach the operator rather than loop quietly.
                 await self._emit_text_notify(
-                    f"**Workspace Error:** Task `{task.id}` — {e}",
+                    f"**Branch In Use:** Task `{task.id}` paused for "
+                    f"{no_ws_backoff}s — its branch is checked out in "
+                    f"another worktree. Run `aq doctor --check "
+                    f"worktrees.orphans` to find the slot holding it.",
                     project_id=action.project_id,
                 )
-                workspace = None
-
-            if not workspace:
-                # No workspace available — PAUSE the task with a backoff timer
-                # instead of returning to READY.  Returning to READY causes an
-                # infinite assign→fail→READY→assign loop that spams Discord every
-                # orchestrator cycle (~5s).  PAUSED + resume_after lets
-                # _resume_paused_tasks() promote it back to READY after a delay,
-                # giving time for workspaces to free up.
-                no_ws_backoff = 60  # seconds before retrying workspace acquisition
-                await self.db.transition_task(
-                    action.task_id,
-                    TaskStatus.PAUSED,
-                    context="no_workspace_available",
-                    resume_after=time.time() + no_ws_backoff,
-                    assigned_agent_id=None,
+            else:
+                await self._emit_text_notify(
+                    f"**No Workspace:** Task `{task.id}` paused for "
+                    f"{no_ws_backoff}s — project `{action.project_id}` has no "
+                    f"available workspaces. Use `/add-workspace` to create one.",
+                    project_id=action.project_id,
                 )
-                await self._emit_task_event(
-                    "task.paused",
-                    task,
-                    reason="no_workspace",
-                    resume_after=time.time() + no_ws_backoff,
-                )
-                await self.db.update_agent(
-                    action.agent_id, state=AgentState.IDLE, current_task_id=None
-                )
-                # Some waits are expected and self-clearing.  Telling the
-                # operator to "/add-workspace" while the slot pool is simply
-                # ramping — one slot per dispatch, so a cold cap-N project
-                # needs N-1 rounds — is both wrong and, at one notice per
-                # round, noisy.  Same for two plan subtasks queueing on their
-                # shared parent branch (worktree-execution §4.4).
-                wait_reason = self._workspace_wait_reasons.pop(action.task_id, None)
-                if wait_reason == "slot_warming":
-                    logger.info(
-                        "Task %s paused %ds — worktree slot pool for project %s is "
-                        "still warming up (one slot is provisioned per dispatch)",
-                        task.id,
-                        no_ws_backoff,
-                        action.project_id,
-                    )
-                elif wait_reason == "branch_busy":
-                    logger.info(
-                        "Task %s paused %ds — a sibling plan subtask holds the "
-                        "shared plan branch in another slot",
-                        task.id,
-                        no_ws_backoff,
-                    )
-                else:
-                    await self._emit_text_notify(
-                        f"**No Workspace:** Task `{task.id}` paused for "
-                        f"{no_ws_backoff}s — project `{action.project_id}` has no "
-                        f"available workspaces. Use `/add-workspace` to create one.",
-                        project_id=action.project_id,
-                    )
-                # Drop the platform we registered above; the task is paused.
-                self._adapters.pop(action.agent_id, None)
-                return
-        else:
-            # Tool-call-only platform (e.g. Supervisor): no workspace.
-            workspace = None
+            return
 
         # Re-fetch task/agent in case _prepare_workspace updated them
         task = await self.db.get_task(action.task_id)
@@ -530,11 +459,7 @@ class ExecutionMixin:
 
         # Fetch the workspace object for display in notifications.  None for
         # workspace-less platforms (no workspace was provisioned).
-        ws_obj = (
-            await self.db.get_workspace_for_task(task.id)
-            if getattr(platform, "requires_workspace", True)
-            else None
-        )
+        ws_obj = await self.db.get_workspace_for_task(task.id)
 
         # Detect whether this is a reopened task (via thread feedback) so we
         # can suppress noisy main-channel notifications for reopened work.
@@ -591,13 +516,9 @@ class ExecutionMixin:
             ),
         )
 
-        # ── Session-runtime fork: launch and return ──────────────────────
-        # Everything below this point is the legacy blocking pipeline:
-        # build a prompt, start an adapter, await its stream, branch on the
-        # result.  A session-routed task does none of it.  Its full prompt
-        # comes from ``aq prime``, its progress arrives as events, and its
-        # completion arrives as ``aq task close`` — so this method's job
-        # ends the moment the session exists.
+        # ── Session launch and return ─────────────────────────────────────
+        # The session receives its prompt from ``aq prime`` and reports
+        # completion through ``aq task close``.
         #
         # Note the wrapper above (``_execute_task_safe_inner``) still wraps
         # this coroutine in ``asyncio.wait_for(stuck_timeout_seconds)``.
@@ -605,1023 +526,8 @@ class ExecutionMixin:
         # in milliseconds, so the timeout can never fire on it.  The real
         # stuck-timeout backstop moved to ``SessionReconciler.tick()``
         # step 6, where it can act on a session that outlives the daemon.
-        if session_routed:
-            await self._launch_session_for_task(action, task, profile, workspace)
-            return
-
-        # Profile + platform were resolved earlier (before workspace prep) so
-        # the workspace decision could honor platform.requires_workspace.
-        # Alias kept because later code in this method reads ``adapter``.
-        adapter = platform
-
-        # ------------------------------------------------------------------ #
-        # Build the agent's system context prompt.
-        # ------------------------------------------------------------------ #
-        full_description = await self._build_task_context_with_prompt_builder(
-            task, workspace, project, profile
-        )
-
-        # ------------------------------------------------------------------ #
-        # L0 Identity tier and L1 Critical Facts tier.
-        # ------------------------------------------------------------------ #
-        # Profile chain: the global agent-type profile (e.g. claude-opus)
-        # provides the base Role; the project-scoped profile (e.g. Meredith
-        # Oxalis) supplies a project specialisation on top.  We expose them
-        # as two separate tiers so the prompt builder keeps them ordered:
-        # l0_role → project_override_role → L1 facts → ...  Before this
-        # chain existed, the scoped profile fully replaced the base, so any
-        # role guidance from the agent-type was silently dropped.
-        l0_role = ""
-        project_override_role = ""
-        if profile and profile.system_prompt_suffix:
-            scoped_suffix = profile.system_prompt_suffix.strip()
-            base_agent_type = underlying_agent_type(profile.id)
-            is_scoped = profile.id.startswith("project:")
-            if is_scoped and base_agent_type:
-                global_profile = await self.db.get_profile(base_agent_type)
-                if global_profile and global_profile.system_prompt_suffix:
-                    l0_role = global_profile.system_prompt_suffix.strip()
-                    project_override_role = scoped_suffix
-                else:
-                    # No global parent — fall back to scoped suffix as the
-                    # only role source.  Keeps single-profile projects working.
-                    l0_role = scoped_suffix
-            else:
-                l0_role = scoped_suffix
-
-        l1_facts = ""
-        l1_guidance = ""
-        l2_context = ""
-        mem_svc = (
-            self.plugin_registry.get_service("memory")
-            if getattr(self, "plugin_registry", None) is not None
-            else None
-        )
-        if mem_svc:
-            try:
-                l1_text = await mem_svc.load_l1_facts(
-                    project_id=task.project_id,
-                    agent_type=underlying_agent_type(profile.id) if profile else None,
-                )
-                if l1_text:
-                    l1_facts = l1_text
-            except Exception as e:
-                logger.warning("L1 facts injection failed for task %s: %s", task.id, e)
-
-            try:
-                l1_guid = await mem_svc.load_l1_guidance(
-                    project_id=task.project_id,
-                    agent_type=underlying_agent_type(profile.id) if profile else None,
-                )
-                if l1_guid:
-                    l1_guidance = l1_guid
-            except Exception as e:
-                logger.warning("L1 guidance injection failed for task %s: %s", task.id, e)
-
-            # L2 Topic Context — semantic search using task description.
-            if task.project_id and task.description:
-                try:
-                    l2_text = await mem_svc.load_l2_context(
-                        task.description,
-                        project_id=task.project_id,
-                    )
-                    if l2_text:
-                        l2_context = l2_text
-                except Exception as e:
-                    logger.warning("L2 context injection failed for task %s: %s", task.id, e)
-
-        # Resolve MCP servers from the in-memory registry.  Each profile
-        # entry is a *name*; we look it up against the project-scoped or
-        # system-scoped registry to recover the dict the agent adapter
-        # expects.  The daemon's own embedded MCP server is auto-injected
-        # if ``inject_into_tasks`` is enabled, separately from profile
-        # entries (so a profile that doesn't list ``agent-queue`` still
-        # gets it).
-        injected_mcp: dict[str, dict] = dict(self.config.mcp_server.task_mcp_entry())
-        if not injected_mcp:
-            ms = self.config.mcp_server
-            logger.info(
-                "Task %s: agent-queue MCP auto-injection skipped (enabled=%s inject_into_tasks=%s)",
-                task.id,
-                ms.enabled,
-                ms.inject_into_tasks,
-            )
-
-        profile_mcp: dict[str, dict] = {}
-        registry = getattr(self, "mcp_registry", None)
-        missing_servers: list[str] = []
-        if profile and profile.mcp_servers and registry is not None:
-            for name in profile.mcp_servers:
-                # Auto-injected agent-queue takes precedence over any
-                # registry entry of the same name.
-                if name in injected_mcp:
-                    continue
-                resolved = registry.get(name, project_id=task.project_id)
-                if resolved is None:
-                    missing_servers.append(name)
-                    continue
-                profile_mcp[name] = resolved.to_adapter_dict()
-
-        if missing_servers:
-            logger.error(
-                "Task %s: profile='%s' references unknown MCP server(s): %s",
-                task.id,
-                profile.id if profile else "(none)",
-                missing_servers,
-            )
-
-        task_mcp: dict[str, dict] = dict(injected_mcp)
-        task_mcp.update(profile_mcp)
-
-        # Log the merged MCP server view so operators can see which servers
-        # came from auto-injection vs the profile, and what the agent will
-        # actually try to connect to.
-        def _mcp_summary(servers: dict[str, dict]) -> str:
-            parts: list[str] = []
-            for sname, sconf in servers.items():
-                if isinstance(sconf, dict):
-                    if sconf.get("type") == "http":
-                        parts.append(f"{sname}=http({sconf.get('url', '?')})")
-                    elif sconf.get("type") == "sdk":
-                        parts.append(f"{sname}=sdk-instance")
-                    elif "command" in sconf:
-                        cmd = sconf.get("command", "?")
-                        parts.append(f"{sname}=subprocess[{cmd}]")
-                    else:
-                        parts.append(f"{sname}=?")
-                else:
-                    parts.append(f"{sname}=<non-dict>")
-            return ", ".join(parts) if parts else "(none)"
-
-        logger.info(
-            "Task %s MCP servers resolved: injected=[%s] profile=[%s] final=[%s]",
-            task.id,
-            _mcp_summary(injected_mcp),
-            _mcp_summary(profile_mcp),
-            _mcp_summary(task_mcp),
-        )
-
-        # Validation: warn if the profile's allowed_tools references
-        # ``mcp__{server}__*`` patterns for servers that aren't in the final
-        # task_mcp dict. This catches hyphen/underscore mismatches and typos
-        # that otherwise surface only as "agent says it has no tools".
-        if profile and profile.allowed_tools:
-            import re
-
-            pat = re.compile(r"^mcp__([^_]+(?:[-_][^_]+)*)__")
-            mcp_server_names = set(task_mcp.keys())
-            missing: list[tuple[str, str]] = []
-            for tool in profile.allowed_tools:
-                m = pat.match(tool)
-                if not m:
-                    continue
-                declared_server = m.group(1)
-                if declared_server not in mcp_server_names:
-                    missing.append((tool, declared_server))
-            if missing:
-                candidates = ", ".join(sorted(mcp_server_names)) or "(none)"
-                details = "; ".join(
-                    f"{tool} → server '{srv}' not in task_mcp" for tool, srv in missing[:4]
-                )
-                logger.warning(
-                    "Task %s profile='%s' allowed_tools references %d MCP server(s) not "
-                    "in task_mcp: %s. Available servers: %s",
-                    task.id,
-                    profile.id,
-                    len(missing),
-                    details,
-                    candidates,
-                )
-
-        # Give the agent read/write access to its own memory in the vault.
-        # The workspace (cwd) is the project's git repo; the vault lives
-        # under ~/.agent-queue/vault/projects/<id>/ which is outside cwd, so
-        # without this the Claude CLI's filesystem sandbox rejects Edit/Write
-        # calls on insight files — breaking any task that edits memory
-        # directly (consolidation, note-taking, self-improvement).
-        extra_dirs: list[str] = []
-        if task.project_id:
-            vault_project_dir = os.path.join(self.config.vault_root, "projects", task.project_id)
-            extra_dirs.append(vault_project_dir)
-
-        # Workspaces-v2: surface the per-task attachment set captured at
-        # acquisition time.  When present, it includes every workspace the
-        # task locked or auto-attached (including the project vault as a
-        # first-class attachment).  Empty for back-compat call sites that
-        # haven't been wired yet (e.g. Supervisor singleton).
-        attachment_set = getattr(self, "_task_attachments", {}).get(task.id)
-        workspace_attachments = (
-            list(attachment_set.attachments) if attachment_set is not None else []
-        )
-
-        # Append a Workspaces block to the description so the agent knows
-        # what each attached path represents.  Spec §8.3.
-        if workspace_attachments:
-            full_description = (
-                full_description.rstrip() + "\n\n" + _render_workspaces_block(workspace_attachments)
-            )
-
-        # Build the runtime's allowed-paths set: extra_dirs (vault back-compat)
-        # ∪ attachment paths, minus the cwd.  Spec §7.1: dedup is explicit.
-        cwd_path = workspace
-        attachment_extra = {
-            a.workspace_path
-            for a in workspace_attachments
-            if a.workspace_path and a.workspace_path != cwd_path
-        }
-        deduped_extra_dirs = list(
-            dict.fromkeys(  # preserve order, dedup
-                [d for d in extra_dirs if d != cwd_path]
-                + sorted(attachment_extra - set(extra_dirs))
-            )
-        )
-
-        ctx = TaskContext(
-            task_id=task.id,
-            description=full_description,
-            l0_role=l0_role,
-            project_override_role=project_override_role,
-            l1_facts=l1_facts,
-            l1_guidance=l1_guidance,
-            l2_context=l2_context,
-            checkout_path=workspace,
-            branch_name=task.branch_name or "",
-            image_paths=task.attachments if task.attachments else [],
-            mcp_servers=task_mcp,
-            add_dirs=deduped_extra_dirs,
-            workspace_attachments=workspace_attachments,
-            # Singleton platforms (e.g. Supervisor) read profile here at
-            # ``start(task)`` time since they can't carry it in __init__.
-            profile=profile,
-        )
-
-        # On reopened tasks, pass the previous session ID so the adapter can
-        # fork the session and give the agent full prior context.
-        if _is_reopened:
-            try:
-                prev_session = await self.db.get_task_meta(task.id, "last_session_id")
-                if prev_session:
-                    ctx.resume_session_id = prev_session
-                    logger.info(
-                        "Task %s: reopened — will fork session %s",
-                        task.id,
-                        prev_session,
-                    )
-            except Exception as e:
-                logger.warning("Task %s: failed to look up session_id: %s", task.id, e)
-
-        # Record execution start time, keyed by task_id.
-        self._task_exec_start[action.task_id] = time.time()
-
-        # Snapshot the current HEAD so the task summary can show only the
-        # commits the agent made (git log pre_sha..HEAD).
-        if workspace and await self.git.avalidate_checkout(workspace):
-            try:
-                pre_sha = (
-                    await self.git._arun(
-                        ["rev-parse", "HEAD"],
-                        cwd=workspace,
-                    )
-                ).strip()
-                if pre_sha:
-                    self._task_pre_exec_sha[action.task_id] = pre_sha
-            except Exception:
-                pass
-
-        async with self._task_control_lock(task.id):
-            current = await self.db.get_task(task.id)
-            if current and current.status == TaskStatus.PAUSED and current.resume_after is None:
-                raise ManualPauseActive(f"Task {task.id} is manually paused")
-            await adapter.start(ctx)
-            await self.db.delete_task_meta(task.id, "manual_pause_checkpoint")
-
-        # ------------------------------------------------------------------ #
-        # Agent message streaming and question detection.
-        # ------------------------------------------------------------------ #
-        _question_notified = False
-
-        async def forward_agent_message(
-            text: str,
-            *,
-            stream_id: str | None = None,
-            stream_done: bool = False,
-        ) -> None:
-            nonlocal _question_notified
-            # Stream agent output via event — the notification handler
-            # routes to the task's thread if one exists, otherwise to the
-            # main channel.  ``stream_id``/``stream_done`` are passthrough
-            # kwargs from streaming sources — when set, the
-            # Discord receiver edits a single message in place instead of
-            # posting a new one per call.
-            await self._emit_notify(
-                "notify.task_message",
-                TaskMessageEvent(
-                    task_id=task.id,
-                    message=text,
-                    message_type="agent_output",
-                    project_id=action.project_id,
-                    stream_id=stream_id,
-                    stream_done=stream_done,
-                ),
-            )
-
-            # Detect agent questions — the Claude adapter formats
-            # AskUserQuestion tool use as "**[AskUserQuestion...]**".
-            # When detected, send a dedicated rich notification.
-            if not _question_notified and "**[AskUserQuestion" in text:
-                _question_notified = True
-                # Extract the question text from the message.  The
-                # full question details follow the tool-use marker in
-                # subsequent lines; use the entire text as context.
-                question_text = text.replace("**[AskUserQuestion]**", "").strip()
-                if not question_text:
-                    question_text = (
-                        "(Agent is requesting user input — check the task thread for details.)"
-                    )
-                try:
-                    await self._notify_agent_question(
-                        task,
-                        agent,
-                        question_text,
-                        project_id=action.project_id,
-                    )
-                except Exception as e:
-                    logger.warning("Agent question notification failed: %s", e)
-
-        # ------------------------------------------------------------------ #
-        # Exponential-backoff retry loop for Claude API rate limits.
-        # ------------------------------------------------------------------ #
-        _rl_base = self.config.pause_retry.rate_limit_backoff_seconds
-        _rl_max_backoff = self.config.pause_retry.rate_limit_max_backoff_seconds
-        _rl_max_retries = self.config.pause_retry.rate_limit_max_retries
-        _rl_attempt = 0
-
-        while True:
-            output = await adapter.wait(on_message=forward_agent_message)
-
-            if output.result != AgentResult.PAUSED_RATE_LIMIT:
-                break  # Completed, failed, or token-exhausted — leave the loop.
-
-            # Session limits (with a known reset time) should NOT be retried
-            # in-process — go straight to the PAUSED handler which sets the
-            # provider cooldown and waits until the actual reset time.
-            _err = output.error_message or ""
-            if "hit your limit" in _err.lower():
-                logger.info(
-                    "Task %s: session limit detected, skipping in-process retries.",
-                    task.id,
-                )
-                break
-
-            _rl_attempt += 1
-            if _rl_attempt > _rl_max_retries:
-                logger.info(
-                    "Task %s: rate-limit retries exhausted (%d), pausing task.",
-                    task.id,
-                    _rl_max_retries,
-                )
-                break
-
-            _backoff = min(_rl_base * (2 ** (_rl_attempt - 1)), _rl_max_backoff)
-            logger.info(
-                "Task %s: rate limited (attempt %d/%d), waiting %ds before retry.",
-                task.id,
-                _rl_attempt,
-                _rl_max_retries,
-                _backoff,
-            )
-
-            await self._emit_notify(
-                "notify.task_message",
-                TaskMessageEvent(
-                    task_id=task.id,
-                    message="⏳ Claude is currently rate-limited. We will try again in a moment.",
-                    message_type="status",
-                    project_id=action.project_id,
-                ),
-            )
-
-            await asyncio.sleep(_backoff)
-
-            await self._emit_notify(
-                "notify.task_message",
-                TaskMessageEvent(
-                    task_id=task.id,
-                    message="✅ Rate limit cleared — resuming now.",
-                    message_type="status",
-                    project_id=action.project_id,
-                ),
-            )
-
-            # Re-initialise the adapter so the next call starts a fresh query.
-            async with self._task_control_lock(task.id):
-                current = await self.db.get_task(task.id)
-                if current and current.status == TaskStatus.PAUSED and current.resume_after is None:
-                    raise ManualPauseActive(f"Task {task.id} is manually paused")
-                await adapter.start(ctx)
-
-        # ------------------------------------------------------------------ #
-        # Token accounting and result persistence.
-        # ------------------------------------------------------------------ #
-        if output.tokens_used > 0:
-            await self.db.record_token_usage(
-                action.project_id,
-                action.agent_id,
-                action.task_id,
-                output.tokens_used,
-            )
-            # Check if the project's budget usage has crossed a warning threshold
-            try:
-                await self._check_budget_warning(
-                    action.project_id,
-                    output.tokens_used,
-                )
-            except Exception as e:
-                logger.warning("Budget warning check failed: %s", e)
-
-        # Persist task result
-        try:
-            await self.db.save_task_result(action.task_id, action.agent_id, output)
-        except Exception as e:
-            logger.error("Failed to save task result: %s", e)
-
-        # Persist session ID for potential session forking on reopen
-        if output.session_id:
-            try:
-                await self.db.set_task_meta(action.task_id, "last_session_id", output.session_id)
-            except Exception as e:
-                logger.warning("Failed to persist session_id: %s", e)
-
-        # Re-fetch task in case retry_count changed
-        task = await self.db.get_task(action.task_id)
-
-        # Helper: post to task thread (agent_output type) or to channel.
-        async def _post(msg: str, *, embed: Any = None) -> None:
-            await self._emit_notify(
-                "notify.task_message",
-                TaskMessageEvent(
-                    task_id=task.id,
-                    message=msg,
-                    message_type="agent_output",
-                    project_id=action.project_id,
-                ),
-            )
-
-        # Helper: post a brief notification to the main (notifications) channel.
-        async def _notify_brief(msg: str, *, embed: Any = None) -> None:
-            await self._emit_notify(
-                "notify.task_message",
-                TaskMessageEvent(
-                    task_id=task.id,
-                    message=msg,
-                    message_type="brief",
-                    project_id=action.project_id,
-                ),
-            )
-
-        # ------------------------------------------------------------------ #
-        # Result handling — branch on the agent's exit status.
-        # ------------------------------------------------------------------ #
-
-        # Track the final root text for updating the thread root message
-        _final_root_content: str | None = None
-
-        # Log the agent's final output so "what did the agent actually say"
-        # is visible in daemon.log for every task, not buried in Discord.
-        try:
-            _final_text = getattr(output, "final_text", None) or getattr(output, "text", None)
-            _err_text = getattr(output, "error_message", None)
-            _preview = _final_text or _err_text or "(no text)"
-            if isinstance(_preview, str) and len(_preview) > 600:
-                _preview = _preview[:600] + "…"
-            logger.info(
-                "Task %s agent output: result=%s preview=%s",
-                task.id,
-                getattr(output.result, "name", str(output.result)),
-                _preview,
-            )
-        except Exception:
-            pass
-
-        if output.result == AgentResult.COMPLETED:
-            # Build pipeline context
-            ws = await self.db.get_workspace_for_task(task.id)
-            project = await self.db.get_project(task.project_id)
-            default_branch = await self._get_default_branch(
-                project, ws.workspace_path if ws else workspace
-            )
-            has_repo = bool(project and project.repo_url)
-
-            repo = (
-                RepoConfig(
-                    id=f"project-{task.project_id}",
-                    project_id=task.project_id,
-                    source_type=ws.source_type if ws else RepoSourceType.LINK,
-                    url=project.repo_url if project else "",
-                    default_branch=default_branch,
-                )
-                if (has_repo or ws) and ws
-                else None
-            )
-
-            pipeline_ctx = PipelineContext(
-                task=task,
-                agent=agent,
-                output=output,
-                workspace_path=ws.workspace_path if ws else workspace,
-                workspace_id=ws.id if ws else None,
-                repo=repo,
-                default_branch=default_branch,
-                project=project,
-            )
-
-            # Run completion pipeline (commit → verify → integrate)
-            logger.info("Task %s: running completion pipeline", task.id)
-            pr_url, completed_ok = await self._run_completion_pipeline(pipeline_ctx)
-
-            if pr_url and completed_ok:
-                # Pull-request mode: record the PR and notify, then complete
-                # the worker task below.  The review policy (default-pipeline
-                # playbook: reviewer / final-reviewer tasks, ``pr-merged``
-                # gates on downstream work) owns the merge from here — the
-                # task itself never waits on the PR.
-                await self.db.update_task(action.task_id, pr_url=pr_url)
-                task.pr_url = pr_url
-                await self.db.log_event(
-                    "pr_created",
-                    project_id=action.project_id,
-                    task_id=action.task_id,
-                    agent_id=action.agent_id,
-                    payload=pr_url,
-                )
-                await self._emit_notify(
-                    "notify.pr_created",
-                    PRCreatedEvent(
-                        task=build_task_detail(task),
-                        pr_url=pr_url,
-                        project_id=action.project_id,
-                    ),
-                )
-                brief = f"🔍 PR created for review: {task.title} (`{task.id}`)\n{pr_url}"
-                await _notify_brief(brief)
-
-            if completed_ok:
-                # Worker is done — mark completed (in PR mode the branch/PR
-                # stays unmerged; review policy decides when it lands).
-                try:
-                    await self.db.transition_task(
-                        action.task_id, TaskStatus.COMPLETED, context="completed"
-                    )
-                except HierarchyError as exc:
-                    # Invariant 6 (spec §7): open children hold the container
-                    # open.  Leave the task as it was rather than crash the
-                    # cascade; it settles when the children finish.
-                    logger.warning(
-                        "completion refused for %s: %s", action.task_id, exc
-                    )
-                    return
-                await self.db.log_event(
-                    "task_completed",
-                    project_id=action.project_id,
-                    task_id=action.task_id,
-                    agent_id=action.agent_id,
-                )
-                # Notifications after state transition are best-effort.
-                # A Discord error (e.g. session closed during restart) must
-                # NOT propagate — the outer except would revert the task to
-                # READY, undoing the COMPLETED transition.
-                try:
-                    await self._emit_notify(
-                        "notify.task_completed",
-                        TaskCompletedEvent(
-                            task=build_task_detail(task),
-                            agent=build_agent_summary(agent),
-                            summary=output.summary or "",
-                            files_changed=output.files_changed or [],
-                            tokens_used=output.tokens_used or 0,
-                            project_id=action.project_id,
-                        ),
-                    )
-                except Exception:
-                    logger.warning(
-                        "Task %s: completion notification failed (state is COMPLETED)",
-                        task.id,
-                        exc_info=True,
-                    )
-                await self.bus.emit(
-                    "task.completed",
-                    {
-                        "task_id": task.id,
-                        "project_id": task.project_id,
-                        "title": task.title,
-                        "agent_id": action.agent_id,
-                        "agent_type": profile.id if profile else None,
-                    },
-                )
-
-                # Write task summary to vault
-                try:
-                    result_dict = {
-                        "summary": output.summary or "",
-                        "files_changed": output.files_changed or [],
-                        "tokens_used": output.tokens_used or 0,
-                        "error_message": output.error_message,
-                    }
-                    # Collect commits the agent made during this task.
-                    # Uses the pre-execution HEAD snapshot so we only get
-                    # commits introduced by the agent, not history.
-                    commits: list[tuple[str, str]] | None = None
-                    ws_path = pipeline_ctx.workspace_path
-                    pre_sha = self._task_pre_exec_sha.pop(action.task_id, None)
-                    if ws_path and pre_sha and await self.git.avalidate_checkout(ws_path):
-                        try:
-                            log_output = await self.git._arun(
-                                ["log", "--format=%H|%s", f"{pre_sha}..HEAD"],
-                                cwd=ws_path,
-                            )
-                            if log_output.strip():
-                                commits = []
-                                for line in log_output.strip().splitlines():
-                                    if "|" in line:
-                                        sha, subject = line.split("|", 1)
-                                        commits.append((sha.strip(), subject.strip()))
-                        except Exception:
-                            pass  # git log failure is non-critical
-                    write_task_summary(
-                        self.config.vault_root,
-                        task,
-                        result_dict,
-                        commits=commits,
-                    )
-                except Exception as e:
-                    logger.warning("Failed to write task summary for %s: %s", task.id, e)
-
-                # Check if this completion finishes a workflow stage
-                await self._check_workflow_stage_completion(task)
-
-                # Auto-reload plugin if the task modified a plugin workspace
-                await self._check_plugin_workspace_update(task, ws)
-                # Mark for thread root update
-                _final_root_content = f"✅ **Work completed:** {task.title}"
-            elif pipeline_ctx.verification_reopened:
-                # Task was already reopened to READY by _phase_verify —
-                # don't transition to BLOCKED.
-                brief = f"🔄 Task reopened for git verification: {task.title} (`{task.id}`)"
-                await _post(brief)
-                await _notify_brief(brief)
-                # Clean up workspace so the next attempt starts with a
-                # clean working tree.
-                await self._cleanup_workspace_for_next_task(
-                    pipeline_ctx.workspace_path,
-                    pipeline_ctx.default_branch,
-                    task.id,
-                    project_id=task.project_id,
-                    agent_id=pipeline_ctx.agent.id,
-                )
-            else:
-                # Pipeline stopped and could not reopen — last-ditch attempt
-                # to clean the workspace before blocking.
-                if pipeline_ctx.workspace_path:
-                    try:
-                        has_dirty = await self.git.ahas_uncommitted_changes(
-                            pipeline_ctx.workspace_path
-                        )
-                        if has_dirty:
-                            cur = await self.git.aget_current_branch(pipeline_ctx.workspace_path)
-                            still_dirty = await self._auto_remediate_uncommitted(
-                                pipeline_ctx.workspace_path,
-                                task.id,
-                                cur,
-                                project_id=task.project_id,
-                                agent_id=pipeline_ctx.agent.id,
-                            )
-                            if not still_dirty:
-                                logger.info(
-                                    "Task %s: last-ditch remediation cleaned workspace",
-                                    task.id,
-                                )
-                    except Exception as e:
-                        logger.warning(
-                            "Task %s: last-ditch remediation failed: %s",
-                            task.id,
-                            e,
-                        )
-
-                await self.db.transition_task(
-                    action.task_id,
-                    TaskStatus.BLOCKED,
-                    context="verification_failed",
-                )
-                await self._emit_task_failure(
-                    task,
-                    "verification_failed",
-                    error="Post-task verification failed, max retries exhausted",
-                    agent_id=action.agent_id,
-                    agent_type=underlying_agent_type(profile.id) if profile else None,
-                )
-                await _post(
-                    f"**Verification failed** for `{task.id}` — "
-                    f"max retries exhausted, manual resolution needed."
-                )
-                # Clean up workspace so it's ready for the next task
-                await self._cleanup_workspace_for_next_task(
-                    pipeline_ctx.workspace_path,
-                    pipeline_ctx.default_branch,
-                    task.id,
-                    project_id=task.project_id,
-                    agent_id=pipeline_ctx.agent.id,
-                )
-
-            # Ensure workspace is clean for the next task.
-            if (
-                not pipeline_ctx.verification_reopened
-                and completed_ok
-                and pipeline_ctx.workspace_path
-            ):
-                await self._cleanup_workspace_for_next_task(
-                    pipeline_ctx.workspace_path,
-                    pipeline_ctx.default_branch,
-                    task.id,
-                    project_id=task.project_id,
-                    agent_id=pipeline_ctx.agent.id,
-                )
-
-            # Re-check DEFINED tasks so newly created subtasks get promoted
-            await self._check_defined_tasks()
-
-        elif output.result == AgentResult.FAILED:
-            # WG-5: honour the ``failure_class`` outcome-metadata key.  A
-            # ``"hard"`` failure skips retry entirely and goes straight to
-            # BLOCKED — retries can't heal a structural problem.
-            try:
-                failure_class = await self.db.get_task_meta(task.id, "failure_class")
-            except Exception:
-                failure_class = None
-            if failure_class == "hard":
-                await self.db.transition_task(
-                    action.task_id,
-                    TaskStatus.BLOCKED,
-                    context="hard_failure",
-                    retry_count=task.retry_count,
-                )
-                await self._emit_task_failure(
-                    task,
-                    "hard_failure",
-                    error=output.error_message or "hard failure_class — no retry",
-                    agent_id=action.agent_id,
-                    agent_type=underlying_agent_type(profile.id) if profile else None,
-                )
-                await _notify_brief(
-                    f"🚫 Hard failure: {task.title} (`{task.id}`) — retry skipped"
-                )
-                # No workspace reset — leave the state for post-mortem.
-                await self._check_defined_tasks()
-                return
-            new_retry = task.retry_count + 1
-            if new_retry >= task.max_retries:
-                await self.db.transition_task(
-                    action.task_id, TaskStatus.BLOCKED, context="max_retries", retry_count=new_retry
-                )
-                await self._emit_task_failure(
-                    task,
-                    "max_retries",
-                    error=f"Max retries ({task.max_retries}) exhausted",
-                    agent_id=action.agent_id,
-                    agent_type=underlying_agent_type(profile.id) if profile else None,
-                )
-                brief = (
-                    f"🚫 Task blocked: {task.title} (`{task.id}`) — "
-                    f"max retries ({task.max_retries}) exhausted"
-                )
-            else:
-                await self.db.transition_task(
-                    action.task_id,
-                    TaskStatus.READY,
-                    context="retry",
-                    retry_count=new_retry,
-                    assigned_agent_id=None,
-                )
-                brief = (
-                    f"⚠️ Task failed: {task.title} (`{task.id}`) — "
-                    f"retry {new_retry}/{task.max_retries}"
-                )
-            # Emit typed failure/blocked event
-            if new_retry >= task.max_retries:
-                await self._emit_notify(
-                    "notify.task_blocked",
-                    TaskBlockedEvent(
-                        task=build_task_detail(task),
-                        last_error=output.error_message or "",
-                        project_id=action.project_id,
-                    ),
-                )
-            else:
-                await self._emit_notify(
-                    "notify.task_failed",
-                    TaskFailedEvent(
-                        task=build_task_detail(task),
-                        agent=build_agent_summary(agent),
-                        error_label="",
-                        error_detail=output.error_message or "",
-                        fix_suggestion="",
-                        retry_count=new_retry,
-                        max_retries=task.max_retries,
-                        project_id=action.project_id,
-                    ),
-                )
-            await _notify_brief(brief)
-
-            # Mark for thread root update
-            if new_retry >= task.max_retries:
-                _final_root_content = f"🚫 **Work blocked:** {task.title}"
-            else:
-                _final_root_content = f"⚠️ **Work failed (retrying):** {task.title}"
-
-            # Check if this blocked task breaks a dependency chain
-            if new_retry >= task.max_retries:
-                await self._notify_stuck_chain(task)
-
-            # Clean up workspace git state so it's ready for the next task.
-            if workspace:
-                try:
-                    fail_project = await self.db.get_project(task.project_id)
-                    fail_default_branch = await self._get_default_branch(fail_project, workspace)
-                    await self._cleanup_workspace_for_next_task(
-                        workspace,
-                        fail_default_branch,
-                        task.id,
-                        project_id=task.project_id,
-                        agent_id=task.assigned_agent_id,
-                    )
-                except Exception as e:
-                    logger.warning(
-                        "Task %s: workspace cleanup after failure failed: %s",
-                        task.id,
-                        e,
-                    )
-
-        elif output.result in (AgentResult.PAUSED_TOKENS, AgentResult.PAUSED_RATE_LIMIT):
-            # PAUSED path
-            retry_secs = (
-                self.config.pause_retry.rate_limit_backoff_seconds
-                if output.result == AgentResult.PAUSED_RATE_LIMIT
-                else self.config.pause_retry.token_exhaustion_retry_seconds
-            )
-            reason = (
-                "rate limit"
-                if output.result == AgentResult.PAUSED_RATE_LIMIT
-                else "token exhaustion"
-            )
-
-            # Session limits include a reset time
-            error_msg = output.error_message or ""
-            parsed_resume = _parse_reset_time(error_msg)
-            if parsed_resume and parsed_resume > time.time():
-                retry_secs = int(parsed_resume - time.time()) + 60  # +60s buffer
-                reason = "session limit"
-                logger.info(
-                    "Task %s: session limit resets in %ds, will resume then.",
-                    task.id,
-                    retry_secs,
-                )
-
-            resume_at = time.time() + retry_secs
-
-            # Set provider-level cooldown
-            if agent and agent.profile_id:
-                self._provider_cooldowns[agent.profile_id] = resume_at
-                logger.info(
-                    "Provider cooldown set: %s until %.0f (%ds from now)",
-                    agent.profile_id,
-                    resume_at,
-                    retry_secs,
-                )
-
-            await self.db.transition_task(
-                action.task_id,
-                TaskStatus.PAUSED,
-                context="tokens_exhausted",
-                resume_after=resume_at,
-            )
-            await self._emit_task_event(
-                "task.paused",
-                task,
-                reason=reason,
-                resume_after=resume_at,
-            )
-            friendly_wait = (
-                f"{retry_secs // 3600}h {(retry_secs % 3600) // 60}m"
-                if retry_secs >= 3600
-                else f"{retry_secs // 60}m"
-            )
-            await _post(
-                f"**Task Paused:** `{task.id}` — {task.title}\n"
-                f"Reason: {reason}. Will resume in {friendly_wait}."
-            )
-
-            # Clean up workspace
-            if workspace:
-                try:
-                    pause_project = await self.db.get_project(task.project_id)
-                    pause_default_branch = await self._get_default_branch(pause_project, workspace)
-                    await self._cleanup_workspace_for_next_task(
-                        workspace,
-                        pause_default_branch,
-                        task.id,
-                        project_id=task.project_id,
-                        agent_id=task.assigned_agent_id,
-                    )
-                except Exception as e:
-                    logger.warning(
-                        "Task %s: workspace cleanup after pause failed: %s",
-                        task.id,
-                        e,
-                    )
-
-        elif output.result == AgentResult.WAITING_INPUT:
-            # Agent is blocked on a question
-            question_text = output.question or output.summary or "(no question text)"
-            await self.db.transition_task(
-                action.task_id,
-                TaskStatus.WAITING_INPUT,
-                context="agent_question",
-            )
-            await self._emit_task_event(
-                "task.waiting_input",
-                task,
-                question=question_text,
-            )
-            await self.db.log_event(
-                "agent_question",
-                project_id=action.project_id,
-                task_id=action.task_id,
-                agent_id=action.agent_id,
-                payload=question_text[:500],
-            )
-            await self._emit_notify(
-                "notify.agent_question",
-                AgentQuestionEvent(
-                    task=build_task_detail(task),
-                    agent=build_agent_summary(agent),
-                    question=question_text,
-                    project_id=action.project_id,
-                ),
-            )
-
-        # ------------------------------------------------------------------ #
-        # Cleanup — runs regardless of which result branch was taken above.
-        # ------------------------------------------------------------------ #
-
-        # Close the task thread
-        if _final_root_content:
-            await self._emit_notify(
-                "notify.task_thread_close",
-                TaskThreadCloseEvent(
-                    task_id=task.id,
-                    final_status=task.status.value
-                    if hasattr(task.status, "value")
-                    else str(task.status),
-                    final_message=_final_root_content,
-                    project_id=action.project_id,
-                ),
-            )
-
-        # Clean up the sentinel file before releasing the workspace lock.
-        if workspace:
-            self._remove_sentinel(workspace)
-
-        # Release the workspace lock
-        await self._release_workspaces_for_task(action.task_id)
-
-        # Free the agent for new work
-        post_agent = await self.db.get_agent(action.agent_id)
-        next_state = (
-            AgentState.PAUSED
-            if post_agent and post_agent.state == AgentState.PAUSED
-            else AgentState.IDLE
-        )
-        await self.db.update_agent(action.agent_id, state=next_state, current_task_id=None)
-
-        # Remove adapter reference
-        self._adapters.pop(action.agent_id, None)
-        self._task_exec_start.pop(action.task_id, None)
-        self._task_pre_exec_sha.pop(action.task_id, None)
-
-        # Delete the task-added notification
-        added_msg = self._task_added_messages.pop(action.task_id, None)
-        if added_msg is not None:
-            try:
-                await added_msg.delete()
-            except Exception as e:
-                logger.debug("Could not delete task-added message for %s: %s", action.task_id, e)
-
-        # Delete the Task Started message
-        started_msg = self._task_started_messages.pop(action.task_id, None)
-        if started_msg is not None:
-            try:
-                await started_msg.delete()
-            except Exception as e:
-                logger.debug("Could not delete task-started message for %s: %s", action.task_id, e)
+        await self._launch_session_for_task(action, task, profile, workspace)
+        return
 
     # ======================================================================
     # Session runtime -- launch and return (session-runtime spec §4, §6)
@@ -1630,10 +536,9 @@ class ExecutionMixin:
     def _is_session_routed(self, profile) -> bool:
         """True when this profile's tasks run as sessions.
 
-        Two conditions, both required: the daemon-wide ``sessions.enabled``
-        flag, and a ``harness`` on the resolved profile.  Rollback is
-        therefore either flipping the flag or removing ``harness:`` from one
-        profile -- no code change, and live sessions drain naturally.
+        A task worker requires both the session service and a session
+        harness. With sessions disabled, execution fails explicitly instead
+        of falling through to the removed runtime adapter pipeline.
 
         A ``lifecycle: pool`` profile is never push-routed (swarm-work-model
         §11): its work is claimed by long-lived pool sessions, not launched
@@ -1871,6 +776,7 @@ class ExecutionMixin:
             session_key=resume_key or (session_id if harness.session_id_flag else None),
             work_dir=work_dir, epoch=self.daemon_epoch, instance_token=instance_token,
             started_at=launched_at, last_activity=launched_at,
+            hooks_provisioned=spec.hooks_provisioned,
         )
 
         async def record_failed_launch(reason):
@@ -2006,6 +912,7 @@ class ExecutionMixin:
         notes: str = "",
         expect_claim_epoch: int | None = None,
         pool: bool = False,
+        session_live: bool = False,
     ) -> dict:
         """Run the completion pipeline for a session-closed task.
 
@@ -2061,6 +968,7 @@ class ExecutionMixin:
             repo=repo,
             default_branch=default_branch,
             project=project,
+            close_session_live=session_live,
         )
 
         pr_url = None
@@ -2075,6 +983,30 @@ class ExecutionMixin:
                     exc_info=True,
                 )
                 completed_ok = False
+
+        # Git verification found only fixable issues and the closing session
+        # is still live: the close is refused rather than the task reopened.
+        # Nothing is transitioned and nothing is released — the task keeps
+        # its IN_PROGRESS status, its agent, its workspace and its claim, so
+        # the reconciler's orphan rule (live session, task not IN_PROGRESS)
+        # never sees a reason to drain the worker that has to fix this.
+        if outcome == "pass" and ctx.verification_retry_in_session:
+            current = await self.db.get_task(task.id)
+            logger.info(
+                "Task %s: close refused, %d fixable verification issue(s) returned "
+                "to the live session",
+                task.id,
+                len(ctx.verification_issues),
+            )
+            return {
+                "status": (current or task).status.value,
+                "pr_url": None,
+                "pipeline_ok": False,
+                "retry_count": None,
+                "verification_retry": True,
+                "issues": list(ctx.verification_issues),
+                "feedback": ctx.verification_feedback,
+            }
 
         # ``retry_count`` is only carried on the transient leg; the other
         # branches are terminal and must not bump the counter.
@@ -2151,6 +1083,38 @@ class ExecutionMixin:
             refreshed = await self.db.get_task(task.id)
             if refreshed:
                 new_status = refreshed.status
+        # ``task.completed`` is the event the review pipeline triggers on
+        # (``per-task-review`` / ``per-branch-final-review`` in
+        # default-pipeline.md).  The legacy blocking tail of ``_execute_task``
+        # used to raise it, but every agent is session-routed now — that tail
+        # is dead code below the "Session-runtime fork", so this close path is
+        # the only place an ordinary task can still announce that it finished.
+        # Without it workers opened PRs, closed clean, and nothing ever
+        # reviewed or merged them.
+        #
+        # It is emitted *before* ``task.closed`` and only for a task that
+        # actually reached COMPLETED: the retry/blocked legs are not finished
+        # work, and spawning a reviewer for a task about to be retried would
+        # be worse than the silence.  Ordering matters for the guards, not the
+        # payload — ``_dispatch_playbook`` hydrates ``event.task`` from a fresh
+        # ``db.get_task``, so the transition above must already have committed
+        # ``pr_url`` for ``event.task.pr_url`` to read as truthy.
+        if new_status == TaskStatus.COMPLETED:
+            try:
+                await self._emit_task_event(
+                    "task.completed",
+                    task,
+                    agent_id=task.assigned_agent_id,
+                    agent_type=task.profile_id,
+                )
+            except Exception:
+                # Best-effort, exactly like the notification below it: a
+                # subscriber blowing up must not undo a committed COMPLETED.
+                logger.warning(
+                    "Task %s: task.completed emit failed (state is COMPLETED)",
+                    task.id,
+                    exc_info=True,
+                )
         await self._emit_task_event(
             "task.closed",
             task,

@@ -155,12 +155,15 @@ where = ["."]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests", "packages"]
+addopts = "-n auto --dist loadfile --durations=10 -m \"not perf and not migration and not slow and not tmux and not integration\""
 markers = [
     "functional: tests that launch real Claude CLI (require auth + API key)",
     "functional_mcp: functional tests requiring npm/npx for MCP servers",
     "integration: tests requiring external dependencies (Milvus Lite, etc.)",
     "tmux: tests requiring a real tmux binary (POSIX only)",
     "perf: latency-budget tests, skipped unless AQ_PERF_STRICT=1 (xdist load makes them flaky)",
+    "migration: tests that exercise the real Alembic revision chain",
+    "slow: high-cost regression tests kept out of the default developer suite",
 ]
 
 [tool.ruff]

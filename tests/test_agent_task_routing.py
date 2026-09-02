@@ -364,6 +364,51 @@ async def test_orchestrator_snapshot_enforces_matching_and_live_terminal_ownersh
     assert [action.agent_id for action in actions] == ([] if interactive else ["sol"])
 
 
+def test_unrouted_task_is_never_reserved_and_reports_the_route_as_the_blocker():
+    from src.explain import build_capacity_reasons
+
+    state = routing_state(requested_task(profile_id=None, intelligence_class=None))
+    state.assignment_routes = {}
+
+    assert Scheduler.schedule(state) == []
+    reasons = build_capacity_reasons(state.tasks[0], state, {"p": 1}, {"p": 3})
+    assert [reason["code"] for reason in reasons] == ["awaiting_intelligence_route"]
+
+
+def test_fresh_route_reserves_a_worker_at_the_class_it_names():
+    state = routing_state(requested_task(profile_id=None, intelligence_class=None))
+    state.assignment_routes = {
+        "task": EffectiveAssignmentRoute("task", "fast-low", None, "playbook")
+    }
+
+    assert [action.agent_id for action in Scheduler.schedule(state)] == ["triage"]
+
+
+async def test_orchestrator_leaves_an_unrouted_task_and_its_workers_alone(routing_db, tmp_path):
+    """No reserve → no BUSY→IDLE flip and no 60 s launch-failure backoff."""
+    from unittest.mock import AsyncMock
+    from src.config import AppConfig, DiscordConfig
+    from src.orchestrator import Orchestrator
+    from src.orchestrator.agent_reconciler import ReconcileReport
+
+    for agent in workers():
+        await routing_db.create_agent(agent)
+    await routing_db.update_task("task", intelligence_class=None, profile_id=None)
+    config = AppConfig(
+        discord=DiscordConfig(bot_token="test", guild_id="1"),
+        database_path=str(tmp_path / "unused.db"), data_dir=str(tmp_path / "data"),
+        workspace_dir=str(tmp_path / "work"),
+    )
+    orch = Orchestrator(config)
+    orch.db = routing_db
+    orch._agent_reconciler.reconcile = AsyncMock(return_value=ReconcileReport())
+    orch.session_spec_builder._intelligence_classes = routing_classes()
+
+    assert await orch._schedule() == []
+    assert all(agent.state == AgentState.IDLE for agent in await routing_db.list_agents())
+    assert (await routing_db.get_task("task")).status == TaskStatus.READY
+
+
 def test_idle_count_uses_global_workers_and_ignores_disabled_supervisor_and_busy():
     from src.orchestrator.core import _idle_by_project
 

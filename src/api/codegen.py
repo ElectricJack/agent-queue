@@ -374,6 +374,12 @@ def _make_route_handler(cmd_name: str, input_model: type[BaseModel]):
             # command rejects before writing any accompanying legacy field.
             for field in {"description", "expected_description"} & body.model_fields_set:
                 args[field] = getattr(body, field)
+        if cmd_name == "pool_scale":
+            # ``max: null`` means an unbounded pool.  Normal generated-route
+            # serialization drops nulls, which would turn that explicit
+            # operator request into a no-op.
+            for field in {"min", "max"} & body.model_fields_set:
+                args[field] = getattr(body, field)
         if cmd_name == "edit_task":
             # Explicit null clears routing; omitted option defaults must not.
             for field in {"profile_id", "intelligence_class"} & body.model_fields_set:

@@ -35,9 +35,15 @@ class Reason(TypedDict):
 
     ``code`` is a stable machine-readable identifier — one of
     ``blocked_dependency``, ``blocked_gate``, ``no_idle_agent``,
-    ``no_compatible_agent``,
+    ``no_compatible_agent``, ``awaiting_intelligence_route``,
     ``workspace_locked``, ``budget_exhausted``, ``rate_limited``,
-    ``held``, ``project_paused``.  ``detail`` is a human string.
+    ``held``, ``project_paused``, ``awaiting_pool_session``.  The last is
+    the pull path's answer and *replaces* the capacity codes rather than
+    joining them: a ``lifecycle: pool`` profile's tasks never reach the push
+    scheduler, so ``no_idle_agent`` would describe a queue this task is not
+    in (see ``_cmd_explain_task._pool_wait_reason``). ``needs_attention``,
+    ``paused_backoff``, and ``paused_manually`` cover recovery states.
+    ``detail`` is a human string.
     ``ref`` names the specific entity (task id, gate id, workspace id,
     provider id) when one applies, else ``None``.
     """
@@ -89,6 +95,28 @@ def build_capacity_reasons(
                 code="project_paused",
                 detail=f"project '{task.project_id}' pause_scheduling=True",
                 ref=task.project_id,
+            )
+        )
+        return reasons
+
+    # An unrouted task is not a capacity problem: the scheduler refuses to
+    # reserve it at all (``scheduler.routing_mismatch``), so every supply
+    # reason below would send an operator hunting for a worker that would
+    # not have been allowed to take it anyway.  Say what it is really
+    # waiting for and stop.
+    if (
+        state.assignment_routes is not None
+        and not (task.intelligence_class or "").strip()
+        and task.id not in state.assignment_routes
+    ):
+        reasons.append(
+            Reason(
+                code="awaiting_intelligence_route",
+                detail=(
+                    "no fresh assignment route: the assignment playbook has not "
+                    "selected an intelligence class for this task yet"
+                ),
+                ref=task.id,
             )
         )
         return reasons

@@ -105,7 +105,20 @@ def resolve_effective_route(
     saved: TaskAssignmentRoute | None,
     current_options_hash: str,
 ) -> EffectiveAssignmentRoute | None:
-    """Resolve explicit intent or a fresh playbook decision, never a default."""
+    """Resolve explicit intent or a fresh playbook decision, never a default.
+
+    Freshness is decided by ``input_hash`` (every material field the router
+    was shown) and ``options_hash`` (the compatible class/provider catalog).
+    ``saved.task_updated_at`` is deliberately *not* part of that test: it is
+    the redundant revision the claim query joins on because SQL cannot hash
+    the task, and it moves for reasons the router does not care about — the
+    READY→ASSIGNED write itself bumps ``updated_at``.  Requiring it here
+    revoked a route the instant the scheduler reserved the task, so the
+    launch check then failed with "awaiting intelligence route", paused the
+    task, and flipped its worker back to IDLE every cycle.  The coordinator
+    re-stamps a drifted row (``AssignmentRoutingCoordinator.reconcile``) so
+    the SQL-side approximation stays in step with this decision.
+    """
 
     explicit = (task.intelligence_class or "").strip()
     if explicit:
@@ -113,8 +126,6 @@ def resolve_effective_route(
     if saved is None:
         return None
     if saved.project_id != task.project_id:
-        return None
-    if saved.task_updated_at != task.updated_at:
         return None
     if saved.input_hash != assignment_input_hash(task):
         return None

@@ -7,6 +7,8 @@ from sqlalchemy import inspect
 from src.database import Database
 from src.database.tables import GATE_TYPES
 
+pytestmark = pytest.mark.migration
+
 
 @pytest.fixture
 async def db(tmp_path):

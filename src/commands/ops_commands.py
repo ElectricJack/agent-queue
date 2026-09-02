@@ -254,6 +254,13 @@ class OpsCommandsMixin:
             _projects,
         ) = await self.orchestrator._measure_pools(project_ids)
         now = time.time()
+        sessions_by_key: dict[tuple[str, str], list] = {}
+        for session in await self.db.list_sessions(lifecycle="pool"):
+            if session.project_id is None or session.state == "stopped":
+                continue
+            if project_ids is not None and session.project_id not in project_ids:
+                continue
+            sessions_by_key.setdefault((session.project_id, session.profile_id), []).append(session)
         pools = []
         for key in sorted(supply, key=lambda k: (k.project_id, k.profile_id)):
             sup, (lo, hi) = supply[key], bounds[key]
@@ -271,10 +278,37 @@ class OpsCommandsMixin:
                 "starting": sup.starting,
                 "draining": sup.draining,
                 "ready": demand.get(key, 0),
+                "instances": [],
             }
-            until = self.orchestrator._pool_quarantine.get((key.project_id, key.profile_id))
-            if until and until > now:
+            for session in sessions_by_key.get((key.project_id, key.profile_id), []):
+                task = await self.db.get_task(session.task_id) if session.task_id else None
+                idle_since = session.last_activity or session.started_at
+                row["instances"].append(
+                    {
+                        "session_id": session.id,
+                        "name": session.name,
+                        "state": session.state,
+                        "task_id": session.task_id,
+                        "task_title": task.title if task is not None else None,
+                        "idle_seconds": (
+                            max(0.0, now - idle_since)
+                            if session.task_id is None and session.claim_phase is None
+                            else None
+                        ),
+                        "started_at": session.started_at,
+                        "quarantine_reason": (
+                            session.end_reason if session.state == "quarantined" else None
+                        ),
+                    }
+                )
+            until, reason = self.orchestrator._pool_quarantine_state(
+                key.project_id, key.profile_id, now
+            )
+            if until:
                 row["quarantined_until"] = until
+                # A timestamp alone left an operator staring at a pool that
+                # will not grow with nothing to act on.
+                row["quarantined_reason"] = reason
             pools.append(row)
         return {"success": True, "pools": pools}
 
@@ -293,44 +327,48 @@ class OpsCommandsMixin:
     def _system_profile_path(self, agent_type: str) -> str:
         return os.path.join(self.config.data_dir, "vault", "agent-types", agent_type, "profile.md")
 
-    async def _write_pool_bounds(
-        self, project_id: str, profile_id: str, min_active: int | None, max_active: int | None
+    async def _pool_profile_target(
+        self, project_id: str, profile_id: str, *, require_pool: bool
     ):
-        """Persist new min/max bounds for the effective pool profile of *project_id*.
+        """Resolve the profile an operator edit should copy into a project override."""
+        scoped_id = f"project:{project_id}:{profile_id}"
+        scoped = await self.db.get_profile(scoped_id)
+        target = scoped or await self.db.get_profile(profile_id)
+        if target is None:
+            return None
+        if require_pool and getattr(target, "lifecycle", "task") != "pool":
+            return None
+        return target
+
+    async def _write_pool_profile_config(
+        self, project_id: str, profile_id: str, updates: dict, *, require_pool: bool
+    ):
+        """Persist project-scoped profile config, with the vault as source of truth.
 
         The vault ``## Config`` block is the source of truth (swarm spec §14),
-        so the bounds are written into the **project-scoped** profile markdown
+        so operator edits are written into the **project-scoped** profile markdown
         at ``vault/projects/<pid>/agent-types/<id>/profile.md`` — created from
         the system profile when no override exists yet — and then synced back
-        into the ``agent_profiles`` row.  Writing only the DB row (what this
-        used to do) meant the next vault sync silently reverted the scale.
+        into the ``agent_profiles`` row.  Writing only the DB row would let a
+        later vault sync silently revert the operator edit.
 
         The DB row is also updated directly and first, so the very next
-        orchestrator tick sees the new bounds even if the sync is slow.
+        orchestrator tick sees the change even if the sync is slow.
         """
         import dataclasses
 
         scoped_id = f"project:{project_id}:{profile_id}"
         scoped = await self.db.get_profile(scoped_id)
-        if scoped is not None and getattr(scoped, "lifecycle", "task") != "pool":
-            scoped = None
-        target = scoped
+        target = await self._pool_profile_target(
+            project_id, profile_id, require_pool=require_pool
+        )
         if target is None:
-            target = await self.db.get_profile(profile_id)
-        if target is None or getattr(target, "lifecycle", "task") != "pool":
             return None
-
-        updates: dict = {}
-        if min_active is not None:
-            updates["min_active"] = min_active
-        if max_active is not None:
-            updates["max_active"] = max_active
 
         # 1. Immediate DB write so the next tick already honours the new
         #    bounds.  The write always lands on the PROJECT-scoped row: when
         #    no override exists yet it is created as a copy of the system
-        #    profile.  Touching the system row would resize every other
-        #    project's pool until the system file re-synced.
+        #    profile.  Touching the system row would alter every other project.
         if updates:
             if scoped is not None:
                 await self.db.update_profile(scoped_id, **updates)
@@ -340,15 +378,11 @@ class OpsCommandsMixin:
                 )
 
         # 2. Durable write: the project-scoped vault file.
-        await self._write_pool_bounds_to_vault(project_id, profile_id, updates)
+        await self._write_pool_profile_config_to_vault(project_id, profile_id, updates)
 
-        return dataclasses.replace(
-            target,
-            min_active=min_active if min_active is not None else target.min_active,
-            max_active=max_active if max_active is not None else target.max_active,
-        )
+        return dataclasses.replace(target, **updates)
 
-    async def _write_pool_bounds_to_vault(
+    async def _write_pool_profile_config_to_vault(
         self, project_id: str, profile_id: str, updates: dict
     ) -> None:
         """Merge *updates* into the project override's ``## Config`` and re-sync.
@@ -386,7 +420,7 @@ class OpsCommandsMixin:
             path.write_text(markdown, encoding="utf-8")
         except OSError:
             logger.warning(
-                "pool scale: could not write vault profile %s — bounds applied to the "
+                "pool profile edit: could not write vault profile %s — changes applied to the "
                 "agent_profiles row only, and will revert on the next vault sync",
                 path,
                 exc_info=True,
@@ -398,42 +432,130 @@ class OpsCommandsMixin:
         )
         if not result.success:
             logger.warning(
-                "pool scale: wrote %s but the DB re-sync failed: %s", path, result.errors
+                "pool profile edit: wrote %s but the DB re-sync failed: %s", path, result.errors
             )
+
+    async def _cmd_pool_set_lifecycle(self, args: dict) -> dict:
+        """Set a profile's task/pool lifecycle for one project only."""
+        project_id, profile_id = args.get("project_id"), args.get("profile_id")
+        lifecycle = args.get("lifecycle")
+        if not project_id or not profile_id:
+            return {"success": False, "error": "project_id and profile_id are required"}
+        if lifecycle not in {"task", "pool"}:
+            return {"success": False, "error": "lifecycle must be task or pool"}
+        if lifecycle == "pool" and not getattr(self.config.swarm, "enabled", True):
+            return {
+                "success": False,
+                "error": "cannot set lifecycle to pool while swarm.enabled is false",
+            }
+        # The sizing knobs are pool-only configuration.  Clear them together
+        # with the lifecycle change so the durable override can be re-synced
+        # by the profile parser (which deliberately rejects those keys on a
+        # task profile).
+        updates = {"lifecycle": lifecycle}
+        if lifecycle == "task":
+            updates.update(
+                min_active=None,
+                max_active=None,
+                max_claims_per_session=None,
+            )
+        profile = await self._write_pool_profile_config(
+            project_id, profile_id, updates, require_pool=False
+        )
+        if profile is None:
+            return {"success": False, "error": f"no profile '{profile_id}' for {project_id}"}
+        if lifecycle == "task":
+            # Do not let workers from the former pool take another task while
+            # the reconciler drains them.  Active tasks retain their session
+            # until their normal close/release path completes.
+            for session in await self.db.list_sessions(
+                lifecycle="pool", project_id=project_id, live_only=True
+            ):
+                if session.profile_id != profile_id:
+                    continue
+                await self.db.update_session(session.id, desired_state="stopped")
+                await self.orchestrator.bus.emit(
+                    "pool.session_drained",
+                    {
+                        "project_id": project_id,
+                        "profile_id": profile_id,
+                        "session_id": session.id,
+                        "name": session.name,
+                        "reason": "lifecycle_changed",
+                    },
+                )
+        await self.orchestrator.bus.emit(
+            "pool.lifecycle_changed",
+            {"project_id": project_id, "profile_id": profile_id, "lifecycle": lifecycle},
+        )
+        return {
+            "success": True,
+            "project_id": project_id,
+            "profile_id": profile_id,
+            "lifecycle": lifecycle,
+        }
 
     async def _cmd_pool_scale(self, args: dict) -> dict:
         """Set a pool profile's min/max active-session bounds.  Backs ``aq pool scale``."""
         project_id, profile_id = args.get("project_id"), args.get("profile_id")
         if not project_id or not profile_id:
             return {"success": False, "error": "project_id and profile_id are required"}
+        has_min, has_max = "min" in args, "max" in args
         lo, hi = args.get("min"), args.get("max")
-        if lo is None and hi is None:
+        if not has_min and not has_max:
             return {"success": False, "error": "nothing to change: pass min and/or max"}
-        if lo is not None and lo < 0:
-            return {"success": False, "error": "min must be >= 0"}
-        if hi is not None and hi < 1:
-            return {"success": False, "error": "max must be >= 1"}
-        if lo is not None and hi is not None and lo > hi:
-            return {"success": False, "error": "min must be <= max"}
-        profile = await self._write_pool_bounds(project_id, profile_id, lo, hi)
-        if profile is None:
+        target = await self._pool_profile_target(project_id, profile_id, require_pool=True)
+        if target is None:
             return {"success": False, "error": f"no pool profile '{profile_id}' for {project_id}"}
+        min_active = lo if has_min else target.min_active
+        max_active = hi if has_max else target.max_active
+        if min_active is None or min_active < 0:
+            return {"success": False, "error": "min must be >= 0"}
+        if max_active is not None and max_active < min_active:
+            return {"success": False, "error": "max must be >= min"}
+        project = await self.db.get_project(project_id)
+        project_cap = getattr(project, "max_concurrent_agents", None) if project else None
+        effective_max = (
+            project_cap if max_active is None else min(max_active, project_cap)
+        ) if project_cap is not None else max_active
+        updates = {}
+        if has_min:
+            updates["min_active"] = lo
+        if has_max:
+            updates["max_active"] = hi
+        profile = await self._write_pool_profile_config(
+            project_id, profile_id, updates, require_pool=True
+        )
         terminated: list[str] = []
-        if args.get("now") and hi is not None:
+        if args.get("now") and effective_max is not None:
             live = [
                 s
                 for s in await self.db.list_sessions(lifecycle="pool", project_id=project_id)
                 if s.profile_id == profile_id and s.state in ("running", "stalled")
             ]
             idle = sorted((s for s in live if not s.task_id), key=lambda s: s.started_at or 0)
-            for s in idle[: max(0, len(live) - hi)]:
+            for s in idle[: max(0, len(live) - effective_max)]:
                 await self.orchestrator._terminate_pool_session(s, reason="scaled")
                 terminated.append(s.id)
-        return {
+        response = {
             "success": True,
             "project_id": project_id,
             "profile_id": profile_id,
             "min_active": profile.min_active,
             "max_active": profile.max_active,
+            "project_cap": project_cap,
+            "effective_max_active": effective_max,
             "terminated": terminated,
         }
+        await self.orchestrator.bus.emit(
+            "pool.bounds_changed",
+            {
+                "project_id": project_id,
+                "profile_id": profile_id,
+                "min_active": profile.min_active,
+                "max_active": profile.max_active,
+                "project_cap": project_cap,
+                "effective_max_active": effective_max,
+            },
+        )
+        return response

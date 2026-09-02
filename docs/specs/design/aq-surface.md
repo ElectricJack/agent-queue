@@ -197,8 +197,8 @@ LLM calls and no writes.
 
 | # | Section | Source | Notes |
 |---|---|---|---|
-| 1 | L0 profile role | `vault/agent-types/<id>/profile.md` `## Role` | who you are |
-| 2 | Project override role | `vault/projects/<pid>/agent-types/<id>/profile.md` | specificity wins (principle #6) |
+| 1 | L0 profile role + rules | `vault/agent-types/<id>/profile.md` `## Role` + `## Rules` | who you are, then how you must work |
+| 2 | Project override role + rules | `vault/projects/<pid>/agent-types/<id>/profile.md` | specificity wins (principle #6) |
 | 3 | Task pointer | `aq task show` summary | id, title, status, acceptance criteria |
 | 4 | Task context | `task_context` rows incl. `spec_ref` sections + attachments | spec sections are inlined, not linked |
 | 5 | Workspaces block | task work-state + attachments | `work_dir`, `branch`, other attached kinds |
@@ -210,6 +210,13 @@ LLM calls and no writes.
 
 Slots 7–8 exist in the section model from day one so the memory comeback is a renderer
 change, not a protocol change.
+
+Sections 1–2 render exactly the *prime-visible* profile headings —
+`## Role` bare, then `## Rules` under a `### Rules` sub-heading — and nothing
+else; `## Config`, `## Tools`, `## MCP Servers` and `## Reflection` stay
+machine-only. Prime is the only channel a session-launched agent has for its
+Rules, since the DB `system_prompt_suffix` is read only by the legacy adapter
+path. See [[profiles]] §2 "Which headings reach the agent".
 
 ### 5.3 Per-project override: `.aq/PRIME.md`
 

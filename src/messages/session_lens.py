@@ -434,6 +434,7 @@ class SessionLens:
                     session_key=resume_key or (session_id if harness.session_id_flag else None),
                     state="running",
                     desired_state="running",
+                    hooks_provisioned=spec.hooks_provisioned,
                 )
             )
         except BaseException as exc:
@@ -545,8 +546,13 @@ class SessionLens:
             # is addressed as ``supervisor-<pid>`` but the runtime session
             # row is named ``n-supervisor--<pid>`` (so the reconciler can
             # adopt it); translate here.
-            runtime_name = _resolve_runtime_session_name(kind, target_id)
-            row = await self._db.get_session_by_name(runtime_name)
+            # Native supervisor messaging resolves a target all the way to
+            # an immutable session id.  Keep the historical name-address
+            # fallback for existing message rows and named supervisors.
+            row = await self._db.get_session(target_id)
+            if row is None:
+                runtime_name = _resolve_runtime_session_name(kind, target_id)
+                row = await self._db.get_session_by_name(runtime_name)
         else:
             return None, None
 

@@ -68,7 +68,14 @@ describe("task hierarchy projection", () => {
       ],
     ));
     expect(projected.edges).toEqual([
-      { from: "b", to: "a", dep_type: "blocks", count: 2, remapped: true },
+      {
+        from: "b",
+        to: "a",
+        dep_type: "blocks",
+        description: null,
+        count: 2,
+        remapped: true,
+      },
     ]);
   });
 

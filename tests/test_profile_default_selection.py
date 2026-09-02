@@ -20,11 +20,19 @@ def test_falls_back_to_claude_sonnet():
     ) == "claude-sonnet"
 
 
+def test_prefers_the_standard_worker_over_the_deep_one():
+    """Alphabetical order made ``worker-deep`` the default for every
+    unpinned task, which is the most expensive lane, not the sensible one."""
+    assert select_default_profile_id(
+        ["worker-deep", "worker-fast", "worker-standard", "reviewer"]
+    ) == "worker-standard"
+
+
 def test_falls_back_to_general_purpose_alphabetically():
     """No preferred profile → the alphabetically-first general-purpose
     one, so the choice is stable across ticks."""
     assert select_default_profile_id(
-        ["worker-standard", "acp-gemini", "reviewer", "supervisor"]
+        ["worker-deep", "acp-gemini", "reviewer", "supervisor"]
     ) == "acp-gemini"
 
 
@@ -60,6 +68,6 @@ def test_ignores_falsy_ids():
 
 
 def test_is_deterministic_regardless_of_input_order():
-    ids = ["worker-standard", "acp-gemini", "reviewer", "acp-codex"]
+    ids = ["worker-deep", "acp-gemini", "reviewer", "acp-codex"]
     first = select_default_profile_id(ids)
     assert first == select_default_profile_id(list(reversed(ids)))
