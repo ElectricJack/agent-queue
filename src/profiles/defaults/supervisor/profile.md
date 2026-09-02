@@ -68,6 +68,7 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
   ],
   "aq_commands": [
     "add_dependency",
+    "agent_message",
     "create_task",
     "edit_task",
     "gate_list",
@@ -79,6 +80,7 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
     "message_inbox",
     "message_reply",
     "message_send",
+    "message_status",
     "prime",
     "project_ready",
     "session_drain_ack",

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from src.profiles.capabilities import CapabilityPolicy
 from src.profiles.parser import parse_profile
 from src.vault import ensure_default_profiles, ensure_vault_layout
 
@@ -86,6 +87,18 @@ def test_seeded_supervisor_profile_has_named_session_config(tmp_path):
     assert parsed.config.get("mode") == "on_demand"
     assert parsed.config.get("wake_mode") == "resume"
     assert isinstance(parsed.config.get("idle_timeout"), int)
+
+
+def test_seeded_supervisor_can_use_advertised_worker_message_surface(tmp_path):
+    """Supervisor capability policy grants the worker messaging commands it documents."""
+    ensure_default_profiles(str(tmp_path))
+    text = _vault_profile_path(tmp_path, "supervisor").read_text(encoding="utf-8")
+    parsed = parse_profile(text)
+    assert parsed.capabilities is not None
+    policy = CapabilityPolicy.from_namespaces(**parsed.capabilities)
+
+    assert policy.allows_aq_command("agent_message")
+    assert policy.allows_aq_command("message_status")
 
 
 def test_seeded_planner_profile_is_task_lifecycle(tmp_path):
