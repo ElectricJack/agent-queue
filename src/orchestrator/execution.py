@@ -8,6 +8,7 @@ import logging
 import time
 
 from src.database.queries.hierarchy_queries import HierarchyError
+from src.orchestrator.base_workspace import base_checkout_refusal
 from src.logging_config import CorrelationContext
 from src.discord.notifications import format_task_started
 from src.notifications.builder import build_agent_summary, build_task_detail
@@ -688,6 +689,18 @@ class ExecutionMixin:
             await self._fail_session_launch(
                 action, task, "session launch needs a work_dir but none was prepared"
             )
+            return
+
+        # The base checkout is never a place to run an agent — see
+        # :mod:`src.orchestrator.base_workspace`.  Refusing here rather than
+        # at acquisition keeps the guard in front of *every* way a work_dir
+        # can be chosen, including a preferred_workspace_id pointing at the
+        # base and any future path that bypasses ``acquire_for_task``.
+        refusal = await base_checkout_refusal(
+            self.db, work_dir, profile, project_id=task.project_id
+        )
+        if refusal:
+            await self._fail_session_launch(action, task, refusal)
             return
 
         # Canonical dashed form: this id rides the harness's session-id flag
