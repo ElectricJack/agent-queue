@@ -637,6 +637,7 @@ class TestReplyTimeouts:
 
 
 class TestTranscriptTailDeduplication:
+    @pytest.mark.slow
     @pytest.mark.parametrize("project_id", ["p1", None])
     @pytest.mark.parametrize("delivery_times", [(100, 101, 102), (102, 100, 101)])
     async def test_backlog_reuses_one_reply_across_sweeps_and_restart(

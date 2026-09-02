@@ -6,6 +6,10 @@ from .add_dependency_response_422 import AddDependencyResponse422
 from .add_workspace_request import AddWorkspaceRequest
 from .add_workspace_response import AddWorkspaceResponse
 from .add_workspace_response_422 import AddWorkspaceResponse422
+from .agent_message_request import AgentMessageRequest
+from .agent_message_response import AgentMessageResponse
+from .agent_message_response_422 import AgentMessageResponse422
+from .agent_message_response_recipients_item import AgentMessageResponseRecipientsItem
 from .agent_question_detail import AgentQuestionDetail
 from .agent_settings import AgentSettings
 from .agent_summary import AgentSummary
@@ -463,6 +467,9 @@ from .message_reply_response import MessageReplyResponse
 from .message_reply_response_422 import MessageReplyResponse422
 from .message_send_request import MessageSendRequest
 from .message_send_request_pane_open_type_0 import MessageSendRequestPaneOpenType0
+from .message_status_request import MessageStatusRequest
+from .message_status_response import MessageStatusResponse
+from .message_status_response_422 import MessageStatusResponse422
 from .note_summary import NoteSummary
 from .orchestrator_control_request import OrchestratorControlRequest
 from .orchestrator_control_response import OrchestratorControlResponse
@@ -569,6 +576,7 @@ from .probed_tool_model import ProbedToolModel
 from .probed_tool_model_input_schema import ProbedToolModelInputSchema
 from .profile_detail import ProfileDetail
 from .profile_detail_install import ProfileDetailInstall
+from .profile_subagent_rollup import ProfileSubagentRollup
 from .profile_summary import ProfileSummary
 from .project_graph_response import ProjectGraphResponse
 from .project_profile_row import ProjectProfileRow
@@ -757,6 +765,7 @@ from .stub_scan_project import StubScanProject
 from .stub_scan_totals import StubScanTotals
 from .stuck_task import StuckTask
 from .stuck_tasks_thresholds import StuckTasksThresholds
+from .subagent_rollup import SubagentRollup
 from .tail_api_streams_stream_id_tail_get_response_tail_api_streams_stream_id_tail_get import (
     TailApiStreamsStreamIdTailGetResponseTailApiStreamsStreamIdTailGet,
 )
@@ -871,6 +880,10 @@ __all__ = (
     "AddWorkspaceRequest",
     "AddWorkspaceResponse",
     "AddWorkspaceResponse422",
+    "AgentMessageRequest",
+    "AgentMessageResponse",
+    "AgentMessageResponse422",
+    "AgentMessageResponseRecipientsItem",
     "AgentQuestionDetail",
     "AgentSettings",
     "AgentSummary",
@@ -1322,6 +1335,9 @@ __all__ = (
     "MessageReplyResponse422",
     "MessageSendRequest",
     "MessageSendRequestPaneOpenType0",
+    "MessageStatusRequest",
+    "MessageStatusResponse",
+    "MessageStatusResponse422",
     "NoteSummary",
     "OrchestratorControlRequest",
     "OrchestratorControlResponse",
@@ -1426,6 +1442,7 @@ __all__ = (
     "ProbeMcpServerResponse422",
     "ProfileDetail",
     "ProfileDetailInstall",
+    "ProfileSubagentRollup",
     "ProfileSummary",
     "ProjectGraphResponse",
     "ProjectProfileRow",
@@ -1614,6 +1631,7 @@ __all__ = (
     "StubScanTotals",
     "StuckTask",
     "StuckTasksThresholds",
+    "SubagentRollup",
     "TailApiStreamsStreamIdTailGetResponseTailApiStreamsStreamIdTailGet",
     "TaskBatchAckResponse",
     "TaskBatchCommitRequest",

@@ -1,0 +1,18 @@
+{
+  "hooks": {
+    "SubagentStart": [
+      {
+        "hooks": [
+          {"type": "command", "command": "aq subagent event --hook-json", "timeout": 10}
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {"type": "command", "command": "aq subagent event --hook-json", "timeout": 10}
+        ]
+      }
+    ]
+  }
+}

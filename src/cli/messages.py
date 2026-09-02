@@ -326,6 +326,22 @@ def message_inbox(
     emit(ctx, result, render=_render)
 
 
+@message.command("status")
+@click.argument("message_id")
+@click.pass_context
+@_handle_errors
+def message_status(ctx: click.Context, message_id: str) -> None:
+    """Show a message's queued, delivered, or acknowledged state."""
+    api_url = ctx.obj.get("api_url") if ctx.obj else None
+
+    async def _status():
+        async with _get_client(api_url) as client:
+            return await client.execute("message_status", {"message_id": message_id})
+
+    result = _run(_status())
+    emit(ctx, result, render=lambda data: console.print(f"{data['message_id']}: {data['state']}"))
+
+
 # ---------------------------------------------------------------------------
 # aq inbox — top-level alias for the UserPromptSubmit hook
 # ---------------------------------------------------------------------------

@@ -739,8 +739,11 @@ class SessionReconciler:
             note = {"RAPID_CRASH": "rapid_crash"}.get(verdict.verdict.name, "exited_holding_task")
             await self.db.set_task_meta(task.id, "needs_attention", note)
         if verdict.verdict is Verdict.RAPID_CRASH:
-            orch._pool_quarantine[(row.project_id, row.profile_id)] = (
-                now + self.sessions_config.restart_window_seconds
+            self._quarantine_pool_key(
+                orch,
+                row,
+                until=now + self.sessions_config.restart_window_seconds,
+                reason=f"rapid crash: {verdict.reason or 'session exited repeatedly'}",
             )
         elif verdict.verdict is Verdict.RATE_LIMIT:
             await self._apply_rate_limit_cooldown(row)
@@ -749,10 +752,31 @@ class SessionReconciler:
             # rate-limited, so a different worker should pick it straight
             # back up.  The window matches whatever ``_step_exits`` handed
             # ``classify_exit`` for this verdict.
-            orch._pool_quarantine[(row.project_id, row.profile_id)] = (
-                now + verdict.cooldown_seconds
+            self._quarantine_pool_key(
+                orch,
+                row,
+                until=now + verdict.cooldown_seconds,
+                reason=f"provider rate limit; retrying in {verdict.cooldown_seconds:.0f}s",
             )
         await orch._terminate_pool_session(row, reason=verdict.verdict.name.lower())
+
+    @staticmethod
+    def _quarantine_pool_key(orch, row, *, until: float, reason: str) -> None:
+        """Stop starting into this pool key until *until*, and say why.
+
+        ``PoolsMixin._quarantine_pool`` owns the launch-failure window and
+        always uses ``LAUNCH_BACKOFF``; an exit verdict carries its own
+        (restart-window / provider-cooldown) deadline, so it writes the same
+        two maps directly rather than borrowing that helper's fixed window.
+        ``aq pool status`` reads both.
+        """
+        key = (row.project_id, row.profile_id)
+        orch._pool_quarantine[key] = until
+        reasons = getattr(orch, "_pool_quarantine_reason", None)
+        if reasons is None:
+            reasons = orch._pool_quarantine_reason = {}
+        reasons[key] = reason
+        logger.warning("pool %s/%s quarantined: %s", row.project_id, row.profile_id, reason)
 
     async def _waiting_for_question(self, row, now):
         service = getattr(self.orchestrator, "agent_questions", None)
@@ -935,10 +959,10 @@ class SessionReconciler:
 
         Ordering matters for (a): ``_step_drain_ack`` runs earlier in the
         same tick, so an ack that has landed always wins and the agent gets
-        the graceful path.  Draining without one costs nothing — the task
-        is closed, and ``complete_session_task`` released the workspace and
-        the agent at close time — so there is nothing left for the session
-        to finish.
+        the graceful path.  A terminal task is also a normal, short-lived
+        state while a pool close moves from ``complete_session_task`` to
+        ``release_claim``.  That interleaving must release only the task
+        hold: pool sizing owns any later drain decision and its grace period.
         """
         # (a) live session, task closed or gone.
         for row in live:
@@ -960,16 +984,19 @@ class SessionReconciler:
             if still_open:
                 continue
             if row.lifecycle == "pool":
-                if self.orchestrator is None:
-                    logger.warning(
-                        "Pool session %s is orphaned but no orchestrator is wired "
-                        "— skipping", row.id,
-                    )
-                    continue
-                await self.orchestrator._terminate_pool_session(
-                    row,
-                    reason="orphaned",
+                # ``_cmd_task_close`` makes the task terminal before its
+                # subsequent ``release_claim`` clears ``sessions.task_id``.
+                # Releasing here is idempotent with that later close-path
+                # release, while terminating would incorrectly bypass pool
+                # scale-down grace and an explicit drain acknowledgement.
+                await self.db.release_claim(
+                    row.id,
                     task_status=task.status if task is not None else TaskStatus.READY,
+                    context="terminal_pool_release",
+                    now=now,
+                    expected_task_id=row.task_id,
+                    expected_claim_epoch=row.last_claim_epoch,
+                    drain_after_release=self.config.swarm.fresh_context_per_task,
                 )
                 continue
             provider = self._provider_for(row)

@@ -4,6 +4,8 @@ import sqlalchemy as sa
 from alembic import command
 from alembic.config import Config
 
+pytestmark = pytest.mark.migration
+
 
 def upgrade(engine, revision):
     with engine.connect() as conn:

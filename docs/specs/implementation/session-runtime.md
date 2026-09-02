@@ -207,6 +207,12 @@ async def _tmux(self, *args: str, timeout: float = 30.0) -> str   # asyncio.crea
   `clamp(ready_delay_ms + 5000, 5000, 60000)` ms; on pane death write last capture to
   `<state_dir>/sessions/<name>/start-stderr.log` and raise `SessionDiedDuringStartup`;
   interleave `run_dialog_dismissal()` before and after the prefix wait.
+  **The prefix wait is dialog-aware**: a capture on which any declared dialog matches is
+  never accepted as readiness — the trust menus' own rows start with the ready glyph
+  (Codex `› 1. Yes, continue`, Claude `❯ No, exit`) — it is dismissed and the poll
+  continues. The final pass runs with `quiet_seconds = dialog_settle_seconds` so a trust
+  screen painted *after* readiness is still answered, and if one fires there the prefix
+  wait is re-entered on the remaining dialog budget.
 - `nudge()` — `asyncio.Lock` per session name; `_find_agent_pane()` via
   `list-panes -F '#{pane_id}\t#{pane_current_command}'` matched against `process_names`;
   cancel copy-mode (`#{pane_in_mode}` → `send-keys -X cancel`); `send-keys -l` ≤ 4096 B else
@@ -465,6 +471,7 @@ sessions:
   restart_window_seconds: 600
   restart_backoff_seconds: 30
   dialog_budget_seconds: 8
+  dialog_settle_seconds: 1.5
   nudge_debounce_ms: 500
   state_cache_ttl_seconds: 2
   transcript_poll_seconds: 2

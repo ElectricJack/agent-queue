@@ -1421,3 +1421,10 @@ class SessionRecord:
     llm_provider: str | None = None
     model: str | None = None
     intelligence_class: str | None = None
+
+    #: True when this launch actually wired the harness's subagent hooks
+    #: (``SubagentStart`` / ``SubagentStop`` -> ``aq subagent event``).
+    #: Recorded from the :class:`~src.sessions.provider.SessionSpec` at
+    #: insert, because it is a property of the argv this process was
+    #: started with, not of whatever the harness file says today.
+    hooks_provisioned: bool = False

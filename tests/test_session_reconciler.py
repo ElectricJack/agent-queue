@@ -783,7 +783,7 @@ class TestPoolLifecycle:
         assert task.status not in (TaskStatus.PAUSED, TaskStatus.BLOCKED)
         assert pool_reconciler.test_orch.terminations == [(row.id, "rate_limit")]
 
-    async def test_orphaned_pool_closed_task_uses_pool_termination_not_generic_release(
+    async def test_terminal_pool_task_releases_hold_without_terminating_worker(
         self, db, provider, pool_reconciler, tmp_path
     ):
         row = await _claimed_pool_session(db, provider, tmp_path)
@@ -791,9 +791,11 @@ class TestPoolLifecycle:
 
         await pool_reconciler._step_orphans([row], NOW)
 
-        assert pool_reconciler.test_orch.terminations == [(row.id, "orphaned")]
+        assert pool_reconciler.test_orch.terminations == []
         assert pool_reconciler.test_orch.generic_releases == []
-        assert (await db.get_session(row.id)).state == "stopped"
+        session = await db.get_session(row.id)
+        assert (session.state, session.desired_state, session.task_id) == ("running", "stopped", None)
+        assert (await db.get_agent(row.agent_id)).current_task_id is None
         assert (await db.get_task("t1")).status is TaskStatus.COMPLETED
 
     async def test_mid_prepare_pool_is_excluded_from_stall_ladder(

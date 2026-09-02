@@ -74,6 +74,7 @@ class TestRegistry:
     def test_default_registry_has_all_builtins(self):
         from src.doctor.formula_checks import formula_checks
         from src.doctor.hierarchy_checks import hierarchy_checks
+        from src.doctor.integration_checks import integration_checks
         from src.doctor.pool_checks import pool_checks
 
         reg = default_registry()
@@ -82,6 +83,7 @@ class TestRegistry:
             | {c.id for c in hierarchy_checks()}
             | {c.id for c in pool_checks()}
             | {c.id for c in formula_checks()}
+            | {c.id for c in integration_checks()}
         )
         assert set(reg.ids()) == expected
 

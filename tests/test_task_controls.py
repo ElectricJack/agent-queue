@@ -10,6 +10,7 @@ from src.config import AppConfig
 from src.database import Database
 from src.models import Agent, AgentProfile, Project, Task, TaskStatus
 from src.orchestrator import Orchestrator
+from tests.assignment_routing_helpers import install_already_routed
 from tests.pg_dsn import ensure_worker_postgres_dsn
 
 pytestmark = pytest.mark.asyncio
@@ -41,6 +42,7 @@ async def env(tmp_path, request):
     config = AppConfig(data_dir=str(tmp_path / "data"), workspace_dir=str(tmp_path / "ws"))
     orch = Orchestrator(config)
     orch.db = db
+    install_already_routed(orch)
     yield SimpleNamespace(db=db, orch=orch, handler=CommandHandler(orch, config), config=config)
     await db.close()
 

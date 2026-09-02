@@ -301,9 +301,14 @@ class OpsCommandsMixin:
                         ),
                     }
                 )
-            until = self.orchestrator._pool_quarantine.get((key.project_id, key.profile_id))
-            if until and until > now:
+            until, reason = self.orchestrator._pool_quarantine_state(
+                key.project_id, key.profile_id, now
+            )
+            if until:
                 row["quarantined_until"] = until
+                # A timestamp alone left an operator staring at a pool that
+                # will not grow with nothing to act on.
+                row["quarantined_reason"] = reason
             pools.append(row)
         return {"success": True, "pools": pools}
 

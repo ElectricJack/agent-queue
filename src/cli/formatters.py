@@ -1099,13 +1099,22 @@ def format_pool_table(pools: list[dict]) -> Table:
     table.add_column("Starting", justify="right")
     table.add_column("Draining", justify="right")
     table.add_column("Ready", justify="right")
-    table.add_column("Quarantined", style="yellow")
+    # Wraps: the reason carries the startup-output excerpt for a session that
+    # died on launch, which is the whole point of showing it -- a bare
+    # "until 14:02:11" told an operator nothing they could act on.
+    table.add_column("Quarantined", style="yellow", overflow="fold", max_width=48)
 
     for row in pools:
         quarantined_until = row.get("quarantined_until")
-        quarantined = time.strftime("%H:%M:%S", time.localtime(quarantined_until)) if (
-            quarantined_until
-        ) else "—"
+        if quarantined_until:
+            quarantined = "until " + time.strftime(
+                "%H:%M:%S", time.localtime(quarantined_until)
+            )
+            reason = row.get("quarantined_reason")
+            if reason:
+                quarantined += f" — {reason}"
+        else:
+            quarantined = "—"
         table.add_row(
             row.get("project_id", ""),
             row.get("profile_id", ""),

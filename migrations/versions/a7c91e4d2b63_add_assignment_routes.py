@@ -1,5 +1,7 @@
 """Add persisted playbook assignment routes."""
 
+from contextlib import contextmanager
+
 from alembic import op
 import sqlalchemy as sa
 
@@ -7,6 +9,24 @@ revision = "a7c91e4d2b63"
 down_revision = "f1d7a9c20b64"
 branch_labels = None
 depends_on = None
+
+
+@contextmanager
+def _sqlite_fk_suspended():
+    """Allow SQLite to rebuild the referenced projects table on downgrade."""
+    bind = op.get_bind()
+    foreign_keys = (
+        bind.dialect.name == "sqlite" and bind.exec_driver_sql("PRAGMA foreign_keys").scalar_one()
+    )
+    if foreign_keys:
+        with op.get_context().autocommit_block():
+            bind.exec_driver_sql("PRAGMA foreign_keys=OFF")
+    try:
+        yield
+    finally:
+        if foreign_keys:
+            with op.get_context().autocommit_block():
+                bind.exec_driver_sql("PRAGMA foreign_keys=ON")
 
 
 def upgrade():
@@ -42,7 +62,8 @@ def upgrade():
 
 
 def downgrade():
-    op.drop_index("idx_task_assignment_routes_project", table_name="task_assignment_routes")
-    op.drop_table("task_assignment_routes")
-    with op.batch_alter_table("projects") as batch:
-        batch.drop_column("assignment_playbook_id")
+    with _sqlite_fk_suspended():
+        op.drop_index("idx_task_assignment_routes_project", table_name="task_assignment_routes")
+        op.drop_table("task_assignment_routes")
+        with op.batch_alter_table("projects") as batch:
+            batch.drop_column("assignment_playbook_id")
