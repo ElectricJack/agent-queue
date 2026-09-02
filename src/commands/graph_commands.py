@@ -8,6 +8,13 @@ from src.task_graph.layout.driver import LayoutDriver
 
 class GraphCommandsMixin:
     async def _cmd_graph_layout_rebuild(self, args: dict) -> dict:
+        scope = self._current_scope or {}
+        if scope.get("kind") == "session" and not scope.get("elevated"):
+            return {
+                "success": False,
+                "error": "graph_layout_rebuild is not available to agent sessions",
+            }
+
         pid = args.get("project_id")
         if not pid or await self.db.get_project(pid) is None:
             return {"success": False, "error": f"No project '{pid}'"}
@@ -16,6 +23,13 @@ class GraphCommandsMixin:
         return {"success": True, "project_id": pid, "versions": versions}
 
     async def _cmd_graph_tidy(self, args: dict) -> dict:
+        scope = self._current_scope or {}
+        if scope.get("kind") == "session" and not scope.get("elevated"):
+            return {
+                "success": False,
+                "error": "graph_tidy is not available to agent sessions",
+            }
+
         pid = args.get("project_id")
         if not pid or await self.db.get_project(pid) is None:
             return {"success": False, "error": f"No project '{pid}'"}
