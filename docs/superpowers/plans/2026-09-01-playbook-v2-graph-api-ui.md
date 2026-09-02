@@ -1824,6 +1824,44 @@ Status is therefore unchanged: this package stays blocked on
 `solid-harbor.26` (P1), `solid-harbor.30` (P2) and `solid-harbor.39` (P4),
 and §9's `playbook_pending_events` half stays with `solid-harbor.36`.
 
+### 16.8 Re-run on 2026-09-02 at `4a49e615` (task solid-harbor.46.1, ninth attempt)
+
+`origin/main` has moved to `4a49e615` (four merges since `5a3c31b0`: #189,
+#186, #195, #193 — CLI/MCP schemas, OpenAPI guard rendering, pipeline
+review derivation, `aq test` path validation). None of them touches
+Package 1, 2 or 4.
+
+- **Check 1.** Unchanged from §16.7. Present on `main`:
+  `src/playbooks/artifact_store.py`, `src/playbooks/activation.py`,
+  `src/database/queries/playbook_artifact_queries.py`,
+  `src/api/models/playbook_v2.py`, `src/commands/playbook_v2_commands.py`.
+  Missing: `src/playbooks/definition.py` (P2),
+  `src/playbooks/explanation.py` and `src/commands/contracts/registry.py`
+  (P1), `src/playbooks/engine.py`, `src/playbooks/receipts.py` and
+  `src/database/queries/playbook_run_queries.py` (P4). Also still absent,
+  as expected: `graph_projection.py`, `artifact_diff.py`, `run_overlay.py`.
+- **Check 2.** `playbook_activations` present with `activated_by`;
+  `playbook_pending_events` still absent from `src/database/tables.py`
+  (the tables between `playbook_activations` and `workflows` are
+  `task_assignment_routes` and nothing else).
+- **`origin/*` sweep.** 290 refs; zero hits for any P1/P2/P4 file.
+- **Open PRs.** Six (#198, #197, #196, #194, #192, #184); none adds a
+  Package 1, 2 or 4 file.
+
+New this run, and the only material change: **PR #198
+("Keep terminal-BLOCKED tasks out of the BLOCKED-recovery rule,
+crisp-pinnacle-54") is open**, which is the fix for the re-promotion loop
+described in §16.6. Once it merges, a `fail --failure-class hard` close of
+this task will stay BLOCKED instead of being re-promoted within a minute,
+so the re-run churn should stop on its own. The remaining human action is
+narrower than in §16.6/§16.7: add `blocks` edges
+`solid-harbor.46.1 -> solid-harbor.26 / .30 / .39` (or pause this task) so
+the dependency is recorded rather than merely inert.
+
+Status otherwise unchanged: blocked on P1 (`solid-harbor.26`),
+P2 (`solid-harbor.30`) and P4 (`solid-harbor.39`); §9's
+`playbook_pending_events` half stays with `solid-harbor.36`.
+
 ---
 
 ## 17. Open items for the next child plans
