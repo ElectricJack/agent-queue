@@ -51,6 +51,7 @@ from src.database.queries.task_requirements_queries import TaskRequirementsQuery
 from src.database.queries.token_queries import TokenQueryMixin
 from src.database.queries.transaction_queries import TransactionQueryMixin
 from src.database.queries.playbook_queries import PlaybookQueryMixin
+from src.database.queries.playbook_artifact_queries import PlaybookArtifactQueryMixin
 from src.database.queries.plugin_queries import PluginQueryMixin
 from src.database.queries.workflow_queries import WorkflowQueryMixin
 from src.database.queries.workspace_kinds_queries import WorkspaceKindQueryMixin
@@ -90,6 +91,7 @@ class SQLiteDatabaseAdapter(
     MetricsQueryMixin,
     PluginQueryMixin,
     PlaybookQueryMixin,
+    PlaybookArtifactQueryMixin,
     WorkflowQueryMixin,
     ApiSessionTokenQueriesMixin,
     TransactionQueryMixin,
