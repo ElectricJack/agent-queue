@@ -106,6 +106,10 @@ class PrimeRenderer:
             project = await self.db.get_project(task.project_id)
             effective_profile_id = getattr(project, "default_profile_id", None)
 
+        allow_emergent_work = await _sections.profile_allows_create_task(
+            self.db, effective_profile_id
+        )
+
         section_tuple = (
             await _sections.build_role_section(self.config, effective_profile_id),
             await _sections.build_project_role_section(
@@ -125,7 +129,11 @@ class PrimeRenderer:
             _sections.build_l1_facts_section(self.config),
             _sections.build_l2_context_section(self.config),
             _sections.build_tool_guidance_section(),
-            _sections.build_completion_protocol_section(task_id, lifecycle=session_lifecycle),
+            _sections.build_completion_protocol_section(
+                task_id,
+                lifecycle=session_lifecycle,
+                allow_emergent_work=allow_emergent_work,
+            ),
         )
 
         doc = PrimeDocument(

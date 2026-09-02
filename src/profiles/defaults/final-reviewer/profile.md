@@ -33,6 +33,7 @@ tags: [system, review, merge-authority, dv2-phase2]
     "WebFetch"
   ],
   "aq_commands": [
+    "create_task",
     "get_schema",
     "get_task",
     "message_inbox",
@@ -62,6 +63,7 @@ tags: [system, review, merge-authority, dv2-phase2]
 <!-- tools-rationale -->
 Every command named in the Role section above appears in this list. A profile whose instructions call a tool it cannot reach stalls at the sandbox with "not in active set".
 Role inspects the PR and CI with the `gh` CLI through Bash (there are no `gh_*` commands — the earlier Role text invented them), waits via `task_heartbeat`, rejects via `reopen_with_feedback`, and is the ONLY profile carrying `pr_merge`.
+`create_task` files emergent work the final review turns up, which the prime's Emergent work section instructs every session to do.
 
 
 ## MCP Servers

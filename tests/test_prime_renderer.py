@@ -495,6 +495,50 @@ class TestStaticSections:
         assert "discovered-from" in body
         assert "--parent <container-id>" in body
 
+    async def test_emergent_work_is_omitted_when_the_profile_denies_create_task(
+        self, db, config, task
+    ):
+        """A profile-owned capability gate would deny the very command we ask for.
+
+        ``create_task`` is on the scope allowlist, but the profile's
+        ``aq_commands`` is a second gate — telling a session to file emergent
+        work it cannot file just produces a capability denial.
+        """
+        await db.update_profile(
+            "coder",
+            aq_commands=["task_close", "task_show"],
+            harness_tools=["Bash", "Read"],
+            plugin_tools=[],
+        )
+        doc = await PrimeRenderer(db, config).render_for_task("task-1")
+        body = {s.key: s.body for s in doc.sections}["completion_protocol"]
+        assert "## Emergent work" not in body
+        # The rest of the completion protocol is untouched.
+        assert "aq task close task-1" in body
+
+    async def test_emergent_work_renders_when_the_profile_allows_create_task(
+        self, db, config, task
+    ):
+        await db.update_profile(
+            "coder",
+            aq_commands=["create_task", "task_close"],
+            harness_tools=["Bash", "Read"],
+            plugin_tools=[],
+        )
+        doc = await PrimeRenderer(db, config).render_for_task("task-1")
+        body = {s.key: s.body for s in doc.sections}["completion_protocol"]
+        assert "## Emergent work" in body
+
+    async def test_emergent_work_survives_an_unresolvable_profile(self, db, config):
+        """Fail open: prime cannot ask the gate, so it keeps the instruction."""
+        await db.create_project(Project(id="proj-2", name="No Profile"))
+        await db.create_task(
+            Task(id="task-2", project_id="proj-2", title="No profile", description="")
+        )
+        doc = await PrimeRenderer(db, config).render_for_task("task-2")
+        body = {s.key: s.body for s in doc.sections}["completion_protocol"]
+        assert "## Emergent work" in body
+
 
 # ---------------------------------------------------------------------------
 # .aq/PRIME.md override (design §5.3)

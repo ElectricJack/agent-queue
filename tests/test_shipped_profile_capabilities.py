@@ -126,3 +126,33 @@ class TestShippedProfile:
             else set(parsed.capabilities["aq_commands"]) - REACHABLE
         )
         assert unreachable == EXPECTED_UNREACHABLE[profile_id]
+
+
+# ---------------------------------------------------------------------------
+# Emergent-work prime section vs. the profile-owned capability gate
+# ---------------------------------------------------------------------------
+
+#: Shipped profiles that deliberately cannot create tasks directly. Prime must
+#: therefore *not* render its Emergent work section for them — see
+#: ``src/prime/sections.py:profile_allows_create_task``.
+NO_CREATE_TASK: set[str] = {"spec-ingest"}
+
+
+@pytest.mark.parametrize("profile_id", PROFILE_IDS)
+def test_emergent_work_prime_matches_the_create_task_capability(profile_id):
+    """Either the section is absent from the profile's prime, or it can file.
+
+    The emergent-work section (``src/prime/templates/emergent_work.md``) tells
+    the session to run ``aq task create``. ``create_task`` is on the scope
+    allowlist, but ``aq_commands`` is a second, profile-owned gate, so a
+    profile that omits it would be instructed to file work its own policy
+    denies.
+    """
+    from src.prime.sections import build_completion_protocol_section
+
+    parsed = _parsed(profile_id)
+    allows = "create_task" in set(parsed.capabilities["aq_commands"])
+    assert allows is (profile_id not in NO_CREATE_TASK)
+
+    body = build_completion_protocol_section("t-1", allow_emergent_work=allows).body
+    assert ("## Emergent work" in body) is allows

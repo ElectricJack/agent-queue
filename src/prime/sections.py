@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from src.aq_uri import path_is_within
+from src.profiles.capabilities import capability_policy_for
 from src.prompt_builder import extract_section
 
 from .models import SECTION_TITLES, PrimeSection
@@ -433,7 +434,51 @@ def build_tool_guidance_section() -> PrimeSection:
 # ---------------------------------------------------------------------------
 
 
-def build_completion_protocol_section(task_id: str, *, lifecycle: str | None = None) -> PrimeSection:
+#: The ``CommandHandler`` command the emergent-work instruction tells a session
+#: to run. A profile whose capability policy omits it would be told to file
+#: what it finds and then denied by its own policy at dispatch, so the section
+#: is gated on this name — see :func:`profile_allows_create_task`.
+CREATE_TASK_COMMAND = "create_task"
+
+
+async def profile_allows_create_task(db: Any, profile_id: str | None) -> bool:
+    """Whether *profile_id*'s capability policy can dispatch ``create_task``.
+
+    The capability gate is profile-owned and is a *second* gate after
+    ``check_request_scope`` (``tests/test_api_scope.py::TestScopeAndCapabilityCompose``),
+    so a profile can list ``aq_commands`` without ``create_task`` even though
+    the scope allowlist carries it. Prime asks the same question the dispatch
+    gate will answer.
+
+    Fail *open* on anything unresolvable — no profile id, a backend with no
+    ``get_profile``, a lookup error, or a profile row that is gone. Those are
+    the cases where prime cannot know, and dropping a long-standing
+    instruction on a guess is worse than leaving it in. Fail closed only on a
+    real policy that omits the command.
+    """
+    if not profile_id:
+        return True
+    get_profile = getattr(db, "get_profile", None)
+    if get_profile is None:
+        return True
+    try:
+        profile = await get_profile(profile_id)
+    except Exception:
+        logger.debug("prime: could not load profile %s", profile_id, exc_info=True)
+        return True
+    if profile is None:
+        return True
+    try:
+        policy = capability_policy_for(profile)
+    except Exception:
+        logger.debug("prime: could not resolve policy for %s", profile_id, exc_info=True)
+        return True
+    return CREATE_TASK_COMMAND in policy.aq_commands
+
+
+def build_completion_protocol_section(
+    task_id: str, *, lifecycle: str | None = None, allow_emergent_work: bool = True
+) -> PrimeSection:
     body = _load_template("completion_protocol.md").replace("{task_id}", task_id)
     # Pool sessions (swarm-work-model §10) never get pushed a next task —
     # they pull in a loop via `--claim-next`. That's a materially different
@@ -443,7 +488,9 @@ def build_completion_protocol_section(task_id: str, *, lifecycle: str | None = N
         pool_body = _load_template("completion_protocol_pool.md").replace("{task_id}", task_id)
         if pool_body:
             body = f"{body}\n\n{pool_body}" if body else pool_body
-    emergent_work = _load_template("emergent_work.md")
+    # A profile whose policy denies ``create_task`` must not be told to file
+    # emergent work — the instruction would land as a capability denial.
+    emergent_work = _load_template("emergent_work.md") if allow_emergent_work else ""
     if emergent_work:
         body = f"{body}\n\n{emergent_work}" if body else emergent_work
     return PrimeSection(

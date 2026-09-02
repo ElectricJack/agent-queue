@@ -33,6 +33,7 @@ tags: [system, review, dv2-phase2]
     "WebFetch"
   ],
   "aq_commands": [
+    "create_task",
     "get_schema",
     "get_task",
     "message_inbox",
@@ -61,6 +62,9 @@ Role calls `task_close` (approve) and `reopen_with_feedback` (reject);
 `get_task`/`task_show` and `task_comments` read the reviewed task.
 `task_heartbeat` keeps the lease alive while reading a long diff. No merge,
 no write tools — this profile is read_only and must never push.
+`create_task` files emergent work the review turns up (the prime's
+Emergent work section); filing a task is not a repo write, so it does not
+conflict with read_only.
 
 
 ## MCP Servers
