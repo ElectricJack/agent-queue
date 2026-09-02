@@ -161,6 +161,18 @@ describe("LayoutCanvas", () => {
     expect(onTaskClick).toHaveBeenCalledWith("z", expect.objectContaining({ id: "z", playbook_run_id: "run-1" }));
   });
 
+  it("routes a clicked container through its own node payload", () => {
+    tiles.store = mergeTiles(emptyStore(), ["0:0"], {
+      nodes: [n("e", "container", 0, 0, { w: 3, h: 2, playbook_run_id: "run-2" })],
+      edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+    } as unknown as TilesResponse);
+    const onTaskClick = vi.fn();
+    render(<MemoryRouter><LayoutCanvas {...base} onTaskClick={onTaskClick} /></MemoryRouter>);
+    const node = flow.current!.nodes.find((candidate) => candidate.id === "e")!;
+    act(() => flow.current!.onNodeClick!(null, node));
+    expect(onTaskClick).toHaveBeenCalledWith("e", expect.objectContaining({ id: "e", playbook_run_id: "run-2" }));
+  });
+
   it("fits the viewport to a located search result", () => {
     const view = render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
     fitBounds.mockClear();

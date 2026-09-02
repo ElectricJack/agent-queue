@@ -16,7 +16,7 @@ export default function ContainerNode({ data, selected }: ContainerNodeProps) {
       <div className="flex items-center gap-2 px-2 text-[11px] text-gray-200" style={{ height: HEADER_PX }}>
         <button type="button" aria-label={`Open task ${node.title}`} data-task-id={node.id}
           className="nodrag nopan min-w-0 flex-1 truncate text-left font-medium hover:underline"
-          onClick={(e) => { e.stopPropagation(); onOpenTask?.(node.id); }}>{node.title}</button>
+          onClick={(e) => { e.stopPropagation(); onOpenTask?.(node.id, { id: node.id, playbook_run_id: node.playbook_run_id }); }}>{node.title}</button>
         <span className="shrink-0 text-[9px] uppercase tracking-wide opacity-70">{node.status.replace(/_/g, " ")}</span>
         <span className="shrink-0 rounded bg-white/10 px-1">{node.agg_completed}/{node.agg_descendants} done</span>
         {(node.agg_running ?? 0) > 0 && <span className="shrink-0 text-indigo-300">{node.agg_running} running</span>}

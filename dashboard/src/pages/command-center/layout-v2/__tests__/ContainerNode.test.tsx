@@ -18,6 +18,13 @@ describe("ContainerNode", () => {
     await userEvent.click(screen.getByRole("button", { name: "Open task Epic" }));
     expect(onFocus).toHaveBeenCalledWith("e");
     expect(onToggleChildren).toHaveBeenCalledWith("e");
-    expect(onOpenTask).toHaveBeenCalledWith("e");
+    expect(onOpenTask).toHaveBeenCalledWith("e", { id: "e", playbook_run_id: undefined });
+  });
+
+  it("passes the container's own run id so a run task keeps its routing", async () => {
+    const onOpenTask = vi.fn();
+    render(<ContainerNode id="e" data={{ node: { ...node, playbook_run_id: "run-1" }, projectId: "p1", onOpenTask }} /> as never);
+    await userEvent.click(screen.getByRole("button", { name: "Open task Epic" }));
+    expect(onOpenTask).toHaveBeenCalledWith("e", { id: "e", playbook_run_id: "run-1" });
   });
 });

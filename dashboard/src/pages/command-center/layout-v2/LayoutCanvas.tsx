@@ -16,7 +16,8 @@ import { refetchLayout, registerLayoutRefetch } from "./liveRegistry";
 import { toFlowElements, type FlowHandlers } from "./flowNodes";
 import { maxDepthForZoom, sizePx, toPx, worldRectFromViewport, type Rect } from "./units";
 import {
-  NODE_HEIGHT, NODE_WIDTH, type GraphViewProps, type GraphWorker, type SelectableTask, type TaskNodeData,
+  NODE_HEIGHT, NODE_WIDTH, type ContainerNodeData, type GraphViewProps, type GraphWorker,
+  type SelectableTask, type TaskNodeData,
 } from "../types";
 import type { TaskFilters } from "../taskFilters";
 import type { LocateHit } from "@aq/ts-client";
@@ -343,6 +344,8 @@ function Inner(props: LayoutCanvasProps) {
 
   const openNode = (node: Node) => {
     if (node.type === "playbook") openPlaybook(String((node.data.playbook as { id: string }).id));
+    // A container's payload is its `node`; a card's is its `task`.
+    else if (node.type === "container") openTask(node.id, (node.data as ContainerNodeData).node);
     else if (node.type !== "projectHeader") openTask(node.id, (node.data as Partial<TaskNodeData>).task);
   };
 
