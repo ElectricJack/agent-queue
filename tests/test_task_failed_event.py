@@ -10,6 +10,7 @@ from src.config import AppConfig
 from src.models import (
     Agent,
     AgentOutput,
+    AgentProfile,
     AgentResult,
     AgentState,
     Project,
@@ -109,7 +110,8 @@ class TestTaskFailedEvent:
 
     @pytest.mark.asyncio
     @pytest.mark.skip(
-        reason="legacy runtime dispatch was removed; session close handles task failures"
+        reason="legacy runtime dispatch was removed; the session-close equivalent is "
+        "test_session_close_blocked_legs_emit_task_failed"
     )
     async def test_max_retries_emits_task_failed(self, orch):
         """When max retries exhausted, task.failed should be emitted with context='max_retries'."""
@@ -136,6 +138,98 @@ class TestTaskFailedEvent:
         assert len(events) == 1
         assert events[0]["task_id"] == "t-retry"
         assert events[0]["context"] == "max_retries"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("close_kwargs", "expected_context"),
+        [
+            ({"failure_class": "transient"}, "max_retries"),
+            ({"failure_class": "hard"}, "session_close_hard_failure"),
+        ],
+    )
+    async def test_session_close_blocked_legs_emit_task_failed(
+        self, orch, close_kwargs, expected_context
+    ):
+        """A session close that ends terminally in BLOCKED must emit task.failed.
+
+        task.failed is the reflection playbook's trigger and the failure
+        notification path; the session close path used to emit only
+        task.closed, so a worker that spent its retry budget (or closed
+        --failure-class hard) got neither.
+        """
+        await _setup_project(orch.db)
+        await orch.db.create_profile(
+            AgentProfile(id="claude", name="Claude", harness="claude")
+        )
+        agent = Agent(id="a-3", name="agent-3", profile_id="claude", state=AgentState.BUSY)
+        await orch.db.create_agent(agent)
+        task = Task(
+            id="t-close",
+            project_id="p-1",
+            title="Session close task",
+            description="test",
+            status=TaskStatus.IN_PROGRESS,
+            assigned_agent_id="a-3",
+            profile_id="claude",
+            max_retries=1,
+            retry_count=0,
+        )
+        await orch.db.create_task(task)
+
+        seen: list[tuple[str, dict]] = []
+        orch.bus.subscribe("task.failed", lambda d: seen.append(("task.failed", d)))
+        orch.bus.subscribe("task.closed", lambda d: seen.append(("task.closed", d)))
+
+        result = await orch.complete_session_task(
+            task, outcome="fail", notes="it broke", **close_kwargs
+        )
+
+        assert result["status"] == TaskStatus.BLOCKED.value
+        failed = [d for name, d in seen if name == "task.failed"]
+        assert len(failed) == 1
+        payload = failed[0]
+        assert payload["task_id"] == "t-close"
+        assert payload["project_id"] == "p-1"
+        assert payload["title"] == "Session close task"
+        assert payload["context"] == expected_context
+        assert payload["status"] == TaskStatus.BLOCKED.value
+        assert payload["error"] == "it broke"
+        assert payload["agent_id"] == "a-3"
+        assert payload["agent_type"] == "claude"
+        # Ordering: subscribers see the failure before the close.
+        assert [name for name, _ in seen] == ["task.failed", "task.closed"]
+
+    @pytest.mark.asyncio
+    async def test_session_close_retry_leg_does_not_emit_task_failed(self, orch):
+        """A close that still has retry budget is re-queued, not failed."""
+        await _setup_project(orch.db)
+        await orch.db.create_profile(
+            AgentProfile(id="claude", name="Claude", harness="claude")
+        )
+        agent = Agent(id="a-4", name="agent-4", profile_id="claude", state=AgentState.BUSY)
+        await orch.db.create_agent(agent)
+        task = Task(
+            id="t-retryable",
+            project_id="p-1",
+            title="Retryable task",
+            description="test",
+            status=TaskStatus.IN_PROGRESS,
+            assigned_agent_id="a-4",
+            profile_id="claude",
+            max_retries=3,
+            retry_count=0,
+        )
+        await orch.db.create_task(task)
+
+        events = []
+        orch.bus.subscribe("task.failed", lambda d: events.append(d))
+
+        result = await orch.complete_session_task(
+            task, outcome="fail", failure_class="transient", notes="flake"
+        )
+
+        assert result["status"] == TaskStatus.READY.value
+        assert events == []
 
     @pytest.mark.asyncio
     async def test_emit_task_failure_payload_structure(self, orch):
