@@ -19,6 +19,7 @@ import pytest
 
 import src.main as main_mod
 from src.config import AppConfig, DatabaseConfig, DiscordConfig
+from src.event_bus import EventBus
 
 
 class LoginFailure(Exception):
@@ -80,7 +81,7 @@ def _install_run_env(monkeypatch, config, adapter):
         def __init__(self, cfg, runtimes=None):
             self.config = cfg
             self.db = SimpleNamespace()
-            self.bus = object()
+            self.bus = EventBus()
             self._restart_requested = False
             self._paused = False
             self._running_tasks: dict = {}

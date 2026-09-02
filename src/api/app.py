@@ -31,8 +31,29 @@ from src.api.task_files import router as task_files_router
 from src.api.task_sessions import router as task_sessions_router
 from src.api.workspace_files import router as workspace_files_router
 from src.api.middleware import RequestContextMiddleware, TokenAuthMiddleware
-from src.api.websocket import WebSocketManager
 from src.api.terminal_stream import build_terminal_router
+from src.api.websocket import WebSocketManager
+
+
+def _add_binary_upload_format(app: FastAPI) -> None:
+    """Keep generated clients compatible with FastAPI's OAS 3.1 upload schema.
+
+    FastAPI describes ``UploadFile`` with ``contentMediaType``. The Python
+    client generator still keys multipart files off ``format: binary``, so the
+    published OpenAPI contract carries both equivalent annotations.
+    """
+    original_openapi = app.openapi
+
+    def openapi_with_binary_upload_format() -> dict[str, Any]:
+        spec = original_openapi()
+        multipart = spec["paths"]["/api/tasks/{task_id}/attachments"]["post"]["requestBody"][
+            "content"
+        ]["multipart/form-data"]
+        body_name = multipart["schema"]["$ref"].rsplit("/", 1)[-1]
+        spec["components"]["schemas"][body_name]["properties"]["file"]["format"] = "binary"
+        return spec
+
+    app.openapi = openapi_with_binary_upload_format
 
 if TYPE_CHECKING:
     from src.config import AppConfig
@@ -153,6 +174,8 @@ def create_app(
     app.include_router(build_terminal_router(
         orchestrator, config, token_store=deps._token_store,
     ))
+
+    _add_binary_upload_format(app)
 
     # WebSocket event stream — forward notify.* events to connected clients
     ws_manager = WebSocketManager(orchestrator.bus, db=orchestrator.db)
