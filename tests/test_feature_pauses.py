@@ -414,6 +414,78 @@ class TestHousekeepingEarlyReturns:
         await enabled_orch._check_paused_playbook_timeouts()
         enabled_orch.command_handler.check_paused_playbook_timeouts.assert_awaited_once()
 
+    # -- Playbook V2 retention sweep (durable-state child plan §12.2) -------
+    #
+    # Gated by ``playbooks.v2_storage_enabled``, which is its own flag rather
+    # than ``playbooks.enabled``: the V2 tables and the artifact directory are
+    # inert new state, so their housekeeping is switchable without unpausing
+    # V1 execution.
+
+    async def test_v2_retention_sweep_is_a_noop_while_the_flag_is_off(
+        self, paused_orch, monkeypatch
+    ):
+        from src.playbooks import retention
+
+        built = []
+        monkeypatch.setattr(
+            retention, "ArtifactRetentionSweeper", lambda *a, **k: built.append(a) or MagicMock()
+        )
+        await paused_orch._sweep_playbook_v2_retention()
+        assert built == []
+        assert paused_orch._last_playbook_retention_sweep == 0.0
+
+    async def test_v2_retention_sweep_runs_once_per_interval(self, paused_orch, monkeypatch):
+        from src.playbooks import retention
+
+        sweeps = []
+
+        class _Sweeper:
+            def __init__(self, db, config, compiled_root):
+                self.compiled_root = compiled_root
+
+            async def sweep(self, now):
+                sweeps.append(now)
+                return {}
+
+        monkeypatch.setattr(retention, "ArtifactRetentionSweeper", _Sweeper)
+        paused_orch.config.playbooks.v2_storage_enabled = True
+        paused_orch.config.playbooks.v2_retention_sweep_interval_seconds = 3600
+
+        await paused_orch._sweep_playbook_v2_retention()
+        await paused_orch._sweep_playbook_v2_retention()
+        assert len(sweeps) == 1
+
+        # Pretend the interval elapsed; the second call now goes through.
+        paused_orch._last_playbook_retention_sweep -= 3601
+        await paused_orch._sweep_playbook_v2_retention()
+        assert len(sweeps) == 2
+
+    async def test_v2_retention_sweep_failure_never_aborts_the_cycle(
+        self, paused_orch, monkeypatch, caplog
+    ):
+        """A housekeeping failure must not stop the daemon dispatching.
+
+        The throttle stamp still advances, so a sweep that raises is not
+        retried every 5 s for the rest of the hour.
+        """
+        from src.playbooks import retention
+
+        class _Exploding:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def sweep(self, now):
+                raise RuntimeError("disk on fire")
+
+        monkeypatch.setattr(retention, "ArtifactRetentionSweeper", _Exploding)
+        paused_orch.config.playbooks.v2_storage_enabled = True
+
+        with caplog.at_level(logging.WARNING):
+            await paused_orch._sweep_playbook_v2_retention()
+
+        assert paused_orch._last_playbook_retention_sweep > 0
+        assert "disk on fire" in caplog.text
+
     async def test_workflow_stage_check_is_a_noop(self, paused_orch):
         from src.models import Task, TaskStatus
 

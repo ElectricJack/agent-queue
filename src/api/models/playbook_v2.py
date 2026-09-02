@@ -760,6 +760,72 @@ class PlaybookRunOverlayResponse(V2Model):
 
 
 # ---------------------------------------------------------------------------
+# Package 2 review-only compiler responses
+# ---------------------------------------------------------------------------
+
+
+class CompilerDiagnosticCountsDTO(V2Model):
+    error: int = 0
+    warning: int = 0
+    question: int = 0
+    info: int = 0
+
+
+class CompilerDiagnosticDTO(V2Model):
+    severity: Literal["error", "warning", "question", "info"]
+    code: str
+    message: str
+    rule_id: str | None = None
+    step_id: str | None = None
+    field: str | None = None
+    source: SourceRefDTO | None = None
+
+
+class PlaybookV2ValidateResponse(V2Model):
+    success: bool
+    artifact_sha256: str | None = None
+    counts: CompilerDiagnosticCountsDTO
+    diagnostics: list[CompilerDiagnosticDTO] = []
+
+
+class PlaybookV2ProposeResponse(V2Model):
+    success: bool
+    activatable: bool
+    artifact_sha256: str | None = None
+    source_digest: str
+    contract_fingerprint: str | None = None
+    compiler_build: str
+    counts: CompilerDiagnosticCountsDTO
+    diagnostics: list[CompilerDiagnosticDTO] = []
+    semantic_diff: dict[str, Any] | None = None
+    artifact: dict[str, Any] | None = None
+
+
+class ShadowCompileRowDTO(V2Model):
+    playbook_id: str
+    vault_path: str
+    kind: str
+    lowered: bool
+    artifact_sha256: str | None = None
+    counts: CompilerDiagnosticCountsDTO
+    diagnostics: list[CompilerDiagnosticDTO] = []
+
+
+class ShadowSourceErrorDTO(V2Model):
+    path: str
+    errors: list[str] = []
+
+
+class PlaybookV2ShadowCompileResponse(V2Model):
+    success: bool
+    total: int
+    lowered: int
+    clean: int
+    rows: list[ShadowCompileRowDTO] = []
+    source_errors: list[ShadowSourceErrorDTO] = []
+
+
+# ---------------------------------------------------------------------------
 # §4.8 Registration
 # ---------------------------------------------------------------------------
 
@@ -772,4 +838,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "playbook_pending_events": ListPlaybookPendingEventsResponse,
     "playbook_pending_event_action": PlaybookPendingEventActionResponse,
     "playbook_run_overlay": PlaybookRunOverlayResponse,
+    "playbook_v2_validate": PlaybookV2ValidateResponse,
+    "playbook_v2_propose": PlaybookV2ProposeResponse,
+    "playbook_v2_shadow_compile": PlaybookV2ShadowCompileResponse,
 }

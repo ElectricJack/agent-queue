@@ -929,6 +929,10 @@ _SWARM_SCHEMAS: dict[str, EventSchema] = {
         "required": ["project_id", "profile_id", "session_id", "name", "task_id", "task_title"],
         "optional": [],
     },
+    "pool.prepare_failed": {
+        "required": ["project_id", "profile_id", "session_id", "task_id", "reason"],
+        "optional": [],
+    },
     "pool.session_drained": {
         "required": ["project_id", "profile_id", "session_id", "name", "reason"],
         "optional": [],

@@ -22,7 +22,21 @@ function persistExpandedTaskIds(ids: ReadonlySet<string>) {
   }
 }
 
-/** The expanded-task set is shared by both canvases through one storage key. */
+/** Expand/collapse is the user's state, not the viewport's.
+ *
+ *  The set changes only through `toggleExpanded` (the container toggle on a
+ *  task card) and is persisted so the choice survives zooms, live graph
+ *  refreshes, tab switches and reloads. Zoom, pan and resize deliberately
+ *  reach none of this: a viewport that is too small or too busy to draw every
+ *  child should reduce visual detail, never restructure the graph. Semantic
+ *  zoom, if it is ever wanted, has to arrive as an explicit opt-in toggle that
+ *  defaults to off. `__tests__/expandedState.test.tsx` guards this.
+ *
+ *  The one non-click change is filter-driven: an active filter temporarily
+ *  auto-expands the ancestors of a match so it can be seen, flagged as
+ *  `autoExpanded` and reverted when the filter clears. It never writes to the
+ *  persisted set. The expanded-task set is shared by both canvases through
+ *  one storage key. */
 export function useExpandedTaskIds() {
   const [expandedTaskIds, setExpandedTaskIds] = useState<ReadonlySet<string>>(readExpandedTaskIds);
 

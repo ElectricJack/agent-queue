@@ -422,6 +422,13 @@ class TestClaim:
         assert (t.status, t.assigned_agent_id) == (TaskStatus.READY, None)
         s = await db.get_session(sid)
         assert (s.claims, s.last_claim_result, s.claim_phase) == (0, "prepare_failed", None)
+        assert await db.get_task_meta("t1", "claim_prepare_backoff_attempts") == 1
+        assert await db.get_task_meta("t1", "claim_prepare_backoff_until") > time.time()
+        # READY is intentionally not enough to re-offer a task whose slot
+        # preparation just failed; this prevents a claim --wait hot loop.
+        again = await scoped(handler, sid)._cmd_task_claim({"next": True})
+        assert again["result"] == "no_ready_work"
+        assert "pool.prepare_failed" in handler.orchestrator.bus.seen_event_types
 
     async def test_claim_file_write_failure_releases_and_reports(
         self, handler, db, tmp_path, monkeypatch
@@ -445,6 +452,26 @@ class TestClaim:
         assert (t.status, t.assigned_agent_id) == (TaskStatus.READY, None)
         s = await db.get_session(sid)
         assert (s.claims, s.last_claim_result, s.claim_phase) == (0, "prepare_failed", None)
+
+    async def test_pool_close_restores_its_slot_before_releasing_claim(
+        self, handler, db, tmp_path
+    ):
+        await mktask(db, "t1", profile_id="worker")
+        sid, _ = await pool_session(db, tmp_path)
+        h = scoped(handler, sid)
+        claimed = await h._cmd_task_claim({"next": True})
+        slot = MagicMock()
+        handler.orchestrator._slot_workspace_at = AsyncMock(return_value=slot)
+        restore = AsyncMock()
+        handler.orchestrator._worktree_slots.return_value.restore_slot_after_task = restore
+
+        closed = await h._cmd_task_close(
+            {"outcome": "pass", "summary": "done", "claim_epoch": claimed["claim_epoch"]}
+        )
+
+        assert closed["success"] is True
+        restore.assert_awaited_once_with(slot, task_id="t1")
+        assert (await db.get_session(sid)).task_id is None
 
     async def test_duplicate_claim_is_idempotent_once_active(self, handler, db, tmp_path):
         await mktask(db, "t1", profile_id="worker")

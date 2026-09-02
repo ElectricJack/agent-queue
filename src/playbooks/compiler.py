@@ -48,6 +48,15 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAX_TOKENS = 4096
 
 
+# V2 is intentionally a review-only surface.  Keeping this re-export at the
+# existing compiler seam lets callers discover it without coupling V1 dispatch
+# to proposal assembly or activation.
+def compile_v2_proposal(*args: Any, **kwargs: Any) -> Any:
+    from src.playbooks.proposal import propose
+
+    return propose(*args, **kwargs)
+
+
 # ---------------------------------------------------------------------------
 # Result type
 # ---------------------------------------------------------------------------

@@ -35,7 +35,30 @@ the wire contract in ``src/api/models/playbook_v2.py``.
 
 from __future__ import annotations
 
+from dataclasses import asdict
+import json
 import logging
+from pathlib import Path
+from typing import Any
+
+from pydantic import ValidationError
+
+from src.playbooks.authoring import PlaybookSource, SourceError
+from src.playbooks.definition import (
+    DuplicateJsonKey,
+    PlaybookDefinition,
+    artifact_sha256,
+    load_definition_json,
+)
+from src.playbooks.pipeline_lowering import shadow_compile
+from src.playbooks.proposal import DuplicateSemanticKey, load_semantic_body_json, propose
+from src.playbooks.validation import (
+    Diagnostic,
+    RegisteredEventLookup,
+    RegistryContractLookup,
+    VaultProfileLookup,
+    validate_definition,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +89,19 @@ PLAYBOOK_V2_COMMANDS: frozenset[str] = frozenset(
         "playbook_run_overlay",
     }
 )
+
+#: Package 2's review-only compiler surface.  Kept separate from the Package 5
+#: projection constant because several API-contract tests intentionally pin
+#: that seven-command set.
+PLAYBOOK_V2_COMPILER_COMMANDS: frozenset[str] = frozenset(
+    {
+        "playbook_v2_validate",
+        "playbook_v2_propose",
+        "playbook_v2_shadow_compile",
+    }
+)
+
+V2_COMPILER_DISABLED_ERROR = "playbook v2 compiler is disabled"
 
 #: Activation scopes, matching ``ActivationStateDTO.scope``.
 _VALID_SCOPES: frozenset[str] = frozenset({"system", "project", "agent_type"})
@@ -105,6 +141,37 @@ def _validate_sha(value: str, field: str) -> str | None:
     return None
 
 
+def _diagnostic_dict(diagnostic: Diagnostic) -> dict[str, Any]:
+    return {
+        "severity": diagnostic.severity,
+        "code": diagnostic.code,
+        "message": diagnostic.message,
+        "rule_id": diagnostic.rule_id,
+        "step_id": diagnostic.step_id,
+        "field": diagnostic.field,
+        "source": diagnostic.source.model_dump(mode="json") if diagnostic.source else None,
+    }
+
+
+def _diagnostic_counts(diagnostics: list[Diagnostic]) -> dict[str, int]:
+    return {
+        severity: sum(d.severity == severity for d in diagnostics)
+        for severity in ("error", "warning", "question", "info")
+    }
+
+
+def _command_error(message: str, *, field: str | None = None) -> dict[str, Any]:
+    diagnostic = Diagnostic(
+        "error", "ambiguous_prose", message, field=f"/{field}" if field else None
+    )
+    return {
+        "success": False,
+        "artifact_sha256": None,
+        "counts": _diagnostic_counts([diagnostic]),
+        "diagnostics": [_diagnostic_dict(diagnostic)],
+    }
+
+
 class PlaybookV2CommandsMixin:
     """Playbook V2 semantic-graph command methods mixed into CommandHandler."""
 
@@ -119,6 +186,209 @@ class PlaybookV2CommandsMixin:
     def _v2_activation_writes_enabled(self) -> bool:
         playbooks = getattr(self.config, "playbooks", None)
         return bool(getattr(playbooks, "v2_activation_writes", False))
+
+    def _v2_compiler_enabled(self) -> bool:
+        playbooks = getattr(self.config, "playbooks", None)
+        return bool(getattr(playbooks, "v2_compiler_enabled", False))
+
+    def _v2_vault_root(self) -> Path:
+        configured = getattr(self.config, "vault_root", None)
+        if configured:
+            return Path(configured).resolve()
+        return (Path(self.config.data_dir) / "vault").resolve()
+
+    def _v2_resolve_vault_path(self, raw: Any, field: str) -> tuple[Path | None, str | None]:
+        if not isinstance(raw, str) or not raw.strip():
+            return None, f"{field} is required"
+        root = self._v2_vault_root()
+        candidate = Path(raw)
+        if not candidate.is_absolute():
+            candidate = root / candidate
+        try:
+            resolved = candidate.resolve()
+            resolved.relative_to(root)
+        except (OSError, ValueError):
+            return None, f"{field} must be inside vault root {root}"
+        if not resolved.is_file():
+            return None, f"file not found: {resolved}"
+        return resolved, None
+
+    async def _v2_lookups(self):
+        profiles = await self.db.list_profiles()
+        profile_map = {profile.id: profile for profile in profiles}
+        return (
+            RegistryContractLookup(),
+            VaultProfileLookup(
+                profile_map,
+                plugin_command_names=self._plugin_command_names(),
+            ),
+            RegisteredEventLookup(),
+        )
+
+    def _v2_find_source(self, playbook_id: str) -> tuple[PlaybookSource | None, str | None]:
+        matches: list[PlaybookSource] = []
+        root = self._v2_vault_root()
+        for directory in self._vault_playbook_dirs():
+            for path in sorted(Path(directory).glob("*.md")):
+                loaded = PlaybookSource.load(path, vault_root=root)
+                if isinstance(loaded, PlaybookSource) and loaded.frontmatter.get("id") == playbook_id:
+                    matches.append(loaded)
+        if not matches:
+            return None, f"no vault source declares playbook id {playbook_id!r}"
+        if len(matches) > 1:
+            paths = ", ".join(source.vault_path for source in matches)
+            return None, f"multiple vault sources declare playbook id {playbook_id!r}: {paths}"
+        return matches[0], None
+
+    # ------------------------------------------------------------------
+    # Package 2 compiler — review-only, never persists or activates
+    # ------------------------------------------------------------------
+
+    async def _cmd_playbook_v2_validate(self, args: dict) -> dict:
+        if not self._v2_compiler_enabled():
+            return {"success": False, "error": V2_COMPILER_DISABLED_ERROR}
+        path, error = self._v2_resolve_vault_path(args.get("path"), "path")
+        if error:
+            return _command_error(error, field="path")
+        assert path is not None
+        try:
+            definition = load_definition_json(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, ValidationError, DuplicateJsonKey, json.JSONDecodeError) as exc:
+            return _command_error(f"invalid V2 artifact: {exc}", field="path")
+        contracts, profiles, events = await self._v2_lookups()
+        diagnostics = validate_definition(
+            definition,
+            inventory=None,
+            contracts=contracts,
+            profiles=profiles,
+            events=events,
+        )
+        counts = _diagnostic_counts(diagnostics)
+        clean = counts["error"] == 0 and counts["question"] == 0
+        return {
+            "success": clean,
+            "artifact_sha256": artifact_sha256(definition) if clean else None,
+            "counts": counts,
+            "diagnostics": [_diagnostic_dict(diagnostic) for diagnostic in diagnostics],
+        }
+
+    async def _cmd_playbook_v2_propose(self, args: dict) -> dict:
+        if not self._v2_compiler_enabled():
+            return {"success": False, "error": V2_COMPILER_DISABLED_ERROR}
+        playbook_id = _clean_str(args, "playbook_id")
+        if not playbook_id:
+            return _command_error("playbook_id is required", field="playbook_id")
+        source, error = self._v2_find_source(playbook_id)
+        if error:
+            return _command_error(error, field="playbook_id")
+        body_path, error = self._v2_resolve_vault_path(
+            args.get("semantic_body_path"), "semantic_body_path"
+        )
+        if error:
+            return _command_error(error, field="semantic_body_path")
+        baseline: PlaybookDefinition | None = None
+        baseline_arg = args.get("baseline_artifact_path")
+        if baseline_arg:
+            baseline_path, error = self._v2_resolve_vault_path(
+                baseline_arg, "baseline_artifact_path"
+            )
+            if error:
+                return _command_error(error, field="baseline_artifact_path")
+            assert baseline_path is not None
+            try:
+                baseline = load_definition_json(baseline_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, ValidationError, DuplicateJsonKey, json.JSONDecodeError) as exc:
+                return _command_error(
+                    f"invalid baseline V2 artifact: {exc}", field="baseline_artifact_path"
+                )
+        assert source is not None and body_path is not None
+        try:
+            body = load_semantic_body_json(body_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, DuplicateSemanticKey, json.JSONDecodeError) as exc:
+            return _command_error(f"invalid semantic body: {exc}", field="semantic_body_path")
+        contracts, profiles, events = await self._v2_lookups()
+        proposal = propose(
+            source,
+            body,
+            baseline=baseline,
+            contracts=contracts,
+            profiles=profiles,
+            events=events,
+            version=(baseline.version + 1) if baseline is not None else 1,
+        )
+        counts = _diagnostic_counts(proposal.diagnostics)
+        return {
+            "success": proposal.artifact is not None,
+            "activatable": proposal.activatable,
+            "artifact_sha256": proposal.artifact_sha256,
+            "source_digest": proposal.source_digest,
+            "contract_fingerprint": proposal.contract_fingerprint,
+            "compiler_build": proposal.compiler_build,
+            "counts": counts,
+            "diagnostics": [_diagnostic_dict(diagnostic) for diagnostic in proposal.diagnostics],
+            "semantic_diff": asdict(proposal.semantic_diff) if proposal.semantic_diff else None,
+            "artifact": (
+                proposal.artifact.model_dump(mode="json", exclude_none=True)
+                if proposal.artifact
+                else None
+            ),
+        }
+
+    async def _cmd_playbook_v2_shadow_compile(self, args: dict) -> dict:
+        if not self._v2_compiler_enabled():
+            return {"success": False, "error": V2_COMPILER_DISABLED_ERROR}
+        scope = _clean_str(args, "scope")
+        if scope and scope not in _VALID_SCOPES:
+            return _command_error(
+                f"Invalid scope {scope!r}. Valid: {', '.join(sorted(_VALID_SCOPES))}",
+                field="scope",
+            )
+        root = self._v2_vault_root()
+        sources: list[PlaybookSource] = []
+        source_errors: list[dict[str, Any]] = []
+        for directory in self._vault_playbook_dirs():
+            for path in sorted(Path(directory).glob("*.md")):
+                loaded = PlaybookSource.load(path, vault_root=root)
+                if isinstance(loaded, SourceError):
+                    source_errors.append({"path": str(path), "errors": list(loaded.errors)})
+                    continue
+                source_scope = str(loaded.frontmatter.get("scope") or "system")
+                normalized_scope = "agent_type" if source_scope.startswith("agent-type") else source_scope.split(":", 1)[0]
+                if scope and normalized_scope != scope:
+                    continue
+                sources.append(loaded)
+        contracts, profiles, events = await self._v2_lookups()
+        report = shadow_compile(
+            sources,
+            contracts=contracts,
+            profiles=profiles,
+            events=events,
+        )
+        rows = []
+        for row in report.rows:
+            counts = _diagnostic_counts(row.diagnostics)
+            rows.append(
+                {
+                    "playbook_id": row.playbook_id,
+                    "vault_path": row.vault_path,
+                    "kind": row.kind,
+                    "lowered": row.lowered,
+                    "artifact_sha256": row.artifact_sha256,
+                    "counts": counts,
+                    "diagnostics": [_diagnostic_dict(d) for d in row.diagnostics],
+                }
+            )
+        return {
+            "success": not source_errors,
+            "total": len(rows),
+            "lowered": sum(row["lowered"] for row in rows),
+            "clean": sum(
+                row["counts"]["error"] == 0 and row["counts"]["question"] == 0
+                for row in rows
+            ),
+            "rows": rows,
+            "source_errors": source_errors,
+        }
 
     def _v2_storage_unavailable(self) -> dict:
         """The single seam onto Package 2-4 state.

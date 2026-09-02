@@ -60,6 +60,7 @@ async def db(tmp_path):
 def test_check_names():
     names = {c.id for c in pool_checks.CHECKS}
     assert names == {
+        "pools.stale_worktree_checkouts",
         "pools.stuck",
         "pools.orphan_agents",
         "pools.preparing_stuck",

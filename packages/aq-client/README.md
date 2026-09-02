@@ -57,8 +57,8 @@ You can also disable certificate validation altogether, but beware that **this i
 
 ```python
 client = AuthenticatedClient(
-    base_url="https://internal_api.example.com", 
-    token="SuperSecretToken", 
+    base_url="https://internal_api.example.com",
+    token="SuperSecretToken",
     verify_ssl=False
 )
 ```
