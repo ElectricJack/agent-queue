@@ -56,8 +56,13 @@ recursion returns. `review_task` is structural instead — the close path sets i
 when the finishing task carries the dedup key this pipeline stamps on every
 review it creates (`review:task:<task_id>` or `branch-review:<branch_name>`,
 see `src/review_keys.py`), so a review is recognised as a review whatever its
-profile says. A custom pipeline that keys its review tasks differently must
-either keep these prefixes or add its own guard.
+profile says. The dispatch path (`Orchestrator._on_playbook_trigger`) derives
+the same flag again from the hydrated task row, because `truthy: false` passes
+on a *missing* key: an emitter that never sets it — a daemon still running code
+older than the flag, container settlement, a hand-written event — used to fire
+the review anyway, and `Review: Review: Review: ...` chains six deep reached
+the live queue (task prime-cascade-64). A custom pipeline that keys its review
+tasks differently must either keep these prefixes or add its own guard.
 
 The `ensure_task` nodes below pin `profile_id` but no `intelligence_class`, so
 the assignment-routing playbook chooses the class for the tasks they create. A

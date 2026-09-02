@@ -13,11 +13,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 from click.testing import CliRunner
 
-# Import the application first so its ordered command registrations are stable.
-# Importing ``daemon`` first makes its legacy ``logs`` command overwrite the
-# filter-capable command from ``src.cli.logs`` on this xdist worker.
-from src.cli.app import cli
 import src.cli.daemon as daemon_mod
+from src.cli.app import cli
 
 
 @pytest.fixture

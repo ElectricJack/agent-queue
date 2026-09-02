@@ -459,3 +459,46 @@ async def test_per_branch_review_gates_downstream_with_pr_merged(
         and g.get("await_id") == "https://github.com/o/r/pull/9"
         for g in gates
     ), f"expected pr-merged gate on {dep} awaiting PR URL; got: {gates}"
+
+
+# ---------------------------------------------------------------------------
+# T6: a review task is recognised structurally, not by the emitter's flag
+# ---------------------------------------------------------------------------
+
+
+async def test_per_task_review_skips_a_review_task_when_the_emitter_omits_the_flag(
+    command_handler_factory, pipeline_engine_factory
+):
+    """Hydration derives ``review_task`` from the row's ``review:task:`` key.
+
+    The ``when`` guard alone only narrows on a key the emitter set; the
+    orchestrator (and this helper, which mirrors it) must flag the event from
+    the task row so a slim ``task.completed`` for a finished review never
+    spawns ``Review: Review: ...``.
+    """
+    h = await command_handler_factory()
+    engine = pipeline_engine_factory(handler=h)
+    db = h.db
+
+    await db.create_project(Project(id="p", name="P"))
+    await db.upsert_profile(AgentProfile(id="worker", name="Worker"))
+    await db.upsert_profile(AgentProfile(id="reviewer", name="Reviewer"))
+
+    t1 = (await h.execute("create_task", {"project_id": "p", "title": "T1", "profile_id": "worker"}))["created"]
+    await db.update_task(t1, branch_name="feature/t1")
+    await engine.dispatch("task.completed", {"task_id": t1, "project_id": "p", "title": "T1"})
+    reviews = [t for t in await db.list_tasks(project_id="p") if t.profile_id == "reviewer"]
+    assert len(reviews) == 1
+    review = reviews[0]
+    assert review.dedup_key == f"review:task:{t1}"
+
+    # The review finishes on its own slot branch; the emitter sends no flags.
+    await db.update_task(review.id, branch_name=f"aq/{review.id}")
+    await engine.dispatch(
+        "task.completed", {"task_id": review.id, "project_id": "p", "title": review.title}
+    )
+
+    reviews_after = [t for t in await db.list_tasks(project_id="p") if t.profile_id == "reviewer"]
+    assert [t.id for t in reviews_after] == [review.id], (
+        f"review of the review spawned: {[(t.id, t.title) for t in reviews_after]}"
+    )
