@@ -1358,7 +1358,19 @@ class TestPhaseVerifyApprovalTask:
         mock_git.aget_current_branch = AsyncMock(return_value="feature-1")
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
         mock_git.afind_open_pr = AsyncMock(return_value="https://github.com/org/repo/pull/42")
-        mock_git._arun = AsyncMock(return_value="0")
+        # `rev-list <base>..<branch> --count` is _phase_verify's no-change
+        # probe: these tasks are meant to carry work, so the branch is one
+        # commit ahead.  Every other rev-list (ahead/behind origin) stays 0.
+        async def _arun(args, cwd=None, **kwargs):
+            if (
+                args
+                and args[0] == "rev-list"
+                and args[1].split("..")[-1].startswith("feature-")
+            ):
+                return "1"
+            return "0"
+
+        mock_git._arun = AsyncMock(side_effect=_arun)
         mock_git.acommit_all = AsyncMock(return_value=True)
         mock_git.apush_branch = AsyncMock(return_value=None)
         mock_git.aabort_in_progress_operations = AsyncMock()
