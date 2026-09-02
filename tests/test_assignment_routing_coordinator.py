@@ -132,6 +132,22 @@ async def test_coordinator_batches_ready_tasks_in_one_llm_call(coordinator_syste
 
 
 @pytest.mark.asyncio
+async def test_reconcile_is_a_noop_without_a_playbook_manager(coordinator_system):
+    coordinator, services, db = coordinator_system
+    await db.create_task(Task(
+        id="paused-playbooks",
+        project_id="p",
+        title="Paused playbooks",
+        description="The playbook subsystem is intentionally disabled.",
+        status=TaskStatus.READY,
+    ))
+    coordinator.owner.playbook_manager = None
+
+    assert await coordinator.reconcile() == {}
+    services.llm.run_tools.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_explicit_class_bypasses_llm(coordinator_system):
     coordinator, services, db = coordinator_system
     await db.create_task(Task(
