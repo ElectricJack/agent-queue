@@ -131,7 +131,15 @@ def test_reviewer_profile_parses_and_lacks_merge_authority():
     assert parsed.frontmatter.id == "reviewer"
     tools = (parsed.capabilities or {}).get("aq_commands", [])
     assert "pr_merge" not in tools, "reviewer must not have merge authority"
-    assert "reopen_with_feedback" in tools
+    assert {
+        "get_task",
+        "task_show",
+        "task_comments",
+        "task_heartbeat",
+        "task_close",
+        "reopen_with_feedback",
+    } <= set(tools)
+    assert "task_comment" not in tools
     assert parsed.config.get("needs_workspace") is True
     assert parsed.config.get("read_only") is True
 
