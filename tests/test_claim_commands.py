@@ -161,7 +161,10 @@ class TestClaim:
         task hold; terminating the worker would bypass normal pool
         scale-down grace and an explicit drain acknowledgement.
         """
+        handler.config.swarm.fresh_context_per_task = False
+        await db.update_profile("worker", max_claims_per_session=None)
         await mktask(db, "t1", profile_id="worker")
+        await mktask(db, "t2", profile_id="worker")
         sid, _ = await pool_session(db, tmp_path)
         h = scoped(handler, sid)
         claim = await h._cmd_task_claim({"next": True})
@@ -211,9 +214,17 @@ class TestClaim:
                 None,
             )
             assert (await db.get_agent("agent-1")).state == AgentState.IDLE
+
+            reclaimed = await h._cmd_task_claim({"task_id": "t2"})
+            assert reclaimed["result"] == "claimed"
         finally:
             allow_close_release.set()
             await close
+
+        session = await db.get_session(sid)
+        task = await db.get_task("t2")
+        assert (session.desired_state, session.task_id) == ("running", "t2")
+        assert (task.status, task.assigned_agent_id) == (TaskStatus.IN_PROGRESS, "agent-1")
 
     async def test_claim_next_returns_task_epoch_and_writes_file(self, handler, db, tmp_path):
         handler.orchestrator.bus.emit = AsyncMock()

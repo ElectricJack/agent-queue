@@ -889,6 +889,8 @@ class SessionReconciler:
                     task_status=task.status if task is not None else TaskStatus.READY,
                     context="terminal_pool_release",
                     now=now,
+                    expected_task_id=row.task_id,
+                    expected_claim_epoch=row.last_claim_epoch,
                 )
                 continue
             provider = self._provider_for(row)

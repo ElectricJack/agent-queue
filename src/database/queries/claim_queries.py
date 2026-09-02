@@ -357,7 +357,18 @@ class ClaimQueryMixin:
             return await _run(conn)
 
     async def _release_claim_on(
-        self, conn, session_id, *, task_status, context, now, result, needs_attention, end_reason=None
+        self,
+        conn,
+        session_id,
+        *,
+        task_status,
+        context,
+        now,
+        result,
+        needs_attention,
+        expected_task_id=None,
+        expected_claim_epoch=None,
+        end_reason=None,
     ) -> TransitionResult:
         row = (
             (await conn.execute(select(sessions).where(sessions.c.id == session_id).with_for_update()))
@@ -368,6 +379,17 @@ class ClaimQueryMixin:
         if row is None:
             return out
         task_id, agent_id = row["task_id"], row["agent_id"]
+        # A task close may race pool reconciliation: the reconciler can
+        # release the terminal hold and the worker can claim new work before
+        # the original close resumes.  Never let that old close release the
+        # successor's task or claim file.
+        if (
+            expected_task_id is not None
+            and task_id != expected_task_id
+            or expected_claim_epoch is not None
+            and row["last_claim_epoch"] != expected_claim_epoch
+        ):
+            return out
         epoch = None
         if task_id:
             # ``projection_stable``: IN_PROGRESS -> READY cannot move any
@@ -420,6 +442,7 @@ class ClaimQueryMixin:
                 last_claim_result=result,
             )
         )
+        out.released = True
         return out
 
     async def _after_release(self, out: TransitionResult) -> None:
@@ -436,6 +459,8 @@ class ClaimQueryMixin:
         now,
         result="released",
         needs_attention=None,
+        expected_task_id=None,
+        expected_claim_epoch=None,
         conn=None,
     ) -> TransitionResult:
         kwargs = dict(
@@ -444,6 +469,8 @@ class ClaimQueryMixin:
             now=now,
             result=result,
             needs_attention=needs_attention,
+            expected_task_id=expected_task_id,
+            expected_claim_epoch=expected_claim_epoch,
         )
         if conn is not None:
             return await self._release_claim_on(conn, session_id, **kwargs)
