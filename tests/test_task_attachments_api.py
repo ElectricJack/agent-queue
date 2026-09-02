@@ -181,7 +181,9 @@ async def test_attachment_routes_publish_typed_openapi_contract(attachment_app):
     upload = spec["paths"]["/api/tasks/{task_id}/attachments"]["post"]
     upload_schema = upload["responses"]["201"]["content"]["application/json"]["schema"]
     assert upload_schema["$ref"].endswith("/TaskAttachmentResponse")
-    assert "multipart/form-data" in upload["requestBody"]["content"]
+    multipart = upload["requestBody"]["content"]["multipart/form-data"]
+    upload_body = multipart["schema"]["$ref"].rsplit("/", 1)[-1]
+    assert spec["components"]["schemas"][upload_body]["properties"]["file"]["format"] == "binary"
 
     listing = spec["paths"]["/api/tasks/{task_id}/attachments"]["get"]
     list_schema = listing["responses"]["200"]["content"]["application/json"]["schema"]
