@@ -1,0 +1,58 @@
+import { describe, expect, it } from "vitest";
+import { emptyStore, mergeTiles } from "../layoutStore";
+import { toFlowElements } from "../flowNodes";
+
+const n = (id: string, kind: string, x: number, y: number, extra = {}) => ({
+  id, title: id, status: "READY", priority: 100, is_blocked: false, x, y, w: 1, h: 1, depth: 0,
+  container_id: null, kind, context_only: false,
+  agg_children: 2, agg_descendants: 3, agg_completed: 1, agg_running: 0, agg_blocked: 0, agg_active: 2, ...extra,
+});
+const ctx = { projectId: "p1", offsetY: 0, expanded: new Set<string>(), handlers: { onOpenTask: () => {}, onToggleChildren: () => {}, onFocus: () => {} } };
+
+describe("toFlowElements", () => {
+  it("maps kinds to node types and scales positions", () => {
+    const store = mergeTiles(emptyStore(), ["0:0"], {
+      nodes: [n("e", "container", 0, 0, { w: 3, h: 2 }), n("c", "collapsed", 1, 4), n("z", "card", 2, 4)],
+      edges: [{ from: "z", to: "c", dep_type: "blocks", description: null, count: 2 }],
+      stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+    } as never);
+    const { nodes, edges } = toFlowElements(store, ctx);
+    const byId = Object.fromEntries(nodes.map((x) => [x.id, x]));
+    expect(byId.e!.type).toBe("container");
+    expect(byId.e!.position).toEqual({ x: 0, y: 0 });
+    expect(byId.e!.width).toBe(720); expect(byId.e!.height).toBe(312);
+    expect(byId.c!.type).toBe("task");
+    expect((byId.c!.data as { hierarchy: { expanded: boolean; descendantCount: number } }).hierarchy).toMatchObject({ expanded: false, descendantCount: 3 });
+    expect(byId.z!.position).toEqual({ x: 480, y: 624 });
+    expect(edges).toHaveLength(1);
+    expect(edges[0]).toMatchObject({ source: "c", target: "z", label: "×2", sourceHandle: "out-right", targetHandle: "in-left" });
+  });
+  it("renders stubs as dashed task nodes and drops edges with no endpoints", () => {
+    const store = mergeTiles(emptyStore(), ["0:0"], {
+      nodes: [n("z", "card", 0, 0)],
+      edges: [{ from: "z", to: "far", dep_type: "blocks", description: null, count: 1 },
+              { from: "gone", to: "gone2", dep_type: "blocks", description: null, count: 1 }],
+      stubs: [{ id: "far", project_id: "p1", x: 5, y: 0, w: 1, h: 1, title: "Far" }],
+      stub_overflow: [], workers: [], gates: [], layout_version: 1,
+    } as never);
+    const { nodes, edges } = toFlowElements(store, ctx);
+    expect(nodes.find((x) => x.id === "far")?.className).toBe("aq-stub");
+    expect(edges).toHaveLength(1);
+  });
+  it("applies the project offset", () => {
+    const store = mergeTiles(emptyStore(), ["0:0"], { nodes: [n("z", "card", 0, 1)], edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1 } as never);
+    expect(toFlowElements(store, { ...ctx, offsetY: 10 }).nodes[0]!.position.y).toBe(11 * 156);
+  });
+  it("maps gates onto the cards whose task_ids include the node id", () => {
+    const store = mergeTiles(emptyStore(), ["0:0"], {
+      nodes: [n("z", "card", 0, 0)],
+      edges: [],
+      stubs: [], stub_overflow: [], workers: [],
+      gates: [{ id: "g1", task_ids: ["z"], status: "open", gate_type: "approval" }],
+      layout_version: 1,
+    } as never);
+    const { nodes } = toFlowElements(store, ctx);
+    const z = nodes.find((x) => x.id === "z");
+    expect((z?.data as { gates: unknown[] }).gates).toMatchObject([{ id: "g1" }]);
+  });
+});

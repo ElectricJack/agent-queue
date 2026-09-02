@@ -52,6 +52,20 @@ export interface TaskNodeData extends Record<string, unknown> {
   hierarchy: TaskHierarchy;
   onOpenTask?: (taskId: string) => void;
   onToggleChildren?: (taskId: string) => void;
+  onFocus?: (taskId: string) => void;
+}
+
+export interface ContainerNodeData extends Record<string, unknown> {
+  node: import("@aq/ts-client").LayoutNode;
+  projectId: string;
+  onFocus?: (taskId: string) => void;
+  onToggleChildren?: (taskId: string) => void;
+  onOpenTask?: (taskId: string) => void;
+}
+
+export interface StubNodeData extends Record<string, unknown> {
+  id: string;
+  title: string;
 }
 
 export interface PlaybookNodeData extends Record<string, unknown> {
