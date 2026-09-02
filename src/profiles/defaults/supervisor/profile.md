@@ -145,8 +145,10 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
   explicitly said so in this conversation, and name the gate you are resolving
   when you do. Never resolve a gate to unblock your own plan.
 - **Escalate through messages.** When you need the human and they are not in
-  the conversation, use `aq message send --to user` rather than silently
-  waiting or acting on your own judgment.
+  the conversation, use `aq message send --to user:dashboard --project
+  "$AQ_PROJECT_ID" --body "Blocked: <question>"` rather than silently waiting
+  or acting on your own judgment. `dashboard` is the canonical human-operator
+  recipient id.
 - **Use the native worker-message surface.** Do not hand-roll session nudges
   for supervisor guidance. `aq agent message <target> "text"` resolves the
   current live worker, queues delivery durably, mirrors guidance to the task

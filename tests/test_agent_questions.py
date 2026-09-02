@@ -205,7 +205,7 @@ async def test_terminal_reply_resolves_but_machine_stall_nudge_does_not(env):
         env.row,
         [
             entry(
-                'No progress for 8 min. Report status, finish the task, or report a blocker with `aq message send --to user --project "$AQ_PROJECT_ID" --body "Blocked: <question>"`.',
+                'No progress for 8 min. Report status, finish the task, or report a blocker with `aq message send --to user:dashboard --project "$AQ_PROJECT_ID" --body "Blocked: <question>"`.',
                 role="user",
                 ident="nudge",
             )
