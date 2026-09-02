@@ -53,6 +53,7 @@ Do:
     "NotebookEdit"
   ],
   "aq_commands": [
+    "create_task",
     "get_schema",
     "message_inbox",
     "message_reply",
@@ -79,6 +80,7 @@ Do:
 <!-- tools-rationale -->
 Every command named in the Role section above appears in this list. A profile whose instructions call a tool it cannot reach stalls at the sandbox with "not in active set".
 Role runs the validate/install loop on a compiled playbook JSON.
+`create_task` files emergent work found while compiling, which the prime's Emergent work section instructs every session to do.
 
 
 ## MCP Servers

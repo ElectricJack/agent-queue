@@ -83,7 +83,7 @@ Do:
 
 <!-- tools-rationale -->
 Every command named in the Role section above appears in this list. A profile whose instructions call a tool it cannot reach stalls at the sandbox with "not in active set".
-Role reads the graph (`list_tasks`, `get_downstream_tasks`) and proposes a batch. Deliberately WITHOUT `create_task` and `task_batch_commit`: it must not create tasks directly, and the commit is triggered by the human approving the gate.
+Role reads the graph (`list_tasks`, `get_downstream_tasks`) and proposes a batch. Deliberately WITHOUT `create_task` and `task_batch_commit`: it must not create tasks directly, and the commit is triggered by the human approving the gate. Because the policy omits `create_task`, prime also omits its Emergent work section for this profile (`src/prime/sections.py:profile_allows_create_task`) — this profile files what it finds through `task_batch_propose`, not directly.
 
 
 ## MCP Servers
