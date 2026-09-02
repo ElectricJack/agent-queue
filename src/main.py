@@ -155,6 +155,15 @@ async def run(config_path: str, profile: str | None = None) -> bool:
     orch.set_command_handler(handler)
     orch.set_tool_registry(ToolRegistry())
 
+    # Fleet metrics sampler.  Owned here rather than by the orchestrator so
+    # it runs on the daemon's loop for the daemon's whole life, independent
+    # of a scheduling cycle that may be paused, and so a single daemon start
+    # increments the restart counter exactly once.
+    from src.metrics import MetricsSampler
+
+    metrics_sampler = MetricsSampler(orch.db, config, orch.bus)
+    await metrics_sampler.start()
+
     # Start health check server (if enabled)
     async def _plan_content(task_id: str) -> str | None:
         """Fetch raw plan content from task_context for the plan viewer."""
@@ -301,6 +310,7 @@ async def run(config_path: str, profile: str | None = None) -> bool:
                 pass
         bot_task.cancel()
         scheduler_task.cancel()
+        await metrics_sampler.stop()
         await orch.shutdown()
 
     return restart

@@ -49,6 +49,7 @@ HANDCRAFTED_COVERAGE = {
     "task_comment",
     "task_comments",
     "task_handoff",
+    "subagent_event",
     # messages.py — hand-crafted so every message command routes through
     # emit() and shares the versioned JSON envelope (aq-surface §4).
     "message_send",

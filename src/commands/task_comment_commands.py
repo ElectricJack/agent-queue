@@ -30,12 +30,11 @@ class TaskCommentCommandsMixin:
     async def _reviewer_grant(self, task) -> str | None:
         """Author id when the caller is the live reviewer *of* ``task``, else None.
 
-        A reviewer's whole job is a verdict on another task, so it reads and
-        annotates a task it deliberately does not own — the claim fence below
-        refuses that by construction, and ``_task_findings_scope_error``'s
-        ``task_id`` pin refuses it earlier still.  Authority comes from the
-        same verified review assignment the API scope check uses, so "is a
-        reviewer of this task" has exactly one definition in the codebase.
+        A reviewer reads a task it deliberately does not own, so
+        ``_task_findings_scope_error``'s ``task_id`` pin refuses it by
+        construction. Authority comes from the same verified review assignment
+        the API scope check uses, so "is a reviewer of this task" has exactly
+        one definition in the codebase.
         """
         from src.api.auth import RequestScope
         from src.api.scope import reviewed_task_for_reviewer
@@ -58,17 +57,6 @@ class TaskCommentCommandsMixin:
         return (session.agent_id if session is not None else None) or session_id
 
     async def _task_findings_write_fence(self, task, args) -> tuple[dict | None, dict | None]:
-        fence, error = await self._owner_write_fence(task, args)
-        if error is None:
-            return fence, None
-        reviewer_author = await self._reviewer_grant(task)
-        if reviewer_author is None:
-            return None, error
-        # No claim fence: the reviewer holds its own review task, never this
-        # one.  Project pinning still applies via ``_write_predicates``.
-        return {"project_id": task.project_id, "agent_id": reviewer_author}, None
-
-    async def _owner_write_fence(self, task, args) -> tuple[dict | None, dict | None]:
         error = self._task_findings_scope_error(task)
         if error:
             return None, error

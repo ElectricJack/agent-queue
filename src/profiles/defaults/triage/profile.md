@@ -57,11 +57,11 @@ retrying the same gates or creating replacement triage tasks.
 }
 ```
 
-## Tools
+## Capabilities
 
 ```json
 {
-  "allowed": [
+  "harness_tools": [
     "Bash",
     "Read",
     "Write",
@@ -73,15 +73,34 @@ retrying the same gates or creating replacement triage tasks.
     "Skill",
     "WebSearch",
     "WebFetch",
-    "NotebookEdit",
-    "task_route",
-    "list_tasks",
-    "get_task",
-    "list_profiles",
-    "list_intelligence_classes",
-    "gate_list",
+    "NotebookEdit"
+  ],
+  "aq_commands": [
     "create_task",
-    "edit_task"
+    "edit_task",
+    "gate_list",
+    "get_schema",
+    "get_task",
+    "list_intelligence_classes",
+    "list_profiles",
+    "list_tasks",
+    "message_inbox",
+    "message_reply",
+    "message_send",
+    "prime",
+    "session_drain_ack",
+    "task_close",
+    "task_comment",
+    "task_comments",
+    "task_handoff",
+    "task_heartbeat",
+    "task_route",
+    "task_set",
+    "task_show"
+  ],
+  "plugin_tools": [
+    "memory_save",
+    "memory_search"
   ]
 }
 ```

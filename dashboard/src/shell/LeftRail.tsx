@@ -2,6 +2,7 @@ import { Link, NavLink, useLocation } from "react-router-dom";
 import { useState } from "react";
 import {
   Squares2X2Icon,
+  ChartBarIcon,
   Cog6ToothIcon,
   FolderIcon,
   ChevronDownIcon,
@@ -64,6 +65,10 @@ export default function LeftRail() {
               </div>
             )}
           </section>
+          <NavLink to="/metrics" data-listnav="1" className={({ isActive }) => linkClass(isActive)}>
+            <ChartBarIcon className="h-4 w-4" />
+            <span>Metrics</span>
+          </NavLink>
           <NavLink to="/settings" data-listnav="1" className={({ isActive }) => linkClass(isActive)}>
             <Cog6ToothIcon className="h-4 w-4" />
             <span>Settings</span>

@@ -88,27 +88,28 @@ def _normalize_label_list(raw) -> list[str]:
 def _check_capability_escalation(parent, child) -> str:
     """Return an explanation if ``child`` exceeds ``parent``'s capabilities.
 
-    Returns the empty string when the child profile is a strict subset
-    (i.e. acceptable).  Used by ``_cmd_create_task`` to reject upward
-    escalation when a sandboxed caller delegates work to another profile.
+    Returns the empty string when the child profile is a subset (i.e.
+    acceptable).  Used by ``_cmd_create_task`` to reject upward escalation
+    when a sandboxed caller delegates work to another profile.
 
-    Subset semantics:
-
-    * ``child.allowed_tools ⊆ parent.allowed_tools``.  An empty parent
-      list means the parent has no tools at all, so the child cannot
-      have any either.  An empty child list is always OK (strictest).
-    * ``child.mcp_servers ⊆ parent.mcp_servers``.
+    Playbook V2 Package 0 §3.9 replaced the flat ``allowed_tools`` comparison
+    with a :class:`~src.profiles.capabilities.CapabilityPolicy` subset check
+    across all three namespaces, so an escalation in *any* of harness tools,
+    AQ commands, or plugin tools is caught and named.  ``mcp_servers`` is
+    still compared separately: server *names* are not capabilities in the
+    policy model, and dropping the check would have widened delegation.
 
     System-prompt subsetting is intentionally not enforced — there is no
-    mechanical notion of "subset of prose".  The parent profile's author
-    is responsible for what they delegate; the runtime ensures the
-    delegate cannot reach beyond the parent's tool/server bounds.
+    mechanical notion of "subset of prose".  The parent profile's author is
+    responsible for what they delegate; the runtime ensures the delegate
+    cannot reach beyond the parent's capability bounds.
     """
-    parent_tools = set(parent.allowed_tools or [])
-    child_tools = set(child.allowed_tools or [])
-    extra_tools = sorted(child_tools - parent_tools)
-    if extra_tools:
-        return f"child has {len(extra_tools)} tool(s) not in parent's allowlist: {extra_tools[:5]}"
+    from src.commands.principal import check_delegation
+    from src.profiles.capabilities import capability_policy_for
+
+    escalation = check_delegation(capability_policy_for(parent), capability_policy_for(child))
+    if escalation:
+        return escalation
     parent_servers = set(parent.mcp_servers or [])
     child_servers = set(child.mcp_servers or [])
     extra_servers = sorted(child_servers - parent_servers)
@@ -1184,24 +1185,55 @@ class TaskCommandsMixin:
         # sandboxed playbook says "create a task with profile=admin and
         # description=`rm -rf`".
         #
-        # **v1 gap — recursive task→child-task escalation:** when
-        # ``create_task`` is invoked by a task agent via the embedded
-        # ``agent-queue`` MCP server (HTTP), there's no per-task identity
-        # on the request, so ``self._caller_profile_id`` will be unset
-        # and the escalation check won't fire.  The line of defense for
-        # untrusted-input *tasks* is therefore the Claude CLI's
-        # ``--allowed-tools`` flag — a profile that omits
-        # ``mcp__agent-queue__create_task`` from its allowlist literally
-        # cannot reach this code path from inside the agent.  Profiles
-        # that DO whitelist ``create_task`` are trusted to delegate.
-        # See ``docs/specs/design/sandboxed-playbooks.md`` for the plan
-        # to plumb task identity through the MCP server.
+        # **v1 gap — recursive task→child-task escalation — CLOSED** by
+        # Playbook V2 Package 0 (§1.4, §3.9).  It used to read: when
+        # ``create_task`` is invoked by a task agent over HTTP/MCP there is
+        # no per-task identity on the request, so ``_caller_profile_id`` is
+        # unset and this check never fires.  The stated fallback — the
+        # harness ``--allowedTools`` flag — never applied either, because AQ
+        # command names were dropped from that flag entirely.
+        #
+        # ``_caller_profile_id`` is now a shim over the request-local
+        # ``ExecutionPrincipal``, which ``CommandHandler.execute`` derives
+        # from the *session row* keyed by the token's ``session_id``.  Every
+        # real tmux session therefore arrives with a resolved profile, and
+        # the subset check below fires on the path that used to bypass it.
+        # See ``docs/specs/design/sandboxed-playbooks.md`` and
+        # ``docs/superpowers/plans/2026-09-01-playbook-v2-phase0-security.md``.
         profile_id = args.get("profile_id")
         caller_profile_id = getattr(self, "_caller_profile_id", None)
         caller_profile = None
+        # Both fail-closed branches below are conditioned on ``profile_id``
+        # being **explicitly requested**.  The refusal exists to stop a grant
+        # nobody can bound: without a resolved parent policy there is no
+        # subset to check a named child profile against.  A caller that names
+        # no profile is asking for no grant, so there is nothing to bound and
+        # nothing to widen — it inherits whatever it would have inherited
+        # before this package, which for an unresolvable caller is nothing.
+        #
+        # Refusing that case too would delete a *pre-existing* capability
+        # rather than close a gap: a worker filing discovered work
+        # (``aq task create`` with no ``--profile``) reached this code with
+        # ``caller_profile_id is None`` before Package 0, because
+        # ``_caller_profile_id`` was only ever set by the playbook runner.
+        # Now that the shim resolves it from the session row, an unresolvable
+        # profile row would newly strand every such filing — the exact
+        # fleet-stranding outcome ``audit`` mode exists to prevent (§3.6).
+        # Under ``enforce`` the question does not arise: the dispatch gate
+        # denies an unresolved principal before ``create_task`` runs at all
+        # (``tests/test_delegation_no_widening.py::TestFailClosed``).
+        if caller_profile_id is None:
+            # Fail closed: an enforced principal that could not resolve a
+            # profile must not be able to delegate at all.  A trusted local
+            # or service caller has no profile by design and is unaffected.
+            from src.commands.principal import current_principal
+
+            principal = current_principal()
+            if principal is not None and principal.enforced and profile_id:
+                return {"error": "delegation refused: caller has no resolved profile"}
         if caller_profile_id:
             caller_profile = await self.db.get_profile(caller_profile_id)
-            if caller_profile is None:
+            if caller_profile is None and profile_id:
                 # Caller profile is gone — fail closed.  Leaks of stale
                 # caller_profile_id mid-run shouldn't widen the child's
                 # scope; refuse the create until the situation is sane.
@@ -1210,6 +1242,13 @@ class TaskCommandsMixin:
                     "found — refusing to create task without a resolved "
                     "capability bound."
                 }
+            if caller_profile is None:
+                logger.warning(
+                    "delegation_unbounded_shadow cmd=create_task profile=%s "
+                    "reason=caller-profile-not-found; child task inherits no "
+                    "profile",
+                    caller_profile_id,
+                )
 
         profile = caller_profile
         if profile_id:

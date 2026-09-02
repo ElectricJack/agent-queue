@@ -34,31 +34,86 @@ def _profile(tools=None, pid="p"):
 class TestAllowlistResolution:
     def test_harness_tools_are_kept(self, resolve, claude):
         assert resolve(_profile(["Bash", "Read", "Glob", "Grep"]), claude) == [
-            "Bash", "Read", "Glob", "Grep",
+            "Bash", "Glob", "Grep", "Read",
         ]
 
-    def test_aq_commands_are_dropped(self, resolve, claude):
-        """Sessions launch without --mcp-config, so aq commands are not tools.
+    def test_aq_commands_live_in_their_own_namespace(self, resolve, claude):
+        """AQ command names never reach the harness allowlist flag.
 
-        They reach the daemon through the ``aq`` CLI (i.e. through Bash), so
-        they cannot be named in a harness allowlist.
+        Sessions launch without --mcp-config, so an aq command is not a tool
+        the CLI can be told about — it reaches the daemon through the ``aq``
+        CLI (i.e. through Bash).  Package 0 makes that structural rather than
+        a filtering step: ``aq_commands`` is a separate namespace, gated
+        server-side at dispatch (``src/commands/authorization.py``).
         """
         got = resolve(_profile(["Bash", "Read", "get_task", "pr_merge"]), claude)
         assert got == ["Bash", "Read"]
 
-    def test_declaration_order_is_preserved(self, resolve, claude):
-        got = resolve(_profile(["Grep", "Bash", "Read"]), claude)
-        assert got == ["Grep", "Bash", "Read"]
+    def test_output_is_deterministic(self, resolve, claude):
+        """Sorted, not declaration-ordered.
+
+        ``harness_tools`` is a set, so declaration order carries no meaning
+        and cannot be preserved.  Sorting keeps the emitted argv stable
+        across runs, which matters because the argv is what a restarted
+        session is compared against.
+        """
+        assert resolve(_profile(["Grep", "Bash", "Read"]), claude) == ["Bash", "Grep", "Read"]
+        assert resolve(_profile(["Read", "Grep", "Bash"]), claude) == ["Bash", "Grep", "Read"]
+
+    def test_explicit_capabilities_win_over_allowed_tools(self, resolve, claude):
+        profile = AgentProfile(
+            id="p", name="p",
+            allowed_tools=["Bash", "Read", "Write", "Edit"],
+            harness_tools=["Bash", "Read"],
+            aq_commands=["task_close"],
+            plugin_tools=[],
+        )
+        assert resolve(profile, claude) == ["Bash", "Read"]
+
+    def test_explicitly_empty_harness_tools_emits_no_flag(self, resolve, claude):
+        profile = AgentProfile(
+            id="p", name="p", harness_tools=[], aq_commands=[], plugin_tools=[]
+        )
+        assert resolve(profile, claude) == []
 
 
 class TestNoFlagEmitted:
     """Empty result means "emit no flag" — the CLI keeps its own defaults."""
 
-    def test_unset_allowlist(self, resolve, claude):
-        assert resolve(_profile([]), claude) == []
+    def test_unset_allowlist_falls_back_to_the_names_the_launcher_knows(
+        self, resolve, claude
+    ):
+        """Legacy adapter rule R1 (Playbook V2 Package 0 §3.3).
 
-    def test_wildcard_means_everything(self, resolve, claude):
-        assert resolve(_profile(["*"]), claude) == []
+        An empty ``allowed_tools`` used to mean "emit no flag", i.e. the
+        CLI's own defaults.  The adapter now yields the 12 names the launcher
+        recognises — the same effective grant, because the flag could never
+        have expressed more than those names anyway.  It grants nothing new.
+        """
+        from src.profiles.capabilities import HARNESS_TOOL_NAMES
+
+        assert resolve(_profile([]), claude) == sorted(HARNESS_TOOL_NAMES)
+
+    def test_wildcard_cannot_reach_this_function(self, resolve, claude):
+        """``"*"`` is rejected at parse and at sync, so it never gets here.
+
+        It used to mean "everything" — the grant-everything value Package 0
+        exists to remove.  Reaching the launcher with one now raises rather
+        than silently widening.
+        """
+        from src.profiles.capabilities import CapabilityPolicyError
+
+        with pytest.raises(CapabilityPolicyError, match="wildcard"):
+            resolve(_profile(["*"]), claude)
+
+    def test_wildcard_is_rejected_at_parse_time(self):
+        from src.profiles.parser import parse_profile
+
+        parsed = parse_profile(
+            '---\nid: p\nname: P\n---\n\n## Tools\n\n```json\n'
+            '{"allowed": ["*"]}\n```\n'
+        )
+        assert any("wildcard" in e for e in parsed.errors), parsed.errors
 
     def test_harness_without_a_tools_flag_cannot_restrict(self, resolve):
         codex = Harness(id="codex", command="codex")

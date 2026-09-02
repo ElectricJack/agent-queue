@@ -34,11 +34,11 @@ Do:
 }
 ```
 
-## Tools
+## Capabilities
 
 ```json
 {
-  "allowed": [
+  "harness_tools": [
     "Bash",
     "Read",
     "Write",
@@ -50,10 +50,28 @@ Do:
     "Skill",
     "WebSearch",
     "WebFetch",
-    "NotebookEdit",
-    "playbook_validate",
+    "NotebookEdit"
+  ],
+  "aq_commands": [
+    "get_schema",
+    "message_inbox",
+    "message_reply",
+    "message_send",
     "playbook_install",
-    "task_close"
+    "playbook_validate",
+    "prime",
+    "session_drain_ack",
+    "task_close",
+    "task_comment",
+    "task_comments",
+    "task_handoff",
+    "task_heartbeat",
+    "task_set",
+    "task_show"
+  ],
+  "plugin_tools": [
+    "memory_save",
+    "memory_search"
   ]
 }
 ```

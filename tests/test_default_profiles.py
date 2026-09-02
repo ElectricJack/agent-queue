@@ -129,9 +129,17 @@ def test_reviewer_profile_parses_and_lacks_merge_authority():
     parsed = parse_profile(src)
     assert parsed.is_valid, parsed.errors
     assert parsed.frontmatter.id == "reviewer"
-    tools = parsed.tools.get("allowed", [])
+    tools = (parsed.capabilities or {}).get("aq_commands", [])
     assert "pr_merge" not in tools, "reviewer must not have merge authority"
-    assert "reopen_with_feedback" in tools
+    assert {
+        "get_task",
+        "task_show",
+        "task_comments",
+        "task_heartbeat",
+        "task_close",
+        "reopen_with_feedback",
+    } <= set(tools)
+    assert "task_comment" not in tools
     assert parsed.config.get("needs_workspace") is True
     assert parsed.config.get("read_only") is True
 
@@ -144,7 +152,7 @@ def test_final_reviewer_profile_has_merge_authority():
     parsed = parse_profile(src)
     assert parsed.is_valid, parsed.errors
     assert parsed.frontmatter.id == "final-reviewer"
-    tools = parsed.tools.get("allowed", [])
+    tools = (parsed.capabilities or {}).get("aq_commands", [])
     assert "pr_merge" in tools, "final-reviewer must have merge authority"
     assert parsed.config.get("needs_workspace") is True
     assert parsed.config.get("read_only") is False
@@ -164,7 +172,7 @@ def test_reviewer_profile_lacks_merge_authority_after_seeding(tmp_path):
     ensure_default_profiles(str(tmp_path))
     text = _vault_profile_path(tmp_path, "reviewer").read_text(encoding="utf-8")
     parsed = parse_profile(text)
-    tools = parsed.tools.get("allowed", [])
+    tools = (parsed.capabilities or {}).get("aq_commands", [])
     assert "pr_merge" not in tools, "reviewer must not have merge authority after seeding"
 
 
@@ -204,7 +212,7 @@ def test_spec_ingest_profile_shape():
     assert parsed.frontmatter.id == "spec-ingest"
     assert parsed.config.get("harness") == "claude"
     assert parsed.config.get("needs_workspace") is False
-    tools = parsed.tools.get("allowed", [])
+    tools = (parsed.capabilities or {}).get("aq_commands", [])
     assert "task_batch_propose" in tools
     assert "list_tasks" in tools
     assert "get_downstream_tasks" in tools
@@ -222,6 +230,6 @@ def test_playbook_compiler_profile_shape():
     assert parsed.frontmatter.id == "playbook-compiler"
     assert parsed.config.get("harness") == "claude"
     assert parsed.config.get("needs_workspace") is False
-    tools = parsed.tools.get("allowed", [])
+    tools = (parsed.capabilities or {}).get("aq_commands", [])
     assert "playbook_validate" in tools
     assert "playbook_install" in tools
