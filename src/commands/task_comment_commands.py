@@ -140,7 +140,13 @@ class TaskCommentCommandsMixin:
             task = SimpleNamespace(id=task_id, project_id=archived["project_id"])
         error = self._task_findings_scope_error(task)
         if error:
-            return error
+            from src.api.scope import reviewer_target_task_id
+
+            reviewed_task_id = await reviewer_target_task_id(
+                self.db, self._current_scope or {},
+            )
+            if reviewed_task_id != task_id:
+                return error
         return await self.db.list_task_comments(
             task_id, limit=limit, offset=offset, project_id=task.project_id
         )

@@ -8,6 +8,8 @@ happens.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from src.api.auth import RequestScope
 
 
@@ -146,6 +148,83 @@ _TRIAGE_COMMANDS = frozenset({
 
 _PLAYBOOK_COMPILER_COMMANDS = frozenset({"playbook_validate", "playbook_install"})
 
+_REVIEWER_TARGET_COMMANDS = frozenset({
+    "get_task", "task_show", "task_comments", "reopen_with_feedback",
+})
+
+
+async def reviewer_target_task_id(
+    db, scope: RequestScope | Mapping[str, object],
+) -> str | None:
+    """Return the sole task a live reviewer assignment is allowed to review.
+
+    The default pipeline records the relationship as a ``discovered-from``
+    edge from the review task to the reviewed task.  That persisted graph edge
+    is the authority; the human-readable ``Reviewing task: ...`` description
+    is deliberately not parsed for permissions.
+    """
+    from src.models import AgentState, TaskStatus
+
+    def value(name: str):
+        if isinstance(scope, Mapping):
+            return scope.get(name)
+        return getattr(scope, name, None)
+
+    session_id = value("session_id")
+    review_task_id = value("task_id")
+    project_id = value("project_id")
+    if (
+        db is None
+        or value("kind") != "session"
+        or value("elevated")
+        or not session_id
+        or not review_task_id
+        or not project_id
+    ):
+        return None
+
+    session = await db.get_session(str(session_id))
+    if (
+        session is None
+        or session.task_id != review_task_id
+        or session.project_id != project_id
+        or session.profile_id != "reviewer"
+        or session.lifecycle != "task"
+        or session.state not in {"starting", "running"}
+        or session.desired_state != "running"
+        or not session.agent_id
+    ):
+        return None
+
+    review_task = await db.get_task(str(review_task_id))
+    if (
+        review_task is None
+        or review_task.project_id != project_id
+        or review_task.profile_id != "reviewer"
+        or review_task.status != TaskStatus.IN_PROGRESS
+        or review_task.assigned_agent_id != session.agent_id
+    ):
+        return None
+
+    agent = await db.get_agent(session.agent_id)
+    if (
+        agent is None
+        or not agent.enabled
+        or agent.deleted_at is not None
+        or agent.state != AgentState.BUSY
+        or agent.current_task_id != review_task.id
+    ):
+        return None
+
+    edges = await db.get_typed_dependencies(review_task.id)
+    targets = [task_id for task_id, dep_type in edges if dep_type == "discovered-from"]
+    if len(targets) != 1:
+        return None
+    target = await db.get_task(targets[0])
+    if target is None or target.project_id != project_id:
+        return None
+    return target.id
+
 
 async def _has_live_playbook_compiler_assignment(db, scope: RequestScope) -> bool:
     """Grant compiler mutations only to the exact active compiler claim."""
@@ -227,7 +306,7 @@ async def _has_live_triage_assignment(db, scope: RequestScope) -> bool:
 async def check_request_scope(
     command: str, args: dict, scope: RequestScope, *, db=None,
 ) -> str | None:
-    """Apply the normal scope, with narrowly verified triage capabilities.
+    """Apply normal scope plus narrowly verified role capabilities.
 
     Both HTTP command surfaces use this guard. Tokens retain their ordinary
     task/session identity; granting queue access never grants operator commands
@@ -250,6 +329,36 @@ async def check_request_scope(
                 args[key] = expected
             elif value != expected:
                 return f"out of scope: {key} mismatch"
+        return None
+
+    reviewer_session = (
+        await db.get_session(scope.session_id)
+        if db is not None and scope.kind == "session" and scope.session_id
+        else None
+    )
+    if (
+        scope.kind == "session"
+        and not scope.elevated
+        and reviewer_session is not None
+        and reviewer_session.profile_id == "reviewer"
+        and command in _REVIEWER_TARGET_COMMANDS
+    ):
+        ordinary_args = dict(args)
+        error = check_command_scope(command, ordinary_args, scope)
+        if error is None:
+            args.update(ordinary_args)
+            return None
+
+        reviewed_task_id = await reviewer_target_task_id(db, scope)
+        requested_task_id = args.get("task_id")
+        if reviewed_task_id is None or requested_task_id != reviewed_task_id:
+            return error
+        if args.get("project_id") not in (None, scope.project_id):
+            return "out of scope: project_id mismatch"
+        if args.get("session_id") not in (None, scope.session_id):
+            return "out of scope: session_id mismatch"
+        args["project_id"] = scope.project_id
+        args["session_id"] = scope.session_id
         return None
 
     if scope.kind != "session" or scope.elevated or command not in _TRIAGE_COMMANDS:
