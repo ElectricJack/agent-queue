@@ -49,12 +49,12 @@ from src.sessions.provider import PROMPT_MODES, DialogRule
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "HARNESS_KNOWN_KEYS",
+    "VALID_RESUME_STYLES",
     "Harness",
     "ParsedHarness",
     "parse_harness_markdown",
     "resolve_base",
-    "HARNESS_KNOWN_KEYS",
-    "VALID_RESUME_STYLES",
 ]
 
 #: Recognised ``## Config`` keys.  Unknown keys are a *warning*, not an
@@ -77,6 +77,7 @@ HARNESS_KNOWN_KEYS: frozenset[str] = frozenset(
         "ready_prompt_prefix",
         "process_names",
         "skip_escape_before_enter",
+        "composer_clear_keys",
         "supports_hooks",
         "hook_files",
         "hook_trust_flag",
@@ -140,6 +141,13 @@ class Harness:
     ready_prompt_prefix: str | None = None
     process_names: tuple[str, ...] = ()
     skip_escape_before_enter: bool = True
+    #: tmux key names that clear this harness's composer, tried in order
+    #: when a nudge was typed but never confirmed submitted.  Per-harness
+    #: data for the same reason ``skip_escape_before_enter`` is: ``C-u``
+    #: kills an input line in a readline-style composer but scrolls, or
+    #: worse, in something else.  Empty means "no known clear sequence" and
+    #: the provider then leaves the text for the resubmit path.
+    composer_clear_keys: tuple[str, ...] = ()
     supports_hooks: bool = False
     #: ``dest_relative_path -> packaged template name`` written into the
     #: work_dir at spec-build time when ``supports_hooks``.
@@ -371,6 +379,9 @@ def parse_harness_markdown(
         ready_prompt_prefix=config.get("ready_prompt_prefix") or None,
         process_names=_str_tuple(config.get("process_names"), "process_names", errors),
         skip_escape_before_enter=bool(config.get("skip_escape_before_enter", True)),
+        composer_clear_keys=_str_tuple(
+            config.get("composer_clear_keys"), "composer_clear_keys", errors
+        ),
         supports_hooks=bool(config.get("supports_hooks", False)),
         hook_files=tuple(sorted((str(k), str(v)) for k, v in raw_hooks.items())),
         hook_trust_flag=str(config.get("hook_trust_flag") or ""),
@@ -407,6 +418,7 @@ _INHERITABLE = (
     "dialogs",
     "hook_files",
     "hook_trust_flag",
+    "composer_clear_keys",
 )
 
 
@@ -430,8 +442,8 @@ def resolve_base(
         return harness, [f"harness '{harness.id}': unknown base '{harness.base}'"]
     if parent.base:
         return harness, [
-            f"harness '{harness.id}': base '{parent.base}' is itself derived — "
-            "harness inheritance is single-level"
+            (f"harness '{harness.id}': base '{parent.base}' is itself derived — "
+            "harness inheritance is single-level")
         ]
 
     merged: dict = {}

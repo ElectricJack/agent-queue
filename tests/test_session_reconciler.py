@@ -972,6 +972,36 @@ class TestStallLadder:
         # ...but it is not reported as delivered.
         assert "task.nudged" not in bus.types()
 
+    async def test_a_swallowed_nudge_warns_and_announces_the_stuck_composer(
+        self, db, provider, reconciler, bus, caplog
+    ):
+        """The stall in stark-journey-63: the text stays in the composer.
+
+        Info-level "will retry" was how that stayed invisible for hours —
+        the retry can never happen while the composer is dirty, so the
+        operator needs both a WARNING and an event the dashboard can hang
+        "message stuck" off.
+        """
+        import logging
+
+        row = await self._stalled(db, provider)
+        provider.swallow_next_nudge(row.name)
+        with caplog.at_level(logging.WARNING, logger="src.sessions.reconciler"):
+            await reconciler.tick(now=NOW)
+
+        assert any(
+            rec.levelno == logging.WARNING and "not submitted" in rec.getMessage()
+            and row.name in rec.getMessage() and "t1" in rec.getMessage()
+            for rec in caplog.records
+        ), [r.getMessage() for r in caplog.records]
+
+        payload = bus.payload("session.nudge_unsubmitted")
+        assert payload is not None
+        assert payload["session_id"] == "s1"
+        assert payload["name"] == row.name
+        assert payload["task_id"] == "t1"
+        assert payload["composer_dirty"] is True
+
     async def test_a_draft_defers_without_consuming_restart_attempts(
         self, db, provider, reconciler, bus, monkeypatch
     ):
@@ -1528,11 +1558,10 @@ class TestOrphanStep:
     ):
         """The agent closed the task and never acked — B3(a)."""
         await _task(db, status=TaskStatus.COMPLETED)
-        row = await _session(db, provider)
+        await _session(db, provider)
         await releasing_reconciler.tick(now=NOW)
         assert (await db.get_session("s1")).state == "stopped"
         assert await provider.list_running("s-") == []
-        assert row.name not in provider.sessions or True
 
     @pytest.mark.parametrize(
         "status", [TaskStatus.FAILED, TaskStatus.BLOCKED, TaskStatus.PAUSED]

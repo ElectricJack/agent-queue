@@ -28,6 +28,9 @@ vault watcher; no restart, no release.
   "ready_prompt_prefix": "› ",
   "process_names": ["codex"],
   "skip_escape_before_enter": true,
+  "composer_clear_keys": [
+    "C-u"
+  ],
   "supports_hooks": true,
   "hook_files": {
     ".codex/hooks.json": "hooks/codex.json"
@@ -177,3 +180,12 @@ and possible MCP-startup warnings all render above the composer and need no
 keys. The `login-required` dialog quarantines instead of typing — an
 unauthenticated codex cannot be fixed by keystrokes; run `codex login` on
 the host.
+
+**`composer_clear_keys: ["C-u"]`** is the recovery key for a nudge that was
+typed but never submitted. Enter races the composer's repaint (an attached
+dashboard terminal resizing the pane is the reliable way to lose one), and
+text left behind blocks every later nudge on the empty-composer guard — the
+stall ladder then stops climbing forever. The provider first re-presses
+Enter on a widening backoff; only if that still fails does it clear with
+these keys, and only while it can still see its own marker on the input
+line. Empty this list to make the provider leave the text alone instead.

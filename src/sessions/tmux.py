@@ -51,7 +51,7 @@ from src.sessions.subprocess import _write_spec_files
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["TmuxProvider", "TmuxCommandError"]
+__all__ = ["TmuxCommandError", "TmuxProvider"]
 
 #: Shell commands that mean "the agent has not started yet" during the
 #: readiness poll (the pane briefly shows the wrapper shell).
@@ -67,6 +67,24 @@ _SEND_KEYS_MAX_BYTES = 4096
 
 # tmux may accept manual input before the harness paints the updated draft.
 _MANUAL_INPUT_QUIET_SECONDS = 2.0
+
+#: Poll schedule for the submit confirmation, one tuple of sleeps per Enter
+#: attempt.  The first attempt is the fast path an idle harness always takes
+#: (~0.6 s); the later ones widen because an ink composer under a repaint
+#: storm — a dashboard terminal attaching or detaching resizes the pane —
+#: can take the better part of a second to redraw the input line, and a
+#: submit judged "unconfirmed" there is a nudge lost for good.
+_SUBMIT_POLLS: tuple[tuple[float, ...], ...] = (
+    (0.15, 0.15, 0.15, 0.15),
+    (0.15, 0.25, 0.5),
+    (0.25, 0.5, 1.0),
+    (0.5, 1.0, 2.0),
+)
+
+#: How many times the clear sequence is sent before giving up on emptying a
+#: composer that refused to submit.  A readline ``C-u`` kills to the start of
+#: the line, so a wrapped paste can need more than one.
+_CLEAR_ATTEMPTS = 3
 
 _META_TOKEN_KEY = "AQ_INSTANCE_TOKEN"
 
@@ -115,6 +133,12 @@ class TmuxProvider(SessionProvider):
         #: Session-env instance tokens, so list_running does not need one
         #: ``show-environment`` per session per tick.
         self._token_cache: dict[str, str] = {}
+        #: name -> (marker, first seen monotonic) for a nudge that was typed
+        #: into the composer and never confirmed submitted.  This is what
+        #: turns "the retry is deferred forever because the composer is not
+        #: empty" into "the retry knows the text is *ours* and presses
+        #: Enter", and it is what ``sessions.stuck_composer`` reports on.
+        self._unsubmitted: dict[str, tuple[str, float]] = {}
 
     # -- plumbing ----------------------------------------------------------
 
@@ -136,7 +160,7 @@ class TmuxProvider(SessionProvider):
         )
         try:
             out, err = await asyncio.wait_for(proc.communicate(stdin), timeout=timeout)
-        except (TimeoutError, asyncio.TimeoutError):
+        except TimeoutError:
             with contextlib.suppress(ProcessLookupError):
                 proc.kill()
             raise TmuxCommandError(args, None, f"timed out after {timeout}s") from None
@@ -228,6 +252,7 @@ class TmuxProvider(SessionProvider):
             ("AQ_SKIP_ESCAPE", "1" if spec.skip_escape_before_enter else "0"),
             ("AQ_PROCESS_NAMES", ",".join(spec.process_names)),
             ("AQ_READY_PREFIX", spec.ready_prompt_prefix or ""),
+            ("AQ_CLEAR_KEYS", ",".join(spec.composer_clear_keys)),
         ):
             with contextlib.suppress(TmuxCommandError):
                 await self._tmux("set-environment", "-t", f"={spec.session_name}", key, value)
@@ -577,7 +602,7 @@ class TmuxProvider(SessionProvider):
                 # is empty. Defer immediately; do not sleep while holding input.
                 raise NudgeDeferred(f"terminal {h.name!r} has recent manual input")
             if not await self._fenced(h):
-                raise NotSubmitted(f"session {h.name!r} is gone")
+                raise NotSubmitted(f"session {h.name!r} is gone", session_name=h.name)
 
             # Debounce successive nudges (input collision pitfall).
             debounce = self.nudge_debounce_ms / 1000.0
@@ -588,16 +613,30 @@ class TmuxProvider(SessionProvider):
             spec_names = await self._process_names_hint(h.name)
             pane = await self._find_agent_pane(h.name, spec_names)
             if pane is None:
-                raise NotSubmitted(f"no live pane found for {h.name!r}")
+                raise NotSubmitted(f"no live pane found for {h.name!r}", session_name=h.name)
+
+            prefix = await self._ready_prefix_hint(h.name)
+            marker = _marker_for(text)
+
+            # Record pre-send activity for poke discounting.
+            before = await self._raw_activity(h.name)
+
+            # Resubmit path: a previous attempt typed *this* text and never
+            # got Enter confirmed.  The composer is therefore not empty, and
+            # the guard below would defer — forever, because nothing else
+            # ever clears it.  Recognising our own marker on the input line
+            # and simply pressing Enter is what stops the stall ladder from
+            # silently stopping (see :class:`NotSubmitted`).
+            if await self._composer_holds(pane, marker, prefix):
+                self._last_nudge_at[h.name] = time.monotonic()
+                self._poke[h.name] = (time.time(), before)
+                await self._submit(h, pane, marker, prefix, before)
+                return
 
             # Never append a reminder to a user's draft or compete with an
             # attached terminal. This guard shares send_input's lock and runs
             # before any resize, key, or paste (including copy-mode cancel).
-            prefix = await self._ready_prefix_hint(h.name)
             await self._require_empty_composer(h.name, pane, prefix)
-
-            # Record pre-send activity for poke discounting.
-            before = await self._raw_activity(h.name)
 
             # Detached TUIs drop pastes until a SIGWINCH wakes them (§9).
             with contextlib.suppress(TmuxCommandError):
@@ -617,8 +656,6 @@ class TmuxProvider(SessionProvider):
             self._last_nudge_at[h.name] = time.monotonic()
             self._poke[h.name] = (time.time(), before)
 
-            marker = text.strip().splitlines()[-1][-48:] if text.strip() else ""
-
             # Landed check (live-test regression): a TUI mid-turn swallows
             # typed keys entirely — the text never reaches the input line,
             # yet the absence-of-marker confirm below would read that as
@@ -633,7 +670,9 @@ class TmuxProvider(SessionProvider):
                         break
                     await asyncio.sleep(0.15)
                 else:
-                    raise NotSubmitted(f"typed text never rendered in {h.name!r}")
+                    raise NotSubmitted(
+                        f"typed text never rendered in {h.name!r}", session_name=h.name
+                    )
 
             # Per-harness Escape semantics (§9): only when the harness says
             # it is safe — grok clears the input line, codex backtracks.
@@ -641,22 +680,155 @@ class TmuxProvider(SessionProvider):
                 await self._tmux("send-keys", "-t", pane, "Escape")
                 await asyncio.sleep(0.05)
 
-            # Enter, then confirm submission: the pasted text must leave
-            # the *input line*.  Enter races bracketed paste (§9), so retry.
-            # Harnesses echo the submitted prompt into the transcript
-            # (Claude repaints it as ``❯ <text>``), so "marker anywhere on
-            # screen" is a false negative after a successful submit — the
-            # check is anchored to the last prompt-prefixed line instead
-            # (see :func:`_submit_pending`).
-            for _attempt in range(3):
-                await self._tmux("send-keys", "-t", pane, "Enter")
-                for _poll in range(4):
-                    await asyncio.sleep(0.15)
-                    tail = await self._capture_tail(pane, lines=40)
-                    if not _submit_pending(tail, marker, prefix):
-                        self._poke[h.name] = (time.time(), before)
-                        return
-            raise NotSubmitted(f"submit unconfirmed for {h.name!r} after 3 attempts")
+            await self._submit(h, pane, marker, prefix, before)
+
+    async def _composer_holds(self, pane: str, marker: str, prefix: str) -> bool:
+        """True when *our own* text is sitting on the harness's input line.
+
+        Deliberately stricter than :func:`_submit_pending`, which fails
+        *safe* for a submit confirmation (an unrecognised screen counts as
+        "still pending", costing one extra Enter).  Here the same guess
+        would be read as "there is a draft to submit" and could replay an
+        already-delivered message, so both of that function's conservative
+        fallbacks are dropped: no ``ready_prompt_prefix`` hint, or no
+        visible prompt line, means "not ours" and the empty-composer guard
+        decides instead.  A pane in copy mode is nobody's composer.
+        """
+        if not marker or not _normalize(prefix).strip():
+            return False
+        try:
+            in_mode = (await self._tmux(
+                "display-message", "-p", "-t", pane, "#{pane_in_mode}",
+            )).strip()
+        except TmuxCommandError:
+            return False
+        if in_mode == "1":
+            return False
+        tail = await self._capture_tail(pane, lines=40)
+        return _marker_on_input_line(tail, marker, prefix)
+
+    async def _submit(
+        self,
+        h: SessionHandle,
+        pane: str,
+        marker: str,
+        prefix: str,
+        before: float | None,
+    ) -> None:
+        """Press Enter until the typed text leaves the input line.
+
+        Confirmation is anchored to the last prompt-prefixed line rather
+        than "marker anywhere on screen": harnesses echo the submitted
+        prompt into the transcript (Claude repaints it as ``❯ <text>``), so
+        a whole-screen scan reads every *successful* submit as a failure
+        (see :func:`_submit_pending`).
+
+        Enter races the composer's repaint, and the backoff widens across
+        attempts because the race is not uniform — an ink composer being
+        repainted by an attaching or detaching dashboard terminal can lag
+        several hundred milliseconds.  When even that fails the text must
+        not simply be abandoned in the composer: it would block every later
+        nudge on :meth:`_require_empty_composer` and the stall ladder would
+        stop climbing.  So the marker is remembered (the next nudge for the
+        same text resubmits it instead of deferring) and, if the harness
+        declares a clear sequence, the composer is emptied.
+        """
+        for polls in _SUBMIT_POLLS:
+            await self._tmux("send-keys", "-t", pane, "Enter")
+            for delay in polls:
+                await asyncio.sleep(delay)
+                tail = await self._capture_tail(pane, lines=40)
+                if not _submit_pending(tail, marker, prefix):
+                    self._unsubmitted.pop(h.name, None)
+                    self._poke[h.name] = (time.time(), before)
+                    return
+        self._unsubmitted.setdefault(h.name, (marker, time.monotonic()))
+        cleared = await self._clear_composer(h.name, pane, marker, prefix)
+        if cleared:
+            self._unsubmitted.pop(h.name, None)
+        raise NotSubmitted(
+            f"submit unconfirmed for {h.name!r} after {len(_SUBMIT_POLLS)} attempts"
+            + ("; composer cleared" if cleared else "; text left in composer"),
+            session_name=h.name,
+            composer_dirty=not cleared,
+        )
+
+    async def _clear_composer(self, name: str, pane: str, marker: str, prefix: str) -> bool:
+        """Empty a composer still holding *our* unsubmitted text.
+
+        Only ever runs while :func:`_submit_pending` can still see this
+        nudge's marker on the input line, so a human draft that arrived
+        mid-nudge is never destroyed.  A harness with no declared
+        ``composer_clear_keys`` is left alone — guessing a key that means
+        something else in that TUI is worse than leaving text the resubmit
+        path can recover.
+        """
+        keys = await self._clear_keys_hint(name)
+        if not keys or not marker or not _normalize(prefix).strip():
+            return False
+        for _attempt in range(_CLEAR_ATTEMPTS):
+            try:
+                for key in keys:
+                    await self._tmux("send-keys", "-t", pane, key)
+            except TmuxCommandError:
+                return False
+            await asyncio.sleep(0.15)
+            tail = await self._capture_tail(pane, lines=40)
+            if not _submit_pending(tail, marker, prefix):
+                return True
+        return False
+
+    # -- stuck-composer recovery (doctor: ``sessions.stuck_composer``) ------
+
+    async def pending_submit(self, h: SessionHandle) -> str | None:
+        """The marker of a nudge still sitting unsubmitted in the composer.
+
+        ``None`` when nothing is known to be stuck *or* when the composer no
+        longer shows it (the agent submitted or deleted it in the meantime),
+        in which case the record is dropped.  Read-only: it never presses a
+        key, so ``aq doctor`` without ``--fix`` cannot disturb a session.
+        """
+        record = self._unsubmitted.get(h.name)
+        if record is None:
+            return None
+        marker = record[0]
+        if not await self._fenced(h):
+            self._unsubmitted.pop(h.name, None)
+            return None
+        pane = await self._find_agent_pane(h.name, await self._process_names_hint(h.name))
+        if pane is None:
+            return None
+        prefix = await self._ready_prefix_hint(h.name)
+        if await self._composer_holds(pane, marker, prefix):
+            return marker
+        self._unsubmitted.pop(h.name, None)
+        return None
+
+    async def resubmit_pending(self, h: SessionHandle) -> bool:
+        """Press Enter on a stuck composer.  True when the text went in.
+
+        The ``--fix`` half of ``sessions.stuck_composer``: exactly the
+        manual ``tmux send-keys Enter`` an operator would run, gated on the
+        composer still holding the marker this provider typed.
+        """
+        async with self._nudge_locks[h.name]:
+            record = self._unsubmitted.get(h.name)
+            if record is None or not await self._fenced(h):
+                return False
+            marker = record[0]
+            pane = await self._find_agent_pane(h.name, await self._process_names_hint(h.name))
+            if pane is None:
+                return False
+            prefix = await self._ready_prefix_hint(h.name)
+            if not await self._composer_holds(pane, marker, prefix):
+                self._unsubmitted.pop(h.name, None)
+                return False
+            before = await self._raw_activity(h.name)
+            try:
+                await self._submit(h, pane, marker, prefix, before)
+            except NotSubmitted:
+                return False
+            return True
 
     async def attach_command(self, h: SessionHandle) -> str:
         return f"tmux -u -L {self.socket} attach -t ={h.name}"
@@ -808,6 +980,20 @@ class TmuxProvider(SessionProvider):
             return ""
         return _parse_environment_value(out, "AQ_READY_PREFIX") or ""
 
+    async def _clear_keys_hint(self, name: str) -> tuple[str, ...]:
+        """The harness's ``composer_clear_keys``, recovered from the env.
+
+        Stored at start like ``AQ_SKIP_ESCAPE`` so a session started before
+        a daemon restart still knows how to clear its own composer.  Absent
+        marker → no keys, which means "leave the text alone".
+        """
+        try:
+            out = await self._tmux("show-environment", "-t", f"={name}", "AQ_CLEAR_KEYS")
+        except TmuxCommandError:
+            return ()
+        value = _parse_environment_value(out, "AQ_CLEAR_KEYS") or ""
+        return tuple(part for part in value.split(",") if part)
+
     async def _skip_escape(self, name: str) -> bool:
         """Whether the session's spec said to skip Escape before Enter.
 
@@ -880,6 +1066,40 @@ def _composer_is_empty(
     if any(row.lstrip().startswith(prefix) for row in lines[:cursor_y]):
         return False
     return all(not row.strip() for row in below)
+
+
+def _marker_for(text: str) -> str:
+    """The tail slice of *text* used to recognise it on the input line.
+
+    The last non-blank line, last 48 characters: long enough to be unique
+    against a harness's own chrome, short enough to survive the wrapping
+    and truncation a composer applies to a multi-line nudge.
+    """
+    stripped = text.strip()
+    return stripped.splitlines()[-1][-48:] if stripped else ""
+
+
+def _marker_on_input_line(tail: str, marker: str, prompt_prefix: str) -> bool:
+    """True when *marker* sits at or after the last prompt-prefixed line.
+
+    The positive half of :func:`_submit_pending` with none of its
+    fail-safe guesses: an unrecognised screen answers ``False`` here.  Used
+    to decide whether text in a composer is a nudge this daemon typed,
+    where a wrong "yes" resubmits something already delivered.
+    """
+    if not marker:
+        return False
+    prefix = _normalize(prompt_prefix).strip()
+    if not prefix:
+        return False
+    lines = _normalize(tail).splitlines()
+    last_prompt = None
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith(prefix):
+            last_prompt = i
+    if last_prompt is None:
+        return False
+    return any(marker in line for line in lines[last_prompt:])
 
 
 def _submit_pending(tail: str, marker: str, prompt_prefix: str) -> bool:

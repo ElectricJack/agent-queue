@@ -45,7 +45,7 @@ from src.sessions.provider import (
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["SessionReconciler", "AdoptReport", "DRAIN_ACK_KEY"]
+__all__ = ["DRAIN_ACK_KEY", "AdoptReport", "SessionReconciler"]
 
 #: Provider-side metadata key the agent's ``aq session drain-ack`` sets.
 DRAIN_ACK_KEY = "AQ_DRAIN_ACK"
@@ -196,7 +196,7 @@ class SessionReconciler:
             try:
                 await step(live, now)
             except Exception:
-                logger.error("Session reconciler step %s failed", step.__name__, exc_info=True)
+                logger.exception("Session reconciler step %s failed", step.__name__)
 
     async def adopt_on_start(self) -> AdoptReport:
         """Boot-time pass: re-bind live sessions, classify dead ones.
@@ -232,7 +232,7 @@ class SessionReconciler:
                 )
                 report.deferred.append(prefix)
             except Exception:
-                logger.error("Adoption: list_running(%r) failed", prefix, exc_info=True)
+                logger.exception("Adoption: list_running(%r) failed", prefix)
                 report.deferred.append(prefix)
 
         for name, row in by_name.items():
@@ -282,7 +282,7 @@ class SessionReconciler:
                 await provider.stop(handle, grace=2.0)
                 report.unknown_killed.append(name)
             except Exception:
-                logger.error("Adoption: could not stop orphan session %r", name, exc_info=True)
+                logger.exception("Adoption: could not stop orphan session %r", name)
 
         if report.total or report.unknown_live or report.deferred:
             logger.info(
@@ -342,7 +342,7 @@ class SessionReconciler:
         try:
             rows = await self.db.list_sessions(live_only=True)
         except Exception:
-            logger.error("Session reconciler: cannot list sessions", exc_info=True)
+            logger.exception("Session reconciler: cannot list sessions")
             return []
 
         refreshed: list[SessionRecord] = []
@@ -1259,7 +1259,7 @@ class SessionReconciler:
     async def _profile_for(self, row: SessionRecord):
         try:
             return await self.db.get_profile(row.profile_id)
-        except Exception:
+        except Exception:  # noqa: BLE001 -- missing profile is handled as unknown
             return None
 
     # -- step 6: backstop --------------------------------------------------
@@ -1417,10 +1417,9 @@ class SessionReconciler:
         try:
             await release(task.id, agent_id=task.assigned_agent_id, expect_claim_epoch=task.claim_epoch)
         except Exception:
-            logger.error(
+            logger.exception(
                 "Session reconciler: releasing resources for task %s failed",
                 task.id,
-                exc_info=True,
             )
 
     async def _carry_resume_key(self, row: SessionRecord, task) -> None:
@@ -1452,8 +1451,28 @@ class SessionReconciler:
         except NudgeDeferred:
             logger.debug("Nudge to session %s deferred; terminal input untouched", row.id)
             return None
-        except NotSubmitted:
-            logger.info("Nudge to session %s pasted but not submitted — will retry", row.id)
+        except NotSubmitted as exc:
+            # WARNING, not info: text left in a composer blocks every later
+            # nudge on the empty-composer guard, so "will retry" can mean
+            # "never" — the operator has to be able to see it in the log.
+            dirty = bool(getattr(exc, "composer_dirty", False))
+            logger.warning(
+                "Nudge to session %s (%s) on task %s pasted but not submitted: %s%s",
+                row.id,
+                row.name,
+                row.task_id,
+                exc,
+                " — text is stuck in the composer" if dirty else " — will retry",
+            )
+            await self._emit(
+                "session.nudge_unsubmitted",
+                session_id=row.id,
+                name=row.name,
+                task_id=row.task_id,
+                project_id=row.project_id,
+                composer_dirty=dirty,
+                reason=str(exc),
+            )
             return False
         except CapabilityUnsupported:
             return False

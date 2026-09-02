@@ -15,7 +15,9 @@ Test knobs (all keyed by session *name*, settable before or after start):
     :class:`~src.sessions.provider.SessionDiedDuringStartup`.
 ``swallow_next_nudge(name)``
     The next :meth:`nudge` raises :class:`NotSubmitted` — the
-    pasted-but-not-submitted race, on demand.
+    pasted-but-not-submitted race, on demand.  The text is recorded as
+    stuck in the composer, so :meth:`pending_submit` reports it and
+    :meth:`resubmit_pending` recovers it (``sessions.stuck_composer``).
 ``script_partial_list(exc)``
     The next :meth:`list_running` raises :class:`PartialListError`.
 ``sent_nudges``
@@ -72,6 +74,9 @@ class FakeProvider(SessionProvider):
         self.sent_nudges: list[tuple[str, str]] = []
         self.starts: list[SessionSpec] = []
         self._swallow: set[str] = set()
+        #: name -> text left unsubmitted in the composer by a swallowed
+        #: nudge.  The fake's stand-in for tmux's marker bookkeeping.
+        self._unsubmitted: dict[str, str] = {}
         self._startup_death: set[str] = set()
         self._partial_list: Exception | None = None
         #: Names whose ``start`` should raise a generic failure.
@@ -206,11 +211,35 @@ class FakeProvider(SessionProvider):
             raise NotSubmitted(f"session {h.name!r} is gone")
         if h.name in self._swallow:
             self._swallow.discard(h.name)
-            raise NotSubmitted(f"submit unconfirmed for {h.name!r}")
+            self._unsubmitted[h.name] = text
+            raise NotSubmitted(
+                f"submit unconfirmed for {h.name!r}; text left in composer",
+                session_name=h.name,
+                composer_dirty=True,
+            )
+        self._unsubmitted.pop(h.name, None)
         self.sent_nudges.append((h.name, text))
         s.output.append(text)
         # Deliberately does *not* bump ``activity``: our own poke must not
         # look like agent progress (poke discounting, design §4.5).
+
+    async def pending_submit(self, h: SessionHandle) -> str | None:
+        """The text of a nudge left unsubmitted in this session's composer."""
+        if self._get(h) is None:
+            self._unsubmitted.pop(h.name, None)
+            return None
+        return self._unsubmitted.get(h.name)
+
+    async def resubmit_pending(self, h: SessionHandle) -> bool:
+        """Press Enter on a stuck composer.  True when the text went in."""
+        text = self._unsubmitted.get(h.name)
+        s = self._get(h)
+        if text is None or s is None:
+            return False
+        del self._unsubmitted[h.name]
+        self.sent_nudges.append((h.name, text))
+        s.output.append(text)
+        return True
 
     async def attach_command(self, h: SessionHandle) -> str:
         return f"# fake session {h.name} (nothing to attach to)"

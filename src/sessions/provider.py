@@ -48,21 +48,21 @@ from pathlib import Path
 from typing import ClassVar
 
 __all__ = [
+    "LIFECYCLES",
+    "PROMPT_MODES",
+    "SESSION_STATES",
     "Cap",
-    "DialogRule",
-    "SessionSpec",
-    "SessionHandle",
-    "SessionProvider",
-    "SessionError",
-    "SessionExecutableNotFound",
-    "require_session_executable",
     "CapabilityUnsupported",
+    "DialogRule",
     "NotSubmitted",
     "PartialListError",
     "SessionDiedDuringStartup",
-    "PROMPT_MODES",
-    "LIFECYCLES",
-    "SESSION_STATES",
+    "SessionError",
+    "SessionExecutableNotFound",
+    "SessionHandle",
+    "SessionProvider",
+    "SessionSpec",
+    "require_session_executable",
 ]
 
 
@@ -176,6 +176,12 @@ class SessionSpec:
     lifecycle: str = "task"
     dialogs: tuple[DialogRule, ...] = ()
     skip_escape_before_enter: bool = True
+    #: tmux key names that clear this harness's composer (``("C-u",)`` for
+    #: readline-style input lines).  Used only to recover from a nudge that
+    #: was typed but never submitted; empty means "no known clear sequence",
+    #: and the provider then leaves the text for the resubmit path rather
+    #: than guessing a key that might do something else entirely.
+    composer_clear_keys: tuple[str, ...] = ()
     #: Files the provider writes into ``work_dir`` before launch, as
     #: ``relative_path -> content``.  Prompt overflow files and harness hook
     #: material ride here so the spec stays the single launch description
@@ -263,7 +269,25 @@ class NotSubmitted(SessionError):
 
     Never treat this as delivered.  Enter races bracketed paste, and
     assuming delivery is how a stall ladder silently stops climbing.
+
+    ``composer_dirty`` says whether the text is *still sitting in the
+    harness's input line*.  That distinction is the whole difference
+    between "retry later" and "a human has to press Enter": a dirty
+    composer blocks every subsequent nudge on the empty-composer guard, so
+    the provider must either resubmit it or clear it, and the caller must
+    say so loudly rather than logging a retry that will never come.
     """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        session_name: str = "",
+        composer_dirty: bool = False,
+    ):
+        super().__init__(message)
+        self.session_name = session_name
+        self.composer_dirty = composer_dirty
 
 
 class NudgeDeferred(NotSubmitted):

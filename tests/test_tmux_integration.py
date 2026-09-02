@@ -14,6 +14,7 @@ row) and the §9 pitfall table.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import signal
 import subprocess
@@ -39,6 +40,12 @@ PROMPT = f"❯{NBSP}"  # "❯ " with a non-breaking space, as Claude paints it
 #: for any key.  Reads bytes (not lines — canonical mode truncates at 4 KB,
 #: which is exactly why real TUIs run raw), strips bracketed-paste markers,
 #: appends each submitted line to received.txt, and repaints the prompt.
+#:
+#: ``--eat-file=<path>`` reproduces the lost-Enter stall: while that file
+#: reads ``eat``, every submit is swallowed and the typed text stays on the
+#: input line, exactly as a composer repainting under a resize does.  The
+#: test flips the file to release it.  ``C-u`` (0x15) kills the input line,
+#: which is what ``composer_clear_keys`` sends.
 STUB = r"""
 import os, sys, termios
 
@@ -46,6 +53,22 @@ fd = sys.stdin.fileno()
 attrs = termios.tcgetattr(fd)
 attrs[3] &= ~(termios.ICANON | termios.ECHO)
 termios.tcsetattr(fd, termios.TCSANOW, attrs)
+
+eat_file = None
+for arg in sys.argv:
+    if arg.startswith("--eat-file="):
+        eat_file = arg.split("=", 1)[1]
+
+
+def eating():
+    if not eat_file:
+        return False
+    try:
+        with open(eat_file) as handle:
+            return handle.read().strip() == "eat"
+    except OSError:
+        return False
+
 
 if "--dialog" in sys.argv:
     print("Do you trust the files in this folder?", flush=True)
@@ -57,13 +80,30 @@ while True:
     chunk = os.read(fd, 65536)
     if not chunk:
         break
+    if b"\x15" in chunk:  # C-u: kill the input line and repaint the prompt
+        buf = b""
+        sys.stdout.write("\r\x1b[2K❯" + " ")
+        sys.stdout.flush()
+        continue
     if "--mute" not in sys.argv:
         # Render typed input like a real TUI input line (termios ECHO is
         # off).  --mute simulates a harness mid-turn that swallows keys.
-        sys.stdout.write(chunk.decode("utf-8", "replace").replace("\r", "\n"))
+        typed = chunk.decode("utf-8", "replace")
+        if eating():
+            # A swallowed submit must not move the cursor off the input
+            # line -- ICRNL already turned the CR into an LF by now.
+            typed = typed.replace("\r", "").replace("\n", "")
+        else:
+            typed = typed.replace("\r", "\n")
+        sys.stdout.write(typed)
         sys.stdout.flush()
     buf += chunk.replace(b"\r", b"\n")
     while b"\n" in buf:
+        if eating():
+            # Swallow the submit; the typed text stays in the composer.
+            head, _, tail = buf.partition(b"\n")
+            buf = head + tail
+            break
         line, _, buf = buf.partition(b"\n")
         text = line.decode("utf-8", "replace")
         text = text.replace("\x1b[200~", "").replace("\x1b[201~", "")
@@ -118,7 +158,16 @@ def stub_path(tmp_path) -> Path:
 
 
 def _spec(
-    tmp_path, stub_path, *, name="s-tm1", token="tok-1", dialog=False, echo=False, mute=False, **kw
+    tmp_path,
+    stub_path,
+    *,
+    name="s-tm1",
+    token="tok-1",
+    dialog=False,
+    echo=False,
+    mute=False,
+    eat_file=None,
+    **kw,
 ) -> SessionSpec:
     command = [sys.executable, str(stub_path)]
     if dialog:
@@ -127,19 +176,51 @@ def _spec(
         command.append("--echo")
     if mute:
         command.append("--mute")
-    defaults = dict(
-        session_name=name,
-        work_dir=str(tmp_path / "wd"),
-        command=tuple(command),
-        env={"AQ_SESSION_ID": f"sess-{name}", "AQ_INSTANCE_TOKEN": token},
-        prompt=None,
-        prompt_mode="none",
-        ready_prompt_prefix="❯ ",  # plain space: NBSP normalization under test
-        process_names=("python",),
-        instance_token=token,
-    )
+    if eat_file is not None:
+        command.append(f"--eat-file={eat_file}")
+    defaults = {
+        "session_name": name,
+        "work_dir": str(tmp_path / "wd"),
+        "command": tuple(command),
+        "env": {"AQ_SESSION_ID": f"sess-{name}", "AQ_INSTANCE_TOKEN": token},
+        "prompt": None,
+        "prompt_mode": "none",
+        "ready_prompt_prefix": "❯ ",  # plain space: NBSP normalization under test
+        "process_names": ("python",),
+        "instance_token": token,
+    }
     defaults.update(kw)
     return SessionSpec(**defaults)
+
+
+async def _resize_storm(provider, name: str, *, cycles: int = 60) -> None:
+    """Churn the pane geometry the way an attaching client does."""
+    for i in range(cycles):
+        with contextlib.suppress(Exception):
+            await provider._tmux(
+                "resize-window",
+                "-t",
+                f"={name}",
+                "-x",
+                str(76 + (i % 9)),
+                "-y",
+                str(22 + (i % 5)),
+            )
+        await asyncio.sleep(0.03)
+
+
+async def _release(eat_file, *, after: float) -> None:
+    """Stop the stub swallowing submits, mid-nudge."""
+    await asyncio.sleep(after)
+    eat_file.write_text("ok")
+
+
+@pytest.fixture
+def quick_submit(monkeypatch):
+    """Keep the four Enter attempts, drop the wall-clock backoff."""
+    from src.sessions import tmux as tmux_module
+
+    monkeypatch.setattr(tmux_module, "_SUBMIT_POLLS", ((0.1, 0.1),) * 4)
 
 
 async def _received(tmp_path, tries=40) -> str:
@@ -263,6 +344,120 @@ class TestNudge:
                 await provider.nudge(handle, "you never saw this")
             assert "you never saw this" not in await _received(tmp_path, tries=3)
         finally:
+            await provider.stop(handle)
+
+    async def test_a_swallowed_enter_is_retried_until_the_composer_accepts_it(
+        self, provider, tmp_path, stub_path
+    ):
+        """The 2026-09-02 stall: Enter lost to the composer's repaint.
+
+        The stub eats submits while ``eat.txt`` says so — what an ink
+        composer does while a pane is being resized by a dashboard terminal
+        attaching or detaching.  The widening Enter backoff has to outlast
+        it; three fixed 0.6 s attempts did not.
+        """
+        eat = tmp_path / "eat.txt"
+        eat.write_text("eat")
+        handle = await provider.start(_spec(tmp_path, stub_path, eat_file=str(eat)))
+        try:
+            releaser = asyncio.create_task(_release(eat, after=0.7))
+            await provider.nudge(handle, "status check please")
+            await releaser
+            received = await _received(tmp_path)
+            assert received.count("status check please") == 1
+        finally:
+            await provider.stop(handle)
+
+    async def test_an_unsubmittable_nudge_is_cleared_out_of_the_composer(
+        self, provider, tmp_path, stub_path, quick_submit
+    ):
+        """Never leave typed text behind: it blocks every later nudge.
+
+        With ``composer_clear_keys`` the provider sends the harness's own
+        kill-line key (``C-u`` → 0x15) rather than abandoning the text, and
+        reports ``composer_dirty=False`` so nobody is told to look at a
+        composer that is already clean.
+        """
+        from src.sessions.provider import NotSubmitted
+
+        eat = tmp_path / "eat.txt"
+        eat.write_text("eat")
+        handle = await provider.start(
+            _spec(
+                tmp_path,
+                stub_path,
+                eat_file=str(eat),
+                composer_clear_keys=("C-u",),
+            )
+        )
+        try:
+            with pytest.raises(NotSubmitted) as caught:
+                await provider.nudge(handle, "this one never submits")
+            assert caught.value.composer_dirty is False
+            assert "this one never submits" not in await provider.peek(handle, 20)
+            assert await _received(tmp_path, tries=3) == ""
+        finally:
+            await provider.stop(handle)
+
+    async def test_text_left_in_the_composer_is_resubmitted_not_retyped(
+        self, provider, tmp_path, stub_path, quick_submit
+    ):
+        """The permanent stall, and its cure.
+
+        Without clear keys the text stays on the input line — which is
+        where the old code gave up, because the next nudge's
+        empty-composer guard then deferred forever.  The retry has to
+        recognise its own marker and press Enter, submitting the text
+        exactly once rather than typing a second copy.
+        """
+        from src.sessions.provider import NotSubmitted
+
+        eat = tmp_path / "eat.txt"
+        eat.write_text("eat")
+        handle = await provider.start(_spec(tmp_path, stub_path, eat_file=str(eat)))
+        try:
+            with pytest.raises(NotSubmitted) as caught:
+                await provider.nudge(handle, "close or continue")
+            assert caught.value.composer_dirty is True
+            assert "close or continue" in await provider.peek(handle, 20)
+
+            eat.write_text("ok")
+            await provider.nudge(handle, "close or continue")
+
+            assert (await _received(tmp_path)).splitlines() == ["close or continue"]
+        finally:
+            await provider.stop(handle)
+
+    async def test_a_resize_storm_never_loses_or_duplicates_a_nudge(
+        self, provider, tmp_path, stub_path
+    ):
+        """The operator's aggravating factor, as a real repaint storm.
+
+        An *attached* dashboard terminal makes a nudge defer outright —
+        the empty-composer guard will not compete with a live client — so
+        the window that actually eats an Enter is the repaint churn around
+        attach and detach.  Under that churn a deferral is a correct
+        answer and a lost Enter is not: the invariant is that the text is
+        eventually delivered, and delivered exactly once.
+        """
+        from src.sessions.provider import NudgeDeferred
+
+        handle = await provider.start(_spec(tmp_path, stub_path))
+        storm = asyncio.create_task(_resize_storm(provider, handle.name))
+        try:
+            for _attempt in range(12):
+                try:
+                    await provider.nudge(handle, "still there?")
+                    break
+                except NudgeDeferred:
+                    await asyncio.sleep(0.1)
+            else:  # pragma: no cover - the storm never let a nudge through
+                pytest.fail("every nudge deferred for the whole storm")
+            assert (await _received(tmp_path)).splitlines() == ["still there?"]
+        finally:
+            storm.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await storm
             await provider.stop(handle)
 
     async def test_large_nudge_takes_the_paste_buffer_path(self, provider, tmp_path, stub_path):

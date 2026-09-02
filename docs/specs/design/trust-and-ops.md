@@ -240,6 +240,7 @@ doctor never hangs and never dies on one bad check.
 | `harness.drift` | `vault/harnesses/*.md` vs the shipped defaults, using the manifest of every hash each shipped file has ever had (`src/sessions/harness_manifest.py`). A copy that matches an *older* shipped version is `stale` (startup seeding refreshes it, so this only shows between upgrade and restart); one that matches nothing is `edited` — an operator's, never touched, but a shipped fix cannot reach it. `aq vault reset-harness <name>` restores the shipped file on request | warn (stale; edited copy that parses with errors/warnings) / info (edited, missing) | yes — seed missing + refresh stale copies only; edited copies are never overwritten |
 | `tmux.server` | tmux socket probe (contributed by [[session-runtime]]) | error when sessions enabled; info otherwise | no |
 | `sessions.stale` | session rows vs process table (contributed by [[session-runtime]]) | warn | yes — reconcile rows through the exit classifier |
+| `sessions.stuck_composer` | live sessions whose composer still holds a nudge the provider typed and could **not** confirm submitted (`src/doctor/session_checks.py`). Enter races the composer's repaint; text left behind then blocks every later nudge on `TmuxProvider._require_empty_composer`, so the stall ladder stops climbing and the message is never seen. Read of provider state plus one screen capture per suspect session — never a scan of every pane, and never a key press | warn | yes — presses Enter, gated on the composer still showing that nudge's marker, so a human draft is never submitted |
 | `worktrees.orphans` | orphan worktree dirs, stale `.git/worktrees` entries (contributed by [[worktree-execution]]). **As landed:** slot worktrees whose `.aq-worktree.json` names a task no longer in `tasks` — a released slot stays on its last task's branch (worktree-execution §3.4), so a deleted task leaves `aq/<task_id>` checked out and git refuses it to every other slot. Report-only: `git worktree prune` does not clear a live worktree's own checkout, and resetting a slot off a branch is an operator call | warn | no — see "as landed" |
 | `leases.stale` | leases past TTL with no live session | warn | yes — clear lease, task re-enters stall handling |
 | `workspaces.base_sessions` | live sessions whose `work_dir` is a **base** workspace — the clone that hosts a kind's slot worktrees, routinely a human's own checkout. Registered unconditionally by the core registry; the launch-time half of the rule is the refusal in `src/orchestrator/base_workspace.py`, which a profile opts out of with `allow_base_checkout: true` | error | no — stopping a session is an operator call |
@@ -273,7 +274,9 @@ or worktree directories that contain content; those always remain human decision
 (principle #5) — which is why `profiles.system_drift` ships without a fix: the
 vault profile is an operator-owned file, so its repair is the explicit,
 per-profile `aq agent profile-reseed` (backs the old file up to
-`profile.md.bak-<epoch>` first). Fixable checks: `sessions.stale`, `worktrees.orphans`
+`profile.md.bak-<epoch>` first). Fixable checks: `sessions.stale`, `sessions.stuck_composer`
+(re-sends only a key the daemon would have sent itself, to submit text the daemon
+itself typed), `worktrees.orphans`
 (prune only), `leases.stale`, `db.wal_size`, `logs.llm_size`, `harness.drift`
 (overwrites only copies byte-identical to a version we shipped), plus plugin checks
 that declare a fix

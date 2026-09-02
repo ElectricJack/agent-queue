@@ -40,15 +40,15 @@ from src.sessions.provider import SessionSpec
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "BOOTSTRAP_PROMPT",
+    "BYPASS_PERMISSION_MODE",
+    "POOL_BOOTSTRAP_PROMPT",
     "SessionSpecBuilder",
-    "sanitize_name",
-    "task_session_name",
     "named_session_name",
     "pool_session_name",
+    "sanitize_name",
     "skip_permissions_allowed",
-    "BYPASS_PERMISSION_MODE",
-    "BOOTSTRAP_PROMPT",
-    "POOL_BOOTSTRAP_PROMPT",
+    "task_session_name",
 ]
 
 _UNSAFE = re.compile(r"[^A-Za-z0-9_-]+")
@@ -511,6 +511,7 @@ class SessionSpecBuilder:
             lifecycle=lifecycle,
             dialogs=harness.dialogs,
             skip_escape_before_enter=harness.skip_escape_before_enter,
+            composer_clear_keys=harness.composer_clear_keys,
             files=tuple(files),
             instance_token=instance_token,
             hooks_provisioned=hooks_provisioned,

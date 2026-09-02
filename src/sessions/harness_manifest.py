@@ -63,6 +63,8 @@ SHIPPED_HARNESS_HASHES: Mapping[str, frozenset[str]] = {
             "69c946e751315e37f8af36d7c43ae364d01ffe166c248f314c74db46e499e991",  # 28f8481e 2026-09-02
             "76ad7c1261dd56beeafa750b53394fe28040cd86b2301a42fafee66b51db2d78",  # 5e65efe9 2026-09-02 (PR #212)
             "c002fa5b88f0a942a38f81649eac0cb694bb48ec8b80ef190b992ac91b15e135",  # ca7ffda9 2026-09-03
+            "8ebe1887e58e23a0b68fbdaff0801414470e7e6d70adfaf06dc1d3032f2d0753",  # keen-current-10 2026-09-02 (composer_clear_keys)
+            "3f4ab3f3928b7ff3444f8db6650dbed92879dadf755a2a710218fa5d64f0bd7e",  # merged main + composer_clear_keys
         }
     ),
     "codex.md": frozenset(
@@ -76,12 +78,15 @@ SHIPPED_HARNESS_HASHES: Mapping[str, frozenset[str]] = {
             "e8d6273fd9c27416b9b72287f477e91d3655bebd0ff1b4e0bc177bb1d4a71bf5",  # 0bcaefe9 2026-09-01
             "2d322783e676dfa4fede595a93b6d3b2706a4628c306ce00a10d7233ca10b07e",  # 5e65efe9 2026-09-02 (PR #212)
             "8cc90bc5c0e99cf7e737bef15368de5e34ff0293b78044fc76aaaceda837f9a3",  # ca7ffda9 2026-09-03
+            "69faf87a91c38b06871e9501aae2e978f14aa1812503f9503f6935ec2444e3d9",  # keen-current-10 2026-09-02 (composer_clear_keys)
+            "b2d63549a13b54ac759e642faf5fa7347fc475020bb8e5e72e4e159fd99a84fb",  # merged main + composer_clear_keys
         }
     ),
     "gemini.md": frozenset(
         {
             "9a68080765918a81b14b93f645c7ab8404c5b502aef8fde1a3fecf030f5ad7f4",  # 7024d380 2026-08-22
             "3af7b3252e2dd0dc1f47aea2301ce0e4223c5561c07cffc9dd99cd484f6cbc78",  # 5e65efe9 2026-09-02 (PR #212)
+            "2f962b1f0a40ff7475b04782f6b9c41b4c8da80c7d6c8162cfecb73633fc5356",  # keen-current-10 2026-09-02 (composer_clear_keys)
         }
     ),
 }

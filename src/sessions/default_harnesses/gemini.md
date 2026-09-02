@@ -30,6 +30,9 @@ vault watcher; no restart, no release.
   "ready_prompt_prefix": "> ",
   "process_names": ["gemini", "node"],
   "skip_escape_before_enter": true,
+  "composer_clear_keys": [
+    "C-u"
+  ],
   "supports_hooks": false,
   "instructions_file": "GEMINI.md",
   "dialogs": [
@@ -118,3 +121,12 @@ claude.md and codex.md.
 unauthenticated gemini cannot be fixed by keystrokes; run
 `gemini` interactively once on the host to complete OAuth or set a
 `GEMINI_API_KEY` in the daemon environment.
+
+**`composer_clear_keys: ["C-u"]`** is the recovery key for a nudge that was
+typed but never submitted. Enter races the composer's repaint (an attached
+dashboard terminal resizing the pane is the reliable way to lose one), and
+text left behind blocks every later nudge on the empty-composer guard — the
+stall ladder then stops climbing forever. The provider first re-presses
+Enter on a widening backoff; only if that still fails does it clear with
+these keys, and only while it can still see its own marker on the input
+line. Empty this list to make the provider leave the text alone instead.

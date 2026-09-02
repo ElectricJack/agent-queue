@@ -295,12 +295,28 @@ an alternation (`A|B`) written without the flag is matched literally and never f
 the parser warns on that shape, and the shipped harnesses flag every alternation.
 
 **Nudge pipeline:** per-session lock → find the agent pane by `process_names` (never by
-window index) → text via `send-keys -l` when ≤ 4 KB, else `load-buffer` +
+window index) → **resubmit check** (does the input line already hold *this* nudge's
+marker?) → text via `send-keys -l` when ≤ 4 KB, else `load-buffer` +
 `paste-buffer -p -d` (bracketed paste) → debounce (~500 ms) → `Escape` only for harnesses
 that need it (per-harness `skip_escape_before_enter`; claude/codex skip) → `Enter`,
-**confirmed** by busy-indicator poll, up to 3 attempts → still unconfirmed raises
-`NotSubmitted` and the caller re-queues. Copy-mode is cancelled first (a parked pane
-swallows keys).
+**confirmed** by busy-indicator poll on a widening backoff (four attempts, ~7 s worst
+case; an ink composer under a repaint storm can take most of a second to redraw) →
+still unconfirmed: the composer is cleared with the harness's `composer_clear_keys`
+and `NotSubmitted` is raised for the caller to re-queue. Copy-mode is cancelled first
+(a parked pane swallows keys).
+
+**Never leave typed text behind.** The composer is the interlock for every later
+nudge — `_require_empty_composer` refuses to type into a non-empty one — so text
+abandoned there is not "a retry pending", it is a permanent stall with the stall
+ladder frozen on its current rung. Three things prevent that, in order: the widening
+Enter backoff; the resubmit check, which recognises the daemon's own marker on the
+input line and presses Enter instead of deferring (this is also what recovers a
+composer left dirty by a *previous* daemon process); and the per-harness clear keys.
+When the text still cannot be moved, `NotSubmitted` carries `composer_dirty=True`,
+the reconciler logs it at **WARNING** with the session name and task id, and emits
+`session.nudge_unsubmitted` — the event behind the dashboard's "message stuck" and
+the `sessions.stuck_composer` doctor check, whose `--fix` presses the same Enter an
+operator would send by hand.
 
 **Kill:** pane pid → descendants (`pgrep -P` + process group) → SIGTERM, 2 s grace
 (100 ms orphans Claude), SIGKILL survivors → `kill-session`. Every kill checks
@@ -386,8 +402,13 @@ calls them.
 
 ## 8. Failure Modes and Edge Cases
 
-- **Dropped submit.** A nudge can paste without submitting (Enter races bracketed paste).
-  Submit is confirmed by busy-poll; `NotSubmitted` re-queues rather than assuming delivery.
+- **Dropped submit.** A nudge can paste without submitting (Enter races bracketed paste,
+  and a dashboard terminal attaching or detaching resizes the pane mid-submit). Submit is
+  confirmed by busy-poll on a widening backoff; `NotSubmitted` re-queues rather than
+  assuming delivery, and the text is either resubmitted, cleared, or reported dirty —
+  never silently abandoned in the composer (observed live 2026-09-02, task
+  `stark-journey-63`: one manual `tmux send-keys Enter` cleared a nudge that had been
+  stuck for hours while the log said "will retry" at info level).
 - **Nudging a busy agent** can interleave with its typing. Nudges are debounced, locked
   per-session, and policy (when to deliver vs. queue) belongs to [[supervisor-agent]];
   the provider only guarantees inject-and-confirm or a typed failure.

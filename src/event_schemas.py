@@ -19,14 +19,7 @@ Phase 0.2 for the full specification.
 
 from __future__ import annotations
 
-import sys
-
-if sys.version_info >= (3, 11):
-    from typing import NotRequired, TypedDict
-else:
-    from typing import TypedDict
-
-    from typing_extensions import NotRequired
+from typing import NotRequired, TypedDict
 
 
 class EventSchema(TypedDict):
@@ -45,7 +38,7 @@ class EventSchema(TypedDict):
     required: list[str]
     optional: list[str]
     types: NotRequired[dict[str, type | tuple[type, ...]]]
-    fields: NotRequired[dict[str, "EventFieldSpec"]]
+    fields: NotRequired[dict[str, EventFieldSpec]]
 
 
 class EventFieldSpec(TypedDict):
@@ -58,8 +51,8 @@ class EventFieldSpec(TypedDict):
     description: str
     sensitive: NotRequired[bool]
     hydrated: NotRequired[bool]
-    fields: NotRequired[dict[str, "EventFieldSpec"]]
-    item: NotRequired["EventFieldSpec"]
+    fields: NotRequired[dict[str, EventFieldSpec]]
+    item: NotRequired[EventFieldSpec]
 
 
 # Meta-fields injected by infrastructure (e.g. ``_plugin`` added by
@@ -830,6 +823,18 @@ _SESSION_SCHEMAS: dict[str, EventSchema] = {
     "session.quarantined": {
         "required": ["session_id", "name", "reason"],
         "optional": ["task_id", "project_id"],
+    },
+    # A nudge (stall reminder or queued message) was typed into the
+    # harness's composer and Enter was never confirmed.  ``composer_dirty``
+    # is the operator-visible half: True means the text is still sitting in
+    # the input line, which blocks every later nudge on the empty-composer
+    # guard until something presses Enter -- what the dashboard shows as
+    # "message stuck" and what ``aq doctor --fix sessions.stuck_composer``
+    # repairs.
+    "session.nudge_unsubmitted": {
+        "required": ["session_id", "name"],
+        "optional": ["task_id", "project_id", "composer_dirty", "reason"],
+        "types": {"session_id": str, "name": str, "composer_dirty": bool},
     },
     # Emitted by TranscriptWatcher when a session's transcript path cannot
     # be resolved (missing directory, no jsonl yet).  One-shot per session

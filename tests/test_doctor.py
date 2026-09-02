@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -22,7 +22,6 @@ from src.doctor.models import (
     Severity,
 )
 from src.doctor.runner import DoctorRegistry, exit_code_for, run_doctor
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -102,6 +101,7 @@ class TestRegistry:
             | {c.id for c in profile_checks()}
             | {c.id for c in db_checks()}
             | {c.id for c in playbook_v2_checks()}
+            | {c.id for c in session_checks()}
         )
         assert set(reg.ids()) == expected
 
@@ -320,7 +320,7 @@ class TestUnknownCheckFilter:
         assert result["exit_code"] == 0
 
     async def test_reserved_id_is_not_unknown(self, ctx):
-        reserved = sorted(RESERVED_CHECK_IDS)[0]
+        reserved = min(RESERVED_CHECK_IDS)
         result = await run_doctor(default_registry(), ctx, only=[reserved])
         assert [c["id"] for c in result["checks"]] == [reserved]
         assert result["exit_code"] == 0
@@ -365,7 +365,7 @@ class TestBuiltinCatalog:
         assert all("." in i for i in ids)
 
     def test_no_builtin_claims_a_reserved_id(self):
-        assert not (set(c.id for c in builtin_checks()) & set(RESERVED_CHECK_IDS))
+        assert not ({c.id for c in builtin_checks()} & set(RESERVED_CHECK_IDS))
 
     def test_expected_checks_present(self):
         ids = {c.id for c in builtin_checks()}
@@ -675,7 +675,7 @@ class TestHarnessBinariesCheck:
 
     async def test_timed_out_probe_kills_the_child(self, monkeypatch):
         """A cancelled ``communicate()`` abandons the process; it must be reaped."""
-        import src.doctor.builtin as builtin
+        from src.doctor import builtin
 
         killed = {"n": 0}
 
@@ -699,7 +699,7 @@ class TestHarnessBinariesCheck:
         monkeypatch.setattr(builtin.asyncio, "create_subprocess_exec", fake_exec)
         monkeypatch.setattr(builtin, "_PROBE_TIMEOUT_S", 0.01)
 
-        name, ok, detail = await builtin._probe_binary("git")
+        _name, ok, detail = await builtin._probe_binary("git")
         assert ok is False
         assert "timed out" in detail
         assert killed["n"] == 1, "the timed-out child was never killed"
@@ -712,8 +712,8 @@ class TestLogsLlmSizeCheck:
 
     async def test_warns_on_dirs_past_retention(self, tmp_path):
         base = tmp_path / "logs" / "llm"
-        old = (datetime.now(timezone.utc) - timedelta(days=99)).strftime("%Y-%m-%d")
-        recent = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        old = (datetime.now(UTC) - timedelta(days=99)).strftime("%Y-%m-%d")
+        recent = datetime.now(UTC).strftime("%Y-%m-%d")
         (base / old).mkdir(parents=True)
         (base / recent).mkdir(parents=True)
         (base / old / "x.jsonl").write_text("{}\n", encoding="utf-8")
@@ -795,7 +795,7 @@ class TestEventsRegistryCheck:
         from src.event_bus import EventBus
         from src.event_schemas import registered_event_types
 
-        known = sorted(registered_event_types())[0]
+        known = min(registered_event_types())
         bus = EventBus(validate_events=False)
         await bus.emit(known, {})
 

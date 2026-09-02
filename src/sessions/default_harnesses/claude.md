@@ -37,6 +37,9 @@ vault watcher; no restart, no release.
     "node"
   ],
   "skip_escape_before_enter": true,
+  "composer_clear_keys": [
+    "C-u"
+  ],
   "supports_hooks": true,
   "hook_files": {
     ".aq/hooks/claude.json": "hooks/claude.json"
@@ -139,6 +142,15 @@ tells the CLI to read it; without the flag the file is inert and
 harnesses need an Escape first to leave a mode; grok's Escape *clears* the
 input, and codex's double-Escape backtracks, which is why this is per-harness
 data and not a blind key sequence in provider code.
+
+**`composer_clear_keys: ["C-u"]`** is the recovery key for a nudge that was
+typed but never submitted. Enter races the composer's repaint (an attached
+dashboard terminal resizing the pane is the reliable way to lose one), and
+text left behind blocks every later nudge on the empty-composer guard — the
+stall ladder then stops climbing forever. The provider first re-presses
+Enter on a widening backoff; only if that still fails does it clear with
+these keys, and only while it can still see its own marker on the input
+line. Empty this list to make the provider leave the text alone instead.
 
 **Dialogs share one budget** (`sessions.dialog_budget_seconds`, default 8 s)
 across the whole table, not 8 s each. Nine per-dialog budgets is how the
