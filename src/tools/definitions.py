@@ -57,6 +57,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "install_profile": "agent",
     "export_profile": "agent",
     "import_profile": "agent",
+    "subagent_event": "agent",
     # agent profiles (project-scoped CRUD wrappers)
     "create_project_profile": "agent",
     "edit_project_profile": "agent",
@@ -3826,6 +3827,44 @@ _ALL_TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "subagent_event",
+        "description": (
+            "Record a native sub-agent start or stop event for the calling session. "
+            "Harness hooks use this to report their own child-agent lifecycle; the "
+            "session identity comes from the bearer token when present."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "event": {
+                    "type": "string",
+                    "enum": ["start", "stop"],
+                    "description": "Native lifecycle event reported by the harness hook.",
+                },
+                "subagent_id": {
+                    "type": "string",
+                    "description": "Harness-provided identifier for the child agent.",
+                },
+                "agent_type": {
+                    "type": "string",
+                    "description": "Optional harness sub-agent type.",
+                },
+                "turn_id": {
+                    "type": "string",
+                    "description": "Optional harness turn identifier.",
+                },
+                "session_id": {
+                    "type": "string",
+                    "description": (
+                        "Session to attribute the event to for local replay only; a bearer "
+                        "token always supplies its own session identity."
+                    ),
+                },
+            },
+            "required": ["event", "subagent_id"],
+        },
+    },
+    {
         "name": "task_claim",
         "description": (
             "Claim a ready task for the calling pool/task session (pull-based work "
@@ -3893,48 +3932,6 @@ _ALL_TOOL_DEFINITIONS = [
                     ),
                 },
             },
-        },
-    },
-    {
-        "name": "subagent_event",
-        "description": (
-            "Record one SubagentStart / SubagentStop from a harness hook so the "
-            "flock view can fold live sub-agent counts per session. The session is "
-            "taken from the caller's token scope; duplicate deliveries collapse onto "
-            "the row they already wrote. Backs `aq subagent event --hook-json`."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "event": {
-                    "type": "string",
-                    "enum": ["start", "stop"],
-                    "description": "Which side of the sub-agent lifecycle this hook fired for.",
-                },
-                "subagent_id": {
-                    "type": "string",
-                    "description": (
-                        "Harness-supplied identifier for the sub-agent; pairs a stop "
-                        "with its start."
-                    ),
-                },
-                "session_id": {
-                    "type": "string",
-                    "description": (
-                        "Session that spawned the sub-agent (optional — taken from the "
-                        "token scope; only a local caller may name it)."
-                    ),
-                },
-                "agent_type": {
-                    "type": "string",
-                    "description": "Sub-agent type reported by the harness (optional).",
-                },
-                "turn_id": {
-                    "type": "string",
-                    "description": "Harness turn the sub-agent belongs to (optional).",
-                },
-            },
-            "required": ["event", "subagent_id"],
         },
     },
     {
