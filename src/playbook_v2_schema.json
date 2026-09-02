@@ -1,0 +1,2407 @@
+{
+  "$defs": {
+    "AgentTaskStep": {
+      "additionalProperties": false,
+      "properties": {
+        "cancel_child": {
+          "default": false,
+          "title": "Cancel Child",
+          "type": "boolean"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "executable": false,
+          "title": "Description"
+        },
+        "inputs": {
+          "additionalProperties": {
+            "discriminator": {
+              "mapping": {
+                "binding_ref": "#/$defs/BindingRef",
+                "coalesce": "#/$defs/CoalesceValue",
+                "context_ref": "#/$defs/ContextRef",
+                "event_ref": "#/$defs/EventRef",
+                "list": "#/$defs/ListValue",
+                "literal": "#/$defs/LiteralValue",
+                "loop_ref": "#/$defs/LoopRef",
+                "object": "#/$defs/ObjectValue",
+                "template": "#/$defs/TemplateValue"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/LiteralValue"
+              },
+              {
+                "$ref": "#/$defs/EventRef"
+              },
+              {
+                "$ref": "#/$defs/ContextRef"
+              },
+              {
+                "$ref": "#/$defs/BindingRef"
+              },
+              {
+                "$ref": "#/$defs/LoopRef"
+              },
+              {
+                "$ref": "#/$defs/ListValue"
+              },
+              {
+                "$ref": "#/$defs/ObjectValue"
+              },
+              {
+                "$ref": "#/$defs/TemplateValue"
+              },
+              {
+                "$ref": "#/$defs/CoalesceValue"
+              }
+            ]
+          },
+          "title": "Inputs",
+          "type": "object"
+        },
+        "objective": {
+          "discriminator": {
+            "mapping": {
+              "binding_ref": "#/$defs/BindingRef",
+              "coalesce": "#/$defs/CoalesceValue",
+              "context_ref": "#/$defs/ContextRef",
+              "event_ref": "#/$defs/EventRef",
+              "list": "#/$defs/ListValue",
+              "literal": "#/$defs/LiteralValue",
+              "loop_ref": "#/$defs/LoopRef",
+              "object": "#/$defs/ObjectValue",
+              "template": "#/$defs/TemplateValue"
+            },
+            "propertyName": "type"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/LiteralValue"
+            },
+            {
+              "$ref": "#/$defs/EventRef"
+            },
+            {
+              "$ref": "#/$defs/ContextRef"
+            },
+            {
+              "$ref": "#/$defs/BindingRef"
+            },
+            {
+              "$ref": "#/$defs/LoopRef"
+            },
+            {
+              "$ref": "#/$defs/ListValue"
+            },
+            {
+              "$ref": "#/$defs/ObjectValue"
+            },
+            {
+              "$ref": "#/$defs/TemplateValue"
+            },
+            {
+              "$ref": "#/$defs/CoalesceValue"
+            }
+          ],
+          "title": "Objective"
+        },
+        "profile_id": {
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$",
+          "title": "Profile Id",
+          "type": "string"
+        },
+        "retry": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RetryPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "rule": {
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+          "title": "Rule",
+          "type": "string"
+        },
+        "save_result_as": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Save Result As"
+        },
+        "source": {
+          "$ref": "#/$defs/SourceRef"
+        },
+        "timeout_seconds": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeout Seconds"
+        },
+        "title": {
+          "executable": false,
+          "title": "Title",
+          "type": "string"
+        },
+        "transitions": {
+          "additionalProperties": {
+            "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+            "type": "string"
+          },
+          "title": "Transitions",
+          "type": "object"
+        },
+        "type": {
+          "const": "agent_task",
+          "default": "agent_task",
+          "title": "Type",
+          "type": "string"
+        },
+        "wait_for_completion": {
+          "default": true,
+          "title": "Wait For Completion",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "rule",
+        "title",
+        "source",
+        "profile_id",
+        "objective",
+        "transitions"
+      ],
+      "title": "AgentTaskStep",
+      "type": "object"
+    },
+    "AgentTypeScope": {
+      "additionalProperties": false,
+      "properties": {
+        "agent_type": {
+          "title": "Agent Type",
+          "type": "string"
+        },
+        "type": {
+          "const": "agent_type",
+          "default": "agent_type",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "agent_type"
+      ],
+      "title": "AgentTypeScope",
+      "type": "object"
+    },
+    "AiBudget": {
+      "additionalProperties": false,
+      "description": "Every field required. The spec forbids an unbounded AI state.",
+      "properties": {
+        "max_calls": {
+          "maximum": 50,
+          "minimum": 1,
+          "title": "Max Calls",
+          "type": "integer"
+        },
+        "max_output_tokens": {
+          "minimum": 1,
+          "title": "Max Output Tokens",
+          "type": "integer"
+        },
+        "max_total_tokens": {
+          "minimum": 1,
+          "title": "Max Total Tokens",
+          "type": "integer"
+        },
+        "timeout_seconds": {
+          "maximum": 3600,
+          "minimum": 1,
+          "title": "Timeout Seconds",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "max_calls",
+        "max_output_tokens",
+        "max_total_tokens",
+        "timeout_seconds"
+      ],
+      "title": "AiBudget",
+      "type": "object"
+    },
+    "BindingRef": {
+      "additionalProperties": false,
+      "description": "A read of a binding produced by an earlier step's ``save_result_as``.",
+      "properties": {
+        "binding": {
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+          "title": "Binding",
+          "type": "string"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Path"
+        },
+        "type": {
+          "const": "binding_ref",
+          "default": "binding_ref",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "binding"
+      ],
+      "title": "BindingRef",
+      "type": "object"
+    },
+    "BooleanExpr": {
+      "additionalProperties": false,
+      "properties": {
+        "op": {
+          "enum": [
+            "and",
+            "or",
+            "not"
+          ],
+          "title": "Op",
+          "type": "string"
+        },
+        "operands": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "bool": "#/$defs/BooleanExpr",
+                "comparison": "#/$defs/Comparison",
+                "exists": "#/$defs/Exists"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/Comparison"
+              },
+              {
+                "$ref": "#/$defs/BooleanExpr"
+              },
+              {
+                "$ref": "#/$defs/Exists"
+              }
+            ]
+          },
+          "title": "Operands",
+          "type": "array"
+        },
+        "type": {
+          "const": "bool",
+          "default": "bool",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "op",
+        "operands"
+      ],
+      "title": "BooleanExpr",
+      "type": "object"
+    },
+    "CoalesceValue": {
+      "additionalProperties": false,
+      "description": "First non-null branch wins. The ONLY way to express optionality.",
+      "properties": {
+        "options": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "binding_ref": "#/$defs/BindingRef",
+                "coalesce": "#/$defs/CoalesceValue",
+                "context_ref": "#/$defs/ContextRef",
+                "event_ref": "#/$defs/EventRef",
+                "list": "#/$defs/ListValue",
+                "literal": "#/$defs/LiteralValue",
+                "loop_ref": "#/$defs/LoopRef",
+                "object": "#/$defs/ObjectValue",
+                "template": "#/$defs/TemplateValue"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/LiteralValue"
+              },
+              {
+                "$ref": "#/$defs/EventRef"
+              },
+              {
+                "$ref": "#/$defs/ContextRef"
+              },
+              {
+                "$ref": "#/$defs/BindingRef"
+              },
+              {
+                "$ref": "#/$defs/LoopRef"
+              },
+              {
+                "$ref": "#/$defs/ListValue"
+              },
+              {
+                "$ref": "#/$defs/ObjectValue"
+              },
+              {
+                "$ref": "#/$defs/TemplateValue"
+              },
+              {
+                "$ref": "#/$defs/CoalesceValue"
+              }
+            ]
+          },
+          "minItems": 2,
+          "title": "Options",
+          "type": "array"
+        },
+        "type": {
+          "const": "coalesce",
+          "default": "coalesce",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "options"
+      ],
+      "title": "CoalesceValue",
+      "type": "object"
+    },
+    "CommandStep": {
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$",
+          "title": "Command",
+          "type": "string"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "executable": false,
+          "title": "Description"
+        },
+        "idempotency_key": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "binding_ref": "#/$defs/BindingRef",
+                  "coalesce": "#/$defs/CoalesceValue",
+                  "context_ref": "#/$defs/ContextRef",
+                  "event_ref": "#/$defs/EventRef",
+                  "list": "#/$defs/ListValue",
+                  "literal": "#/$defs/LiteralValue",
+                  "loop_ref": "#/$defs/LoopRef",
+                  "object": "#/$defs/ObjectValue",
+                  "template": "#/$defs/TemplateValue"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/LiteralValue"
+                },
+                {
+                  "$ref": "#/$defs/EventRef"
+                },
+                {
+                  "$ref": "#/$defs/ContextRef"
+                },
+                {
+                  "$ref": "#/$defs/BindingRef"
+                },
+                {
+                  "$ref": "#/$defs/LoopRef"
+                },
+                {
+                  "$ref": "#/$defs/ListValue"
+                },
+                {
+                  "$ref": "#/$defs/ObjectValue"
+                },
+                {
+                  "$ref": "#/$defs/TemplateValue"
+                },
+                {
+                  "$ref": "#/$defs/CoalesceValue"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Idempotency Key"
+        },
+        "inputs": {
+          "additionalProperties": {
+            "discriminator": {
+              "mapping": {
+                "binding_ref": "#/$defs/BindingRef",
+                "coalesce": "#/$defs/CoalesceValue",
+                "context_ref": "#/$defs/ContextRef",
+                "event_ref": "#/$defs/EventRef",
+                "list": "#/$defs/ListValue",
+                "literal": "#/$defs/LiteralValue",
+                "loop_ref": "#/$defs/LoopRef",
+                "object": "#/$defs/ObjectValue",
+                "template": "#/$defs/TemplateValue"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/LiteralValue"
+              },
+              {
+                "$ref": "#/$defs/EventRef"
+              },
+              {
+                "$ref": "#/$defs/ContextRef"
+              },
+              {
+                "$ref": "#/$defs/BindingRef"
+              },
+              {
+                "$ref": "#/$defs/LoopRef"
+              },
+              {
+                "$ref": "#/$defs/ListValue"
+              },
+              {
+                "$ref": "#/$defs/ObjectValue"
+              },
+              {
+                "$ref": "#/$defs/TemplateValue"
+              },
+              {
+                "$ref": "#/$defs/CoalesceValue"
+              }
+            ]
+          },
+          "title": "Inputs",
+          "type": "object"
+        },
+        "retry": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RetryPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "rule": {
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+          "title": "Rule",
+          "type": "string"
+        },
+        "save_result_as": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Save Result As"
+        },
+        "source": {
+          "$ref": "#/$defs/SourceRef"
+        },
+        "title": {
+          "executable": false,
+          "title": "Title",
+          "type": "string"
+        },
+        "transitions": {
+          "additionalProperties": {
+            "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+            "type": "string"
+          },
+          "title": "Transitions",
+          "type": "object"
+        },
+        "type": {
+          "const": "command",
+          "default": "command",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "rule",
+        "title",
+        "source",
+        "command",
+        "transitions"
+      ],
+      "title": "CommandStep",
+      "type": "object"
+    },
+    "Comparison": {
+      "additionalProperties": false,
+      "properties": {
+        "left": {
+          "discriminator": {
+            "mapping": {
+              "binding_ref": "#/$defs/BindingRef",
+              "coalesce": "#/$defs/CoalesceValue",
+              "context_ref": "#/$defs/ContextRef",
+              "event_ref": "#/$defs/EventRef",
+              "list": "#/$defs/ListValue",
+              "literal": "#/$defs/LiteralValue",
+              "loop_ref": "#/$defs/LoopRef",
+              "object": "#/$defs/ObjectValue",
+              "template": "#/$defs/TemplateValue"
+            },
+            "propertyName": "type"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/LiteralValue"
+            },
+            {
+              "$ref": "#/$defs/EventRef"
+            },
+            {
+              "$ref": "#/$defs/ContextRef"
+            },
+            {
+              "$ref": "#/$defs/BindingRef"
+            },
+            {
+              "$ref": "#/$defs/LoopRef"
+            },
+            {
+              "$ref": "#/$defs/ListValue"
+            },
+            {
+              "$ref": "#/$defs/ObjectValue"
+            },
+            {
+              "$ref": "#/$defs/TemplateValue"
+            },
+            {
+              "$ref": "#/$defs/CoalesceValue"
+            }
+          ],
+          "title": "Left"
+        },
+        "op": {
+          "enum": [
+            "eq",
+            "ne",
+            "lt",
+            "lte",
+            "gt",
+            "gte",
+            "in",
+            "not_in",
+            "contains"
+          ],
+          "title": "Op",
+          "type": "string"
+        },
+        "right": {
+          "discriminator": {
+            "mapping": {
+              "binding_ref": "#/$defs/BindingRef",
+              "coalesce": "#/$defs/CoalesceValue",
+              "context_ref": "#/$defs/ContextRef",
+              "event_ref": "#/$defs/EventRef",
+              "list": "#/$defs/ListValue",
+              "literal": "#/$defs/LiteralValue",
+              "loop_ref": "#/$defs/LoopRef",
+              "object": "#/$defs/ObjectValue",
+              "template": "#/$defs/TemplateValue"
+            },
+            "propertyName": "type"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/LiteralValue"
+            },
+            {
+              "$ref": "#/$defs/EventRef"
+            },
+            {
+              "$ref": "#/$defs/ContextRef"
+            },
+            {
+              "$ref": "#/$defs/BindingRef"
+            },
+            {
+              "$ref": "#/$defs/LoopRef"
+            },
+            {
+              "$ref": "#/$defs/ListValue"
+            },
+            {
+              "$ref": "#/$defs/ObjectValue"
+            },
+            {
+              "$ref": "#/$defs/TemplateValue"
+            },
+            {
+              "$ref": "#/$defs/CoalesceValue"
+            }
+          ],
+          "title": "Right"
+        },
+        "type": {
+          "const": "comparison",
+          "default": "comparison",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "op",
+        "left",
+        "right"
+      ],
+      "title": "Comparison",
+      "type": "object"
+    },
+    "CompiledAgainst": {
+      "additionalProperties": false,
+      "description": "Server-computed provenance: what the artifact was compiled against.\n\nNever author-supplied — §7.1 strips and recomputes it from the registries.",
+      "properties": {
+        "commands": {
+          "patternProperties": {
+            "^[a-z0-9][a-z0-9._-]{0,127}$": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            }
+          },
+          "title": "Commands",
+          "type": "object"
+        },
+        "profiles": {
+          "patternProperties": {
+            "^[a-z0-9][a-z0-9._-]{0,127}$": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            }
+          },
+          "title": "Profiles",
+          "type": "object"
+        }
+      },
+      "title": "CompiledAgainst",
+      "type": "object"
+    },
+    "ContextRef": {
+      "additionalProperties": false,
+      "description": "A dotted path into the engine context schema (§4.2.1).",
+      "properties": {
+        "path": {
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$",
+          "title": "Path",
+          "type": "string"
+        },
+        "type": {
+          "const": "context_ref",
+          "default": "context_ref",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "title": "ContextRef",
+      "type": "object"
+    },
+    "DecisionCase": {
+      "additionalProperties": false,
+      "properties": {
+        "goto": {
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+          "title": "Goto",
+          "type": "string"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "executable": false,
+          "title": "Label"
+        },
+        "when": {
+          "discriminator": {
+            "mapping": {
+              "bool": "#/$defs/BooleanExpr",
+              "comparison": "#/$defs/Comparison",
+              "exists": "#/$defs/Exists"
+            },
+            "propertyName": "type"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Comparison"
+            },
+            {
+              "$ref": "#/$defs/BooleanExpr"
+            },
+            {
+              "$ref": "#/$defs/Exists"
+            }
+          ],
+          "title": "When"
+        }
+      },
+      "required": [
+        "when",
+        "goto"
+      ],
+      "title": "DecisionCase",
+      "type": "object"
+    },
+    "DecisionStep": {
+      "additionalProperties": false,
+      "description": "``default`` is required, deviating from the spec's \"optional default\".\n\nAn optional default is a fall-through that is neither a displayed edge nor\nan error, which the spec's stronger rule (\"every executable transition is\ndisplayed\", \"no silent defaults\") forbids.  §20 item 3 records the deviation.",
+      "properties": {
+        "cases": {
+          "items": {
+            "$ref": "#/$defs/DecisionCase"
+          },
+          "minItems": 1,
+          "title": "Cases",
+          "type": "array"
+        },
+        "default": {
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+          "title": "Default",
+          "type": "string"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "executable": false,
+          "title": "Description"
+        },
+        "rule": {
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+          "title": "Rule",
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/SourceRef"
+        },
+        "title": {
+          "executable": false,
+          "title": "Title",
+          "type": "string"
+        },
+        "type": {
+          "const": "decision",
+          "default": "decision",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "rule",
+        "title",
+        "source",
+        "cases",
+        "default"
+      ],
+      "title": "DecisionStep",
+      "type": "object"
+    },
+    "EventRef": {
+      "additionalProperties": false,
+      "description": "A dotted path into the triggering event's registered payload schema.",
+      "properties": {
+        "path": {
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$",
+          "title": "Path",
+          "type": "string"
+        },
+        "type": {
+          "const": "event_ref",
+          "default": "event_ref",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "title": "EventRef",
+      "type": "object"
+    },
+    "Exists": {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "default": "present",
+          "enum": [
+            "present",
+            "truthy"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "type": {
+          "const": "exists",
+          "default": "exists",
+          "title": "Type",
+          "type": "string"
+        },
+        "value": {
+          "discriminator": {
+            "mapping": {
+              "binding_ref": "#/$defs/BindingRef",
+              "coalesce": "#/$defs/CoalesceValue",
+              "context_ref": "#/$defs/ContextRef",
+              "event_ref": "#/$defs/EventRef",
+              "list": "#/$defs/ListValue",
+              "literal": "#/$defs/LiteralValue",
+              "loop_ref": "#/$defs/LoopRef",
+              "object": "#/$defs/ObjectValue",
+              "template": "#/$defs/TemplateValue"
+            },
+            "propertyName": "type"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/LiteralValue"
+            },
+            {
+              "$ref": "#/$defs/EventRef"
+            },
+            {
+              "$ref": "#/$defs/ContextRef"
+            },
+            {
+              "$ref": "#/$defs/BindingRef"
+            },
+            {
+              "$ref": "#/$defs/LoopRef"
+            },
+            {
+              "$ref": "#/$defs/ListValue"
+            },
+            {
+              "$ref": "#/$defs/ObjectValue"
+            },
+            {
+              "$ref": "#/$defs/TemplateValue"
+            },
+            {
+              "$ref": "#/$defs/CoalesceValue"
+            }
+          ],
+          "title": "Value"
+        }
+      },
+      "required": [
+        "value"
+      ],
+      "title": "Exists",
+      "type": "object"
+    },
+    "ForEachStep": {
+      "additionalProperties": false,
+      "properties": {
+        "body_entry": {
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+          "title": "Body Entry",
+          "type": "string"
+        },
+        "collection": {
+          "discriminator": {
+            "mapping": {
+              "binding_ref": "#/$defs/BindingRef",
+              "coalesce": "#/$defs/CoalesceValue",
+              "context_ref": "#/$defs/ContextRef",
+              "event_ref": "#/$defs/EventRef",
+              "list": "#/$defs/ListValue",
+              "literal": "#/$defs/LiteralValue",
+              "loop_ref": "#/$defs/LoopRef",
+              "object": "#/$defs/ObjectValue",
+              "template": "#/$defs/TemplateValue"
+            },
+            "propertyName": "type"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/LiteralValue"
+            },
+            {
+              "$ref": "#/$defs/EventRef"
+            },
+            {
+              "$ref": "#/$defs/ContextRef"
+            },
+            {
+              "$ref": "#/$defs/BindingRef"
+            },
+            {
+              "$ref": "#/$defs/LoopRef"
+            },
+            {
+              "$ref": "#/$defs/ListValue"
+            },
+            {
+              "$ref": "#/$defs/ObjectValue"
+            },
+            {
+              "$ref": "#/$defs/TemplateValue"
+            },
+            {
+              "$ref": "#/$defs/CoalesceValue"
+            }
+          ],
+          "title": "Collection"
+        },
+        "continuation": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Continuation"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "executable": false,
+          "title": "Description"
+        },
+        "failure_policy": {
+          "enum": [
+            "halt",
+            "continue",
+            "collect"
+          ],
+          "title": "Failure Policy",
+          "type": "string"
+        },
+        "item_binding": {
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+          "title": "Item Binding",
+          "type": "string"
+        },
+        "max_iterations": {
+          "default": 500,
+          "maximum": 10000,
+          "minimum": 1,
+          "title": "Max Iterations",
+          "type": "integer"
+        },
+        "rule": {
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+          "title": "Rule",
+          "type": "string"
+        },
+        "save_result_as": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Save Result As"
+        },
+        "source": {
+          "$ref": "#/$defs/SourceRef"
+        },
+        "title": {
+          "executable": false,
+          "title": "Title",
+          "type": "string"
+        },
+        "transitions": {
+          "additionalProperties": {
+            "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+            "type": "string"
+          },
+          "title": "Transitions",
+          "type": "object"
+        },
+        "type": {
+          "const": "foreach",
+          "default": "foreach",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "rule",
+        "title",
+        "source",
+        "collection",
+        "item_binding",
+        "failure_policy",
+        "body_entry",
+        "transitions"
+      ],
+      "title": "ForEachStep",
+      "type": "object"
+    },
+    "ListValue": {
+      "additionalProperties": false,
+      "properties": {
+        "items": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "binding_ref": "#/$defs/BindingRef",
+                "coalesce": "#/$defs/CoalesceValue",
+                "context_ref": "#/$defs/ContextRef",
+                "event_ref": "#/$defs/EventRef",
+                "list": "#/$defs/ListValue",
+                "literal": "#/$defs/LiteralValue",
+                "loop_ref": "#/$defs/LoopRef",
+                "object": "#/$defs/ObjectValue",
+                "template": "#/$defs/TemplateValue"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/LiteralValue"
+              },
+              {
+                "$ref": "#/$defs/EventRef"
+              },
+              {
+                "$ref": "#/$defs/ContextRef"
+              },
+              {
+                "$ref": "#/$defs/BindingRef"
+              },
+              {
+                "$ref": "#/$defs/LoopRef"
+              },
+              {
+                "$ref": "#/$defs/ListValue"
+              },
+              {
+                "$ref": "#/$defs/ObjectValue"
+              },
+              {
+                "$ref": "#/$defs/TemplateValue"
+              },
+              {
+                "$ref": "#/$defs/CoalesceValue"
+              }
+            ]
+          },
+          "title": "Items",
+          "type": "array"
+        },
+        "type": {
+          "const": "list",
+          "default": "list",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "items"
+      ],
+      "title": "ListValue",
+      "type": "object"
+    },
+    "LiteralValue": {
+      "additionalProperties": false,
+      "description": "A constant. Named ``LiteralValue`` because ``Literal`` is ``typing``'s.",
+      "properties": {
+        "type": {
+          "const": "literal",
+          "default": "literal",
+          "title": "Type",
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Value"
+        }
+      },
+      "required": [
+        "value"
+      ],
+      "title": "LiteralValue",
+      "type": "object"
+    },
+    "LlmStep": {
+      "additionalProperties": false,
+      "properties": {
+        "budget": {
+          "$ref": "#/$defs/AiBudget"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "executable": false,
+          "title": "Description"
+        },
+        "inputs": {
+          "additionalProperties": {
+            "discriminator": {
+              "mapping": {
+                "binding_ref": "#/$defs/BindingRef",
+                "coalesce": "#/$defs/CoalesceValue",
+                "context_ref": "#/$defs/ContextRef",
+                "event_ref": "#/$defs/EventRef",
+                "list": "#/$defs/ListValue",
+                "literal": "#/$defs/LiteralValue",
+                "loop_ref": "#/$defs/LoopRef",
+                "object": "#/$defs/ObjectValue",
+                "template": "#/$defs/TemplateValue"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/LiteralValue"
+              },
+              {
+                "$ref": "#/$defs/EventRef"
+              },
+              {
+                "$ref": "#/$defs/ContextRef"
+              },
+              {
+                "$ref": "#/$defs/BindingRef"
+              },
+              {
+                "$ref": "#/$defs/LoopRef"
+              },
+              {
+                "$ref": "#/$defs/ListValue"
+              },
+              {
+                "$ref": "#/$defs/ObjectValue"
+              },
+              {
+                "$ref": "#/$defs/TemplateValue"
+              },
+              {
+                "$ref": "#/$defs/CoalesceValue"
+              }
+            ]
+          },
+          "title": "Inputs",
+          "type": "object"
+        },
+        "outcome_field": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Outcome Field"
+        },
+        "output_schema": {
+          "additionalProperties": true,
+          "title": "Output Schema",
+          "type": "object"
+        },
+        "profile_id": {
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$",
+          "title": "Profile Id",
+          "type": "string"
+        },
+        "prompt": {
+          "discriminator": {
+            "mapping": {
+              "binding_ref": "#/$defs/BindingRef",
+              "coalesce": "#/$defs/CoalesceValue",
+              "context_ref": "#/$defs/ContextRef",
+              "event_ref": "#/$defs/EventRef",
+              "list": "#/$defs/ListValue",
+              "literal": "#/$defs/LiteralValue",
+              "loop_ref": "#/$defs/LoopRef",
+              "object": "#/$defs/ObjectValue",
+              "template": "#/$defs/TemplateValue"
+            },
+            "propertyName": "type"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/LiteralValue"
+            },
+            {
+              "$ref": "#/$defs/EventRef"
+            },
+            {
+              "$ref": "#/$defs/ContextRef"
+            },
+            {
+              "$ref": "#/$defs/BindingRef"
+            },
+            {
+              "$ref": "#/$defs/LoopRef"
+            },
+            {
+              "$ref": "#/$defs/ListValue"
+            },
+            {
+              "$ref": "#/$defs/ObjectValue"
+            },
+            {
+              "$ref": "#/$defs/TemplateValue"
+            },
+            {
+              "$ref": "#/$defs/CoalesceValue"
+            }
+          ],
+          "title": "Prompt"
+        },
+        "retry": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RetryPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "rule": {
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+          "title": "Rule",
+          "type": "string"
+        },
+        "save_result_as": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Save Result As"
+        },
+        "source": {
+          "$ref": "#/$defs/SourceRef"
+        },
+        "title": {
+          "executable": false,
+          "title": "Title",
+          "type": "string"
+        },
+        "tool_use": {
+          "$ref": "#/$defs/ToolUsePolicy"
+        },
+        "transitions": {
+          "additionalProperties": {
+            "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+            "type": "string"
+          },
+          "title": "Transitions",
+          "type": "object"
+        },
+        "type": {
+          "const": "llm",
+          "default": "llm",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "rule",
+        "title",
+        "source",
+        "profile_id",
+        "prompt",
+        "output_schema",
+        "budget",
+        "transitions"
+      ],
+      "title": "LlmStep",
+      "type": "object"
+    },
+    "LoopRef": {
+      "additionalProperties": false,
+      "description": "A read of the current item of an enclosing ``ForEachStep``.",
+      "properties": {
+        "binding": {
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+          "title": "Binding",
+          "type": "string"
+        },
+        "index": {
+          "default": false,
+          "title": "Index",
+          "type": "boolean"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Path"
+        },
+        "type": {
+          "const": "loop_ref",
+          "default": "loop_ref",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "binding"
+      ],
+      "title": "LoopRef",
+      "type": "object"
+    },
+    "ObjectValue": {
+      "additionalProperties": false,
+      "properties": {
+        "fields": {
+          "additionalProperties": {
+            "discriminator": {
+              "mapping": {
+                "binding_ref": "#/$defs/BindingRef",
+                "coalesce": "#/$defs/CoalesceValue",
+                "context_ref": "#/$defs/ContextRef",
+                "event_ref": "#/$defs/EventRef",
+                "list": "#/$defs/ListValue",
+                "literal": "#/$defs/LiteralValue",
+                "loop_ref": "#/$defs/LoopRef",
+                "object": "#/$defs/ObjectValue",
+                "template": "#/$defs/TemplateValue"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/LiteralValue"
+              },
+              {
+                "$ref": "#/$defs/EventRef"
+              },
+              {
+                "$ref": "#/$defs/ContextRef"
+              },
+              {
+                "$ref": "#/$defs/BindingRef"
+              },
+              {
+                "$ref": "#/$defs/LoopRef"
+              },
+              {
+                "$ref": "#/$defs/ListValue"
+              },
+              {
+                "$ref": "#/$defs/ObjectValue"
+              },
+              {
+                "$ref": "#/$defs/TemplateValue"
+              },
+              {
+                "$ref": "#/$defs/CoalesceValue"
+              }
+            ]
+          },
+          "title": "Fields",
+          "type": "object"
+        },
+        "type": {
+          "const": "object",
+          "default": "object",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "fields"
+      ],
+      "title": "ObjectValue",
+      "type": "object"
+    },
+    "ProjectScope": {
+      "additionalProperties": false,
+      "properties": {
+        "project_id": {
+          "title": "Project Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "project",
+          "default": "project",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "project_id"
+      ],
+      "title": "ProjectScope",
+      "type": "object"
+    },
+    "RetryPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "backoff_seconds": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Backoff Seconds"
+        },
+        "max_attempts": {
+          "default": 1,
+          "maximum": 10,
+          "minimum": 1,
+          "title": "Max Attempts",
+          "type": "integer"
+        },
+        "retry_on": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Retry On",
+          "type": "array"
+        }
+      },
+      "title": "RetryPolicy",
+      "type": "object"
+    },
+    "Rule": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "executable": false,
+          "title": "Description"
+        },
+        "entry_step": {
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+          "title": "Entry Step",
+          "type": "string"
+        },
+        "guard": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "bool": "#/$defs/BooleanExpr",
+                  "comparison": "#/$defs/Comparison",
+                  "exists": "#/$defs/Exists"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/Comparison"
+                },
+                {
+                  "$ref": "#/$defs/BooleanExpr"
+                },
+                {
+                  "$ref": "#/$defs/Exists"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Guard"
+        },
+        "id": {
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "executable": false,
+          "title": "Name",
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/SourceRef"
+        },
+        "trigger": {
+          "$ref": "#/$defs/Trigger"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "trigger",
+        "entry_step",
+        "source"
+      ],
+      "title": "Rule",
+      "type": "object"
+    },
+    "SourceRef": {
+      "additionalProperties": false,
+      "description": "Where in the authoring Markdown this element came from.\n\nField-for-field identical to Package 5 §4.1's ``SourceRefDTO``.  Every field\nis presentation-only (§4.8): moving a rule down the page must not change the\nartifact's executable fingerprint.",
+      "properties": {
+        "end_line": {
+          "executable": false,
+          "minimum": 1,
+          "title": "End Line",
+          "type": "integer"
+        },
+        "excerpt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "executable": false,
+          "title": "Excerpt"
+        },
+        "heading": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "executable": false,
+          "title": "Heading"
+        },
+        "path": {
+          "executable": false,
+          "title": "Path",
+          "type": "string"
+        },
+        "start_line": {
+          "executable": false,
+          "minimum": 1,
+          "title": "Start Line",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "start_line",
+        "end_line"
+      ],
+      "title": "SourceRef",
+      "type": "object"
+    },
+    "SystemScope": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "system",
+          "default": "system",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "title": "SystemScope",
+      "type": "object"
+    },
+    "TemplateValue": {
+      "additionalProperties": false,
+      "description": "Produces a string and only a string. Parts are concatenated in order.\n\n§10.4: this is not a format language.  There is no ``{{ }}`` parsing, no\n``str.format``, and no user-controlled format spec — rendering is\n``\"\".join(str(render(p)) for p in parts)``.",
+      "properties": {
+        "parts": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "binding_ref": "#/$defs/BindingRef",
+                "coalesce": "#/$defs/CoalesceValue",
+                "context_ref": "#/$defs/ContextRef",
+                "event_ref": "#/$defs/EventRef",
+                "list": "#/$defs/ListValue",
+                "literal": "#/$defs/LiteralValue",
+                "loop_ref": "#/$defs/LoopRef",
+                "object": "#/$defs/ObjectValue",
+                "template": "#/$defs/TemplateValue"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/LiteralValue"
+              },
+              {
+                "$ref": "#/$defs/EventRef"
+              },
+              {
+                "$ref": "#/$defs/ContextRef"
+              },
+              {
+                "$ref": "#/$defs/BindingRef"
+              },
+              {
+                "$ref": "#/$defs/LoopRef"
+              },
+              {
+                "$ref": "#/$defs/ListValue"
+              },
+              {
+                "$ref": "#/$defs/ObjectValue"
+              },
+              {
+                "$ref": "#/$defs/TemplateValue"
+              },
+              {
+                "$ref": "#/$defs/CoalesceValue"
+              }
+            ]
+          },
+          "title": "Parts",
+          "type": "array"
+        },
+        "type": {
+          "const": "template",
+          "default": "template",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "parts"
+      ],
+      "title": "TemplateValue",
+      "type": "object"
+    },
+    "TerminalStep": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "executable": false,
+          "title": "Description"
+        },
+        "outcome": {
+          "enum": [
+            "completed",
+            "failed",
+            "cancelled"
+          ],
+          "title": "Outcome",
+          "type": "string"
+        },
+        "result": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "binding_ref": "#/$defs/BindingRef",
+                  "coalesce": "#/$defs/CoalesceValue",
+                  "context_ref": "#/$defs/ContextRef",
+                  "event_ref": "#/$defs/EventRef",
+                  "list": "#/$defs/ListValue",
+                  "literal": "#/$defs/LiteralValue",
+                  "loop_ref": "#/$defs/LoopRef",
+                  "object": "#/$defs/ObjectValue",
+                  "template": "#/$defs/TemplateValue"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/LiteralValue"
+                },
+                {
+                  "$ref": "#/$defs/EventRef"
+                },
+                {
+                  "$ref": "#/$defs/ContextRef"
+                },
+                {
+                  "$ref": "#/$defs/BindingRef"
+                },
+                {
+                  "$ref": "#/$defs/LoopRef"
+                },
+                {
+                  "$ref": "#/$defs/ListValue"
+                },
+                {
+                  "$ref": "#/$defs/ObjectValue"
+                },
+                {
+                  "$ref": "#/$defs/TemplateValue"
+                },
+                {
+                  "$ref": "#/$defs/CoalesceValue"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Result"
+        },
+        "rule": {
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+          "title": "Rule",
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/SourceRef"
+        },
+        "title": {
+          "executable": false,
+          "title": "Title",
+          "type": "string"
+        },
+        "type": {
+          "const": "terminal",
+          "default": "terminal",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "rule",
+        "title",
+        "source",
+        "outcome"
+      ],
+      "title": "TerminalStep",
+      "type": "object"
+    },
+    "ToolUsePolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "aq_commands": {
+          "items": {
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$",
+            "type": "string"
+          },
+          "title": "Aq Commands",
+          "type": "array"
+        },
+        "enabled": {
+          "default": false,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "plugin_tools": {
+          "items": {
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$",
+            "type": "string"
+          },
+          "title": "Plugin Tools",
+          "type": "array"
+        }
+      },
+      "title": "ToolUsePolicy",
+      "type": "object"
+    },
+    "Trigger": {
+      "additionalProperties": false,
+      "description": "Subscription-level match.\n\n``filter`` is a conjunction of literal equality (scalar) or membership\n(list) tests against the event schema — not an expression tree, because a\nsubscription filter must be matchable without a run context.",
+      "properties": {
+        "event_type": {
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$",
+          "title": "Event Type",
+          "type": "string"
+        },
+        "filter": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "items": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "integer"
+                        },
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "boolean"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Filter"
+        }
+      },
+      "required": [
+        "event_type"
+      ],
+      "title": "Trigger",
+      "type": "object"
+    },
+    "WaitStep": {
+      "additionalProperties": false,
+      "properties": {
+        "awaited": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "binding_ref": "#/$defs/BindingRef",
+                  "coalesce": "#/$defs/CoalesceValue",
+                  "context_ref": "#/$defs/ContextRef",
+                  "event_ref": "#/$defs/EventRef",
+                  "list": "#/$defs/ListValue",
+                  "literal": "#/$defs/LiteralValue",
+                  "loop_ref": "#/$defs/LoopRef",
+                  "object": "#/$defs/ObjectValue",
+                  "template": "#/$defs/TemplateValue"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/LiteralValue"
+                },
+                {
+                  "$ref": "#/$defs/EventRef"
+                },
+                {
+                  "$ref": "#/$defs/ContextRef"
+                },
+                {
+                  "$ref": "#/$defs/BindingRef"
+                },
+                {
+                  "$ref": "#/$defs/LoopRef"
+                },
+                {
+                  "$ref": "#/$defs/ListValue"
+                },
+                {
+                  "$ref": "#/$defs/ObjectValue"
+                },
+                {
+                  "$ref": "#/$defs/TemplateValue"
+                },
+                {
+                  "$ref": "#/$defs/CoalesceValue"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Awaited"
+        },
+        "correlation_key": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "binding_ref": "#/$defs/BindingRef",
+                  "coalesce": "#/$defs/CoalesceValue",
+                  "context_ref": "#/$defs/ContextRef",
+                  "event_ref": "#/$defs/EventRef",
+                  "list": "#/$defs/ListValue",
+                  "literal": "#/$defs/LiteralValue",
+                  "loop_ref": "#/$defs/LoopRef",
+                  "object": "#/$defs/ObjectValue",
+                  "template": "#/$defs/TemplateValue"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/LiteralValue"
+                },
+                {
+                  "$ref": "#/$defs/EventRef"
+                },
+                {
+                  "$ref": "#/$defs/ContextRef"
+                },
+                {
+                  "$ref": "#/$defs/BindingRef"
+                },
+                {
+                  "$ref": "#/$defs/LoopRef"
+                },
+                {
+                  "$ref": "#/$defs/ListValue"
+                },
+                {
+                  "$ref": "#/$defs/ObjectValue"
+                },
+                {
+                  "$ref": "#/$defs/TemplateValue"
+                },
+                {
+                  "$ref": "#/$defs/CoalesceValue"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Correlation Key"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "executable": false,
+          "title": "Description"
+        },
+        "outcomes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Outcomes",
+          "type": "array"
+        },
+        "rule": {
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+          "title": "Rule",
+          "type": "string"
+        },
+        "save_result_as": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Save Result As"
+        },
+        "source": {
+          "$ref": "#/$defs/SourceRef"
+        },
+        "timeout_seconds": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeout Seconds"
+        },
+        "title": {
+          "executable": false,
+          "title": "Title",
+          "type": "string"
+        },
+        "transitions": {
+          "additionalProperties": {
+            "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+            "type": "string"
+          },
+          "title": "Transitions",
+          "type": "object"
+        },
+        "type": {
+          "const": "wait",
+          "default": "wait",
+          "title": "Type",
+          "type": "string"
+        },
+        "wait_kind": {
+          "enum": [
+            "event",
+            "human",
+            "task",
+            "timer"
+          ],
+          "title": "Wait Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "rule",
+        "title",
+        "source",
+        "wait_kind",
+        "transitions"
+      ],
+      "title": "WaitStep",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "compiled_against": {
+      "$ref": "#/$defs/CompiledAgainst"
+    },
+    "compiled_at": {
+      "format": "date-time",
+      "title": "Compiled At",
+      "type": "string"
+    },
+    "compiler_build": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Compiler Build"
+    },
+    "id": {
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$",
+      "title": "Id",
+      "type": "string"
+    },
+    "purpose": {
+      "default": "routine",
+      "enum": [
+        "routine",
+        "assignment_routing"
+      ],
+      "title": "Purpose",
+      "type": "string"
+    },
+    "rules": {
+      "items": {
+        "$ref": "#/$defs/Rule"
+      },
+      "maxItems": 50,
+      "minItems": 1,
+      "title": "Rules",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": 2,
+      "default": 2,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "scope": {
+      "discriminator": {
+        "mapping": {
+          "agent_type": "#/$defs/AgentTypeScope",
+          "project": "#/$defs/ProjectScope",
+          "system": "#/$defs/SystemScope"
+        },
+        "propertyName": "type"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/SystemScope"
+        },
+        {
+          "$ref": "#/$defs/ProjectScope"
+        },
+        {
+          "$ref": "#/$defs/AgentTypeScope"
+        }
+      ],
+      "title": "Scope"
+    },
+    "source_hash": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Source Hash",
+      "type": "string"
+    },
+    "steps": {
+      "maxProperties": 500,
+      "minProperties": 1,
+      "patternProperties": {
+        "^[a-z0-9][a-z0-9_-]{0,63}$": {
+          "discriminator": {
+            "mapping": {
+              "agent_task": "#/$defs/AgentTaskStep",
+              "command": "#/$defs/CommandStep",
+              "decision": "#/$defs/DecisionStep",
+              "foreach": "#/$defs/ForEachStep",
+              "llm": "#/$defs/LlmStep",
+              "terminal": "#/$defs/TerminalStep",
+              "wait": "#/$defs/WaitStep"
+            },
+            "propertyName": "type"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/CommandStep"
+            },
+            {
+              "$ref": "#/$defs/LlmStep"
+            },
+            {
+              "$ref": "#/$defs/AgentTaskStep"
+            },
+            {
+              "$ref": "#/$defs/DecisionStep"
+            },
+            {
+              "$ref": "#/$defs/WaitStep"
+            },
+            {
+              "$ref": "#/$defs/ForEachStep"
+            },
+            {
+              "$ref": "#/$defs/TerminalStep"
+            }
+          ]
+        }
+      },
+      "title": "Steps",
+      "type": "object"
+    },
+    "version": {
+      "minimum": 1,
+      "title": "Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "id",
+    "version",
+    "scope",
+    "source_hash",
+    "compiled_at",
+    "rules",
+    "steps"
+  ],
+  "title": "PlaybookDefinition",
+  "type": "object"
+}
