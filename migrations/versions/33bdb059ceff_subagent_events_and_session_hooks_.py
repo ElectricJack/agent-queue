@@ -57,6 +57,8 @@ def upgrade() -> None:
             sa.Column(
                 'hooks_provisioned',
                 sa.Boolean(),
+                # sa.false(), not sa.text('0'): SQLite takes 0 for a BOOLEAN,
+                # PostgreSQL rejects an integer default on a boolean column.
                 server_default=sa.false(),
                 nullable=False,
             )
