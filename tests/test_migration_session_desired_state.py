@@ -13,6 +13,7 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
+import pytest
 import sqlalchemy as sa
 from alembic import command
 from alembic.config import Config
@@ -20,6 +21,8 @@ from sqlalchemy import create_engine
 
 DESIRED_STATE_REVISION = "4e925610d7a6"
 PRIOR_REVISION = "2ea52ac3da6c"
+
+pytestmark = pytest.mark.migration
 
 
 def _alembic_config(db_url: str) -> Config:

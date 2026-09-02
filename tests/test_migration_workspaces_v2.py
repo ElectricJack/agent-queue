@@ -5,6 +5,7 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
+import pytest
 import sqlalchemy as sa
 from alembic import command
 from alembic.config import Config
@@ -14,6 +15,8 @@ from sqlalchemy import create_engine
 # Revision id from migrations/versions/7cdb4618fd0b_add_workspaces_v2_schema.py.
 WORKSPACES_V2_REVISION = "7cdb4618fd0b"
 PRIOR_REVISION = "e4f2a8b1d6c9"
+
+pytestmark = pytest.mark.migration
 
 
 def _alembic_config(db_url: str) -> Config:

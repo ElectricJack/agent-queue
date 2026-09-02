@@ -25,6 +25,8 @@ from sqlalchemy import create_engine
 INTEGRATION_MODE_REVISION = "c4d5e6f7a8b9"
 PRIOR_REVISION = "f1d7a9c20b64"
 
+pytestmark = pytest.mark.migration
+
 
 def _alembic_config(db_url: str) -> Config:
     cfg = Config("alembic.ini")

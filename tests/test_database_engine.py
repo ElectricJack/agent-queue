@@ -119,6 +119,7 @@ async def test_corrupt_schema_cache_template_rebuilds_from_alembic(tmp_path, mon
     assert template.read_bytes().startswith(b"SQLite format 3\000")
 
 
+@pytest.mark.migration
 @pytest.mark.perf
 def test_sqlite_head_window_downgrade_reupgrade_preserves_and_transforms_data(tmp_path):
     """head -> below the hierarchy pair -> head, with data in the window.
@@ -189,6 +190,7 @@ def test_sqlite_head_window_downgrade_reupgrade_preserves_and_transforms_data(tm
     engine.dispose()
 
 
+@pytest.mark.migration
 @pytest.mark.perf
 def test_one_way_token_ledger_downgrade_is_documented_lossy(tmp_path):
     """Below-hierarchy history: c4e1a9d7b310's downgrade is one-way by design.

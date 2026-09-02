@@ -24,7 +24,7 @@ from tests.pg_dsn import ensure_worker_postgres_dsn
 
 # Full Alembic history and downgrade compatibility are exercised explicitly,
 # but are intentionally excluded from the default fast suite.
-pytestmark = pytest.mark.perf
+pytestmark = [pytest.mark.perf, pytest.mark.migration]
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROJECT_ID = "proj"
