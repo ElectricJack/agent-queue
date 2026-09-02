@@ -8,7 +8,11 @@ Child plan ``docs/superpowers/plans/2026-09-01-playbook-v2-typed-model-compiler.
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 from pydantic import BaseModel, ValidationError
@@ -510,3 +514,84 @@ def test_the_golden_artifact_is_the_shared_fixture():
     }
     assert isinstance(golden.steps["ensure-review-task"], CommandStep)
     assert golden.compiled_at == datetime(2026, 9, 1, tzinfo=UTC)
+
+
+# --------------------------------------------------------------------------
+# §8 — generated JSON Schema (``scripts/generate-playbook-schema.py``)
+# --------------------------------------------------------------------------
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+GENERATOR = REPO_ROOT / "scripts" / "generate-playbook-schema.py"
+SCHEMA_FILE = REPO_ROOT / "src" / "playbook_v2_schema.json"
+V1_SCHEMA_FILE = REPO_ROOT / "src" / "playbook_schema.json"
+
+
+def _run_generator(*args: str) -> subprocess.CompletedProcess[str]:
+    """Run the generator with no daemon, no database and no config (§8)."""
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if not k.startswith("AQ_") and k not in {"DATABASE_URL", "POSTGRES_TEST_DSN"}
+    }
+    env["PYTHONPATH"] = str(REPO_ROOT)
+    return subprocess.run(
+        [sys.executable, str(GENERATOR), *args],
+        cwd=str(REPO_ROOT),
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+class TestGeneratedSchema:
+    """§8 — the published schema and the accepting loader are one source."""
+
+    def test_generated_schema_matches_checked_in_file(self):
+        """T-15 — the CI guard, mirroring V1's ``test_schema_file_matches_generated``."""
+        result = _run_generator("--check")
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_generation_is_idempotent(self, tmp_path):
+        """T-16 — generate twice, byte-identical (the roadmap's acceptance test)."""
+        first = tmp_path / "first.json"
+        second = tmp_path / "second.json"
+        assert _run_generator("--output", str(first)).returncode == 0
+        assert _run_generator("--output", str(second)).returncode == 0
+        assert first.read_bytes() == second.read_bytes()
+        assert first.read_bytes() == SCHEMA_FILE.read_bytes()
+
+    def test_check_reports_drift(self, tmp_path):
+        stale = tmp_path / "stale.json"
+        stale.write_text('{"title": "not the schema"}\n')
+        result = _run_generator("--check", "--output", str(stale))
+        assert result.returncode == 1
+        assert "playbook" in result.stdout.lower() or "---" in result.stdout
+
+    def test_schema_is_deterministically_serialized(self):
+        text = SCHEMA_FILE.read_text()
+        parsed = json.loads(text)
+        assert text == json.dumps(parsed, sort_keys=True, indent=2, ensure_ascii=False) + "\n"
+        assert parsed["$defs"]
+        assert "PlaybookDefinition" in text
+
+    def test_the_v1_schema_file_is_untouched(self):
+        """T-17 — Package 7, not this package, retires V1's schema file."""
+        v1 = json.loads(V1_SCHEMA_FILE.read_text())
+        assert v1 != json.loads(SCHEMA_FILE.read_text())
+
+    def test_output_schema_validation_has_its_validator(self):
+        """T-15b — ``jsonschema`` is a declared dependency, not a transitive accident."""
+        from jsonschema import Draft202012Validator
+
+        Draft202012Validator.check_schema(json.loads(SCHEMA_FILE.read_text()))
+
+    def test_every_fixture_validates_against_the_published_schema(self):
+        from jsonschema import Draft202012Validator
+
+        validator = Draft202012Validator(json.loads(SCHEMA_FILE.read_text()))
+        fixtures = sorted(GOLDEN.parent.glob("*.artifact.json"))
+        assert fixtures
+        for path in fixtures:
+            errors = sorted(validator.iter_errors(json.loads(path.read_text())), key=str)
+            assert not errors, f"{path.name}: {[e.message for e in errors]}"
