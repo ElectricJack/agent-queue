@@ -483,11 +483,14 @@ class DependencyQueryMixin:
                     parent_settled = parent_result.settled
                     parent_ready = parent_result.ready
                     conditions.append(task_dependencies.c.dep_type != DepType.PARENT_CHILD.value)
-            await conn.execute(delete(task_dependencies).where(and_(*conditions)))
-            # The pure ``parent-child`` case returned above via set_parent
-            # (which marks parent.changed); reaching here always means a
-            # non-parent-child edge was in scope for the DELETE.
-            await self._mark_dependency_dirty((task_id, depends_on), conn=conn)
+            removed = await conn.execute(delete(task_dependencies).where(and_(*conditions)))
+            # ``dep_type=None`` also covers the parent edge, which
+            # ``set_parent`` above already marked ``parent.changed``; the
+            # DELETE here only ever touches non-parent-child edges, and may
+            # well match none.  Mark only when it actually removed an edge,
+            # so a pure parent-child removal produces exactly one mark.
+            if (removed.rowcount or 0) > 0:
+                await self._mark_dependency_dirty((task_id, depends_on), conn=conn)
             flipped = await self.recompute_blocked({task_id, depends_on}, conn=conn)
             flipped |= parent_flipped
             already_noted = {tid for tid, _ in parent_ready}

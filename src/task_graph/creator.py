@@ -95,6 +95,19 @@ class GraphPlan:
     def task_ids(self) -> list[str]:
         return [row["id"] for row in self.node_rows]
 
+    @property
+    def project_id(self) -> str | None:
+        """The project every row in this plan belongs to.
+
+        ``build_plan`` stamps one ``project_id`` onto the container and every
+        node, so either source answers; the container row is absent when the
+        plan hangs off a pre-existing parent.
+        """
+        for row in (self.parent_row, *self.node_rows):
+            if row is not None:
+                return row["project_id"]
+        return None
+
 
 @dataclass(frozen=True)
 class FormulaProvenance:
@@ -375,7 +388,14 @@ async def write_plan(
     async with db._engine.begin() as conn:
         if plan.parent_row is not None:
             await _insert_task(conn, plan.parent_row)
-            await db.mark_container(plan.parent_id, conn=conn)
+            # ``_insert_task`` is a direct ``insert(tasks)`` that bypasses
+            # ``_insert_task_row``, so the layout mark is owed here.  The
+            # nodes below are marked by ``set_parent_bulk``, but a plan with
+            # zero nodes never reaches it — the container would otherwise
+            # never enter ``layout_dirty`` at all.
+            await db.mark_layout_dirty(
+                plan.parent_row["project_id"], [plan.parent_id], "task.created", conn=conn
+            )
         if plan.provisional:
             real: dict[str, str] = {}
             for key in plan.ids:
@@ -404,6 +424,14 @@ async def write_plan(
         if plan.dependency_rows:
             await conn.execute(
                 insert(task_dependencies), [_strip_private(r) for r in plan.dependency_rows]
+            )
+            # These edges are written straight to the table, so
+            # ``add_dependency``'s mark never runs.  One batched mark over
+            # every endpoint of the batch — never one per edge.
+            endpoints = {r["task_id"] for r in plan.dependency_rows}
+            endpoints |= {r["depends_on_task_id"] for r in plan.dependency_rows}
+            await db.mark_layout_dirty(
+                plan.project_id, sorted(endpoints), "dependency.changed", conn=conn
             )
         if plan.context_rows:
             await conn.execute(insert(task_context), [_strip_private(r) for r in plan.context_rows])

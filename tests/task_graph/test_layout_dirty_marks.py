@@ -176,3 +176,72 @@ async def test_delete_project_clears_all_layout_state(db):
     assert await db.get_layout_meta("p1", "all") is None
     assert await db.dirty_layout_projects() == []
     assert await db.next_layout_job() is None
+
+
+# ── graph-creation path (creator.write_plan writes rows directly) ────────
+
+
+async def test_write_plan_marks_container_with_zero_nodes(db):
+    """The container is inserted by a direct ``insert(tasks)``.
+
+    With no nodes there is no ``set_parent_bulk`` call to mark anything, so
+    the container's own mark has to come from ``write_plan``.  The parser
+    rejects a node-less document (``no_nodes``), so the graph is built
+    directly rather than through ``parse_graph``.
+    """
+    from src.task_graph.creator import build_plan, write_plan
+    from src.task_graph.models import GraphParent, TaskGraph
+
+    plan = await build_plan(
+        db, TaskGraph(parent=GraphParent(title="Epic"), nodes=[]), project_id="p1"
+    )
+    assert plan.node_rows == []
+    await write_plan(db, plan)
+    assert (plan.parent_id, "task.created") in await marks(db)
+
+
+async def test_write_plan_marks_both_edge_endpoints(db):
+    from src.task_graph import parse_graph
+    from src.task_graph.creator import build_plan, write_plan
+
+    graph = {
+        "version": 1,
+        "parent": {"title": "Epic"},
+        "nodes": [
+            {"key": "a", "title": "A"},
+            {"key": "b", "title": "B", "needs": [{"on": "a"}]},
+        ],
+    }
+    plan = await build_plan(db, parse_graph(graph), project_id="p1")
+    await write_plan(db, plan)
+    a, b = plan.task_ids
+    m = await marks(db)
+    assert (a, "dependency.changed") in m and (b, "dependency.changed") in m
+    # one batched mark over the endpoint set, not one per edge
+    assert len([r for r in m if r[1] == "dependency.changed"]) == 2
+
+
+# ── negative / transactional guarantees ─────────────────────────────────
+
+
+async def test_parent_child_only_removal_marks_no_dependency_change(db):
+    for t in ("p", "c"):
+        await db.create_task(Task(id=t, project_id="p1", title=t, description=""))
+    async with db._engine.begin() as conn:
+        await db.set_parent("c", "p", conn=conn)
+    await drain(db)
+    await db.remove_dependency("c", "p", None)
+    m = await marks(db)
+    assert [r for r in m if r[1].startswith("parent.changed")] == [("c", "parent.changed:p")]
+    assert not [r for r in m if r[1] == "dependency.changed"]
+
+
+async def test_marks_roll_back_with_their_transaction(db):
+    with pytest.raises(RuntimeError):
+        async with db._engine.begin() as conn:
+            await db.create_task(
+                Task(id="a", project_id="p1", title="a", description=""), conn=conn
+            )
+            raise RuntimeError("boom")
+    assert await marks(db) == []
+    assert await db.get_task("a") is None

@@ -329,6 +329,13 @@ class TaskQueryMixin:
         not just ``status``: ``update_task(primary, max_retries=10)`` turns a
         terminal failure back into a transient one and must re-block the
         contingency waiting on it.
+
+        A raw ``status=`` here also bypasses the layout ``status.finished`` /
+        ``status.reopened`` dirty mark that ``_apply_transition`` writes when
+        a task crosses the finished boundary.  No production caller crosses
+        that boundary through this method today (the same invariant test that
+        guards raw status writes covers it), but a new one would leave the
+        layout stale until the next full pass.
         """
         values = self._coerce_task_values(kwargs)
         values["updated_at"] = time.time()
