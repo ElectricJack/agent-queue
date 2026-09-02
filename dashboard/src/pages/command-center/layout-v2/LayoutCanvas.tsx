@@ -31,7 +31,20 @@ function ProjectHeaderNode({ data }: { data: { label: string } }) {
   );
 }
 
-const nodeTypes = { task: TaskNode, playbook: PlaybookNode, container: ContainerNode, projectHeader: ProjectHeaderNode };
+/** A boundary count, not a destination: no pointer events, no focus, no click. */
+function OverflowMarkerNode({ data }: { data: { label: string } }) {
+  return (
+    <div role="note" title={`${data.label} outside this view`}
+      className="pointer-events-none flex h-full w-full items-center justify-center whitespace-nowrap rounded-full border border-dashed border-gray-600 bg-gray-900/80 px-1 text-[10px] leading-none text-gray-400">
+      {data.label}
+    </div>
+  );
+}
+
+const nodeTypes = {
+  task: TaskNode, playbook: PlaybookNode, container: ContainerNode,
+  projectHeader: ProjectHeaderNode, overflowMarker: OverflowMarkerNode,
+};
 const NO_PLAYBOOKS: NonNullable<GraphViewProps["playbooks"]> = [];
 const PROJECT_GAP = 2;
 const PLAYBOOKS_PER_ROW = 4;
@@ -85,8 +98,8 @@ function nearestIn(nodes: Node[], from: Node, dir: "up" | "down" | "left" | "rig
   let best: Node | null = null;
   let bestScore = Infinity;
   for (const node of nodes) {
-    // Project bands are labels, not destinations.
-    if (node.id === from.id || node.type === "projectHeader") continue;
+    // Project bands and "+N more" pills are labels, not destinations.
+    if (node.id === from.id || node.type === "projectHeader" || node.type === "overflowMarker") continue;
     const dx = node.position.x - from.position.x;
     const dy = node.position.y - from.position.y;
     const primary = dir === "up" ? -dy : dir === "down" ? dy : dir === "right" ? dx : -dx;
@@ -356,7 +369,10 @@ function Inner(props: LayoutCanvasProps) {
     if (node.type === "playbook") openPlaybook(String((node.data.playbook as { id: string }).id));
     // A container's payload is its `node`; a card's is its `task`.
     else if (node.type === "container") openTask(node.id, (node.data as ContainerNodeData).node);
-    else if (node.type !== "projectHeader") openTask(node.id, (node.data as Partial<TaskNodeData>).task);
+    // Project bands and overflow pills carry no task to open.
+    else if (node.type !== "projectHeader" && node.type !== "overflowMarker") {
+      openTask(node.id, (node.data as Partial<TaskNodeData>).task);
+    }
   };
 
   function onKeyDown(event: KeyboardEvent<HTMLDivElement>) {

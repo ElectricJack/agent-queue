@@ -78,7 +78,7 @@ describe("toFlowElements", () => {
     expect((mine.data as { task: { title: string } }).task.title).toBe("Mine");
     expect(mine.position.x).toBe(4 * 240);
   });
-  it('renders one "+N more" marker per stub_overflow entry, on the side the links leave from', () => {
+  it('renders one non-interactive "+N more" marker per stub_overflow entry, beside its anchor', () => {
     const store = mergeTiles(emptyStore(), ["0:0"], {
       nodes: [n("z", "card", 2, 1)],
       edges: [], stubs: [],
@@ -89,12 +89,19 @@ describe("toFlowElements", () => {
     const { nodes } = toFlowElements(store, ctx);
     const out = nodes.find((x) => x.id === "overflow:z|out")!;
     const incoming = nodes.find((x) => x.id === "overflow:z|in")!;
-    expect(out.className).toBe("aq-stub aq-stub-overflow");
-    expect((out.data as { task: { title: string } }).task.title).toBe("+7 more");
-    expect((incoming.data as { task: { title: string } }).task.title).toBe("+2 more");
-    // Outgoing sits past the card's right edge, incoming just left of it.
-    expect(out.position.x).toBeGreaterThan(2 * 240);
-    expect(incoming.position.x).toBeLessThan(2 * 240);
-    expect(out.position.y).toBe(1 * 156);
+    // Its own type: a marker is not a task, so nothing may open it.
+    expect(out.type).toBe("overflowMarker");
+    expect(incoming.type).toBe("overflowMarker");
+    expect((out.data as { label: string }).label).toBe("+7 more");
+    expect((incoming.data as { label: string }).label).toBe("+2 more");
+    // Sized as a pill and parked outside the card's edges, never under it.
+    expect(out.width).toBe(0.4 * 240);
+    expect(out.height).toBeCloseTo(0.3 * 156);
+    expect(out.position.x).toBeCloseTo((2 + 1 + 0.05) * 240);
+    expect(incoming.position.x).toBeCloseTo((2 - 0.45) * 240);
+    // Vertically centred on the anchor, and above every card.
+    expect(out.position.y).toBeCloseTo((1 + 0.5 - 0.15) * 156);
+    expect(out.zIndex).toBe(200);
+    expect(out.selectable).toBe(false);
   });
 });

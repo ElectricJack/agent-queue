@@ -206,6 +206,26 @@ describe("LayoutCanvas", () => {
     expect(setCenter).toHaveBeenCalledWith(600, 78, expect.objectContaining({ duration: 0 }));
   });
 
+  it("treats a +N overflow marker as scenery: not clickable, not a keyboard destination", () => {
+    tiles.store = mergeTiles(emptyStore(), ["0:0"], {
+      nodes: [n("z", "card", 0, 0)],
+      edges: [], stubs: [],
+      stub_overflow: [{ node_id: "z", direction: "out", more: 4 }],
+      workers: [], gates: [], layout_version: 1,
+    } as unknown as TilesResponse);
+    const onTaskClick = vi.fn();
+    render(<MemoryRouter><LayoutCanvas {...base} onTaskClick={onTaskClick} /></MemoryRouter>);
+    const marker = flow.current!.nodes.find((candidate) => candidate.id === "overflow:z|out")!;
+    expect(marker.type).toBe("overflowMarker");
+    act(() => flow.current!.onNodeClick!(null, marker));
+    expect(onTaskClick).not.toHaveBeenCalled();
+    // Arrowing right from the only card must not land on the pill beside it.
+    fireEvent.keyDown(screen.getByRole("region", { name: "Task graph" }), { key: "ArrowRight" });
+    expect(setCenter).not.toHaveBeenCalled();
+    fireEvent.keyDown(screen.getByRole("region", { name: "Task graph" }), { key: "Enter" });
+    expect(onTaskClick).toHaveBeenCalledWith("z", expect.objectContaining({ id: "z" }));
+  });
+
   it("waits for the focus node's layout: a 202 fits nothing, the real response fits once", () => {
     layoutNode.data = { pending: true };
     const view = render(<MemoryRouter><LayoutCanvas {...base} focusId="e" /></MemoryRouter>);

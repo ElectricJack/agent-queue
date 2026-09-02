@@ -7,6 +7,10 @@ import { sizePx, toPx } from "./units";
 
 /** Where a stub belonging to another project is docked, in world units. */
 const STUB_PORT_X = -1.2;
+/** The "+N more" pill: small enough to sit beside a card without covering it. */
+const OVERFLOW_W = 0.4;
+const OVERFLOW_H = 0.3;
+const OVERFLOW_GAP = 0.05;
 
 export interface FlowHandlers { onOpenTask: (id: string, task?: SelectableTask) => void; onToggleChildren: (id: string) => void; onFocus: (id: string) => void }
 export interface FlowContext {
@@ -66,19 +70,22 @@ export function toFlowElements(store: LayoutStore, ctx: FlowContext): { nodes: N
     nodes.push({ id: s.id, type: "task", className: "aq-stub", position: toPx(x, s.y + ctx.offsetY), ...sizePx(1, 1), zIndex: 5, draggable: false, connectable: false, data: taskNodeData(stub, ctx, gatesFor(s.id)) });
   }
   // Boundary markers: a card with more far dependencies than the tile carries
-  // stubs for gets one "+N more" chip on the side the links leave from.
+  // stubs for gets one "+N more" pill on the side the links leave from. It is
+  // its own node type — a marker is not a task, so it must not be clickable,
+  // focusable or a keyboard destination.
   for (const [key, overflow] of store.stubOverflow) {
     const anchor = store.nodes.get(overflow.node_id);
     if (!anchor || overflow.more <= 0) continue;
     const outward = overflow.direction === "out";
-    const x = outward ? anchor.x + anchor.w + 0.15 : anchor.x - 0.55;
-    const marker: LayoutNode = { id: `overflow:${key}`, title: `+${overflow.more} more`, status: "PENDING",
-      priority: 100, is_blocked: false, x, y: anchor.y, w: 0.4, h: 1, depth: anchor.depth,
-      container_id: null, kind: "stub", context_only: true, agg_children: 0, agg_descendants: 0,
-      agg_completed: 0, agg_running: 0, agg_blocked: 0, agg_active: 0 } as LayoutNode;
-    nodes.push({ id: marker.id, type: "task", className: "aq-stub aq-stub-overflow",
-      position: toPx(x, anchor.y + ctx.offsetY), ...sizePx(0.4, 1), zIndex: 4, selectable: false,
-      draggable: false, connectable: false, data: taskNodeData(marker, ctx, []) });
+    const x = outward ? anchor.x + anchor.w + OVERFLOW_GAP : anchor.x - OVERFLOW_W - OVERFLOW_GAP;
+    const y = anchor.y + anchor.h / 2 - OVERFLOW_H / 2;
+    nodes.push({
+      id: `overflow:${key}`, type: "overflowMarker", className: "aq-stub-overflow",
+      position: toPx(x, y + ctx.offsetY), ...sizePx(OVERFLOW_W, OVERFLOW_H),
+      zIndex: 200 + anchor.depth, selectable: false, focusable: false, draggable: false,
+      connectable: false,
+      data: { label: `+${overflow.more} more`, direction: overflow.direction, anchorId: anchor.id },
+    });
   }
   const edges: Edge[] = [];
   for (const e of store.edges.values()) {

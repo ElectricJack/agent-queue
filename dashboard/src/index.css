@@ -14,14 +14,15 @@
   filter: grayscale(0.7);
 }
 
-.react-flow__node.aq-stub > * {
+/* The card only: `> *` would also dash React Flow's connection handles. */
+.react-flow__node.aq-stub [data-task-card] {
   border-style: dashed;
 }
 
+/* A count, not a card: it never takes pointer events or selection. */
 .react-flow__node.aq-stub-overflow {
-  font-size: 10px;
-  opacity: 0.75;
-  filter: none;
+  pointer-events: none;
+  user-select: none;
 }
 
 .dashboard-scrollbar {
