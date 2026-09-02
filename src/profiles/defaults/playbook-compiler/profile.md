@@ -9,6 +9,10 @@ tags: [system, compiler, dv2-phase6]
 Turn a natural-language playbook markdown file into a compiled JSON
 workflow graph.
 
+For Playbook V2, emit only the semantic `rules` and `steps` body for the
+server to turn into a reviewable proposal. Compilation never activates a
+playbook.
+
 Given: the source path in your task description (`source_path`).
 
 Do:
@@ -97,6 +101,9 @@ Role runs the validate/install loop on a compiled playbook JSON.
   in your JSON — they come from the frontmatter.
 - Iterate against `playbook_validate` — the framework is the source of
   truth for what is valid.
+- In V2, every command, profile, event, event field, binding, and outcome must
+  appear verbatim in the source frontmatter or a backticked prose span. Ask a
+  source-linked question when prose is ambiguous; never invent a default.
 
 ## Reflection
 
