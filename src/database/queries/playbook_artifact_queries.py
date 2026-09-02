@@ -94,6 +94,26 @@ class PlaybookArtifactQueryMixin:
             ).mappings().fetchone()
         return ArtifactRef.from_row(row) if row else None
 
+    async def get_playbook_artifact_row(self, artifact_sha256: str) -> dict | None:
+        """The whole artifact row, or ``None`` when the hash is unknown.
+
+        ``get_playbook_artifact`` projects the immutable identity into an
+        :class:`ArtifactRef` and drops everything else.  The activation-health
+        read path needs the row's *mutable* metadata too — ``path``,
+        ``validation`` and the ``profile_fingerprint`` the artifact was
+        compiled against — so it reads the row rather than issuing three
+        single-column queries for one activation.
+        """
+        async with self._engine.connect() as conn:
+            row = (
+                await conn.execute(
+                    select(playbook_artifacts).where(
+                        playbook_artifacts.c.artifact_sha256 == artifact_sha256
+                    )
+                )
+            ).mappings().fetchone()
+        return dict(row) if row else None
+
     async def set_playbook_activation(
         self,
         *,
