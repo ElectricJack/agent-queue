@@ -2261,3 +2261,44 @@ class TestTerminalBlockedIsNotRecovered:
         await orch.db.transition_task("t-dep", TaskStatus.COMPLETED)
         await orch._check_defined_tasks()
         assert (await orch.db.get_task("t-waiter")).status == TaskStatus.READY
+
+
+class TestMergeConflictBlockedIsNotRecovered:
+    """A merge-conflict BLOCKED child must not re-enter the ready frontier."""
+
+    @pytest.mark.parametrize("authoritative", [False, True])
+    async def test_merge_conflict_child_stays_blocked_across_cycles(self, orch, authoritative):
+        from src.models import DepType
+
+        orch.config.work_graph.blocked_state_authoritative = authoritative
+        await _create_project_with_workspace(orch.db)
+        await orch.db.create_task(
+            Task(
+                id="t-epic",
+                project_id="p-1",
+                title="Container",
+                description="released container",
+                status=TaskStatus.IN_PROGRESS,
+            )
+        )
+        await orch.db.create_task(
+            Task(
+                id="t-epic.1",
+                project_id="p-1",
+                title="Conflicted child",
+                description="child with a merge conflict",
+                status=TaskStatus.IN_PROGRESS,
+                parent_task_id="t-epic",
+            )
+        )
+        await orch.db.add_dependency("t-epic.1", "t-epic", DepType.PARENT_CHILD.value)
+
+        await orch.db.transition_task(
+            "t-epic.1", TaskStatus.BLOCKED, context="merge_conflict"
+        )
+        child = await orch.db.get_task("t-epic.1")
+        assert child.is_blocked is False
+
+        await orch._check_defined_tasks()
+
+        assert (await orch.db.get_task("t-epic.1")).status == TaskStatus.BLOCKED

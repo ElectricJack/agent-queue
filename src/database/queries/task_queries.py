@@ -100,14 +100,16 @@ _READY_REASONS = {
 TERMINAL_BLOCKED_META_KEY = "blocked_terminal"
 
 #: Transition contexts that make an entry into BLOCKED terminal: the session
-#: close's three BLOCKED legs, the execution timeout, and an operator stop.
-#: Leaving BLOCKED by any route (restart, reopen, supervisor recovery, admin
-#: skip) clears the mark; only an explicit decision brings the task back.
+#: close's three BLOCKED legs, merge conflicts, the execution timeout, and an
+#: operator stop. Leaving BLOCKED by any route (restart, reopen, supervisor
+#: recovery, admin skip) clears the mark; only an explicit decision brings the
+#: task back.
 TERMINAL_BLOCKED_CONTEXTS = frozenset(
     {
         "session_close_hard_failure",
         "max_retries",
         "session_close_pipeline_stop",
+        "merge_conflict",
         "timeout",
         "stop_task",
     }
