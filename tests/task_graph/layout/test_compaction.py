@@ -304,6 +304,12 @@ async def test_collapsing_the_epic_of_a_real_layout_reclaims_the_space(tmp_path)
         for tid in ("y", "z"):
             assert after[tid].y == pytest.approx(before[tid].y - delta)
             assert after[tid].x == pytest.approx(before[tid].x)
+
+        # The whole canvas is shorter by exactly the epic's collapsed delta.
+        def height(boxes):
+            return max(b.y + b.h for b in boxes.values())
+
+        assert height(after) == pytest.approx(height(before) - delta)
         assert compact_layout(rows, collapsed=set(), scopes_loaded=scopes) == before
     finally:
         await db.close()
