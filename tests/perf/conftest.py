@@ -12,10 +12,6 @@ import pytest
 
 from tests.pg_dsn import ensure_worker_postgres_dsn
 
-# The whole directory enforces performance budgets. Keep it available for
-# explicit ``pytest -m perf`` runs, but leave it out of the fast default suite.
-pytestmark = pytest.mark.perf
-
 #: Per-xdist-worker DSN (tests/pg_dsn.py) -- this suite and
 #: tests/test_claim_queries.py / tests/test_database_postgresql.py each get
 #: their own Postgres database so concurrent ``reset_for_tests()`` truncates
