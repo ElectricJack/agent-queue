@@ -2567,8 +2567,12 @@ _ALL_TOOL_DEFINITIONS = [
                     "description": "Tool whitelist (e.g. ['Read', 'Glob', 'Grep', 'Bash'])",
                 },
                 "mcp_servers": {
-                    "type": "object",
-                    "description": "MCP server configurations (name -> {command, args})",
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "MCP server names from the registry (e.g. ['playwright']). "
+                        "A legacy name -> config mapping is reduced to its keys."
+                    ),
                 },
                 "system_prompt_suffix": {
                     "type": "string",
@@ -2609,8 +2613,12 @@ _ALL_TOOL_DEFINITIONS = [
                     "description": "New tool whitelist (optional)",
                 },
                 "mcp_servers": {
-                    "type": "object",
-                    "description": "New MCP server configurations (optional)",
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "New MCP server names from the registry (optional). "
+                        "A legacy name -> config mapping is reduced to its keys."
+                    ),
                 },
                 "system_prompt_suffix": {
                     "type": "string",

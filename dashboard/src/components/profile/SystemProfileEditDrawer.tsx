@@ -5,7 +5,11 @@ import IntelligenceClassPicker from "./IntelligenceClassPicker";
 import McpServerSelector from "./McpServerSelector";
 import ToolPicker from "./ToolPicker";
 import { Section, Field } from "./FormSection";
-import { profileToForm, type ProfileFormState as FormState } from "./profileForm";
+import {
+  profileEditPayload,
+  profileToForm,
+  type ProfileFormState as FormState,
+} from "./profileForm";
 
 interface Props {
   open: boolean;
@@ -50,21 +54,7 @@ export default function SystemProfileEditDrawer({ open, onClose, profileId }: Pr
   const onSave = async () => {
     setFatal(null);
     try {
-      // The backend's edit_profile request model isn't fully typed yet —
-      // mcp_servers is declared loosely as a dict, but the daemon accepts
-      // a list[str] of registry names (matches edit_project_profile).
-      // Cast to bypass the stale OpenAPI shape until the backend model is
-      // tightened.
-      await edit.mutateAsync({
-        profile_id: profileId,
-        name: form.name || null,
-        description: form.description || null,
-        default_class: form.default_class || "",
-        permission_mode: form.permission_mode || null,
-        system_prompt_suffix: form.system_prompt_suffix || null,
-        allowed_tools: form.allowed_tools,
-        mcp_servers: form.mcp_servers as unknown as Record<string, unknown>,
-      } as unknown as Parameters<typeof edit.mutateAsync>[0]);
+      await edit.mutateAsync(profileEditPayload(profileId, form));
       onClose();
     } catch (err) {
       setFatal(err instanceof Error ? err.message : String(err));

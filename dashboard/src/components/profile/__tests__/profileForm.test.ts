@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { profileToForm } from "../profileForm";
+import {
+  profileEditPayload,
+  profileToForm,
+  projectProfileEditPayload,
+  type ProfileFormState,
+} from "../profileForm";
 import type { ProfileDetail } from "../../../api/hooks";
 
 describe("profileToForm", () => {
@@ -39,5 +44,80 @@ describe("profileToForm", () => {
   it("maps the sentinel '(default)' permission_mode to empty string", () => {
     const profile = { permission_mode: "(default)" } as unknown as ProfileDetail;
     expect(profileToForm(profile).permission_mode).toBe("");
+  });
+});
+
+const FORM: ProfileFormState = {
+  name: "Supervisor",
+  description: "Coordinates work",
+  default_class: "standard-medium",
+  permission_mode: "acceptEdits",
+  system_prompt_suffix: "Be terse.",
+  allowed_tools: ["Read", "Edit"],
+  mcp_servers: ["playwright"],
+};
+
+describe("profileEditPayload", () => {
+  it("sends mcp_servers as a list of registry names", () => {
+    const body = profileEditPayload("supervisor", FORM);
+    expect(body).toEqual({
+      profile_id: "supervisor",
+      name: "Supervisor",
+      description: "Coordinates work",
+      default_class: "standard-medium",
+      permission_mode: "acceptEdits",
+      system_prompt_suffix: "Be terse.",
+      allowed_tools: ["Read", "Edit"],
+      mcp_servers: ["playwright"],
+    });
+  });
+
+  it("sends an empty mcp_servers list, not an empty object", () => {
+    // The regression: the global edit route used to type mcp_servers as a
+    // dict, so clearing every server 422'd on `[]`.
+    const body = profileEditPayload("supervisor", { ...FORM, mcp_servers: [] });
+    expect(body.mcp_servers).toEqual([]);
+    expect(Array.isArray(body.mcp_servers)).toBe(true);
+  });
+
+  it("clears blank text fields with null", () => {
+    const body = profileEditPayload("supervisor", {
+      ...FORM,
+      name: "",
+      description: "",
+      permission_mode: "",
+      system_prompt_suffix: "",
+    });
+    expect(body.name).toBeNull();
+    expect(body.description).toBeNull();
+    expect(body.permission_mode).toBeNull();
+    expect(body.system_prompt_suffix).toBeNull();
+  });
+});
+
+describe("projectProfileEditPayload", () => {
+  it("carries the same field shape as the global payload", () => {
+    const scoped = projectProfileEditPayload("proj", "coding", FORM);
+    const globalBody = profileEditPayload("coding", FORM);
+    expect(scoped).toEqual({
+      project_id: "proj",
+      agent_type: "coding",
+      name: FORM.name,
+      description: FORM.description,
+      default_class: FORM.default_class,
+      permission_mode: FORM.permission_mode,
+      system_prompt_suffix: FORM.system_prompt_suffix,
+      allowed_tools: FORM.allowed_tools,
+      mcp_servers: FORM.mcp_servers,
+    });
+    // Same body either side of the id fields — one form, two routes.
+    const dropIds = (body: Record<string, unknown>) => {
+      const rest = { ...body };
+      delete rest.project_id;
+      delete rest.agent_type;
+      delete rest.profile_id;
+      return rest;
+    };
+    expect(dropIds(scoped)).toEqual(dropIds(globalBody));
   });
 });

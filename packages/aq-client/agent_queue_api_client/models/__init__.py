@@ -95,7 +95,6 @@ from .create_playbook_request import CreatePlaybookRequest
 from .create_playbook_response import CreatePlaybookResponse
 from .create_playbook_response_422 import CreatePlaybookResponse422
 from .create_profile_request import CreateProfileRequest
-from .create_profile_request_mcp_servers_type_0 import CreateProfileRequestMcpServersType0
 from .create_profile_response import CreateProfileResponse
 from .create_profile_response_422 import CreateProfileResponse422
 from .create_project_profile_request import CreateProjectProfileRequest
@@ -176,7 +175,6 @@ from .edit_mcp_server_response import EditMcpServerResponse
 from .edit_mcp_server_response_422 import EditMcpServerResponse422
 from .edit_profile_request import EditProfileRequest
 from .edit_profile_request_install_type_0 import EditProfileRequestInstallType0
-from .edit_profile_request_mcp_servers_type_0 import EditProfileRequestMcpServersType0
 from .edit_profile_response import EditProfileResponse
 from .edit_profile_response_422 import EditProfileResponse422
 from .edit_project_profile_request import EditProjectProfileRequest
@@ -1122,7 +1120,6 @@ __all__ = (
     "CreatePlaybookResponse",
     "CreatePlaybookResponse422",
     "CreateProfileRequest",
-    "CreateProfileRequestMcpServersType0",
     "CreateProfileResponse",
     "CreateProfileResponse422",
     "CreateProjectProfileRequest",
@@ -1203,7 +1200,6 @@ __all__ = (
     "EditMcpServerResponse422",
     "EditProfileRequest",
     "EditProfileRequestInstallType0",
-    "EditProfileRequestMcpServersType0",
     "EditProfileResponse",
     "EditProfileResponse422",
     "EditProjectProfileRequest",

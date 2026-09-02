@@ -10,6 +10,27 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+def _mcp_server_names(value: Any) -> list[str]:
+    """Normalize an ``mcp_servers`` argument to a list of registry names.
+
+    The registry shape is a flat ``list[str]`` of names resolved against
+    ``vault/[projects/<pid>/]mcp-servers/``.  Profiles written before the
+    registry landed carried the config inline as a ``name -> {command,
+    args}`` mapping, and ``src/profiles/mcp_inline_migration.py`` still
+    accepts it.  Both spellings reach this layer — the dashboard, the API
+    and the CLI send lists; an older MCP caller or an imported profile may
+    still send the mapping — so reduce a mapping to its keys and leave a
+    list alone.
+    """
+    if not value:
+        return []
+    if isinstance(value, dict):
+        return [str(name) for name in value]
+    if isinstance(value, str):
+        return [value]
+    return [str(name) for name in value]
+
+
 class ProfileCommandsMixin:
     """Profile command methods mixed into CommandHandler."""
 
@@ -93,7 +114,7 @@ class ProfileCommandsMixin:
             model=args.get("model", ""),
             permission_mode=args.get("permission_mode", ""),
             allowed_tools=args.get("allowed_tools", []),
-            mcp_servers=args.get("mcp_servers", {}),
+            mcp_servers=_mcp_server_names(args.get("mcp_servers")),
             system_prompt_suffix=args.get("system_prompt_suffix", ""),
             install=args.get("install", {}),
         )
@@ -178,7 +199,7 @@ class ProfileCommandsMixin:
             "default_class",
         ):
             if fld in args:
-                updates[fld] = args[fld]
+                updates[fld] = _mcp_server_names(args[fld]) if fld == "mcp_servers" else args[fld]
         if not updates:
             return {
                 "error": (
@@ -241,7 +262,7 @@ class ProfileCommandsMixin:
             model=merged.get("model", ""),
             permission_mode=merged.get("permission_mode", ""),
             allowed_tools=merged.get("allowed_tools", []),
-            mcp_servers=merged.get("mcp_servers", {}),
+            mcp_servers=_mcp_server_names(merged.get("mcp_servers")),
             system_prompt_suffix=merged.get("system_prompt_suffix", ""),
             install=merged.get("install", {}),
             default_class=merged.get("default_class", "") or "",
@@ -386,7 +407,9 @@ class ProfileCommandsMixin:
             "model": args.get("model", seed.get("model", "")),
             "permission_mode": args.get("permission_mode", seed.get("permission_mode", "")),
             "allowed_tools": list(args.get("allowed_tools", seed.get("allowed_tools", []))),
-            "mcp_servers": list(args.get("mcp_servers", seed.get("mcp_servers", []))),
+            "mcp_servers": _mcp_server_names(
+                args["mcp_servers"] if "mcp_servers" in args else seed.get("mcp_servers", [])
+            ),
             "system_prompt_suffix": args.get(
                 "system_prompt_suffix", seed.get("system_prompt_suffix", "")
             ),

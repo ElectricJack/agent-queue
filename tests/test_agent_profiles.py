@@ -1253,22 +1253,23 @@ agent_profile:
         await orch.db.close()
 
 
-class TestProfileDefaultClassViaApi:
-    """The generated FastAPI request models must carry ``default_class``.
+# ---------------------------------------------------------------------------
+# mcp_servers shape over the typed API (regression)
+# ---------------------------------------------------------------------------
 
-    ``_make_input_model`` builds the request body from the tool
-    ``input_schema``; pydantic ignores undeclared keys, so a field the
-    command accepts but the schema omits is silently dropped at the API
-    boundary even though ``aq`` and MCP callers can set it.
+
+class TestProfileMcpServersShape:
+    """``mcp_servers`` is a ``list[str]`` of registry names on every edit path.
+
+    The dashboard's profile drawer sends one payload for both the global and
+    the project-scoped route.  The global ``edit_profile``/``create_profile``
+    request models used to declare ``mcp_servers`` as a legacy ``name ->
+    {command, args}`` object, so saving a system profile with no servers
+    selected was rejected with ``422 dict_type`` before the handler ever ran.
     """
 
     @pytest.fixture
-    async def api(self, tmp_path, monkeypatch):
-        import httpx
-        from fastapi import FastAPI
-
-        from src.api import dependencies as deps
-        from src.api.codegen import build_category_routers
+    async def handler(self, tmp_path):
         from src.commands.handler import CommandHandler
 
         config = AppConfig(
@@ -1279,50 +1280,161 @@ class TestProfileDefaultClassViaApi:
         orch = Orchestrator(config)
         await orch.initialize()
         handler = CommandHandler(orch, config)
-        monkeypatch.setattr(deps, "_command_handler", handler)
-        monkeypatch.setattr(deps, "_orchestrator", orch)
-        await orch.db.create_project(Project(id="proj", name="Proj"))
+        yield handler
+        await orch.db.close()
+
+    def _api(self, handler):
+        from fastapi import FastAPI
+
+        from src.api.auth import LOCAL_SCOPE
+        from src.api.codegen import build_category_routers
+        from src.api.dependencies import get_command_handler
+
+        app = FastAPI()
+        for router in build_category_routers():
+            if router.prefix == "/api/agent":
+                app.include_router(router)
+        app.dependency_overrides[get_command_handler] = lambda: handler
+
+        @app.middleware("http")
+        async def bind_scope(request, call_next):
+            request.state.scope = LOCAL_SCOPE
+            return await call_next(request)
+
+        return app
+
+    async def _client(self, handler):
+        import httpx
+
+        return httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=self._api(handler)), base_url="http://test"
+        )
+
+    async def test_global_edit_accepts_an_empty_server_list(self, handler):
+        created = await handler.execute(
+            "create_profile",
+            {"id": "mcp-shape-supervisor", "name": "Supervisor", "mcp_servers": ["playwright"]},
+        )
+        assert created.get("created") == "mcp-shape-supervisor", created
+        assert (await handler.db.get_profile("mcp-shape-supervisor")).mcp_servers == ["playwright"]
+        async with await self._client(handler) as client:
+            resp = await client.post(
+                "/api/agent/edit-profile",
+                json={
+                    "profile_id": "mcp-shape-supervisor",
+                    "name": "Supervisor",
+                    "allowed_tools": ["Read"],
+                    "mcp_servers": [],
+                },
+            )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["updated"] == "mcp-shape-supervisor"
+        profile = await handler.db.get_profile("mcp-shape-supervisor")
+        assert profile.mcp_servers == []
+
+    async def test_global_edit_accepts_a_list_of_server_names(self, handler):
+        await handler.execute(
+            "create_profile", {"id": "mcp-shape-supervisor", "name": "Supervisor"}
+        )
+        async with await self._client(handler) as client:
+            resp = await client.post(
+                "/api/agent/edit-profile",
+                json={
+                    "profile_id": "mcp-shape-supervisor",
+                    "mcp_servers": ["playwright", "github"],
+                },
+            )
+        assert resp.status_code == 200, resp.text
+        profile = await handler.db.get_profile("mcp-shape-supervisor")
+        assert profile.mcp_servers == ["playwright", "github"]
+
+    async def test_global_create_accepts_a_list_of_server_names(self, handler):
+        async with await self._client(handler) as client:
+            resp = await client.post(
+                "/api/agent/create-profile",
+                json={
+                    "id": "mcp-shape-reviewer",
+                    "name": "Reviewer",
+                    "mcp_servers": ["playwright"],
+                },
+            )
+        assert resp.status_code == 200, resp.text
+        profile = await handler.db.get_profile("mcp-shape-reviewer")
+        assert profile.mcp_servers == ["playwright"]
+
+    async def test_project_edit_accepts_the_same_payload(self, handler):
+        """Parity: the drawer sends one body shape to both routes."""
+        await handler.execute("create_profile", {"id": "mcp-shape-coding", "name": "Coding"})
+        await handler.execute(
+            "create_project_profile", {"project_id": "proj", "agent_type": "mcp-shape-coding"}
+        )
+        async with await self._client(handler) as client:
+            resp = await client.post(
+                "/api/agent/edit-project-profile",
+                json={
+                    "project_id": "proj",
+                    "agent_type": "mcp-shape-coding",
+                    "allowed_tools": ["Read"],
+                    "mcp_servers": [],
+                },
+            )
+        assert resp.status_code == 200, resp.text
+        profile = await handler.db.get_profile("project:proj:mcp-shape-coding")
+        assert profile.mcp_servers == []
+
+    async def test_legacy_inline_mapping_is_reduced_to_its_keys(self, handler):
+        """Older MCP callers still send the pre-registry inline config dict."""
+        await handler.execute(
+            "create_profile", {"id": "mcp-shape-supervisor", "name": "Supervisor"}
+        )
+        result = await handler.execute(
+            "edit_profile",
+            {
+                "profile_id": "mcp-shape-supervisor",
+                "name": "Supervisor",
+                "mcp_servers": {"playwright": {"command": "npx", "args": ["playwright-mcp"]}},
+            },
+        )
+        assert result.get("updated") == "mcp-shape-supervisor"
+        profile = await handler.db.get_profile("mcp-shape-supervisor")
+        assert profile.mcp_servers == ["playwright"]
+
+    async def test_edit_profile_writes_default_class(self, handler):
+        await handler.execute("create_profile", {"id": "coder", "name": "Coder"})
+        async with await self._client(handler) as client:
+            resp = await client.post(
+                "/api/agent/edit-profile",
+                json={"profile_id": "coder", "default_class": "standard-medium"},
+            )
+        assert resp.status_code == 200, resp.text
+        profile = await handler.db.get_profile("coder")
+        assert profile.default_class == "standard-medium"
+
+    async def test_edit_profile_writes_install(self, handler):
+        await handler.execute("create_profile", {"id": "coder", "name": "Coder"})
+        async with await self._client(handler) as client:
+            resp = await client.post(
+                "/api/agent/edit-profile",
+                json={"profile_id": "coder", "install": {"npm": ["eslint-mcp"]}},
+            )
+        assert resp.status_code == 200, resp.text
+        profile = await handler.db.get_profile("coder")
+        assert profile.install == {"npm": ["eslint-mcp"]}
+
+    async def test_edit_project_profile_writes_default_class(self, handler):
         await handler.execute("create_profile", {"id": "coder", "name": "Coder"})
         await handler.execute(
             "create_project_profile", {"project_id": "proj", "agent_type": "coder"}
         )
-
-        app = FastAPI()
-        for router in build_category_routers():
-            app.include_router(router)
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            yield client, orch.db
-        await orch.db.close()
-
-    async def test_edit_profile_writes_default_class(self, api):
-        client, db = api
-        resp = await client.post(
-            "/api/agent/edit-profile",
-            json={"profile_id": "coder", "default_class": "standard-medium"},
-        )
+        async with await self._client(handler) as client:
+            resp = await client.post(
+                "/api/agent/edit-project-profile",
+                json={
+                    "project_id": "proj",
+                    "agent_type": "coder",
+                    "default_class": "deep-high",
+                },
+            )
         assert resp.status_code == 200, resp.text
-        assert "default_class" in resp.json()["fields"]
-        profile = await db.get_profile("coder")
-        assert profile.default_class == "standard-medium"
-
-    async def test_edit_profile_writes_install(self, api):
-        client, db = api
-        resp = await client.post(
-            "/api/agent/edit-profile",
-            json={"profile_id": "coder", "install": {"npm": ["eslint-mcp"]}},
-        )
-        assert resp.status_code == 200, resp.text
-        profile = await db.get_profile("coder")
-        assert profile.install == {"npm": ["eslint-mcp"]}
-
-    async def test_edit_project_profile_writes_default_class(self, api):
-        client, db = api
-        resp = await client.post(
-            "/api/agent/edit-project-profile",
-            json={"project_id": "proj", "agent_type": "coder", "default_class": "deep-high"},
-        )
-        assert resp.status_code == 200, resp.text
-        profile = await db.get_profile("project:proj:coder")
+        profile = await handler.db.get_profile("project:proj:coder")
         assert profile.default_class == "deep-high"

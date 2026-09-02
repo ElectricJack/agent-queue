@@ -10,9 +10,6 @@ from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.edit_profile_request_install_type_0 import EditProfileRequestInstallType0
-    from ..models.edit_profile_request_mcp_servers_type_0 import EditProfileRequestMcpServersType0
-
-
 T = TypeVar("T", bound="EditProfileRequest")
 
 
@@ -26,7 +23,8 @@ class EditProfileRequest:
         model (None | str | Unset): New model override (optional)
         permission_mode (None | str | Unset): New permission mode (optional)
         allowed_tools (list[Any] | None | Unset): New tool whitelist (optional)
-        mcp_servers (EditProfileRequestMcpServersType0 | None | Unset): New MCP server configurations (optional)
+        mcp_servers (list[Any] | None | Unset): New MCP server names from the registry (optional). A legacy name ->
+            config mapping is reduced to its keys.
         system_prompt_suffix (None | str | Unset): New system prompt suffix (optional)
         default_class (None | str | Unset): New default intelligence class id (optional)
         install (EditProfileRequestInstallType0 | None | Unset): New install manifest (optional)
@@ -38,7 +36,7 @@ class EditProfileRequest:
     model: None | str | Unset = UNSET
     permission_mode: None | str | Unset = UNSET
     allowed_tools: list[Any] | None | Unset = UNSET
-    mcp_servers: EditProfileRequestMcpServersType0 | None | Unset = UNSET
+    mcp_servers: list[Any] | None | Unset = UNSET
     system_prompt_suffix: None | str | Unset = UNSET
     default_class: None | str | Unset = UNSET
     install: EditProfileRequestInstallType0 | None | Unset = UNSET
@@ -46,8 +44,6 @@ class EditProfileRequest:
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.edit_profile_request_install_type_0 import EditProfileRequestInstallType0
-        from ..models.edit_profile_request_mcp_servers_type_0 import EditProfileRequestMcpServersType0
-
         profile_id = self.profile_id
 
         name: None | str | Unset
@@ -83,11 +79,12 @@ class EditProfileRequest:
         else:
             allowed_tools = self.allowed_tools
 
-        mcp_servers: dict[str, Any] | None | Unset
+        mcp_servers: list[Any] | None | Unset
         if isinstance(self.mcp_servers, Unset):
             mcp_servers = UNSET
-        elif isinstance(self.mcp_servers, EditProfileRequestMcpServersType0):
-            mcp_servers = self.mcp_servers.to_dict()
+        elif isinstance(self.mcp_servers, list):
+            mcp_servers = self.mcp_servers
+
         else:
             mcp_servers = self.mcp_servers
 
@@ -142,8 +139,6 @@ class EditProfileRequest:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.edit_profile_request_install_type_0 import EditProfileRequestInstallType0
-        from ..models.edit_profile_request_mcp_servers_type_0 import EditProfileRequestMcpServersType0
-
         d = dict(src_dict)
         profile_id = d.pop("profile_id")
 
@@ -200,20 +195,20 @@ class EditProfileRequest:
 
         allowed_tools = _parse_allowed_tools(d.pop("allowed_tools", UNSET))
 
-        def _parse_mcp_servers(data: object) -> EditProfileRequestMcpServersType0 | None | Unset:
+        def _parse_mcp_servers(data: object) -> list[Any] | None | Unset:
             if data is None:
                 return data
             if isinstance(data, Unset):
                 return data
             try:
-                if not isinstance(data, dict):
+                if not isinstance(data, list):
                     raise TypeError()
-                mcp_servers_type_0 = EditProfileRequestMcpServersType0.from_dict(data)
+                mcp_servers_type_0 = cast(list[Any], data)
 
                 return mcp_servers_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
-            return cast(EditProfileRequestMcpServersType0 | None | Unset, data)
+            return cast(list[Any] | None | Unset, data)
 
         mcp_servers = _parse_mcp_servers(d.pop("mcp_servers", UNSET))
 

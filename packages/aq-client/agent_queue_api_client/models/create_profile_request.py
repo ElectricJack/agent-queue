@@ -1,16 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, TypeVar, cast
+from typing import Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
-
-if TYPE_CHECKING:
-    from ..models.create_profile_request_mcp_servers_type_0 import CreateProfileRequestMcpServersType0
-
 
 T = TypeVar("T", bound="CreateProfileRequest")
 
@@ -25,8 +21,8 @@ class CreateProfileRequest:
         model (None | str | Unset): Model override (optional, empty = use default)
         permission_mode (None | str | Unset): Permission mode override (optional)
         allowed_tools (list[Any] | None | Unset): Tool whitelist (e.g. ['Read', 'Glob', 'Grep', 'Bash'])
-        mcp_servers (CreateProfileRequestMcpServersType0 | None | Unset): MCP server configurations (name -> {command,
-            args})
+        mcp_servers (list[Any] | None | Unset): MCP server names from the registry (e.g. ['playwright']). A legacy name
+            -> config mapping is reduced to its keys.
         system_prompt_suffix (None | str | Unset): Text appended to the agent's system prompt (optional)
     """
 
@@ -36,13 +32,11 @@ class CreateProfileRequest:
     model: None | str | Unset = UNSET
     permission_mode: None | str | Unset = UNSET
     allowed_tools: list[Any] | None | Unset = UNSET
-    mcp_servers: CreateProfileRequestMcpServersType0 | None | Unset = UNSET
+    mcp_servers: list[Any] | None | Unset = UNSET
     system_prompt_suffix: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.create_profile_request_mcp_servers_type_0 import CreateProfileRequestMcpServersType0
-
         id = self.id
 
         name = self.name
@@ -74,11 +68,12 @@ class CreateProfileRequest:
         else:
             allowed_tools = self.allowed_tools
 
-        mcp_servers: dict[str, Any] | None | Unset
+        mcp_servers: list[Any] | None | Unset
         if isinstance(self.mcp_servers, Unset):
             mcp_servers = UNSET
-        elif isinstance(self.mcp_servers, CreateProfileRequestMcpServersType0):
-            mcp_servers = self.mcp_servers.to_dict()
+        elif isinstance(self.mcp_servers, list):
+            mcp_servers = self.mcp_servers
+
         else:
             mcp_servers = self.mcp_servers
 
@@ -113,8 +108,6 @@ class CreateProfileRequest:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.create_profile_request_mcp_servers_type_0 import CreateProfileRequestMcpServersType0
-
         d = dict(src_dict)
         id = d.pop("id")
 
@@ -164,20 +157,20 @@ class CreateProfileRequest:
 
         allowed_tools = _parse_allowed_tools(d.pop("allowed_tools", UNSET))
 
-        def _parse_mcp_servers(data: object) -> CreateProfileRequestMcpServersType0 | None | Unset:
+        def _parse_mcp_servers(data: object) -> list[Any] | None | Unset:
             if data is None:
                 return data
             if isinstance(data, Unset):
                 return data
             try:
-                if not isinstance(data, dict):
+                if not isinstance(data, list):
                     raise TypeError()
-                mcp_servers_type_0 = CreateProfileRequestMcpServersType0.from_dict(data)
+                mcp_servers_type_0 = cast(list[Any], data)
 
                 return mcp_servers_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
-            return cast(CreateProfileRequestMcpServersType0 | None | Unset, data)
+            return cast(list[Any] | None | Unset, data)
 
         mcp_servers = _parse_mcp_servers(d.pop("mcp_servers", UNSET))
 
