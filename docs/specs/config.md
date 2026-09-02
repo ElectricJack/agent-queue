@@ -356,6 +356,7 @@ re-adopts across restarts. These keys tune that reconciliation loop.
 | `restart_window_seconds` | `int` | `600` | Also the rapid-crash window: a death inside it is classified `RAPID_CRASH` rather than `PRODUCTIVE_DEATH`. |
 | `restart_backoff_seconds` | `int` | `30` | Base backoff before a crashed task is re-queued; multiplied by the restart count. |
 | `dialog_budget_seconds` | `int` | `8` | **One shared budget** for the whole startup-dialog table, not per dialog. Per-dialog budgets are how the Gas City runtime blew its start deadline. |
+| `dialog_settle_seconds` | `float` | `1.5` | How long the pane must stay free of every declared dialog before startup accepts it. Claude and Codex both paint their trust screen *after* the first frames, so a zero window declares a still-blocked session ready. Drawn from the same `dialog_budget_seconds` clock. |
 | `nudge_debounce_ms` | `int` | `500` | Minimum gap between injections into one session. |
 | `state_cache_ttl_seconds` | `int` | `2` | TTL of the provider state cache — the tmux provider does at most one `list-panes` and one `ps` per reconciler tick. |
 | `transcript_poll_seconds` | `int` | `2` | Transcript reader poll interval (Phase S3). |

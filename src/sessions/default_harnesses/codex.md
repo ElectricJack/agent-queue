@@ -112,6 +112,13 @@ that could ride `args` if you want sandboxed-but-automatic instead.
 composer backtracks/clears; a blind Escape-then-Enter sequence would eat
 the nudge text.
 
+**The trust screen is painted late, and its rows start with `›`.** Codex's
+trust menu renders `› 1. Yes, continue` — the same prefix the readiness poll
+looks for — and it can land *after* the first dismissal pass. Startup
+therefore refuses readiness on any capture where a rule above matches, and
+holds the final pass open for `sessions.dialog_settle_seconds` (default
+1.5 s). Verified live on Codex 0.151 (task smart-orbit.7).
+
 **Startup noise is harmless:** an update banner, a bubblewrap PATH warning,
 and possible MCP-startup warnings all render above the composer and need no
 keys. The `login-required` dialog quarantines instead of typing — an
