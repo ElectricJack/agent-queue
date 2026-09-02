@@ -83,6 +83,21 @@ def _cells_for_rect(x0, y0, x1, y1):
     return [(cx, cy) for cx in range(cx0, cx1 + 1) for cy in range(cy0, cy1 + 1)]
 
 
+def _cell_bounds(rect) -> tuple[float, float, float, float]:
+    """`rect` snapped outwards to whole cells.
+
+    The neighbourhood a viewport request is allowed to reason about beyond
+    its own rectangle — the same one the persisted cell index used to hand
+    it before the geometry became a function of the expanded set.
+    """
+    return (
+        math.floor(rect.x0 / CELL_SIZE) * CELL_SIZE,
+        math.floor(rect.y0 / CELL_SIZE) * CELL_SIZE,
+        math.ceil(rect.x1 / CELL_SIZE) * CELL_SIZE,
+        math.ceil(rect.y1 / CELL_SIZE) * CELL_SIZE,
+    )
+
+
 def _intersects(b: Box, x0, y0, x1, y1) -> bool:
     return b.x < x1 and b.x + b.w > x0 and b.y < y1 and b.y + b.h > y0
 
@@ -374,13 +389,25 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
         boxes = geo.boxes
         matches = None if geo.matches is None else set(geo.matches)
         forced = set(geo.forced)
-        # rect membership again, now over the COMPACTED boxes: after a
-        # collapse the persisted coordinates are not where these nodes are
-        # drawn, so the rect has to be applied to where they actually land.
+        # rect membership, now over the COMPACTED boxes: after a collapse the
+        # persisted coordinates are not where these nodes are drawn, so the
+        # rect has to be applied to where they actually land.
         if req.root is None:
             for tid in list(visible):
                 if not _intersects(boxes[tid], rect.x0, rect.y0, rect.x1, rect.y1):
                     del visible[tid]
+            # A collapsed container just off-screen still owns the edges into
+            # its subtree, so the collapsed set is taken from a cell-aligned
+            # neighbourhood rather than the rect itself. It must NOT be the
+            # whole open set, though: `hidden_paths` below reads every task
+            # inside every collapsed container it names, and a project of a
+            # hundred collapsed epics would pay for all of them on every pan.
+            near = _cell_bounds(rect)
+            collapsed_resolved = {
+                tid: path
+                for tid, path in collapsed_resolved.items()
+                if tid in boxes and _intersects(boxes[tid], *near)
+            }
         context_only: set[str] = set()
         if matches is not None:
             for tid in list(visible):

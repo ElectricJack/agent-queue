@@ -889,9 +889,7 @@ async def test_locate_reports_where_the_canvas_will_draw_the_hit(db, client_fact
     await seed(db)
     async with client_factory() as ac:
         tiles = await _tiles(ac, q="title d", expanded=[])
-        r = await ac.post(
-            "/api/projects/p1/graph/locate", json={"variant": "all", "q": "title d"}
-        )
+        r = await ac.post("/api/projects/p1/graph/locate", json={"variant": "all", "q": "title d"})
     assert r.status_code == 200
     hits = {h["id"]: h for h in r.json()["hits"]}
     assert hits and set(hits) <= set(tiles)
@@ -902,3 +900,32 @@ async def test_locate_reports_where_the_canvas_will_draw_the_hit(db, client_fact
             tiles[tid]["w"],
             tiles[tid]["h"],
         )
+
+
+async def test_a_collapsed_subtree_far_from_the_rect_is_not_read(db, client_factory):
+    """The open set decides the geometry; the rect still decides the cost.
+
+    `hidden_paths` reads every task inside every collapsed container it is
+    given, so a project of collapsed epics would pay for all of them on every
+    pan if the collapsed set were taken from the whole open set.
+    """
+    await seed(db)
+    seen: list[list[str]] = []
+    real = db.load_paths_by_prefixes
+
+    async def spy(project_id, variant, prefixes):
+        seen.append(list(prefixes))
+        return await real(project_id, variant, prefixes)
+
+    db.load_paths_by_prefixes = spy
+    try:
+        async with client_factory() as ac:
+            everywhere = await _tiles(ac, expanded=[])
+            assert any("/e/" in p for batch in seen for p in batch), seen
+            seen.clear()
+            e = everywhere["e"]
+            far = e["y"] + e["h"] + 40
+            await _tiles(ac, rect={"x0": -1, "y0": far, "x1": 20, "y1": far + 10})
+    finally:
+        db.load_paths_by_prefixes = real
+    assert not any("/e/" in p for batch in seen for p in batch), seen

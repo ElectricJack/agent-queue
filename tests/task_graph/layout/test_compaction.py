@@ -305,3 +305,43 @@ async def test_collapsing_the_epic_of_a_real_layout_reclaims_the_space(tmp_path)
         assert compact_layout(rows, collapsed=set(), scopes_loaded=scopes) == before
     finally:
         await db.close()
+
+
+def test_lines_are_inherited_not_re_wrapped():
+    """A rank of wide containers collapses into a column, not a grid.
+
+    Line membership is preserved by design (the graph has to stay
+    recognisable across a toggle), so the height comes back but the
+    horizontal packing is not re-derived. Re-wrapping belongs to the density
+    work, not here.
+    """
+    wide = band_up(4 * CARD_W + 3 * SIBLING_GAP + 2 * PADDING)
+    tall = band_up(CARD_H + 2 * PADDING + HEADER_H)
+    rows = {}
+    for i in range(4):
+        tid = f"e{i}"
+        rows[tid] = row(
+            tid,
+            parent=None,
+            path=f"/{tid}/",
+            depth=0,
+            rank=0,
+            rel=(0.0, i * (tall + LINE_GAP)),
+            size=(wide, tall),
+            kind="container",
+        )
+        rows[f"{tid}c"] = row(
+            f"{tid}c",
+            parent=tid,
+            path=f"/{tid}/{tid}c/",
+            depth=1,
+            rank=0,
+            rel=(0.0, 0.0),
+            origin=content_origin(rows[tid]),
+        )
+
+    boxes = compact_layout(rows, collapsed={f"e{i}" for i in range(4)}, scopes_loaded={None})
+    assert [boxes[f"e{i}"].x for i in range(4)] == [0.0, 0.0, 0.0, 0.0]
+    assert [boxes[f"e{i}"].y for i in range(4)] == pytest.approx(
+        [i * (CARD_H + LINE_GAP) for i in range(4)]
+    )

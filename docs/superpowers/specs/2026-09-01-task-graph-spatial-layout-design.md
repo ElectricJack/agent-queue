@@ -176,6 +176,14 @@ computed per request in `src/task_graph/layout/compaction.py` as a pure function
 - The **toggled container is a fixed point**: only nodes *after* it in reading order move,
   so the viewport needs no correction to keep it under the pointer.
 
+What compaction deliberately does **not** do is re-wrap. Lines are inherited, not
+re-derived, so a scope whose children each filled a line of their own (a rank of wide
+epics, say) collapses into a narrow column rather than repacking into a grid: the vertical
+space comes back, the horizontal packing does not. That is the price of "the graph stays
+recognisable", and re-deriving the wrap would mean re-running `flow_container` — which
+needs the sibling edges and the serpentine chains, and would no longer be the identity on
+the published layout. Re-wrapping belongs to the density work (§3.2), not here.
+
 Only scopes whose children are loaded in full may be re-packed — a missing sibling would
 silently shrink the line it belonged to. Every other scope keeps the interior the engine
 published (it still moves, because its container moved). Level-of-detail culling feeds the
