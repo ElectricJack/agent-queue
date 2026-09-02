@@ -2234,12 +2234,42 @@ class GitManager:
         checkout_path: str,
         branch_name: str,
     ) -> str | None:
-        """Return an open or merged PR URL for *branch_name*, or ``None``.
+        """Return an open or merged PR URL delivering *branch_name*, or ``None``.
+
+        Matches the head branch **name** first, then falls back to matching
+        the head **commit**.  A PR delivers commits, not a name: a task
+        description that names a different delivery branch, or an agent that
+        opened the PR from a second ref pointed at the same tip, publishes
+        exactly these commits under another head name.  Treating that as "no
+        PR" sends a correct, pushed task into a pointless retry, so any open
+        PR whose head commit is this branch's tip (or the workspace's
+        ``HEAD``, for when the agent never moved the task branch) counts.
 
         A merged pull request is evidence that the branch's work has already
-        shipped, so completion verification must accept it just like an open
-        PR.  A closed-but-unmerged PR deliberately remains a failure.
+        shipped. Closed-but-unmerged PRs deliberately remain a failure.
+        Best-effort throughout: any gh/git failure returns ``None``.
         """
+        url = await self._open_pr_url_by_head_name(checkout_path, branch_name)
+        if url:
+            return url
+
+        tips = {
+            sha
+            for sha in (
+                await self.arev_parse(checkout_path, branch_name),
+                await self.arev_parse(checkout_path, "HEAD"),
+            )
+            if sha
+        }
+        if not tips:
+            return None
+        return await self._open_pr_url_by_head_commit(checkout_path, tips, branch_name)
+
+    async def _open_pr_url_by_head_name(
+        self,
+        checkout_path: str,
+        branch_name: str,
+    ) -> str | None:
         try:
             result = await self._arun_subprocess(
                 [
@@ -2258,10 +2288,64 @@ class GitManager:
                 cwd=checkout_path,
                 timeout=self._GIT_TIMEOUT,
             )
-            url = (result.stdout or "").strip()
-            return url if url else None
         except Exception:
             return None
+        if result.returncode != 0:
+            return None
+        url = (result.stdout or "").strip()
+        return url if url else None
+
+    async def _open_pr_url_by_head_commit(
+        self,
+        checkout_path: str,
+        tips: set[str],
+        branch_name: str,
+    ) -> str | None:
+        """URL of an open or merged PR whose head commit is one of *tips*."""
+        try:
+            result = await self._arun_subprocess(
+                [
+                    "gh",
+                    "pr",
+                    "list",
+                    "--state",
+                    "all",
+                    "--json",
+                    "url,state,headRefName,headRefOid",
+                    "--limit",
+                    "100",
+                ],
+                cwd=checkout_path,
+                timeout=self._GIT_TIMEOUT,
+            )
+        except Exception:
+            return None
+        if result.returncode != 0:
+            return None
+        try:
+            prs = json.loads(result.stdout or "[]")
+        except (ValueError, TypeError):
+            return None
+        if not isinstance(prs, list):
+            return None
+        for pr in prs:
+            if not isinstance(pr, dict):
+                continue
+            if (
+                pr.get("state") in {"OPEN", "MERGED"}
+                and pr.get("headRefOid") in tips
+                and pr.get("url")
+            ):
+                logger.info(
+                    "Accepting open PR %s from branch '%s' for '%s' "
+                    "(same head commit %s)",
+                    pr.get("url"),
+                    pr.get("headRefName"),
+                    branch_name,
+                    str(pr.get("headRefOid"))[:8],
+                )
+                return pr["url"]
+        return None
 
     async def ais_ancestor(
         self,
