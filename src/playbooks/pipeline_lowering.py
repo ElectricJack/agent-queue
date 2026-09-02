@@ -206,19 +206,19 @@ def lower_pipeline(
             return f"{rule_id}--{node_id}"
         for node_id, node in nodes.items():
             step_id = node_key(node_id)
+            source_ref = locations.ref_for_object_key(node_id)
             if node.get("terminal"):
                 steps[step_id] = {
                     "type": "terminal",
                     "rule": rule_id,
                     "title": node_id,
-                    "source": _ref(source),
+                    "source": source_ref,
                     "outcome": "completed",
                 }
                 continue
             loop = node.get("for_each") or {}
             loop_name = loop.get("as")
             base_id = f"{step_id}-body" if loop_name else step_id
-            source_ref = locations.ref_for_object_key(node_id)
             success_target = node_key(node.get("on_success", "done"))
             failure_target = node_key(node.get("on_failure", node.get("on_success", "done")))
             transitions = _command_transitions(

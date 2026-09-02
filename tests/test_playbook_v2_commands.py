@@ -124,6 +124,10 @@ def test_default_pipeline_source_refs_point_to_exact_json_key_lines(tmp_path):
     assert isinstance(source, PlaybookSource)
     body, diagnostics = lower_pipeline(source)
     assert diagnostics == []
-    step = body["steps"]["per-task-review--create-review"]
     lines = path.read_text(encoding="utf-8").splitlines()
-    assert lines[step["source"]["start_line"] - 1].strip().startswith('"create-review": {')
+    for step_id, key in {
+        "per-task-review--create-review": "create-review",
+        "per-task-review--done": "done",
+    }.items():
+        step = body["steps"][step_id]
+        assert lines[step["source"]["start_line"] - 1].strip().startswith(f'"{key}": {{')

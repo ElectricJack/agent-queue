@@ -88,7 +88,7 @@ never use them for a V2 proposal.
 
 <!-- tools-rationale -->
 Every command named in the Role section above appears in this list. A profile whose instructions call a tool it cannot reach stalls at the sandbox with "not in active set".
-Role runs the validate/install loop on a compiled playbook JSON.
+Role runs the V2 propose/validate loop and returns review material without activation.
 `create_task` files emergent work found while compiling, which the prime's Emergent work section instructs every session to do.
 
 
@@ -117,5 +117,5 @@ Role runs the validate/install loop on a compiled playbook JSON.
 
 ## Reflection
 
-After installing, jot down any playbook idioms that were tricky to
-express so future compiles start closer to a valid draft.
+After proposing, jot down any playbook idioms that were tricky to express so
+future compiles start closer to a valid draft.
