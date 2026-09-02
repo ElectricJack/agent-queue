@@ -766,18 +766,48 @@ class SessionCommandsMixin:
             # — returning from within ``async with`` would commit the
             # transaction rather than leave it untouched.
             live: list = []
+            paused: list[str] = []
             abandon_result = None
             async with self.db.immediate() as conn:
-                live = await self.db.live_descendant_sessions(task_id, conn=conn)
+                # ``exclude_root``: the closing task's own session — the
+                # worker calling ``task_close``, or the container-root
+                # session driving it — is live by definition.  Counting it
+                # made every ``--abandon-children`` close refuse, even with
+                # nothing but a PAUSED unassigned child underneath.
+                live = await self.db.live_descendant_sessions(
+                    task_id, conn=conn, exclude_root=True
+                )
                 if not live:
+                    # A hand-paused descendant cannot be transitioned
+                    # (``ManualPauseActive``).  Detect it here so the caller
+                    # gets a structured refusal naming the ids rather than an
+                    # exception escaping from inside the transaction.
+                    paused = await self.db.manually_paused_descendants(task_id, conn=conn)
+                if not live and not paused:
                     abandon_result = await self.db.abandon_subtree(task_id, conn=conn)
             if live:
+                held = sorted({t for _, t in live})
                 return {
                     "success": False,
                     "code": "hierarchy.live_descendants",
-                    "error": "descendants are held by live sessions; stop them first "
-                    "(aq task stop <id> / aq session kill <name>)",
+                    "error": (
+                        "descendants are held by live sessions: "
+                        + ", ".join(held)
+                        + "; stop them first (aq task stop <id> / aq session kill <name>)"
+                    ),
                     "sessions": [{"session_id": s, "task_id": t} for s, t in live],
+                    "live_descendants": held,
+                }
+            if paused:
+                return {
+                    "success": False,
+                    "code": "hierarchy.manually_paused_descendants",
+                    "error": (
+                        "descendants are manually paused: "
+                        + ", ".join(paused)
+                        + "; resume them first (aq task resume <id>)"
+                    ),
+                    "manually_paused_descendants": paused,
                 }
             # Post-commit: audit rows and settlement notification, same
             # sequencing as ``transition_task`` (never inside the write

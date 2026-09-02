@@ -221,7 +221,13 @@ nothing to find).
   abandonment and administrative closes — bypasses it. There is no force that leaves open children under a completed
   container — that would break invariant 6. The operator's option is
   `--abandon-children`, and it is **refused while any descendant has a live session**
-  (`hierarchy.live_descendants`, listing them). A `task`-lifecycle descendant may be
+  (`hierarchy.live_descendants`, listing the descendant ids). "Descendant" is strict: the
+  closing container's *own* session — the worker calling `task_close`, or the
+  container-root session driving it — is live by definition and is excluded from the
+  check, otherwise every abandon would refuse itself. A descendant a human has paused by
+  hand (`PAUSED` with no `resume_after`) is likewise refused, as
+  `hierarchy.manually_paused_descendants` listing the ids: the manual-pause guard means
+  those rows cannot be transitioned, and the operator resumes them first. A `task`-lifecycle descendant may be
   mid-write in its worktree with a valid token; closing its row first would let it keep
   writing against abandoned work. The operator stops those sessions through the existing
   paths (`aq task stop <id>` / `aq session kill <name>`, both of which run the salvage and
