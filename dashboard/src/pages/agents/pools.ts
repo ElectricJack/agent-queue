@@ -1,3 +1,4 @@
+import { useEffect, useMemo, useRef, useState } from "react";
 import { usePoolSessions, usePoolStatus, type PoolStatusRow, type SessionSummary } from "../../api/hooks";
 import type { FlockAgent } from "../../api/agents";
 
@@ -44,6 +45,47 @@ export function poolEntries(pools: PoolStatusRow[], sessions: SessionSummary[]):
         instances: [...(byKey.get(key) ?? [])].sort((a, b) => (a.started_at ?? 0) - (b.started_at ?? 0)),
       };
     });
+}
+
+export interface BusyPoolEntries {
+  busy: PoolEntry[];
+  hiddenCount: number;
+}
+
+/** Pools with a task-holding worker are the only pools shown in the flock rail. */
+export function splitBusyPoolEntries(entries: PoolEntry[]): BusyPoolEntries {
+  const busy = entries.filter((entry) => entry.pool.running_busy > 0);
+  return { busy, hiddenCount: entries.length - busy.length };
+}
+
+/**
+ * Hold a pool's rail visibility briefly when supply changes so a claim or
+ * completion does not make the flock jump between adjacent live updates.
+ */
+export function useDebouncedBusyPoolEntries(entries: PoolEntry[], delay = 1_000): BusyPoolEntries {
+  const next = useMemo(() => splitBusyPoolEntries(entries), [entries]);
+  const [visible, setVisible] = useState(next);
+  const initialized = useRef(false);
+  const hasReceivedEntries = useRef(entries.length > 0);
+
+  useEffect(() => {
+    if (!initialized.current) {
+      initialized.current = true;
+      setVisible(next);
+      return;
+    }
+    // The first status response should populate the rail immediately. Later
+    // changes are debounced to avoid a claim/completion flicker.
+    if (!hasReceivedEntries.current && entries.length > 0) {
+      hasReceivedEntries.current = true;
+      setVisible(next);
+      return;
+    }
+    const timer = window.setTimeout(() => setVisible(next), delay);
+    return () => window.clearTimeout(timer);
+  }, [entries, delay, next]);
+
+  return visible;
 }
 
 /** Profile IDs that run as pools anywhere. `pool_status` is the only source. */

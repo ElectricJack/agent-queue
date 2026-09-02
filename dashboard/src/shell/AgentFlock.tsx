@@ -1,10 +1,11 @@
 import { useId, useState } from "react";
+import { Link } from "react-router-dom";
 import { ChevronDownIcon, ChevronRightIcon, UsersIcon, PlusIcon } from "@heroicons/react/24/outline";
 import { useAgentFlock, useFlockSubagents } from "../api/agents";
 import { useAgentSelection } from "../pages/agents/useAgentSelection";
 import { AgentState, AgentEligibility, AgentWaitingQuestion, FlockSubagents } from "../pages/agents/AgentMetadata";
 import { PoolBadge, PoolQuarantine, PoolSupplyRow } from "../pages/agents/PoolMetadata";
-import { isPoolAgent, usePoolFlock } from "../pages/agents/pools";
+import { isPoolAgent, useDebouncedBusyPoolEntries, usePoolFlock } from "../pages/agents/pools";
 
 const COLLAPSED_KEY = "aq:flock:collapsed";
 
@@ -12,7 +13,8 @@ export default function AgentFlock() {
   const { data: roster = [], isLoading, error, refetch } = useAgentFlock();
   const { data: subagents } = useFlockSubagents();
   const selection = useAgentSelection();
-  const { entries: pools, poolIds } = usePoolFlock();
+  const { entries: poolEntries, poolIds } = usePoolFlock();
+  const { busy: pools, hiddenCount } = useDebouncedBusyPoolEntries(poolEntries);
   // Pool members are reachable through their pool entry; listing each
   // ephemeral instance row here as well would double-count the flock.
   const agents = roster.filter((agent) => !isPoolAgent(agent, poolIds));
@@ -65,7 +67,7 @@ export default function AgentFlock() {
               Could not load agents. <button type="button" className="underline" onClick={() => void refetch()}>Retry</button>
             </div>
           )}
-          {!isLoading && !error && agents.length === 0 && pools.length === 0 && (
+          {!isLoading && !error && agents.length === 0 && pools.length === 0 && hiddenCount === 0 && (
             <p className="px-3 py-2 text-xs text-gray-500">No agents defined.</p>
           )}
           {agents.map((agent) => {
@@ -137,6 +139,11 @@ export default function AgentFlock() {
               </button>
             );
           })}
+          {hiddenCount > 0 && (
+            <Link to="/agents" data-listnav="1" className="block px-3 py-1 text-xs text-gray-500 hover:text-gray-300">
+              {hiddenCount} idle {hiddenCount === 1 ? "pool" : "pools"}
+            </Link>
+          )}
         </div>
       )}
       {limitAt === selection.locationKey && (
