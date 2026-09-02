@@ -236,6 +236,48 @@ class ProfileAuditResponse(BaseModel):
     enforcement: str = "audit"
 
 
+class ProfileConfigDivergence(BaseModel):
+    """One ``## Config`` field whose vault value differs from the shipped one."""
+
+    field: str
+    #: ``None`` means the field is absent on that side — none of the compared
+    #: fields legitimately take a JSON ``null``.
+    shipped: Any = None
+    vault: Any = None
+
+
+class ProfileDriftRow(BaseModel):
+    """One system profile's vault copy compared against the shipped default."""
+
+    profile_id: str
+    #: ``ok`` / ``not_seeded`` / ``drifted`` / ``unreadable``.
+    status: str = "ok"
+    config: list[ProfileConfigDivergence] = []
+    #: Section headings (lowercased) the shipped default has and the vault
+    #: copy lacks.  A rename appears here and in ``extra_sections``.
+    missing_sections: list[str] = []
+    extra_sections: list[str] = []
+    errors: list[str] = []
+    summary: str = ""
+
+
+class ProfileDriftResponse(BaseModel):
+    profiles: list[ProfileDriftRow] = []
+    checked: int = 0
+    drifted_count: int = 0
+
+
+class ProfileReseedResponse(BaseModel):
+    profile_id: str
+    #: The vault path that was written.
+    path: str = ""
+    #: ``None`` when there was no existing file to back up.
+    backup_path: str | None = None
+    created: bool = False
+    warnings: list[str] | None = None
+    sync_errors: list[str] | None = None
+
+
 class InstallProfileResponse(BaseModel):
     profile_id: str
     installed: list[str] = []
@@ -363,6 +405,8 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "list_available_tools": ListAvailableToolsResponse,
     "check_profile": CheckProfileResponse,
     "profile_audit": ProfileAuditResponse,
+    "profile_drift": ProfileDriftResponse,
+    "profile_reseed": ProfileReseedResponse,
     "install_profile": InstallProfileResponse,
     "export_profile": ExportProfileResponse,
     "import_profile": ImportProfileResponse,

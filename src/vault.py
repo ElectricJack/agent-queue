@@ -1738,6 +1738,13 @@ def ensure_default_profiles(data_dir: str) -> dict:
     survive upgrades, and a user who wants the shipped version back
     deletes their copy.
 
+    The cost of that rule is drift: a copy seeded by an older release keeps
+    that release's schema and semantics forever, including load-bearing
+    ``## Config`` fields like ``read_only``.  ``src/profiles/drift.py``
+    detects it (doctor check ``profiles.system_drift``, command
+    ``aq agent profile-drift``) and ``aq agent profile-reseed <id>`` is the
+    explicit, backup-taking way to restore one shipped default.
+
     Args:
         data_dir: The root data directory (e.g. ``~/.agent-queue``).
 

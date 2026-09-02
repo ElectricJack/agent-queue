@@ -669,8 +669,16 @@ from .profile_audit_request import ProfileAuditRequest
 from .profile_audit_response import ProfileAuditResponse
 from .profile_audit_response_422 import ProfileAuditResponse422
 from .profile_audit_row import ProfileAuditRow
+from .profile_config_divergence import ProfileConfigDivergence
 from .profile_detail import ProfileDetail
 from .profile_detail_install import ProfileDetailInstall
+from .profile_drift_request import ProfileDriftRequest
+from .profile_drift_response import ProfileDriftResponse
+from .profile_drift_response_422 import ProfileDriftResponse422
+from .profile_drift_row import ProfileDriftRow
+from .profile_reseed_request import ProfileReseedRequest
+from .profile_reseed_response import ProfileReseedResponse
+from .profile_reseed_response_422 import ProfileReseedResponse422
 from .profile_subagent_rollup import ProfileSubagentRollup
 from .profile_summary import ProfileSummary
 from .project_graph_response import ProjectGraphResponse
@@ -1670,8 +1678,16 @@ __all__ = (
     "ProfileAuditResponse",
     "ProfileAuditResponse422",
     "ProfileAuditRow",
+    "ProfileConfigDivergence",
     "ProfileDetail",
     "ProfileDetailInstall",
+    "ProfileDriftRequest",
+    "ProfileDriftResponse",
+    "ProfileDriftResponse422",
+    "ProfileDriftRow",
+    "ProfileReseedRequest",
+    "ProfileReseedResponse",
+    "ProfileReseedResponse422",
     "ProfileSubagentRollup",
     "ProfileSummary",
     "ProjectGraphResponse",
