@@ -157,13 +157,19 @@ def _handler(*, memory: bool = False, playbooks: bool = False) -> CommandHandler
 
 class TestCommandGate:
     def test_paused_playbook_command_set_matches_the_mixins(self):
-        """The frozen set must cover exactly the two frozen command modules."""
+        """The frozen set must cover exactly the frozen command modules.
+
+        ``playbook_v2_commands`` is in the list because its seven commands
+        pause with the rest of the subsystem -- ``PAUSED_PLAYBOOK_COMMANDS``
+        unions ``PLAYBOOK_V2_COMMANDS`` in.
+        """
         import src.commands.playbook_commands as pbc
+        import src.commands.playbook_v2_commands as pbv2
         import src.commands.workflow_commands as wfc
 
         discovered = {
             name[len("_cmd_") :]
-            for module in (pbc, wfc)
+            for module in (pbc, wfc, pbv2)
             for cls in vars(module).values()
             if isinstance(cls, type) and cls.__module__ == module.__name__
             for name in vars(cls)
@@ -173,7 +179,13 @@ class TestCommandGate:
 
     @pytest.mark.parametrize("name", sorted(PAUSED_PLAYBOOK_COMMANDS))
     async def test_every_playbook_command_is_gated(self, name):
-        result = await _handler(playbooks=False).execute(name, {})
+        handler = _handler(playbooks=False)
+        # The gate short-circuits before dispatch, so a stale entry naming a
+        # command that no longer exists would still "pass" below.  Assert the
+        # name is dispatchable first, so this parametrization cannot quietly
+        # stop testing anything.
+        assert handler.has_command(name), f"{name} is in the frozen set but has no _cmd_"
+        result = await handler.execute(name, {})
         assert result == {"success": False, "error": PLAYBOOKS_PAUSED_ERROR}
 
     @pytest.mark.parametrize(
