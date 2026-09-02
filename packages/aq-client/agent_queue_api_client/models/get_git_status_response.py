@@ -57,7 +57,7 @@ class GetGitStatusResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.get_git_status_response_repos_item import GetGitStatusResponseReposItem  # noqa: PLC0415
+        from ..models.get_git_status_response_repos_item import GetGitStatusResponseReposItem
 
         d = dict(src_dict)
         project_id = d.pop("project_id")

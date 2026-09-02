@@ -85,9 +85,9 @@ class GetTaskResponse:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.get_task_response_children_type_0 import GetTaskResponseChildrenType0  # noqa: PLC0415
-        from ..models.get_task_response_parent_type_0 import GetTaskResponseParentType0  # noqa: PLC0415
-        from ..models.task_completion_detail import TaskCompletionDetail  # noqa: PLC0415
+        from ..models.get_task_response_children_type_0 import GetTaskResponseChildrenType0
+        from ..models.get_task_response_parent_type_0 import GetTaskResponseParentType0
+        from ..models.task_completion_detail import TaskCompletionDetail
 
         id = self.id
 
@@ -286,10 +286,10 @@ class GetTaskResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.get_task_response_children_type_0 import GetTaskResponseChildrenType0  # noqa: PLC0415
-        from ..models.get_task_response_parent_type_0 import GetTaskResponseParentType0  # noqa: PLC0415
-        from ..models.task_completion_detail import TaskCompletionDetail  # noqa: PLC0415
-        from ..models.task_ref import TaskRef  # noqa: PLC0415
+        from ..models.get_task_response_children_type_0 import GetTaskResponseChildrenType0
+        from ..models.get_task_response_parent_type_0 import GetTaskResponseParentType0
+        from ..models.task_completion_detail import TaskCompletionDetail
+        from ..models.task_ref import TaskRef
 
         d = dict(src_dict)
         id = d.pop("id")

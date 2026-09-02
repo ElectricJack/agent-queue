@@ -6,27 +6,67 @@ from typing import Any, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-T = TypeVar("T", bound="PlaybookGraphViewResponseEdgesItem")
+T = TypeVar("T", bound="LayoutWorker")
 
 
 @_attrs_define
-class PlaybookGraphViewResponseEdgesItem:
+class LayoutWorker:
+    """
+    Attributes:
+        agent_id (str):
+        name (str):
+        docked_at (str):
+        in_collapsed (bool):
+    """
+
+    agent_id: str
+    name: str
+    docked_at: str
+    in_collapsed: bool
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        agent_id = self.agent_id
+
+        name = self.name
+
+        docked_at = self.docked_at
+
+        in_collapsed = self.in_collapsed
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
+        field_dict.update(
+            {
+                "agent_id": agent_id,
+                "name": name,
+                "docked_at": docked_at,
+                "in_collapsed": in_collapsed,
+            }
+        )
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        playbook_graph_view_response_edges_item = cls()
+        agent_id = d.pop("agent_id")
 
-        playbook_graph_view_response_edges_item.additional_properties = d
-        return playbook_graph_view_response_edges_item
+        name = d.pop("name")
+
+        docked_at = d.pop("docked_at")
+
+        in_collapsed = d.pop("in_collapsed")
+
+        layout_worker = cls(
+            agent_id=agent_id,
+            name=name,
+            docked_at=docked_at,
+            in_collapsed=in_collapsed,
+        )
+
+        layout_worker.additional_properties = d
+        return layout_worker
 
     @property
     def additional_keys(self) -> list[str]:

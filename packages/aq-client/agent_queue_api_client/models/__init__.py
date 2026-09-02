@@ -10,6 +10,7 @@ from .agent_question_detail import AgentQuestionDetail
 from .agent_settings import AgentSettings
 from .agent_summary import AgentSummary
 from .agent_waiting_question import AgentWaitingQuestion
+from .ancestor_ref import AncestorRef
 from .append_note_request import AppendNoteRequest
 from .append_note_response import AppendNoteResponse
 from .append_note_response_422 import AppendNoteResponse422
@@ -21,6 +22,7 @@ from .archive_task_response import ArchiveTaskResponse
 from .archive_task_response_422 import ArchiveTaskResponse422
 from .ask_human_request import AskHumanRequest
 from .ask_human_response_422 import AskHumanResponse422
+from .assignment_route_detail import AssignmentRouteDetail
 from .cancel_playbook_run_request import CancelPlaybookRunRequest
 from .cancel_playbook_run_response import CancelPlaybookRunResponse
 from .cancel_playbook_run_response_422 import CancelPlaybookRunResponse422
@@ -49,6 +51,10 @@ from .compare_specs_notes_response_422 import CompareSpecsNotesResponse422
 from .compile_playbook_request import CompilePlaybookRequest
 from .compile_playbook_response import CompilePlaybookResponse
 from .compile_playbook_response_422 import CompilePlaybookResponse422
+from .compiled_playbook_node import CompiledPlaybookNode
+from .compiled_playbook_node_action_type_0 import CompiledPlaybookNodeActionType0
+from .compiled_playbook_node_for_each_type_0 import CompiledPlaybookNodeForEachType0
+from .compiled_playbook_node_output_type_0 import CompiledPlaybookNodeOutputType0
 from .count_project_memory_files_request import CountProjectMemoryFilesRequest
 from .count_project_memory_files_response import CountProjectMemoryFilesResponse
 from .count_project_memory_files_response_422 import CountProjectMemoryFilesResponse422
@@ -173,6 +179,7 @@ from .explain_task_response_422 import ExplainTaskResponse422
 from .export_profile_request import ExportProfileRequest
 from .export_profile_response import ExportProfileResponse
 from .export_profile_response_422 import ExportProfileResponse422
+from .extent_response import ExtentResponse
 from .file_entry import FileEntry
 from .file_inspection_record import FileInspectionRecord
 from .find_merge_conflict_workspaces_request import FindMergeConflictWorkspacesRequest
@@ -373,6 +380,12 @@ from .install_profile_response import InstallProfileResponse
 from .install_profile_response_422 import InstallProfileResponse422
 from .intelligence_class_model import IntelligenceClassModel
 from .intelligence_class_model_mapping import IntelligenceClassModelMapping
+from .layout_edge import LayoutEdge
+from .layout_job import LayoutJob
+from .layout_node import LayoutNode
+from .layout_rect import LayoutRect
+from .layout_stub import LayoutStub
+from .layout_worker import LayoutWorker
 from .list_active_tasks_all_projects_request import ListActiveTasksAllProjectsRequest
 from .list_active_tasks_all_projects_response import ListActiveTasksAllProjectsResponse
 from .list_active_tasks_all_projects_response_422 import ListActiveTasksAllProjectsResponse422
@@ -432,6 +445,8 @@ from .list_prompts_request import ListPromptsRequest
 from .list_prompts_response import ListPromptsResponse
 from .list_prompts_response_422 import ListPromptsResponse422
 from .list_prompts_response_prompts_item import ListPromptsResponsePromptsItem
+from .list_request import ListRequest
+from .list_response import ListResponse
 from .list_sessions_response import ListSessionsResponse
 from .list_tasks_request import ListTasksRequest
 from .list_tasks_response import ListTasksResponse
@@ -441,6 +456,8 @@ from .list_workspace_kinds_response_422 import ListWorkspaceKindsResponse422
 from .list_workspaces_request import ListWorkspacesRequest
 from .list_workspaces_response import ListWorkspacesResponse
 from .list_workspaces_response_422 import ListWorkspacesResponse422
+from .locate_hit import LocateHit
+from .locate_response import LocateResponse
 from .log_entry import LogEntry
 from .mcp_server_summary import McpServerSummary
 from .memory_save_request import MemorySaveRequest
@@ -465,6 +482,7 @@ from .message_reply_response import MessageReplyResponse
 from .message_reply_response_422 import MessageReplyResponse422
 from .message_send_request import MessageSendRequest
 from .message_send_request_pane_open_type_0 import MessageSendRequestPaneOpenType0
+from .node_response import NodeResponse
 from .note_summary import NoteSummary
 from .orchestrator_control_request import OrchestratorControlRequest
 from .orchestrator_control_response import OrchestratorControlResponse
@@ -474,12 +492,25 @@ from .pause_project_response import PauseProjectResponse
 from .pause_project_response_422 import PauseProjectResponse422
 from .pause_task_request import PauseTaskRequest
 from .pause_task_response_422 import PauseTaskResponse422
+from .playbook_graph_edge import PlaybookGraphEdge
+from .playbook_graph_edge_edge_type import PlaybookGraphEdgeEdgeType
+from .playbook_graph_identity import PlaybookGraphIdentity
+from .playbook_graph_layout import PlaybookGraphLayout
+from .playbook_graph_layout_grid_positions import PlaybookGraphLayoutGridPositions
+from .playbook_graph_node import PlaybookGraphNode
+from .playbook_graph_node_colors import PlaybookGraphNodeColors
+from .playbook_graph_nodes_edges import PlaybookGraphNodesEdges
+from .playbook_graph_position import PlaybookGraphPosition
+from .playbook_graph_trigger import PlaybookGraphTrigger
+from .playbook_graph_trigger_filter_type_0 import PlaybookGraphTriggerFilterType0
 from .playbook_graph_view_request import PlaybookGraphViewRequest
 from .playbook_graph_view_response import PlaybookGraphViewResponse
 from .playbook_graph_view_response_422 import PlaybookGraphViewResponse422
-from .playbook_graph_view_response_edges_item import PlaybookGraphViewResponseEdgesItem
-from .playbook_graph_view_response_nodes_item import PlaybookGraphViewResponseNodesItem
-from .playbook_graph_view_response_overlays import PlaybookGraphViewResponseOverlays
+from .playbook_graph_view_response_legend import PlaybookGraphViewResponseLegend
+from .playbook_graph_view_response_live_state_type_0 import PlaybookGraphViewResponseLiveStateType0
+from .playbook_graph_view_response_node_metrics_type_0 import PlaybookGraphViewResponseNodeMetricsType0
+from .playbook_graph_view_response_run_history_type_0_item import PlaybookGraphViewResponseRunHistoryType0Item
+from .playbook_graph_view_response_run_overlay_type_0 import PlaybookGraphViewResponseRunOverlayType0
 from .playbook_health_request import PlaybookHealthRequest
 from .playbook_health_response import PlaybookHealthResponse
 from .playbook_health_response_422 import PlaybookHealthResponse422
@@ -488,9 +519,12 @@ from .playbook_install_request import PlaybookInstallRequest
 from .playbook_install_response import PlaybookInstallResponse
 from .playbook_install_response_422 import PlaybookInstallResponse422
 from .playbook_last_run import PlaybookLastRun
+from .playbook_node_llm_config import PlaybookNodeLlmConfig
 from .playbook_run_path_entry import PlaybookRunPathEntry
 from .playbook_run_summary import PlaybookRunSummary
 from .playbook_summary import PlaybookSummary
+from .playbook_transition_detail import PlaybookTransitionDetail
+from .playbook_transition_detail_when_type_1 import PlaybookTransitionDetailWhenType1
 from .playbook_validate_request import PlaybookValidateRequest
 from .playbook_validate_response import PlaybookValidateResponse
 from .playbook_validate_response_422 import PlaybookValidateResponse422
@@ -734,6 +768,7 @@ from .stream_kill_response import StreamKillResponse
 from .stream_metadata import StreamMetadata
 from .stream_start_request import StreamStartRequest
 from .stream_start_response import StreamStartResponse
+from .stub_overflow import StubOverflow
 from .stub_scan_entry import StubScanEntry
 from .stub_scan_project import StubScanProject
 from .stub_scan_totals import StubScanTotals
@@ -813,6 +848,10 @@ from .task_status_summary import TaskStatusSummary
 from .task_status_summary_by_status import TaskStatusSummaryByStatus
 from .task_status_summary_in_progress_item import TaskStatusSummaryInProgressItem
 from .task_status_summary_ready_to_work_item import TaskStatusSummaryReadyToWorkItem
+from .tidy_request import TidyRequest
+from .tidy_response import TidyResponse
+from .tiles_request import TilesRequest
+from .tiles_response import TilesResponse
 from .token_audit_request import TokenAuditRequest
 from .token_audit_response import TokenAuditResponse
 from .token_audit_response_422 import TokenAuditResponse422
@@ -857,6 +896,7 @@ __all__ = (
     "AgentSettings",
     "AgentSummary",
     "AgentWaitingQuestion",
+    "AncestorRef",
     "AppendNoteRequest",
     "AppendNoteResponse",
     "AppendNoteResponse422",
@@ -868,6 +908,7 @@ __all__ = (
     "ArchiveTaskResponse422",
     "AskHumanRequest",
     "AskHumanResponse422",
+    "AssignmentRouteDetail",
     "CancelPlaybookRunRequest",
     "CancelPlaybookRunResponse",
     "CancelPlaybookRunResponse422",
@@ -893,6 +934,10 @@ __all__ = (
     "CompareSpecsNotesRequest",
     "CompareSpecsNotesResponse",
     "CompareSpecsNotesResponse422",
+    "CompiledPlaybookNode",
+    "CompiledPlaybookNodeActionType0",
+    "CompiledPlaybookNodeForEachType0",
+    "CompiledPlaybookNodeOutputType0",
     "CompilePlaybookRequest",
     "CompilePlaybookResponse",
     "CompilePlaybookResponse422",
@@ -1020,6 +1065,7 @@ __all__ = (
     "ExportProfileRequest",
     "ExportProfileResponse",
     "ExportProfileResponse422",
+    "ExtentResponse",
     "FileEntry",
     "FileInspectionRecord",
     "FindMergeConflictWorkspacesRequest",
@@ -1216,6 +1262,12 @@ __all__ = (
     "InstallProfileResponse422",
     "IntelligenceClassModel",
     "IntelligenceClassModelMapping",
+    "LayoutEdge",
+    "LayoutJob",
+    "LayoutNode",
+    "LayoutRect",
+    "LayoutStub",
+    "LayoutWorker",
     "ListActiveTasksAllProjectsRequest",
     "ListActiveTasksAllProjectsResponse",
     "ListActiveTasksAllProjectsResponse422",
@@ -1273,6 +1325,8 @@ __all__ = (
     "ListPromptsResponse",
     "ListPromptsResponse422",
     "ListPromptsResponsePromptsItem",
+    "ListRequest",
+    "ListResponse",
     "ListSessionsResponse",
     "ListTasksRequest",
     "ListTasksResponse",
@@ -1282,6 +1336,8 @@ __all__ = (
     "ListWorkspacesRequest",
     "ListWorkspacesResponse",
     "ListWorkspacesResponse422",
+    "LocateHit",
+    "LocateResponse",
     "LogEntry",
     "McpServerSummary",
     "MemorySaveRequest",
@@ -1306,6 +1362,7 @@ __all__ = (
     "MessageReplyResponse422",
     "MessageSendRequest",
     "MessageSendRequestPaneOpenType0",
+    "NodeResponse",
     "NoteSummary",
     "OrchestratorControlRequest",
     "OrchestratorControlResponse",
@@ -1315,12 +1372,25 @@ __all__ = (
     "PauseProjectResponse422",
     "PauseTaskRequest",
     "PauseTaskResponse422",
+    "PlaybookGraphEdge",
+    "PlaybookGraphEdgeEdgeType",
+    "PlaybookGraphIdentity",
+    "PlaybookGraphLayout",
+    "PlaybookGraphLayoutGridPositions",
+    "PlaybookGraphNode",
+    "PlaybookGraphNodeColors",
+    "PlaybookGraphNodesEdges",
+    "PlaybookGraphPosition",
+    "PlaybookGraphTrigger",
+    "PlaybookGraphTriggerFilterType0",
     "PlaybookGraphViewRequest",
     "PlaybookGraphViewResponse",
     "PlaybookGraphViewResponse422",
-    "PlaybookGraphViewResponseEdgesItem",
-    "PlaybookGraphViewResponseNodesItem",
-    "PlaybookGraphViewResponseOverlays",
+    "PlaybookGraphViewResponseLegend",
+    "PlaybookGraphViewResponseLiveStateType0",
+    "PlaybookGraphViewResponseNodeMetricsType0",
+    "PlaybookGraphViewResponseRunHistoryType0Item",
+    "PlaybookGraphViewResponseRunOverlayType0",
     "PlaybookHealthRequest",
     "PlaybookHealthResponse",
     "PlaybookHealthResponse422",
@@ -1329,9 +1399,12 @@ __all__ = (
     "PlaybookInstallResponse",
     "PlaybookInstallResponse422",
     "PlaybookLastRun",
+    "PlaybookNodeLlmConfig",
     "PlaybookRunPathEntry",
     "PlaybookRunSummary",
     "PlaybookSummary",
+    "PlaybookTransitionDetail",
+    "PlaybookTransitionDetailWhenType1",
     "PlaybookValidateRequest",
     "PlaybookValidateResponse",
     "PlaybookValidateResponse422",
@@ -1573,6 +1646,7 @@ __all__ = (
     "StreamMetadata",
     "StreamStartRequest",
     "StreamStartResponse",
+    "StubOverflow",
     "StubScanEntry",
     "StubScanProject",
     "StubScanTotals",
@@ -1650,6 +1724,10 @@ __all__ = (
     "TaskStatusSummaryByStatus",
     "TaskStatusSummaryInProgressItem",
     "TaskStatusSummaryReadyToWorkItem",
+    "TidyRequest",
+    "TidyResponse",
+    "TilesRequest",
+    "TilesResponse",
     "TokenAuditRequest",
     "TokenAuditResponse",
     "TokenAuditResponse422",

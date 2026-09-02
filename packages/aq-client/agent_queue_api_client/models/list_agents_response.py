@@ -59,7 +59,7 @@ class ListAgentsResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.agent_summary import AgentSummary  # noqa: PLC0415
+        from ..models.agent_summary import AgentSummary
 
         d = dict(src_dict)
         _agents = d.pop("agents", UNSET)

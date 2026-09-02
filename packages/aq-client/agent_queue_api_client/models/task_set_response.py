@@ -98,10 +98,10 @@ class TaskSetResponse:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.claimed_by import ClaimedBy  # noqa: PLC0415
-        from ..models.task_completion_detail import TaskCompletionDetail  # noqa: PLC0415
-        from ..models.task_set_response_children_type_0 import TaskSetResponseChildrenType0  # noqa: PLC0415
-        from ..models.task_set_response_parent_type_0 import TaskSetResponseParentType0  # noqa: PLC0415
+        from ..models.claimed_by import ClaimedBy
+        from ..models.task_completion_detail import TaskCompletionDetail
+        from ..models.task_set_response_children_type_0 import TaskSetResponseChildrenType0
+        from ..models.task_set_response_parent_type_0 import TaskSetResponseParentType0
 
         id = self.id
 
@@ -340,13 +340,13 @@ class TaskSetResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.claimed_by import ClaimedBy  # noqa: PLC0415
-        from ..models.task_completion_detail import TaskCompletionDetail  # noqa: PLC0415
-        from ..models.task_ref import TaskRef  # noqa: PLC0415
-        from ..models.task_set_response_children_type_0 import TaskSetResponseChildrenType0  # noqa: PLC0415
-        from ..models.task_set_response_context_item import TaskSetResponseContextItem  # noqa: PLC0415
-        from ..models.task_set_response_parent_type_0 import TaskSetResponseParentType0  # noqa: PLC0415
-        from ..models.task_set_response_provenance_item import TaskSetResponseProvenanceItem  # noqa: PLC0415
+        from ..models.claimed_by import ClaimedBy
+        from ..models.task_completion_detail import TaskCompletionDetail
+        from ..models.task_ref import TaskRef
+        from ..models.task_set_response_children_type_0 import TaskSetResponseChildrenType0
+        from ..models.task_set_response_context_item import TaskSetResponseContextItem
+        from ..models.task_set_response_parent_type_0 import TaskSetResponseParentType0
+        from ..models.task_set_response_provenance_item import TaskSetResponseProvenanceItem
 
         d = dict(src_dict)
         id = d.pop("id")

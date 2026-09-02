@@ -49,7 +49,7 @@ class GateListResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.gate_summary import GateSummary  # noqa: PLC0415
+        from ..models.gate_summary import GateSummary
 
         d = dict(src_dict)
         success = d.pop("success", UNSET)

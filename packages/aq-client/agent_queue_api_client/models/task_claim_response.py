@@ -48,7 +48,7 @@ class TaskClaimResponse:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.task_claim_response_task_type_0 import TaskClaimResponseTaskType0  # noqa: PLC0415
+        from ..models.task_claim_response_task_type_0 import TaskClaimResponseTaskType0
 
         success = self.success
 
@@ -107,8 +107,8 @@ class TaskClaimResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.claim_session_summary import ClaimSessionSummary  # noqa: PLC0415
-        from ..models.task_claim_response_task_type_0 import TaskClaimResponseTaskType0  # noqa: PLC0415
+        from ..models.claim_session_summary import ClaimSessionSummary
+        from ..models.task_claim_response_task_type_0 import TaskClaimResponseTaskType0
 
         d = dict(src_dict)
         success = d.pop("success")

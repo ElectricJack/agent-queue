@@ -945,6 +945,396 @@
         }
       }
     },
+    "/api/projects/{project_id}/graph/extent": {
+      "get": {
+        "summary": "Get Extent",
+        "operationId": "get_extent_api_projects__project_id__graph_extent_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "variant",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "active",
+              "title": "Variant"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExtentResponse"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "layout pending"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/graph/tiles": {
+      "post": {
+        "summary": "Post Tiles",
+        "operationId": "post_tiles_api_projects__project_id__graph_tiles_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TilesRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TilesResponse"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "layout pending"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/graph/list": {
+      "post": {
+        "summary": "Post List",
+        "operationId": "post_list_api_projects__project_id__graph_list_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ListRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListResponse"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "layout pending"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/graph/node/{task_id}": {
+      "get": {
+        "summary": "Get Node",
+        "operationId": "get_node_api_projects__project_id__graph_node__task_id__get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "variant",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "all",
+              "title": "Variant"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NodeResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/graph/locate": {
+      "get": {
+        "summary": "Get Locate",
+        "operationId": "get_locate_api_projects__project_id__graph_locate_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "variant",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "active",
+              "title": "Variant"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Q"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Status"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 200,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LocateResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/graph/tidy": {
+      "post": {
+        "summary": "Post Tidy",
+        "operationId": "post_tidy_api_projects__project_id__graph_tidy_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TidyRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TidyResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/graph/jobs/{job_id}": {
+      "get": {
+        "summary": "Get Job",
+        "operationId": "get_job_api_projects__project_id__graph_jobs__job_id__get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LayoutJob"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/proposals/{proposal_id}": {
       "get": {
         "summary": "Get Proposal",
@@ -12334,6 +12724,44 @@
         ],
         "title": "AgentWaitingQuestion"
       },
+      "AncestorRef": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "x": {
+            "type": "number",
+            "title": "X"
+          },
+          "y": {
+            "type": "number",
+            "title": "Y"
+          },
+          "w": {
+            "type": "number",
+            "title": "W"
+          },
+          "h": {
+            "type": "number",
+            "title": "H"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "x",
+          "y",
+          "w",
+          "h"
+        ],
+        "title": "AncestorRef"
+      },
       "AppendNoteRequest": {
         "properties": {
           "project_id": {
@@ -17098,6 +17526,44 @@
         "type": "object",
         "title": "ExportProfileResponse"
       },
+      "ExtentResponse": {
+        "properties": {
+          "layout_version": {
+            "type": "integer",
+            "title": "Layout Version"
+          },
+          "extent_w": {
+            "type": "number",
+            "title": "Extent W"
+          },
+          "extent_h": {
+            "type": "number",
+            "title": "Extent H"
+          },
+          "node_count": {
+            "type": "integer",
+            "title": "Node Count"
+          },
+          "job": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LayoutJob"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "layout_version",
+          "extent_w",
+          "extent_h",
+          "node_count"
+        ],
+        "title": "ExtentResponse"
+      },
       "FileEntry": {
         "properties": {
           "name": {
@@ -21561,6 +22027,390 @@
         ],
         "title": "IntelligenceClassModel"
       },
+      "LayoutEdge": {
+        "properties": {
+          "from": {
+            "type": "string",
+            "title": "From"
+          },
+          "to": {
+            "type": "string",
+            "title": "To"
+          },
+          "dep_type": {
+            "type": "string",
+            "title": "Dep Type"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count",
+            "default": 1
+          }
+        },
+        "type": "object",
+        "required": [
+          "from",
+          "to",
+          "dep_type"
+        ],
+        "title": "LayoutEdge"
+      },
+      "LayoutJob": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "variant": {
+            "type": "string",
+            "title": "Variant"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "requested_at": {
+            "type": "number",
+            "title": "Requested At"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "project_id",
+          "variant",
+          "kind",
+          "status",
+          "requested_at"
+        ],
+        "title": "LayoutJob"
+      },
+      "LayoutNode": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "priority": {
+            "type": "integer",
+            "title": "Priority",
+            "default": 100
+          },
+          "is_blocked": {
+            "type": "boolean",
+            "title": "Is Blocked",
+            "default": false
+          },
+          "profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Id"
+          },
+          "intelligence_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intelligence Class"
+          },
+          "assigned_agent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assigned Agent Id"
+          },
+          "branch_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Branch Name"
+          },
+          "pr_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pr Url"
+          },
+          "playbook_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Playbook Run Id"
+          },
+          "x": {
+            "type": "number",
+            "title": "X"
+          },
+          "y": {
+            "type": "number",
+            "title": "Y"
+          },
+          "w": {
+            "type": "number",
+            "title": "W"
+          },
+          "h": {
+            "type": "number",
+            "title": "H"
+          },
+          "depth": {
+            "type": "integer",
+            "title": "Depth"
+          },
+          "container_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Container Id"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "context_only": {
+            "type": "boolean",
+            "title": "Context Only",
+            "default": false
+          },
+          "agg_children": {
+            "type": "integer",
+            "title": "Agg Children",
+            "default": 0
+          },
+          "agg_descendants": {
+            "type": "integer",
+            "title": "Agg Descendants",
+            "default": 0
+          },
+          "agg_completed": {
+            "type": "integer",
+            "title": "Agg Completed",
+            "default": 0
+          },
+          "agg_running": {
+            "type": "integer",
+            "title": "Agg Running",
+            "default": 0
+          },
+          "agg_blocked": {
+            "type": "integer",
+            "title": "Agg Blocked",
+            "default": 0
+          },
+          "agg_active": {
+            "type": "integer",
+            "title": "Agg Active",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "status",
+          "x",
+          "y",
+          "w",
+          "h",
+          "depth",
+          "kind"
+        ],
+        "title": "LayoutNode"
+      },
+      "LayoutRect": {
+        "properties": {
+          "x0": {
+            "type": "number",
+            "title": "X0"
+          },
+          "y0": {
+            "type": "number",
+            "title": "Y0"
+          },
+          "x1": {
+            "type": "number",
+            "title": "X1"
+          },
+          "y1": {
+            "type": "number",
+            "title": "Y1"
+          }
+        },
+        "type": "object",
+        "required": [
+          "x0",
+          "y0",
+          "x1",
+          "y1"
+        ],
+        "title": "LayoutRect"
+      },
+      "LayoutStub": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "x": {
+            "type": "number",
+            "title": "X"
+          },
+          "y": {
+            "type": "number",
+            "title": "Y"
+          },
+          "w": {
+            "type": "number",
+            "title": "W"
+          },
+          "h": {
+            "type": "number",
+            "title": "H"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "project_id",
+          "x",
+          "y",
+          "w",
+          "h"
+        ],
+        "title": "LayoutStub"
+      },
+      "LayoutWorker": {
+        "properties": {
+          "agent_id": {
+            "type": "string",
+            "title": "Agent Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "docked_at": {
+            "type": "string",
+            "title": "Docked At"
+          },
+          "in_collapsed": {
+            "type": "boolean",
+            "title": "In Collapsed"
+          }
+        },
+        "type": "object",
+        "required": [
+          "agent_id",
+          "name",
+          "docked_at",
+          "in_collapsed"
+        ],
+        "title": "LayoutWorker"
+      },
       "ListActiveTasksAllProjectsRequest": {
         "properties": {
           "include_completed": {
@@ -22277,6 +23127,83 @@
         ],
         "title": "ListPromptsResponse"
       },
+      "ListRequest": {
+        "properties": {
+          "variant": {
+            "type": "string",
+            "title": "Variant",
+            "default": "active"
+          },
+          "expanded": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Expanded",
+            "default": []
+          },
+          "q": {
+            "type": "string",
+            "title": "Q",
+            "default": ""
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": ""
+          },
+          "cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cursor"
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "default": 50
+          }
+        },
+        "type": "object",
+        "title": "ListRequest"
+      },
+      "ListResponse": {
+        "properties": {
+          "nodes": {
+            "items": {
+              "$ref": "#/components/schemas/LayoutNode"
+            },
+            "type": "array",
+            "title": "Nodes",
+            "default": []
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "layout_version": {
+            "type": "integer",
+            "title": "Layout Version"
+          }
+        },
+        "type": "object",
+        "required": [
+          "layout_version"
+        ],
+        "title": "ListResponse"
+      },
       "ListSessionsResponse": {
         "properties": {
           "success": {
@@ -22485,6 +23412,69 @@
         },
         "type": "object",
         "title": "ListWorkspacesResponse"
+      },
+      "LocateHit": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "x": {
+            "type": "number",
+            "title": "X"
+          },
+          "y": {
+            "type": "number",
+            "title": "Y"
+          },
+          "w": {
+            "type": "number",
+            "title": "W"
+          },
+          "h": {
+            "type": "number",
+            "title": "H"
+          },
+          "container_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Container Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "x",
+          "y",
+          "w",
+          "h"
+        ],
+        "title": "LocateHit"
+      },
+      "LocateResponse": {
+        "properties": {
+          "hits": {
+            "items": {
+              "$ref": "#/components/schemas/LocateHit"
+            },
+            "type": "array",
+            "title": "Hits",
+            "default": []
+          },
+          "truncated": {
+            "type": "boolean",
+            "title": "Truncated",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "LocateResponse"
       },
       "LogEntry": {
         "properties": {
@@ -23428,6 +24418,31 @@
         ],
         "title": "MessageSendRequest",
         "description": "Body of POST /api/messages/send for non-session recipients."
+      },
+      "NodeResponse": {
+        "properties": {
+          "node": {
+            "$ref": "#/components/schemas/LayoutNode"
+          },
+          "ancestors": {
+            "items": {
+              "$ref": "#/components/schemas/AncestorRef"
+            },
+            "type": "array",
+            "title": "Ancestors",
+            "default": []
+          },
+          "layout_version": {
+            "type": "integer",
+            "title": "Layout Version"
+          }
+        },
+        "type": "object",
+        "required": [
+          "node",
+          "layout_version"
+        ],
+        "title": "NodeResponse"
       },
       "NoteSummary": {
         "properties": {
@@ -29690,6 +30705,29 @@
         ],
         "title": "StreamStartResponse"
       },
+      "StubOverflow": {
+        "properties": {
+          "node_id": {
+            "type": "string",
+            "title": "Node Id"
+          },
+          "direction": {
+            "type": "string",
+            "title": "Direction"
+          },
+          "more": {
+            "type": "integer",
+            "title": "More"
+          }
+        },
+        "type": "object",
+        "required": [
+          "node_id",
+          "direction",
+          "more"
+        ],
+        "title": "StubOverflow"
+      },
       "StubScanEntry": {
         "properties": {
           "stub_name": {
@@ -32220,6 +33258,155 @@
         },
         "type": "object",
         "title": "TaskStatusSummary"
+      },
+      "TidyRequest": {
+        "properties": {
+          "variant": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Variant"
+          }
+        },
+        "type": "object",
+        "title": "TidyRequest"
+      },
+      "TidyResponse": {
+        "properties": {
+          "jobs": {
+            "items": {
+              "$ref": "#/components/schemas/LayoutJob"
+            },
+            "type": "array",
+            "title": "Jobs",
+            "default": []
+          }
+        },
+        "type": "object",
+        "title": "TidyResponse"
+      },
+      "TilesRequest": {
+        "properties": {
+          "variant": {
+            "type": "string",
+            "title": "Variant",
+            "default": "active"
+          },
+          "rect": {
+            "$ref": "#/components/schemas/LayoutRect"
+          },
+          "expanded": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Expanded",
+            "default": []
+          },
+          "root": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Root"
+          },
+          "max_depth": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Depth"
+          },
+          "q": {
+            "type": "string",
+            "title": "Q",
+            "default": ""
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "rect"
+        ],
+        "title": "TilesRequest"
+      },
+      "TilesResponse": {
+        "properties": {
+          "nodes": {
+            "items": {
+              "$ref": "#/components/schemas/LayoutNode"
+            },
+            "type": "array",
+            "title": "Nodes",
+            "default": []
+          },
+          "edges": {
+            "items": {
+              "$ref": "#/components/schemas/LayoutEdge"
+            },
+            "type": "array",
+            "title": "Edges",
+            "default": []
+          },
+          "stubs": {
+            "items": {
+              "$ref": "#/components/schemas/LayoutStub"
+            },
+            "type": "array",
+            "title": "Stubs",
+            "default": []
+          },
+          "stub_overflow": {
+            "items": {
+              "$ref": "#/components/schemas/StubOverflow"
+            },
+            "type": "array",
+            "title": "Stub Overflow",
+            "default": []
+          },
+          "workers": {
+            "items": {
+              "$ref": "#/components/schemas/LayoutWorker"
+            },
+            "type": "array",
+            "title": "Workers",
+            "default": []
+          },
+          "gates": {
+            "items": {
+              "$ref": "#/components/schemas/GraphGate"
+            },
+            "type": "array",
+            "title": "Gates",
+            "default": []
+          },
+          "layout_version": {
+            "type": "integer",
+            "title": "Layout Version"
+          }
+        },
+        "type": "object",
+        "required": [
+          "layout_version"
+        ],
+        "title": "TilesResponse"
       },
       "TokenAuditRequest": {
         "properties": {

@@ -49,7 +49,7 @@ class ListEventTriggersResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.event_trigger import EventTrigger  # noqa: PLC0415
+        from ..models.event_trigger import EventTrigger
 
         d = dict(src_dict)
         _events = d.pop("events", UNSET)
