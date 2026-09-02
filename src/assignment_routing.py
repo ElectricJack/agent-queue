@@ -22,6 +22,16 @@ def select_assignment_playbook(manager, project):
     """Resolve the system default or a project-scoped explicit override."""
 
     playbook_id = project.assignment_playbook_id or DEFAULT_ASSIGNMENT_PLAYBOOK_ID
+    if manager is None:
+        # ``playbooks.enabled=false`` leaves ``Orchestrator.playbook_manager``
+        # None (feature-pause branch in src/orchestrator/core.py).  Routing is
+        # then simply unavailable: report it as a configuration error and wait,
+        # exactly like a missing or disabled playbook.  Never an AttributeError
+        # -- callers guard on AssignmentPlaybookError, not on that.
+        raise AssignmentPlaybookError(
+            f"assignment playbook '{playbook_id}' is unavailable: "
+            "the playbook subsystem is disabled (playbooks.enabled=false)"
+        )
     playbook = manager.get_playbook(playbook_id)
     if playbook is None:
         raise AssignmentPlaybookError(f"assignment playbook '{playbook_id}' is missing")

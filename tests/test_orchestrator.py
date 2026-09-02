@@ -252,6 +252,17 @@ async def test_child_completion_settles_all_terminal_container_ancestors_once(
     reason="legacy runtime dispatch was removed; session lifecycle is tested separately"
 )
 class TestOrchestratorLifecycle:
+    """Assignment routing is playbook-owned (playbook-intelligence-routing
+    design §8, §14.8): a task carrying no explicit ``intelligence_class`` is
+    routed by the assignment playbook, and with none wired here it correctly
+    never routes and never dispatches -- "no algorithmic class fallback
+    occurs".  These tests exercise the dispatch/completion cascade rather
+    than routing, so each task states its class explicitly, which resolves
+    to an ``explicit``-source effective route with no playbook involved.
+    ``fast-low`` is one of the bundled vault classes seeded by
+    ``initialize()``.
+    """
+
     async def test_full_task_lifecycle(self, orch):
         """DEFINED → READY → ASSIGNED → IN_PROGRESS → COMPLETED"""
         await _create_project_with_workspace(orch.db)
@@ -262,6 +273,7 @@ class TestOrchestratorLifecycle:
                 project_id="p-1",
                 title="Test",
                 description="Do it",
+                intelligence_class="fast-low",
                 status=TaskStatus.READY,
             )
         )
@@ -281,6 +293,7 @@ class TestOrchestratorLifecycle:
                 project_id="p-1",
                 title="Test",
                 description="Do it",
+                intelligence_class="fast-low",
                 status=TaskStatus.READY,
                 max_retries=2,
             )
@@ -303,6 +316,7 @@ class TestOrchestratorLifecycle:
                 project_id="p-1",
                 title="Test",
                 description="Do it",
+                intelligence_class="fast-low",
                 status=TaskStatus.READY,
             )
         )
@@ -320,6 +334,7 @@ class TestOrchestratorLifecycle:
             Task(
                 id="t-1",
                 project_id="p-1",
+                intelligence_class="fast-low",
                 title="First",
                 description="Do first",
                 status=TaskStatus.DEFINED,
@@ -329,6 +344,7 @@ class TestOrchestratorLifecycle:
             Task(
                 id="t-2",
                 project_id="p-1",
+                intelligence_class="fast-low",
                 title="Second",
                 description="Do second",
                 status=TaskStatus.DEFINED,
@@ -503,6 +519,7 @@ class TestAgentReconcilerWiring:
                 project_id="p-1",
                 title="Test reconciler dispatch",
                 description="Should auto-dispatch via the reconciler.",
+                intelligence_class="fast-low",
                 status=TaskStatus.READY,
             )
         )
