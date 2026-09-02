@@ -14,9 +14,16 @@ What it does, in order:
    with no config still gets gating.
 2. Take one of N ``flock`` slots, printing a "waiting" line every poll so a
    queued agent looks queued rather than hung.
-3. Exec pytest with ``-n <cap> --dist loadfile`` and the default marker
+3. Stat every path-shaped argument first and refuse to launch when one of
+   them does not exist.  Under xdist a mistyped path is reported as
+   "no tests ran", which reads like a clean run to an agent that then
+   closes its task believing it verified something.
+4. Exec pytest with ``-n <cap> --dist loadfile`` and the default marker
    deselects folded in — only when the caller did not pass their own, so
    an explicit ``-n 0`` / ``-p no:xdist`` / ``-m perf`` is always honoured.
+5. Treat pytest's exit code 5 ("no tests collected") as the failure it is,
+   with a line saying so, rather than letting a run that executed nothing
+   pass for a green one.
 
 Option names are all ``--aq-``-prefixed on purpose: everything else on the
 command line is pytest's, and a wrapper that quietly ate ``-k`` or ``-x``
@@ -121,6 +128,97 @@ def _xdist_disabled(args: tuple[str, ...]) -> bool:
     """
     joined = " ".join(args)
     return "no:xdist" in joined
+
+
+#: pytest/xdist options whose value is the *next* argv entry.  Anything not
+#: listed here is assumed to be a flag, which is the safe direction: the
+#: worst case is that a value we failed to recognise gets path-checked, and
+#: the path check only ever fires on arguments that look like paths.
+_VALUE_OPTIONS = frozenset(
+    {
+        "-c",
+        "-k",
+        "-m",
+        "-n",
+        "-o",
+        "-p",
+        "-r",
+        "-W",
+        "--basetemp",
+        "--capture",
+        "--color",
+        "--confcutdir",
+        "--deselect",
+        "--dist",
+        "--durations",
+        "--ignore",
+        "--ignore-glob",
+        "--import-mode",
+        "--junit-xml",
+        "--junitxml",
+        "--log-file",
+        "--max-worker-restart",
+        "--maxfail",
+        "--numprocesses",
+        "--override-ini",
+        "--rootdir",
+        "--tb",
+        "--tx",
+    }
+)
+
+
+def _positional_args(args: tuple[str, ...]) -> list[str]:
+    """The arguments pytest will read as test paths.
+
+    Options and the values that follow them are skipped; everything after a
+    bare ``--`` is positional by definition.
+    """
+    positionals: list[str] = []
+    skip_next = False
+    rest_are_positional = False
+    for arg in args:
+        if rest_are_positional:
+            positionals.append(arg)
+            continue
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == "--":
+            rest_are_positional = True
+            continue
+        if arg.startswith("-"):
+            if arg in _VALUE_OPTIONS:
+                skip_next = True
+            continue
+        positionals.append(arg)
+    return positionals
+
+
+def _looks_like_a_path(arg: str) -> bool:
+    """True for arguments that are unambiguously file paths.
+
+    Deliberately narrow.  A missed path (``aq test tests -k foo``) merely
+    leaves the old behaviour in place; a false positive would refuse a
+    perfectly valid command line, which is how wrappers get worked around.
+    """
+    head = arg.split("::", 1)[0]
+    return bool(head) and (os.sep in head or head.endswith(".py"))
+
+
+def _missing_paths(args: tuple[str, ...]) -> list[str]:
+    """Path-shaped arguments that do not exist on disk.
+
+    The ``::node-id`` suffix is stripped before the stat: only the file part
+    of ``tests/test_x.py::TestY::test_z`` is a path.
+    """
+    missing = []
+    for arg in _positional_args(args):
+        if not _looks_like_a_path(arg):
+            continue
+        if not os.path.exists(arg.split("::", 1)[0]):
+            missing.append(arg)
+    return missing
 
 
 def _compose_pytest_argv(
@@ -247,6 +345,10 @@ def test_command(
     untouched.  ``-n`` and ``-m`` are added only when you did not supply
     them.  Use ``--aq-help`` for this help (``-h``/``--help`` belong to
     pytest).
+
+    A path-shaped argument that does not exist is refused before pytest
+    starts (exit 4), and a run that collected nothing exits nonzero and
+    says so.
     """
     from src.resources.semaphore import SlotSemaphore, SlotTimeout, default_lock_dir
 
@@ -274,6 +376,15 @@ def test_command(
         console.print("[yellow]No pytest arguments given.[/] Try: aq test tests/test_config.py")
         console.print("[dim]Refusing to run the whole suite implicitly — see --aq-help.[/]")
         ctx.exit(2)
+
+    missing = _missing_paths(pytest_args)
+    if missing:
+        # Fail before taking a slot.  pytest under xdist turns a bad path
+        # into "no tests ran", which an agent reads as a pass and closes
+        # its task on; the whole point of naming a file is to run it.
+        console.print(f"[red]aq test:[/] no such test path: {', '.join(missing)}")
+        console.print(f"[dim]cwd: {os.getcwd()} — nothing was run.[/]")
+        ctx.exit(4)
 
     argv = _compose_pytest_argv(
         pytest_args,
@@ -321,6 +432,13 @@ def test_command(
             console.print(f"[dim]aq test: slot {slot} of {slots}, -n {workers}[/]")
             click.echo(f"$ {shlex.join(argv)}", err=True)
             returncode = _run_forwarding_signals(argv)
+        if returncode == 5:
+            # pytest's EXIT_NOTESTSCOLLECTED.  Nonzero already, but silent
+            # about *why*: say plainly that nothing was verified.
+            console.print(
+                "[red]aq test: no tests were collected[/] — nothing was verified. "
+                "Check the paths, -k expression and marker deselects."
+            )
         ctx.exit(returncode)
     except SlotTimeout as exc:
         console.print(f"[red]aq test:[/] {exc}")

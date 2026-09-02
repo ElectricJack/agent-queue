@@ -79,6 +79,33 @@ KNOWN_AUTO_REGISTERED: frozenset[str] = frozenset(
     }
 )
 
+#: Commands that read their ``args`` dict but are knowingly registered with an
+#: empty input schema, so no caller can pass anything.  A second debt ledger,
+#: with the same rule as :data:`KNOWN_AUTO_REGISTERED`: it may shrink, and
+#: growing it is a visible edit here.  The fix for an entry is a schema in
+#: ``_FALLBACK_INPUT_SCHEMAS`` (src/tools/definitions.py) or a full definition
+#: in ``_ALL_TOOL_DEFINITIONS``.
+KNOWN_EMPTY_SCHEMA_COMMANDS: frozenset[str] = frozenset(
+    {
+        # Supervisor-internal navigation meta-tool.  Excluded from MCP, the
+        # CLI and the API; its schema is synthesised by ``ToolRegistry``.
+        "load_tools",
+        # Plugin lifecycle.  Hand-crafted in the CLI (``aq plugin *``, which
+        # reaches the database directly), so only the MCP registration is left
+        # holding an empty schema.
+        "plugin_config",
+        "plugin_disable",
+        "plugin_enable",
+        "plugin_info",
+        "plugin_install",
+        "plugin_prompts",
+        "plugin_reload",
+        "plugin_remove",
+        "plugin_reset_prompts",
+        "plugin_update",
+    }
+)
+
 #: Typed definitions in ``_ALL_TOOL_DEFINITIONS`` whose backing ``_cmd_*``
 #: method lands with a still-unmerged Wave 2 lane (see
 #: docs/analysis/execution-plan.md §3, §4).  Unlike :data:`KNOWN_AUTO_REGISTERED`
@@ -299,3 +326,194 @@ class TestRunCommandStaysExcluded:
             "an R1 trust-boundary violation — see trust-and-ops §2.5."
         )
         assert calls[0].startswith("commands/system_commands.py"), calls
+
+
+class TestNoArgumentlessCommandsByAccident:
+    """A command that reaches a transport with an empty input schema takes no
+    arguments *at all* — from MCP, from the CLI, and from the HTTP API.
+
+    ``_discover_all_commands`` synthesises ``{"type": "object", "properties":
+    {}}`` for every ``_cmd_*`` without a typed definition.  That is correct for
+    the handful of genuinely argument-less commands (``list_projects``,
+    ``archive_settings``) and silently wrong for everything else: ``aq task
+    explain`` shipped with ``--help`` as its only option while its docstring
+    still promised a ``task_id``, and ``POST /api/task/explain`` dropped the
+    field it then reported as required.  ``_FALLBACK_INPUT_SCHEMAS``
+    (src/tools/definitions.py) is where such a command gets its properties
+    without joining the LLM-facing tool list.
+    """
+
+    def test_no_command_reads_args_without_a_schema_to_pass_them(self):
+        from src.mcp_registration import _discover_all_commands, _needs_arguments
+
+        # A typed entry in ``_ALL_TOOL_DEFINITIONS`` wins over the discovered
+        # dict on every surface, so only untyped commands are at risk here.
+        typed = _defined_tool_names()
+        discovered = _discover_all_commands()
+        offenders = sorted(
+            name
+            for name, defn in discovered.items()
+            if name not in typed
+            and not (defn.get("input_schema") or {}).get("properties")
+            and _needs_arguments(getattr(CommandHandler, f"_cmd_{name}"))
+            and name not in KNOWN_EMPTY_SCHEMA_COMMANDS
+        )
+        assert not offenders, (
+            f"{len(offenders)} command(s) read their args dict but expose an "
+            f"empty input schema, so no caller can pass anything: "
+            f"{', '.join(offenders)}. Add a typed definition to "
+            "_ALL_TOOL_DEFINITIONS or a schema to _FALLBACK_INPUT_SCHEMAS."
+        )
+
+    def test_empty_schema_ledger_does_not_rot(self):
+        from src.mcp_registration import _discover_all_commands, _needs_arguments
+
+        typed = _defined_tool_names()
+        discovered = _discover_all_commands()
+        stale = sorted(
+            name
+            for name in KNOWN_EMPTY_SCHEMA_COMMANDS
+            if name not in discovered
+            or name in typed
+            or (discovered[name].get("input_schema") or {}).get("properties")
+            or not _needs_arguments(getattr(CommandHandler, f"_cmd_{name}", None))
+        )
+        assert not stale, (
+            "KNOWN_EMPTY_SCHEMA_COMMANDS lists names that no longer belong "
+            f"(command gone, or a schema now exists): {', '.join(stale)}. "
+            "Delete them — the list must shrink."
+        )
+
+    def test_fallback_schemas_name_real_commands(self):
+        from src.tools.definitions import _FALLBACK_INPUT_SCHEMAS
+
+        orphans = sorted(set(_FALLBACK_INPUT_SCHEMAS) - _command_names())
+        assert not orphans, (
+            f"_FALLBACK_INPUT_SCHEMAS has entries with no CommandHandler._cmd_* "
+            f"method: {', '.join(orphans)}"
+        )
+
+    def test_fallback_schemas_never_shadow_a_typed_definition(self):
+        """One schema per command — a typed definition wins, so a fallback
+        beside it is dead weight that will silently drift."""
+        from src.tools.definitions import _FALLBACK_INPUT_SCHEMAS
+
+        both = sorted(set(_FALLBACK_INPUT_SCHEMAS) & _defined_tool_names())
+        assert not both, (
+            f"{', '.join(both)} appear in both _ALL_TOOL_DEFINITIONS and "
+            "_FALLBACK_INPUT_SCHEMAS. Delete the fallback — it is never read."
+        )
+
+    def test_fallback_schemas_are_well_formed(self):
+        from src.tools.definitions import _FALLBACK_INPUT_SCHEMAS
+
+        for name, schema in _FALLBACK_INPUT_SCHEMAS.items():
+            assert schema.get("type") == "object", name
+            properties = schema.get("properties")
+            assert properties, f"{name}: a fallback with no properties is the bug it fixes"
+            for field in schema.get("required", []):
+                assert field in properties, f"{name}: required '{field}' is not a property"
+
+    def test_the_fallback_warns_only_where_a_log_is_read(self, caplog):
+        """Loud in the daemon log, silent on the user's terminal.
+
+        ``_discover_all_commands`` runs on every ``aq`` invocation to build the
+        CLI, and the CLI configures no log handlers — an unconditional warning
+        would print this to stderr ahead of every command's output.
+        """
+        import logging
+
+        from src.mcp_registration import _discover_all_commands
+
+        with caplog.at_level(logging.WARNING, logger="src.mcp_registration"):
+            _discover_all_commands()
+        assert not caplog.records
+
+        with caplog.at_level(logging.WARNING, logger="src.mcp_registration"):
+            _discover_all_commands(warn_on_empty_schema=True)
+        assert any("empty input schema" in r.getMessage() for r in caplog.records)
+
+    def test_needs_arguments_reads_the_body_not_the_signature(self):
+        """Every handler takes ``args``; only some read it."""
+        from src.mcp_registration import _needs_arguments
+
+        # Reads nothing out of args — an empty schema is correct.
+        assert not _needs_arguments(CommandHandler._cmd_archive_settings)
+        # Reads args directly.
+        assert _needs_arguments(CommandHandler._cmd_explain_task)
+        # Reads args only by handing the whole dict to a resolver.
+        assert _needs_arguments(CommandHandler._cmd_session_show)
+
+    @pytest.mark.parametrize(
+        "name",
+        ["explain_task", "gate_create", "gate_list", "gate_resolve", "gate_show"],
+    )
+    def test_gate_and_explain_surface_carry_their_identifiers(self, name):
+        """Regression: these five shipped with no way to name the task or gate.
+
+        ``aq task explain --task-id <id>`` answered "No such option"; the bare
+        form dispatched ``explain_task`` with an empty payload.
+        """
+        from src.cli.auto_commands import _make_auto_command
+        from src.mcp_registration import _discover_all_commands
+
+        defn = _discover_all_commands()[name]
+        command = _make_auto_command(name, name, defn, console=None)
+        options = {p.name for p in command.params}
+        assert options - {"help"}, f"{name} generated a CLI command with no parameters"
+
+    def test_generated_cli_commands_expose_their_required_fields(self):
+        from src.cli.auto_commands import _make_auto_command
+        from src.mcp_registration import _discover_all_commands
+
+        discovered = _discover_all_commands()
+        expected = {
+            "explain_task": {"task_id"},
+            "gate_show": {"gate_id"},
+            "gate_resolve": {"gate_id", "resolved_by"},
+            "gate_create": {"project_id", "gate_type", "title"},
+        }
+        for name, required in expected.items():
+            command = _make_auto_command(name, name, discovered[name], console=None)
+            actual = {p.name for p in command.params if getattr(p, "required", False)}
+            assert required <= actual, f"{name}: expected {required} required, got {actual}"
+
+
+class TestSessionCommandsHaveOneCliSpelling:
+    """``aq session <verb>`` is hand-crafted; auto-generation must not mount a
+    second, flag-shaped spelling of each under ``aq system session-*``."""
+
+    SESSION_VERBS = (
+        "session_attach",
+        "session_drain_ack",
+        "session_kill",
+        "session_list",
+        "session_logs",
+        "session_nudge",
+        "session_peek",
+        "session_show",
+        "session_sleep",
+        "session_token",
+        "session_wake",
+    )
+
+    @pytest.mark.parametrize("name", SESSION_VERBS)
+    def test_covered_by_the_handcrafted_group(self, name):
+        from src.cli.auto_commands import HANDCRAFTED_COVERAGE
+
+        assert name in HANDCRAFTED_COVERAGE
+
+    @pytest.mark.parametrize("name", SESSION_VERBS)
+    def test_still_carries_a_schema_for_the_other_transports(self, name):
+        """CLI coverage is not MCP/API coverage — the schema still has to exist."""
+        from src.mcp_registration import _discover_all_commands
+
+        defn = _discover_all_commands()[name]
+        assert (defn.get("input_schema") or {}).get("properties"), name
+
+    def test_session_input_keeps_its_generated_command(self):
+        """``session_input`` has no ``aq session`` verb, so ``aq system
+        session-input`` is its only CLI spelling — do not suppress it."""
+        from src.cli.auto_commands import HANDCRAFTED_COVERAGE
+
+        assert "session_input" not in HANDCRAFTED_COVERAGE

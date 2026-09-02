@@ -1227,8 +1227,10 @@ contract is enforced by convention, not code. Add a lightweight registry:
 EVENT_SCHEMAS = {
     "task.completed": {
         "required": ["task_id", "project_id", "title"],
-        # no_code: the close path's "left no commits behind" verdict
-        # (read_only profile / --work-outcome no-op); review rules skip it.
+        # no_code: the close path's "left no commits behind" verdict —
+        # by construction (read_only profile / --work-outcome no-op) or in
+        # fact (the branch ended with no commits ahead of its base);
+        # review rules skip it.
         # review_task: the task is one the pipeline created as a review
         # (review:task: / branch-review: dedup key, or a reviewer /
         # final-reviewer profile); review rules skip it regardless of the

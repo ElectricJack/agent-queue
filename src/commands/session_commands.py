@@ -22,7 +22,6 @@ success, ``{"error": "..."}`` on failure.
 from __future__ import annotations
 
 import asyncio
-
 import logging
 import time
 import uuid
@@ -36,7 +35,9 @@ from src.sessions.provider import (
     NotSubmitted,
     SessionHandle,
 )
-from src.sessions.reconciler import DRAIN_ACK_KEY, LIVE_SESSION_STATES as _LIVE_SESSION_STATES
+# Safe at module scope: the reconciler's claim-file helpers live in the leaf
+# module ``src.claim_file``, so it no longer imports this package back.
+from src.sessions.reconciler import DRAIN_ACK_KEY, LIVE_SESSION_STATES
 
 logger = logging.getLogger(__name__)
 
@@ -285,11 +286,11 @@ class SessionCommandsMixin:
         the bytes came from — a silent switch is how an operator debugs
         the wrong thing.
         """
-        from src.sessions.transcripts import resolve_reader
-
         from types import SimpleNamespace
+
         from src.api.auth import LOCAL_SCOPE, RequestScope
         from src.api.scope import check_command_scope
+        from src.sessions.transcripts import resolve_reader
 
         attempt = None
         if args.get("attempt_id"):
@@ -732,7 +733,7 @@ class SessionCommandsMixin:
         session_live = bool(
             caller_session_id
             and session is not None
-            and session.state in _LIVE_SESSION_STATES
+            and session.state in LIVE_SESSION_STATES
         )
 
         # --- close-with-summary enforcement (Dv2 Phase 2 §7) --------------

@@ -100,6 +100,7 @@ from src.models import (
     Task,
     TaskStatus,
 )
+from src.review_keys import flag_review_task_event
 from src.scheduler import AssignAction, Scheduler, SchedulerState, idle_workers
 from src.tokens.budget import BudgetManager
 from src.vault_manager import VaultManager
@@ -868,6 +869,15 @@ class Orchestrator(
                             hydrated_event.get("task_id"),
                             exc_info=True,
                         )
+                # A task the pipeline itself created as a review (``review:task:``
+                # / ``branch-review:`` dedup key) is a review whatever the emitter
+                # said: the close path flags ``review_task`` too, but the rules'
+                # ``truthy: false`` guard passes on a missing key, so an emitter
+                # that omits it (older daemon code, container settlement, a
+                # hand-written event) would review the review again — and so on.
+                task_dict = hydrated_event.get("task")
+                if isinstance(task_dict, dict):
+                    flag_review_task_event(hydrated_event, task_dict.get("dedup_key"))
 
                 # Multi-rule pipelines store a trigger → list of rule metas
                 # mapping in ``pipeline_rules``.  When present, we dispatch

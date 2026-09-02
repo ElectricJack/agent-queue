@@ -100,6 +100,33 @@ async def test_pass_close_emits_notify_task_completed(orch):
 
 
 @pytest.mark.asyncio
+async def test_pass_close_without_agent_emits_notify_task_completed(orch):
+    """A reaped or unassigned agent must not suppress the outcome event."""
+    await orch.db.create_project(Project(id="p-1", name="Test"))
+    task = Task(
+        id="t-no-agent",
+        project_id="p-1",
+        title="Close me",
+        description="test",
+        status=TaskStatus.IN_PROGRESS,
+    )
+    await orch.db.create_task(task)
+    seen = _collect(orch.bus, *NOTIFY)
+
+    await orch.complete_session_task(
+        task, outcome="pass", work_outcome="shipped", notes="all done"
+    )
+
+    assert len(seen["notify.task_completed"]) == 1
+    event = seen["notify.task_completed"][0]
+    assert event["task"]["id"] == "t-no-agent"
+    assert event["agent"]["id"] == ""
+    assert event["agent"]["settings"]["profile_id"] == ""
+    assert seen["notify.task_failed"] == []
+    assert seen["notify.task_blocked"] == []
+
+
+@pytest.mark.asyncio
 async def test_transient_failure_emits_notify_task_failed_with_retry(orch):
     task = await _seed(orch, task_id="t-retry", retry_count=0, max_retries=3)
     seen = _collect(orch.bus, *NOTIFY)

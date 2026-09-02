@@ -17,14 +17,19 @@ routes: ``src/api/codegen.py`` turns every categorised command into
 an MCP tool at once, and that is the only path the committed ``openapi.json``
 and both generated clients cover.
 
-**Current state.** The artifact model (Package 2), artifact store / activation
-records / receipts / pending events (Package 3) and the engine (Package 4) have
-not landed on ``main`` — only their child plans have.  Every command below is
+**Current state.** Package 3 has landed on ``main``: the artifact store
+(``src/playbooks/artifact_store.py``), activation records
+(``src/playbooks/activation.py``, ``playbook_activations``) and
+``src/database/queries/playbook_artifact_queries.py``.  The typed artifact model
+(Package 2, ``src/playbooks/definition.py``), the explanation and contract
+registry (Package 1), and the engine, receipts, V2 runs and pending events
+(Package 4) have not — only their child plans have.  Every command below is
 therefore fully wired end to end (registration, HTTP route, CLI verb, generated
 clients, feature flags, argument validation, scope) and returns
 ``V2_STORAGE_UNAVAILABLE_ERROR`` at the single seam where it would read that
-state.  ``_v2_storage_unavailable`` is that seam: the package that lands the
-artifact store replaces its body and fills in the projections, without touching
+state.  ``_v2_storage_unavailable`` is that seam: the task that lands the
+projections (child plan §16.2, §16.3) replaces its body and fills in
+``graph_projection``, ``artifact_diff`` and ``run_overlay``, without touching
 the wire contract in ``src/api/models/playbook_v2.py``.
 """
 

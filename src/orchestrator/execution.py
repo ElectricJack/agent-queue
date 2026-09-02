@@ -12,7 +12,7 @@ from src.orchestrator.base_workspace import base_checkout_refusal
 from src.logging_config import CorrelationContext
 from src.discord.notifications import format_task_started
 from src.notifications.builder import build_agent_summary, build_task_detail
-from src.api.models.agent import AgentSummary
+from src.api.models.agent import AgentSettings, AgentSummary
 from src.notifications.events import (
     TaskBlockedEvent,
     TaskCompletedEvent,
@@ -21,7 +21,7 @@ from src.notifications.events import (
     TaskThreadOpenEvent,
 )
 from src.profiles.sync import underlying_agent_type
-from src.review_keys import is_pipeline_review_task
+from src.review_keys import is_review_completion
 from src.models import (
     AgentOutput,
     AgentResult,
@@ -1193,24 +1193,35 @@ class ExecutionMixin:
                 # ``no_code`` is only as good as the reviewer profile's
                 # ``read_only`` flag: an operator who hands the reviewer
                 # Write/Edit tools (``read_only: false``) turns it off and the
-                # recursion is back (task sound-horizon-77.18.2).  The pipeline
-                # stamps every review it creates with a ``review:task:`` /
-                # ``branch-review:`` dedup key *and* runs it under ``reviewer``
-                # / ``final-reviewer``, so a finishing task carrying either
-                # mark *is* a review whatever its profile flags say, and the
-                # rules guard on this flag as well.  The profile half matters
-                # because ``ensure_task`` is not the only way a review row is
-                # born: one created by hand or by a project's own flow has no
-                # dedup key, and on the key alone it reviewed itself (task
-                # crisp-summit-88).
-                no_code = await self._task_produces_no_code(ctx)
+                # recursion is back (task sound-horizon-77.18.2).  So
+                # ``is_review_completion`` ORs two signals no profile edit can
+                # reach: the ``review:task:`` / ``branch-review:`` dedup key
+                # this pipeline stamps on every review it creates, and the
+                # ``reviewer`` / ``final-reviewer`` profile id.  The second
+                # exists because the first is only the *shipped* pipeline's
+                # mark — a project routing reviews through its own pipeline
+                # keys the rows however it likes, and with a non-read-only
+                # reviewer that left every guard blind and the chain grew
+                # again (task solid-beacon-50).
+                #
+                # ``_on_playbook_trigger`` derives the dedup-key signal from
+                # the task row too, so an emitter that predates this flag
+                # cannot reopen the recursion (task prime-cascade-64).
+                # ``ctx.branch_no_commits`` is the final layer: the
+                # branch itself carried no commits ahead of its base when the
+                # completion pipeline asked, so there is literally nothing for
+                # a reviewer to read (task bright-forge-78).  It catches what
+                # the structural signals cannot — a renamed reviewer profile
+                # used by a custom pipeline, or an ordinary worker that closed
+                # ``pass`` having committed nothing.
+                no_code = await self._task_produces_no_code(ctx) or ctx.branch_no_commits
                 await self._emit_task_event(
                     "task.completed",
                     task,
                     agent_id=task.assigned_agent_id,
                     agent_type=task.profile_id,
                     no_code=no_code,
-                    review_task=is_pipeline_review_task(task.dedup_key, task.profile_id),
+                    review_task=is_review_completion(task.dedup_key, task.profile_id),
                 )
             except Exception:
                 # Best-effort, exactly like the notification below it: a
@@ -1319,6 +1330,10 @@ class ExecutionMixin:
                 id=task.assigned_agent_id or "",
                 name=task.assigned_agent_id or "unknown",
                 profile_id=task.profile_id or "",
+                settings=AgentSettings(
+                    name=task.assigned_agent_id or "unknown",
+                    profile_id=task.profile_id or "",
+                ),
             )
         )
 

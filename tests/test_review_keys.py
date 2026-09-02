@@ -13,10 +13,12 @@ import pytest
 from src.doctor.integration_checks import _review_dedup_key
 from src.review_keys import (
     BRANCH_REVIEW_DEDUP_PREFIX,
-    PIPELINE_REVIEW_PROFILE_IDS,
+    REVIEW_PROFILE_IDS,
     REVIEW_TASK_DEDUP_PREFIX,
     branch_review_dedup_key,
     is_pipeline_review_task,
+    is_review_completion,
+    is_review_role,
     review_task_dedup_key,
 )
 
@@ -58,48 +60,111 @@ def test_default_pipeline_source_uses_these_prefixes():
     assert f'"dedup_key": "{BRANCH_REVIEW_DEDUP_PREFIX}{{{{event.task.branch_name}}}}"' in src
 
 
-# ---------------------------------------------------------------------------
-# The profile-id half of the same structural mark
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize(
     ("profile_id", "expected"),
     [
         ("reviewer", True),
         ("final-reviewer", True),
-        ("worker-standard", False),
-        ("triage", False),
+        ("worker", False),
+        ("spec-ingest", False),
+        ("Reviewer", False),
         ("", False),
         (None, False),
     ],
 )
-def test_is_pipeline_review_task_recognises_the_review_profiles(profile_id, expected):
-    """A review task created outside ``ensure_task`` carries no dedup key.
+def test_is_review_role(profile_id, expected):
+    assert is_review_role(profile_id) is expected
 
-    Its profile is still one the pipeline itself pins, so the profile alone
-    has to be enough to mark it a review.
+
+def test_git_ops_no_code_fallback_shares_the_role_set():
+    """``_task_produces_no_code``'s unresolved-profile fallback must not drift.
+
+    If the two lists diverge, a task can be waved through git verification as
+    no-code while still being announced as reviewable — or the reverse.
     """
-    assert is_pipeline_review_task(None, profile_id) is expected
+    from src.orchestrator.git_ops import NO_CODE_PROFILE_IDS
+
+    assert NO_CODE_PROFILE_IDS is REVIEW_PROFILE_IDS
 
 
-def test_either_mark_alone_is_enough():
-    assert is_pipeline_review_task("review:task:t1", "worker-standard") is True
-    assert is_pipeline_review_task("spec-ingest:x.md", "reviewer") is True
-    assert is_pipeline_review_task("spec-ingest:x.md", "worker-standard") is False
+@pytest.mark.parametrize(
+    ("dedup_key", "profile_id", "expected"),
+    [
+        # Either signal alone is enough — that is the whole point of the OR.
+        ("review:task:abc", "worker", True),
+        ("branch-review:aq/x", None, True),
+        (None, "reviewer", True),
+        ("some-project-key", "final-reviewer", True),
+        # Both present (the shipped configuration).
+        ("review:task:abc", "reviewer", True),
+        # Neither: an ordinary worker that shipped code, which is exactly what
+        # the review rules exist for.
+        (None, "worker", False),
+        ("spec-ingest:docs/specs/x.md", "spec-ingest", False),
+        ("", "", False),
+    ],
+)
+def test_is_review_completion(dedup_key, profile_id, expected):
+    assert is_review_completion(dedup_key, profile_id) is expected
 
 
-def test_default_pipeline_source_pins_these_profiles():
+def test_shipped_review_profiles_exist_with_these_ids():
+    """The role guard is id-based, so a rename of either profile disarms it."""
+    from pathlib import Path
+
+    defaults = Path(__file__).parent.parent / "src" / "profiles" / "defaults"
+    for profile_id in REVIEW_PROFILE_IDS:
+        assert (defaults / profile_id / "profile.md").is_file(), (
+            f"REVIEW_PROFILE_IDS names '{profile_id}' but no such shipped profile exists"
+        )
+
+
+def test_default_pipeline_source_pins_the_review_profiles():
     """The markdown is the source of truth for the profile ids too."""
     from tests.conftest import DEFAULT_PIPELINE_PATH
 
     src = DEFAULT_PIPELINE_PATH.read_text(encoding="utf-8")
-    for profile_id in PIPELINE_REVIEW_PROFILE_IDS:
+    for profile_id in REVIEW_PROFILE_IDS:
         assert f'"profile_id": "{profile_id}"' in src
 
 
-def test_the_ad_hoc_review_profile_literals_delegate_here():
-    """Two call sites grew the same set by hand; they must not drift."""
-    from src.orchestrator.git_ops import NO_CODE_PROFILE_IDS
+@pytest.mark.parametrize(
+    ("dedup_key", "expected"),
+    [
+        ("review:task:abc", {"task_id": "abc", "review_task": True}),
+        ("branch-review:aq/x", {"task_id": "abc", "review_task": True}),
+        ("spec-ingest:x", {"task_id": "abc"}),
+        (None, {"task_id": "abc"}),
+    ],
+)
+def test_flag_review_task_event_only_narrows(dedup_key, expected):
+    """The dispatch path sets ``review_task`` from the row; it never clears it."""
+    from src.review_keys import flag_review_task_event
 
-    assert NO_CODE_PROFILE_IDS == PIPELINE_REVIEW_PROFILE_IDS
+    event = {"task_id": "abc"}
+    assert flag_review_task_event(event, dedup_key) is event
+    assert event == expected
+
+    # An emitter that already flagged the task keeps its flag either way.
+    flagged = {"task_id": "abc", "review_task": True}
+    flag_review_task_event(flagged, dedup_key)
+    assert flagged["review_task"] is True
+
+
+@pytest.mark.parametrize(
+    ("dedup_key", "expected"),
+    [
+        ("review:task:abc", "abc"),
+        ("review:task:sound-horizon-77.18.2", "sound-horizon-77.18.2"),
+        ("review:task:", None),
+        ("branch-review:aq/x", None),
+        ("spec-ingest:x", None),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_reviewed_task_id(dedup_key, expected):
+    """``reviewed_task_id`` inverts ``review_task_dedup_key``; anything else is ``None``."""
+    from src.review_keys import reviewed_task_id
+
+    assert reviewed_task_id(dedup_key) == expected
