@@ -55,7 +55,7 @@ class ProfileAuditResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.profile_audit_row import ProfileAuditRow  # noqa: PLC0415
+        from ..models.profile_audit_row import ProfileAuditRow
 
         d = dict(src_dict)
         _profiles = d.pop("profiles", UNSET)

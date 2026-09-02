@@ -511,6 +511,8 @@ class OpsCommandsMixin:
         max_active = hi if has_max else target.max_active
         if min_active is None or min_active < 0:
             return {"success": False, "error": "min must be >= 0"}
+        if max_active is not None and max_active < 1:
+            return {"success": False, "error": "max must be >= 1"}
         if max_active is not None and max_active < min_active:
             return {"success": False, "error": "max must be >= min"}
         project = await self.db.get_project(project_id)

@@ -6,55 +6,43 @@ from typing import Any, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-from .. import types
+from ..types import UNSET, Unset
 
-T = TypeVar("T", bound="BodyUploadAttachmentApiTasksTaskIdAttachmentsPost")
+T = TypeVar("T", bound="SubagentEventResponse422")
 
 
 @_attrs_define
-class BodyUploadAttachmentApiTasksTaskIdAttachmentsPost:
+class SubagentEventResponse422:
     """
     Attributes:
-        file (str):
+        error (str | Unset):
     """
 
-    file: str
+    error: str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        file = self.file
+        error = self.error
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update(
-            {
-                "file": file,
-            }
-        )
+        field_dict.update({})
+        if error is not UNSET:
+            field_dict["error"] = error
 
         return field_dict
-
-    def to_multipart(self) -> types.RequestFiles:
-        files: types.RequestFiles = []
-
-        files.append(("file", (None, str(self.file).encode(), "text/plain")))
-
-        for prop_name, prop in self.additional_properties.items():
-            files.append((prop_name, (None, str(prop).encode(), "text/plain")))
-
-        return files
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        file = d.pop("file")
+        error = d.pop("error", UNSET)
 
-        body_upload_attachment_api_tasks_task_id_attachments_post = cls(
-            file=file,
+        subagent_event_response_422 = cls(
+            error=error,
         )
 
-        body_upload_attachment_api_tasks_task_id_attachments_post.additional_properties = d
-        return body_upload_attachment_api_tasks_task_id_attachments_post
+        subagent_event_response_422.additional_properties = d
+        return subagent_event_response_422
 
     @property
     def additional_keys(self) -> list[str]:

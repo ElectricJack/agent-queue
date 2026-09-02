@@ -419,7 +419,7 @@ async def test_pool_scale_survives_a_resync(pool_handler, tmp_path):
     assert (scoped.min_active, scoped.max_active) == (4, 9)
 
 
-async def test_pool_scale_clears_an_existing_max_in_db_and_vault(pool_handler, tmp_path):
+async def test_pool_scale_explicit_null_clears_max_in_db_and_vault(pool_handler, tmp_path):
     """An explicit ``max: None`` removes the cap — the CLI spells it `--max null`."""
     from src.profiles.parser import parse_profile
 
@@ -541,14 +541,18 @@ async def test_pool_lifecycle_is_project_scoped_durable_and_guarded(pool_handler
     }
 
 
-async def test_pool_scale_allows_zero_and_reports_project_cap(pool_handler):
-    """A zero-sized pool is valid; a project cap remains the effective maximum."""
+async def test_pool_scale_rejects_zero_max_before_writing(pool_handler, tmp_path):
+    """A parser-invalid zero max must not leave DB or vault state behind."""
     zero = await pool_handler._cmd_pool_scale(
         {"project_id": PROJECT_ID, "profile_id": "worker", "min": 0, "max": 0}
     )
-    assert zero["success"], zero
-    assert zero["max_active"] == zero["effective_max_active"] == 0
-    assert zero["project_cap"] == 2
+    assert zero == {"success": False, "error": "max must be >= 1"}
+    assert not _override_path(tmp_path).exists()
+    assert await pool_handler.db.get_profile(f"project:{PROJECT_ID}:worker") is None
+
+
+async def test_pool_scale_reports_project_cap(pool_handler):
+    """The project cap remains the effective maximum above the profile bound."""
 
     capped = await pool_handler._cmd_pool_scale(
         {"project_id": PROJECT_ID, "profile_id": "worker", "min": 0, "max": 8}
