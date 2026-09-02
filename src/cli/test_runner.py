@@ -44,8 +44,8 @@ _FALLBACK_WORKERS = 4
 _FALLBACK_MARKERS = "not perf and not migration and not slow and not tmux and not integration"
 
 
-def _load_resources():
-    """The ``resources`` config section, or ``None`` when unreadable.
+def _load_config():
+    """The application config, or ``None`` when unreadable.
 
     Deliberately forgiving: ``aq test`` runs in worktrees, in CI, and on
     boxes where the daemon has never started.  A missing or broken config
@@ -54,7 +54,7 @@ def _load_resources():
     try:
         from src.config import load_config
 
-        return load_config(CONFIG_PATH).resources
+        return load_config(CONFIG_PATH)
     except Exception:
         return None
 
@@ -146,7 +146,10 @@ def _run_forwarding_signals(argv: list[str]) -> int:
     already reaches both through the process group; this covers everything
     that does not.
     """
-    proc = subprocess.Popen(argv)
+    # SlotSemaphore deliberately marks its flock descriptor inheritable.
+    # Preserve inheritable descriptors so a hard-killed wrapper cannot
+    # release the slot while the pytest child continues running.
+    proc = subprocess.Popen(argv, close_fds=False)
     previous: dict[int, object] = {}
 
     def _forward(signum, _frame):
@@ -241,7 +244,8 @@ def test_command(
     """
     from src.resources.semaphore import SlotSemaphore, SlotTimeout, default_lock_dir
 
-    resources = _load_resources()
+    config = _load_config()
+    resources = getattr(config, "resources", None)
     slots, workers, markers, poll, timeout = _caps(resources)
     if aq_workers is not None and aq_workers > 0:
         # An escape hatch for an operator running this by hand, clamped to
@@ -254,7 +258,7 @@ def test_command(
     if aq_timeout is not None:
         timeout = aq_timeout
 
-    sem = SlotSemaphore(default_lock_dir(data_dir=os.path.dirname(CONFIG_PATH)), slots)
+    sem = SlotSemaphore(default_lock_dir(config), slots)
 
     if aq_status:
         _render_status(sem.snapshot())

@@ -136,7 +136,8 @@ slot came free within `test_wait_timeout`. That is "come back later", not
 ### Why `flock`
 
 The slot is held by an open file descriptor on
-`~/.agent-queue/locks/test-slots/slot-N.lock`. The kernel drops the lock
+`{data_dir}/locks/test-slots/slot-N.lock` (by default,
+`~/.agent-queue/locks/test-slots/slot-N.lock`). The kernel drops the lock
 when the last descriptor closes — clean exit, `SIGKILL`, OOM kill,
 `tmux kill-session`, all of them — so a crashed holder needs no reaper.
 Holder metadata written into the file is advisory only: every reader
