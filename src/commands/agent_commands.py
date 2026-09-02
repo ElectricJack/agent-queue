@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 
 from src.models import RepoSourceType, Task, TaskStatus, TaskType, Workspace
 from src.task_names import generate_task_id
@@ -17,6 +18,101 @@ logger = logging.getLogger(__name__)
 
 class AgentCommandsMixin(FlockCommandsMixin):
     """Agent command methods mixed into CommandHandler."""
+
+    async def _cmd_agent_message(self, args: dict) -> dict:
+        """Queue supervisor guidance for one live worker or every live worker.
+
+        This is deliberately a facade over ``message_send``: the messages
+        table remains the one durable transport and ``MessageDeliveryEngine``
+        remains the only delivery policy.  Resolving to a concrete live
+        session id avoids the historical ambiguity of reused session names.
+        """
+        body = args.get("body")
+        if not isinstance(body, str) or not body.strip():
+            return {"error": "body is required"}
+        wait = args.get("wait")
+        if wait is not None and (type(wait) is not int or not 0 <= wait <= 60):
+            return {"error": "wait must be an integer from 0 to 60"}
+
+        if args.get("all_running"):
+            sessions = await self.db.list_sessions(live_only=True)
+            profile = args.get("profile")
+            if profile:
+                sessions = [session for session in sessions if session.profile_id == profile]
+            rows = []
+            for session in sessions:
+                result = await self._queue_supervisor_message(session, body, wait)
+                rows.append({"session_id": session.id, **result})
+            return {"count": len(rows), "recipients": rows}
+
+        target = args.get("target")
+        if not isinstance(target, str) or not target.strip():
+            return {"error": "target is required unless all_running=true"}
+        session, task_id, error = await self._resolve_live_message_target(target.strip())
+        if error:
+            return {"error": error}
+        result = await self._queue_supervisor_message(session, body, wait)
+        if "error" not in result:
+            result["target"] = {"task_id": task_id, "session_id": session.id}
+        return result
+
+    async def _resolve_live_message_target(self, target: str):
+        """Resolve task, agent id/name, or session id to one live session."""
+        task = await self.db.get_task(target)
+        if task is not None:
+            session = await self.db.get_session_for_task(task.id)
+            if (
+                session is None
+                or session.state not in {"starting", "running"}
+                or (task.assigned_agent_id and session.agent_id != task.assigned_agent_id)
+            ):
+                return None, task.id, f"Task '{task.id}' has no live worker session"
+            return session, task.id, None
+
+        session = await self.db.get_session(target)
+        if session is not None:
+            if session.state not in {"starting", "running"}:
+                return None, session.task_id, f"Session '{target}' is not live"
+            return session, session.task_id, None
+
+        agents = [agent for agent in await self.db.list_agents() if target in {agent.id, agent.name}]
+        if len(agents) > 1:
+            return None, None, f"Agent target '{target}' is ambiguous; use its agent id"
+        if not agents:
+            return None, None, f"No task, agent, or session matches '{target}'"
+        sessions = await self.db.list_sessions(agent_id=agents[0].id, live_only=True)
+        if len(sessions) != 1:
+            return None, None, f"Agent '{target}' has no unique live worker session"
+        return sessions[0], sessions[0].task_id, None
+
+    async def _queue_supervisor_message(self, session, body: str, wait: int | None) -> dict:
+        queued = await self._cmd_message_send(
+            {
+                "project_id": session.project_id,
+                "to_kind": "session",
+                "to_id": session.id,
+                "from_kind": "system",
+                "from_id": "supervisor",
+                "body": body,
+            }
+        )
+        if "error" in queued:
+            return queued
+        if session.task_id:
+            await self.db.add_task_comment(
+                session.task_id, body, author_kind="supervisor", author_id="supervisor"
+            )
+        if wait:
+            deadline = time.monotonic() + wait
+            while time.monotonic() < deadline:
+                status = await self._cmd_message_status({"message_id": queued["message_id"]})
+                if status.get("state") != "queued":
+                    queued.update(status)
+                    break
+                await asyncio.sleep(0.1)
+            else:
+                queued["timed_out"] = True
+        return queued
 
     async def _cmd_add_workspace(self, args: dict) -> dict:
         """Create a workspace for a project."""
@@ -768,4 +864,3 @@ class AgentCommandsMixin(FlockCommandsMixin):
                 f"complete, merge all feature branches into '{default_branch}', then resume."
             ),
         }
-

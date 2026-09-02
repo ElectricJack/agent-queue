@@ -27,6 +27,21 @@ poll `aq message inbox` manually.
 
 ## Send
 
+Supervisors should use the native live-worker command for operational
+guidance. It resolves a task, agent, or session to its current live worker,
+queues the message durably, mirrors it in the task comments, and reports its
+delivery status:
+
+```bash
+aq agent message <task-id|agent-id|session-id> "Stop the full suite; run the focused file."
+aq agent message <task-id> "Please use xdist" --wait 60
+aq agent message --all-running "Never run a bare pytest" --profile worker
+aq message status <message-id>
+```
+
+Use `aq session nudge` only for low-level diagnostics; it is not a reliable
+supervisor-to-worker delivery surface.
+
 ```bash
 # To the human via the project's Discord / dashboard channel:
 aq message send --to user --project <pid> \

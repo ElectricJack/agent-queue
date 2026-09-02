@@ -559,9 +559,9 @@ class TestNoDuplicateAutoCommands:
             "create_task_graph",
         } <= HANDCRAFTED_COVERAGE
 
-    def test_message_group_exposes_exactly_the_four_commands(self, runner):
+    def test_message_group_exposes_the_handcrafted_message_commands(self, runner):
         group = cli.commands["message"]
-        assert set(group.commands) == {"send", "reply", "inbox", "list"}
+        assert set(group.commands) == {"send", "reply", "inbox", "list", "status"}
 
     def test_message_tools_are_registered_for_mcp_and_api(self):
         from src.tools import _ALL_TOOL_DEFINITIONS, _TOOL_CATEGORIES
