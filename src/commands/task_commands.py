@@ -2576,10 +2576,21 @@ class TaskCommandsMixin:
             candidates = []
         terminal = {"COMPLETED", "FAILED", "BLOCKED"}
         review_profile_ids = {"reviewer", "final-reviewer"}
+        # The review that is *doing* the rejecting is the one review here that
+        # is not stale: it just produced this verdict, and the reviewer profile
+        # is documented to call ``task_close(success)`` on it next.  Cancelling
+        # it out from under its own live session is what made the documented
+        # reject path unusable even once scope allowed the call.
+        caller_scope = self._current_scope or {}
+        caller_task_id = (
+            caller_scope.get("task_id") if caller_scope.get("kind") == "session" else None
+        )
         cancelled_reviews: list[str] = []
         for cand in candidates:
             status_val = getattr(cand.status, "value", cand.status)
             if status_val in terminal:
+                continue
+            if caller_task_id and cand.id == caller_task_id:
                 continue
             if cand.profile_id not in review_profile_ids:
                 # Defense-in-depth: only cascade-cancel review producers.

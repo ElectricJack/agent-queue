@@ -166,6 +166,7 @@ class TestCheckCommandScope:
             "task_progress",
             "task_heartbeat",
             "task_handoff",
+            "subagent_event",
             "ask_human",
             "message_send",
             "message_inbox",
