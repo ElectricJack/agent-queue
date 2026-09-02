@@ -936,7 +936,7 @@ def test_ensure_default_playbooks_installs_all_defaults(tmp_path):
 
     `memory-consolidation.md` and the control-plane `default-pipeline.md`
     ship installed by default.  Other playbooks that used to auto-install
-    have been moved to ``src/prompts/example_playbooks/`` as opt-in
+    have been moved to ``docs/example_playbooks/`` as opt-in
     reference material.
     """
     result = ensure_default_playbooks(str(tmp_path))
