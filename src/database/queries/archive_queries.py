@@ -72,6 +72,15 @@ class ArchiveQueryMixin:
             affected -= set(ids)
             if parent:
                 affected.add(parent)
+            # Archiving moves the rows out of ``tasks``, so mark while the
+            # project id is still readable there; ``_archive_one`` reuses
+            # ``_delete_one``, which drops the layout rows (an FK holder on
+            # ``tasks``) inside this same transaction.
+            project_id = (
+                await conn.execute(select(tasks.c.project_id).where(tasks.c.id == task_id))
+            ).scalar_one_or_none()
+            if project_id is not None:
+                await self.mark_layout_dirty(project_id, ids, "task.archived", conn=conn)
             for tid in reversed(ids):
                 task = await self._get_task_conn(tid, conn=conn)
                 if task is not None:

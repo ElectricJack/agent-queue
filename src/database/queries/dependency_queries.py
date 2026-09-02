@@ -25,6 +25,30 @@ def _dep_type_filter(dep_types: frozenset[str] | set[str] | None):
 class DependencyQueryMixin:
     """Query mixin for task dependency operations.  Expects ``self._engine``."""
 
+    async def _mark_dependency_dirty(self, task_ids, *, conn) -> None:
+        """Mark every endpoint of an edge change dirty for layout.
+
+        The dep tables carry no project id, so it is read from the task
+        rows themselves — grouped by project because an edge is not
+        structurally forbidden from spanning two projects.  Called on the
+        connection that owns the edge write, so a rollback takes the mark
+        with it.  ``parent-child`` edges never come here: they are
+        delegated to ``set_parent``, which marks ``parent.changed``.
+        """
+        ids = [t for t in dict.fromkeys(task_ids) if t]
+        if not ids:
+            return
+        rows = (
+            await conn.execute(
+                select(tasks.c.project_id, tasks.c.id).where(tasks.c.id.in_(sorted(ids)))
+            )
+        ).fetchall()
+        by_project: dict[str, list[str]] = {}
+        for pid, tid in rows:
+            by_project.setdefault(pid, []).append(tid)
+        for pid, tids in by_project.items():
+            await self.mark_layout_dirty(pid, tids, "dependency.changed", conn=conn)
+
     async def add_dependency(
         self,
         task_id: str,
@@ -83,6 +107,7 @@ class DependencyQueryMixin:
                 )
                 .on_conflict_do_nothing()
             )
+            await self._mark_dependency_dirty((task_id, depends_on), conn=conn)
             return await self.recompute_blocked({task_id, depends_on}, conn=conn)
 
         async with self._engine.begin() as owned_conn:
@@ -96,6 +121,7 @@ class DependencyQueryMixin:
                 )
                 .on_conflict_do_nothing()
             )
+            await self._mark_dependency_dirty((task_id, depends_on), conn=owned_conn)
             flipped = await self.recompute_blocked({task_id, depends_on}, conn=owned_conn)
             ready_ids = await self._note_frontier_entry(
                 owned_conn, set(flipped), reason="unblocked"
@@ -458,6 +484,10 @@ class DependencyQueryMixin:
                     parent_ready = parent_result.ready
                     conditions.append(task_dependencies.c.dep_type != DepType.PARENT_CHILD.value)
             await conn.execute(delete(task_dependencies).where(and_(*conditions)))
+            # The pure ``parent-child`` case returned above via set_parent
+            # (which marks parent.changed); reaching here always means a
+            # non-parent-child edge was in scope for the DELETE.
+            await self._mark_dependency_dirty((task_id, depends_on), conn=conn)
             flipped = await self.recompute_blocked({task_id, depends_on}, conn=conn)
             flipped |= parent_flipped
             already_noted = {tid for tid, _ in parent_ready}
@@ -516,6 +546,7 @@ class DependencyQueryMixin:
                     task_dependencies.c.depends_on_task_id == depends_on_task_id
                 )
             )
+            await self._mark_dependency_dirty(former | {depends_on_task_id}, conn=conn)
             flipped = await self.recompute_blocked(former | {depends_on_task_id}, conn=conn)
             ready_ids = await self._note_frontier_entry(conn, set(flipped), reason="unblocked")
         await self.log_blocked_flips(flipped)

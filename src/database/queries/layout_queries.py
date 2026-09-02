@@ -63,6 +63,42 @@ class LayoutQueryMixin:
             rows = res.fetchall()
         return (max(r[0] for r in rows), [(r[1], r[2]) for r in rows]) if rows else (0, [])
 
+    # ── FK-holder cleanup ───────────────────────────────────────────────
+    async def delete_layout_rows_for_tasks(self, task_ids: Iterable[str], *, conn) -> None:
+        """Drop every layout row for *task_ids*, on the caller's connection.
+
+        ``task_layouts.task_id`` is a plain FK onto ``tasks`` (no cascade)
+        and FK enforcement is on for both dialects, so these rows must go
+        in the same transaction and *before* the task row leaves ``tasks``
+        — whether it is being deleted or moved into ``archived_tasks``.
+        The cells table is keyed by the same task id and is cleaned with it.
+        """
+        from src.database.tables import task_layout_cells as cells, task_layouts
+
+        ids = list(dict.fromkeys(task_ids))
+        if not ids:
+            return
+        await conn.execute(delete(task_layouts).where(task_layouts.c.task_id.in_(ids)))
+        await conn.execute(delete(cells).where(cells.c.task_id.in_(ids)))
+
+    async def delete_layout_rows_for_project(self, project_id: str, *, conn) -> None:
+        """Drop all layout state for a project, on the caller's connection.
+
+        Covers the two FK holders on ``projects`` (``task_layouts``,
+        ``project_layout_meta``) plus the project-scoped bookkeeping
+        tables, so ``delete_project`` leaves nothing behind.
+        """
+        from src.database.tables import task_layout_cells as cells, task_layouts
+
+        for table, col in (
+            (task_layouts, task_layouts.c.project_id),
+            (cells, cells.c.project_id),
+            (project_layout_meta, project_layout_meta.c.project_id),
+            (layout_dirty, layout_dirty.c.project_id),
+            (layout_jobs, layout_jobs.c.project_id),
+        ):
+            await conn.execute(delete(table).where(col == project_id))
+
     async def clear_layout_dirty(self, project_id: str, up_to_seq: int, *, conn) -> None:
         await conn.execute(
             delete(layout_dirty).where(
