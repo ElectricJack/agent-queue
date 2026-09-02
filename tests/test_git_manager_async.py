@@ -155,6 +155,29 @@ class TestAsyncGetCurrentBranch:
 
 class TestAsyncFindOpenPr:
     @pytest.mark.asyncio
+    async def test_returns_only_the_first_matching_pr_url(self, mgr, monkeypatch):
+        """A duplicated head branch must not leak a newline-delimited URL list."""
+        monkeypatch.setattr(
+            mgr,
+            "_arun_subprocess",
+            AsyncMock(
+                return_value=SimpleNamespace(
+                    returncode=0,
+                    stdout=(
+                        "https://github.com/o/r/pull/41\n"
+                        "https://github.com/o/r/pull/42\n"
+                    ),
+                )
+            ),
+        )
+
+        assert await mgr.afind_open_pr("/repo", "feature-x") == "https://github.com/o/r/pull/41"
+        jq_filter = mgr._arun_subprocess.await_args.args[0][
+            mgr._arun_subprocess.await_args.args[0].index("--jq") + 1
+        ]
+        assert jq_filter.startswith("first(")
+
+    @pytest.mark.asyncio
     async def test_accepts_merged_pr_and_excludes_closed_pr(self, mgr, monkeypatch):
         """Verification can use merged PRs but must reject closed-unmerged ones."""
         monkeypatch.setattr(
