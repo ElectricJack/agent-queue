@@ -73,7 +73,6 @@ class ArtifactStore:
         *,
         source_digest: str,
         contract_fingerprint: str,
-        profile_fingerprint: str,
         compiler_build: str,
         version: int = 0,
     ) -> ArtifactRef:
