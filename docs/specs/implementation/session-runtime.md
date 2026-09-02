@@ -461,7 +461,7 @@ See `docs/specs/config.md` §4.11 for the `swarm` config section and
 
 ```yaml
 sessions:
-  enabled: false              # feature flag; false = legacy runtimes only
+  enabled: true               # default on; false = this daemon dispatches nothing
   provider: tmux              # tmux | subprocess | fake
   tmux_socket: aq             # tmux -L name; one server per daemon
   lease_ttl_seconds: 480
@@ -484,6 +484,12 @@ round-trip) without additions. Per-profile keys (`harness`, `lifecycle`, `wake_m
 `idle_timeout`, `max_session_age`) extend `CONFIG_KNOWN_KEYS` in `src/profiles/parser.py`.
 
 ## 6. Feature Flag and Rollout (dual-run)
+
+> **Completed.** Step 5 has landed: the runtime subsystem is gone and a session is the
+> only execution path, so the flag no longer selects between two paths. It now defaults
+> to `true` and `false` means "dispatch disabled" — `AppConfig.validate()` emits a
+> warning for it rather than letting it surface as tasks that sit in READY forever.
+> The steps below are kept as the record of how the flip was staged.
 
 1. `sessions.enabled: false` ships first — all new code dormant, tests green.
 2. Routing rule in `_execute_task`: session path iff `sessions.enabled` **and** the resolved

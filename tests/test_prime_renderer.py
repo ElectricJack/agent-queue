@@ -69,6 +69,41 @@ def _write(path, content: str) -> None:
 
 
 class TestGoldenAssembly:
+    async def test_project_default_profile_supplies_role_sections(self, db, config):
+        """A dispatched task may inherit its profile without storing it on the task row."""
+        await db.create_profile(AgentProfile(id="coder", name="Coder"))
+        await db.create_project(
+            Project(id="default-profile-project", name="Default Profile", default_profile_id="coder")
+        )
+        await db.create_task(
+            Task(
+                id="default-profile-task",
+                project_id="default-profile-project",
+                title="Inherited profile",
+                description="",
+            )
+        )
+        _write(
+            os.path.join(config.vault_agent_types, "coder", "profile.md"),
+            "## Role\nYou are the default coder.\n",
+        )
+        _write(
+            os.path.join(
+                config.vault_projects,
+                "default-profile-project",
+                "agent-types",
+                "coder",
+                "profile.md",
+            ),
+            "## Role\nUse the project conventions.\n",
+        )
+
+        doc = await PrimeRenderer(db, config).render_for_task("default-profile-task")
+        by_key = {section.key: section.body for section in doc.sections}
+
+        assert by_key["role"] == "You are the default coder."
+        assert by_key["project_role"] == "Use the project conventions."
+
     async def test_role_and_project_role_sections_from_vault_files(self, db, config, task):
         _write(
             os.path.join(config.vault_agent_types, "coder", "profile.md"),

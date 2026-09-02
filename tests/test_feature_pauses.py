@@ -35,24 +35,17 @@ from src.config import (
     diff_configs,
     load_config,
 )
-from src.models import (
-    Agent,
-    AgentOutput,
-    AgentProfile,
-    AgentResult,
-    PlaybookRun,
-    Project,
-    RepoSourceType,
-    Task,
-    TaskContext,
-    TaskStatus,
-    Workspace,
-)
+from src.models import PlaybookRun, Task, TaskStatus
 from src.orchestrator import Orchestrator
 from src.plugins.registry import PluginRegistry
-from src.runtimes.base import Runtime
-from tests.assignment_routing_helpers import install_already_routed
-
+from tests.session_dispatch_helpers import (
+    create_session_profile,
+    create_session_project,
+    drain_running_tasks,
+    prime_bodies,
+    render_prime,
+    write_vault_profile,
+)
 
 # ---------------------------------------------------------------------------
 # §2 / §10 — Config defaults
@@ -497,92 +490,51 @@ class TestDataPreservation:
 # ---------------------------------------------------------------------------
 
 
-class _CapturingRuntime(Runtime):
-    """Records the TaskContext handed to ``start()`` and completes instantly."""
-
-    def __init__(self):
-        self.captured_ctx: TaskContext | None = None
-
-    async def start(self, task: TaskContext) -> None:
-        self.captured_ctx = task
-
-    async def wait(self, on_message=None) -> AgentOutput:
-        return AgentOutput(result=AgentResult.COMPLETED, summary="Done", tokens_used=1)
-
-    async def stop(self) -> None:  # pragma: no cover - nothing to tear down
-        pass
-
-    async def is_alive(self) -> bool:
-        return True
-
-
-class _CapturingRegistry:
-    def __init__(self):
-        self.runtimes: list[_CapturingRuntime] = []
-
-    def create(self, agent_type: str, profile=None, llm_logger=None) -> Runtime:
-        runtime = _CapturingRuntime()
-        self.runtimes.append(runtime)
-        return runtime
-
-    @property
-    def last_ctx(self) -> TaskContext | None:
-        return self.runtimes[-1].captured_ctx if self.runtimes else None
-
-
-@pytest.mark.skip(
-    reason="legacy runtime prompt assembly was removed; session launch tests cover execution"
-)
 class TestPromptTiersEmptyWhilePaused:
-    async def test_l1_l2_empty_but_l0_and_task_context_intact(self, tmp_path):
+    """M3/M4 end to end, on the session path.
+
+    The tiers reach a session-run agent through ``aq prime`` rather than a
+    runtime's ``TaskContext``, so the assertion is on the prime document
+    rendered for the task the orchestrator actually launched: the L1/L2
+    slots are empty, the L0 role and the task body are untouched.  The
+    renderer-only half of this contract is
+    ``tests/test_prime_renderer.py::TestMemoryPausedSlots``.
+    """
+
+    async def test_l1_l2_empty_but_l0_and_task_context_intact(self, session_orch):
         """M3/M4: no memory service ⇒ empty L1/L2, everything else unaffected."""
-        registry = _CapturingRegistry()
-        orch = Orchestrator(_base_config(tmp_path), runtimes=registry)
-        await orch.initialize()
-        install_already_routed(orch)
-        try:
-            assert orch.plugin_registry.get_service("memory") is None
+        orch = session_orch
+        assert orch.plugin_registry.get_service("memory") is None
+        assert orch.config.memory.enabled is False
 
-            profile = AgentProfile(
-                id="coding",
-                name="Coding Agent",
-                system_prompt_suffix="You are a senior backend developer.",
+        await create_session_project(orch)
+        await create_session_profile(orch, "coding")
+        write_vault_profile(
+            orch.config, "coding", "## Role\nYou are a senior backend developer.\n"
+        )
+        await orch.db.create_task(
+            Task(
+                id="t-1",
+                project_id="p-1",
+                title="Paused memory task",
+                description="Do something useful",
+                status=TaskStatus.READY,
+                profile_id="coding",
             )
-            await orch.db.create_profile(profile)
-            await orch.db.create_project(
-                Project(id="p-1", name="test-project", default_profile_id="coding")
-            )
-            await orch.db.create_workspace(
-                Workspace(
-                    id="ws-p-1",
-                    project_id="p-1",
-                    workspace_path=str(tmp_path / "ws"),
-                    source_type=RepoSourceType.LINK,
-                )
-            )
-            await orch.db.create_agent(Agent(id="a-1", name="claude-1", profile_id="claude"))
-            await orch.db.create_task(
-                Task(
-                    id="t-1",
-                    project_id="p-1",
-                    title="Paused memory task",
-                    description="Do something useful",
-                    status=TaskStatus.READY,
-                )
-            )
+        )
 
-            await orch.run_one_cycle()
-            await orch.wait_for_running_tasks(timeout=10)
+        await orch.run_one_cycle()
+        await drain_running_tasks(orch)
 
-            ctx = registry.last_ctx
-            assert ctx is not None, "runtime was never started — no TaskContext captured"
-            assert ctx.l1_facts == ""
-            assert ctx.l1_guidance == ""
-            assert ctx.l2_context == ""
-            # L0 role and the ordinary task context are untouched.
-            assert ctx.l0_role == "You are a senior backend developer."
-            assert "Do something useful" in ctx.description
-            assert "## System Context" in ctx.description
-        finally:
-            await orch.wait_for_running_tasks(timeout=10)
-            await orch.shutdown()
+        session = await orch.db.get_session_for_task("t-1")
+        assert session is not None, "session was never launched — nothing to prime"
+        doc = await render_prime(orch, "t-1")
+        bodies = prime_bodies(doc)
+        assert bodies["l1_facts"] == ""
+        assert bodies["l2_context"] == ""
+        assert "## Facts" not in doc.to_markdown()
+        assert "## Topic Context" not in doc.to_markdown()
+        # L0 role and the ordinary task context are untouched.
+        assert bodies["role"] == "You are a senior backend developer."
+        assert "Do something useful" in bodies["task"]
+        assert "**work_dir:**" in bodies["workspaces"]

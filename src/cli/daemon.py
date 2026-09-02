@@ -685,22 +685,3 @@ def daemon_restart(no_dashboard: bool) -> None:
     if not start_daemon():
         raise SystemExit(1)
     _maybe_prompt_dashboard(no_dashboard)
-
-
-@cli.command("logs")
-@click.option("-n", "--lines", default=50, help="Number of lines to show")
-@click.option("-f", "--follow", is_flag=True, help="Follow log output")
-def daemon_logs(lines: int, follow: bool) -> None:
-    """View daemon logs."""
-    if not os.path.exists(LOG_PATH):
-        console.print(f"[dim]No log file at {LOG_PATH}[/]")
-        return
-
-    if follow:
-        # Use tail -f for following
-        try:
-            subprocess.run(["tail", "-f", "-n", str(lines), LOG_PATH])
-        except KeyboardInterrupt:
-            pass
-    else:
-        _tail_log(lines)
