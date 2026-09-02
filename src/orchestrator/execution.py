@@ -2162,6 +2162,38 @@ class ExecutionMixin:
             refreshed = await self.db.get_task(task.id)
             if refreshed:
                 new_status = refreshed.status
+        # ``task.completed`` is the event the review pipeline triggers on
+        # (``per-task-review`` / ``per-branch-final-review`` in
+        # default-pipeline.md).  The legacy blocking tail of ``_execute_task``
+        # used to raise it, but every agent is session-routed now — that tail
+        # is dead code below the "Session-runtime fork", so this close path is
+        # the only place an ordinary task can still announce that it finished.
+        # Without it workers opened PRs, closed clean, and nothing ever
+        # reviewed or merged them.
+        #
+        # It is emitted *before* ``task.closed`` and only for a task that
+        # actually reached COMPLETED: the retry/blocked legs are not finished
+        # work, and spawning a reviewer for a task about to be retried would
+        # be worse than the silence.  Ordering matters for the guards, not the
+        # payload — ``_dispatch_playbook`` hydrates ``event.task`` from a fresh
+        # ``db.get_task``, so the transition above must already have committed
+        # ``pr_url`` for ``event.task.pr_url`` to read as truthy.
+        if new_status == TaskStatus.COMPLETED:
+            try:
+                await self._emit_task_event(
+                    "task.completed",
+                    task,
+                    agent_id=task.assigned_agent_id,
+                    agent_type=task.profile_id,
+                )
+            except Exception:
+                # Best-effort, exactly like the notification below it: a
+                # subscriber blowing up must not undo a committed COMPLETED.
+                logger.warning(
+                    "Task %s: task.completed emit failed (state is COMPLETED)",
+                    task.id,
+                    exc_info=True,
+                )
         await self._emit_task_event(
             "task.closed",
             task,

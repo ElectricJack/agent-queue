@@ -1875,6 +1875,12 @@ class TaskCommandsMixin:
             "assigned_agent": task.assigned_agent_id,
             "retry_count": task.retry_count,
             "max_retries": task.max_retries,
+            # The branch is work-state every read surface needs: `aq task show`
+            # renders `task.branch_name or "—"` (cli/formatters.py), so leaving
+            # it out of this payload made every task look branchless and sent a
+            # PR-integration outage investigation after a persistence bug that
+            # did not exist.  The row has always carried it.
+            "branch_name": task.branch_name,
             "integration_mode": task.integration_mode,
             # Persisted graph blockedness (work-graph design §4).  Capacity
             # reasons (no agent, workspace busy, budget) are NOT in here —
@@ -1893,8 +1899,10 @@ class TaskCommandsMixin:
             "created_at": task.created_at,
             "updated_at": task.updated_at,
         }
-        if task.pr_url:
-            info["pr_url"] = task.pr_url
+        # Unconditional, unlike the historical `if task.pr_url:` — a missing
+        # key and an absent PR are the same state to a caller, and the
+        # conditional only made the payload's shape vary for no gain.
+        info["pr_url"] = task.pr_url
 
         # Effective integration policy + its source, so surfaces can show
         # where the mode comes from instead of another ambiguous flag.
