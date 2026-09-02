@@ -6,11 +6,11 @@ file whose contents hash to the name it is stored under.
 
 ``playbooks.activation_stale``: every enabled activation must still agree with
 the live registries — the command execution contracts *and* the capability
-profiles it was compiled against.  The design spec makes a changed capability
-profile stale an activation exactly like a changed command contract does, and
-this is the check that says so out loud; the two are separate ids because they
-fail for unrelated reasons and an operator fixes them differently (a corrupt
-file is a rebuild, a moved fingerprint is a recompile-and-reactivate).
+profiles it was compiled against — and must still read the exact artifact it
+activated.  The design spec makes a changed capability profile stale an
+activation exactly like a changed command contract does.  A hash mismatch is
+also surfaced here so this health read agrees with ``artifact_integrity``; a
+corrupt file is a rebuild while moved fingerprints need recompile-and-reactivate.
 
 There is deliberately **no fix**.  A missing or mutated artifact is a rebuild
 decision (Package 6 recompiles from source and Package 5 activates the
@@ -171,6 +171,7 @@ async def _check_activation_stale(ctx: DoctorContext) -> CheckResult:
         }
         for record in records
         if record.health is ActivationHealth.STALE_CONTRACT
+        or any(reason.code == "artifact_sha_mismatch" for reason in record.reasons)
     ]
     if not stale:
         return CheckResult(
@@ -190,9 +191,8 @@ async def _check_activation_stale(ctx: DoctorContext) -> CheckResult:
         id=STALE_CHECK_ID,
         severity=Severity.WARN,
         detail=(
-            f"{len(stale)} enabled activation(s) were compiled against a command contract or "
-            f"capability profile that has since changed ({', '.join(subjects)}); recompile and "
-            "re-activate them"
+            f"{len(stale)} enabled activation(s) have stale contracts, profiles, or artifact "
+            f"bytes ({', '.join(subjects)}); rebuild or recompile and re-activate them"
         ),
         data={"checked": len(records), "count": len(stale), "stale": stale},
     )

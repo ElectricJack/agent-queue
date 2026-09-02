@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from src.playbooks.artifact_ref import SHA256_RE, ArtifactRef
+from src.playbooks.run_state import ArtifactVerificationFailed
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +96,7 @@ def evaluate_health(
     current_profile_fingerprints: Mapping[str, str] | None = None,
     artifact_profile_fingerprints: Mapping[str, str] | None = None,
     stored_profile_fingerprint: str | None = None,
+    artifact_sha_mismatch: bool = False,
 ) -> tuple[ActivationHealth, tuple[HealthReason, ...]]:
     """Health for one activation.  First match wins; the order is the contract.
 
@@ -112,6 +114,14 @@ def evaluate_health(
     caller with its own convention.  Neither may be read as a mismatch — a
     false ``stale_contract`` blocks runs.
     """
+    if artifact_sha_mismatch:
+        return ActivationHealth.UNAVAILABLE, (
+            HealthReason(
+                "artifact_sha_mismatch",
+                "Artifact bytes do not match the active artifact SHA-256",
+                expected_fingerprint=artifact.artifact_sha256 if artifact else None,
+            ),
+        )
     if artifact is None or not artifact_present:
         return ActivationHealth.UNAVAILABLE, (HealthReason("artifact_missing", "Artifact is unavailable"),)
     errors = validation.get("errors", [])
@@ -225,12 +235,16 @@ def _artifact_snapshots(definition: Any) -> tuple[dict[str, str], dict[str, str]
     )
 
 
-def _load_definition(path: str | None) -> Any | None:
+def _load_definition(path: str | None, artifact_sha256: str | None) -> Any | None:
     """The stored artifact, or ``None`` when it is gone or unreadable.
 
     Unreadable counts as absent on purpose: ``playbooks.artifact_integrity``
-    is the check that names a mutated or missing file, and health should say
+    is the check that names a missing file, and health should say
     ``unavailable`` rather than invent a validation error it cannot describe.
+    A readable file whose bytes do not match the activation's SHA is different:
+    it raises :class:`ArtifactVerificationFailed`, just like
+    :meth:`ArtifactStore.load`, so callers cannot accidentally trust mutable
+    content at the path stored in the artifact row.
     """
     if not path:
         return None
@@ -241,6 +255,9 @@ def _load_definition(path: str | None) -> Any | None:
         data = target.read_bytes()
     except OSError:
         return None
+    actual_sha256 = "sha256:" + hashlib.sha256(data).hexdigest()
+    if artifact_sha256 and actual_sha256 != artifact_sha256:
+        raise ArtifactVerificationFailed(f"artifact at {target} does not match {artifact_sha256}")
     try:
         return PlaybookDefinition.model_validate_json(data)
     except Exception:  # noqa: BLE001 - any malformed artifact reads as absent
@@ -282,7 +299,15 @@ async def load_activation_health(
         sha = row.get("active_artifact_sha256")
         artifact_row = await db.get_playbook_artifact_row(sha) if sha else None
         ref = ArtifactRef.from_row(artifact_row) if artifact_row else None
-        definition = _load_definition(artifact_row.get("path") if artifact_row else None)
+        artifact_sha_mismatch = False
+        try:
+            definition = _load_definition(
+                artifact_row.get("path") if artifact_row else None,
+                sha,
+            )
+        except ArtifactVerificationFailed:
+            artifact_sha_mismatch = True
+            definition = None
         artifact_commands, artifact_profiles = _artifact_snapshots(definition)
         current_commands = {}
         for name in artifact_commands:
@@ -306,6 +331,7 @@ async def load_activation_health(
             stored_profile_fingerprint=(
                 artifact_row.get("profile_fingerprint") if artifact_row else None
             ),
+            artifact_sha_mismatch=artifact_sha_mismatch,
         )
         records.append(
             ActivationHealthRecord(
