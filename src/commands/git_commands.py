@@ -10,6 +10,8 @@ surface.  Currently contains:
 
 from __future__ import annotations
 
+import os
+
 
 class GitCommandsMixin:
     """Mixin that adds git PR commands to CommandHandler."""
@@ -49,16 +51,21 @@ class GitCommandsMixin:
                 "error": f"unknown project: {project_id}",
             }
 
-        checkout_path = await self.db.get_project_workspace_path(project_id)
-        if not checkout_path:
-            return {
-                "success": False,
-                "pr_url": pr_url,
-                "sha": None,
-                "error": f"project {project_id} has no workspace_path",
-            }
+        # ``gh pr merge`` used to run in ``get_project_workspace_path()`` —
+        # the project's first workspace row, clones before links, which under
+        # worktree mode is the *base* checkout and is routinely the operator's
+        # own working tree.  Merging does not need it: given a full PR URL gh
+        # resolves owner/repo/number from the URL and talks to the API, so any
+        # directory works (verified against gh 2.45).  Run in the daemon's
+        # data dir instead, which is not a checkout at all.  The one behaviour
+        # this drops is ``--delete-branch``'s *local* half; the remote branch
+        # is still deleted, and the local branch it used to remove lived in a
+        # tree no agent should have been touching.  See
+        # :mod:`src.orchestrator.base_workspace`.
+        cwd = self.config.data_dir or os.getcwd()
+        os.makedirs(cwd, exist_ok=True)
 
-        result = await self.orchestrator.git.amerge_pr(checkout_path, pr_url, method=method)
+        result = await self.orchestrator.git.amerge_pr(cwd, pr_url, method=method)
         return {
             "success": result["success"],
             "pr_url": pr_url,

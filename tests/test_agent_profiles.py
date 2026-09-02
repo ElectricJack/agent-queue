@@ -14,22 +14,22 @@ Covers:
 
 import pytest
 
-from src.runtimes.base import Runtime
-from tests.assignment_routing_helpers import install_already_routed
-from src.config import AppConfig, AgentProfileConfig, load_config
+from src.config import AgentProfileConfig, AppConfig, load_config
 from src.database import Database
 from src.models import (
     Agent,
-    AgentOutput,
     AgentProfile,
-    AgentResult,
     Project,
-    RepoSourceType,
     Task,
     TaskStatus,
-    Workspace,
 )
 from src.orchestrator import Orchestrator
+from tests.session_dispatch_helpers import (
+    create_session_profile,
+    create_session_project,
+    drain_running_tasks,
+    fake_provider,
+)
 
 
 @pytest.fixture
@@ -785,108 +785,22 @@ class TestProfileCommands:
 
 
 # ---------------------------------------------------------------------------
-# Profile enforcement — verify profile reaches the adapter factory (v2)
+# Profile enforcement — verify profile reaches the session launch (v2)
 # ---------------------------------------------------------------------------
 
 
-class MockAdapter(Runtime):
-    def __init__(self, result=AgentResult.COMPLETED, tokens=1000):
-        self._result = result
-        self._tokens = tokens
-
-    async def start(self, task):
-        pass
-
-    async def wait(self, on_message=None):
-        return AgentOutput(result=self._result, summary="Done", tokens_used=self._tokens)
-
-    async def stop(self):
-        pass
-
-    async def is_alive(self):
-        return True
-
-
-class MockAdapterFactory:
-    def __init__(self, result=AgentResult.COMPLETED, tokens=1000):
-        self.result = result
-        self.tokens = tokens
-        self.last_profile = None
-        self.create_calls = []
-
-    def create(self, agent_type: str, profile=None, llm_logger=None) -> Runtime:
-        self.last_profile = profile
-        self.create_calls.append({"agent_type": agent_type, "profile": profile})
-        return MockAdapter(result=self.result, tokens=self.tokens)
-
-
-async def _create_project_with_workspace(
-    db,
-    project_id: str = "p-1",
-    name: str = "alpha",
-    workspace_path: str = "/tmp/test-workspace",
-    default_profile_id: str | None = None,
-) -> None:
-    """Create a project and an associated workspace so task execution succeeds."""
-    await db.create_project(
-        Project(
-            id=project_id,
-            name=name,
-            default_profile_id=default_profile_id,
-        )
-    )
-    await db.create_workspace(
-        Workspace(
-            id=f"ws-{project_id}",
-            project_id=project_id,
-            workspace_path=workspace_path,
-            source_type=RepoSourceType.LINK,
-        )
-    )
-
-
-@pytest.mark.skip(
-    reason="legacy runtime dispatch was removed; session profile routing is tested separately"
-)
 class TestProfileEnforcement:
-    """Verify profiles flow from DB through orchestrator to adapter factory."""
+    """Profiles flow from the DB through the orchestrator into the session launch.
 
-    @pytest.fixture
-    async def setup(self, tmp_path):
-        factory = MockAdapterFactory()
-        config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
-            workspace_dir=str(tmp_path / "workspaces"),
-            data_dir=str(tmp_path / "data"),
-        )
-        orch = Orchestrator(config, runtimes=factory)
-        await orch.initialize()
-        install_already_routed(orch)
-        yield orch, factory
-        if orch._running_tasks:
-            import asyncio
+    These once asserted on the profile handed to a runtime adapter factory.
+    The runtime subsystem is gone: ``_execute_task`` resolves the profile
+    (task → project default → backfill) and builds a session from it, so the
+    evidence is now the launched session — the ``sessions`` row's
+    ``profile_id`` and the ``AQ_PROFILE`` marker in the spec the provider
+    received (``tests/session_dispatch_helpers.py``).
+    """
 
-            await asyncio.gather(*orch._running_tasks.values(), return_exceptions=True)
-            orch._running_tasks.clear()
-        await orch.shutdown()
-
-    async def test_execute_task_passes_profile_to_adapter_factory(self, setup):
-        orch, factory = setup
-        await orch.db.create_profile(
-            AgentProfile(
-                id="test-reviewer",
-                name="Reviewer",
-                allowed_tools=["Read", "Glob", "Grep"],
-            )
-        )
-        await _create_project_with_workspace(orch.db)
-        await orch.db.create_agent(
-            Agent(
-                id="a-1",
-                name="claude-1",
-                profile_id="claude",
-            )
-        )
+    async def _dispatch(self, orch, *, profile_id: str | None = None):
         await orch.db.create_task(
             Task(
                 id="t-1",
@@ -894,60 +808,65 @@ class TestProfileEnforcement:
                 title="Review",
                 description="Review code",
                 status=TaskStatus.READY,
-                profile_id="test-reviewer",
+                profile_id=profile_id,
             )
         )
         await orch.run_one_cycle()
-        await orch.wait_for_running_tasks()
-        assert factory.last_profile is not None
-        assert factory.last_profile.id == "test-reviewer"
+        await drain_running_tasks(orch)
+        return await orch.db.get_task("t-1")
 
-    async def test_execute_task_no_profile_uses_backfilled_project_default(self, setup):
+    async def _launched_profile(self, orch) -> str:
+        session = await orch.db.get_session_for_task("t-1")
+        assert session is not None and session.state == "running"
+        spec = fake_provider(orch).starts[-1]
+        assert spec.env["AQ_PROFILE"] == session.profile_id
+        return session.profile_id
+
+    async def test_dispatch_launches_session_with_task_profile(self, session_orch):
+        """An explicit ``task.profile_id`` wins over the project default."""
+        orch = session_orch
+        await create_session_project(orch)  # default profile "claude"
+        await create_session_profile(orch, "test-reviewer", allowed_tools=["Read", "Glob", "Grep"])
+
+        task = await self._dispatch(orch, profile_id="test-reviewer")
+
+        assert task.status == TaskStatus.IN_PROGRESS
+        assert await self._launched_profile(orch) == "test-reviewer"
+
+    async def test_dispatch_no_profile_uses_backfilled_project_default(self, session_orch):
         """A task with no profile_id in a project with no default_profile_id
-        no longer falls through to the adapter's built-in defaults: the
-        AgentReconciler backfills a system default so the task is
-        dispatchable, and _resolve_profile then resolves to it.
+        does not fall through to built-in defaults: the AgentReconciler
+        backfills a system default so the task is dispatchable, and
+        _resolve_profile then resolves to it.
         """
-        orch, factory = setup
-        await _create_project_with_workspace(orch.db)
-        await orch.db.create_agent(
-            Agent(
-                id="a-1",
-                name="claude-1",
-                profile_id="claude",
-            )
-        )
-        await orch.db.create_task(
-            Task(
-                id="t-1",
-                project_id="p-1",
-                title="Do work",
-                description="Details",
-                status=TaskStatus.READY,
-            )
-        )
-        await orch.run_one_cycle()
-        await orch.wait_for_running_tasks()
+        orch = session_orch
+        for existing in await orch.db.list_profiles():
+            await orch.db.delete_profile(existing.id)
+        await create_session_profile(orch, "developer")
+        await create_session_project(orch, default_profile_id=None)
+
+        task = await self._dispatch(orch)
+
         backfilled = (await orch.db.get_project("p-1")).default_profile_id
-        assert backfilled is not None
-        assert factory.last_profile is not None
-        assert factory.last_profile.id == backfilled
+        assert backfilled == "developer"
+        assert task.status == TaskStatus.IN_PROGRESS
+        assert await self._launched_profile(orch) == backfilled
 
-    async def test_execute_task_passes_none_when_no_profiles_registered(self, setup):
-        """With an empty agent_profiles table there is nothing to backfill,
-        so the adapter still receives None and uses its built-in defaults.
+    async def test_dispatch_with_no_profile_anywhere_launches_no_session(self, session_orch):
+        """With an empty agent_profiles table there is nothing to backfill.
+
+        The adapter used to receive ``None`` and run on its built-in
+        defaults.  A session has no such fallback — a task with no profile
+        has no harness, so dispatch refuses rather than launching something
+        unconfigured.
         """
-        orch, factory = setup
-        for p in await orch.db.list_profiles():
-            await orch.db.delete_profile(p.id)
-        await _create_project_with_workspace(orch.db)
-        await orch.db.create_agent(
-            Agent(
-                id="a-1",
-                name="claude-1",
-                profile_id="claude",
-            )
-        )
+        from src.scheduler import AssignAction
+
+        orch = session_orch
+        for existing in await orch.db.list_profiles():
+            await orch.db.delete_profile(existing.id)
+        await create_session_project(orch, default_profile_id=None)
+        await orch.db.create_agent(Agent(id="a-1", name="claude-1", profile_id="claude"))
         await orch.db.create_task(
             Task(
                 id="t-1",
@@ -957,44 +876,22 @@ class TestProfileEnforcement:
                 status=TaskStatus.READY,
             )
         )
-        await orch.run_one_cycle()
-        await orch.wait_for_running_tasks()
-        assert (await orch.db.get_project("p-1")).default_profile_id is None
-        assert factory.last_profile is None
 
-    async def test_execute_task_project_default_profile_passed(self, setup):
-        orch, factory = setup
-        await orch.db.create_profile(
-            AgentProfile(
-                id="developer",
-                name="Developer",
-                allowed_tools=["Read", "Write", "Edit", "Bash"],
-            )
-        )
-        await _create_project_with_workspace(
-            orch.db,
-            default_profile_id="developer",
-        )
-        await orch.db.create_agent(
-            Agent(
-                id="a-1",
-                name="claude-1",
-                profile_id="claude",
-            )
-        )
-        await orch.db.create_task(
-            Task(
-                id="t-1",
-                project_id="p-1",
-                title="Build feature",
-                description="Build it",
-                status=TaskStatus.READY,
-            )
-        )
-        await orch.run_one_cycle()
-        await orch.wait_for_running_tasks()
-        assert factory.last_profile is not None
-        assert factory.last_profile.id == "developer"
+        with pytest.raises(RuntimeError, match="no session harness"):
+            await orch._execute_task(AssignAction("a-1", "t-1", "p-1"))
+
+        assert (await orch.db.get_project("p-1")).default_profile_id is None
+        assert await orch.db.get_session_for_task("t-1") is None
+        assert fake_provider(orch).starts == []
+
+    async def test_dispatch_project_default_profile_launched(self, session_orch):
+        orch = session_orch
+        await create_session_project(orch, default_profile_id="developer")
+
+        task = await self._dispatch(orch)
+
+        assert task.status == TaskStatus.IN_PROGRESS
+        assert await self._launched_profile(orch) == "developer"
 
 
 # ---------------------------------------------------------------------------

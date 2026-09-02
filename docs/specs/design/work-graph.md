@@ -158,7 +158,7 @@ No new columns — typed `task_metadata` keys (the sanctioned extension point):
 |---|---|---|
 | `outcome` | `pass` \| `fail` | task close (session-runtime completion protocol: `aq task close --outcome …`) |
 | `failure_class` | `transient` \| `hard` | task close on failure |
-| `work_outcome` | `shipped` \| `no-op` \| `blocked` \| `abandoned` | task close; `no-op` also by the conditional auto-close (§3.1) |
+| `work_outcome` | `shipped` \| `no-op` \| `blocked` \| `abandoned` | task close; `no-op` also by the conditional auto-close (§3.1). `no-op` tells git verification the task produced no code: the require-a-PR / merge checks and the integrate phase are skipped (the `reviewer` / `final-reviewer` stage profiles get the same treatment by profile id) |
 | `work_commit`, `work_branch` | sha / branch name | task close |
 | `verification` | free-form evidence string | task close |
 | `close_notes` | "Done: …" summary | task close |

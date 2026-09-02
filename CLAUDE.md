@@ -28,6 +28,7 @@ Agent Queue — self-improving orchestration platform for AI coding agents. Mana
 - **Config:** `~/.agent-queue/config.yaml`
 - **Vault:** `~/.agent-queue/vault/` (playbooks, profiles, memory, facts — all markdown)
 - **Packages:** `packages/aq-client/` (typed API client)
+- **OpenAPI spec:** `openapi.json` is a committed artifact both clients are generated from. `src/api/spec.py` builds it offline (no daemon) — regenerate with `./scripts/regenerate-api-client.sh --offline` and `./scripts/regenerate-ts-client.sh --offline` after **any** change to `src/api/models` or a codegen router. `tests/test_api_client_contract.py::test_committed_openapi_json_matches_the_live_app_surface` fails when the committed spec drifts from what `create_app()` serves.
 
 ## Development
 

@@ -891,3 +891,99 @@ async def test_recovery_leaves_other_paused_tasks_alone(env):
     await env.orch._resume_paused_tasks()
     assert (await env.db.get_task("t")).status == TaskStatus.READY
     assert (await env.db.get_task("peer")).status == TaskStatus.PAUSED
+
+
+async def test_pause_with_missing_workspace_finishes_instead_of_retrying_forever(env, tmp_path):
+    """A slot that is already gone has nothing to retry for — converge on the first pass."""
+    import shutil
+
+    missing = tmp_path / "reassigned-slot"
+    missing.mkdir()
+    provider, _ = await running_session(env, missing)
+    shutil.rmtree(missing)
+    await pause(env)
+    assert "task-session" not in provider.running
+    assert (await env.db.get_task_meta("t", "manual_pause"))["cleanup_pending"] is False
+    assert await env.db.get_task_meta("t", "manual_pause_checkpoint_retry") is None
+    assert (await env.db.get_workspace("workspace")).locked_by_task_id is None
+    notes = [row for row in await env.db.get_task_contexts("t")
+             if row["type"] == "manual_pause_no_checkpoint"]
+    assert notes and "no checkpoint captured:" in notes[0]["content"]
+    await env.orch._resume_paused_tasks()  # nothing pending left for the cascade to retry
+    assert (await env.db.get_task("t")).status == TaskStatus.PAUSED
+    assert "error" not in await command(env, "resume_task")
+
+
+async def test_pause_with_clean_worktree_captures_checkpoint_and_finishes(env, tmp_path):
+    repo, git = make_git_repo(tmp_path, "clean")
+    provider, _ = await running_session(env, repo)
+    await pause(env)
+    assert "task-session" not in provider.running
+    saved = await env.db.get_task_meta("t", "manual_pause_checkpoint")
+    assert saved and saved["head"] == git("rev-parse", "HEAD")
+    assert (await env.db.get_task_meta("t", "manual_pause"))["cleanup_pending"] is False
+    assert await env.db.get_task_meta("t", "manual_pause_checkpoint_retry") is None
+    assert (await env.db.get_workspace("workspace")).locked_by_task_id is None
+    assert "error" not in await command(env, "resume_task")
+
+
+async def test_repeated_checkpoint_failure_converges_and_salvages_dirty_work(env, tmp_path, monkeypatch):
+    from src.orchestrator import task_checkpoint
+
+    repo, _ = make_git_repo(tmp_path, "stuck")
+    (repo / "progress.txt").write_text("dirty progress")
+    await running_session(env, repo)
+
+    async def unusable(*_args, **_kwargs):
+        raise RuntimeError("slot was reassigned")
+
+    monkeypatch.setattr(task_checkpoint, "capture_checkpoint", unusable)
+
+    for attempt in (1, 2):
+        result = await command(env, "pause_task")
+        assert "workspace could not be preserved" in result.get("error", ""), result
+        state = await env.db.get_task_meta("t", "manual_pause_checkpoint_retry")
+        assert state["attempts"] == attempt
+        assert (await env.db.get_task_meta("t", "manual_pause"))["cleanup_pending"] is True
+        assert (await env.db.get_workspace("workspace")).locked_by_task_id == "t"
+
+    assert "error" not in await command(env, "pause_task")
+    assert (await env.db.get_task_meta("t", "manual_pause"))["cleanup_pending"] is False
+    assert await env.db.get_task_meta("t", "manual_pause_checkpoint_retry") is None
+    assert (await env.db.get_workspace("workspace")).locked_by_task_id is None
+    contexts = {row["type"]: row["content"] for row in await env.db.get_task_contexts("t")}
+    assert "no checkpoint captured: slot was reassigned" in contexts["manual_pause_no_checkpoint"]
+    assert "dirty progress" in contexts["worktree_salvage"]
+    assert "error" not in await command(env, "resume_task")
+
+
+async def test_pause_cleanup_cascade_backs_off_then_stops_retrying(env, tmp_path, monkeypatch):
+    from src.orchestrator import task_checkpoint
+
+    repo, _ = make_git_repo(tmp_path, "cascade")
+    await running_session(env, repo)
+    calls = []
+
+    async def unusable(*_args, **_kwargs):
+        calls.append(1)
+        raise RuntimeError("slot was reassigned")
+
+    monkeypatch.setattr(task_checkpoint, "capture_checkpoint", unusable)
+
+    assert "error" in await command(env, "pause_task")
+    assert len(calls) == 1
+    await env.orch._resume_paused_tasks()  # inside the backoff window: no retry at all
+    assert len(calls) == 1
+    for _ in range(4):
+        state = await env.db.get_task_meta("t", "manual_pause_checkpoint_retry")
+        if state is None:
+            break
+        await env.db.set_task_meta(
+            "t", "manual_pause_checkpoint_retry", {**state, "next_attempt_at": 0}
+        )
+        await env.orch._resume_paused_tasks()
+    assert len(calls) == 3
+    assert (await env.db.get_task_meta("t", "manual_pause"))["cleanup_pending"] is False
+    await env.orch._resume_paused_tasks()
+    assert len(calls) == 3
+    assert (await env.db.get_task("t")).status == TaskStatus.PAUSED
