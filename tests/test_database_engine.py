@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import stat
 import subprocess
 import sys
 import tempfile
@@ -12,7 +13,12 @@ import pytest
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy import text as sqltext
 
-from src.database.engine import create_sqlite_engine, run_schema_setup
+from src.database.engine import (
+    _schema_cache_directory,
+    _schema_cache_inputs,
+    create_sqlite_engine,
+    run_schema_setup,
+)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -81,7 +87,7 @@ async def test_fresh_temp_sqlite_uses_migrated_schema_cache(tmp_path, monkeypatc
     engine = create_sqlite_engine(str(tmp_path / "cached.db"))
     try:
         await run_schema_setup(engine)
-        cache_files = list((cache_root / "aq-schema-cache").glob("*.db"))
+        cache_files = list(_schema_cache_directory().glob("*.db"))
         assert len(cache_files) == 1
         async with engine.connect() as conn:
             assert (
@@ -103,7 +109,7 @@ async def test_corrupt_schema_cache_template_rebuilds_from_alembic(tmp_path, mon
     finally:
         await first.dispose()
 
-    template = next((cache_root / "aq-schema-cache").glob("*.db"))
+    template = next(_schema_cache_directory().glob("*.db"))
     template.write_bytes(b"not a sqlite database")
 
     second = create_sqlite_engine(str(tmp_path / "second.db"))
@@ -117,6 +123,90 @@ async def test_corrupt_schema_cache_template_rebuilds_from_alembic(tmp_path, mon
         await second.dispose()
 
     assert template.read_bytes().startswith(b"SQLite format 3\000")
+
+
+async def _setup_fresh_cached_database(tmp_path, monkeypatch, name: str = "cached.db"):
+    """Run schema setup for a fresh temp database against a private cache root."""
+    cache_root = tmp_path / "cache-root"
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(cache_root))
+    monkeypatch.setenv("AQ_SCHEMA_CACHE", "1")
+    engine = create_sqlite_engine(str(tmp_path / name))
+    try:
+        await run_schema_setup(engine)
+        async with engine.connect() as conn:
+            assert (
+                await conn.execute(text("SELECT version_num FROM alembic_version"))
+            ).scalar() is not None
+    finally:
+        await engine.dispose()
+    return cache_root
+
+
+async def test_schema_cache_build_leaves_only_the_template_and_its_lock(tmp_path, monkeypatch):
+    """Building the template must not orphan the ``<key>.<pid>.building.db``
+    scratch file's ``-wal``/``-shm`` sidecars (they were piling up in
+    ``/tmp``: the checkpoint connection was still open across the rename)."""
+    await _setup_fresh_cached_database(tmp_path, monkeypatch)
+
+    entries = sorted(entry.name for entry in _schema_cache_directory().iterdir())
+    assert len(entries) == 2, entries
+    assert {entry.rsplit(".", 1)[1] for entry in entries} == {"db", "lock"}
+
+
+async def test_restoring_from_the_template_leaves_no_sidecars_behind(tmp_path, monkeypatch):
+    """The validation read of an existing template closes its connection,
+    so the copy path leaves the directory as it found it."""
+    await _setup_fresh_cached_database(tmp_path, monkeypatch, name="first.db")
+    await _setup_fresh_cached_database(tmp_path, monkeypatch, name="second.db")
+
+    entries = sorted(entry.name for entry in _schema_cache_directory().iterdir())
+    assert {entry.rsplit(".", 1)[1] for entry in entries} == {"db", "lock"}, entries
+
+
+@pytest.mark.skipif(not hasattr(os, "getuid"), reason="POSIX ownership semantics")
+async def test_schema_cache_directory_is_private_to_the_user(tmp_path, monkeypatch):
+    """``/tmp`` is shared: a fixed, world-readable path would let another
+    local user plant a template that passes ``quick_check`` and carries the
+    right ``alembic_version`` rows.  The cache lives in a per-uid, 0700 dir."""
+    cache_root = await _setup_fresh_cached_database(tmp_path, monkeypatch)
+
+    directory = _schema_cache_directory()
+    assert directory.parent == cache_root
+    assert directory.name.endswith(f"-{os.getuid()}")
+    assert stat.S_IMODE(directory.stat().st_mode) == 0o700
+
+
+@pytest.mark.skipif(not hasattr(os, "getuid"), reason="POSIX ownership semantics")
+async def test_symlinked_schema_cache_directory_falls_back_to_alembic(tmp_path, monkeypatch):
+    """A planted symlink at the cache path is refused: Alembic still migrates
+    the database, and nothing is written through the link."""
+    cache_root = tmp_path / "cache-root"
+    cache_root.mkdir()
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(cache_root))
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    name = f"aq-schema-cache-{os.getuid()}"
+    (cache_root / name).symlink_to(elsewhere, target_is_directory=True)
+
+    await _setup_fresh_cached_database(tmp_path, monkeypatch)
+
+    assert list(elsewhere.iterdir()) == []
+
+
+def test_schema_cache_key_covers_the_whole_migration_environment():
+    """``migrations/env.py`` (batch mode, transaction-per-migration) and the
+    helper module revision ``b2c3d4e5f6a7`` imports shape the migrated
+    schema as much as the revision files do, so they have to key the cache."""
+    inputs = _schema_cache_inputs()
+    names = {os.path.relpath(path, ROOT).replace(os.sep, "/") for path in inputs}
+
+    assert {
+        "src/database/tables.py",
+        "src/database/hierarchy_migration.py",
+        "migrations/env.py",
+    } <= names
+    assert any(name.startswith("migrations/versions/") for name in names)
+    assert all(os.path.isfile(path) for path in inputs)
 
 
 @pytest.mark.migration
