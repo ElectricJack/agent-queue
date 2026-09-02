@@ -93,6 +93,31 @@ class ClaimQueryMixin:
             return "active", record
         return "not_found", record
 
+    async def claim_preparation_is_current(
+        self, session_id: str, task_id: str, claim_epoch: int
+    ) -> bool:
+        """Verify the task and pool-session fences before filesystem work.
+
+        Slot reset and claim-file creation happen outside the claim
+        transaction, so this read must prove both rows are still current.
+        Joining their two predicates avoids two independent round trips on
+        every successful pool claim.
+        """
+        stmt = (
+            select(literal(1))
+            .select_from(tasks.join(sessions, sessions.c.task_id == tasks.c.id))
+            .where(
+                tasks.c.id == task_id,
+                tasks.c.status == TaskStatus.IN_PROGRESS.value,
+                tasks.c.claim_epoch == claim_epoch,
+                sessions.c.id == session_id,
+                sessions.c.claim_phase == "preparing",
+                sessions.c.desired_state == "running",
+            )
+        )
+        async with self._engine.connect() as conn:
+            return (await conn.execute(stmt)).scalar_one_or_none() is not None
+
     async def release_claim_slot(self, conn, session_id: str) -> None:
         await conn.execute(
             update(sessions)
@@ -185,18 +210,29 @@ class ClaimQueryMixin:
         tell READY from IN_PROGRESS, so nothing's projection can move
         (``projection_stable``).  Returns ``None`` when the fence lost.
         """
-        # Serialize eligibility with soft deletion on PostgreSQL. A plain
-        # EXISTS check on the task UPDATE does not lock the worker, allowing a
-        # deletion to race the later record_holder write in this transaction.
-        eligible = await conn.execute(
-            select(agents.c.id).where(
+        # Reserving the worker is also its soft-delete fence.  The old
+        # SELECT ... FOR UPDATE followed by record_holder's later UPDATE
+        # needed two round trips to lock and mark the same row.  This guarded
+        # UPDATE does both, while retaining the lock until the task transition
+        # commits; a competing soft delete can neither pass its idle predicate
+        # nor alter this row underneath the claim.
+        reserve = (
+            update(agents)
+            .where(
                 agents.c.id == agent_id,
                 agents.c.enabled.is_(True),
                 agents.c.role == "worker",
                 agents.c.deleted_at.is_(None),
-            ).with_for_update()
+                agents.c.state == AgentState.IDLE.value,
+                agents.c.current_task_id.is_(None),
+            )
+            .values(state=AgentState.BUSY.value, current_task_id=task_id)
         )
-        if eligible.scalar_one_or_none() is None:
+        if supports_returning(conn):
+            reserved = (await conn.execute(reserve.returning(agents.c.id))).scalar_one_or_none() is not None
+        else:
+            reserved = (await conn.execute(reserve)).rowcount == 1
+        if not reserved:
             return None
         out = await self._apply_transition(
             conn,
@@ -211,17 +247,16 @@ class ClaimQueryMixin:
                 tasks.c.status == TaskStatus.READY.value,
                 tasks.c.is_blocked == 0,
                 tasks.c.assigned_agent_id.is_(None),
-                exists(select(literal(1)).where(
-                    agents.c.id == agent_id,
-                    agents.c.enabled.is_(True),
-                    agents.c.role == "worker",
-                    agents.c.deleted_at.is_(None),
-                )),
             ),
             extra_values={"claim_epoch": tasks.c.claim_epoch + 1},
             returning=True,
         )
         if out.row is None:
+            await conn.execute(
+                update(agents)
+                .where(agents.c.id == agent_id, agents.c.current_task_id == task_id)
+                .values(state=AgentState.IDLE.value, current_task_id=None)
+            )
             return None
         return self._row_to_task(out.row)
 
@@ -244,7 +279,7 @@ class ClaimQueryMixin:
             return await _run(conn)
 
     async def record_holder(
-        self, conn, *, session_id, task_id, agent_id, work_dir, now
+        self, conn, *, session_id, task_id, agent_id, work_dir, now, agent_reserved=False
     ) -> Workspace | None:
         """Write the holder rows; return the agent's workspace slot.
 
@@ -260,11 +295,12 @@ class ClaimQueryMixin:
         )
         slot = None
         if agent_id:
-            await conn.execute(
-                update(agents)
-                .where(agents.c.id == agent_id)
-                .values(state=AgentState.BUSY.value, current_task_id=task_id)
-            )
+            if not agent_reserved:
+                await conn.execute(
+                    update(agents)
+                    .where(agents.c.id == agent_id)
+                    .values(state=AgentState.BUSY.value, current_task_id=task_id)
+                )
             stmt = (
                 update(workspaces)
                 .where(workspaces.c.locked_by_agent_id == agent_id)
@@ -398,15 +434,30 @@ class ClaimQueryMixin:
             # it is ignored for every other target status, so the FAILED /
             # BLOCKED releases keep the full recompute.  ``returning`` folds
             # what used to be a separate ``claim_epoch`` read into the write.
-            out = await self._apply_transition(
-                conn,
-                task_id,
-                task_status,
+            transition = dict(
                 context=context,
                 force=True,
                 assigned_agent_id=None,
                 projection_stable=True,
                 returning=True,
+            )
+            if task_status == TaskStatus.READY:
+                # An active claim can only release the IN_PROGRESS,
+                # unblocked task it holds.  Put that proof in the UPDATE
+                # itself so _apply_transition may skip its validation read;
+                # a concurrent close/pause simply leaves this task unchanged.
+                transition.update(
+                    assume_pre_state=(TaskStatus.IN_PROGRESS, False),
+                    extra_where=and_(
+                        tasks.c.status == TaskStatus.IN_PROGRESS.value,
+                        tasks.c.is_blocked == 0,
+                    ),
+                )
+            out = await self._apply_transition(
+                conn,
+                task_id,
+                task_status,
+                **transition,
             )
             epoch = (out.row or {}).get("claim_epoch")
             if needs_attention:

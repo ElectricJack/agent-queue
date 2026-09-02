@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from uuid import uuid4
 
-from sqlalchemy import func, insert, or_, select, update
+from sqlalchemy import exists, func, insert, literal, or_, select, update
 
 from src.database.tables import agents, sessions, task_session_attempts
 
@@ -25,67 +25,77 @@ class TaskSessionQueryMixin:
     async def _start_task_session_attempt(
         self, conn, session_id, *, started_at=None, work_dir=None
     ):
-        row = (
-            (await conn.execute(select(sessions).where(sessions.c.id == session_id)))
-            .mappings()
-            .first()
-        )
-        if row is None or not row["task_id"]:
-            return None
-        # Caller holds the session writer/row lock, so a repeated assignment
-        # converges without making duplicate associations.
-        existing = (
-            await conn.execute(
-                select(task_session_attempts.c.id).where(
-                    *open_attempts(session_id),
-                    task_session_attempts.c.task_id == row["task_id"],
-                )
+        """Snapshot a newly-held session in one ``INSERT ... SELECT``.
+
+        The caller already owns the session writer/row lock.  Selecting the
+        session, checking for an open attempt, looking up the agent name, and
+        inserting the snapshot separately therefore bought no additional
+        safety but added four round trips to every pool claim.  Keep the
+        idempotence predicate and launch snapshot in one portable statement.
+        """
+        attempt_id = uuid4().hex
+        has_open_attempt = exists(
+            select(literal(1)).where(
+                task_session_attempts.c.session_id == sessions.c.id,
+                task_session_attempts.c.task_id == sessions.c.task_id,
+                task_session_attempts.c.ended_at.is_(None),
+                task_session_attempts.c.state.in_(LIVE_ATTEMPT_STATES),
             )
-        ).scalar_one_or_none()
-        if existing is not None:
-            return existing
-        agent_name = None
-        if row["agent_id"]:
-            agent_name = (
-                await conn.execute(
-                    select(agents.c.name).where(
-                        agents.c.id == row["agent_id"],
-                    )
-                )
-            ).scalar_one_or_none()
-        values = {
-            key: row[key]
-            for key in (
-                "task_id",
-                "project_id",
-                "agent_id",
-                "profile_id",
-                "name",
-                "lifecycle",
-                "model",
-                "intelligence_class",
-                "llm_provider",
-                "harness",
-                "provider",
-                "state",
-                "work_dir",
-                "session_key",
-                "ended_at",
-                "end_reason",
-            )
-        }
-        values.update(
-            id=uuid4().hex,
-            session_id=session_id,
-            agent_name=agent_name,
-            started_at=row["started_at"] if started_at is None else started_at,
-            session_started_at=row["started_at"],
-            outcome=None,
         )
-        if work_dir is not None:
-            values["work_dir"] = work_dir
-        await conn.execute(insert(task_session_attempts).values(**values))
-        return values["id"]
+        columns = [
+            task_session_attempts.c.id,
+            task_session_attempts.c.session_id,
+            task_session_attempts.c.task_id,
+            task_session_attempts.c.project_id,
+            task_session_attempts.c.agent_id,
+            task_session_attempts.c.agent_name,
+            task_session_attempts.c.profile_id,
+            task_session_attempts.c.name,
+            task_session_attempts.c.lifecycle,
+            task_session_attempts.c.model,
+            task_session_attempts.c.intelligence_class,
+            task_session_attempts.c.llm_provider,
+            task_session_attempts.c.harness,
+            task_session_attempts.c.provider,
+            task_session_attempts.c.state,
+            task_session_attempts.c.work_dir,
+            task_session_attempts.c.started_at,
+            task_session_attempts.c.session_started_at,
+            task_session_attempts.c.ended_at,
+            task_session_attempts.c.end_reason,
+            task_session_attempts.c.outcome,
+            task_session_attempts.c.session_key,
+        ]
+        snapshot = (
+            select(
+                literal(attempt_id),
+                sessions.c.id,
+                sessions.c.task_id,
+                sessions.c.project_id,
+                sessions.c.agent_id,
+                agents.c.name,
+                sessions.c.profile_id,
+                sessions.c.name,
+                sessions.c.lifecycle,
+                sessions.c.model,
+                sessions.c.intelligence_class,
+                sessions.c.llm_provider,
+                sessions.c.harness,
+                sessions.c.provider,
+                sessions.c.state,
+                literal(work_dir) if work_dir is not None else sessions.c.work_dir,
+                literal(started_at) if started_at is not None else sessions.c.started_at,
+                sessions.c.started_at,
+                sessions.c.ended_at,
+                sessions.c.end_reason,
+                literal(None),
+                sessions.c.session_key,
+            )
+            .select_from(sessions.outerjoin(agents, agents.c.id == sessions.c.agent_id))
+            .where(sessions.c.id == session_id, sessions.c.task_id.is_not(None), ~has_open_attempt)
+        )
+        result = await conn.execute(insert(task_session_attempts).from_select(columns, snapshot))
+        return attempt_id if result.rowcount else None
 
     async def get_task_session_attempt(self, attempt_id: str) -> dict | None:
         async with self._engine.connect() as conn:
