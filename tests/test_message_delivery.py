@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock
 from dataclasses import dataclass, field
 
 import pytest
-from sqlalchemy import update as sa_update
+from sqlalchemy import insert, update as sa_update
 
 from src.config import MessagesConfig
 from src.database import SQLiteDatabaseAdapter
@@ -112,6 +112,30 @@ async def _send(db, **overrides):
     )
     params.update(overrides)
     return await db.create_message(**params)
+
+
+async def _seed_irrelevant_history(db, count: int = 201) -> None:
+    """Create rows beyond the legacy 200-row history window in one transaction."""
+    now = time.time()
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            insert(messages),
+            [
+                {
+                    "id": f"msg-history-{index}",
+                    "project_id": "p1",
+                    "from_kind": "user",
+                    "from_id": "discord:1",
+                    "to_kind": "profile",
+                    "to_id": "unrelated",
+                    "body": "irrelevant history",
+                    "priority": 100,
+                    "created_at": now + index,
+                    "archive_after_inject": False,
+                }
+                for index in range(count)
+            ],
+        )
 
 
 # --------------------------------------------------------------------------
@@ -613,6 +637,7 @@ class TestReplyTimeouts:
 
 
 class TestTranscriptTailDeduplication:
+    @pytest.mark.slow
     @pytest.mark.parametrize("project_id", ["p1", None])
     @pytest.mark.parametrize("delivery_times", [(100, 101, 102), (102, 100, 101)])
     async def test_backlog_reuses_one_reply_across_sweeps_and_restart(
@@ -635,8 +660,7 @@ class TestTranscriptTailDeduplication:
         # Forget process state, archive the original reply and its request,
         # and push them beyond the old 200-row history scan.
         await db.archive_messages([first.id, newest.id])
-        for _ in range(201):
-            await _send(db, to_kind="profile", to_id="unrelated")
+        await _seed_irrelevant_history(db)
         restarted = make_engine(db, sessions, bus=bus)
         for _ in range(3):
             assert await restarted.check_reply_timeouts() == 0

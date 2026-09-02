@@ -80,6 +80,8 @@ import {
   deleteAttachmentApiTasksTaskIdAttachmentsAttachmentIdDelete,
   listAttachmentsApiTasksTaskIdAttachmentsGet,
   uploadAttachmentApiTasksTaskIdAttachmentsPost,
+  poolStatus,
+  poolScale,
 } from "./client";
 import type {
   AgentSummary,
@@ -152,6 +154,10 @@ import type {
   InspectPlaybookRunResponse,
   CancelPlaybookRunResponse,
   TaskAttachmentsResponse,
+  PoolStatusResponse,
+  PoolStatusRow,
+  PoolScaleRequest,
+  PoolScaleResponse,
 } from "./client";
 import {
   fetchChatMessages,
@@ -271,6 +277,67 @@ export function useAllAgents(projectIds: string[]) {
     },
     refetchInterval: 60_000,
     enabled: projectIds.length > 0,
+  });
+}
+
+// --- Worker pools (swarm work model §11) ---
+
+export type { PoolStatusRow };
+
+/**
+ * One row per (active project, pool profile) with its bounds and live supply.
+ *
+ * ``pool_status`` emits a row for every pool profile a project resolves —
+ * including one at zero supply — so the response doubles as the authoritative
+ * list of which profiles run as pools. Polled on the flock's cadence because
+ * supply turns over as fast as agent state does.
+ */
+export function usePoolStatus(projectId?: string) {
+  return useQuery({
+    queryKey: ["pools", projectId ?? "all"],
+    queryFn: async () => {
+      const { data } = await poolStatus({
+        body: projectId ? { project_id: projectId } : {},
+        throwOnError: true,
+      });
+      return ((data as PoolStatusResponse).pools ?? []) as PoolStatusRow[];
+    },
+    staleTime: 2_000,
+    refetchInterval: 5_000,
+  });
+}
+
+/** Live ``lifecycle: pool`` sessions — the individual instances behind a pool. */
+export function usePoolSessions() {
+  return useQuery({
+    queryKey: ["sessions", "pool"],
+    queryFn: async () => {
+      const { data } = await sessionList({
+        body: { lifecycle: "pool", live_only: true },
+        throwOnError: true,
+      });
+      return ((data as ListSessionsResponse).sessions ?? []) as SessionSummary[];
+    },
+    staleTime: 2_000,
+    refetchInterval: 5_000,
+  });
+}
+
+export function usePoolScale() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: PoolScaleRequest) => {
+      const { data } = await poolScale({ body: input, throwOnError: true });
+      const result = data as PoolScaleResponse;
+      // pool_scale reports refusals in band (bad bounds, no such pool profile)
+      // with a 200, so success has to be checked before React Query calls it one.
+      if (!result.success) throw new Error(result.error || "Could not scale this pool");
+      return result;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["pools"] });
+      void queryClient.invalidateQueries({ queryKey: ["sessions"] });
+    },
   });
 }
 

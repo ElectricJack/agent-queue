@@ -130,6 +130,9 @@ class TransitionResult:
     #: of re-reading).  ``None`` also means "the guarded UPDATE matched no
     #: row" for callers that passed ``extra_where``.
     row: dict | None = None
+    #: Whether a claim-release operation actually owned and cleared the
+    #: session hold.  Ordinary task transitions leave this false.
+    released: bool = False
 
 
 class TaskQueryMixin:

@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
+
+if TYPE_CHECKING:
+    from ..models.pool_instance_status import PoolInstanceStatus
+
 
 T = TypeVar("T", bound="PoolStatusRow")
 
@@ -27,6 +31,8 @@ class PoolStatusRow:
         ready (int):
         max_active (int | None | Unset):
         quarantined_until (float | None | Unset):
+        quarantined_reason (None | str | Unset):
+        instances (list[PoolInstanceStatus] | Unset):
     """
 
     project_id: str
@@ -40,6 +46,8 @@ class PoolStatusRow:
     ready: int
     max_active: int | None | Unset = UNSET
     quarantined_until: float | None | Unset = UNSET
+    quarantined_reason: None | str | Unset = UNSET
+    instances: list[PoolInstanceStatus] | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -73,6 +81,19 @@ class PoolStatusRow:
         else:
             quarantined_until = self.quarantined_until
 
+        quarantined_reason: None | str | Unset
+        if isinstance(self.quarantined_reason, Unset):
+            quarantined_reason = UNSET
+        else:
+            quarantined_reason = self.quarantined_reason
+
+        instances: list[dict[str, Any]] | Unset = UNSET
+        if not isinstance(self.instances, Unset):
+            instances = []
+            for instances_item_data in self.instances:
+                instances_item = instances_item_data.to_dict()
+                instances.append(instances_item)
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -92,11 +113,17 @@ class PoolStatusRow:
             field_dict["max_active"] = max_active
         if quarantined_until is not UNSET:
             field_dict["quarantined_until"] = quarantined_until
+        if quarantined_reason is not UNSET:
+            field_dict["quarantined_reason"] = quarantined_reason
+        if instances is not UNSET:
+            field_dict["instances"] = instances
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.pool_instance_status import PoolInstanceStatus
+
         d = dict(src_dict)
         project_id = d.pop("project_id")
 
@@ -134,6 +161,24 @@ class PoolStatusRow:
 
         quarantined_until = _parse_quarantined_until(d.pop("quarantined_until", UNSET))
 
+        def _parse_quarantined_reason(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        quarantined_reason = _parse_quarantined_reason(d.pop("quarantined_reason", UNSET))
+
+        _instances = d.pop("instances", UNSET)
+        instances: list[PoolInstanceStatus] | Unset = UNSET
+        if _instances is not UNSET:
+            instances = []
+            for instances_item_data in _instances:
+                instances_item = PoolInstanceStatus.from_dict(instances_item_data)
+
+                instances.append(instances_item)
+
         pool_status_row = cls(
             project_id=project_id,
             profile_id=profile_id,
@@ -146,6 +191,8 @@ class PoolStatusRow:
             ready=ready,
             max_active=max_active,
             quarantined_until=quarantined_until,
+            quarantined_reason=quarantined_reason,
+            instances=instances,
         )
 
         pool_status_row.additional_properties = d

@@ -49,7 +49,7 @@ class MessageSendRequest:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.message_send_request_pane_open_type_0 import MessageSendRequestPaneOpenType0  # noqa: PLC0415
+        from ..models.message_send_request_pane_open_type_0 import MessageSendRequestPaneOpenType0
 
         to_kind = self.to_kind
 
@@ -125,7 +125,7 @@ class MessageSendRequest:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.message_send_request_pane_open_type_0 import MessageSendRequestPaneOpenType0  # noqa: PLC0415
+        from ..models.message_send_request_pane_open_type_0 import MessageSendRequestPaneOpenType0
 
         d = dict(src_dict)
         to_kind = d.pop("to_kind")

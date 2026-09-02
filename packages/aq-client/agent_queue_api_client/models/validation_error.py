@@ -68,7 +68,7 @@ class ValidationError:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.validation_error_context import ValidationErrorContext  # noqa: PLC0415
+        from ..models.validation_error_context import ValidationErrorContext
 
         d = dict(src_dict)
         loc = []

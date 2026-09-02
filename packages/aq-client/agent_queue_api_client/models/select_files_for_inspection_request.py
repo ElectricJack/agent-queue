@@ -44,7 +44,7 @@ class SelectFilesForInspectionRequest:
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.select_files_for_inspection_request_weights_type_0 import (
-            SelectFilesForInspectionRequestWeightsType0,  # noqa: PLC0415
+            SelectFilesForInspectionRequestWeightsType0,
         )
 
         project_id = self.project_id
@@ -100,7 +100,7 @@ class SelectFilesForInspectionRequest:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.select_files_for_inspection_request_weights_type_0 import (
-            SelectFilesForInspectionRequestWeightsType0,  # noqa: PLC0415
+            SelectFilesForInspectionRequestWeightsType0,
         )
 
         d = dict(src_dict)

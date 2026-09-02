@@ -170,6 +170,29 @@ the new file lands. An invalid edit never reaches disk. Comments, quoting,
 and `${ENV_VAR}` references are preserved by the ruamel-based round-trip
 writer.
 
+### Test Commands
+
+```bash
+aq test tests/test_pools.py            # run pytest behind the box-wide test semaphore
+aq test tests/ -k claim                # any pytest arguments; passed through untouched
+aq test --aq-status                    # slot occupancy: who is holding, who is waiting
+aq test --aq-no-wait tests/            # fail immediately instead of queueing
+aq test --aq-dry-run tests/            # print the pytest command that would run
+aq test --aq-all-markers tests/perf    # skip the default marker deselects
+aq test --aq-help                      # help (-h/--help belong to pytest)
+```
+
+`aq test` acquires one of `resources.test_slots` `flock` slots before
+running, so concurrent agents cannot each spawn a full-width test run. It
+adds `-n <per-session cap>` and `-m "not tmux and not integration and not
+perf"` only when you did not pass your own. It needs no daemon — the lock
+is a file under `~/.agent-queue/locks/test-slots/` — and the slot is
+released by the kernel even if the run is killed.
+
+Exit codes are pytest's, plus **75** (`EX_TEMPFAIL`) for "no slot came free
+within `resources.test_wait_timeout`". See
+[resource gating](resource-gating.md).
+
 ## Interactive Features
 
 ### Task Creation Wizard

@@ -16,7 +16,7 @@ from src.commands.message_commands import MESSAGES_DISABLED_ERROR, message_to_di
 from src.config import MessagesConfig
 from src.database import Database
 from src.event_schemas import validate_payload
-from src.models import Message, Project
+from src.models import Agent, AgentState, Message, Project, SessionRecord, Task, TaskStatus
 
 
 class _RecordingBus:
@@ -148,6 +148,79 @@ class TestSend:
         handler, _db, _bus = setup
         result = await handler._cmd_message_send(_send_args(reply_to_id="msg-nope"))
         assert "not found" in result["error"]
+
+
+class TestSupervisorAgentMessage:
+    async def test_task_target_resolves_live_session_and_mirrors_comment(self, setup):
+        """A supervisor targets the current worker, never a stale session name."""
+        handler, db, _bus = setup
+        await db.create_agent(
+            Agent(id="agent-1", name="worker-one", profile_id="worker", state=AgentState.BUSY)
+        )
+        await db.create_task(
+            Task(
+                id="task-1",
+                project_id="p1",
+                title="work",
+                description="do work",
+                status=TaskStatus.IN_PROGRESS,
+                assigned_agent_id="agent-1",
+            )
+        )
+        await db.create_session(
+            SessionRecord(
+                id="session-live",
+                task_id="task-1",
+                agent_id="agent-1",
+                project_id="p1",
+                profile_id="worker",
+                harness="codex",
+                provider="fake",
+                name="s-task-1",
+                lifecycle="task",
+                work_dir="/tmp",
+                epoch="test",
+                instance_token="token",
+                started_at=1,
+                state="running",
+            )
+        )
+
+        result = await handler._cmd_agent_message({"target": "task-1", "body": "stop tests"})
+
+        assert result["state"] == "queued"
+        assert result["target"] == {"task_id": "task-1", "session_id": "session-live"}
+        message = await db.get_message(result["message_id"])
+        assert (message.to_kind, message.to_id, message.from_kind) == (
+            "session",
+            "session-live",
+            "system",
+        )
+        comments = await db.list_task_comments("task-1", project_id="p1")
+        assert comments["comments"][0]["author_kind"] == "supervisor"
+        assert comments["comments"][0]["body"] == "stop tests"
+
+    async def test_rejects_task_without_live_session(self, setup):
+        handler, db, _bus = setup
+        await db.create_task(
+            Task(id="task-1", project_id="p1", title="work", description="do work")
+        )
+
+        result = await handler._cmd_agent_message({"target": "task-1", "body": "hello"})
+
+        assert result == {"error": "Task 'task-1' has no live worker session"}
+
+    async def test_status_reports_queued_delivered_and_acknowledged(self, setup):
+        handler, db, _bus = setup
+        sent = await handler._cmd_message_send(_send_args())
+
+        assert (await handler._cmd_message_status({"message_id": sent["message_id"]}))["state"] == "queued"
+        await db.mark_delivered(sent["message_id"], via="nudge")
+        delivered = await handler._cmd_message_status({"message_id": sent["message_id"]})
+        assert delivered["state"] == "delivered"
+        assert delivered["via"] == "nudge"
+        await db.mark_read(sent["message_id"])
+        assert (await handler._cmd_message_status({"message_id": sent["message_id"]}))["state"] == "acknowledged"
 
 
 # ---------------------------------------------------------------------------

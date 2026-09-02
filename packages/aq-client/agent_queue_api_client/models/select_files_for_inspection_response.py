@@ -113,14 +113,12 @@ class SelectFilesForInspectionResponse:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.select_files_for_inspection_response_categorized import (
-            SelectFilesForInspectionResponseCategorized,  # noqa: PLC0415
+            SelectFilesForInspectionResponseCategorized,
         )
         from ..models.select_files_for_inspection_response_target_counts import (
-            SelectFilesForInspectionResponseTargetCounts,  # noqa: PLC0415
+            SelectFilesForInspectionResponseTargetCounts,
         )
-        from ..models.select_files_for_inspection_response_weights import (
-            SelectFilesForInspectionResponseWeights,  # noqa: PLC0415
-        )
+        from ..models.select_files_for_inspection_response_weights import SelectFilesForInspectionResponseWeights
 
         d = dict(src_dict)
         project_id = d.pop("project_id")

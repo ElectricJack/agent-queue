@@ -49,7 +49,7 @@ class ListPlaybookRunsResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.playbook_run_summary import PlaybookRunSummary  # noqa: PLC0415
+        from ..models.playbook_run_summary import PlaybookRunSummary
 
         d = dict(src_dict)
         _runs = d.pop("runs", UNSET)

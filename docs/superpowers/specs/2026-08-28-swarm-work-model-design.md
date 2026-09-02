@@ -221,7 +221,13 @@ nothing to find).
   abandonment and administrative closes — bypasses it. There is no force that leaves open children under a completed
   container — that would break invariant 6. The operator's option is
   `--abandon-children`, and it is **refused while any descendant has a live session**
-  (`hierarchy.live_descendants`, listing them). A `task`-lifecycle descendant may be
+  (`hierarchy.live_descendants`, listing the descendant ids). "Descendant" is strict: the
+  closing container's *own* session — the worker calling `task_close`, or the
+  container-root session driving it — is live by definition and is excluded from the
+  check, otherwise every abandon would refuse itself. A descendant a human has paused by
+  hand (`PAUSED` with no `resume_after`) is likewise refused, as
+  `hierarchy.manually_paused_descendants` listing the ids: the manual-pause guard means
+  those rows cannot be transitioned, and the operator resumes them first. A `task`-lifecycle descendant may be
   mid-write in its worktree with a valid token; closing its row first would let it keep
   writing against abandoned work. The operator stops those sessions through the existing
   paths (`aq task stop <id>` / `aq session kill <name>`, both of which run the salvage and
@@ -640,6 +646,63 @@ the backstop, as today. Claim file deleted with the slot's reset on next use.
 
 `_stop_session` for a pool row therefore calls `terminate_pool_session` before writing
 the state; for `task` and `named` rows it is unchanged.
+
+##### 11.2.1 Agent rows: retire on unconfirmed stop, reuse on confirmed stop
+
+§11.2 above says the agent row is left `RETIRED`. That is the *safe-side* half of the
+rule; the other half is what makes the roster bounded, and both are load-bearing.
+
+`_terminate_pool_session_locked` marks the row `RETIRED` **before** it asks the provider
+to stop the process, and leaves it `RETIRED` if that stop cannot be confirmed (the
+provider raised — the function returns early, deliberately retaining the workspace and
+the definition). Only a *confirmed* stop clears it back to `IDLE`, which returns the
+definition to the pool `_launch_pool_session` draws its candidates from
+(`list_agents(state=IDLE)`, preferring the same `profile_id`). So:
+
+- **`RETIRED`** = "this worker's process may still be alive; never hand it to a second
+  session."
+- **`IDLE`, no session row** = "confirmed stopped and reusable" — the spare pool.
+
+Reuse is not an optimisation. Without it the roster grows by one `agents` row per pool
+session — one per *task* under `fresh_context_per_task` — and there is no sanctioned
+sweep to bound it: `soft_delete_agent` cannot reap retired rows because
+`create_automatic_agent` refuses to grow the roster while *any* worker tombstone exists,
+and a hard delete drops history the task ledger still references. (This supersedes
+§11.2's aside that "`AgentReconciler` deletes retired rows at startup"; no such sweep
+exists, and adding one would disable automatic pool growth.) The agent-flock design
+states the same conclusion: "pools ... may reuse idle definitions after safe
+termination".
+
+`pools.orphan_agents` polices what falls outside that loop — a pool-profile agent with
+no session row at all, stale by `2 × prepare_timeout` so an in-flight launch is never
+caught. Four shapes, four verdicts, and `--fix` **never deletes**:
+
+| shape | `--fix` |
+|---|---|
+| idle, enabled, unowned, no workspace lock | nothing — this is the spare pool |
+| idle but still holding a workspace lock | release the lock; row stays `IDLE` and reusable |
+| `BUSY`, or `current_task_id` set | nothing — reported for a human |
+| disabled, or `ERROR`/`PAUSED` | retire (`state=RETIRED`, `current_task_id=NULL`) |
+
+The busy row is the "fixed push-agent row for a profile that has since become
+`lifecycle: pool`" case: no pool session will ever adopt it, but it may still own a task,
+so retiring or deleting it would strand that task. Every repair writes one
+`pool.agent_repaired` event.
+
+##### 11.2.2 Quarantine reasons
+
+`_pool_quarantine` holds the deadline; `_pool_quarantine_reason` holds the why, written
+together by `PoolsMixin._quarantine_pool` (launch failures, fixed `LAUNCH_BACKOFF`
+window) and by `SessionReconciler._quarantine_pool_key` (exit verdicts, which carry
+their own restart-window / provider-cooldown deadline). `pool_status` returns both as
+`quarantined_until` / `quarantined_reason`, so `aq pool status` answers "why is this pool
+not growing?" rather than only "until when".
+
+A `SessionDiedDuringStartup` reads a bounded tail of the captured startup output
+(`read_stderr_excerpt`, 400 chars) **once**, at the moment it quarantines the key, and
+carries it in the reason from there on. The quarantine window is what keeps it once: a
+key inside its window is skipped before any launch is attempted, so a persistently broken
+harness produces one warning per window, not one per 5 s tick.
 
 #### 11.3 Reconciler carve-outs for `lifecycle='pool'`
 

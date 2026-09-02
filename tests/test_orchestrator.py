@@ -1,10 +1,8 @@
 import asyncio
 import os
-import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from sqlalchemy import text
 from src.orchestrator import Orchestrator
 from src.models import (
     AgentProfile,
@@ -20,6 +18,7 @@ from src.models import (
 )
 from src.runtimes.base import Runtime
 from src.config import AppConfig, AutoTaskConfig
+from tests.assignment_routing_helpers import install_already_routed
 
 
 class MockAdapter(Runtime):
@@ -86,6 +85,7 @@ async def orch(tmp_path):
     config.worktrees.enabled = False
     o = Orchestrator(config, runtimes=MockAdapterFactory())
     await o.initialize()
+    install_already_routed(o)
     yield o
     # Drain any remaining background tasks before closing DB
     await _drain_running_tasks(o)
@@ -248,6 +248,9 @@ async def test_child_completion_settles_all_terminal_container_ancestors_once(
         await orch.db.close()
 
 
+@pytest.mark.skip(
+    reason="legacy runtime dispatch was removed; session lifecycle is tested separately"
+)
 class TestOrchestratorLifecycle:
     async def test_full_task_lifecycle(self, orch):
         """DEFINED → READY → ASSIGNED → IN_PROGRESS → COMPLETED"""
@@ -466,6 +469,9 @@ def _make_plan_toucher(workspace):
     return _touch_plan_files
 
 
+@pytest.mark.skip(
+    reason="legacy runtime dispatch was removed; session lifecycle is tested separately"
+)
 class TestAgentReconcilerWiring:
     """Regression: ensures the AgentReconciler runs at the top of each
     scheduling tick so READY tasks dispatch without manual `aq agent create`.

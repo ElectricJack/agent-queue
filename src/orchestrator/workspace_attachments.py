@@ -107,6 +107,7 @@ async def acquire_for_task(
     worktrees_enabled: bool = False,
     worktree_slot_cap: int | None = None,
     read_only: bool = False,
+    preferred_workspaces: dict[str, str] | None = None,
 ) -> WorkspaceAttachmentSet:
     """Acquire all required workspaces for a task.
 
@@ -135,6 +136,15 @@ async def acquire_for_task(
     bound ``count_available_workspaces`` and ``_ensure_worktree_slots_for_task``
     already apply — otherwise a shrunk cap leaves capacity reporting 0 while
     acquisition still hands out an out-of-cap slot.
+
+    ``preferred_workspaces`` is a ``{kind_id: workspace_id}`` *soft* hint
+    computed by the caller — in practice the slot that already has the task's
+    branch checked out (worktree-execution §3.4, §6.3).  A released slot
+    stays on its last task's branch, so without the hint a retry lands on a
+    different slot and ``git switch`` is refused forever.  It is strictly a
+    preference: an explicit ``Task.preferred_workspace_id`` always wins, and
+    a hinted workspace that is busy or gone falls through to the ordinary
+    first-unlocked pick rather than blocking the task behind it.
     """
     requirements = await effective_requirements(db, task)
     acquired: list[WorkspaceAttachment] = []
@@ -159,7 +169,10 @@ async def acquire_for_task(
                     mode=effective_mode,
                     locked_by_task_id=task.id,
                     locked_by_agent_id=agent_id,
-                    prefer_workspace_id=req.preferred_workspace_id,
+                    prefer_workspace_id=(
+                        req.preferred_workspace_id
+                        or (preferred_workspaces or {}).get(req.kind_id)
+                    ),
                     kind_mode=(
                         kind.mode
                         if worktrees_enabled and kind.is_git_repo

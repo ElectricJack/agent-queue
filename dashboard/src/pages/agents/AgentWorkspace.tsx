@@ -1,30 +1,34 @@
-import { useState } from "react";
 import { PlusIcon, UsersIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import { useAgentFlock } from "../../api/agents";
-import { useAgentSelection } from "./useAgentSelection";
+import { selectionAddress, useAgentSelection } from "./useAgentSelection";
 import AgentWindow from "./AgentWindow";
 import AddAgent from "./AddAgent";
+import PoolWindow from "./PoolWindow";
+import { usePoolFlock } from "./pools";
 
 export default function AgentWorkspace() {
   const { data: agents = [], isLoading, error, refetch } = useAgentFlock();
-  const { selectedIds, select, close, resetToken } = useAgentSelection();
-  const [adding, setAdding] = useState(false);
+  const { selectedIds, selections, select, close, setInstance, resetToken, adding, setAdding } = useAgentSelection();
+  const { entries: pools } = usePoolFlock();
   const columns = selectedIds.length > 1 ? "lg:grid-cols-2" : "grid-cols-1";
   const rows = selectedIds.length > 2 ? "lg:grid-rows-2" : "lg:grid-rows-1";
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-3 p-4">
+      {/* The header is empty-state chrome only: a selected agent gets the full height. */}
+      {selectedIds.length === 0 && (
       <header className="flex shrink-0 items-start justify-between gap-4">
         <div>
           <h1 className="text-lg font-semibold text-gray-100">Agent flock</h1>
           <p className="mt-0.5 text-xs text-gray-500">Global workers shared across projects. Shift-click agents to tile up to four views.</p>
         </div>
-        <button type="button" aria-expanded={adding} onClick={() => setAdding((value) => !value)}
+        <button type="button" aria-expanded={adding} onClick={() => setAdding(!adding)}
           className="flex shrink-0 items-center gap-1.5 rounded border border-gray-700 px-3 py-2 text-xs text-gray-300 hover:bg-gray-800">
           <PlusIcon className="h-3.5 w-3.5" />Add agent
         </button>
       </header>
-      {adding && <AddAgent onCancel={() => setAdding(false)} onCreated={(id) => { setAdding(false); select(id); }} />}
+      )}
+      {adding && <AddAgent onCancel={() => setAdding(false)} onCreated={(id) => select(id)} />}
       {error && (
         <div role="alert" className="rounded border border-red-900 bg-red-950/30 p-3 text-sm text-red-300">
           Could not load the agent flock: {error.message}{" "}
@@ -39,8 +43,19 @@ export default function AgentWorkspace() {
         </div>
       ) : (
         <div className={"grid min-h-0 flex-1 auto-rows-[minmax(20rem,1fr)] gap-3 overflow-y-auto lg:auto-rows-auto " + columns + " " + rows}>
-          {selectedIds.map((id) => {
-            const agent = agents.find((item) => item.id === id);
+          {selections.map((selection) => {
+            const id = selection.key;
+            if (selection.kind === "pool") {
+              const entry = pools.find((pool) => pool.key === selectionAddress(id));
+              if (entry) {
+                return (
+                  <PoolWindow key={entry.key} entry={entry} instanceId={selection.instanceId}
+                    onInstanceChange={(instanceId) => setInstance(id, instanceId)}
+                    onClose={() => close(id)} resetToken={resetToken} />
+                );
+              }
+            }
+            const agent = selection.kind === "agent" ? agents.find((item) => item.id === selection.agentId) : undefined;
             return agent ? (
               <AgentWindow key={id} agent={agent} onClose={() => close(id)} resetToken={resetToken} />
             ) : (
@@ -52,7 +67,8 @@ export default function AgentWorkspace() {
                     <XMarkIcon className="h-4 w-4" />
                   </button>
                 </div>
-                <p className="m-auto text-sm text-gray-500">{isLoading ? "Loading agent…" : error ? "Agent unavailable." : "Agent not found."}</p>
+                <p className="m-auto text-sm text-gray-500">{isLoading ? "Loading agent…" : error ? "Agent unavailable."
+                    : selection.kind === "pool" ? "This pool is no longer configured." : "Agent not found."}</p>
               </section>
             );
           })}

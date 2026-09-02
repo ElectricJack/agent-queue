@@ -41,8 +41,62 @@ _LIVE_STATES = ("starting", "running", "draining")
 LAUNCH_BACKOFF = 60.0
 
 
+#: How much of a dead session's captured startup output to carry into the
+#: quarantine reason.  Enough to show the actual error line, short enough to
+#: sit in a log record and an ``aq pool status`` row.
+_STDERR_EXCERPT_CHARS = 400
+
+
+def read_stderr_excerpt(path: str | None) -> str:
+    """Tail of the captured startup output at *path*, or ``""``.
+
+    Read **once**, at the moment the launch failure quarantines the key, and
+    carried in the quarantine reason from there on.  Re-reading it per tick
+    (or logging it per tick) is what turned one dead harness into a wall of
+    identical stack traces; the quarantine window is what makes once enough.
+    """
+    if not path:
+        return ""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+    except OSError:
+        return ""
+    text = " ".join(text.split())
+    if len(text) > _STDERR_EXCERPT_CHARS:
+        text = "..." + text[-_STDERR_EXCERPT_CHARS:]
+    return text
+
+
 class PoolsMixin:
     """Worker-pool sizing and convergence, mixed into ``Orchestrator``."""
+
+    def _quarantine_pool(self, project_id: str, profile_id: str, reason: str) -> float:
+        """Stop starting into ``(project_id, profile_id)`` for :data:`LAUNCH_BACKOFF`.
+
+        Records *reason* alongside the deadline so ``aq pool status`` can say
+        **why** a pool is not growing — a bare timestamp left an operator
+        looking at a stalled pool with nothing to act on — and logs it once,
+        here, rather than from each tick that skips the key.
+        """
+        until = time.time() + LAUNCH_BACKOFF
+        self._pool_quarantine[(project_id, profile_id)] = until
+        reasons = getattr(self, "_pool_quarantine_reason", None)
+        if reasons is None:
+            reasons = self._pool_quarantine_reason = {}
+        reasons[(project_id, profile_id)] = reason
+        logger.warning(
+            "pool %s/%s quarantined for %.0fs: %s", project_id, profile_id, LAUNCH_BACKOFF, reason
+        )
+        return until
+
+    def _pool_quarantine_state(self, project_id: str, profile_id: str, now: float):
+        """``(until, reason)`` for a key still inside its window, else ``(None, None)``."""
+        key = (project_id, profile_id)
+        until = self._pool_quarantine.get(key)
+        if not until or until <= now:
+            return None, None
+        return until, (getattr(self, "_pool_quarantine_reason", None) or {}).get(key)
 
     async def _pool_profiles(
         self, project_id: str, *, system_profiles: list[AgentProfile] | None = None
@@ -190,8 +244,10 @@ class PoolsMixin:
         for action in actions:
             executed = 0
             if action.kind == "start":
-                until = self._pool_quarantine.get((action.key.project_id, action.key.profile_id))
-                if until and until > now:
+                until, _reason = self._pool_quarantine_state(
+                    action.key.project_id, action.key.profile_id, now
+                )
+                if until:
                     continue
                 for _ in range(action.count):
                     sid = await self._launch_pool_session(
@@ -267,8 +323,7 @@ class PoolsMixin:
         try:
             provider = self.session_providers.create(provider_name, self.config)
         except ValueError as exc:
-            logger.warning("pool %s/%s: %s", project.id, profile.id, exc)
-            self._pool_quarantine[(project.id, profile.id)] = time.time() + LAUNCH_BACKOFF
+            self._quarantine_pool(project.id, profile.id, f"session provider unavailable: {exc}")
             return None
 
         # Reserve the identity before any await that starts a process. A live
@@ -276,6 +331,7 @@ class PoolsMixin:
         profiles = {item.id: item for item in await self.db.list_profiles()}
         requirement = Task(
             id="", project_id=project.id, title="", description="", profile_id=profile.id,
+            intelligence_class=profile.default_class,
         )
         classes = self.session_spec_builder._intelligence_classes
         candidates = await self.db.list_agents(state=AgentState.IDLE)
@@ -317,16 +373,22 @@ class PoolsMixin:
         harness = self.harness_registry.get(harness_name, project.id)
         if harness is None:
             await self.db.update_agent(agent.id, state=AgentState.IDLE, current_task_id=None)
-            self._pool_quarantine[(project.id, profile.id)] = time.time() + LAUNCH_BACKOFF
-            logger.warning("pool %s/%s: unknown harness %s", project.id, profile.id, harness_name)
+            self._quarantine_pool(project.id, profile.id, f"unknown harness {harness_name!r}")
             return None
 
         token_store = getattr(self, "token_store", None)
-        session_id = pool_session_name(profile.id, project.id, uuid.uuid4().hex[:8])
+        # Claude accepts only canonical UUIDs for ``--session-id``. Keep the
+        # durable/session-token identity separate from the readable provider
+        # name used to address this pool worker.
+        session_id = str(uuid.uuid4())
+        session_name = pool_session_name(profile.id, project.id, uuid.uuid4().hex[:8])
         minted_token = False
 
         async def _rollback(reason: str, *, quarantine: bool) -> None:
-            logger.warning("pool %s/%s: %s", project.id, profile.id, reason)
+            if not quarantine:
+                # A starved pool is expected; ``_quarantine_pool`` does the
+                # logging for the failures that are not.
+                logger.warning("pool %s/%s: %s", project.id, profile.id, reason)
             await self.db.release_workspaces_for_agent(agent.id)
             await self.db.update_agent(agent.id, state=AgentState.IDLE, current_task_id=None)
             if minted_token and token_store is not None:
@@ -335,7 +397,7 @@ class PoolsMixin:
                 except Exception:
                     logger.debug("pool %s/%s: token revoke failed", project.id, profile.id)
             if quarantine:
-                self._pool_quarantine[(project.id, profile.id)] = time.time() + LAUNCH_BACKOFF
+                self._quarantine_pool(project.id, profile.id, reason)
 
         try:
             kind = await self.db.resolve_workspace_kind(project.id, "project-repo")
@@ -379,6 +441,7 @@ class PoolsMixin:
                 harness=harness,
                 work_dir=work_dir,
                 session_id=session_id,
+                session_name=session_name,
                 instance_token=instance_token,
                 epoch=self.daemon_epoch,
                 api_token=api_token,
@@ -389,7 +452,12 @@ class PoolsMixin:
             try:
                 await provider.start(spec)
             except SessionDiedDuringStartup as exc:
-                await _rollback(f"session died during startup: {exc}", quarantine=True)
+                excerpt = read_stderr_excerpt(exc.start_stderr_path)
+                await _rollback(
+                    f"session died during startup: {exc}"
+                    + (f" | startup output: {excerpt}" if excerpt else ""),
+                    quarantine=True,
+                )
                 return None
 
             now = time.time()
@@ -413,6 +481,7 @@ class PoolsMixin:
                         agent_id=agent.id,
                         **resolve_launch_settings(profile, harness, self.session_spec_builder),
                         last_activity=now,
+                        hooks_provisioned=spec.hooks_provisioned,
                     ),
                     release_agent_reservation=True,
                 )
@@ -459,6 +528,16 @@ class PoolsMixin:
             harness.id,
             work_dir,
         )
+        await self.bus.emit(
+            "pool.session_started",
+            {
+                "project_id": project.id,
+                "profile_id": profile.id,
+                "session_id": session_id,
+                "name": spec.session_name,
+                "state": "running",
+            },
+        )
         return session_id
 
     def _pool_teardown_lock(self, session_id):
@@ -479,7 +558,27 @@ class PoolsMixin:
     async def _terminate_pool_session_locked(
         self, session, *, reason: str, task_status=TaskStatus.READY
     ) -> None:
-        """Stop the process before making its durable worker or workspace reusable."""
+        """Stop the process before making its durable worker or workspace reusable.
+
+        The agent row is marked ``RETIRED`` **first**, up front, and only
+        cleared back to ``IDLE`` at the very bottom once ``provider.stop``
+        has actually confirmed the process is gone.  The two writes look
+        contradictory read in isolation; they are the safe ordering.  Between
+        them sits the early ``return`` on an unconfirmed stop, and that is
+        the whole point: a worker whose process may still be alive stays
+        ``RETIRED`` and is never handed to a second session, while a
+        confirmed-stopped one goes back to the pool ``_launch_pool_session``
+        draws its candidates from (``list_agents(state=IDLE)``).
+
+        That reuse is what bounds the roster.  Retiring unconditionally would
+        add one ``agents`` row per pool session — one per *task* under
+        ``fresh_context_per_task`` — with no sweep able to reclaim them:
+        ``soft_delete_agent`` cannot, because ``create_automatic_agent``
+        refuses to grow the roster while any worker tombstone exists, and a
+        hard delete drops history the task ledger still points at.  See
+        swarm-work-model §11.2.1 and ``src/doctor/pool_checks``, which
+        polices the rows that fall outside this loop.
+        """
         # Callers may hold an old in-memory row after its worker has already
         # been reserved for a new launch. Completed teardown is idempotent.
         current = await self.db.get_session(session.id)
@@ -533,3 +632,13 @@ class PoolsMixin:
             )
         if session.agent_id and not other_live and still_owned:
             await self.db.update_agent(session.agent_id, state=AgentState.IDLE, current_task_id=None)
+        await self.bus.emit(
+            "pool.session_drained",
+            {
+                "project_id": session.project_id,
+                "profile_id": session.profile_id,
+                "session_id": session.id,
+                "name": session.name,
+                "reason": reason,
+            },
+        )

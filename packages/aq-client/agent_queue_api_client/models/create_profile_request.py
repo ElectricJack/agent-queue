@@ -41,9 +41,7 @@ class CreateProfileRequest:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.create_profile_request_mcp_servers_type_0 import (
-            CreateProfileRequestMcpServersType0,  # noqa: PLC0415
-        )
+        from ..models.create_profile_request_mcp_servers_type_0 import CreateProfileRequestMcpServersType0
 
         id = self.id
 
@@ -115,9 +113,7 @@ class CreateProfileRequest:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.create_profile_request_mcp_servers_type_0 import (
-            CreateProfileRequestMcpServersType0,  # noqa: PLC0415
-        )
+        from ..models.create_profile_request_mcp_servers_type_0 import CreateProfileRequestMcpServersType0
 
         d = dict(src_dict)
         id = d.pop("id")

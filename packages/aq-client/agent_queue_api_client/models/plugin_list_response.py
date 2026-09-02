@@ -49,7 +49,7 @@ class PluginListResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.plugin_summary import PluginSummary  # noqa: PLC0415
+        from ..models.plugin_summary import PluginSummary
 
         d = dict(src_dict)
         _plugins = d.pop("plugins", UNSET)

@@ -109,7 +109,7 @@ class ProfileDetail:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.profile_detail_install import ProfileDetailInstall  # noqa: PLC0415
+        from ..models.profile_detail_install import ProfileDetailInstall
 
         d = dict(src_dict)
         id = d.pop("id")

@@ -122,7 +122,7 @@ class PlaybookRunSummary:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.playbook_run_path_entry import PlaybookRunPathEntry  # noqa: PLC0415
+        from ..models.playbook_run_path_entry import PlaybookRunPathEntry
 
         d = dict(src_dict)
         run_id = d.pop("run_id")

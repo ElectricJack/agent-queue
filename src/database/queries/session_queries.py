@@ -137,6 +137,7 @@ def _row_to_session(row) -> SessionRecord:
         claim_phase_at=row.get("claim_phase_at"),
         last_claim_epoch=row.get("last_claim_epoch"),
         last_claim_result=row.get("last_claim_result"),
+        hooks_provisioned=bool(row.get("hooks_provisioned")),
     )
 
 
@@ -198,6 +199,7 @@ class SessionQueryMixin:
                     claim_phase_at=session.claim_phase_at,
                     last_claim_epoch=session.last_claim_epoch,
                     last_claim_result=session.last_claim_result,
+                    hooks_provisioned=session.hooks_provisioned,
                 )
             )
 

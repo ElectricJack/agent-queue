@@ -23,6 +23,7 @@ SERVER_PANE_REGISTRY: dict[str, PaneEntry] = {
     "console-stream": PaneEntry(id="console-stream", agent_pushable=True),
     "contextual-settings": PaneEntry(id="contextual-settings", agent_pushable=True),
     "diff-review-changes": PaneEntry(id="diff-review-changes", agent_pushable=True),
+    "playbook-detail": PaneEntry(id="playbook-detail", agent_pushable=True),
     "file-browser": PaneEntry(id="file-browser", agent_pushable=True),
     "playbook-run-inspector": PaneEntry(id="playbook-run-inspector", agent_pushable=True),
     "proposal-preview": PaneEntry(id="proposal-preview", agent_pushable=True),

@@ -69,7 +69,7 @@ class GetTokenUsageResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.get_token_usage_response_breakdown_item import GetTokenUsageResponseBreakdownItem  # noqa: PLC0415
+        from ..models.get_token_usage_response_breakdown_item import GetTokenUsageResponseBreakdownItem
 
         d = dict(src_dict)
 

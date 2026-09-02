@@ -23,6 +23,7 @@ class ProjectSummary:
         workspace (None | str | Unset):
         repo_url (None | str | Unset):
         discord_channel_id (None | str | Unset):
+        assignment_playbook_id (None | str | Unset):
     """
 
     id: str
@@ -33,6 +34,7 @@ class ProjectSummary:
     workspace: None | str | Unset = UNSET
     repo_url: None | str | Unset = UNSET
     discord_channel_id: None | str | Unset = UNSET
+    assignment_playbook_id: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -64,6 +66,12 @@ class ProjectSummary:
         else:
             discord_channel_id = self.discord_channel_id
 
+        assignment_playbook_id: None | str | Unset
+        if isinstance(self.assignment_playbook_id, Unset):
+            assignment_playbook_id = UNSET
+        else:
+            assignment_playbook_id = self.assignment_playbook_id
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -84,6 +92,8 @@ class ProjectSummary:
             field_dict["repo_url"] = repo_url
         if discord_channel_id is not UNSET:
             field_dict["discord_channel_id"] = discord_channel_id
+        if assignment_playbook_id is not UNSET:
+            field_dict["assignment_playbook_id"] = assignment_playbook_id
 
         return field_dict
 
@@ -127,6 +137,15 @@ class ProjectSummary:
 
         discord_channel_id = _parse_discord_channel_id(d.pop("discord_channel_id", UNSET))
 
+        def _parse_assignment_playbook_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        assignment_playbook_id = _parse_assignment_playbook_id(d.pop("assignment_playbook_id", UNSET))
+
         project_summary = cls(
             id=id,
             name=name,
@@ -136,6 +155,7 @@ class ProjectSummary:
             workspace=workspace,
             repo_url=repo_url,
             discord_channel_id=discord_channel_id,
+            assignment_playbook_id=assignment_playbook_id,
         )
 
         project_summary.additional_properties = d

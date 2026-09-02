@@ -70,9 +70,9 @@ class TaskStatusSummary:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.task_status_summary_by_status import TaskStatusSummaryByStatus  # noqa: PLC0415
-        from ..models.task_status_summary_in_progress_item import TaskStatusSummaryInProgressItem  # noqa: PLC0415
-        from ..models.task_status_summary_ready_to_work_item import TaskStatusSummaryReadyToWorkItem  # noqa: PLC0415
+        from ..models.task_status_summary_by_status import TaskStatusSummaryByStatus
+        from ..models.task_status_summary_in_progress_item import TaskStatusSummaryInProgressItem
+        from ..models.task_status_summary_ready_to_work_item import TaskStatusSummaryReadyToWorkItem
 
         d = dict(src_dict)
         total = d.pop("total", UNSET)
