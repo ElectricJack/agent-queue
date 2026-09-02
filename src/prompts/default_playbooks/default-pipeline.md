@@ -49,6 +49,16 @@ run on a slot checked out on their own `aq/<id>` branch, so they carry a
 review spawned a review *of the review*, recursively. Emitters that do not set
 the key (container settlement, custom pipelines) still fire the review.
 
+Both review rules also require `event.review_task` to be falsy. `no_code` is
+only as reliable as the reviewer profile's `read_only` flag: a project that
+gives its reviewers Write/Edit tools (`read_only: false`) disarms it and the
+recursion returns. `review_task` is structural instead — the close path sets it
+when the finishing task carries the dedup key this pipeline stamps on every
+review it creates (`review:task:<task_id>` or `branch-review:<branch_name>`,
+see `src/review_keys.py`), so a review is recognised as a review whatever its
+profile says. A custom pipeline that keys its review tasks differently must
+either keep these prefixes or add its own guard.
+
 The `ensure_task` nodes below pin `profile_id` but no `intelligence_class`, so
 the assignment-routing playbook chooses the class for the tasks they create. A
 pinned profile is a compatibility constraint, not a route: until that decision
@@ -66,7 +76,8 @@ be compatible with the task.
       "when": {
         "all": [
           {"field": "event.task.branch_name", "truthy": true},
-          {"field": "event.no_code", "truthy": false}
+          {"field": "event.no_code", "truthy": false},
+          {"field": "event.review_task", "truthy": false}
         ]
       },
       "entry": "create-review",
@@ -124,7 +135,8 @@ be compatible with the task.
         "all": [
           {"field": "event.task.branch_name", "truthy": true},
           {"field": "event.task.pr_url", "truthy": true},
-          {"field": "event.no_code", "truthy": false}
+          {"field": "event.no_code", "truthy": false},
+          {"field": "event.review_task", "truthy": false}
         ]
       },
       "entry": "ensure-final",

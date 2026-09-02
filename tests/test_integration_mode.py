@@ -130,6 +130,17 @@ def _ctx(orch, task, ws_path) -> PipelineContext:
 class TestExecutionRulesByMode:
     """_get_execution_rules varies the git instructions with the mode."""
 
+    def test_orchestrator_constructs_without_a_session_command_import_cycle(self, tmp_path):
+        config = AppConfig(
+            database_path=str(tmp_path / "x.db"),
+            workspace_dir=str(tmp_path / "w"),
+            data_dir=str(tmp_path / "d"),
+        )
+
+        orchestrator = Orchestrator(config, runtimes=_NullRuntimeFactory())
+
+        assert orchestrator.session_reconciler is not None
+
     def test_pr_mode_instructs_push_and_pr_never_merge(self, tmp_path):
         config = AppConfig(
             database_path=str(tmp_path / "x.db"),
@@ -240,6 +251,70 @@ class TestPhaseIntegrateByMode:
         result = await self._run_integrate(orch, task, monkeypatch)
         assert result == PhaseResult.CONTINUE
         orch.git.amerge_branch.assert_awaited_once()
+
+
+class TestEmptyBranchSkipsIntegration:
+    """A zero-commit branch has nothing to integrate either.
+
+    ``_phase_verify`` already lets a review-only task close without a PR.
+    ``_phase_integrate`` used to take the project's merge slot anyway and
+    force-push the empty branch, littering the remote with branches that
+    carry no commits and serialising real integrations behind a no-op.
+    """
+
+    async def _run_integrate(self, orch, task, monkeypatch, ahead):
+        from src.orchestrator import git_ops
+
+        acquire = AsyncMock(return_value=True)
+        monkeypatch.setattr(git_ops, "acquire_merge_slot", acquire)
+        monkeypatch.setattr(git_ops, "renew_merge_slot", AsyncMock(return_value=True))
+        monkeypatch.setattr(git_ops, "release_merge_slot", AsyncMock(return_value=None))
+        orch.git.acount_commits_ahead = AsyncMock(return_value=ahead)
+        orch.git.aget_current_branch = AsyncMock(return_value=task.branch_name)
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = _ctx(orch, task, ws.workspace_path)
+        return await orch._phase_integrate(ctx), acquire
+
+    async def test_empty_branch_never_takes_the_merge_slot(self, orch, monkeypatch):
+        task = _pr_task("t-int-empty")
+        await orch.db.create_task(task)
+
+        result, acquire = await self._run_integrate(orch, task, monkeypatch, ahead=0)
+
+        assert result == PhaseResult.CONTINUE
+        acquire.assert_not_awaited()
+        orch.git.apush_branch.assert_not_awaited()
+        orch.git.amerge_branch.assert_not_awaited()
+
+    async def test_direct_mode_empty_branch_is_not_merged(self, orch, monkeypatch):
+        task = _direct_task("t-int-empty-direct")
+        await orch.db.create_task(task)
+
+        result, acquire = await self._run_integrate(orch, task, monkeypatch, ahead=0)
+
+        assert result == PhaseResult.CONTINUE
+        acquire.assert_not_awaited()
+        orch.git.amerge_branch.assert_not_awaited()
+
+    async def test_a_branch_with_commits_still_integrates(self, orch, monkeypatch):
+        task = _direct_task("t-int-ahead")
+        await orch.db.create_task(task)
+
+        result, acquire = await self._run_integrate(orch, task, monkeypatch, ahead=3)
+
+        assert result == PhaseResult.CONTINUE
+        acquire.assert_awaited_once()
+        orch.git.amerge_branch.assert_awaited_once()
+
+    async def test_an_unanswerable_count_still_integrates(self, orch, monkeypatch):
+        """Unknown is not empty — keep integrating rather than skip blind."""
+        task = _direct_task("t-int-unknown")
+        await orch.db.create_task(task)
+
+        result, acquire = await self._run_integrate(orch, task, monkeypatch, ahead=None)
+
+        assert result == PhaseResult.CONTINUE
+        acquire.assert_awaited_once()
 
 
 class TestSessionCloseCompletion:

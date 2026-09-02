@@ -28,6 +28,7 @@ import time
 
 from src.doctor.models import CheckResult, DoctorCheck, DoctorContext, Severity
 from src.models import TaskStatus
+from src.review_keys import review_task_dedup_key
 
 OWNER = "integration"
 
@@ -46,11 +47,11 @@ _MAX_PR_PROBES = 20
 def _review_dedup_key(task_id: str) -> str:
     """The dedup key ``per-task-review`` uses for its ``ensure_task``.
 
-    Kept in lockstep with ``src/prompts/default_playbooks/default-pipeline.md``
-    — the check is only meaningful if it looks for the same row the pipeline
-    would have written.
+    Delegates to ``src/review_keys.py``, which is kept in lockstep with
+    ``src/prompts/default_playbooks/default-pipeline.md`` — the check is only
+    meaningful if it looks for the same row the pipeline would have written.
     """
-    return f"review:task:{task_id}"
+    return review_task_dedup_key(task_id)
 
 
 async def _pr_is_open(ctx: DoctorContext, project_id: str, pr_url: str) -> bool | None:

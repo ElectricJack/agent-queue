@@ -209,7 +209,7 @@ async def test_direct_native_terminal_reply_resolves_pending_question(flow):
 
 async def test_native_automatic_stall_reminder_is_not_a_human_answer(flow):
     q = await capture(flow)
-    append_native_user(flow, "No progress for 8 min. Report status, finish the task, or report a blocker with aq message send --to user.")
+    append_native_user(flow, "No progress for 8 min. Report status, finish the task, or report a blocker with aq message send --to user:dashboard.")
     watcher = TranscriptWatcher(db=flow.db, bus=flow.bus, base_dir=flow.base, questions=flow.service)
     await watcher.tick()
     assert (await flow.db.get_agent_question(q["id"]))["state"] == "human"

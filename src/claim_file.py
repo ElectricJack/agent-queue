@@ -1,10 +1,10 @@
-"""The worktree claim file — the on-disk half of the pull-based claim fence.
+"""The worktree claim file — pure filesystem helpers for the claim fence.
 
 ``aq task claim`` writes ``.aq/claim.json`` into the worker's work_dir; the
 reconciler and the close path read it back to decide whether a claim still
 belongs to the task they are cleaning up (swarm-work-model §10).
 
-This module exists as a **leaf** on purpose.  Both
+This module exists as a **leaf** on purpose. Both
 :mod:`src.commands.claim_commands` (the CLI/MCP surface) and
 :mod:`src.sessions.reconciler` (the cascade step) need these helpers, and
 importing anything from ``src.commands`` pulls in the whole

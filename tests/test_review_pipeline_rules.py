@@ -222,6 +222,33 @@ def test_review_rules_skip_no_code_completions():
     assert _eval_pipeline_when(final_when, hydrated) is True
 
 
+def test_review_rules_skip_the_pipelines_own_review_tasks():
+    """Both review rules must stand down for a task the pipeline created as a review.
+
+    ``no_code`` is only as good as the reviewer profile's ``read_only`` flag —
+    an operator who gives the reviewer Write/Edit tools disarms it and the
+    recursion is back.  The close path therefore also sets ``review_task`` from
+    the task's own ``review:task:`` / ``branch-review:`` dedup key, which no
+    profile edit can change.  Absent key still fires — the guard only narrows.
+    """
+    whens = _task_completed_rule_whens()
+    review_when = next(w for e, w in whens.items() if e.startswith("per-task-review-"))
+    final_when = next(w for e, w in whens.items() if e.startswith("per-branch-final-review-"))
+
+    hydrated = {"task": {"branch_name": "aq/r-1", "pr_url": "https://github.com/o/r/pull/1"}}
+
+    flagged = {**hydrated, "no_code": False, "review_task": True}
+    assert _eval_pipeline_when(review_when, flagged) is False
+    assert _eval_pipeline_when(final_when, flagged) is False
+
+    plain = {**hydrated, "no_code": False, "review_task": False}
+    assert _eval_pipeline_when(review_when, plain) is True
+    assert _eval_pipeline_when(final_when, plain) is True
+
+    assert _eval_pipeline_when(review_when, {**hydrated, "no_code": False}) is True
+    assert _eval_pipeline_when(final_when, {**hydrated, "no_code": False}) is True
+
+
 # ---------------------------------------------------------------------------
 # T2: fires on completion with branch
 # ---------------------------------------------------------------------------

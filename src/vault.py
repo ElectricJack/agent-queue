@@ -36,6 +36,10 @@ _LEGACY_DEFAULT_PIPELINE_HASHES = frozenset(
         # Review rules without the ``event.no_code`` guard: a finished review
         # task spawned a review of itself (fix/pr-46-review-recursion).
         "008efc9350b3bd57ac37212f92dfebd59a2d8b65625a2ebb207b63162474b9cd",
+        # Review rules with ``no_code`` but without the ``event.review_task``
+        # guard: inert once the reviewer profiles are ``read_only: false``
+        # (task sound-horizon-77.18.2).
+        "9d00dee48cb3d031cf24ef6f7edac4b83ad71f5773baf2aede6f4701ffe226a3",
     }
 )
 

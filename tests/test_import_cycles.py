@@ -1,14 +1,14 @@
-"""Import-order regression tests.
+"""Import-order regression guard.
 
-``src.commands`` composes ``CommandHandler`` from every mixin, and
-``session_commands`` needs constants that live in
-``src.sessions.reconciler``.  So the moment anything under
-``src.sessions`` imports from ``src.commands`` at module scope, the two
-packages form a cycle whose failure depends on which one is imported
-first: ``Orchestrator.__init__`` reaches the reconciler first and blows
-up with ``cannot import name 'DRAIN_ACK_KEY' from partially initialized
-module``, while a test that happened to import ``src.commands`` first
-passes.  These tests pin both orders.
+``src.sessions.reconciler`` used to import ``src.commands.claim_commands``,
+which pulls in ``src.commands.__init__`` → ``handler`` → ``session_commands``
+→ back into the half-initialised reconciler, so ``DRAIN_ACK_KEY`` and
+``LIVE_SESSION_STATES`` did not exist yet.  It only failed when the reconciler
+happened to be imported *first* (importing ``Orchestrator`` is one such path),
+which made it look like a flaky collection error rather than a cycle.
+
+Each case runs in a fresh interpreter: an already-imported ``sys.modules``
+hides the ordering entirely, so an in-process import proves nothing.
 """
 
 from __future__ import annotations
@@ -20,40 +20,74 @@ import sys
 import pytest
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
-
-_ORDERS = [
-    # The order Orchestrator.__init__ produces — the one that used to fail.
-    ("src.sessions.reconciler", "src.commands"),
-    ("src.commands", "src.sessions.reconciler"),
+#: Modules that sit on both sides of the command-handler / session boundary.
+#: Each must import cleanly as the *first* thing a process does.
+ENTRY_MODULES = [
+    "src.sessions.reconciler",
+    "src.commands",
+    "src.commands.claim_commands",
+    "src.commands.session_commands",
+    "src.orchestrator",
+    "src.claim_file",
 ]
 
 
-@pytest.mark.parametrize(("first", "second"), _ORDERS, ids=lambda m: m.rsplit(".", 1)[-1])
-def test_reconciler_and_commands_import_in_either_order(first, second):
-    """Neither package may depend on the other having been imported first."""
-    code = f"import {first}; import {second}"
-    proc = subprocess.run(
-        [sys.executable, "-c", code],
+def _import_in_fresh_interpreter(statement: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, "-c", statement],
         capture_output=True,
         text=True,
-        timeout=300,
+        timeout=180,
         check=False,
         cwd=_REPO_ROOT,
     )
-    assert proc.returncode == 0, proc.stderr
 
 
-def test_claim_file_helpers_stay_importable_from_claim_commands():
-    """The helpers moved to ``src.claim_file``; the old path is a re-export."""
-    from src.claim_file import CLAIM_FILE as leaf_const
-    from src.claim_file import write_claim_file as leaf_write
-    from src.commands.claim_commands import CLAIM_FILE, write_claim_file
-
-    assert CLAIM_FILE is leaf_const
-    assert write_claim_file is leaf_write
+@pytest.mark.parametrize("module", ENTRY_MODULES)
+def test_module_imports_first_in_a_fresh_interpreter(module: str) -> None:
+    result = _import_in_fresh_interpreter(f"import {module}")
+    assert result.returncode == 0, f"importing {module} first failed:\n{result.stderr}"
 
 
-def test_claim_file_module_has_no_project_imports():
+def test_reconciler_constants_survive_a_reconciler_first_import() -> None:
+    """The exact symbols the cycle used to hide, read after a bare import."""
+    result = _import_in_fresh_interpreter(
+        "import src.sessions.reconciler as r; "
+        "assert r.DRAIN_ACK_KEY == 'AQ_DRAIN_ACK'; "
+        "assert r.LIVE_SESSION_STATES == ('starting', 'running', 'draining')"
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_session_commands_binds_reconciler_constants_after_reconciler_first() -> None:
+    """Importing the reconciler first must not leave session_commands unbound."""
+    result = _import_in_fresh_interpreter(
+        "import src.sessions.reconciler; "
+        "import src.commands.session_commands as sc; "
+        "assert sc.DRAIN_ACK_KEY == 'AQ_DRAIN_ACK'"
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_claim_file_helpers_are_importable_without_the_commands_package() -> None:
+    """``src.claim_file`` is a leaf: it must not drag in ``src.commands``."""
+    result = _import_in_fresh_interpreter(
+        "import sys; import src.claim_file; "
+        "assert 'src.commands' not in sys.modules, sorted(sys.modules)"
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_claim_commands_still_re_exports_the_claim_file_helpers() -> None:
+    """Call sites that import the helpers from ``claim_commands`` keep working."""
+    from src.claim_file import read_claim_file, write_claim_file
+    from src.commands import claim_commands
+
+    assert claim_commands.write_claim_file is write_claim_file
+    assert claim_commands.read_claim_file is read_claim_file
+
+
+def test_claim_file_module_has_no_project_imports() -> None:
     """``src.claim_file`` is a leaf on purpose — stdlib only."""
     import ast
 

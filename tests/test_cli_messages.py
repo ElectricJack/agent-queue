@@ -7,6 +7,7 @@ added here must print exactly one versioned envelope under ``--json``.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -99,6 +100,34 @@ class TestMessageSend:
             client,
         )
         assert client.execute.await_args.args[1]["to_id"] == "a:b:c"
+
+    def test_documented_blocker_escalation_command_is_accepted(self, runner):
+        command = (
+            'aq message send --to user:dashboard --project "$AQ_PROJECT_ID" '
+            '--body "Blocked: <question>"'
+        )
+        protocol = Path("src/prime/templates/completion_protocol.md").read_text()
+        assert command in protocol
+
+        client = _mock_client({"message_send": {"message_id": "msg-1", "state": "queued"}})
+        result = _invoke(
+            runner,
+            [
+                "message",
+                "send",
+                "--to",
+                "user:dashboard",
+                "--project",
+                "$AQ_PROJECT_ID",
+                "--body",
+                "Blocked: <question>",
+            ],
+            client,
+        )
+
+        assert result.exit_code == 0, result.output
+        assert client.execute.await_args.args[1]["to_kind"] == "user"
+        assert client.execute.await_args.args[1]["to_id"] == "dashboard"
 
     def test_malformed_to_is_a_usage_error(self, runner):
         client = _mock_client()
