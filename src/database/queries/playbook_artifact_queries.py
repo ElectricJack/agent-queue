@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Sequence
 from uuid import uuid4
 
 from sqlalchemy import delete, insert, select, update
@@ -28,6 +29,12 @@ _ACTIVATION_UPDATE_COLUMNS = (
     "activated_by",
     "updated_at",
 )
+
+
+#: Bound parameters per ``IN`` clause.  SQLite's historical limit is 999 and
+#: PostgreSQL's is 65535; a few hundred keeps one statement comfortably inside
+#: both while still collapsing a large directory scan into a handful of reads.
+_SHA_BATCH = 400
 
 
 class ArtifactNotFound(ValueError):
@@ -197,6 +204,37 @@ class PlaybookArtifactQueryMixin:
                 )
             )
         return row.scalar_one_or_none()
+
+    async def filter_referenced_artifact_shas(self, shas: Sequence[str]) -> set[str]:
+        """Which of ``shas`` are still named by a row anywhere in V2 storage.
+
+        Three tables, not one.  The artifact row is the ordinary reference,
+        but the caller is the orphan-file half of the sweep (§12.1) and it is
+        about to unlink files, so it must not depend on the ``RESTRICT``
+        foreign keys actually being enforced — SQLite only enforces them when
+        the connection asks (§7.4).  An activation or a run naming a hash
+        whose artifact row has somehow gone therefore still protects the file:
+        the answer is deliberately a superset of "has an artifact row".
+
+        Chunked because the candidate list comes from a directory scan and is
+        not bounded by anything the schema controls, while both backends cap
+        bound parameters per statement.
+        """
+        wanted = [sha for sha in dict.fromkeys(shas) if sha]
+        if not wanted:
+            return set()
+        referenced: set[str] = set()
+        async with self._engine.connect() as conn:
+            for start in range(0, len(wanted), _SHA_BATCH):
+                batch = wanted[start : start + _SHA_BATCH]
+                for column in (
+                    playbook_artifacts.c.artifact_sha256,
+                    playbook_activations.c.active_artifact_sha256,
+                    playbook_v2_runs.c.artifact_sha256,
+                ):
+                    found = await conn.execute(select(column).where(column.in_(batch)))
+                    referenced.update(sha for sha in found.scalars().all() if sha)
+        return referenced
 
     async def collect_playbook_artifacts(
         self, before: float, *, min_versions: int = 10, limit: int = 1000

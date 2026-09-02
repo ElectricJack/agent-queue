@@ -513,3 +513,131 @@ def test_artifact_integrity_is_registered_in_the_default_doctor_registry():
     check = next(c for c in registry.checks() if c.id == CHECK_ID)
     assert check.owner == "playbook-v2"
     assert check.fix is None
+
+
+# ---------------------------------------------------------------------------
+# Orphan artifact files against real rows: the crash between deleting a row
+# and unlinking its file, on both backends.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_retention_removes_the_files_a_crash_left_behind(db, tmp_path, monkeypatch):
+    """§12.1's "a crash between them leaves a file the next sweep removes".
+
+    The first sweep deletes the two collectable rows and then dies before it
+    unlinks their files.  Nothing in the database names those files any more,
+    so ``_unlink_artifacts`` -- which is only ever handed the rows of the
+    sweep it belongs to -- can never see them again; the orphan step is what
+    makes the documented recovery real.
+    """
+    import time as _time
+
+    from src.database.tables import playbook_artifacts
+    from src.playbooks.retention import ArtifactRetentionSweeper
+
+    refs = await _store_versions(db, tmp_path, 12)
+    files = {ref.artifact_sha256: tmp_path / "artifacts" / f"{ref.digest}.json" for ref in refs}
+
+    def _crash(self, collected):
+        raise RuntimeError("crash between the row delete and the unlink")
+
+    monkeypatch.setattr(ArtifactRetentionSweeper, "_unlink_artifacts", _crash)
+    with pytest.raises(RuntimeError):
+        await _sweeper(db, tmp_path).sweep(_time.time() + _A_YEAR)
+    monkeypatch.undo()
+
+    # The rows for v1 and v2 are gone; every file is still on disk.
+    async with db._engine.connect() as conn:
+        surviving = set(
+            (await conn.execute(select(playbook_artifacts.c.artifact_sha256))).scalars().all()
+        )
+    orphaned = {refs[0].artifact_sha256, refs[1].artifact_sha256}
+    assert surviving == {ref.artifact_sha256 for ref in refs} - orphaned
+    assert all(path.exists() for path in files.values())
+
+    counts = await _sweeper(db, tmp_path).sweep(_time.time() + _A_YEAR)
+
+    assert counts["artifact_rows"] == 0
+    assert counts["artifact_files"] == 0
+    assert counts["orphan_files"] == 2
+    assert not any(files[sha].exists() for sha in orphaned)
+    assert all(files[sha].exists() for sha in surviving)
+
+
+@pytest.mark.asyncio
+async def test_retention_leaves_files_every_retained_row_still_names(db, tmp_path):
+    """A sweep that collects nothing must also unlink nothing.
+
+    The orphan step deletes files the database did not name, so the case that
+    matters is the ordinary one: ten artifacts inside the ``min_versions``
+    window, one activated and one pinned by a live run, and not a single file
+    removed.
+    """
+    import time as _time
+
+    refs = await _store_versions(db, tmp_path, 10)
+    await db.set_playbook_activation(
+        playbook_id="task-review",
+        scope="system",
+        scope_identifier="",
+        artifact_sha256=refs[0].artifact_sha256,
+        enabled=True,
+        activated_by="operator",
+        health="ready",
+        reasons="[]",
+    )
+    await _insert_run(db, run_id="run-live", artifact_sha256=refs[1].artifact_sha256)
+
+    counts = await _sweeper(db, tmp_path).sweep(_time.time() + _A_YEAR)
+
+    assert counts["artifact_rows"] == 0
+    assert counts["orphan_files"] == 0
+    assert all((tmp_path / "artifacts" / f"{ref.digest}.json").exists() for ref in refs)
+
+
+@pytest.mark.asyncio
+async def test_filter_referenced_artifact_shas_spans_all_three_tables(db, tmp_path):
+    """The reference query is a superset of "has an artifact row".
+
+    The orphan sweep is about to unlink files, and §7.4 leaves foreign-key
+    enforcement optional on SQLite, so an activation or a run naming a hash has
+    to protect it on the strength of its own row -- not on the artifact row
+    being there.
+    """
+    refs = await _store_versions(db, tmp_path, 3)
+    await db.set_playbook_activation(
+        playbook_id="task-review",
+        scope="system",
+        scope_identifier="",
+        artifact_sha256=refs[1].artifact_sha256,
+        enabled=True,
+        activated_by="operator",
+        health="ready",
+        reasons="[]",
+    )
+    await _insert_run(db, run_id="run-live", artifact_sha256=refs[2].artifact_sha256)
+
+    unknown = "sha256:" + "f" * 64
+    referenced = await db.filter_referenced_artifact_shas(
+        [ref.artifact_sha256 for ref in refs] + [unknown]
+    )
+
+    assert referenced == {ref.artifact_sha256 for ref in refs}
+    assert await db.filter_referenced_artifact_shas([]) == set()
+    assert await db.filter_referenced_artifact_shas([unknown]) == set()
+
+
+@pytest.mark.asyncio
+async def test_filter_referenced_artifact_shas_chunks_past_the_parameter_cap(db, tmp_path):
+    """A directory scan is not bounded by the schema, so the IN clause is chunked."""
+    from src.database.queries.playbook_artifact_queries import _SHA_BATCH
+
+    refs = await _store_versions(db, tmp_path, 2)
+    padding = ["sha256:" + f"{index:064x}" for index in range(10_000, 10_000 + _SHA_BATCH * 2 + 5)]
+
+    referenced = await db.filter_referenced_artifact_shas(
+        padding + [ref.artifact_sha256 for ref in refs]
+    )
+
+    assert referenced == {ref.artifact_sha256 for ref in refs}
