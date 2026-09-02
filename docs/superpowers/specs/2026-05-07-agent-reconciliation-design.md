@@ -95,7 +95,8 @@ recent rewrite described but did not finish.
 - Shipping `claude-opus.md` and `claude-sonnet.md` profile templates as
   guaranteed defaults in the source `vault/agent-types/` directory.
 - Auto-picking a project default profile in `create_project` (prefer
-  `claude-opus`, fall back to `claude-sonnet`, then any non-supervisor).
+  `claude-opus`, fall back to `claude-sonnet`, then `worker-standard`,
+  then any non-supervisor).
 - `/health` flipping `tasks.ok=false` when a task has been READY > 60s
   with no progress, and surfacing the blocker reason inline.
 - Generalizing multi-workspace task requirements beyond the SYNC special

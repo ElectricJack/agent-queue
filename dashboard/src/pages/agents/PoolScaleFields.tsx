@@ -12,34 +12,30 @@ export function boundsOf(pool: PoolStatusRow): BoundsDraft {
 /**
  * Bounds validation, matching what ``_cmd_pool_scale`` will accept.
  *
- * An empty max means "no upper bound", which the command can express only by
- * leaving ``max`` out of the request — it has no way to clear a bound that is
- * already set (``max`` must be >= 1, and ``None`` means "unchanged"). So an
- * emptied max is refused here rather than silently saved as a no-op.
+ * An empty max means "no upper bound". The typed API represents that as an
+ * explicit ``max: null``; omitting the key would leave the current bound
+ * unchanged instead.
  */
-export function validateBounds(draft: BoundsDraft, pool: PoolStatusRow): string | null {
+export function validateBounds(draft: BoundsDraft): string | null {
   const min = draft.min.trim();
   const max = draft.max.trim();
   if (!/^-?\d+$/.test(min)) return "Min must be a whole number of workers.";
   if (Number(min) < 0) return "Min must be 0 or more.";
-  if (max === "") {
-    return pool.max_active == null ? null
-      : "Max cannot be cleared back to unbounded here — remove max_active from the profile's Config block in the vault.";
-  }
+  if (max === "") return null;
   if (!/^-?\d+$/.test(max)) return "Max must be a whole number of workers, or empty for unbounded.";
   if (Number(max) < 1) return "Max must be 1 or more.";
   if (Number(max) < Number(min)) return "Max must be greater than or equal to min.";
   return null;
 }
 
-/** Turn a validated draft into a ``pool_scale`` body; omitted keys stay unchanged. */
+/** Turn a validated draft into a ``pool_scale`` body; null clears the max. */
 export function scaleRequest(draft: BoundsDraft, pool: PoolStatusRow) {
   const max = draft.max.trim();
   return {
     project_id: pool.project_id,
     profile_id: pool.profile_id,
     min: Number(draft.min.trim()),
-    ...(max === "" ? {} : { max: Number(max) }),
+    max: max === "" ? null : Number(max),
   };
 }
 
@@ -58,7 +54,7 @@ export default function PoolScaleFields({ pool }: { pool: PoolStatusRow }) {
   const baseline = boundsOf(pool);
   const form = draft ?? baseline;
   const dirty = form.min !== baseline.min || form.max !== baseline.max;
-  const invalid = validateBounds(form, pool);
+  const invalid = validateBounds(form);
   const set = (key: keyof BoundsDraft, value: string) => {
     setDraft({ ...form, [key]: value });
     setSaved(false);

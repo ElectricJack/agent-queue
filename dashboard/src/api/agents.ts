@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   listAgents, getAgent, createAgent, editAgent, deleteAgent, startAgentTerminal,
-  type AgentSummary, type CreateAgentRequest, type EditAgentRequest, type DeleteAgentRequest, type StartAgentTerminalRequest,
+  type AgentSummary, type ListAgentsResponse, type CreateAgentRequest, type EditAgentRequest, type DeleteAgentRequest, type StartAgentTerminalRequest,
 } from "./client";
 
 import { useIntelligenceClasses } from "./hooks";
@@ -9,16 +9,26 @@ import { useIntelligenceClasses } from "./hooks";
 export type FlockAgent = AgentSummary;
 export type AgentSettings = NonNullable<FlockAgent["settings"]>;
 
+// One request feeds both the roster and its sub-agent rollup. Splitting them
+// into two queries would let the header and the rows disagree about the same
+// poll — the total is derived from these exact rows, server-side.
+const flockQuery = {
+  queryKey: ["agents", "flock"],
+  queryFn: async () => {
+    const { data } = await listAgents({ body: {}, throwOnError: true });
+    return data;
+  },
+  staleTime: 2_000,
+  refetchInterval: 5_000,
+} as const;
+
 export function useAgentFlock() {
-  return useQuery({
-    queryKey: ["agents", "flock"],
-    queryFn: async () => {
-      const { data } = await listAgents({ body: {}, throwOnError: true });
-      return data.agents ?? [];
-    },
-    staleTime: 2_000,
-    refetchInterval: 5_000,
-  });
+  return useQuery({ ...flockQuery, select: (data) => data.agents ?? [] });
+}
+
+/** Active native + AQ sub-agents across the whole flock (and per profile). */
+export function useFlockSubagents() {
+  return useQuery({ ...flockQuery, select: (data) => data.subagents ?? null });
 }
 
 export function useFlockAgent(agentId: string) {
@@ -36,7 +46,9 @@ export function useEditAgent() {
     mutationFn: async (input: EditAgentRequest) =>
       (await editAgent({ body: input, throwOnError: true })).data,
     onSuccess: (agent) => {
-      client.setQueryData<FlockAgent[]>(["agents", "flock"], (rows) => rows?.map((row) => row.id === agent.id ? agent : row));
+      client.setQueryData<ListAgentsResponse>(["agents", "flock"], (data) => data && ({
+        ...data, agents: (data.agents ?? []).map((row) => row.id === agent.id ? agent : row),
+      }));
       client.setQueryData(["agents", "detail", agent.id], agent);
       void client.invalidateQueries({ queryKey: ["agents"] });
     },
@@ -59,7 +71,9 @@ export function useStartAgentTerminal() {
       (await startAgentTerminal({ body: input, throwOnError: true })).data,
     retry: false,
     onSuccess: (agent) => {
-      client.setQueryData<FlockAgent[]>(["agents", "flock"], (rows) => rows?.map((row) => row.id === agent.id ? agent : row));
+      client.setQueryData<ListAgentsResponse>(["agents", "flock"], (data) => data && ({
+        ...data, agents: (data.agents ?? []).map((row) => row.id === agent.id ? agent : row),
+      }));
       client.setQueryData(["agents", "detail", agent.id], agent);
       void client.invalidateQueries({ queryKey: ["agents"] });
     },
@@ -72,7 +86,9 @@ export function useDeleteAgent() {
     mutationFn: async (input: DeleteAgentRequest) =>
       (await deleteAgent({ body: input, throwOnError: true })).data,
     onSuccess: (_data, input) => {
-      client.setQueryData<FlockAgent[]>(["agents", "flock"], (rows) => rows?.filter((row) => row.id !== input.agent_id));
+      client.setQueryData<ListAgentsResponse>(["agents", "flock"], (data) => data && ({
+        ...data, agents: (data.agents ?? []).filter((row) => row.id !== input.agent_id),
+      }));
       client.removeQueries({ queryKey: ["agents", "detail", input.agent_id], exact: true });
       void client.invalidateQueries({ queryKey: ["agents"] });
     },

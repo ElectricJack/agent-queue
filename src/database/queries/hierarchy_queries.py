@@ -654,7 +654,7 @@ class HierarchyQueryMixin:
             return [r[0] for r in (await c.execute(stmt)).fetchall()]
 
     async def live_descendant_sessions(
-        self, task_id: str, *, conn, include_root: bool = True
+        self, task_id: str, *, conn, exclude_root: bool = False
     ) -> list[tuple[str, str]]:
         """Live sessions holding any task in *task_id*'s subtree.
 
@@ -662,15 +662,14 @@ class HierarchyQueryMixin:
         on Postgres the rows are taken ``FOR UPDATE`` so a session cannot
         start holding a descendant between this check and the abandonment.
 
-        ``include_root=False`` drops *task_id* itself from the checked set,
-        matching what ``abandon_subtree`` actually touches. A task-scoped
-        worker closing its own container is necessarily holding a live
-        session on the root, so the abandon guard would otherwise always
-        refuse. Callers that go on to remove the root itself (cascade
-        delete, archive) keep the default and stay protected.
+        With ``exclude_root=True`` the root task's own sessions are left out,
+        so the answer is about *descendants* only.  The ``task_close
+        --abandon-children`` path needs that: the closing worker (or the
+        container-root session driving the close) is itself live by
+        definition, and counting it made every abandon refuse.
         """
         ids = await self.subtree_ids(task_id, conn=conn)
-        if not include_root:
+        if exclude_root:
             ids = [i for i in ids if i != task_id]
         if not ids:
             return []
@@ -679,7 +678,31 @@ class HierarchyQueryMixin:
         )
         if conn.dialect.name == "postgresql":
             stmt = stmt.with_for_update()
-        return [(r[0], r[1]) for r in (await conn.execute(stmt)).fetchall()]
+        rows = [(r[0], r[1]) for r in (await conn.execute(stmt)).fetchall()]
+        # Deduplicate: a task may carry more than one session row, and the
+        # caller reports one entry per (session, task) pair.
+        return sorted(set(rows))
+
+    async def manually_paused_descendants(self, task_id: str, *, conn) -> list[str]:
+        """Descendants a human has paused by hand (``PAUSED``, no ``resume_after``).
+
+        ``abandon_subtree`` cannot move these — the manual-pause guard in
+        ``_apply_transition`` raises ``ManualPauseActive`` — so the close
+        path checks them up front and refuses with the ids instead of
+        letting the exception escape mid-transaction.
+        """
+        ids = await self.subtree_ids(task_id, conn=conn)
+        ids = [i for i in ids if i != task_id]
+        if not ids:
+            return []
+        stmt = select(tasks.c.id).where(
+            and_(
+                tasks.c.id.in_(ids),
+                tasks.c.status == TaskStatus.PAUSED.value,
+                tasks.c.resume_after.is_(None),
+            )
+        )
+        return sorted(r[0] for r in (await conn.execute(stmt)).fetchall())
 
     async def abandon_subtree(self, task_id: str, *, conn) -> TransitionResult:
         """Close every non-terminal descendant as ``abandoned`` (spec §7).

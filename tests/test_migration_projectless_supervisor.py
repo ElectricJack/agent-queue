@@ -14,6 +14,8 @@ PRIOR_REVISION = "d4e5f6a7b8c9"
 # projects.integration_mode) that would skew the SELECT-* snapshots below.
 TARGET_REVISION = "5f37c424acde"
 
+pytestmark = pytest.mark.migration
+
 
 def _migrate(engine, target=None, *, downgrade=False):
     target = target or TARGET_REVISION

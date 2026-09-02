@@ -36,6 +36,8 @@ FK_REVISION = "d4e5f6a7b8c9"
 AGENTS_FK = "fk_agents_current_task"
 TASKS_FK = "fk_tasks_preferred_workspace"
 
+pytestmark = pytest.mark.migration
+
 
 def _alembic_config(async_url: str) -> Config:
     cfg = Config("alembic.ini")

@@ -51,6 +51,29 @@ async def mktask(db, tid, status=TaskStatus.DEFINED, **kw):
     return tid
 
 
+async def mksession(db, sid, task_id, state="running"):
+    now = time.time()
+    await db.create_session(
+        SessionRecord(
+            id=sid,
+            task_id=task_id,
+            project_id=PROJECT_ID,
+            profile_id="worker",
+            harness="claude",
+            provider="fake",
+            name=f"s-{sid}",
+            lifecycle="task",
+            state=state,
+            work_dir="/tmp",
+            epoch="e",
+            instance_token=sid,
+            started_at=now,
+            last_activity=now,
+        )
+    )
+    return sid
+
+
 async def container_with_open_child(db):
     await mktask(db, "p", status=TaskStatus.IN_PROGRESS)
     await mktask(db, "c", status=TaskStatus.READY)
@@ -117,39 +140,61 @@ class TestAbandonChildren:
         assert res["sessions"] == [{"session_id": "s1", "task_id": "c"}]
         assert (await db.get_task("c")).status == TaskStatus.READY
 
-    async def test_container_closes_while_its_own_worker_session_is_live(self, handler, db):
-        """A task-scoped worker closes its own container.
+    async def test_parents_own_session_does_not_block_abandon(self, handler, db):
+        """The closing container's own session is not a *descendant* holder.
 
-        The worker's session necessarily holds the root task while it runs,
-        and ``abandon_subtree`` never touches the root — so the live guard
-        must ignore it and abandon the paused child anyway.
+        Regression for smart-orbit.9: with the only child PAUSED, unassigned
+        and session-less, ``--abandon-children`` still refused because the
+        parent's own live session was counted by the subtree check.
         """
-        await container_with_open_child(db)
-        now = time.time()
-        await db.create_session(
-            SessionRecord(
-                id="root-s",
-                task_id="p",
-                project_id=PROJECT_ID,
-                profile_id="worker",
-                harness="claude",
-                provider="fake",
-                name="s-p",
-                lifecycle="task",
-                state="running",
-                work_dir="/tmp",
-                epoch="e",
-                instance_token="t",
-                started_at=now,
-                last_activity=now,
-            )
-        )
+        await mktask(db, "p", status=TaskStatus.IN_PROGRESS)
+        # PAUSED with a resume_after = rate-limit pause, not a manual one;
+        # unassigned and holding no session of its own.
+        await mktask(db, "c", status=TaskStatus.PAUSED, resume_after=time.time() + 3600)
+        await db.add_dependency("c", "p", "parent-child")
+        await mksession(db, "s-parent", "p")
+
         res = await handler._cmd_task_close(
             {"task_id": "p", "outcome": "pass", "summary": "x", "abandon_children": True}
         )
         assert res["success"] is True
         assert res["abandoned"] == ["c"]
         assert (await db.get_task("c")).status == TaskStatus.COMPLETED
+
+    async def test_refusal_names_the_offending_descendants(self, handler, db):
+        await container_with_open_child(db)
+        await mksession(db, "s-parent", "p")
+        await mksession(db, "s1", "c")
+
+        res = await handler._cmd_task_close(
+            {"task_id": "p", "outcome": "pass", "summary": "x", "abandon_children": True}
+        )
+        assert res["code"] == "hierarchy.live_descendants"
+        assert res["live_descendants"] == ["c"]
+        assert "c" in res["error"]
+        # The parent's own session is never reported as a descendant holder.
+        assert res["sessions"] == [{"session_id": "s1", "task_id": "c"}]
+
+    async def test_duplicate_and_deleted_children_do_not_count(self, handler, db):
+        """Two live sessions on one descendant collapse to one task id, and a
+        deleted child contributes nothing to the live check."""
+        await container_with_open_child(db)
+        await mktask(db, "gone", status=TaskStatus.READY)
+        await db.add_dependency("gone", "p", "parent-child")
+        await mksession(db, "s-gone", "gone")
+        await db.delete_task("gone", cascade=False)
+        await mksession(db, "s1", "c")
+        await mksession(db, "s2", "c")
+
+        res = await handler._cmd_task_close(
+            {"task_id": "p", "outcome": "pass", "summary": "x", "abandon_children": True}
+        )
+        assert res["code"] == "hierarchy.live_descendants"
+        assert res["live_descendants"] == ["c"]
+        assert res["sessions"] == [
+            {"session_id": "s1", "task_id": "c"},
+            {"session_id": "s2", "task_id": "c"},
+        ]
 
     async def test_summary_refusal_precedes_abandon(self, handler, db):
         """A refused close (missing summary) must never abandon anything —
@@ -205,16 +250,19 @@ class TestAbandonChildren:
         assert (await db.get_task("c")).status == TaskStatus.COMPLETED
 
     async def test_abandon_does_not_override_manual_pause(self, handler, db):
-        from src.database.queries.task_queries import ManualPauseActive
-
+        """A hand-paused descendant still refuses the close — but as a
+        structured ``hierarchy.manually_paused_descendants`` result naming
+        the ids, not a ``ManualPauseActive`` escaping the transaction."""
         await container_with_open_child(db)
         await mktask(db, "sibling", status=TaskStatus.READY)
         await db.add_dependency("sibling", "p", "parent-child")
         await db.transition_task("c", TaskStatus.PAUSED, context="test-setup", force=True)
-        with pytest.raises(ManualPauseActive, match="resume_task"):
-            await handler._cmd_task_close(
-                {"task_id": "p", "outcome": "pass", "summary": "x", "abandon_children": True}
-            )
+        res = await handler._cmd_task_close(
+            {"task_id": "p", "outcome": "pass", "summary": "x", "abandon_children": True}
+        )
+        assert res["success"] is False
+        assert res["code"] == "hierarchy.manually_paused_descendants"
+        assert res["manually_paused_descendants"] == ["c"]
         assert (await db.get_task("c")).status == TaskStatus.PAUSED
         assert (await db.get_task("sibling")).status == TaskStatus.READY
         assert (await db.get_task("p")).status == TaskStatus.IN_PROGRESS

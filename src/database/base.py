@@ -205,8 +205,9 @@ class DatabaseBackend(Protocol):
     async def open_children(self, task_id: str, *, conn=None) -> list[str]: ...
     async def subtree_ids(self, root_id: str, *, conn) -> list[str]: ...
     async def abandon_subtree(self, task_id: str, *, conn) -> "TransitionResult": ...
+    async def manually_paused_descendants(self, task_id: str, *, conn) -> list[str]: ...
     async def live_descendant_sessions(
-        self, task_id: str, *, conn, include_root: bool = True
+        self, task_id: str, *, conn, exclude_root: bool = False
     ) -> list[tuple[str, str]]: ...
 
     # --- Transactions ---
@@ -467,6 +468,9 @@ class DatabaseBackend(Protocol):
         now: float,
         result: str = "released",
         needs_attention: str | None = None,
+        expected_task_id: str | None = None,
+        expected_claim_epoch: int | None = None,
+        drain_after_release: bool = False,
         conn=None,
     ) -> "TransitionResult": ...
     async def terminate_pool_session(

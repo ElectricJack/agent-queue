@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from collections.abc import Callable
 from dataclasses import asdict
 
@@ -57,6 +58,11 @@ logger = logging.getLogger(__name__)
 #: paused project or an exhausted budget fails ``_admission_reason`` on the
 #: claim, and no free workspace starves ``_launch_pool_session``.
 _PUSH_ONLY_REASON_CODES = frozenset({"no_idle_agent", "no_compatible_agent", "rate_limited"})
+
+
+def _fmt_epoch(ts: float) -> str:
+    """Epoch seconds → local ``YYYY-MM-DD HH:MM:SS`` for human reason text."""
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(float(ts)))
 
 
 def _normalize_label_list(raw) -> list[str]:
@@ -1875,6 +1881,12 @@ class TaskCommandsMixin:
             "assigned_agent": task.assigned_agent_id,
             "retry_count": task.retry_count,
             "max_retries": task.max_retries,
+            # The branch is work-state every read surface needs: `aq task show`
+            # renders `task.branch_name or "—"` (cli/formatters.py), so leaving
+            # it out of this payload made every task look branchless and sent a
+            # PR-integration outage investigation after a persistence bug that
+            # did not exist.  The row has always carried it.
+            "branch_name": task.branch_name,
             "integration_mode": task.integration_mode,
             # Persisted graph blockedness (work-graph design §4).  Capacity
             # reasons (no agent, workspace busy, budget) are NOT in here —
@@ -1893,8 +1905,10 @@ class TaskCommandsMixin:
             "created_at": task.created_at,
             "updated_at": task.updated_at,
         }
-        if task.pr_url:
-            info["pr_url"] = task.pr_url
+        # Unconditional, unlike the historical `if task.pr_url:` — a missing
+        # key and an absent PR are the same state to a caller, and the
+        # conditional only made the payload's shape vary for no gain.
+        info["pr_url"] = task.pr_url
 
         # Effective integration policy + its source, so surfaces can show
         # where the mode comes from instead of another ambiguous flag.
@@ -3077,6 +3091,28 @@ class TaskCommandsMixin:
                 code="needs_attention", detail=str(needs_attention), ref=str(task_id),
             ))
 
+        # A cooling-down PAUSED task is not blocked by anything in the graph
+        # — it is waiting out a backoff (rate limit, rapid crash, stalled
+        # restart, session exit without close).  Without this the answer to
+        # "why isn't X running" was silence for the whole cooldown.
+        if task.status is TaskStatus.PAUSED:
+            if task.resume_after:
+                remaining = max(0.0, float(task.resume_after) - time.time())
+                reasons.append(Reason(
+                    code="paused_backoff",
+                    detail=(
+                        f"paused until {_fmt_epoch(task.resume_after)} "
+                        f"({remaining:.0f}s remaining); resumes automatically"
+                    ),
+                    ref=str(task_id),
+                ))
+            else:
+                reasons.append(Reason(
+                    code="paused_manually",
+                    detail="paused with no resume time; resume with `aq task resume`",
+                    ref=str(task_id),
+                ))
+
         # 1. hold:* labels (task is deliberately withheld).
         try:
             labels = await self.db.get_task_labels(str(task_id))
@@ -3149,6 +3185,15 @@ class TaskCommandsMixin:
             ws_counts = getattr(self.orchestrator, "_last_scheduler_workspace_counts", {})
             idle = getattr(self.orchestrator, "_last_scheduler_idle_by_project", {})
             capacity = build_capacity_reasons(task, state, ws_counts, idle)
+            # The coordinator above already answered the route question with
+            # the richer story (playbook running, retrying, misconfigured);
+            # the scheduler snapshot only knows that no route was in it.
+            if any(reason["code"] == "awaiting_intelligence_route" for reason in reasons):
+                capacity = [
+                    reason
+                    for reason in capacity
+                    if reason["code"] != "awaiting_intelligence_route"
+                ]
             if pool_reason is not None:
                 # A pool-routed task is not in the push queue, so the codes
                 # that describe *that* queue's supply would send an operator

@@ -18,6 +18,15 @@ Quarantine rules terminate
 A rule with ``quarantine=True`` (the rate-limit dialog) is not a dismissal:
 its keys answer *Stop*, and the outcome tells the caller to quarantine the
 session instead of continuing startup.
+
+Quiet windows catch late paints
+-------------------------------
+A pass that returns the moment one capture shows no dialog is racing the
+TUI: Claude and Codex both paint their trust screen *after* the first
+frames, so a pass that ran a beat early declared startup finished while
+the harness was still blocked.  ``quiet_seconds`` makes a pass hold the
+"no dialog" verdict for that long — re-arming the clock every time a rule
+fires — so a dialog painted late is still answered.
 """
 
 from __future__ import annotations
@@ -33,7 +42,7 @@ from src.sessions.provider import DialogRule
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["DialogBudget", "DialogOutcome", "run_dialog_dismissal"]
+__all__ = ["DialogBudget", "DialogOutcome", "first_match", "run_dialog_dismissal"]
 
 #: Pause after sending a rule's keys, letting the TUI repaint before the
 #: next capture decides whether the dialog is gone.
@@ -76,6 +85,23 @@ def _matches(rule: DialogRule, text: str) -> bool:
     return rule.pattern in text
 
 
+def first_match(
+    dialogs: tuple[DialogRule, ...], text: str, *, fired: set[str] | None = None
+) -> DialogRule | None:
+    """The first rule in *dialogs* whose pattern is on screen, if any.
+
+    Shared with the readiness poll so "is a dialog covering the pane?" has
+    exactly one answer.  Rules already in *fired* are skipped when they are
+    ``once`` rules, matching the dismissal loop's own bookkeeping.
+    """
+    for rule in dialogs:
+        if rule.once and fired is not None and rule.name in fired:
+            continue
+        if _matches(rule, text):
+            return rule
+    return None
+
+
 async def run_dialog_dismissal(
     *,
     capture: Callable[[], Awaitable[str]],
@@ -83,32 +109,44 @@ async def run_dialog_dismissal(
     dialogs: tuple[DialogRule, ...],
     budget: DialogBudget,
     fired: set[str],
+    quiet_seconds: float = 0.0,
 ) -> DialogOutcome:
     """Run one dismissal pass: capture, match, answer, repeat until quiet.
 
     *fired* is caller-owned state carried across passes so ``once`` rules
     fire at most once per startup, not once per pass.
+
+    With *quiet_seconds* > 0 the pass does not return on the first quiet
+    capture: it keeps re-capturing until nothing has matched for that long,
+    so a dialog the TUI paints a beat late is still answered.  The clock is
+    re-armed whenever a rule fires, and the shared *budget* still bounds
+    the whole thing.
     """
     outcome = DialogOutcome()
     if not dialogs:
         return outcome
 
+    quiet_since: float | None = None
     while True:
         if budget.exhausted():
             outcome.budget_exhausted = True
             return outcome
 
         text = await capture()
-        matched: DialogRule | None = None
-        for rule in dialogs:
-            if rule.once and rule.name in fired:
-                continue
-            if _matches(rule, text):
-                matched = rule
-                break
+        matched = first_match(dialogs, text, fired=fired)
 
         if matched is None:
-            return outcome
+            now = time.monotonic()
+            if quiet_seconds <= 0:
+                return outcome
+            if quiet_since is None:
+                quiet_since = now
+            elif now - quiet_since >= quiet_seconds:
+                return outcome
+            await asyncio.sleep(min(_SETTLE_SECONDS, max(budget.remaining(), 0)))
+            continue
+
+        quiet_since = None
 
         fired.add(matched.name)
         outcome.fired.append(matched.name)

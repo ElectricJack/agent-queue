@@ -54,6 +54,7 @@ class TestConfigLoading:
         assert config.scheduling.rolling_window_hours == 24
         assert config.scheduling.min_task_guarantee is True
         assert config.agents_config.heartbeat_interval_seconds == 30
+        assert config.messages.enabled is True
 
     def test_custom_workspace_dir(self, config_dir):
         config_file = config_dir / "config.yaml"

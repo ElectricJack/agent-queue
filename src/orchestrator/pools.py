@@ -331,6 +331,7 @@ class PoolsMixin:
         profiles = {item.id: item for item in await self.db.list_profiles()}
         requirement = Task(
             id="", project_id=project.id, title="", description="", profile_id=profile.id,
+            intelligence_class=profile.default_class,
         )
         classes = self.session_spec_builder._intelligence_classes
         candidates = await self.db.list_agents(state=AgentState.IDLE)
@@ -480,6 +481,7 @@ class PoolsMixin:
                         agent_id=agent.id,
                         **resolve_launch_settings(profile, harness, self.session_spec_builder),
                         last_activity=now,
+                        hooks_provisioned=spec.hooks_provisioned,
                     ),
                     release_agent_reservation=True,
                 )

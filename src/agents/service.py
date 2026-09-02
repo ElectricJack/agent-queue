@@ -34,6 +34,10 @@ async def list_agent_flock(orchestrator, *, project_id: str | None = None) -> li
     for question in await db.list_agent_questions(project_id=project_id, pending_only=True):
         questions_by_session.setdefault(question["session_id"], []).append(question)
     profiles = {profile.id: profile for profile in await db.list_profiles()}
+    # One grouped read for the whole flock, not one per agent: the fold is
+    # over every session that ever recorded a subagent event, and the loop
+    # below touches each agent's sessions anyway.
+    native_by_session = await db.subagent_counts_by_session()
     registry = getattr(orchestrator, "harness_registry", None)
     builder = getattr(orchestrator, "session_spec_builder", None)
     rows = []
@@ -146,7 +150,9 @@ async def list_agent_flock(orchestrator, *, project_id: str | None = None) -> li
                     key: current_question[key]
                     for key in ("id", "question", "state", "requires_human", "created_at")
                 }
-        count = await subagent_counts(db, agent.id, sessions, tasks)
+        count = await subagent_counts(
+            db, agent.id, sessions, tasks, native_by_session=native_by_session
+        )
         state = agent.state.value.lower()
         if live:
             state = "busy" if task else live.state

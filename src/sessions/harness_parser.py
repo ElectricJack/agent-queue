@@ -79,6 +79,7 @@ HARNESS_KNOWN_KEYS: frozenset[str] = frozenset(
         "skip_escape_before_enter",
         "supports_hooks",
         "hook_files",
+        "hook_trust_flag",
         "instructions_file",
         "transcript_paths",
         "dialogs",
@@ -143,6 +144,13 @@ class Harness:
     #: ``dest_relative_path -> packaged template name`` written into the
     #: work_dir at spec-build time when ``supports_hooks``.
     hook_files: tuple[tuple[str, str], ...] = ()
+    #: Flag a harness needs in order to honour a hook file it has *not*
+    #: been shown interactively -- Codex's
+    #: ``--dangerously-bypass-hook-trust``.  Emitted only alongside the
+    #: permission flag, so it rides the isolated-worktree trust argument in
+    #: [[design/trust-and-ops]] §4 rather than widening it: a linked
+    #: checkout keeps hook review, and simply reports no native subagents.
+    hook_trust_flag: str = ""
     instructions_file: str = ""
     transcript_paths: tuple[str, ...] = ()
     dialogs: tuple[DialogRule, ...] = ()
@@ -354,6 +362,7 @@ def parse_harness_markdown(
         skip_escape_before_enter=bool(config.get("skip_escape_before_enter", True)),
         supports_hooks=bool(config.get("supports_hooks", False)),
         hook_files=tuple(sorted((str(k), str(v)) for k, v in raw_hooks.items())),
+        hook_trust_flag=str(config.get("hook_trust_flag") or ""),
         instructions_file=str(config.get("instructions_file") or ""),
         transcript_paths=_str_tuple(
             config.get("transcript_paths"), "transcript_paths", errors
@@ -386,6 +395,7 @@ _INHERITABLE = (
     "transcript_paths",
     "dialogs",
     "hook_files",
+    "hook_trust_flag",
 )
 
 

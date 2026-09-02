@@ -896,13 +896,34 @@ class GitOpsMixin:
             ctx.verification_reopened = False
             return PhaseResult.STOP
 
-        # Only fixable issues — attempt to reopen with feedback
+        # Only fixable issues — hand them back to the agent.
         logger.warning(
             "Task %s: git verification failed (%d fixable issues): %s",
             task.id,
             len(fixable),
             "; ".join(all_msgs),
         )
+        if ctx.close_session_live:
+            # The worker that must fix this is still sitting at its prompt.
+            # Refuse the close *in place*: the task keeps its IN_PROGRESS
+            # status and its claim, so the reconciler's "live session but
+            # task is not IN_PROGRESS" orphan rule never fires and the
+            # session survives to push / open the PR and close again.
+            feedback = await self._record_verification_feedback(task, fixable)
+            if feedback is None:
+                # Retries exhausted — fall through to the terminal branch.
+                ctx.verification_reopened = False
+                return PhaseResult.STOP
+            ctx.verification_retry_in_session = True
+            ctx.verification_issues = [msg for msg, _ in fixable]
+            ctx.verification_feedback = feedback
+            logger.info(
+                "Task %s: close refused for verification, session keeps the claim "
+                "(%d fixable issue(s))",
+                task.id,
+                len(fixable),
+            )
+            return PhaseResult.STOP
         reopened = await self._reopen_with_verification_feedback(task, fixable)
         ctx.verification_reopened = reopened
         return PhaseResult.STOP
@@ -1025,20 +1046,22 @@ class GitOpsMixin:
 
         return True
 
-    async def _reopen_with_verification_feedback(
+    async def _record_verification_feedback(
         self,
         task,
         failures: list[tuple[str, bool]],
-    ) -> bool:
-        """Reopen a task with git verification feedback.
+        *,
+        restart_wording: bool = False,
+    ) -> str | None:
+        """Persist one round of git-verification feedback on *task*.
 
-        Args:
-            task: The task to reopen.
-            failures: List of (message, fixable) tuples. Only fixable failures
-                should be passed here — unfixable ones are handled by the caller.
+        Appends the rendered feedback to the description and records a
+        ``verification_feedback`` task context — the row the retry counter
+        is derived from.  Performs **no** status transition: the two
+        callers differ only in what they do with the task afterwards.
 
-        Returns True if the task was reopened (transitioned to READY),
-        False if max retries were exceeded (task left for caller to block).
+        Returns the rendered feedback, or ``None`` when the retry budget is
+        already spent (the caller then blocks / escalates).
         """
         max_retries = self.config.auto_task.max_verification_retries
         # Count previous verification attempts from task_context
@@ -1058,35 +1081,73 @@ class GitOpsMixin:
                 f"Manual resolution needed.",
                 project_id=task.project_id,
             )
-            return False
+            return None
 
         # Build feedback message
         bullet_list = "\n".join(f"- {msg}" for msg, _ in failures)
+        closing = (
+            "Please fix these issues when the task restarts."
+            if restart_wording
+            else (
+                "Fix these issues in this workspace, then run `aq task close` again. "
+                "The task is still yours — it stays IN_PROGRESS under your claim."
+            )
+        )
         feedback = (
             f"**Git Verification Feedback (auto-retry "
             f"{retry_count + 1}/{max_retries}):**\n"
             f"The system verified the git state after your work and found "
             f"issues:\n{bullet_list}\n"
-            f"Please fix these issues when the task restarts."
+            f"{closing}"
         )
 
         separator = "\n\n---\n"
         updated_description = task.description + separator + feedback
-
-        await self.db.transition_task(
-            task.id,
-            TaskStatus.READY,
-            context="verification_reopen",
-            description=updated_description,
-            retry_count=0,
-            assigned_agent_id=None,
-            pr_url=None,
-        )
+        await self.db.update_task(task.id, description=updated_description)
         await self.db.add_task_context(
             task.id,
             type="verification_feedback",
             label="Git Verification Feedback",
             content=feedback,
+        )
+        return feedback
+
+    async def _reopen_with_verification_feedback(
+        self,
+        task,
+        failures: list[tuple[str, bool]],
+    ) -> bool:
+        """Reopen a task with git verification feedback.
+
+        Args:
+            task: The task to reopen.
+            failures: List of (message, fixable) tuples. Only fixable failures
+                should be passed here — unfixable ones are handled by the caller.
+
+        Returns True if the task was reopened (transitioned to READY),
+        False if max retries were exceeded (task left for caller to block).
+
+        Used only when no live session can be handed the feedback directly
+        (``PipelineContext.close_session_live`` is False) — otherwise
+        ``_phase_verify`` refuses the close in place and the worker retries
+        without a session restart.
+        """
+        contexts = await self.db.get_task_contexts(task.id)
+        retry_count = sum(1 for c in contexts if c.get("type") == "verification_feedback")
+        max_retries = self.config.auto_task.max_verification_retries
+        feedback = await self._record_verification_feedback(
+            task, failures, restart_wording=True
+        )
+        if feedback is None:
+            return False
+
+        await self.db.transition_task(
+            task.id,
+            TaskStatus.READY,
+            context="verification_reopen",
+            retry_count=0,
+            assigned_agent_id=None,
+            pr_url=None,
         )
         await self._emit_text_notify(
             f"🔄 **Verification reopen:** Task `{task.id}` — "

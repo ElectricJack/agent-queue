@@ -78,6 +78,7 @@ async def test_concurrent_acquire_exactly_one_winner(db):
     assert sorted(results) == [False, True]
 
 
+@pytest.mark.slow
 @pytest.mark.perf
 async def test_concurrent_acquire_never_double_grants_under_load(tmp_path):
     """Regression: production engine (StaticPool, single shared aiosqlite
