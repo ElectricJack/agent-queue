@@ -551,3 +551,243 @@ A step is not required to map every reserved outcome, but Package 2 requires it 
 | **T-AGENT** (§5.6) | `src/playbooks/executors/agent_task.py`, `tests/test_agent_task_executor.py` | `base.py`, `engine.py`, `command.py`, `llm.py` |
 
 `base.py`, `engine.py`, `decision.py`, `wait.py`, `foreach.py`, `terminal.py` and `__init__.py` are all landed by T-1/T-5/T-6 **before** the three parallel tasks start. Each parallel task adds exactly one executor module, one test module, and one line to the `EXECUTORS` table. A merge conflict is therefore confined to that one table line, by construction.
+
+---
+
+## 4. Design decisions
+
+### 4.1 One engine, six call sites
+
+Package 4 makes the V2 path *reachable* at each site behind `playbooks.v2_engine`; Package 7 makes it authoritative. The shape at every site is identical, so Package 7's switch is a one-line edit per site rather than a rewrite:
+
+```python
+if v2_engine_enabled(self.config):
+    return await <engine call>
+<existing V1 body, untouched>
+```
+
+| # | Site | Live symbol | V2 call |
+|---|---|---|---|
+| 1 | `src/orchestrator/core.py:800` (pipeline branch, fork at `:837`) | `Orchestrator._on_playbook_trigger` | `engine.dispatch_event(hydrated_event, service_principal, LIVE)` |
+| 2 | `src/orchestrator/core.py:800` (LLM branch, `:1065`) | same method | same call — **the fork disappears**; one `dispatch_event` serves both kinds |
+| 3 | `src/orchestrator/assignment_routing.py:459` | `AssignmentRoutingCoordinator._route_batch` | `engine.run_rule(...)` — §4.12 |
+| 4 | `src/playbooks/resume_handler.py:260` | `PlaybookResumeHandler._resume_run` | `engine.resume(run_id, HumanDecision(...), principal)` |
+| 5 | `src/workflow_stage_resume_handler.py:290` | `WorkflowStageResumeHandler._resume_run` | `engine.resume(run_id, EventArrived(...), principal)` |
+| 6 | `src/commands/playbook_commands.py:857/:977/:1032/:324/:508/:1765` | `_cmd_run_playbook`, `_run_pipeline_playbook`, `_cmd_dry_run_playbook`, `_cmd_resume_playbook`, `_cmd_cancel_playbook_run`, `check_paused_playbook_timeouts` | `run_rule` / `dry_run` / `resume` / `cancel` |
+
+The single most visible consequence is at site 2: `core.py:837`'s `if graph.get("kind") == "pipeline":` and the ~200 lines of pipeline-specific hydration, rule cloning and run-row bookkeeping below it (`:838-1048`) have **no V2 counterpart**. Rule selection, `event.task` hydration and per-rule run creation all move inside `dispatch_event`, where they are shared by every playbook kind. The `hydrated_event` construction (`core.py:850-866`) moves to `PlaybookEngine._hydrate_event` verbatim, including its `asdict(task_row)` fallback, because Package 6's parity harness compares V1 and V2 over the same events and a hydration difference would show up as a false rule-selection difference.
+
+### 4.2 Rule-per-run dispatch
+
+`dispatch_event` (`ExecutionMode.LIVE`):
+
+1. Resolve activations: enabled, `ActivationHealth.ready`, matching the event type and scope. `needs_rebuild` or `invalid` → the event goes to `playbook_pending_events` (§4.13), never dropped.
+2. For each activation, load the artifact **by hash** through `ArtifactStore.load` (which verifies the file hash and strict schema). A load failure → `unavailable`, the event is queued.
+3. Evaluate every rule's trigger filter with the Package 2 condition evaluator against the hydrated event.
+4. Allocate one `dispatch_id` (`uuid4().hex[:12]`), then create **one run per matching rule**. Idempotency is `(playbook_id, rule_id, event_id)`, not `(playbook_id, event_id)` — the existing partial unique index at `src/database/tables.py:946` is `(playbook_id, event_id)` and is a V1 table; Package 3's V2 run table carries the three-column index. §10 records the dependency.
+5. Each run is an independent `asyncio.Task`. One rule failing does not fail its siblings; `DispatchResult.run_ids` lists all of them.
+
+This is the direct fix for §2.2 item 5. T-1's failing assertions:
+
+- `test_two_matching_rules_produce_two_runs` — an event matching both fixture rules yields `len(run_ids) == 2` with distinct `run_id`s and a shared `dispatch_id`.
+- `test_sibling_failure_does_not_fail_the_other_run` — rule A's command raises; rule B still reaches its terminal.
+- `test_same_event_id_dispatched_twice_creates_no_new_runs` — replays the event and asserts `run_ids` is unchanged and no second receipt exists.
+
+### 4.3 `CommandExecutor` — `src/playbooks/executors/command.py`
+
+`LiveCommandExecutor.execute`:
+
+1. `registration = ctx.services.contracts.require(step.command)` — `UnknownContract` → `contract_violation`. A `CommandStep` naming an uncontracted command cannot execute, which is the runtime half of the spec's "A `CommandStep` can reference only a contracted command."
+2. Build `args = registration.contract.execution.args_model(**resolved_inputs)`. A `ValidationError` here is the roadmap's "Validate runtime arguments again at the command boundary" — the compiler validated the *types of the references*; this validates the *resolved values*, which the compiler cannot see. Violation → `input_resolution_failed` (the value was wrong), not `contract_violation` (the contract was fine).
+3. Attach the attempt key when `idempotency.mode == "keyed"` (§3.3.2).
+4. `result = await registration.invoke(args, ctx.principal)` under `asyncio.timeout(contract.execution.timeout_seconds or step.timeout_seconds)`. A timeout → `timed_out`.
+5. `_consume(...)` per §3.2.
+
+`PreviewCommandExecutor` calls `registration.preview` when `supports_preview`, and otherwise returns `control=UNRESOLVED` with `diagnostics=("no preview adapter",)`. `ShadowCommandExecutor` **records the intended call and returns `UNRESOLVED` without invoking anything**, including the preview adapter — a preview may read a database snapshot, and shadow mode runs against production. Its recording is what Package 6's parity harness compares (`DispatchResult.commands`: an ordered tuple of `(step_id, command_name, canonical_args)`).
+
+### 4.4 `LlmExecutor` — `src/playbooks/executors/llm.py`
+
+The structural change from `runner.py` is that **the model no longer picks the edge**. `runner.py`'s transition logic (`runner_transitions.py`, 25 KB) asks the LLM which natural-language transition matches; the V2 `LlmStep` declares `output_schema`, and the engine reads a declared field from the validated structured output.
+
+`LiveLlmExecutor.execute`:
+
+1. Resolve the profile: `step.profile_id` → profile → `LLMCallSpec(intelligence_class=...)` → `resolve_call` (`src/llm/spec.py:44`). A missing profile → `unavailable` (a profile can be transiently unloaded), a profile whose capability policy is not a subset of the run principal's → `unauthorized`.
+2. **Budget pre-flight (§4.11).** If `step.budget.max_total_tokens` is set and the resolved provider does not report usage, return `budget_exceeded` with `diagnostics=("provider does not report usage",)` **without calling the provider**. Spec: "A provider adapter that cannot report usage cannot run a step with a hard total-token budget."
+3. Render the prompt from `step.inputs` via `resolve_value`. Record `prompt_digest` only.
+4. Call under `asyncio.timeout(step.budget.timeout_seconds)`. Tools, if `step.tools` is non-empty, are the **intersection** of the step's declared tools and `ctx.principal.policy.aq_commands`, and every tool call routes through the same `CONTRACTS`-registered adapter and `authorize_command` the `CommandExecutor` uses. The model-visible schema is a projection; the dispatch check is the enforcement. §7.3.
+5. Validate the response against `step.output_schema`. On failure, retry up to `step.retry.max_schema_retries` (default 1) with the validation error appended; exhausted → `invalid_output`.
+6. Accumulate usage across every call and tool turn into `ExecutorResult.usage`. A breach of `max_calls`, `max_output_tokens` or `max_total_tokens` → `budget_exceeded`, and the partial transcript is still receipted.
+7. The outcome is `validated_output[step.outcome_field]` (Package 2 requires `outcome_field` to name an enum property of `output_schema`). The value bound is the whole validated output.
+
+**Tool turns are durable.** When `step.tools` is non-empty, each completed tool turn is a `commit_boundary` with a `tool_turn` receipt and the transcript in the snapshot, so a restart mid-conversation resumes after the last completed turn. An **in-flight provider call is never replayed**: the restart writes an `interrupted` receipt and, per §4.8, requires an explicit retry attempt. T-14's `test_interrupted_provider_call_is_not_replayed`.
+
+`SymbolicLlmExecutor` returns `UNRESOLVED` with `possible_outcomes` = the enum values of `output_schema[step.outcome_field]` plus every reserved outcome the step maps, and the engine forks across them (§4.10).
+
+### 4.5 `AgentTaskExecutor` — `src/playbooks/executors/agent_task.py`
+
+Distinct from `LlmStep` because it schedules, persists, waits, costs and cancels differently.
+
+1. **Narrow the principal.** `child_policy = parent.policy.intersect(child_profile.policy).intersect(step.capability_narrowing)`; `child_principal = ctx.principal.narrow(child_policy, reason=f"agent_task:{ctx.step_id}")`. Three-way intersection, exactly the roadmap's "Delegated agent-task permissions are the intersection of parent permissions, child profile permissions, and explicit per-step narrowing." When the parent is itself an AI state, the spec additionally requires `child_profile.policy.is_subset_of(parent_ai_policy)`; a violation is `unauthorized` at execute time, not a silent narrowing. §7.2.
+2. **Create the task** through the contracted `create_task` command with `child_principal`, so the child task's creation is authorized and receipted like any other command.
+3. **Persist before suspending.** `ExecutorResult(control=SUSPEND, child_task_id=..., wait=WaitSpec(kind="task", correlation_key=task_id, deadline_at=now+step.timeout_seconds))`. The engine commits the boundary — snapshot, receipt and wait registration in one transaction — *before* the run is considered paused. A crash between task creation and the commit leaves an orphan child task and a run still at the step; §4.8's ambiguity rule applies, and the operator sees the orphan because the `create_task` receipt is already durable from the boundary that authorized it.
+4. `wait_for_completion=False` returns `control=ADVANCE, outcome="dispatched"` instead, with no wait.
+5. **Reconcile idempotently.** `resume(run_id, ChildTaskCompleted(task_id, status), ...)` maps the child's terminal status onto `completed` / `failed` / `timed_out` / `cancelled`. A second delivery of the same `(run_id, step_id, attempt, task_id)` is a no-op that writes no receipt — T-8's `test_duplicate_child_completion_is_a_noop`.
+6. **Cancellation.** §4.9: `cancel_child` defaults to `False`, so cancelling a parent leaves the child running by default. The child is never granted authority by cancellation.
+
+### 4.6 `WaitExecutor` and the wait scheduler — `src/playbooks/executors/wait.py`
+
+The race the spec closes: an event arrives between "decide to wait" and "the pause is persisted".
+
+`LiveWaitExecutor` computes the typed correlation key from `ctx.scope` and returns `control=SUSPEND`. The engine then, **in one transaction** (`commit_boundary` with `pending_wait_changes=[Register(spec)]`):
+
+1. writes the snapshot with `lifecycle="paused"` and the wait fields;
+2. writes the receipt;
+3. `WaitRepository.register(spec, snapshot.version)`, which in the same transaction scans `playbook_pending_events` (the durable inbox) for an already-arrived match and, if found, returns `matched_immediately` so the engine resumes instead of pausing.
+
+Package 3 owns `register`'s compare-and-set; Package 4 owns the rule that **event ingestion writes the inbox before matching waits**, never the other way round. T-6's three assertions: `test_event_before_registration_resumes_immediately`, `test_event_during_registration_resumes_exactly_once`, `test_event_after_registration_resumes_exactly_once` — all three end with exactly one resume receipt.
+
+**Deadlines.** A dedicated `WaitScheduler` (in `engine.py`, not a new module) owns `deadline_at`. It polls `WaitRepository.due(now)` on the orchestrator cycle. It does **not** create `TimerService` entries: `src/timer_service.py:185` is a playbook-*trigger* scheduler whose entries are cron-like and operator-visible, and per-run waits are neither. The earlier of the wait deadline and the run deadline wins, and `StepReceipt.deadline_fired` records which (§3.3.3).
+
+`ReportingWaitExecutor` (dry-run and shadow) returns `control=ADVANCE, outcome="<the wait's declared timeout-free outcome>"`… **no**: it returns `control=UNRESOLVED` with `possible_outcomes = set(step.transitions)`, and the dry-run tree marks the node `simulated` with reason `wait_not_persisted`. It never registers a wait. Spec: "waits are reported without persisting a pause."
+
+### 4.7 `ForEachExecutor` — `src/playbooks/executors/foreach.py`
+
+Sequential, one active iteration, nesting rejected at compile time (Package 2), so the loop frame is finite and inspectable.
+
+The executor is a pure state transition over the loop frame and returns `GOTO`:
+
+| Frame state | Returns |
+|---|---|
+| No frame → resolve `step.collection` (a list; anything else → `input_resolution_failed`); empty list | `GOTO continuation`, outcome `completed`, aggregate `[]` |
+| No frame, non-empty | `GOTO body_entry`, outcome `iterating`, frame `{index: 0, item_binding, aggregate: []}` |
+| Frame present, body returned success | append to aggregate; `index+1 < len` → `GOTO body_entry`; else `GOTO continuation`, outcome `completed` |
+| Frame present, body returned failure, policy `halt` | `GOTO transitions["failed"]`, outcome `failed` |
+| Frame present, body returned failure, policy `continue` | append outcome only; advance index |
+| Frame present, body returned failure, policy `collect` | append `{index, outcome, error}` to `aggregate.errors`; advance index; at the end outcome is `completed` with a non-empty `errors` list |
+
+Two rules the live `pipeline_runner._run_for_each` (`:165-186`) breaks and this one keeps:
+
+- **The loop item lives in `scope.loop`, not `scope.bindings`.** `with_loop_item` returns a new scope; there is no `pop` and no `finally`, so a failure branch cannot read a stale item. T-7's `test_loop_item_cannot_shadow_a_binding` builds an artifact with a binding named `task` and an item binding named `task` and asserts Package 2 rejects it at compile time *and* that `with_loop_item` raises if it somehow reaches runtime.
+- **The frame is committed on both sides of every body transition.** Entering iteration *n* and leaving it are two boundaries. A crash mid-body restarts iteration *n*, never *n+1*. T-15's `test_restart_mid_loop_resumes_the_same_iteration` kills the process between the two boundaries and asserts `iteration_index` is unchanged and the aggregate has *n* entries.
+
+The aggregate binding is `{"items": [...], "outcomes": [...], "errors": [...]}` — ordered, and subject to the same 256 KiB limit, which is why `collect` over a large collection can legitimately end in `state_limit_exceeded` rather than a truncated result.
+
+### 4.8 Ambiguous interruption — stop, do not guess
+
+Spec: "a retry-safe command can be replayed with that key; a non-retry-safe command pauses with `operator_decision_required` rather than executing twice."
+
+On restart, for a snapshot whose lifecycle is `running` and whose current step has an attempt with a *started* but no *completed* receipt:
+
+| Step / contract | Behaviour |
+|---|---|
+| `retry_safe=True` **or** `idempotency.mode in {"natural", "keyed"}` | Replay as the **same** attempt number with the same key. The receipt for the interrupted attempt is written with outcome `interrupted`, then a new receipt records the replay. |
+| Anything else — including every `LlmStep` with an in-flight provider call, and every `AgentTaskStep` whose child-task creation may or may not have landed | `control=OPERATOR_DECISION`: pause with reason `operator_decision_required`, no binding, no transition. |
+
+The operator records exactly one resolution, and the resolution is itself receipted: `accept(outcome, value)`, `retry` (new attempt number), `fail`, `cancel`. The command surface is `playbook_run_resolve` — **Package 5 owns the endpoint and UI**; Package 4 owns `PlaybookEngine.resume(run_id, OperatorResolution(kind, payload), principal)` and the receipt. Package 5's plan already lists `playbook_run_overlay`; the resolution command is added to its scope by this plan's §12 note.
+
+An operator resolution requires the `playbook_admin` capability and is refused for a `PLAYBOOK`-kind principal — a playbook cannot resolve its own ambiguity. §7.5.
+
+### 4.9 Cancellation and the lifecycle
+
+One enum: `running`, `paused`, `cancelling`, `completed`, `failed`, `timed_out`, `cancelled`. `src/playbooks/state_machine.py` gains `cancelling` and the two legal edges into it (`running → cancelling`, and `paused → cancelled` directly). `TERMINAL_STATUSES` is unchanged.
+
+| From | `cancel()` does |
+|---|---|
+| `paused` | Immediate: `cancelled`, one receipt, wait deregistered in the same boundary |
+| `running`, no executor in flight | Sets `cancel_requested`; the next step boundary (§3.4 step 2) transitions to `cancelled` |
+| `running`, executor in flight | `cancelling`; `request_cancel` on the `Cancellable` executor; `cancelled` on acknowledgement or when `cancellation_grace_seconds` (config, default 30) expires, whichever first. The receipt's `cancellation` field records `acknowledged` vs `grace_expired` |
+| terminal | Refused with the existing `Run '<id>' already <status>` shape from `playbook_commands.py:544` |
+
+This replaces §2.2 item 4 entirely: the engine reads `cancel_requested` from the snapshot it is about to write, so a live run cannot overwrite a cancellation. T-9's `test_cancel_during_a_live_command_does_not_get_overwritten` is the direct regression test for the docstring at `playbook_commands.py:511-519`.
+
+`run_task.py::playbook_status_to_task_status` gains a `cancelling` mapping (to the same task status as `running`, since the projection task is still occupied).
+
+### 4.10 Dry-run — the same graph, bounded
+
+`dry_run` builds the *identical* `PlaybookEngine`, `EXECUTORS[DRY_RUN]`, and `ArtifactStore.load`ed artifact, and walks it with a work-list rather than a single cursor.
+
+- **Bounds.** `max_paths=32`, `max_step_visits=1000` (config-overridable, §9). Reaching either sets `DryRunTree.truncated=True`. A truncated tree **never** reports a path as `completed`; the frontier node is `unresolved` with reason `path_limit` / `visit_limit`. T-11's `test_truncation_never_reports_completed`.
+- **Forking.** A `control=UNRESOLVED` result forks the work list across `possible_outcomes`, each becoming its own path with the symbolic result reference kept unbound. Downstream `ResultRef`s on a forked path stay symbolic and render as `unresolved` rather than failing.
+- **Node states.** `resolved` (a deterministic executor, or a preview adapter that returned a typed simulated result), `simulated` (a preview adapter ran), `unresolved` (with `reason` and `possible_outcomes`).
+- **`invoke_ai=True`** swaps `SymbolicLlmExecutor` for `LiveLlmExecutor` **only**; commands stay preview-only in every case. There is no option that makes dry-run write.
+- **No unrecognised node is terminal.** An unknown step type raises `UnknownStepType`. `runner.py`'s dry-run silently treats unhandled shapes as the end of the walk; the V2 version fails.
+
+The strongest dry-run assertion is the parity one, T-11's `test_live_and_dry_run_select_the_same_edges`: run the fixture artifact live against a scripted command handler, then dry-run it with preview adapters scripted to the *same* outcomes, and assert the ordered `(step_id, outcome, target)` triples are equal. That is the spec's "Live and dry-run select the same rules, nodes, and edges for identical resolved outcomes", and it is the assertion that fails if anyone ever reintroduces a dry-run-specific traversal.
+
+### 4.11 The provider usage channel — the package's largest deviation
+
+**Observed.** `src/llm/types.py::ChatResponse` is `content: list[TextBlock | ToolUseBlock]` and nothing else. `src/llm/providers/anthropic.py:147` returns `ChatResponse(content=content)`, discarding `resp.usage`, which the Anthropic SDK does return. `openai.py` and `google.py` are the same. `grep -rn usage src/llm/` is empty. The only token accounting in the tree is `src/playbooks/token_tracker.py:36::_estimate_tokens`, which is `sum(len(t) for t in texts) // 4`.
+
+**Required.** Spec, `LlmStep`: "Token accounting uses provider-reported input and output usage. A provider adapter that cannot report usage cannot run a step with a hard total-token budget."
+
+**Change (T-13), additive and backward-compatible:**
+
+```python
+# src/llm/types.py
+@dataclass
+class ChatResponse:
+    content: list[TextBlock | ToolUseBlock]
+    usage: TokenUsage | None = None       # NEW, defaults to None
+```
+
+`TokenUsage` lives in `src/playbooks/executors/base.py` per §3.1 and is imported by `src/llm/types.py`… **no** — that inverts the dependency. `TokenUsage` is defined in **`src/llm/types.py`** and re-exported from `src/playbooks/executors/base.py`, so the LLM layer never imports the playbook layer. §3.1's listing shows it in `base.py` for readability; the reconciliation commit must place the definition in `src/llm/types.py` and leave a re-export.
+
+Per provider:
+
+| Provider | Source | Populates |
+|---|---|---|
+| `anthropic.py:147` | `resp.usage.input_tokens`, `resp.usage.output_tokens` | `TokenUsage(..., reported=True)` |
+| `openai.py` | `resp.usage.prompt_tokens`, `.completion_tokens` | `TokenUsage(..., reported=True)` |
+| `google.py` | `resp.usage_metadata.prompt_token_count`, `.candidates_token_count`; absent on some models | `reported=True` when present, else `usage=None` |
+| `fake.py::FakeProvider` | `add_response(resp, usage=...)` — new optional argument, default `None` | Lets a test drive both the reported and unreported paths |
+
+`LLMClient.complete` / `run_tools` (`src/llm/client.py:141`, `:154`) propagate `usage` onto `LLMResponse` and `LLMRunResult`; `run_tools` sums across turns.
+
+**The fail-closed rule.** `LiveLlmExecutor` step 2 (§4.4). T-13's failing assertions:
+
+- `test_step_with_total_token_budget_refuses_an_unreporting_provider` — a `FakeProvider` returning `usage=None` and a step with `max_total_tokens=8000` yields `budget_exceeded` and **zero** provider calls (`FakeProvider.calls == []`).
+- `test_step_without_total_token_budget_runs_on_an_unreporting_provider` — the same provider with `max_total_tokens=None` runs, and the receipt carries `usage.reported is False`.
+- `test_receipt_usage_is_provider_reported_not_estimated` — asserts the receipt's `usage.input_tokens` equals the provider's number and is *not* `len(prompt)//4`.
+
+**Scope boundary.** `token_tracker.py` is **not** modified: it belongs to `runner.py` and Package 7 deletes both. V2 usage goes to receipts, and the existing `record_token_usage` ledger write (`runner.py:320-355`) is reproduced in the engine's commit path so cost reporting keeps working — with `usage.total` instead of an estimate, and skipped (as today) when the event has no `project_id`, because `token_ledger.project_id` is a non-null FK.
+
+### 4.12 Assignment routing keeps its caches
+
+Spec: "Assignment routing keeps its existing input/options hash cache outside the engine. A cache hit does not create another playbook run or receipt set."
+
+`AssignmentRoutingCoordinator` keeps, unchanged: `_batch_key` (`:389`), `_catalog_hash` (`:186`), `_catalog`/`_options`/`cached_options_hash` (`:299`-`:325`), `_attempt_event_id` (`:400`), `_existing_response` (`:413`), `_retry`/`_task_retry` (`:425`), `_commit`'s full re-validation under `with_for_update` (`:509`), and `validate_assignment_response` (`:78`). Only the four lines constructing `PlaybookRunner` (`:459-467`) change:
+
+```python
+outcome = await engine.run_rule(
+    artifact_ref=activation.artifact_ref,
+    rule_id=ASSIGNMENT_RULE_ID,
+    event=event,
+    principal=service_principal("assignment-routing"),
+    mode=ExecutionMode.LIVE,
+)
+response = outcome.result_value            # the declared AssignmentRoutingResult
+```
+
+Two rules this plan adds:
+
+- **The cache key includes artifact identity.** `_batch_key`'s payload gains `"artifact_sha256": activation.artifact_ref.artifact_sha256`, so activating a rebuilt routing artifact invalidates cached decisions instead of serving decisions made by the previous graph. The roadmap requires this ("make cache keys include artifact identity"); it is a one-line change to `_batch_key` and a one-line change to `tests/test_assignment_routing_coordinator.py`.
+- **A synchronous caller gets a typed unavailable result.** When the activation is `needs_rebuild` or the artifact will not load, `run_rule` returns `RunOutcome(status="unavailable")` and the coordinator applies its **existing** `_note_failure` retry/backoff rather than raising. Spec: "A synchronous caller such as assignment routing receives a typed unavailable result and applies its existing caller-owned retry or fallback policy."
+
+`sync_task_projection=False` and `tool_overrides=[]` (`assignment_routing.py:465-466`) become `run_rule(..., project_task=False)`: routing runs must not create projection tasks, and the routing `LlmStep` declares no tools in the artifact rather than having them stripped by a caller argument.
+
+### 4.13 Unavailable dependencies and pending events
+
+A dependency that is *intentionally gone* (an uninstalled plugin's command) is `needs_rebuild`; one that is *transiently absent* (a plugin that failed to load) is `unavailable`. Package 3 owns the health computation; Package 4 owns the two runtime behaviours:
+
+- **New work queues.** `dispatch_event` writes the event to `playbook_pending_events` with its original event ID and arrival order, and returns it in `DispatchResult.pending`. Nothing is dropped.
+- **In-progress work pauses at the next boundary** with reason `dependency_unavailable` and outcome `unavailable`. When compatibility returns, `resume` continues **against the same artifact** — never against a rebuilt one, which would be the in-place translation the roadmap forbids.
+
+Package 5 owns the operator surface for pending events and re-enters through `dispatch_event`; that dependency is already recorded in its plan §3.1.
+
+### 4.14 `DecisionExecutor` and `TerminalExecutor`
+
+Both are pure and mode-independent (§3.1.2).
+
+`DecisionExecutor` evaluates each `case.when` in declared order with the Package 2 condition evaluator over `ctx.scope`, and returns `GOTO case.goto` for the first true case, else `GOTO default`. It makes no LLM call — there is no code path from `decision.py` to `ctx.services.llm`, and T-5 asserts it by patching `services.llm` with an object that raises on attribute access. A condition that raises (a type error the compiler could not see) → `input_resolution_failed`.
+
+`TerminalExecutor` returns `control=TERMINATE, terminal_outcome=step.outcome`, plus `value=resolve_value(step.result)` when the terminal declares a typed result. The engine maps the terminal outcome onto the run lifecycle: `completed` → `completed`, `failed` → `failed`, `cancelled` → `cancelled`, `timed_out` → `timed_out`.
