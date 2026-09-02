@@ -250,6 +250,37 @@ class TestFailClosed:
         assert "refusing to create task" in result["error"]
         assert len(await handler.db.list_tasks()) == before
 
+    async def test_unresolvable_caller_may_still_file_work_it_names_no_profile_for(
+        self, handler
+    ):
+        """The refusal is about an *unbounded grant*, not about filing at all.
+
+        A worker filing discovered work (``aq task create`` with no
+        ``--profile``) asks for no capability grant, so there is nothing to
+        bound and nothing that could be widened.  Refusing it would delete a
+        capability that existed before this package — ``_caller_profile_id``
+        was only ever set by the playbook runner, so every HTTP/MCP filing
+        reached ``create_task`` with no caller profile — and would strand an
+        un-migrated fleet in the *shipped default* mode, which is exactly
+        what ``audit`` exists to prevent (child plan §3.6).
+
+        Under ``enforce`` the question never arises: the dispatch gate denies
+        an unresolved principal first, as
+        ``test_deleted_profile_refuses_and_writes_nothing`` shows.
+        """
+        handler.config.security.capability_enforcement = "audit"
+        sid = await _session_for(handler, "narrow")
+        await handler.db.delete_profile("narrow")
+        handler._invalidate_principal_cache()
+
+        result = await _create(handler, sid)
+
+        assert result.get("error") is None, result
+        # No profile was granted — the child inherits nothing, which is
+        # strictly narrower than any grant the refusal was protecting.
+        task = await handler.db.get_task(result["task_id"])
+        assert not task.profile_id
+
     async def test_session_without_a_profile_cannot_delegate(self, handler):
         """No profile at all on the session row: there is no parent policy to
         compare a child against, so delegation is refused outright."""

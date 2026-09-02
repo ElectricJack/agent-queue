@@ -1203,6 +1203,25 @@ class TaskCommandsMixin:
         profile_id = args.get("profile_id")
         caller_profile_id = getattr(self, "_caller_profile_id", None)
         caller_profile = None
+        # Both fail-closed branches below are conditioned on ``profile_id``
+        # being **explicitly requested**.  The refusal exists to stop a grant
+        # nobody can bound: without a resolved parent policy there is no
+        # subset to check a named child profile against.  A caller that names
+        # no profile is asking for no grant, so there is nothing to bound and
+        # nothing to widen — it inherits whatever it would have inherited
+        # before this package, which for an unresolvable caller is nothing.
+        #
+        # Refusing that case too would delete a *pre-existing* capability
+        # rather than close a gap: a worker filing discovered work
+        # (``aq task create`` with no ``--profile``) reached this code with
+        # ``caller_profile_id is None`` before Package 0, because
+        # ``_caller_profile_id`` was only ever set by the playbook runner.
+        # Now that the shim resolves it from the session row, an unresolvable
+        # profile row would newly strand every such filing — the exact
+        # fleet-stranding outcome ``audit`` mode exists to prevent (§3.6).
+        # Under ``enforce`` the question does not arise: the dispatch gate
+        # denies an unresolved principal before ``create_task`` runs at all
+        # (``tests/test_delegation_no_widening.py::TestFailClosed``).
         if caller_profile_id is None:
             # Fail closed: an enforced principal that could not resolve a
             # profile must not be able to delegate at all.  A trusted local
@@ -1210,11 +1229,11 @@ class TaskCommandsMixin:
             from src.commands.principal import current_principal
 
             principal = current_principal()
-            if principal is not None and principal.enforced:
+            if principal is not None and principal.enforced and profile_id:
                 return {"error": "delegation refused: caller has no resolved profile"}
         if caller_profile_id:
             caller_profile = await self.db.get_profile(caller_profile_id)
-            if caller_profile is None:
+            if caller_profile is None and profile_id:
                 # Caller profile is gone — fail closed.  Leaks of stale
                 # caller_profile_id mid-run shouldn't widen the child's
                 # scope; refuse the create until the situation is sane.
@@ -1223,6 +1242,13 @@ class TaskCommandsMixin:
                     "found — refusing to create task without a resolved "
                     "capability bound."
                 }
+            if caller_profile is None:
+                logger.warning(
+                    "delegation_unbounded_shadow cmd=create_task profile=%s "
+                    "reason=caller-profile-not-found; child task inherits no "
+                    "profile",
+                    caller_profile_id,
+                )
 
         profile = caller_profile
         if profile_id:
