@@ -160,6 +160,44 @@ async def test_live_descendant_sessions_reports_holder_of_any_subtree_task(any_d
         assert await db.live_descendant_sessions("container", conn=conn) == []
 
 
+async def test_live_descendant_sessions_can_exclude_the_root(any_db):
+    """``exclude_root=True`` ignores a session holding the root itself.
+
+    A task-scoped worker closing its own container is necessarily live on
+    the root; ``abandon_subtree`` never touches the root, so that session
+    must not count as a live descendant.
+    """
+    db = any_db
+    await db.create_profile(AgentProfile(id="worker", name="Worker"))
+    await mktask(db, "container", status=TaskStatus.IN_PROGRESS)
+    await mktask(db, "descendant", status=TaskStatus.READY)
+    await db.create_session(
+        SessionRecord(
+            id="root-1",
+            project_id=PROJECT_ID,
+            profile_id="worker",
+            harness="claude",
+            provider="fake",
+            name="p-worker--proj--root-1",
+            lifecycle="task",
+            work_dir="/wd/root-1",
+            epoch="e",
+            instance_token="t",
+            started_at=0.0,
+            state="running",
+            task_id="container",
+        )
+    )
+    async with db._engine.begin() as conn:
+        await db.set_parent("descendant", "container", conn=conn)
+        assert await db.live_descendant_sessions("container", conn=conn) == [
+            ("root-1", "container")
+        ]
+        assert (
+            await db.live_descendant_sessions("container", conn=conn, exclude_root=True) == []
+        )
+
+
 async def test_abandon_subtree_releases_each_descendant_resource_once(any_db):
     """Abandonment frees the workspace lock and the agent, same transaction."""
     db = any_db
