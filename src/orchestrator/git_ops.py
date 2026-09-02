@@ -1504,7 +1504,9 @@ class GitOpsMixin:
                     )
 
                 try:
-                    await self.db.update_task(task.id, status=TaskStatus.BLOCKED.value)
+                    await self.db.transition_task(
+                        task.id, TaskStatus.BLOCKED, context="merge_conflict"
+                    )
                 except Exception as db_err:
                     logger.warning(
                         "Task %s: failed to transition to BLOCKED: %s", task.id, db_err
@@ -1621,8 +1623,8 @@ class GitOpsMixin:
                         await self.db.set_task_meta(
                             task.id, "rejection_reason", reason
                         )
-                        await self.db.update_task(
-                            task.id, status=TaskStatus.BLOCKED.value
+                        await self.db.transition_task(
+                            task.id, TaskStatus.BLOCKED, context="merge_conflict"
                         )
                     except Exception:
                         pass
