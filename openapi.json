@@ -12414,6 +12414,11 @@
             ],
             "title": "Native Subagent Count"
           },
+          "subagents_spawned_total": {
+            "type": "integer",
+            "title": "Subagents Spawned Total",
+            "default": 0
+          },
           "settings": {
             "$ref": "#/components/schemas/AgentSettings"
           },
@@ -21701,6 +21706,24 @@
               }
             ],
             "title": "Project Id"
+          },
+          "subagents": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SubagentRollup"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "subagents_by_profile": {
+            "items": {
+              "$ref": "#/components/schemas/ProfileSubagentRollup"
+            },
+            "type": "array",
+            "title": "Subagents By Profile",
+            "default": []
           }
         },
         "type": "object",
@@ -25660,6 +25683,42 @@
           "name"
         ],
         "title": "ProfileDetail"
+      },
+      "ProfileSubagentRollup": {
+        "properties": {
+          "active_total": {
+            "type": "integer",
+            "title": "Active Total",
+            "default": 0
+          },
+          "native_total": {
+            "type": "integer",
+            "title": "Native Total",
+            "default": 0
+          },
+          "aq_total": {
+            "type": "integer",
+            "title": "Aq Total",
+            "default": 0
+          },
+          "spawned_total": {
+            "type": "integer",
+            "title": "Spawned Total",
+            "default": 0
+          },
+          "complete": {
+            "type": "boolean",
+            "title": "Complete",
+            "default": true
+          },
+          "profile_id": {
+            "type": "string",
+            "title": "Profile Id",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "ProfileSubagentRollup"
       },
       "ProfileSummary": {
         "properties": {
@@ -30208,6 +30267,38 @@
           "in_progress"
         ],
         "title": "StuckTasksThresholds"
+      },
+      "SubagentRollup": {
+        "properties": {
+          "active_total": {
+            "type": "integer",
+            "title": "Active Total",
+            "default": 0
+          },
+          "native_total": {
+            "type": "integer",
+            "title": "Native Total",
+            "default": 0
+          },
+          "aq_total": {
+            "type": "integer",
+            "title": "Aq Total",
+            "default": 0
+          },
+          "spawned_total": {
+            "type": "integer",
+            "title": "Spawned Total",
+            "default": 0
+          },
+          "complete": {
+            "type": "boolean",
+            "title": "Complete",
+            "default": true
+          }
+        },
+        "type": "object",
+        "title": "SubagentRollup",
+        "description": "Sub-agent totals across a set of agents.\n\n``complete`` is a conjunction: one live session without harness hooks\nmakes every number here a lower bound, and callers must say so rather\nthan present a floor as a total."
       },
       "TaskBatchAckResponse": {
         "properties": {

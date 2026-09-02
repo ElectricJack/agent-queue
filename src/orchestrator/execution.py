@@ -776,6 +776,7 @@ class ExecutionMixin:
             session_key=resume_key or (session_id if harness.session_id_flag else None),
             work_dir=work_dir, epoch=self.daemon_epoch, instance_token=instance_token,
             started_at=launched_at, last_activity=launched_at,
+            hooks_provisioned=spec.hooks_provisioned,
         )
 
         async def record_failed_launch(reason):

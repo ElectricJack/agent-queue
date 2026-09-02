@@ -83,7 +83,13 @@ EXCLUDE_END = "# <<< agent-queue managed <<<"
 #: every worktree of the repository, so one line here keeps ``git status``
 #: clean in every slot.  Without it the sentinel shows up as untracked in each
 #: slot and gets swept into the salvage patch.
-EXCLUDE_BODY = "/.aq/\n/.aq-worktree.json"
+#:
+#: ``/.codex/`` is here for the same reason: Codex discovers its hook file by
+#: path only (no ``--settings`` analogue), so the session runtime has to write
+#: ``<work_dir>/.codex/hooks.json`` into the slot rather than pass it as a
+#: flag.  Excluding only untracked paths, so a repo that genuinely tracks
+#: ``.codex/`` is unaffected.
+EXCLUDE_BODY = "/.aq/\n/.aq-worktree.json\n/.codex/"
 EXCLUDE_BLOCK = f"{EXCLUDE_BEGIN}\n{EXCLUDE_BODY}\n{EXCLUDE_END}\n"
 
 #: The block is *located* by these ASCII-only prefixes rather than by

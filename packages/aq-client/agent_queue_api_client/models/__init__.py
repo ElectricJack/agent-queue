@@ -576,6 +576,7 @@ from .probed_tool_model import ProbedToolModel
 from .probed_tool_model_input_schema import ProbedToolModelInputSchema
 from .profile_detail import ProfileDetail
 from .profile_detail_install import ProfileDetailInstall
+from .profile_subagent_rollup import ProfileSubagentRollup
 from .profile_summary import ProfileSummary
 from .project_graph_response import ProjectGraphResponse
 from .project_profile_row import ProjectProfileRow
@@ -764,6 +765,7 @@ from .stub_scan_project import StubScanProject
 from .stub_scan_totals import StubScanTotals
 from .stuck_task import StuckTask
 from .stuck_tasks_thresholds import StuckTasksThresholds
+from .subagent_rollup import SubagentRollup
 from .tail_api_streams_stream_id_tail_get_response_tail_api_streams_stream_id_tail_get import (
     TailApiStreamsStreamIdTailGetResponseTailApiStreamsStreamIdTailGet,
 )
@@ -1440,6 +1442,7 @@ __all__ = (
     "ProbeMcpServerResponse422",
     "ProfileDetail",
     "ProfileDetailInstall",
+    "ProfileSubagentRollup",
     "ProfileSummary",
     "ProjectGraphResponse",
     "ProjectProfileRow",
@@ -1628,6 +1631,7 @@ __all__ = (
     "StubScanTotals",
     "StuckTask",
     "StuckTasksThresholds",
+    "SubagentRollup",
     "TailApiStreamsStreamIdTailGetResponseTailApiStreamsStreamIdTailGet",
     "TaskBatchAckResponse",
     "TaskBatchCommitRequest",

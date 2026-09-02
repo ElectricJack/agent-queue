@@ -244,6 +244,88 @@ class TestHookSettingsWiring:
         )
 
 
+class TestCodexHookTrust:
+    """Codex discovers its hook file by path and refuses to run it untrusted."""
+
+    CODEX = Harness(
+        id="codex",
+        name="OpenAI Codex",
+        command="codex",
+        permission_flag="--dangerously-bypass-approvals-and-sandbox",
+        supports_hooks=True,
+        hook_files=((".codex/hooks.json", "hooks/codex.json"),),
+        hook_trust_flag="--dangerously-bypass-hook-trust",
+    )
+
+    def test_the_file_is_written_into_the_work_dir_with_no_settings_flag(self, builder):
+        spec = _isolated(builder, harness=self.CODEX)
+        by_path = dict(spec.files)
+        assert ".codex/hooks.json" in by_path
+        assert "--settings" not in spec.command
+
+    def test_the_trust_flag_rides_the_isolated_worktree_argument(self, builder):
+        assert "--dangerously-bypass-hook-trust" in _isolated(
+            builder, harness=self.CODEX
+        ).command
+
+    def test_a_linked_checkout_keeps_hook_review_and_loses_the_telemetry(self, builder):
+        from src.models import RepoSourceType
+
+        spec = _build(
+            builder, harness=self.CODEX, workspace_source_type=RepoSourceType.LINK
+        )
+        # A repo we do not own may carry its own .codex/hooks.json; we do not
+        # pre-trust that just to count sub-agents.
+        assert "--dangerously-bypass-hook-trust" not in spec.command
+        assert spec.hooks_provisioned is False
+
+    def test_hooks_provisioned_records_whether_the_launch_actually_wired_them(self, builder):
+        assert _isolated(builder, harness=self.CODEX).hooks_provisioned is True
+        claude = replace(
+            CLAUDE, supports_hooks=True,
+            hook_files=((".aq/hooks/claude.json", "hooks/claude.json"),),
+            settings_flag="--settings",
+        )
+        assert _build(builder, harness=claude).hooks_provisioned is True
+        # No hook file at all — nothing to be provisioned by.
+        assert _build(builder).hooks_provisioned is False
+        # Declares a file but nothing makes it live: the "dead file" case.
+        inert = replace(
+            CLAUDE, supports_hooks=True,
+            hook_files=((".aq/hooks/claude.json", "hooks/claude.json"),),
+            settings_flag="",
+        )
+        assert _build(builder, harness=inert).hooks_provisioned is False
+
+    def test_the_codex_payload_wires_only_the_two_subagent_events(self, builder):
+        import json as _json
+
+        payload = _json.loads(
+            dict(_isolated(builder, harness=self.CODEX).files)[".codex/hooks.json"]
+        )
+        assert set(payload["hooks"]) == {"SubagentStart", "SubagentStop"}
+        entry = payload["hooks"]["SubagentStart"][0]["hooks"][0]
+        # Codex refuses to parse a handler without "type" and then silently
+        # runs no hooks at all — measured on codex-cli 0.151.0.
+        assert entry["type"] == "command"
+        assert entry["command"] == "aq subagent event --hook-json"
+
+    def test_the_shipped_codex_harness_declares_the_trust_flag(self, tmp_path):
+        """``supports_hooks: true`` with no way to be trusted is a dead file."""
+        from src.sessions.harness_registry import HarnessRegistry, load_from_vault
+        from src.vault import ensure_default_harnesses
+
+        ensure_default_harnesses(str(tmp_path))
+        registry = HarnessRegistry()
+        load_from_vault(registry, str(tmp_path / "vault"))
+        codex = registry.get("codex", None)
+        assert codex.supports_hooks and codex.hook_files
+        assert not codex.settings_flag, "codex has no settings-file flag"
+        assert codex.hook_trust_flag, (
+            "codex declares hook_files but nothing that makes them run"
+        )
+
+
 class TestArgvComposition:
     def test_basic_argv(self, builder):
         spec = _isolated(builder)
@@ -556,11 +638,12 @@ class TestHookMaterial:
         spec = _build(builder, harness=harness)
         assert spec.files == ()  # launch still proceeds
 
-    def test_hook_payload_contains_the_two_shipped_hook_events(self, builder):
-        """SessionStart and PreCompact — no Stop, and no UserPromptSubmit.
+    def test_hook_payload_contains_the_four_shipped_hook_events(self, builder):
+        """SessionStart, PreCompact and the two subagent halves.
 
-        Design §3.8 declared a third: ``aq inbox --inject`` at every prompt
-        boundary.  It was removed 2026-08-27 — see the class of test below.
+        No Stop, and no UserPromptSubmit.  Design §3.8 declared the latter:
+        ``aq inbox --inject`` at every prompt boundary.  It was removed
+        2026-08-27 — see the class of test below.
         """
         import json as _json
 
@@ -573,7 +656,29 @@ class TestHookMaterial:
         by_path = dict(spec.files)
         payload = _json.loads(by_path[".aq/hooks/claude.json"])
         hooks = payload["hooks"]
-        assert set(hooks.keys()) == {"SessionStart", "PreCompact"}, hooks.keys()
+        assert set(hooks.keys()) == {
+            "SessionStart", "PreCompact", "SubagentStart", "SubagentStop",
+        }, hooks.keys()
+
+    def test_the_subagent_halves_both_report_to_one_receiver(self, builder):
+        """Start and stop must land in the same place or they cannot pair."""
+        import json as _json
+
+        harness = replace(
+            CLAUDE, supports_hooks=True,
+            hook_files=((".aq/hooks/claude.json", "hooks/claude.json"),),
+        )
+        payload = _json.loads(
+            dict(_build(builder, harness=harness).files)[".aq/hooks/claude.json"]
+        )
+        for event in ("SubagentStart", "SubagentStop"):
+            entry = payload["hooks"][event][0]["hooks"][0]
+            assert entry["type"] == "command"
+            assert entry["command"] == "aq subagent event --hook-json"
+            # Short: this runs on the agent's critical path, twice per child.
+            assert entry["timeout"] == 10
+        # No matcher — every sub-agent type counts, not a curated subset.
+        assert "matcher" not in payload["hooks"]["SubagentStart"][0]
 
     def test_session_start_hook_runs_aq_prime(self, builder):
         import json as _json

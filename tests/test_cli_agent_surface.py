@@ -23,7 +23,12 @@ def runner():
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
-    for var in ("AQ_TASK_ID", "AQ_SESSION_ID", "AQ_STARTUP_PROMPT_DELIVERED"):
+    # ``AQ_API_TOKEN`` is here because these tests may themselves be running
+    # inside a session that exports one; a leaked token silently flips the
+    # tokened/untokened branch under test.
+    for var in (
+        "AQ_TASK_ID", "AQ_SESSION_ID", "AQ_STARTUP_PROMPT_DELIVERED", "AQ_API_TOKEN",
+    ):
         monkeypatch.delenv(var, raising=False)
     yield
 
@@ -302,3 +307,103 @@ class TestInboxCLI:
             result = runner.invoke(cli, ["inbox", "--inject"])
         assert result.exit_code == 0
         get_client.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# aq subagent event — the SubagentStart / SubagentStop receiver
+# ---------------------------------------------------------------------------
+
+
+class TestSubagentEventCLI:
+    """Two hard rules: never block the agent, never fail in its face."""
+
+    CLAUDE_START = json.dumps({
+        "session_id": "harness-session", "cwd": "/repo",
+        "transcript_path": "/t.jsonl", "hook_event_name": "SubagentStart",
+        "agent_id": "agent_017Kx", "agent_type": "Explore",
+    })
+    CODEX_STOP = json.dumps({
+        "session_id": "harness-session", "turn_id": "turn-9", "cwd": "/repo",
+        "hook_event_name": "SubagentStop", "agent_id": "child-1",
+        "agent_type": "default", "agent_transcript_path": "/child.jsonl",
+        "last_assistant_message": "42",
+    })
+
+    def _run(self, runner, stdin, results=None, env=None):
+        from src.cli.app import cli
+
+        client = _mock_client(
+            results if results is not None else {"subagent_event": {"success": True}}
+        )
+        with patch("src.cli.agent_surface._get_client", return_value=client):
+            result = runner.invoke(
+                cli, ["subagent", "event", "--hook-json"], input=stdin, env=env or {},
+            )
+        return result, client
+
+    def test_a_claude_start_is_forwarded_as_a_start(self, runner):
+        result, client = self._run(runner, self.CLAUDE_START)
+        assert result.exit_code == 0
+        command, args = client.calls[0]
+        assert command == "subagent_event"
+        assert args["event"] == "start"
+        assert args["subagent_id"] == "agent_017Kx"
+        assert args["agent_type"] == "Explore"
+
+    def test_a_codex_stop_carries_its_turn(self, runner):
+        _result, client = self._run(runner, self.CODEX_STOP)
+        _command, args = client.calls[0]
+        assert args["event"] == "stop"
+        assert args["subagent_id"] == "child-1"
+        assert args["turn_id"] == "turn-9"
+
+    def test_the_bearer_token_names_the_session_not_the_environment(self, runner):
+        """Regression: sending both made any disagreement a hard rejection.
+
+        The hook inherits ``AQ_SESSION_ID`` from the session's env, but the
+        daemon derives the session from the token's own scope.  Sending the
+        env value as well turned a mismatch into ``out of scope: session_id
+        mismatch`` — a dropped count instead of a recorded one.  Found by
+        running a real Claude session against a real daemon.
+        """
+        _result, client = self._run(
+            runner, self.CLAUDE_START,
+            env={"AQ_API_TOKEN": "aqs_x", "AQ_SESSION_ID": "s-env"},
+        )
+        _command, args = client.calls[0]
+        assert "session_id" not in args
+
+    def test_an_untokened_local_call_still_names_its_session(self, runner):
+        _result, client = self._run(
+            runner, self.CLAUDE_START, env={"AQ_SESSION_ID": "s-env"},
+        )
+        _command, args = client.calls[0]
+        assert args["session_id"] == "s-env"
+
+    @pytest.mark.parametrize(
+        "stdin", ["", "not json", json.dumps({"hook_event_name": "Stop"})]
+    )
+    def test_a_payload_that_is_not_a_subagent_event_is_dropped_silently(self, runner, stdin):
+        result, client = self._run(runner, stdin)
+        assert result.exit_code == 0
+        assert client.calls == []
+        assert result.output == ""
+
+    def test_a_daemon_that_is_down_does_not_stop_the_subagent(self, runner):
+        result, _client = self._run(
+            runner, self.CLAUDE_START,
+            results={"subagent_event": RuntimeError("connection refused")},
+        )
+        # Exit 2 would block the sub-agent from starting; exit 1 would print
+        # an error into the agent's pane.  A missed count is neither.
+        assert result.exit_code == 0
+        assert result.output == ""
+
+    def test_a_command_error_is_also_swallowed(self, runner):
+        from src.cli.exceptions import CommandError
+
+        result, _client = self._run(
+            runner, self.CLAUDE_START,
+            results={"subagent_event": CommandError("subagent_event", "out of scope")},
+        )
+        assert result.exit_code == 0

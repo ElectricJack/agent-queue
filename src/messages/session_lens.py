@@ -434,6 +434,7 @@ class SessionLens:
                     session_key=resume_key or (session_id if harness.session_id_flag else None),
                     state="running",
                     desired_state="running",
+                    hooks_provisioned=spec.hooks_provisioned,
                 )
             )
         except BaseException as exc:
