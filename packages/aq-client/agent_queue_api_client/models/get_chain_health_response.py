@@ -138,10 +138,10 @@ class GetChainHealthResponse:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.get_chain_health_response_stuck_chains_type_0_item import (
-            GetChainHealthResponseStuckChainsType0Item,  # noqa: PLC0415
+            GetChainHealthResponseStuckChainsType0Item,
         )
         from ..models.get_chain_health_response_stuck_downstream_type_0_item import (
-            GetChainHealthResponseStuckDownstreamType0Item,  # noqa: PLC0415
+            GetChainHealthResponseStuckDownstreamType0Item,
         )
 
         d = dict(src_dict)

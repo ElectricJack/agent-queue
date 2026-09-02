@@ -28,6 +28,7 @@ class GetProjectResponse:
         budget_limit (int | None | Unset):
         discord_channel_id (None | str | Unset):
         default_profile_id (None | str | Unset):
+        assignment_playbook_id (None | str | Unset):
     """
 
     id: str
@@ -43,6 +44,7 @@ class GetProjectResponse:
     budget_limit: int | None | Unset = UNSET
     discord_channel_id: None | str | Unset = UNSET
     default_profile_id: None | str | Unset = UNSET
+    assignment_playbook_id: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -88,6 +90,12 @@ class GetProjectResponse:
         else:
             default_profile_id = self.default_profile_id
 
+        assignment_playbook_id: None | str | Unset
+        if isinstance(self.assignment_playbook_id, Unset):
+            assignment_playbook_id = UNSET
+        else:
+            assignment_playbook_id = self.assignment_playbook_id
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -118,6 +126,8 @@ class GetProjectResponse:
             field_dict["discord_channel_id"] = discord_channel_id
         if default_profile_id is not UNSET:
             field_dict["default_profile_id"] = default_profile_id
+        if assignment_playbook_id is not UNSET:
+            field_dict["assignment_playbook_id"] = assignment_playbook_id
 
         return field_dict
 
@@ -178,6 +188,15 @@ class GetProjectResponse:
 
         default_profile_id = _parse_default_profile_id(d.pop("default_profile_id", UNSET))
 
+        def _parse_assignment_playbook_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        assignment_playbook_id = _parse_assignment_playbook_id(d.pop("assignment_playbook_id", UNSET))
+
         get_project_response = cls(
             id=id,
             name=name,
@@ -192,6 +211,7 @@ class GetProjectResponse:
             budget_limit=budget_limit,
             discord_channel_id=discord_channel_id,
             default_profile_id=default_profile_id,
+            assignment_playbook_id=assignment_playbook_id,
         )
 
         get_project_response.additional_properties = d

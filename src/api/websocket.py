@@ -35,9 +35,8 @@ logger = logging.getLogger(__name__)
 # Max queued events per client before dropping oldest
 _MAX_QUEUE_SIZE = 1000
 
-# Event-type prefixes forwarded to WebSocket clients.  Extended (D3/D1/D2) so
-# the dashboard's gates inbox, sessions pages, and task views react live to
-# bus events — see docs/superpowers/plans/2026-08-21-wave4-dashboard-d1-d4.md.
+# Event-type prefixes forwarded to WebSocket clients.  The dashboard uses
+# these to invalidate live gates, sessions, tasks, and pool-management views.
 _FORWARDED_PREFIXES: tuple[str, ...] = (
     "notify.",
     "agent.",
@@ -45,6 +44,7 @@ _FORWARDED_PREFIXES: tuple[str, ...] = (
     "gate.",
     "session.",
     "task.",
+    "pool.",
 )
 
 
@@ -88,6 +88,31 @@ def _question_invalidation(data, scope):
     return result
 
 
+def _pool_event_allowed(data, scope) -> bool:
+    """Return whether *scope* may observe a pool event.
+
+    Pool events contain a session name and, when a worker claims work, task
+    metadata.  A scoped worker may see only its own pool events; a project
+    elevated session may see its project's complete pool dashboard.
+    """
+    nested = data.get("payload")
+    if isinstance(nested, str):
+        try:
+            nested = json.loads(nested)
+        except (ValueError, TypeError):
+            return False
+    nested = nested if isinstance(nested, dict) else {}
+    project_id = data.get("project_id") or nested.get("project_id")
+    session_id = data.get("session_id") or nested.get("session_id")
+    if getattr(scope, "kind", None) == "local":
+        return True
+    if getattr(scope, "kind", None) != "session" or not project_id:
+        return False
+    if scope.project_id is not None and scope.project_id != project_id:
+        return False
+    return bool(scope.elevated or (session_id and session_id == scope.session_id))
+
+
 class WebSocketManager:
     """Manages WebSocket client connections and event fan-out."""
 
@@ -104,7 +129,7 @@ class WebSocketManager:
         self._unsub: Any = None
 
     def start(self) -> None:
-        """Subscribe to all bus events and filter for notify.*."""
+        """Subscribe to all bus events and forward the allowed prefixes."""
         logger.info("WebSocketManager subscribing to bus %s (id=%d)", self._bus, id(self._bus))
         logger.info("Bus handlers before subscribe: %s", dict(self._bus._handlers))
         self._unsub = self._bus.subscribe("*", self._on_event)
@@ -117,7 +142,7 @@ class WebSocketManager:
             self._unsub = None
 
     def _on_event(self, data: dict[str, Any]) -> None:
-        """Fan out notify.* events to all connected clients."""
+        """Fan out allowed live events to all connected clients."""
         event_type = data.get("_event_type", "")
         logger.debug("WS _on_event received: %s (clients=%d)", event_type, len(self._clients))
         if not event_type.startswith(_FORWARDED_PREFIXES):
@@ -126,6 +151,10 @@ class WebSocketManager:
 
         for ws, queue in list(self._clients.items()):
             event = data
+            if event_type.startswith("pool.") and not _pool_event_allowed(
+                data, self._client_scope.get(ws)
+            ):
+                continue
             if event_type in _QUESTION_EVENTS:
                 event = _question_invalidation(data, self._client_scope.get(ws))
                 if event is None:
@@ -241,6 +270,8 @@ class WebSocketManager:
                             "payload": row.get("payload"),
                             "timestamp": row.get("timestamp"),
                         }
+                        if event_type.startswith("pool.") and not _pool_event_allowed(frame, scope):
+                            continue
                         if event_type in _QUESTION_EVENTS:
                             frame = _question_invalidation(frame, scope)
                             if frame is None:

@@ -464,6 +464,16 @@ class PoolsMixin:
             harness.id,
             work_dir,
         )
+        await self.bus.emit(
+            "pool.session_started",
+            {
+                "project_id": project.id,
+                "profile_id": profile.id,
+                "session_id": session_id,
+                "name": spec.session_name,
+                "state": "running",
+            },
+        )
         return session_id
 
     def _pool_teardown_lock(self, session_id):
@@ -538,3 +548,13 @@ class PoolsMixin:
             )
         if session.agent_id and not other_live and still_owned:
             await self.db.update_agent(session.agent_id, state=AgentState.IDLE, current_task_id=None)
+        await self.bus.emit(
+            "pool.session_drained",
+            {
+                "project_id": session.project_id,
+                "profile_id": session.profile_id,
+                "session_id": session.id,
+                "name": session.name,
+                "reason": reason,
+            },
+        )

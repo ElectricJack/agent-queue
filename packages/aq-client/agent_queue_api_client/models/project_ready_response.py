@@ -61,8 +61,8 @@ class ProjectReadyResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.ready_task import ReadyTask  # noqa: PLC0415
-        from ..models.withheld_task import WithheldTask  # noqa: PLC0415
+        from ..models.ready_task import ReadyTask
+        from ..models.withheld_task import WithheldTask
 
         d = dict(src_dict)
         success = d.pop("success", UNSET)

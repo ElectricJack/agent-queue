@@ -87,7 +87,7 @@ class StubScanProject:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.stub_scan_entry import StubScanEntry  # noqa: PLC0415
+        from ..models.stub_scan_entry import StubScanEntry
 
         d = dict(src_dict)
         project_id = d.pop("project_id")

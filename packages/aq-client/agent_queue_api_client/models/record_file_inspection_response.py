@@ -71,7 +71,7 @@ class RecordFileInspectionResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.file_inspection_record import FileInspectionRecord  # noqa: PLC0415
+        from ..models.file_inspection_record import FileInspectionRecord
 
         d = dict(src_dict)
         project_id = d.pop("project_id")

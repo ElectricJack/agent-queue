@@ -493,6 +493,19 @@ class TaskBatchCommitResponse(BaseModel):
     task_ids: list[str] = []
 
 
+class PoolInstanceStatus(BaseModel):
+    """One active or quarantined session belonging to a worker pool."""
+
+    session_id: str
+    name: str
+    state: str
+    task_id: str | None = None
+    task_title: str | None = None
+    idle_seconds: float | None = None
+    started_at: float
+    quarantine_reason: str | None = None
+
+
 class PoolStatusRow(BaseModel):
     """One (project, profile) worker-pool row — swarm-work-model §11."""
 
@@ -507,6 +520,7 @@ class PoolStatusRow(BaseModel):
     draining: int
     ready: int
     quarantined_until: float | None = None
+    instances: list[PoolInstanceStatus] = []
 
 
 class PoolStatusResponse(BaseModel):
@@ -586,7 +600,17 @@ class PoolScaleResponse(BaseModel):
     profile_id: str | None = None
     min_active: int | None = None
     max_active: int | None = None
+    project_cap: int | None = None
+    effective_max_active: int | None = None
     terminated: list[str] = []
+    error: str | None = None
+
+
+class PoolSetLifecycleResponse(BaseModel):
+    success: bool
+    project_id: str | None = None
+    profile_id: str | None = None
+    lifecycle: str | None = None
     error: str | None = None
 
 
@@ -645,6 +669,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "task_claim": TaskClaimResponse,
     "pool_status": PoolStatusResponse,
     "pool_scale": PoolScaleResponse,
+    "pool_set_lifecycle": PoolSetLifecycleResponse,
     "formula_list": FormulaListResponse,
     "formula_show": FormulaShowResponse,
     "formula_cook": FormulaCookResponse,

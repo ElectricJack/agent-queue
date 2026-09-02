@@ -1319,6 +1319,15 @@ class SessionReconciler:
             project_id=row.project_id,
             reason=reason,
         )
+        if row.lifecycle == "pool":
+            await self._emit(
+                "pool.session_quarantined",
+                project_id=row.project_id,
+                profile_id=row.profile_id,
+                session_id=row.id,
+                name=row.name,
+                reason=reason,
+            )
         if task is not None:
             await self.db.set_task_meta(task.id, "needs_attention", f"session_{reason}")
             await self.db.transition_task(

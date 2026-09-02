@@ -15,6 +15,8 @@ T = TypeVar("T", bound="ListProjectProfilesResponseToolCatalog")
 
 @_attrs_define
 class ListProjectProfilesResponseToolCatalog:
+    """ """
+
     additional_properties: dict[str, CatalogEntryModel] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -27,7 +29,7 @@ class ListProjectProfilesResponseToolCatalog:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.catalog_entry_model import CatalogEntryModel  # noqa: PLC0415
+        from ..models.catalog_entry_model import CatalogEntryModel
 
         d = dict(src_dict)
         list_project_profiles_response_tool_catalog = cls()

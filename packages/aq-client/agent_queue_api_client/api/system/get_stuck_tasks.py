@@ -65,12 +65,12 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: GetStuckTasksRequest,
 ) -> Response[GetStuckTasksResponse | GetStuckTasksResponse422]:
-    """Return tasks stuck in ASSIGNED or IN_PROGRESS beyond their per-status threshold.  Detection and time
+    r"""Return tasks stuck in ASSIGNED or IN_PROGRESS beyond their per-status threshold.  Detection and time
     arithmetic run in the database — the caller passes thresholds and a reference ``now`` timestamp and
     receives a structured list back.  Defaults match the system-health-check playbook's stuck
     definition: ASSIGNED > 30 minutes, IN_PROGRESS > 2 hours.  Each entry carries ``id``,
     ``project_id``, ``status``, ``assigned_agent``, ``updated_at``, and ``seconds_in_state`` so
-    remediation (``restart_task`` vs ``set_task_status(..., status="READY")``) can branch on the agent
+    remediation (``restart_task`` vs ``set_task_status(..., status=\"READY\")``) can branch on the agent
     state.
 
      Return tasks stuck in ASSIGNED or IN_PROGRESS beyond their per-status threshold.  Detection and time
@@ -78,7 +78,7 @@ def sync_detailed(
     receives a structured list back.  Defaults match the system-health-check playbook's stuck
     definition: ASSIGNED > 30 minutes, IN_PROGRESS > 2 hours.  Each entry carries ``id``,
     ``project_id``, ``status``, ``assigned_agent``, ``updated_at``, and ``seconds_in_state`` so
-    remediation (``restart_task`` vs ``set_task_status(..., status="READY")``) can branch on the agent
+    remediation (``restart_task`` vs ``set_task_status(..., status=\"READY\")``) can branch on the agent
     state.
 
     Args:
@@ -108,12 +108,12 @@ def sync(
     client: AuthenticatedClient | Client,
     body: GetStuckTasksRequest,
 ) -> GetStuckTasksResponse | GetStuckTasksResponse422 | None:
-    """Return tasks stuck in ASSIGNED or IN_PROGRESS beyond their per-status threshold.  Detection and time
+    r"""Return tasks stuck in ASSIGNED or IN_PROGRESS beyond their per-status threshold.  Detection and time
     arithmetic run in the database — the caller passes thresholds and a reference ``now`` timestamp and
     receives a structured list back.  Defaults match the system-health-check playbook's stuck
     definition: ASSIGNED > 30 minutes, IN_PROGRESS > 2 hours.  Each entry carries ``id``,
     ``project_id``, ``status``, ``assigned_agent``, ``updated_at``, and ``seconds_in_state`` so
-    remediation (``restart_task`` vs ``set_task_status(..., status="READY")``) can branch on the agent
+    remediation (``restart_task`` vs ``set_task_status(..., status=\"READY\")``) can branch on the agent
     state.
 
      Return tasks stuck in ASSIGNED or IN_PROGRESS beyond their per-status threshold.  Detection and time
@@ -121,7 +121,7 @@ def sync(
     receives a structured list back.  Defaults match the system-health-check playbook's stuck
     definition: ASSIGNED > 30 minutes, IN_PROGRESS > 2 hours.  Each entry carries ``id``,
     ``project_id``, ``status``, ``assigned_agent``, ``updated_at``, and ``seconds_in_state`` so
-    remediation (``restart_task`` vs ``set_task_status(..., status="READY")``) can branch on the agent
+    remediation (``restart_task`` vs ``set_task_status(..., status=\"READY\")``) can branch on the agent
     state.
 
     Args:
@@ -146,12 +146,12 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: GetStuckTasksRequest,
 ) -> Response[GetStuckTasksResponse | GetStuckTasksResponse422]:
-    """Return tasks stuck in ASSIGNED or IN_PROGRESS beyond their per-status threshold.  Detection and time
+    r"""Return tasks stuck in ASSIGNED or IN_PROGRESS beyond their per-status threshold.  Detection and time
     arithmetic run in the database — the caller passes thresholds and a reference ``now`` timestamp and
     receives a structured list back.  Defaults match the system-health-check playbook's stuck
     definition: ASSIGNED > 30 minutes, IN_PROGRESS > 2 hours.  Each entry carries ``id``,
     ``project_id``, ``status``, ``assigned_agent``, ``updated_at``, and ``seconds_in_state`` so
-    remediation (``restart_task`` vs ``set_task_status(..., status="READY")``) can branch on the agent
+    remediation (``restart_task`` vs ``set_task_status(..., status=\"READY\")``) can branch on the agent
     state.
 
      Return tasks stuck in ASSIGNED or IN_PROGRESS beyond their per-status threshold.  Detection and time
@@ -159,7 +159,7 @@ async def asyncio_detailed(
     receives a structured list back.  Defaults match the system-health-check playbook's stuck
     definition: ASSIGNED > 30 minutes, IN_PROGRESS > 2 hours.  Each entry carries ``id``,
     ``project_id``, ``status``, ``assigned_agent``, ``updated_at``, and ``seconds_in_state`` so
-    remediation (``restart_task`` vs ``set_task_status(..., status="READY")``) can branch on the agent
+    remediation (``restart_task`` vs ``set_task_status(..., status=\"READY\")``) can branch on the agent
     state.
 
     Args:
@@ -187,12 +187,12 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: GetStuckTasksRequest,
 ) -> GetStuckTasksResponse | GetStuckTasksResponse422 | None:
-    """Return tasks stuck in ASSIGNED or IN_PROGRESS beyond their per-status threshold.  Detection and time
+    r"""Return tasks stuck in ASSIGNED or IN_PROGRESS beyond their per-status threshold.  Detection and time
     arithmetic run in the database — the caller passes thresholds and a reference ``now`` timestamp and
     receives a structured list back.  Defaults match the system-health-check playbook's stuck
     definition: ASSIGNED > 30 minutes, IN_PROGRESS > 2 hours.  Each entry carries ``id``,
     ``project_id``, ``status``, ``assigned_agent``, ``updated_at``, and ``seconds_in_state`` so
-    remediation (``restart_task`` vs ``set_task_status(..., status="READY")``) can branch on the agent
+    remediation (``restart_task`` vs ``set_task_status(..., status=\"READY\")``) can branch on the agent
     state.
 
      Return tasks stuck in ASSIGNED or IN_PROGRESS beyond their per-status threshold.  Detection and time
@@ -200,7 +200,7 @@ async def asyncio(
     receives a structured list back.  Defaults match the system-health-check playbook's stuck
     definition: ASSIGNED > 30 minutes, IN_PROGRESS > 2 hours.  Each entry carries ``id``,
     ``project_id``, ``status``, ``assigned_agent``, ``updated_at``, and ``seconds_in_state`` so
-    remediation (``restart_task`` vs ``set_task_status(..., status="READY")``) can branch on the agent
+    remediation (``restart_task`` vs ``set_task_status(..., status=\"READY\")``) can branch on the agent
     state.
 
     Args:

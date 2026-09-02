@@ -66,7 +66,7 @@ class FindMergeConflictWorkspacesResponse:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.find_merge_conflict_workspaces_response_conflicts_item import (
-            FindMergeConflictWorkspacesResponseConflictsItem,  # noqa: PLC0415
+            FindMergeConflictWorkspacesResponseConflictsItem,
         )
 
         d = dict(src_dict)

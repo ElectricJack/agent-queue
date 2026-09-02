@@ -105,7 +105,7 @@ class CatalogEntryModel:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.probed_tool_model import ProbedToolModel  # noqa: PLC0415
+        from ..models.probed_tool_model import ProbedToolModel
 
         d = dict(src_dict)
         server_name = d.pop("server_name")

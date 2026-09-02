@@ -99,7 +99,7 @@ class RunPlaybookResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.run_playbook_response_node_trace_item import RunPlaybookResponseNodeTraceItem  # noqa: PLC0415
+        from ..models.run_playbook_response_node_trace_item import RunPlaybookResponseNodeTraceItem
 
         d = dict(src_dict)
         run_id = d.pop("run_id")
