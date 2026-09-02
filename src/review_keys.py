@@ -29,12 +29,14 @@ because each one alone is disarmable:
 playbook markdown remains the source of truth for the key strings; nothing
 here may drift from it.
 
-The pipeline dispatch path sets the same flag again from the hydrated task row
-via :func:`flag_review_task_event`; this covers emitters that omit it.  Finally,
-``ensure_task`` refuses to create a ``review:task:<X>`` row when X itself
-carries either pipeline review key, via :func:`reviewed_task_id` and
-:func:`is_pipeline_review_task`.  That command-level guard protects older
-emitters and operator-edited pipeline copies that lack the event guards.
+The common event emitter derives the dedup-key signal for every
+``task.completed``, and the pipeline dispatch path sets it again from the
+hydrated task row via :func:`flag_review_task_event`; together they cover new
+emitters and older or hand-written events.  Finally, ``ensure_task`` refuses to
+create a ``review:task:<X>`` row when X itself carries either pipeline review
+key, via :func:`reviewed_task_id` and :func:`is_pipeline_review_task`.  That
+command-level guard protects older emitters and operator-edited pipeline copies
+that lack the event guards.
 
 Kept dependency-free so both the doctor and the orchestrator can import it.
 """

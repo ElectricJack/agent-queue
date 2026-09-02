@@ -19,7 +19,7 @@ import pytest
 from src.commands.handler import CommandHandler
 from src.config import AppConfig, DiscordConfig
 from src.database import Database
-from src.models import AgentProfile, Project
+from src.models import AgentProfile, Project, Task
 from src.orchestrator import Orchestrator
 from src.orchestrator.core import _eval_pipeline_when
 
@@ -597,3 +597,49 @@ async def test_unguarded_review_rule_still_cannot_review_a_review(command_handle
     assert [t.id for t in reviews_after] == [review.id], (
         f"review of the review spawned: {[(t.id, t.title) for t in reviews_after]}"
     )
+
+
+# ---------------------------------------------------------------------------
+# The ``review_task`` flag is emitter-independent (task prime-quest-67)
+# ---------------------------------------------------------------------------
+
+
+async def test_emit_task_completed_derives_review_task_from_the_dedup_key(
+    command_handler_factory,
+):
+    """Every ``task.completed`` derives ``review_task`` at the emit choke point."""
+    h = await command_handler_factory()
+    o = h.orchestrator
+
+    review = Task(
+        id="r1", project_id="p", title="Review: T1", description="", dedup_key="review:task:t1"
+    )
+    await o._emit_task_event("task.completed", review)
+    assert o.bus.emit.await_args.args[1]["review_task"] is True
+
+    o.bus.emit.reset_mock()
+    work = Task(id="t1", project_id="p", title="T1", description="", dedup_key=None)
+    await o._emit_task_event("task.completed", work)
+    assert o.bus.emit.await_args.args[1]["review_task"] is False
+
+
+async def test_emit_task_event_lets_the_caller_override_review_task(command_handler_factory):
+    """An explicit kwarg still wins; derivation supplies only the default."""
+    h = await command_handler_factory()
+    o = h.orchestrator
+
+    work = Task(id="t1", project_id="p", title="T1", description="", dedup_key=None)
+    await o._emit_task_event("task.completed", work, review_task=True)
+    assert o.bus.emit.await_args.args[1]["review_task"] is True
+
+
+async def test_emit_only_task_completed_carries_review_task(command_handler_factory):
+    """Other task events retain their registered payload shapes."""
+    h = await command_handler_factory()
+    o = h.orchestrator
+
+    review = Task(
+        id="r1", project_id="p", title="Review: T1", description="", dedup_key="review:task:t1"
+    )
+    await o._emit_task_event("task.ready", review, reason="graph")
+    assert "review_task" not in o.bus.emit.await_args.args[1]

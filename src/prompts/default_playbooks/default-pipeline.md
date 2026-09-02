@@ -79,11 +79,12 @@ and the `Review: Review: ...` chain grew again (task solid-beacon-50). A custom
 pipeline that both keys its review tasks differently *and* runs them under its
 own profile ids must add its own guard.
 
-The dispatch path (`Orchestrator._on_playbook_trigger`) derives the dedup-key
-signal again from the hydrated task row, because `truthy: false` passes on a
-*missing* key: an emitter that never sets it — a daemon still running code
-older than the flag, container settlement, or a hand-written event — used to
-fire the review anyway (task prime-cascade-64).
+The common event emitter derives the dedup-key signal from the task row for
+every `task.completed`, so container settlement and future emitters cannot
+forget it (task prime-quest-67). The dispatch path
+(`Orchestrator._on_playbook_trigger`) derives it again from the hydrated task
+row, because `truthy: false` passes on a *missing* key: an older daemon or a
+hand-written event used to fire the review anyway (task prime-cascade-64).
 
 Neither event flag reaches a daemon still running code older than the flag, nor
 a vault copy of this file whose rules an operator edited (`ensure_default_playbooks`
