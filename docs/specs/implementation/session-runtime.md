@@ -389,6 +389,15 @@ Registered in `src/api/app.py::create_app` next to `execute_router`/`health_rout
 `_run_completion_pipeline` via the orchestrator, transitions the task) and
 `_cmd_task_heartbeat` (updates `agents.last_heartbeat` + `touch_session_activity`).
 
+**A PR is matched by head commit, not only by head name.** In `pull_request` mode
+verification looks for an open PR for the task branch (`GitManager.afind_open_pr`). Matching
+only `--head aq/<task_id>` failed correct, fully pushed work: a task description that names a
+different delivery branch (or an agent that opened the PR from a second ref pointed at the
+same tip) publishes exactly these commits under another head name, and the check reported
+"no open PR" and burned a retry. So the name match is tried first and, failing that, any open
+PR whose head commit equals the task branch's tip — or the workspace `HEAD`, for when the
+agent never moved the task branch — is accepted and recorded as `pr_url`.
+
 **Close refused for fixable git verification.** When the close comes from a session whose
 row is still live (`PipelineContext.close_session_live`) and `_phase_verify` finds only
 *fixable* issues (uncommitted work, unpushed commits, no open PR), the close is **refused
@@ -461,7 +470,7 @@ See `docs/specs/config.md` §4.11 for the `swarm` config section and
 
 ```yaml
 sessions:
-  enabled: false              # feature flag; false = legacy runtimes only
+  enabled: true               # default on; false = this daemon dispatches nothing
   provider: tmux              # tmux | subprocess | fake
   tmux_socket: aq             # tmux -L name; one server per daemon
   lease_ttl_seconds: 480
@@ -484,6 +493,12 @@ round-trip) without additions. Per-profile keys (`harness`, `lifecycle`, `wake_m
 `idle_timeout`, `max_session_age`) extend `CONFIG_KNOWN_KEYS` in `src/profiles/parser.py`.
 
 ## 6. Feature Flag and Rollout (dual-run)
+
+> **Completed.** Step 5 has landed: the runtime subsystem is gone and a session is the
+> only execution path, so the flag no longer selects between two paths. It now defaults
+> to `true` and `false` means "dispatch disabled" — `AppConfig.validate()` emits a
+> warning for it rather than letting it surface as tasks that sit in READY forever.
+> The steps below are kept as the record of how the flip was staged.
 
 1. `sessions.enabled: false` ships first — all new code dormant, tests green.
 2. Routing rule in `_execute_task`: session path iff `sessions.enabled` **and** the resolved

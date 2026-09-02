@@ -338,7 +338,12 @@ class TestAcquireForTask:
         assert attachment.workspace.id == "fallback"
         assert (await db.get_workspace("preferred")).locked_by_task_id == blocked.id
 
-    async def test_read_only_mixed_requirements_attach_without_any_write_locks(self, db):
+    async def test_mixed_requirements_lock_only_the_lockable_kinds(self, db):
+        """Non-lockable kinds attach without a lock; lockable ones are locked.
+
+        ``acquire_for_task`` no longer has a read-only mode: skipping the
+        lock is what used to hand read-only agents the base checkout.
+        """
         await _add_workspace(
             db, ws_id="repo", project_id="p1", path="/repo", kind_id="project-repo"
         )
@@ -350,17 +355,19 @@ class TestAcquireForTask:
         await db.add_task_workspace_requirements(
             task.id, [("project-repo", None), ("reference", None)]
         )
-        attachments = await acquire_for_task(db, task, agent.id, read_only=True)
+        attachments = await acquire_for_task(db, task, agent.id)
         assert {attachment.kind_id for attachment in attachments.attachments} == {
             "project-repo",
             "reference",
             "vault",
         }
-        workspaces = [
-            await db.get_workspace(attachment.workspace.id)
+        locked = {
+            attachment.kind_id: (await db.get_workspace(attachment.workspace.id)).locked_by_task_id
             for attachment in attachments.attachments
-        ]
-        assert all(workspace.locked_by_task_id is None for workspace in workspaces)
+        }
+        assert locked["project-repo"] == task.id
+        assert locked["reference"] is None
+        assert locked["vault"] is None
 
     async def test_back_compat_single_workspace(self, db):
         """Spec §14 #7: existing tasks with no requirements get a project-repo

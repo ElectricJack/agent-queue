@@ -9,6 +9,38 @@ from src.api.scope import AGENT_COMMAND_SET, check_command_scope
 SESSION = RequestScope(kind="session", session_id="s1", task_id="t1", project_id="p1")
 
 
+#: The exact server-owned agent allowlist (``src/api/scope.py``).
+#: Pinned so a name can only enter it deliberately — Playbook V2
+#: Package 0 §3.7 explicitly does not widen this set to make room for
+#: the capability gate.
+EXPECTED_AGENT_COMMANDS = {
+    "prime",
+    "get_schema",
+    "task_show",
+    "task_set",
+    "task_comment",
+    "task_comments",
+    "task_close",
+    "task_children",
+    "task_progress",
+    "task_heartbeat",
+    "task_handoff",
+    "ask_human",
+    "message_send",
+    "message_inbox",
+    "message_reply",
+    "memory_save",
+    "memory_search",
+    "task_claim",
+    "session_drain_ack",
+    "create_task",
+    "project_ready",
+    "formula_list",
+    "formula_show",
+    "subagent_event",
+}
+
+
 class TestCheckCommandScope:
     def test_local_scope_allows_anything(self):
         assert check_command_scope("literally_anything", {"x": 1}, LOCAL_SCOPE) is None
@@ -154,29 +186,68 @@ class TestCheckCommandScope:
         assert msg is not None and "session_id mismatch" in msg
 
     def test_agent_command_set_contents(self):
-        expected = {
-            "prime",
-            "get_schema",
-            "task_show",
-            "task_set",
-            "task_comment",
-            "task_comments",
-            "task_close",
-            "task_children",
-            "task_progress",
-            "task_heartbeat",
-            "task_handoff",
-            "ask_human",
-            "message_send",
-            "message_inbox",
-            "message_reply",
-            "memory_save",
-            "memory_search",
-            "task_claim",
-            "session_drain_ack",
-            "create_task",
-            "project_ready",
-            "formula_list",
-            "formula_show",
-        }
-        assert set(AGENT_COMMAND_SET) == expected
+        assert set(AGENT_COMMAND_SET) == EXPECTED_AGENT_COMMANDS
+
+
+class TestScopeAndCapabilityCompose:
+    """Playbook V2 Package 0 §3.7 — two independent gates, not one.
+
+    ``check_request_scope`` is a *server-owned* allowlist: the same names
+    for every non-elevated session, regardless of profile. The capability
+    gate is *profile-owned*. A command must pass both. Package 0 deliberately
+    does not relax the scope gate to make room for the new one, and does not
+    widen ``AGENT_COMMAND_SET`` to shrink the §1.5 unreachable set.
+    """
+
+    def test_the_scope_gate_is_unchanged_by_package_0(self):
+        """The scope allowlist is server-owned, and Package 0 adds nothing to it.
+
+        Pinned against the shared ``EXPECTED_AGENT_COMMANDS`` literal
+        rather than a bare count, so a name added for reasons of its own
+        updates exactly one place, while a name *this* package tried to
+        slip in breaks both tests.
+        """
+        assert set(AGENT_COMMAND_SET) == EXPECTED_AGENT_COMMANDS
+        assert check_command_scope("task_show", {"task_id": "t1"}, SESSION) is None
+        assert check_command_scope("delete_task", {}, SESSION) is not None
+
+    def test_a_profile_policy_cannot_widen_the_scope_gate(self):
+        """Naming a command in a profile does not make the token admit it.
+
+        The capability gate can only *narrow*: a command outside
+        AGENT_COMMAND_SET is refused at the scope boundary before dispatch
+        is reached, whatever the profile says.
+        """
+        from src.profiles.capabilities import CapabilityPolicy
+
+        policy = CapabilityPolicy.from_namespaces(aq_commands=["delete_task"])
+        assert policy.allows_aq_command("delete_task") is True
+        assert check_command_scope("delete_task", {}, SESSION) is not None
+
+    def test_capability_denial_is_a_second_independent_gate(self):
+        """A command the scope gate admits can still be denied by policy."""
+        from src.commands.authorization import authorize_command
+        from src.commands.principal import ExecutionPrincipal, PrincipalKind
+        from src.profiles.capabilities import CapabilityPolicy
+
+        class _Resolver:
+            def is_builtin(self, name):
+                return True
+
+            def is_plugin(self, name):
+                return False
+
+            def plugin_command_names(self):
+                return frozenset()
+
+        assert "task_claim" in AGENT_COMMAND_SET
+        assert check_command_scope("task_claim", {}, SESSION) is None
+
+        principal = ExecutionPrincipal(
+            kind=PrincipalKind.SESSION,
+            policy=CapabilityPolicy.from_namespaces(aq_commands=["task_show"]),
+        )
+        decision = authorize_command(
+            "task_claim", principal, resolver=_Resolver(), mode="enforce"
+        )
+        assert decision.allowed is False

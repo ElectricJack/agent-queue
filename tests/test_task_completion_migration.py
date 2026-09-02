@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import pytest
 import sqlalchemy as sa
 from alembic import command
 from alembic.config import Config
@@ -10,6 +11,8 @@ from sqlalchemy import create_engine
 
 COMPLETION_REVISION = "c8f4a1d2e6b9"
 PRIOR_REVISION = "882b77dc8495"
+
+pytestmark = pytest.mark.migration
 
 
 def _alembic_config(db_path: Path) -> Config:

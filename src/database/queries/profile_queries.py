@@ -11,6 +11,26 @@ from src.database.tables import agent_profiles, projects, tasks
 from src.models import AgentProfile
 
 
+def _dump_namespace(value: list[str] | None) -> str | None:
+    """Serialize one capability namespace, preserving NULL.
+
+    ``None`` (not authored — run the legacy adapter) and ``[]`` (explicitly
+    no capabilities) mean different things, so ``None`` must round-trip as
+    SQL NULL rather than ``'[]'``.
+    """
+    return None if value is None else json.dumps(list(value))
+
+
+def _load_namespace(raw) -> list[str] | None:
+    if raw is None:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    return [str(n) for n in parsed] if isinstance(parsed, list) else None
+
+
 class ProfileQueryMixin:
     """Query mixin for agent profile operations.  Expects ``self._engine``."""
 
@@ -26,6 +46,9 @@ class ProfileQueryMixin:
                     model=profile.model,
                     permission_mode=profile.permission_mode,
                     allowed_tools=json.dumps(profile.allowed_tools),
+                    harness_tools=_dump_namespace(profile.harness_tools),
+                    aq_commands=_dump_namespace(profile.aq_commands),
+                    plugin_tools=_dump_namespace(profile.plugin_tools),
                     mcp_servers=json.dumps(profile.mcp_servers),
                     system_prompt_suffix=profile.system_prompt_suffix,
                     install=json.dumps(profile.install),
@@ -38,6 +61,7 @@ class ProfileQueryMixin:
                     idle_timeout=profile.idle_timeout,
                     needs_workspace=profile.needs_workspace,
                     read_only=profile.read_only,
+                    allow_base_checkout=profile.allow_base_checkout,
                     max_session_age=profile.max_session_age,
                     default_class=profile.default_class or "",
                     min_active=profile.min_active,
@@ -71,7 +95,10 @@ class ProfileQueryMixin:
         """Update arbitrary profile fields."""
         values = {}
         for key, value in kwargs.items():
-            if key in ("allowed_tools", "mcp_servers", "install"):
+            if key in ("harness_tools", "aq_commands", "plugin_tools"):
+                # NULL vs '[]' is meaningful — see AgentProfile.harness_tools.
+                value = _dump_namespace(value)
+            elif key in ("allowed_tools", "mcp_servers", "install"):
                 value = json.dumps(value)
             values[key] = value
         values["updated_at"] = time.time()
@@ -101,6 +128,9 @@ class ProfileQueryMixin:
                 model=profile.model,
                 permission_mode=profile.permission_mode,
                 allowed_tools=profile.allowed_tools,
+                harness_tools=profile.harness_tools,
+                aq_commands=profile.aq_commands,
+                plugin_tools=profile.plugin_tools,
                 mcp_servers=profile.mcp_servers,
                 system_prompt_suffix=profile.system_prompt_suffix,
                 install=profile.install,
@@ -113,6 +143,7 @@ class ProfileQueryMixin:
                 idle_timeout=profile.idle_timeout,
                 needs_workspace=profile.needs_workspace,
                 read_only=profile.read_only,
+                allow_base_checkout=profile.allow_base_checkout,
                 max_session_age=profile.max_session_age,
                 default_class=profile.default_class or "",
                 min_active=profile.min_active,
@@ -160,6 +191,9 @@ class ProfileQueryMixin:
             model=row["model"],
             permission_mode=row["permission_mode"],
             allowed_tools=json.loads(row["allowed_tools"]),
+            harness_tools=_load_namespace(row.get("harness_tools")),
+            aq_commands=_load_namespace(row.get("aq_commands")),
+            plugin_tools=_load_namespace(row.get("plugin_tools")),
             mcp_servers=mcp_servers,
             system_prompt_suffix=row["system_prompt_suffix"],
             install=json.loads(row["install"]),
@@ -173,6 +207,7 @@ class ProfileQueryMixin:
             default_class=row.get("default_class") or "",
             needs_workspace=bool(row.get("needs_workspace", 1)),
             read_only=bool(row.get("read_only", 0)),
+            allow_base_checkout=bool(row.get("allow_base_checkout", 0)),
             max_session_age=row.get("max_session_age"),
             min_active=row.get("min_active"),
             max_active=row.get("max_active"),

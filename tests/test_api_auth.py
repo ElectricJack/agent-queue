@@ -270,6 +270,60 @@ from src.api.middleware import RequestContextMiddleware, TokenAuthMiddleware  # 
 from src.commands.handler import CommandHandler  # noqa: E402
 
 
+async def _seed_session_identity(db, *, session_ids, profile_id="worker"):
+    """Give each minted session a real ``sessions`` row and profile.
+
+    Playbook V2 Package 0 derives the caller's capability policy from the
+    session row (``CommandHandler._principal_from_scope``), and an
+    unresolvable identity fails closed.  Production always has both rows —
+    the reconciler writes the session and profile sync writes the profile —
+    so seeding them is what makes these middleware tests exercise the scope
+    path rather than the fail-closed path.
+
+    The profile is left on the legacy ``allowed_tools`` shape on purpose: it
+    is what an un-migrated fleet looks like, and the adapter's rule R2 gives
+    it exactly ``AGENT_COMMAND_SET``, which is what these tests assert about.
+    """
+    from src.models import AgentProfile, Project, SessionRecord, Task, TaskStatus
+
+    if await db.get_profile(profile_id) is None:
+        await db.create_profile(
+            AgentProfile(id=profile_id, name=profile_id, allowed_tools=["Bash", "Read"])
+        )
+    now = time.time()
+    for sid, task_id, project_id in session_ids:
+        if project_id and await db.get_project(project_id) is None:
+            await db.create_project(Project(id=project_id, name=project_id))
+        if task_id and await db.get_task(task_id) is None:
+            await db.create_task(
+                Task(
+                    id=task_id,
+                    project_id=project_id,
+                    title=task_id,
+                    description="",
+                    status=TaskStatus.IN_PROGRESS,
+                )
+            )
+        await db.create_session(
+            SessionRecord(
+                id=sid,
+                project_id=project_id,
+                profile_id=profile_id,
+                harness="claude",
+                provider="fake",
+                name=sid,
+                lifecycle="task",
+                task_id=task_id,
+                state="running",
+                work_dir="/tmp",
+                instance_token="tok-" + sid,
+                epoch="e1",
+                started_at=now,
+                last_activity=now,
+            )
+        )
+
+
 async def _seed_app(tmp_path, *, require=False):
     db = Database(str(tmp_path / "mw.db"))
     await db.initialize()
@@ -309,6 +363,7 @@ async def _seed_app(tmp_path, *, require=False):
     # LIFO application: RequestContext added FIRST -> outer; TokenAuth LAST -> inner.
     app.add_middleware(RequestContextMiddleware)
     app.add_middleware(TokenAuthMiddleware)
+    await _seed_session_identity(db, session_ids=[("s1", "t1", "p1"), ("sX", "other-task", "p1")])
     return db, store, ch, app
 
 
@@ -596,6 +651,7 @@ class TestPrimeScopeResolution:
         config.playbooks = MagicMock(enabled=True)
         config.memory = MagicMock(enabled=True)
         ch = _CH(orch, config)
+        await _seed_session_identity(db, session_ids=[("s1", "t1", "p1")])
 
         # Patch PrimeRenderer to avoid hitting the vault.
         from src.prime import PrimeRenderer as _PR
@@ -897,6 +953,7 @@ async def _seed_codegen_app(tmp_path, cmd_name: str, *, require: bool = False):
     app.add_api_route(f"/api/task/{cmd_name}", handler, methods=["POST"])
     app.add_middleware(RequestContextMiddleware)
     app.add_middleware(TokenAuthMiddleware)
+    await _seed_session_identity(db, session_ids=[("s1", "t1", "p1")])
     return db, store, ch, app
 
 
@@ -1053,6 +1110,15 @@ async def _seed_typed_surface_app(tmp_path, monkeypatch, generated_routers, stub
             paths[route.operation_id] = route.path
     app.add_middleware(RequestContextMiddleware)
     app.add_middleware(TokenAuthMiddleware)
+    await _seed_session_identity(
+        db,
+        session_ids=[
+            ("s1", "t1", "p1"),
+            ("s-manual", None, None),
+            ("sup-a", None, "proj-a"),
+            ("sup-global", None, None),
+        ],
+    )
     return db, store, ch, app, paths
 
 

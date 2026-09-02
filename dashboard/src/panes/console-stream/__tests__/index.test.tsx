@@ -72,6 +72,7 @@ beforeEach(() => {
   Object.defineProperty(navigator, "clipboard", {
     value: { writeText: vi.fn().mockResolvedValue(undefined) },
     configurable: true,
+    writable: true,
   });
   window.localStorage.removeItem("aq:session:id");
 });
@@ -129,6 +130,10 @@ describe("ConsoleStreamPane", () => {
     firstEs().emit({ type: "line", seq: 0, stream: "stdout", text: "\x1b[32mgreen\x1b[0m", ts: 1 });
 
     await waitFor(() => expect(screen.getByText("green")).toBeInTheDocument());
+
+    // The shortcut callback closes over the scrollback. Wait for the effect
+    // that republishes it after the line state update before invoking it.
+    await waitFor(() => expect(props.setShortcuts).toHaveBeenCalledTimes(2));
 
     const copyBinding = lastShortcuts(props.setShortcuts).find((s) => s.key === "c");
     copyBinding?.onFire();

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from unittest.mock import Mock
 
+import pytest
+
 from src.cli import menus
 
 
 def test_task_creation_wizard_reprompts_required_values_and_preserves_defaults(monkeypatch):
     """Removing required-field validation or defaults would change the creation payload."""
-    responses = iter(["project-1", "A task", "Description", None, "feature", "no"])
+    responses = iter(["project-1", "A task", "Description", None, "feature", "direct"])
     monkeypatch.setattr(menus, "prompt_input", lambda *args, **kwargs: next(responses))
     monkeypatch.setattr(menus, "prompt_choice", lambda *args, **kwargs: next(responses))
 
@@ -21,7 +23,50 @@ def test_task_creation_wizard_reprompts_required_values_and_preserves_defaults(m
         "description": "Description",
         "priority": 100,
         "task_type": "feature",
+        "integration_mode": "direct",
     }
+
+
+def _wire_wizard(monkeypatch, *, integration_mode: str) -> None:
+    """Drive ``task_creation_wizard``'s prompts with canned answers."""
+    inputs = {
+        "Project ID": "project-1",
+        "Title": "A task",
+        "Description": "Description",
+        "Priority": "150",
+    }
+
+    def fake_prompt_choice(message, choices, default=None):
+        if message == "Type":
+            return "bugfix"
+        assert message == "Integration mode"
+        return integration_mode
+
+    monkeypatch.setattr(menus, "prompt_input", lambda message, **kwargs: inputs[message])
+    monkeypatch.setattr(menus, "prompt_choice", fake_prompt_choice)
+
+
+@pytest.mark.parametrize("mode", ["pull_request", "direct"])
+def test_task_creation_wizard_carries_chosen_integration_mode(monkeypatch, mode):
+    """Dropping the chosen mode would make the Step 6/6 prompt cosmetic."""
+    _wire_wizard(monkeypatch, integration_mode=mode)
+
+    result = menus.task_creation_wizard(["project-1"])
+
+    assert result is not None
+    assert result["integration_mode"] == mode
+    assert result["priority"] == 150
+    assert result["task_type"] == "bugfix"
+
+
+def test_task_creation_wizard_omits_integration_mode_when_inherit(monkeypatch):
+    """``inherit`` means "let project/system policy decide" — send no override."""
+    _wire_wizard(monkeypatch, integration_mode="inherit")
+
+    result = menus.task_creation_wizard(["project-1"])
+
+    assert result is not None
+    assert "integration_mode" not in result
 
 
 def test_select_and_confirm_return_value_on_choice_and_none_or_default_on_cancel(monkeypatch):

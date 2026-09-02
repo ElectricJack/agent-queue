@@ -2045,6 +2045,53 @@
         }
       }
     },
+    "/api/agent/profile-audit": {
+      "post": {
+        "tags": [
+          "agent"
+        ],
+        "summary": "Report which agent profiles still derive their capabilities from the legacy allowed_tools list rather than an explicit ## Capabilities block. One row per profile with its source (explicit/legacy), the three capability namespaces, and the policy fingerprint \u2014 the migration list to clear before capability enforcement is set to 'enforce'.",
+        "description": "Report which agent profiles still derive their capabilities from the legacy allowed_tools list rather than an explicit ## Capabilities block. One row per profile with its source (explicit/legacy), the three capability namespaces, and the policy fingerprint \u2014 the migration list to clear before capability enforcement is set to 'enforce'.",
+        "operationId": "profile_audit",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfileAuditRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileAuditResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/agent/show-effective-profile": {
       "post": {
         "tags": [
@@ -11757,6 +11804,184 @@
           }
         }
       }
+    },
+    "/api/tasks/{task_id}/attachments": {
+      "post": {
+        "summary": "Upload Attachment",
+        "operationId": "upload_attachment_api_tasks__task_id__attachments_post",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_attachment_api_tasks__task_id__attachments_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskAttachmentResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "List Attachments",
+        "operationId": "list_attachments_api_tasks__task_id__attachments_get",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskAttachmentsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/{task_id}/attachments/{attachment_id}": {
+      "get": {
+        "summary": "Get Attachment",
+        "operationId": "get_attachment_api_tasks__task_id__attachments__attachment_id__get",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "attachment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attachment Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete Attachment",
+        "operationId": "delete_attachment_api_tasks__task_id__attachments__attachment_id__delete",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "attachment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attachment Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskAttachmentDeleteResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -19934,6 +20159,14 @@
               }
             ],
             "title": "Needs Attention"
+          },
+          "attachments": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Attachments",
+            "default": []
           }
         },
         "type": "object",
@@ -25977,6 +26210,125 @@
         ],
         "title": "ProbedToolModel"
       },
+      "ProfileAuditRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": "Only audit this project's profiles"
+          },
+          "legacy_only": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Legacy Only",
+            "description": "Only report profiles that still need migration"
+          }
+        },
+        "type": "object",
+        "title": "ProfileAuditRequest"
+      },
+      "ProfileAuditResponse": {
+        "properties": {
+          "profiles": {
+            "items": {
+              "$ref": "#/components/schemas/ProfileAuditRow"
+            },
+            "type": "array",
+            "title": "Profiles",
+            "default": []
+          },
+          "legacy_count": {
+            "type": "integer",
+            "title": "Legacy Count",
+            "default": 0
+          },
+          "enforcement": {
+            "type": "string",
+            "title": "Enforcement",
+            "default": "audit"
+          }
+        },
+        "type": "object",
+        "title": "ProfileAuditResponse"
+      },
+      "ProfileAuditRow": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source",
+            "default": "legacy"
+          },
+          "harness_tools": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Harness Tools",
+            "default": []
+          },
+          "aq_commands": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Aq Commands",
+            "default": []
+          },
+          "plugin_tools": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Plugin Tools",
+            "default": []
+          },
+          "fingerprint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fingerprint"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "title": "ProfileAuditRow",
+        "description": "One profile's capability policy, as ``profile_audit`` reports it."
+      },
       "ProfileDetail": {
         "properties": {
           "id": {
@@ -31866,6 +32218,14 @@
               }
             ],
             "title": "Needs Attention"
+          },
+          "attachments": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Attachments",
+            "default": []
           }
         },
         "type": "object",
@@ -32805,6 +33165,14 @@
             "type": "array",
             "title": "Fields Changed",
             "default": []
+          },
+          "attachments": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Attachments",
+            "default": []
           }
         },
         "type": "object",
@@ -33096,6 +33464,14 @@
                 "type": "null"
               }
             ]
+          },
+          "attachments": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Attachments",
+            "default": []
           }
         },
         "type": "object",
@@ -33940,6 +34316,112 @@
         },
         "type": "object",
         "title": "WriteNoteResponse"
+      },
+      "Body_upload_attachment_api_tasks__task_id__attachments_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_upload_attachment_api_tasks__task_id__attachments_post"
+      },
+      "TaskAttachmentDeleteResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "removed": {
+            "type": "string",
+            "title": "Removed"
+          }
+        },
+        "type": "object",
+        "required": [
+          "removed"
+        ],
+        "title": "TaskAttachmentDeleteResponse"
+      },
+      "TaskAttachmentDetail": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "url": {
+            "type": "string",
+            "title": "Url"
+          },
+          "content_type": {
+            "type": "string",
+            "title": "Content Type"
+          },
+          "size": {
+            "type": "integer",
+            "title": "Size"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "path",
+          "url",
+          "content_type",
+          "size"
+        ],
+        "title": "TaskAttachmentDetail"
+      },
+      "TaskAttachmentResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "attachment": {
+            "$ref": "#/components/schemas/TaskAttachmentDetail"
+          }
+        },
+        "type": "object",
+        "required": [
+          "attachment"
+        ],
+        "title": "TaskAttachmentResponse"
+      },
+      "TaskAttachmentsResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "attachments": {
+            "items": {
+              "$ref": "#/components/schemas/TaskAttachmentDetail"
+            },
+            "type": "array",
+            "title": "Attachments",
+            "default": []
+          }
+        },
+        "type": "object",
+        "title": "TaskAttachmentsResponse"
       }
     }
   }

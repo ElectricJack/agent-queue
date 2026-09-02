@@ -14,6 +14,7 @@ from src.models import AgentProfile, Project, Task, TaskStatus
 from src.orchestrator.assignment_routing import (
     AssignmentRoutingCoordinator,
     AssignmentRoutingValidationError,
+    task_assignment_options,
     validate_assignment_response,
 )
 from src.playbooks.manager import PlaybookManager
@@ -103,6 +104,65 @@ def test_validator_rejects_extra_or_unsupported_decisions():
 
 
 @pytest.mark.asyncio
+async def test_pinned_profile_is_offered_and_validated_only_at_its_fixed_class(
+    coordinator_system,
+):
+    coordinator, services, db = coordinator_system
+    await db.create_profile(AgentProfile(
+        id="worker-standard",
+        name="Standard worker",
+        harness="claude",
+        lifecycle="task",
+        default_class="standard-low",
+    ))
+    await db.create_profile(AgentProfile(
+        id="reviewer",
+        name="Reviewer",
+        harness="claude",
+        lifecycle="task",
+        default_class="standard-low",
+    ))
+    coordinator.owner.session_spec_builder._intelligence_classes["standard-low"] = (
+        IntelligenceClass(
+            id="standard-low",
+            name="Standard low",
+            description="Review work",
+            mapping={"anthropic": {"model": "claude-sonnet"}},
+        )
+    )
+    await db.create_task(Task(
+        id="review",
+        project_id="p",
+        title="Review the change",
+        description="Check the submitted implementation.",
+        profile_id="reviewer",
+        status=TaskStatus.READY,
+    ))
+    task = await db.get_task("review")
+    options, profiles = await coordinator._catalog("p")
+    constrained = task_assignment_options(task, options, profiles)
+    assert [option.intelligence_class for option in constrained] == ["standard-low"]
+
+    invalid = {"decisions": [_decision(task, "fast-low")]}
+    with pytest.raises(AssignmentRoutingValidationError, match="unsupported intelligence_class"):
+        validate_assignment_response(json.dumps(invalid), [task], constrained)
+
+    services.llm.run_tools.return_value = LLMRunResult(
+        text=json.dumps({"decisions": [_decision(task, "standard-low")]}),
+        transcript=[],
+        turns=1,
+        stopped_by="done",
+    )
+    routes = await coordinator.reconcile()
+
+    event = json.loads((await db.list_playbook_runs())[0].trigger_event)
+    assert [option["intelligence_class"] for option in event["options"]] == ["standard-low"]
+    assert routes["review"].intelligence_class == "standard-low"
+    saved = await db.get_task_assignment_route("review")
+    assert saved.options_hash == coordinator.cached_options_hash("p")
+
+
+@pytest.mark.asyncio
 async def test_coordinator_batches_ready_tasks_in_one_llm_call(coordinator_system):
     coordinator, services, db = coordinator_system
     for index in range(2):
@@ -129,6 +189,22 @@ async def test_coordinator_batches_ready_tasks_in_one_llm_call(coordinator_syste
     assert set(committed) == {"t-0", "t-1"}
     saved = [await db.get_task_assignment_route(task.id) for task in tasks]
     assert all(saved)
+
+
+@pytest.mark.asyncio
+async def test_reconcile_is_a_noop_without_a_playbook_manager(coordinator_system):
+    coordinator, services, db = coordinator_system
+    await db.create_task(Task(
+        id="paused-playbooks",
+        project_id="p",
+        title="Paused playbooks",
+        description="The playbook subsystem is intentionally disabled.",
+        status=TaskStatus.READY,
+    ))
+    coordinator.owner.playbook_manager = None
+
+    assert await coordinator.reconcile() == {}
+    services.llm.run_tools.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -530,3 +606,29 @@ async def test_broken_project_override_does_not_block_other_projects(coordinator
     assert await db.get_task_assignment_route("broken-task") is None
     _detail, reason = await coordinator.explain(await db.get_task("broken-task"))
     assert reason["code"] == "assignment_playbook_unavailable"
+
+
+async def test_paused_playbook_subsystem_waits_visibly_instead_of_crashing(coordinator_system):
+    """``playbooks.enabled=false`` leaves ``owner.playbook_manager`` None
+    (feature-pause branch in src/orchestrator/core.py), which is the default
+    config.  Routing is then unavailable: every unrouted task must simply
+    wait with a reportable reason, exactly like a missing playbook.  Before
+    the fix this raised AttributeError past the ``AssignmentPlaybookError``
+    guards -- a traceback per 5s cycle and a crashing ``aq task explain``.
+    """
+    coordinator, _services, db = coordinator_system
+    coordinator.owner.playbook_manager = None
+    await db.create_task(Task(
+        id="unrouted",
+        project_id="p",
+        title="Needs a class",
+        description="No explicit intelligence class",
+        status=TaskStatus.READY,
+    ))
+
+    assert await coordinator.reconcile() == {}
+    assert await db.get_task_assignment_route("unrouted") is None
+
+    _detail, reason = await coordinator.explain(await db.get_task("unrouted"))
+    assert reason["code"] == "assignment_playbook_unavailable"
+    assert "playbook subsystem is disabled" in reason["detail"]

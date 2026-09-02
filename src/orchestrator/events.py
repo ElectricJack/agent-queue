@@ -65,6 +65,7 @@ class EventsMixin:
         *,
         agent_id: str | None = None,
         agent_type: str | None = None,
+        status: str | None = None,
     ) -> None:
         """Emit ``task.failed`` event so playbooks and subscribers can react.
 
@@ -75,9 +76,17 @@ class EventsMixin:
         agent_type:
             The vault agent-type identifier (resolved profile ID) for
             agent-type-scoped playbook matching.  See roadmap 6.1.3.
+        status:
+            The status the task ended up in.  Callers that emit *after* a
+            transition but still hold the pre-transition row (the session
+            close path) pass it explicitly; otherwise it is read off
+            ``task``, which is only correct for a freshly-loaded row.
         """
+        resolved_status = status or (
+            task.status.value if hasattr(task.status, "value") else str(task.status)
+        )
         extras: dict[str, Any] = {
-            "status": task.status.value if hasattr(task.status, "value") else str(task.status),
+            "status": resolved_status,
             "context": context,
             "error": error,
         }

@@ -35,7 +35,27 @@ class ToolCommandsMixin:
         unavailable: list[str] = []
         for name in names:
             (available if self.has_command(name) else unavailable).append(name)
-        return available, unavailable
+        return self._capability_filtered(available), unavailable
+
+    def _capability_filtered(self, names: list[str]) -> list[str]:
+        """Drop names the current principal could not dispatch.
+
+        Discovery and execution must agree (Playbook V2 Package 0 §4.3):
+        advertising a tool the next turn will refuse is exactly as confusing
+        as advertising one with no backing handler.  Uses the same
+        ``command_allowed`` predicate the dispatch gate uses, so the two
+        cannot drift.  Silently dropped rather than reported as
+        "unavailable": which commands a caller *cannot* reach is operator
+        information, not agent information (§4.4).
+        """
+        from src.commands.authorization import command_allowed
+        from src.commands.principal import current_principal
+
+        principal = current_principal()
+        if principal is None or not principal.enforced:
+            return names
+        resolver = self._command_resolver
+        return [n for n in names if command_allowed(n, principal, resolver=resolver)]
 
     async def _cmd_load_tools(self, args: dict) -> dict:
         """Load tools by category or individual name.
@@ -70,6 +90,10 @@ class ToolCommandsMixin:
                     ),
                     "unavailable": [tool_name],
                 }
+            if not self._capability_filtered([tool_name]):
+                from src.commands.authorization import denial_result
+
+                return denial_result(tool_name)
             return {
                 "loaded": cat,
                 "tools_added": [tool_name],

@@ -81,12 +81,28 @@ jobs:
       - name: Install project
         run: pip install -e ".[dev,cli,postgresql]"
 
-      - name: Apply migrations to a scratch database
+      - name: Apply migrations to a scratch SQLite database
         env:
           # Keep the migration check off the developer default
           # (~/.agent-queue/agent-queue.db) and out of pytest's collection path.
           AGENT_QUEUE_DB_URL: sqlite+aiosqlite:///${{ runner.temp }}/ci-migration-check.db
         run: alembic upgrade head
+
+      # SQLite is not a proxy for the production backend: it stores booleans
+      # as integers and accepts DDL Postgres rejects outright (revision
+      # 33bdb059ceff shipped ``BOOLEAN DEFAULT 0``, which upgraded cleanly on
+      # SQLite and failed every Postgres run with DatatypeMismatchError).
+      # Run the same chain against a real Postgres so that class of break
+      # fails here, in seconds, instead of in every Postgres test fixture.
+      - name: Apply migrations to a scratch PostgreSQL database
+        env:
+          PGPASSWORD: agent_queue
+          AGENT_QUEUE_DB_URL: postgresql+asyncpg://agent_queue:agent_queue@localhost:5432/ci_migration_check
+        run: |
+          psql -h localhost -U agent_queue -d agent_queue \
+            -c 'DROP DATABASE IF EXISTS ci_migration_check' \
+            -c 'CREATE DATABASE ci_migration_check'
+          alembic upgrade head
 
       - name: Run tests
         run: ${{ matrix.suite.command }}

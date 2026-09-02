@@ -274,6 +274,22 @@ def command_handler_factory(tmp_path: Path):
 
 
 @pytest.fixture
+async def session_orch(tmp_path: Path):
+    """An orchestrator that dispatches the way production does: as a session.
+
+    ``sessions.enabled`` + the ``fake`` provider + a ``claude`` harness, with
+    git mocked out.  See ``tests/session_dispatch_helpers.py`` for the
+    project/profile builders and the launch-evidence accessors that go with it.
+    """
+    from tests.session_dispatch_helpers import drain_running_tasks, make_session_orch
+
+    orch = await make_session_orch(tmp_path)
+    yield orch
+    await drain_running_tasks(orch)
+    await orch.shutdown()
+
+
+@pytest.fixture
 def orchestrator_factory(tmp_path: Path):
     """Factory that creates a fresh Orchestrator (with CommandHandler) backed
     by a real DB — for tests that exercise orchestrator-level sweeps."""

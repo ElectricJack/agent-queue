@@ -57,9 +57,11 @@ class MonitoringMixin:
                     continue
                 if isinstance(snapshot, dict) and snapshot.get("cleanup_pending"):
                     try:
-                        await self.pause_task(task.id)
+                        await self.retry_manual_pause_cleanup(task.id)
                     except Exception:
-                        logger.warning("Task %s remains paused; stop cleanup will retry", task.id, exc_info=True)
+                        self._log_pause_cleanup_retry(task.id)
+                    else:
+                        self._pause_cleanup_retries().pop(task.id, None)
                 continue
             if task.resume_after and task.resume_after <= now:
                 await self.db.transition_task(
@@ -69,6 +71,43 @@ class MonitoringMixin:
                     assigned_agent_id=None,
                     resume_after=None,
                 )
+                # The backoff is over and the task is back on the frontier.
+                # A ``needs_attention`` flag written with the pause (the
+                # session reconciler's exit-without-close leg) has done its
+                # job — the durable task comment is the incident trail —
+                # and left in place it would mark a running task as needing
+                # attention, keep it out of BLOCKED re-promotion, and turn
+                # any later BLOCKED into a false recovery incident.  The
+                # supervisor's retry decision clears it the same way.
+                await self.db.delete_task_meta(task.id, "needs_attention")
+
+    def _pause_cleanup_retries(self) -> dict[str, int]:
+        """Per-task count of consecutive failed pause-cleanup retries."""
+        counts = getattr(self, "_pause_cleanup_retry_counts", None)
+        if counts is None:
+            counts = {}
+            self._pause_cleanup_retry_counts = counts
+        return counts
+
+    def _log_pause_cleanup_retry(self, task_id: str) -> None:
+        """Report a failed retry without emitting a line every 5s forever.
+
+        Checkpoint failures now converge on their own, but a session or
+        adapter that refuses to stop is deliberately retried indefinitely —
+        releasing its resources while the process still runs would be worse
+        than waiting.  Keep that visible without drowning the log: the first
+        few failures and then every tenth warn, the rest are debug.
+        """
+        counts = self._pause_cleanup_retries()
+        counts[task_id] = attempts = counts.get(task_id, 0) + 1
+        loud = attempts <= 3 or attempts % 10 == 0
+        logger.log(
+            logging.WARNING if loud else logging.DEBUG,
+            "Task %s remains paused; stop cleanup will retry (attempt %d)",
+            task_id,
+            attempts,
+            exc_info=loud,
+        )
 
     async def _recover_orphaned_pause(self, task) -> None:
         """Return a task wedged in PAUSED with no operator hold to READY.
