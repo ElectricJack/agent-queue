@@ -227,6 +227,116 @@ Partial unique index `uq_task_deps_single_parent` on `task_id` where
 parent per task. Created by migration revision `b2c3d4e5f6a7` after the
 existing data is canonicalised to satisfy it.
 
+### Table: `task_layouts`
+
+Derived spatial-layout projection for task-graph nodes. Each task has at most one row per
+project and layout variant. The `all` variant contains the complete task tree; the `active`
+variant omits finished tasks and may replace completed containers with stubs. Layout rows can
+be dropped and reproduced by running the backfill.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `project_id` | TEXT | PRIMARY KEY, NOT NULL, REFERENCES projects(id) | Project whose graph is laid out |
+| `variant` | TEXT | PRIMARY KEY, NOT NULL | `all` or `active` |
+| `task_id` | TEXT | PRIMARY KEY, NOT NULL, REFERENCES tasks(id) | Projected task |
+| `container_id` | TEXT | nullable | Immediate layout container; NULL for root-level nodes |
+| `path` | TEXT | NOT NULL | Materialized hierarchy path used for subtree reads and translations |
+| `depth` | INTEGER | NOT NULL | Hierarchy depth |
+| `rank` | INTEGER | NOT NULL | Dependency rank within the containing layout |
+| `order_key` | TEXT | NOT NULL | Stable sibling ordering key |
+| `w` | FLOAT | NOT NULL | Allocated box width |
+| `h` | FLOAT | NOT NULL | Allocated box height |
+| `rel_x` | FLOAT | NOT NULL | X coordinate relative to the containing layout |
+| `rel_y` | FLOAT | NOT NULL | Y coordinate relative to the containing layout |
+| `abs_x` | FLOAT | NOT NULL | Absolute canvas X coordinate |
+| `abs_y` | FLOAT | NOT NULL | Absolute canvas Y coordinate |
+| `kind` | TEXT | NOT NULL | `card`, `container`, or `stub` |
+| `agg_children` | INTEGER | NOT NULL DEFAULT 0 | Number of immediate children |
+| `agg_descendants` | INTEGER | NOT NULL DEFAULT 0 | Number of descendants |
+| `agg_completed` | INTEGER | NOT NULL DEFAULT 0 | Number of completed descendants |
+| `agg_running` | INTEGER | NOT NULL DEFAULT 0 | Number of running descendants |
+| `agg_blocked` | INTEGER | NOT NULL DEFAULT 0 | Number of blocked descendants |
+| `agg_active` | INTEGER | NOT NULL DEFAULT 0 | Number of non-finished descendants |
+
+Composite primary key: (`project_id`, `variant`, `task_id`). Checks
+`ck_task_layouts_variant` and `ck_task_layouts_kind` restrict `variant` and `kind` to the
+values listed above. Indexes: `idx_task_layouts_path` (`project_id`, `variant`, `path`),
+`idx_task_layouts_depth` (`project_id`, `variant`, `depth`), and
+`idx_task_layouts_container` (`project_id`, `variant`, `container_id`).
+
+### Table: `task_layout_cells`
+
+Cross-database spatial index for task-layout boxes. A task has one membership row for every
+8 by 8 unit cell overlapped by its allocated box. Membership rows are rewritten in the same
+transaction whenever publishing translates or resizes the corresponding layout row.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `project_id` | TEXT | PRIMARY KEY, NOT NULL | Project whose graph is indexed |
+| `variant` | TEXT | PRIMARY KEY, NOT NULL | Layout variant |
+| `cell_x` | INTEGER | PRIMARY KEY, NOT NULL | Horizontal cell coordinate |
+| `cell_y` | INTEGER | PRIMARY KEY, NOT NULL | Vertical cell coordinate |
+| `task_id` | TEXT | PRIMARY KEY, NOT NULL | Task occupying the cell |
+
+Composite primary key: (`project_id`, `variant`, `cell_x`, `cell_y`, `task_id`). Indexes:
+`idx_task_layout_cells_cell` (`project_id`, `variant`, `cell_x`, `cell_y`) for viewport
+queries and `idx_task_layout_cells_task` (`project_id`, `variant`, `task_id`) for replacing
+a task's memberships.
+
+### Table: `project_layout_meta`
+
+Publication metadata for one project's layout variant. The version, extent, node count, and
+layout-row changes are published atomically so readers never observe a mixed layout version.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `project_id` | TEXT | PRIMARY KEY, NOT NULL, REFERENCES projects(id) | Project whose layout is described |
+| `variant` | TEXT | PRIMARY KEY, NOT NULL | Layout variant |
+| `layout_version` | INTEGER | NOT NULL DEFAULT 0 | Monotonic version incremented on publish |
+| `extent_w` | FLOAT | NOT NULL DEFAULT 0 | Published canvas width |
+| `extent_h` | FLOAT | NOT NULL DEFAULT 0 | Published canvas height |
+| `node_count` | INTEGER | NOT NULL DEFAULT 0 | Number of published layout rows |
+| `updated_at` | FLOAT | NOT NULL | Unix timestamp of the latest publish |
+| `reconciled_at` | FLOAT | nullable | Unix timestamp of the latest reconciliation sweep |
+
+Composite primary key: (`project_id`, `variant`).
+
+### Table: `layout_dirty`
+
+Durable queue of task mutations that require layout reconciliation. Writers add marks in the
+same transaction as the source mutation; a successful publish consumes marks through the
+highest processed sequence number in its own transaction.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `seq` | INTEGER | PRIMARY KEY, AUTOINCREMENT | Queue sequence and publish fence |
+| `project_id` | TEXT | NOT NULL | Project requiring reconciliation |
+| `task_id` | TEXT | NOT NULL | Changed task |
+| `reason` | TEXT | NOT NULL | Mutation category that caused the mark |
+| `created_at` | FLOAT | NOT NULL | Unix timestamp used to debounce batches |
+
+Index: `idx_layout_dirty_project` (`project_id`, `seq`).
+
+### Table: `layout_jobs`
+
+Lifecycle records for user-requested Tidy work and initial-layout backfills. Only one queued or
+running job is admitted for a project/variant pair by the query layer; job failures retain their
+error text for inspection.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Job identifier |
+| `project_id` | TEXT | NOT NULL | Project to lay out |
+| `variant` | TEXT | NOT NULL | Layout variant |
+| `kind` | TEXT | NOT NULL | `tidy` or `backfill` |
+| `status` | TEXT | NOT NULL | `queued`, `running`, `done`, or `failed` |
+| `requested_at` | FLOAT | NOT NULL | Unix timestamp when the job was queued |
+| `started_at` | FLOAT | nullable | Unix timestamp when execution began |
+| `finished_at` | FLOAT | nullable | Unix timestamp when execution ended |
+| `error` | TEXT | nullable | Failure detail |
+
+Index: `idx_layout_jobs_project_status` (`project_id`, `status`).
+
 ### Table: `task_context`
 
 Arbitrary context blobs attached to a task (e.g., file contents, URLs, notes).
