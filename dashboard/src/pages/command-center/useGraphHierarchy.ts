@@ -56,9 +56,19 @@ function toggleExpandedId(id: string) {
   setExpandedTaskIds(next);
 }
 
+function sameExpandedIds(left: ReadonlySet<string>, right: ReadonlySet<string>) {
+  return left.size === right.size && [...left].every((id) => right.has(id));
+}
+
 export function useExpandedTaskIds() {
+  const persistedIds = readExpandedTaskIds();
+  if (!sameExpandedIds(expandedIds, persistedIds)) expandedIds = persistedIds;
+
   const expandedTaskIds = useSyncExternalStore(
-    (listener) => { expandedListeners.add(listener); return () => expandedListeners.delete(listener); },
+    (listener) => {
+      expandedListeners.add(listener);
+      return () => expandedListeners.delete(listener);
+    },
     () => expandedIds,
   );
   const toggleExpanded = useCallback((id: string) => toggleExpandedId(id), []);
