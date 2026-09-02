@@ -25,10 +25,8 @@ from .archive_task_response import ArchiveTaskResponse
 from .archive_task_response_422 import ArchiveTaskResponse422
 from .ask_human_request import AskHumanRequest
 from .ask_human_response_422 import AskHumanResponse422
-from .body_upload_attachment_api_tasks_task_id_attachments_post import (
-    BodyUploadAttachmentApiTasksTaskIdAttachmentsPost,
-)
 from .assignment_route_detail import AssignmentRouteDetail
+from .body_upload_attachment_api_tasks_task_id_attachments_post import BodyUploadAttachmentApiTasksTaskIdAttachmentsPost
 from .cancel_playbook_run_request import CancelPlaybookRunRequest
 from .cancel_playbook_run_response import CancelPlaybookRunResponse
 from .cancel_playbook_run_response_422 import CancelPlaybookRunResponse422
@@ -768,6 +766,9 @@ from .stub_scan_project import StubScanProject
 from .stub_scan_totals import StubScanTotals
 from .stuck_task import StuckTask
 from .stuck_tasks_thresholds import StuckTasksThresholds
+from .subagent_event_request import SubagentEventRequest
+from .subagent_event_response import SubagentEventResponse
+from .subagent_event_response_422 import SubagentEventResponse422
 from .subagent_rollup import SubagentRollup
 from .tail_api_streams_stream_id_tail_get_response_tail_api_streams_stream_id_tail_get import (
     TailApiStreamsStreamIdTailGetResponseTailApiStreamsStreamIdTailGet,
@@ -906,8 +907,8 @@ __all__ = (
     "ArchiveTaskResponse422",
     "AskHumanRequest",
     "AskHumanResponse422",
-    "BodyUploadAttachmentApiTasksTaskIdAttachmentsPost",
     "AssignmentRouteDetail",
+    "BodyUploadAttachmentApiTasksTaskIdAttachmentsPost",
     "CancelPlaybookRunRequest",
     "CancelPlaybookRunResponse",
     "CancelPlaybookRunResponse422",
@@ -1639,6 +1640,9 @@ __all__ = (
     "StubScanTotals",
     "StuckTask",
     "StuckTasksThresholds",
+    "SubagentEventRequest",
+    "SubagentEventResponse",
+    "SubagentEventResponse422",
     "SubagentRollup",
     "TailApiStreamsStreamIdTailGetResponseTailApiStreamsStreamIdTailGet",
     "TaskAttachmentDeleteResponse",

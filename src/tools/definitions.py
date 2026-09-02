@@ -4594,7 +4594,7 @@ _ALL_TOOL_DEFINITIONS = [
         "name": "pool_scale",
         "description": (
             "Set a pool profile's min/max active-session bounds. Validates "
-            "min >= 0 and max >= min; max may be null for no profile limit. "
+            "min >= 0, max >= 1, and max >= min; max may be null for no profile limit. "
             "With `now: true`, also terminates "
             "idle sessions above the new max, oldest first. Backs `aq pool scale`."
         ),

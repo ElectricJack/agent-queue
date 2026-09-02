@@ -774,6 +774,184 @@
         }
       }
     },
+    "/api/tasks/{task_id}/attachments": {
+      "post": {
+        "summary": "Upload Attachment",
+        "operationId": "upload_attachment_api_tasks__task_id__attachments_post",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_attachment_api_tasks__task_id__attachments_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskAttachmentResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "List Attachments",
+        "operationId": "list_attachments_api_tasks__task_id__attachments_get",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskAttachmentsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/{task_id}/attachments/{attachment_id}": {
+      "get": {
+        "summary": "Get Attachment",
+        "operationId": "get_attachment_api_tasks__task_id__attachments__attachment_id__get",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "attachment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attachment Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete Attachment",
+        "operationId": "delete_attachment_api_tasks__task_id__attachments__attachment_id__delete",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "attachment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attachment Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskAttachmentDeleteResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/tasks/{task_id}/sessions": {
       "get": {
         "summary": "Task Sessions",
@@ -2045,6 +2223,53 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/AgentSummary"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/agent/subagent-event": {
+      "post": {
+        "tags": [
+          "agent"
+        ],
+        "summary": "Record a native sub-agent start or stop event for the calling session. Harness hooks use this to report their own child-agent lifecycle; the session identity comes from the bearer token when present.",
+        "description": "Record a native sub-agent start or stop event for the calling session. Harness hooks use this to report their own child-agent lifecycle; the session identity comes from the bearer token when present.",
+        "operationId": "subagent_event",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubagentEventRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubagentEventResponse"
                 }
               }
             }
@@ -6253,8 +6478,8 @@
         "tags": [
           "pool"
         ],
-        "summary": "Set a pool profile's min/max active-session bounds. Validates min >= 0 and max >= min; max may be null for no profile limit. With `now: true`, also terminates idle sessions above the new max, oldest first. Backs `aq pool scale`.",
-        "description": "Set a pool profile's min/max active-session bounds. Validates min >= 0 and max >= min; max may be null for no profile limit. With `now: true`, also terminates idle sessions above the new max, oldest first. Backs `aq pool scale`.",
+        "summary": "Set a pool profile's min/max active-session bounds. Validates min >= 0, max >= 1, and max >= min; max may be null for no profile limit. With `now: true`, also terminates idle sessions above the new max, oldest first. Backs `aq pool scale`.",
+        "description": "Set a pool profile's min/max active-session bounds. Validates min >= 0, max >= 1, and max >= min; max may be null for no profile limit. With `now: true`, also terminates idle sessions above the new max, oldest first. Backs `aq pool scale`.",
         "operationId": "pool_scale",
         "requestBody": {
           "content": {
@@ -11685,184 +11910,6 @@
           }
         }
       }
-    },
-    "/api/tasks/{task_id}/attachments": {
-      "post": {
-        "summary": "Upload Attachment",
-        "operationId": "upload_attachment_api_tasks__task_id__attachments_post",
-        "parameters": [
-          {
-            "name": "task_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Task Id"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "multipart/form-data": {
-              "schema": {
-                "$ref": "#/components/schemas/Body_upload_attachment_api_tasks__task_id__attachments_post"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/TaskAttachmentResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "get": {
-        "summary": "List Attachments",
-        "operationId": "list_attachments_api_tasks__task_id__attachments_get",
-        "parameters": [
-          {
-            "name": "task_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Task Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/TaskAttachmentsResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/tasks/{task_id}/attachments/{attachment_id}": {
-      "get": {
-        "summary": "Get Attachment",
-        "operationId": "get_attachment_api_tasks__task_id__attachments__attachment_id__get",
-        "parameters": [
-          {
-            "name": "task_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Task Id"
-            }
-          },
-          {
-            "name": "attachment_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Attachment Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "delete": {
-        "summary": "Delete Attachment",
-        "operationId": "delete_attachment_api_tasks__task_id__attachments__attachment_id__delete",
-        "parameters": [
-          {
-            "name": "task_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Task Id"
-            }
-          },
-          {
-            "name": "attachment_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Attachment Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/TaskAttachmentDeleteResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
     }
   },
   "components": {
@@ -12918,6 +12965,20 @@
           "freshness"
         ],
         "title": "AssignmentRouteDetail"
+      },
+      "Body_upload_attachment_api_tasks__task_id__attachments_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_upload_attachment_api_tasks__task_id__attachments_post"
       },
       "CancelPlaybookRunRequest": {
         "properties": {
@@ -17164,6 +17225,18 @@
             ],
             "title": "Profile Id",
             "description": "Pre-route the task to this agent profile on create. Tasks created via ensure_task skip triage, so the ensuring pipeline pins the executing profile directly."
+          },
+          "intelligence_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intelligence Class",
+            "description": "Vault intelligence class for the task on create. A pinned profile is not a route on its own: without an explicit class the task waits for the assignment playbook to choose one. Both apply only when this call creates the task."
           }
         },
         "type": "object",
@@ -19902,6 +19975,14 @@
             ],
             "title": "Pr Url"
           },
+          "attachments": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Attachments",
+            "default": []
+          },
           "depends_on": {
             "items": {
               "$ref": "#/components/schemas/TaskRef"
@@ -19980,14 +20061,6 @@
               }
             ],
             "title": "Needs Attention"
-          },
-          "attachments": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Attachments",
-            "default": []
           }
         },
         "type": "object",
@@ -30454,6 +30527,106 @@
         ],
         "title": "StuckTasksThresholds"
       },
+      "SubagentEventRequest": {
+        "properties": {
+          "event": {
+            "type": "string",
+            "title": "Event",
+            "description": "Native lifecycle event reported by the harness hook."
+          },
+          "subagent_id": {
+            "type": "string",
+            "title": "Subagent Id",
+            "description": "Harness-provided identifier for the child agent."
+          },
+          "agent_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Type",
+            "description": "Optional harness sub-agent type."
+          },
+          "turn_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Turn Id",
+            "description": "Optional harness turn identifier."
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id",
+            "description": "Session to attribute the event to for local replay only; a bearer token always supplies its own session identity."
+          }
+        },
+        "type": "object",
+        "required": [
+          "event",
+          "subagent_id"
+        ],
+        "title": "SubagentEventRequest"
+      },
+      "SubagentEventResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "event": {
+            "type": "string",
+            "title": "Event"
+          },
+          "subagent_id": {
+            "type": "string",
+            "title": "Subagent Id"
+          },
+          "recorded": {
+            "type": "boolean",
+            "title": "Recorded",
+            "default": true
+          },
+          "active_subagent_count": {
+            "type": "integer",
+            "title": "Active Subagent Count",
+            "default": 0
+          },
+          "subagents_spawned_total": {
+            "type": "integer",
+            "title": "Subagents Spawned Total",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id",
+          "event",
+          "subagent_id"
+        ],
+        "title": "SubagentEventResponse",
+        "description": "Receipt for one ``SubagentStart`` / ``SubagentStop`` hook delivery."
+      },
       "SubagentRollup": {
         "properties": {
           "active_total": {
@@ -30485,6 +30658,98 @@
         "type": "object",
         "title": "SubagentRollup",
         "description": "Sub-agent totals across a set of agents.\n\n``complete`` is a conjunction: one live session without harness hooks\nmakes every number here a lower bound, and callers must say so rather\nthan present a floor as a total."
+      },
+      "TaskAttachmentDeleteResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "removed": {
+            "type": "string",
+            "title": "Removed"
+          }
+        },
+        "type": "object",
+        "required": [
+          "removed"
+        ],
+        "title": "TaskAttachmentDeleteResponse"
+      },
+      "TaskAttachmentDetail": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "url": {
+            "type": "string",
+            "title": "Url"
+          },
+          "content_type": {
+            "type": "string",
+            "title": "Content Type"
+          },
+          "size": {
+            "type": "integer",
+            "title": "Size"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "path",
+          "url",
+          "content_type",
+          "size"
+        ],
+        "title": "TaskAttachmentDetail"
+      },
+      "TaskAttachmentResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "attachment": {
+            "$ref": "#/components/schemas/TaskAttachmentDetail"
+          }
+        },
+        "type": "object",
+        "required": [
+          "attachment"
+        ],
+        "title": "TaskAttachmentResponse"
+      },
+      "TaskAttachmentsResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "attachments": {
+            "items": {
+              "$ref": "#/components/schemas/TaskAttachmentDetail"
+            },
+            "type": "array",
+            "title": "Attachments",
+            "default": []
+          }
+        },
+        "type": "object",
+        "title": "TaskAttachmentsResponse"
       },
       "TaskBatchAckResponse": {
         "properties": {
@@ -31491,6 +31756,14 @@
             ],
             "title": "Pr Url"
           },
+          "attachments": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Attachments",
+            "default": []
+          },
           "depends_on": {
             "items": {
               "$ref": "#/components/schemas/TaskRef"
@@ -31569,14 +31842,6 @@
               }
             ],
             "title": "Needs Attention"
-          },
-          "attachments": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Attachments",
-            "default": []
           }
         },
         "type": "object",
@@ -32348,6 +32613,14 @@
             ],
             "title": "Pr Url"
           },
+          "attachments": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Attachments",
+            "default": []
+          },
           "depends_on": {
             "items": {
               "$ref": "#/components/schemas/TaskRef"
@@ -32469,14 +32742,6 @@
             },
             "type": "array",
             "title": "Fields Changed",
-            "default": []
-          },
-          "attachments": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Attachments",
             "default": []
           }
         },
@@ -32655,6 +32920,14 @@
             ],
             "title": "Pr Url"
           },
+          "attachments": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Attachments",
+            "default": []
+          },
           "depends_on": {
             "items": {
               "$ref": "#/components/schemas/TaskRef"
@@ -32769,14 +33042,6 @@
                 "type": "null"
               }
             ]
-          },
-          "attachments": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Attachments",
-            "default": []
           }
         },
         "type": "object",
@@ -33570,112 +33835,6 @@
         },
         "type": "object",
         "title": "WriteNoteResponse"
-      },
-      "Body_upload_attachment_api_tasks__task_id__attachments_post": {
-        "properties": {
-          "file": {
-            "type": "string",
-            "contentMediaType": "application/octet-stream",
-            "title": "File"
-          }
-        },
-        "type": "object",
-        "required": [
-          "file"
-        ],
-        "title": "Body_upload_attachment_api_tasks__task_id__attachments_post"
-      },
-      "TaskAttachmentDeleteResponse": {
-        "properties": {
-          "success": {
-            "type": "boolean",
-            "title": "Success",
-            "default": true
-          },
-          "removed": {
-            "type": "string",
-            "title": "Removed"
-          }
-        },
-        "type": "object",
-        "required": [
-          "removed"
-        ],
-        "title": "TaskAttachmentDeleteResponse"
-      },
-      "TaskAttachmentDetail": {
-        "properties": {
-          "id": {
-            "type": "string",
-            "title": "Id"
-          },
-          "name": {
-            "type": "string",
-            "title": "Name"
-          },
-          "path": {
-            "type": "string",
-            "title": "Path"
-          },
-          "url": {
-            "type": "string",
-            "title": "Url"
-          },
-          "content_type": {
-            "type": "string",
-            "title": "Content Type"
-          },
-          "size": {
-            "type": "integer",
-            "title": "Size"
-          }
-        },
-        "type": "object",
-        "required": [
-          "id",
-          "name",
-          "path",
-          "url",
-          "content_type",
-          "size"
-        ],
-        "title": "TaskAttachmentDetail"
-      },
-      "TaskAttachmentResponse": {
-        "properties": {
-          "success": {
-            "type": "boolean",
-            "title": "Success",
-            "default": true
-          },
-          "attachment": {
-            "$ref": "#/components/schemas/TaskAttachmentDetail"
-          }
-        },
-        "type": "object",
-        "required": [
-          "attachment"
-        ],
-        "title": "TaskAttachmentResponse"
-      },
-      "TaskAttachmentsResponse": {
-        "properties": {
-          "success": {
-            "type": "boolean",
-            "title": "Success",
-            "default": true
-          },
-          "attachments": {
-            "items": {
-              "$ref": "#/components/schemas/TaskAttachmentDetail"
-            },
-            "type": "array",
-            "title": "Attachments",
-            "default": []
-          }
-        },
-        "type": "object",
-        "title": "TaskAttachmentsResponse"
       }
     }
   }

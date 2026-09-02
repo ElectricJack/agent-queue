@@ -45,6 +45,7 @@ class TaskSetResponse:
         intelligence_class (None | str | Unset):
         skip_verification (bool | Unset):  Default: False.
         pr_url (None | str | Unset):
+        attachments (list[str] | Unset):
         depends_on (list[TaskRef] | Unset):
         blocks (list[TaskRef] | Unset):
         subtasks (list[TaskRef] | Unset):
@@ -81,6 +82,7 @@ class TaskSetResponse:
     intelligence_class: None | str | Unset = UNSET
     skip_verification: bool | Unset = False
     pr_url: None | str | Unset = UNSET
+    attachments: list[str] | Unset = UNSET
     depends_on: list[TaskRef] | Unset = UNSET
     blocks: list[TaskRef] | Unset = UNSET
     subtasks: list[TaskRef] | Unset = UNSET
@@ -178,6 +180,10 @@ class TaskSetResponse:
             pr_url = UNSET
         else:
             pr_url = self.pr_url
+
+        attachments: list[str] | Unset = UNSET
+        if not isinstance(self.attachments, Unset):
+            attachments = self.attachments
 
         depends_on: list[dict[str, Any]] | Unset = UNSET
         if not isinstance(self.depends_on, Unset):
@@ -307,6 +313,8 @@ class TaskSetResponse:
             field_dict["skip_verification"] = skip_verification
         if pr_url is not UNSET:
             field_dict["pr_url"] = pr_url
+        if attachments is not UNSET:
+            field_dict["attachments"] = attachments
         if depends_on is not UNSET:
             field_dict["depends_on"] = depends_on
         if blocks is not UNSET:
@@ -451,6 +459,8 @@ class TaskSetResponse:
             return cast(None | str | Unset, data)
 
         pr_url = _parse_pr_url(d.pop("pr_url", UNSET))
+
+        attachments = cast(list[str], d.pop("attachments", UNSET))
 
         _depends_on = d.pop("depends_on", UNSET)
         depends_on: list[TaskRef] | Unset = UNSET
@@ -603,6 +613,7 @@ class TaskSetResponse:
             intelligence_class=intelligence_class,
             skip_verification=skip_verification,
             pr_url=pr_url,
+            attachments=attachments,
             depends_on=depends_on,
             blocks=blocks,
             subtasks=subtasks,

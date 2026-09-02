@@ -23,6 +23,9 @@ class EnsureTaskRequest:
         priority (int | Unset): Priority (lower = higher priority, default 100) Default: 100.
         profile_id (None | str | Unset): Pre-route the task to this agent profile on create. Tasks created via
             ensure_task skip triage, so the ensuring pipeline pins the executing profile directly.
+        intelligence_class (None | str | Unset): Vault intelligence class for the task on create. A pinned profile is
+            not a route on its own: without an explicit class the task waits for the assignment playbook to choose one. Both
+            apply only when this call creates the task.
     """
 
     project_id: str
@@ -31,6 +34,7 @@ class EnsureTaskRequest:
     description: str | Unset = ""
     priority: int | Unset = 100
     profile_id: None | str | Unset = UNSET
+    intelligence_class: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -50,6 +54,12 @@ class EnsureTaskRequest:
         else:
             profile_id = self.profile_id
 
+        intelligence_class: None | str | Unset
+        if isinstance(self.intelligence_class, Unset):
+            intelligence_class = UNSET
+        else:
+            intelligence_class = self.intelligence_class
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -65,6 +75,8 @@ class EnsureTaskRequest:
             field_dict["priority"] = priority
         if profile_id is not UNSET:
             field_dict["profile_id"] = profile_id
+        if intelligence_class is not UNSET:
+            field_dict["intelligence_class"] = intelligence_class
 
         return field_dict
 
@@ -90,6 +102,15 @@ class EnsureTaskRequest:
 
         profile_id = _parse_profile_id(d.pop("profile_id", UNSET))
 
+        def _parse_intelligence_class(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        intelligence_class = _parse_intelligence_class(d.pop("intelligence_class", UNSET))
+
         ensure_task_request = cls(
             project_id=project_id,
             dedup_key=dedup_key,
@@ -97,6 +118,7 @@ class EnsureTaskRequest:
             description=description,
             priority=priority,
             profile_id=profile_id,
+            intelligence_class=intelligence_class,
         )
 
         ensure_task_request.additional_properties = d
