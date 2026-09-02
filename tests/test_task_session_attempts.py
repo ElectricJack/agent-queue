@@ -10,6 +10,7 @@ from sqlalchemy import update
 from src.database.adapters.sqlite import SQLiteDatabaseAdapter
 from src.database.tables import agents, tasks
 from src.models import Agent, Project, SessionRecord, Task, TaskStatus
+from tests.perf.test_hierarchy_statements import count_statements
 
 
 @pytest.fixture
@@ -101,6 +102,27 @@ async def test_pool_claim_release_and_reuse_are_atomic_and_keep_a(db):
             raise RuntimeError("rollback")
     assert (await db.get_session("s")).task_id == "other"
     assert (await db.get_task_session_attempt(b["id"]))["ended_at"] is None
+
+
+async def test_pool_holder_snapshots_history_in_one_database_statement(db):
+    """A pool claim keeps its durable attempt record within the claim budget."""
+    await db.create_session(session(task_id=None, lifecycle="pool"))
+    async with count_statements(db) as counted:
+        async with db.immediate() as conn:
+            await db.record_holder(
+                conn, session_id="s", task_id="t", agent_id="a", work_dir="/task-a", now=150.0
+            )
+
+    # BEGIN, holder's session/agent/workspace/metadata writes, one attempt
+    # snapshot INSERT ... SELECT, COMMIT.  Keep the durable audit record
+    # without restoring the four round trips it originally needed.
+    assert counted["n"] <= 7
+    (attempt,) = await db.list_task_session_attempts("t")
+    assert (attempt["agent_name"], attempt["work_dir"], attempt["started_at"]) == (
+        "Original worker",
+        "/task-a",
+        150.0,
+    )
 
 
 async def test_attempt_survives_archive_and_session_deletion(db):

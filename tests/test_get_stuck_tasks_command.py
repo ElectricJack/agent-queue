@@ -2,7 +2,7 @@
 that powers the ``get_stuck_tasks`` tool used by the
 ``system-health-check`` playbook.
 
-See ``src/prompts/example_playbooks/system-health-check.md`` and
+See ``docs/example_playbooks/system-health-check.md`` and
 ``src/database/queries/dependency_queries.py::get_stuck_active_tasks``.
 """
 

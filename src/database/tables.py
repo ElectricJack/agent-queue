@@ -23,6 +23,7 @@ from sqlalchemy import (
     Table,
     Text,
     UniqueConstraint,
+    false,
     text,
     true,
 )
@@ -589,6 +590,14 @@ agent_profiles = Table(
     Column("model", Text, nullable=False, server_default="''"),
     Column("permission_mode", Text, nullable=False, server_default="''"),
     Column("allowed_tools", Text, nullable=False, server_default="'[]'"),
+    # Normalized capability namespaces (Playbook V2 Package 0 §3.1), stored
+    # as JSON arrays of text like ``allowed_tools`` above.  NULL is
+    # meaningful: it is the signal that the legacy ``allowed_tools`` adapter
+    # should run.  Backfilling would erase the distinction between "authored
+    # as none" ('[]') and "not authored" (NULL).
+    Column("harness_tools", Text, nullable=True),
+    Column("aq_commands", Text, nullable=True),
+    Column("plugin_tools", Text, nullable=True),
     Column("mcp_servers", Text, nullable=False, server_default="'{}'"),
     Column("system_prompt_suffix", Text, nullable=False, server_default="''"),
     Column("install", Text, nullable=False, server_default="'{}'"),
@@ -626,7 +635,7 @@ agent_profiles = Table(
         "read_only",
         Boolean,
         nullable=False,
-        server_default=text("0"),
+        server_default=false(),
     ),
     # Opt-in for the base-checkout launch guard: without it a session whose
     # ``work_dir`` is a base workspace (the clone hosting the slot
@@ -635,7 +644,7 @@ agent_profiles = Table(
         "allow_base_checkout",
         Boolean,
         nullable=False,
-        server_default=text("0"),
+        server_default=false(),
     ),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
@@ -695,7 +704,7 @@ sessions = Table(
     # launched with, and today's harness file may have been edited since.
     # This is what lets ``subagent_counts`` say "complete" instead of
     # "unknown" -- and say "unknown" honestly for the sessions that lack it.
-    Column("hooks_provisioned", Boolean, nullable=False, server_default=text("0")),
+    Column("hooks_provisioned", Boolean, nullable=False, server_default=false()),
     Index("idx_sessions_agent", "agent_id", "state"),
     Index("idx_sessions_task_id", "task_id"),
     Index("idx_sessions_state", "state"),
@@ -788,7 +797,7 @@ api_session_tokens = Table(
     # per-project supervisor sessions so the supervisor can run every
     # ``aq`` command on behalf of the operator; task sessions and other
     # workers stay on the narrow AGENT_COMMAND_SET.
-    Column("elevated", Boolean, nullable=False, server_default=text("0")),
+    Column("elevated", Boolean, nullable=False, server_default=false()),
     Index("idx_api_session_tokens_session", "session_id"),
     Index("idx_api_session_tokens_expires", "expires_at"),
 )

@@ -25,10 +25,10 @@ from .archive_task_response import ArchiveTaskResponse
 from .archive_task_response_422 import ArchiveTaskResponse422
 from .ask_human_request import AskHumanRequest
 from .ask_human_response_422 import AskHumanResponse422
+from .assignment_route_detail import AssignmentRouteDetail
 from .body_upload_attachment_api_tasks_task_id_attachments_post import (
     BodyUploadAttachmentApiTasksTaskIdAttachmentsPost,
 )
-from .assignment_route_detail import AssignmentRouteDetail
 from .cancel_playbook_run_request import CancelPlaybookRunRequest
 from .cancel_playbook_run_response import CancelPlaybookRunResponse
 from .cancel_playbook_run_response_422 import CancelPlaybookRunResponse422
@@ -577,6 +577,10 @@ from .probe_mcp_server_response import ProbeMcpServerResponse
 from .probe_mcp_server_response_422 import ProbeMcpServerResponse422
 from .probed_tool_model import ProbedToolModel
 from .probed_tool_model_input_schema import ProbedToolModelInputSchema
+from .profile_audit_request import ProfileAuditRequest
+from .profile_audit_response import ProfileAuditResponse
+from .profile_audit_response_422 import ProfileAuditResponse422
+from .profile_audit_row import ProfileAuditRow
 from .profile_detail import ProfileDetail
 from .profile_detail_install import ProfileDetailInstall
 from .profile_subagent_rollup import ProfileSubagentRollup
@@ -1448,6 +1452,10 @@ __all__ = (
     "ProbeMcpServerRequest",
     "ProbeMcpServerResponse",
     "ProbeMcpServerResponse422",
+    "ProfileAuditRequest",
+    "ProfileAuditResponse422",
+    "ProfileAuditResponse",
+    "ProfileAuditRow",
     "ProfileDetail",
     "ProfileDetailInstall",
     "ProfileSubagentRollup",

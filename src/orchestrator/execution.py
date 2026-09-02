@@ -1124,6 +1124,40 @@ class ExecutionMixin:
             refreshed = await self.db.get_task(task.id)
             if refreshed:
                 new_status = refreshed.status
+
+        # ``task.failed`` is the trigger for the reflection playbook
+        # (``vault/templates/reflection-playbook.md`` -> deep tier) and for
+        # the failure-notification path.  The legacy execution tail raised it
+        # when a failure went terminal; the session path replaced that tail
+        # and only ever emitted ``task.closed``, so a worker that burned its
+        # retry budget or closed ``--failure-class hard`` got no reflection
+        # and no notification at all.
+        #
+        # Every terminal BLOCKED leg qualifies — retry budget spent
+        # (``max_retries``), hard failure (``session_close_hard_failure``)
+        # and a pass whose pipeline stopped short
+        # (``session_close_pipeline_stop``).  The retry leg (READY) is
+        # deliberately excluded: the task is not finished failing yet.
+        # Emitted before ``task.closed`` so a subscriber sees the failure
+        # ahead of the close, and best-effort so a blowing-up subscriber
+        # cannot undo a committed transition.
+        if new_status == TaskStatus.BLOCKED:
+            try:
+                await self._emit_task_failure(
+                    task,
+                    context,
+                    error=notes or "",
+                    agent_id=task.assigned_agent_id,
+                    agent_type=task.profile_id,
+                    status=new_status.value,
+                )
+            except Exception:
+                logger.warning(
+                    "Task %s: task.failed emit failed (state is BLOCKED)",
+                    task.id,
+                    exc_info=True,
+                )
+
         # ``task.completed`` is the event the review pipeline triggers on
         # (``per-task-review`` / ``per-branch-final-review`` in
         # default-pipeline.md).  The legacy blocking tail of ``_execute_task``

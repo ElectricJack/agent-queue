@@ -70,7 +70,7 @@ Rules:
   aq test --lf                                     # re-run only what failed last time
   pytest --co -q -k <term> | tail -20              # collection only — no slot needed
   ```
-- **Skip the slow-by-nature markers** unless the change is about them (real tmux, Milvus, latency budgets). `aq test` applies `-m "not tmux and not integration and not perf"` by default; pass your own `-m` (or `--aq-all-markers`) when the change *is* about them.
+- **Skip the slow-by-nature markers** unless the change is about them (real tmux, Milvus, latency budgets). `aq test` applies `-m "not perf and not migration and not slow and not tmux and not integration"` by default; pass your own `-m` (or `--aq-all-markers`) when the change *is* about them.
 - **One broader run at the end of a task, not during:** the area suite for what you changed (e.g. `aq test tests/test_playbook*.py tests/test_pipeline*.py`). The whole-repo run is for CI and explicit review gates only.
 - Ruff on changed files only: `ruff check <paths>`.
 

@@ -35,13 +35,15 @@ def read_claim_epoch(cwd: str | None = None) -> int | None:
     commands that use this only send ``claim_epoch`` when it returns a
     value, so a task (non-pool) session's calls are unaffected.
 
-    The search walks *up* from *cwd* to the filesystem root and stops at
-    the first ``.aq/claim.json`` it finds (M5): a worker that ``cd``ed into
-    a subdirectory of its workspace — the normal way to work in a repo —
-    would otherwise silently lose its epoch and fall through to the env
-    var, which is stale after the first re-claim.
+    The search walks *up* from *cwd* to the filesystem root. It accepts a
+    claim file only when its task and session identities do not conflict
+    with the calling worker's environment. This lets a worker that ``cd``ed
+    into a subdirectory retain its current epoch, without inheriting a claim
+    from a slot that has been reused by another session.
     """
     base = os.path.abspath(cwd or os.getcwd())
+    task_id = os.environ.get("AQ_TASK_ID")
+    session_id = os.environ.get("AQ_SESSION_ID")
     seen = set()
     while base not in seen:
         seen.add(base)
@@ -49,6 +51,12 @@ def read_claim_epoch(cwd: str | None = None) -> int | None:
         try:
             with open(path, encoding="utf-8") as fh:
                 data = json.load(fh)
+            if (
+                (task_id and data.get("task_id") not in (None, task_id))
+                or (session_id and data.get("session_id") not in (None, session_id))
+            ):
+                base = os.path.dirname(base)
+                continue
             epoch = data.get("claim_epoch")
             if epoch is not None:
                 return int(epoch)
