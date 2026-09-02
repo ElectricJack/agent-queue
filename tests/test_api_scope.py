@@ -166,6 +166,10 @@ class TestCheckCommandScope:
             "task_progress",
             "task_heartbeat",
             "task_handoff",
+            # Harness subagent-lifecycle hooks (SubagentStart/SubagentStop)
+            # report through the agent surface; the row is bound to the
+            # caller's own session_id (see src/api/scope.py).
+            "subagent_event",
             "ask_human",
             "message_send",
             "message_inbox",
