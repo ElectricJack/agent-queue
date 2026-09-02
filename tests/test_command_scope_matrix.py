@@ -163,7 +163,7 @@ def test_commands_outside_the_agent_set_are_refused_outright(command):
 _PROJECTLESS_ALLOWED = {"prime", "get_schema", "subagent_event"}
 
 
-def test_a_worker_terminal_without_a_project_may_only_prime_and_read_the_schema():
+def test_a_worker_terminal_without_a_project_may_only_prime_read_schema_and_report_subagents():
     scope = RequestScope(kind="session", session_id="s1", task_id=None, project_id=None)
 
     for command in sorted(_PROJECTLESS_ALLOWED):

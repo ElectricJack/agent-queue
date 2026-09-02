@@ -23,6 +23,7 @@ import time
 import uuid
 
 from src.models import AgentProfile, Agent, AgentState, ProjectStatus, SessionRecord, Task, TaskStatus
+from src.orchestrator.base_workspace import base_checkout_refusal
 from src.scheduler import PoolKey, PoolSupply, size_pools
 from src.sessions.spec import pool_session_name
 
@@ -424,6 +425,19 @@ class PoolsMixin:
                 return None
 
             work_dir = workspace.workspace_path
+
+            # Same guard as the task-launch path: a pool session may not run
+            # in the base checkout (see :mod:`src.orchestrator.base_workspace`).
+            refusal = await base_checkout_refusal(
+                self.db, work_dir, profile, project_id=project.id
+            )
+            if refusal:
+                # Quarantine rather than starve: unlike "no free workspace"
+                # this repeats identically every cycle until an operator
+                # fixes the kind's slots or the profile's opt-in.
+                await _rollback(refusal, quarantine=True)
+                return None
+
             instance_token = uuid.uuid4().hex
 
             if token_store is not None:

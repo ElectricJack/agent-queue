@@ -3,6 +3,7 @@
 #
 # Usage:
 #   ./scripts/regenerate-api-client.sh              # daemon must be running
+#   ./scripts/regenerate-api-client.sh --offline    # build the spec in-process
 #   ./scripts/regenerate-api-client.sh --from-file  # use saved openapi.json
 #
 # Prerequisites:
@@ -20,17 +21,28 @@ SPEC_FILE="$ROOT_DIR/openapi.json"
 CLIENT_DIR="$ROOT_DIR/packages/aq-client"
 API_URL="${AGENT_QUEUE_API_URL:-http://127.0.0.1:8081}"
 
-if [[ "${1:-}" != "--from-file" ]]; then
-    echo "Fetching OpenAPI spec from $API_URL/openapi.json ..."
-    curl -sf "$API_URL/openapi.json" > "$SPEC_FILE"
-    echo "Saved to $SPEC_FILE"
-else
-    if [[ ! -f "$SPEC_FILE" ]]; then
-        echo "Error: $SPEC_FILE not found. Start the daemon and run without --from-file first." >&2
-        exit 1
-    fi
-    echo "Using saved spec: $SPEC_FILE"
-fi
+case "${1:-}" in
+    --offline)
+        # No daemon needed: create_app() builds the whole route surface from
+        # the command registry, so the spec is a pure function of the
+        # checkout.  This is what the drift guard in
+        # tests/test_api_client_contract.py compares against.
+        echo "Building OpenAPI spec offline from this checkout ..."
+        (cd "$ROOT_DIR" && python -m src.api.spec "$SPEC_FILE")
+        ;;
+    --from-file)
+        if [[ ! -f "$SPEC_FILE" ]]; then
+            echo "Error: $SPEC_FILE not found. Run with --offline first." >&2
+            exit 1
+        fi
+        echo "Using saved spec: $SPEC_FILE"
+        ;;
+    *)
+        echo "Fetching OpenAPI spec from $API_URL/openapi.json ..."
+        curl -sf "$API_URL/openapi.json" > "$SPEC_FILE"
+        echo "Saved to $SPEC_FILE"
+        ;;
+esac
 
 # Count paths in spec
 PATHS=$(python3 -c "import json; print(len(json.load(open('$SPEC_FILE'))['paths']))")

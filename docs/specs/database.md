@@ -609,22 +609,31 @@ The SQLite-to-PostgreSQL copy inventory includes this audit table.
 
 ### Table: `subagent_events`
 
-Authoritative native sub-agent lifecycle, delivered by the harness's own `SubagentStart` / `SubagentStop` hooks (`aq subagent event --hook-json`, command `subagent_event`). Append-only: an event is a fact about a moment, and the derived "how many are running" is a fold over the facts (`max(0, starts - stops)` per session) rather than a mutable counter that a duplicate delivery or a lost Stop could corrupt. `id` is a deterministic digest of (`session_id`, `event`, `subagent_id`) so a re-delivered hook collapses onto the row it already wrote. Provenance is soft text, like `task_session_attempts`: events outlive the session row's deletion and stay readable as history.
+Append-only native sub-agent telemetry. A harness `SubagentStart` / `SubagentStop`
+hook reports a fact about a moment; "how many children is this session running"
+is a fold over those facts (`src/database/queries/subagent_queries.py`), so a
+re-delivered hook or a lost `stop` cannot corrupt a counter permanently. The
+primary key is a digest of (`session_id`, `event`, `subagent_id`), which makes a
+duplicate delivery a no-op. References are logical IDs without foreign keys so the
+audit trail survives session, task and project deletion.
 
 | Column | Type | Constraints | Notes |
 |---|---|---|---|
-| `id` | TEXT | PRIMARY KEY | Digest of (`session_id`, `event`, `subagent_id`) |
-| `session_id` | TEXT | NOT NULL | Logical reference; taken from the bearer token's scope |
-| `harness` | TEXT | NOT NULL | Harness that fired the hook |
-| `project_id` | TEXT | nullable | Attribution snapshot |
-| `task_id` | TEXT | nullable | Attribution snapshot |
-| `subagent_id` | TEXT | NOT NULL | The harness's own id for the child agent, sent on Start and Stop |
-| `agent_type` | TEXT | nullable | Child agent type as reported by the harness |
-| `turn_id` | TEXT | nullable | Parent turn the child was spawned in |
-| `event` | TEXT | NOT NULL CHECK IN ('start','stop') | The two halves of one child's lifetime |
-| `occurred_at` | FLOAT | NOT NULL | Daemon clock at receipt |
+| `id` | TEXT | PRIMARY KEY | SHA-256 of (session_id, event, subagent_id) — idempotent insert |
+| `session_id` | TEXT | NOT NULL | Parent session that spawned the child; indexed with `event` |
+| `harness` | TEXT | NOT NULL | Harness that fired the hook (e.g. `claude`, `codex`) |
+| `project_id` | TEXT | nullable | Owning project, when the hook reports one |
+| `task_id` | TEXT | nullable | Task the parent session was running, when known |
+| `subagent_id` | TEXT | NOT NULL | Harness's own id for the child; sent on both halves, which is what makes the pairing exact |
+| `agent_type` | TEXT | nullable | Sub-agent type reported by the harness |
+| `turn_id` | TEXT | nullable | Parent turn the child was spawned from |
+| `event` | TEXT | NOT NULL | CHECK IN ('start', 'stop') — the two halves of one child's lifetime |
+| `occurred_at` | REAL | NOT NULL | Daemon clock at hook receipt; indexed |
 
-Indexes: `idx_subagent_events_session` (`session_id`, `event`), `idx_subagent_events_occurred` (`occurred_at`).
+Indexes cover (`session_id`, `event`) for the per-session fold and (`occurred_at`)
+for time-ordered listing. The fold clamps at zero: a `stop` whose `start` never
+arrived is still stored, because losing a Start must not make a session look like
+it is running a child forever.
 The SQLite-to-PostgreSQL copy inventory includes this table.
 
 ### Table: `messages`
