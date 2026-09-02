@@ -54,15 +54,21 @@ DEFAULT_EXCLUDED_COMMANDS = {
     "update_and_restart",
     "run_command",  # dangerous for external MCP clients
     "load_tools",  # supervisor-internal meta-tool, not for MCP agents
-    # Harness hook receiver; it is an authenticated agent-session API path,
-    # not an interactive MCP tool.
-    "subagent_event",
     # Mints a bearer token for an arbitrary session — a credential minter is
     # never something an MCP client should reach, even a trusted one.  It
     # stays available on the CLI/HTTP surface (``aq session token``), which
     # is loopback + elevated-only.  Dev/e2e facility; see
     # ``SessionCommandsMixin._cmd_session_token``.
     "session_token",
+    # Harness-hook telemetry writer, not an agent action.  ``subagent_event``
+    # records one SubagentStart/SubagentStop emitted by the harness's own hook
+    # process, and it takes the session identity from the bearer token's scope
+    # rather than the payload (see
+    # ``SurfaceCommandsMixin._cmd_subagent_event``).  Its callers are the
+    # harness hook via ``aq subagent event --hook-json`` and the HTTP surface
+    # that backs it; an LLM has no reason to hand-write its own subagent
+    # telemetry, and exposing it would only invite fabricated counts.
+    "subagent_event",
 }
 
 
