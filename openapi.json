@@ -6632,6 +6632,147 @@
         }
       }
     },
+    "/api/playbook/v2-propose": {
+      "post": {
+        "tags": [
+          "playbook"
+        ],
+        "summary": "Turn an agent-produced rules/steps JSON body into a reviewable Playbook V2 proposal using server-owned source identity and live contract fingerprints. Read-only; never persists or activates.",
+        "description": "Turn an agent-produced rules/steps JSON body into a reviewable Playbook V2 proposal using server-owned source identity and live contract fingerprints. Read-only; never persists or activates.",
+        "operationId": "playbook_v2_propose",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaybookV2ProposeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybookV2ProposeResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/playbook/v2-shadow-compile": {
+      "post": {
+        "tags": [
+          "playbook"
+        ],
+        "summary": "Read every installed vault playbook source, deterministically lower supported kinds, and return validation diagnostics. Operator-only, read-only, and never writes runtime or activation state.",
+        "description": "Read every installed vault playbook source, deterministically lower supported kinds, and return validation diagnostics. Operator-only, read-only, and never writes runtime or activation state.",
+        "operationId": "playbook_v2_shadow_compile",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaybookV2ShadowCompileRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybookV2ShadowCompileResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/playbook/v2-validate": {
+      "post": {
+        "tags": [
+          "playbook"
+        ],
+        "summary": "Validate an immutable Playbook V2 JSON artifact inside the vault against the strict model, registered command contracts, profiles, and event schemas. Read-only; never installs or activates.",
+        "description": "Validate an immutable Playbook V2 JSON artifact inside the vault against the strict model, registered command contracts, profiles, and event schemas. Read-only; never installs or activates.",
+        "operationId": "playbook_v2_validate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaybookV2ValidateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybookV2ValidateResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/playbook/validate": {
       "post": {
         "tags": [
@@ -15414,6 +15555,106 @@
         "title": "CompiledPlaybookNode",
         "description": "The serializable fields produced by ``PlaybookNode.to_dict()``.\n\nEach field is optional according to the compiled-node rules: a key is\npresent only when the compiler set it.  This is what the dashboard node\ninspector renders, so the prompt here is the full untruncated text."
       },
+      "CompilerDiagnosticCountsDTO": {
+        "properties": {
+          "error": {
+            "type": "integer",
+            "title": "Error",
+            "default": 0
+          },
+          "warning": {
+            "type": "integer",
+            "title": "Warning",
+            "default": 0
+          },
+          "question": {
+            "type": "integer",
+            "title": "Question",
+            "default": 0
+          },
+          "info": {
+            "type": "integer",
+            "title": "Info",
+            "default": 0
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "CompilerDiagnosticCountsDTO"
+      },
+      "CompilerDiagnosticDTO": {
+        "properties": {
+          "severity": {
+            "type": "string",
+            "enum": [
+              "error",
+              "warning",
+              "question",
+              "info"
+            ],
+            "title": "Severity"
+          },
+          "code": {
+            "type": "string",
+            "title": "Code"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          },
+          "rule_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rule Id"
+          },
+          "step_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Step Id"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SourceRefDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "severity",
+          "code",
+          "message"
+        ],
+        "title": "CompilerDiagnosticDTO"
+      },
       "ContractChangeDTO": {
         "properties": {
           "command": {
@@ -16516,6 +16757,19 @@
             ],
             "title": "Attachments",
             "description": "List of absolute file paths to images or files that the agent should have access to when working on this task. These are typically paths to Discord attachment images that were downloaded locally. The agent will be told to read these files using the Read tool."
+          },
+          "deliverables": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deliverables",
+            "description": "Plan-derived implementation contract checked before a passing close."
           },
           "skip_verification": {
             "type": "boolean",
@@ -22232,6 +22486,17 @@
             },
             "type": "array",
             "title": "Attachments",
+            "default": []
+          },
+          "deliverables": {
+            "items": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Deliverables",
             "default": []
           },
           "depends_on": {
@@ -29752,6 +30017,239 @@
         "title": "PlaybookV2GraphResponse",
         "description": "Filtering is server-side and lossless.  ``playbook_v2_graph(event_type=...)``\nnarrows ``rules``/``nodes``/``edges`` to the rules triggered by that event and\nevery node reachable from them.  ``event_groups`` always lists all events, so\nthe selector never depends on the current filter."
       },
+      "PlaybookV2ProposeRequest": {
+        "properties": {
+          "playbook_id": {
+            "type": "string",
+            "title": "Playbook Id",
+            "description": "Frontmatter id of the authoritative Markdown source."
+          },
+          "semantic_body_path": {
+            "type": "string",
+            "title": "Semantic Body Path",
+            "description": "Path inside the vault to JSON containing only rules and steps."
+          },
+          "baseline_artifact_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Baseline Artifact Path",
+            "description": "Optional prior V2 artifact for semantic diff and next version."
+          }
+        },
+        "type": "object",
+        "required": [
+          "playbook_id",
+          "semantic_body_path"
+        ],
+        "title": "PlaybookV2ProposeRequest"
+      },
+      "PlaybookV2ProposeResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "activatable": {
+            "type": "boolean",
+            "title": "Activatable"
+          },
+          "artifact_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artifact Sha256"
+          },
+          "source_digest": {
+            "type": "string",
+            "title": "Source Digest"
+          },
+          "contract_fingerprint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contract Fingerprint"
+          },
+          "compiler_build": {
+            "type": "string",
+            "title": "Compiler Build"
+          },
+          "counts": {
+            "$ref": "#/components/schemas/CompilerDiagnosticCountsDTO"
+          },
+          "diagnostics": {
+            "items": {
+              "$ref": "#/components/schemas/CompilerDiagnosticDTO"
+            },
+            "type": "array",
+            "title": "Diagnostics",
+            "default": []
+          },
+          "semantic_diff": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Semantic Diff"
+          },
+          "artifact": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artifact"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success",
+          "activatable",
+          "source_digest",
+          "compiler_build",
+          "counts"
+        ],
+        "title": "PlaybookV2ProposeResponse"
+      },
+      "PlaybookV2ShadowCompileRequest": {
+        "properties": {
+          "scope": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope",
+            "description": "Optional source-scope filter."
+          }
+        },
+        "type": "object",
+        "title": "PlaybookV2ShadowCompileRequest"
+      },
+      "PlaybookV2ShadowCompileResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "lowered": {
+            "type": "integer",
+            "title": "Lowered"
+          },
+          "clean": {
+            "type": "integer",
+            "title": "Clean"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/ShadowCompileRowDTO"
+            },
+            "type": "array",
+            "title": "Rows",
+            "default": []
+          },
+          "source_errors": {
+            "items": {
+              "$ref": "#/components/schemas/ShadowSourceErrorDTO"
+            },
+            "type": "array",
+            "title": "Source Errors",
+            "default": []
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success",
+          "total",
+          "lowered",
+          "clean"
+        ],
+        "title": "PlaybookV2ShadowCompileResponse"
+      },
+      "PlaybookV2ValidateRequest": {
+        "properties": {
+          "path": {
+            "type": "string",
+            "title": "Path",
+            "description": "Vault-relative or absolute path to a V2 artifact JSON file."
+          }
+        },
+        "type": "object",
+        "required": [
+          "path"
+        ],
+        "title": "PlaybookV2ValidateRequest"
+      },
+      "PlaybookV2ValidateResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "artifact_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artifact Sha256"
+          },
+          "counts": {
+            "$ref": "#/components/schemas/CompilerDiagnosticCountsDTO"
+          },
+          "diagnostics": {
+            "items": {
+              "$ref": "#/components/schemas/CompilerDiagnosticDTO"
+            },
+            "type": "array",
+            "title": "Diagnostics",
+            "default": []
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success",
+          "counts"
+        ],
+        "title": "PlaybookV2ValidateResponse"
+      },
       "PlaybookValidateRequest": {
         "properties": {
           "path": {
@@ -35570,6 +36068,80 @@
         ],
         "title": "SetTaskStatusResponse"
       },
+      "ShadowCompileRowDTO": {
+        "properties": {
+          "playbook_id": {
+            "type": "string",
+            "title": "Playbook Id"
+          },
+          "vault_path": {
+            "type": "string",
+            "title": "Vault Path"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "lowered": {
+            "type": "boolean",
+            "title": "Lowered"
+          },
+          "artifact_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artifact Sha256"
+          },
+          "counts": {
+            "$ref": "#/components/schemas/CompilerDiagnosticCountsDTO"
+          },
+          "diagnostics": {
+            "items": {
+              "$ref": "#/components/schemas/CompilerDiagnosticDTO"
+            },
+            "type": "array",
+            "title": "Diagnostics",
+            "default": []
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "playbook_id",
+          "vault_path",
+          "kind",
+          "lowered",
+          "counts"
+        ],
+        "title": "ShadowCompileRowDTO"
+      },
+      "ShadowSourceErrorDTO": {
+        "properties": {
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "errors": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Errors",
+            "default": []
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "path"
+        ],
+        "title": "ShadowSourceErrorDTO"
+      },
       "ShowEffectiveProfileRequest": {
         "properties": {
           "project_id": {
@@ -37235,6 +37807,19 @@
             "title": "Commands",
             "description": "Other commands run while completing the task (optional)"
           },
+          "deliverable_unmet": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deliverable Unmet",
+            "description": "Explicit exception entries formatted 'deliverable-id: reason'."
+          },
           "summary": {
             "anyOf": [
               {
@@ -37543,6 +38128,15 @@
             "title": "Notes",
             "default": ""
           },
+          "deliverables": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Deliverables",
+            "default": []
+          },
           "completed_at": {
             "type": "number",
             "title": "Completed At",
@@ -37795,6 +38389,17 @@
             },
             "type": "array",
             "title": "Attachments",
+            "default": []
+          },
+          "deliverables": {
+            "items": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Deliverables",
             "default": []
           },
           "depends_on": {
@@ -38700,6 +39305,17 @@
             "title": "Attachments",
             "default": []
           },
+          "deliverables": {
+            "items": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Deliverables",
+            "default": []
+          },
           "depends_on": {
             "items": {
               "$ref": "#/components/schemas/TaskRef"
@@ -39005,6 +39621,17 @@
             },
             "type": "array",
             "title": "Attachments",
+            "default": []
+          },
+          "deliverables": {
+            "items": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Deliverables",
             "default": []
           },
           "depends_on": {

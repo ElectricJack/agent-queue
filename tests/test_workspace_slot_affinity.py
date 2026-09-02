@@ -157,6 +157,11 @@ async def test_acquisition_hands_the_retry_its_own_slot_back(env):
     slots = env.orch._worktree_slots()
     await slots.reset_slot_for_task(env.slots[1], task, kind=env.kind)
     await slots.restore_slot_after_task(env.slots[1], task_id=task.id)
+    # A live holder is never detached by preparation; the acquisition hint
+    # is still needed for this (normal) retry path.
+    from src.claim_file import write_claim_file
+
+    write_claim_file(env.slots[1].workspace_path, {"task_id": task.id})
 
     # The collision the hint exists to prevent is real: slot-0 cannot take it.
     with pytest.raises(Exception, match="already (checked out|used by worktree)"):
@@ -170,6 +175,67 @@ async def test_acquisition_hands_the_retry_its_own_slot_back(env):
         == task_branch_name(task.id)
     )
     assert (await env.db.get_workspace(env.slots[1].id)).locked_by_task_id == task.id
+
+
+async def test_preparation_detaches_an_unclaimed_stale_branch_holder(env):
+    """A dead pool slot cannot pin a task branch forever."""
+    task = await _task(env, "stale-holder")
+    slots = env.orch._worktree_slots()
+    await slots.reset_slot_for_task(env.slots[1], task, kind=env.kind)
+
+    branch = await slots.reset_slot_for_task(env.slots[0], task, kind=env.kind)
+
+    assert branch == task_branch_name(task.id)
+    assert _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=env.slots[1].workspace_path) == "HEAD"
+
+
+async def test_pool_retry_can_use_another_slot_after_clean_pushed_release(env):
+    """Pool slots are acquired before task selection, so release unpins it.
+
+    This is the pool-specific retry sequence: task ran in slot A, closed a
+    transient attempt after pushing its branch, then a pool worker already
+    bound to slot B claims the retry. Without the clean-release detach, the
+    second reset is rejected because slot A still owns ``aq/<task>``.
+    """
+    task = await _task(env, "pool-cross-slot")
+    slots = env.orch._worktree_slots()
+    slot_a, slot_b = env.slots[0], env.slots[1]
+    await slots.reset_slot_for_task(slot_a, task, kind=env.kind)
+    _git(["push", "origin", task_branch_name(task.id)], cwd=slot_a.workspace_path)
+
+    await slots.restore_slot_after_task(slot_a, task_id=task.id)
+    assert _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=slot_a.workspace_path) == "HEAD"
+
+    branch = await slots.reset_slot_for_task(slot_b, task, kind=env.kind)
+    assert branch == task_branch_name(task.id)
+    assert _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=slot_b.workspace_path) == branch
+
+
+async def test_pool_doctor_reports_and_detaches_stale_slot_checkout(env):
+    task = await _task(env, "doctor-stale")
+    slot = env.slots[1]
+    await env.orch._worktree_slots().reset_slot_for_task(slot, task, kind=env.kind)
+
+    from src.doctor.models import Severity
+    from src.doctor.pool_checks import run_check
+
+    finding = await run_check(env.db, "pools.stale_worktree_checkouts", config=None)
+    assert finding.severity is Severity.WARN
+    assert finding.data["slots"] == [
+        {
+            "workspace_id": slot.id,
+            "path": slot.workspace_path,
+            "branch": task_branch_name(task.id),
+            "task_id": task.id,
+            "task_status": TaskStatus.ASSIGNED.value,
+        }
+    ]
+
+    repaired = await run_check(
+        env.db, "pools.stale_worktree_checkouts", config=None, repair=True
+    )
+    assert repaired.severity is Severity.OK
+    assert _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=slot.workspace_path) == "HEAD"
 
 
 async def test_a_plan_subtask_follows_its_parents_branch(env):

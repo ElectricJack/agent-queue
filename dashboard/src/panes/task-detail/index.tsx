@@ -32,10 +32,15 @@ import { useShellPaneStore } from "../store";
 import type { PaneViewProps } from "../types";
 import type { TaskDetailArgs } from "./manifest";
 
+type CompletionWithDeliverables = TaskCompletionDetail & {
+  deliverables?: Array<{ id: string; kind: string; target: string; met: boolean; reason: string }>;
+};
+
 type TaskWithLooseFields = Task & {
   intelligence_class?: string;
   branch_name?: string;
-  completion?: TaskCompletionDetail | null;
+  deliverables?: Array<{ id: string; kind: string; target: string }>;
+  completion?: CompletionWithDeliverables | null;
 };
 
 type LocalModal = "close" | "reopen" | null;
@@ -361,6 +366,9 @@ export default function TaskDetailPane({
             <CompletionList label="Commits" values={loose.completion.commits} mono />
             <CompletionText label="Summary" value={loose.completion.summary} />
             <CompletionText label="Notes" value={loose.completion.notes} />
+            {(loose.completion.deliverables ?? []).length > 0 && (
+              <DeliverablesChecklist items={loose.completion.deliverables ?? []} />
+            )}
             {loose.completion.pr_url && (
               <div>
                 <p className="text-xs text-gray-500">Pull request</p>
@@ -376,6 +384,13 @@ export default function TaskDetailPane({
               </div>
             )}
           </div>
+        </section>
+      )}
+
+      {!loose?.completion && (loose?.deliverables ?? []).length > 0 && (
+        <section>
+          <h3 className="mb-1.5 text-xs font-semibold uppercase text-gray-500">Deliverables</h3>
+          <DeliverablesChecklist items={(loose?.deliverables ?? []).map((item) => ({ ...item, met: false, reason: "Pending close-time check" }))} />
         </section>
       )}
 
@@ -563,6 +578,31 @@ function CompletionList({
       <p className="text-xs text-gray-500">{label}</p>
       <ul className={`mt-0.5 space-y-1 text-gray-300 ${mono ? "font-mono text-xs" : ""}`}>
         {values.map((value) => <li key={value}>{value}</li>)}
+      </ul>
+    </div>
+  );
+}
+
+function DeliverablesChecklist({
+  items,
+}: {
+  items: Array<{ id: string; kind: string; target: string; met: boolean; reason: string }>;
+}) {
+  return (
+    <div>
+      <p className="text-xs text-gray-500">Deliverables</p>
+      <ul className="mt-1 space-y-1.5">
+        {items.map((item) => (
+          <li key={item.id} className="flex gap-2 text-sm">
+            <span aria-label={item.met ? "Met" : "Unmet"} className={item.met ? "text-emerald-400" : "text-amber-400"}>
+              {item.met ? "☑" : "☐"}
+            </span>
+            <span className="min-w-0 text-gray-300">
+              <span className="font-mono text-xs">{item.id}</span> — {item.kind}: <code>{item.target}</code>
+              {item.reason && <span className="block text-xs text-amber-300">{item.reason}</span>}
+            </span>
+          </li>
+        ))}
       </ul>
     </div>
   );

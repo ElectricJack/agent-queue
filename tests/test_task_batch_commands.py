@@ -162,7 +162,14 @@ async def test_commit_is_atomic_and_idempotent(handler):
             "project_id": "p1",
             "source": "spec:foo",
             "tasks": [
-                {"tempId": "a", "title": "A", "description": ""},
+                {
+                    "tempId": "a",
+                    "title": "A",
+                    "description": "",
+                    "deliverables": [
+                        {"id": "module", "kind": "file", "target": "src/new_module.py"}
+                    ],
+                },
                 {"tempId": "b", "title": "B", "description": ""},
             ],
             "edges": [{"from": "b", "to": "a", "dep_type": "blocks"}],
@@ -173,6 +180,9 @@ async def test_commit_is_atomic_and_idempotent(handler):
     c1 = await handler.execute("task_batch_commit", {"proposal_id": prop_id})
     assert c1["success"] is True
     assert len(c1["task_ids"]) == 2
+    assert (await handler._db.get_task(c1["task_ids"][0])).deliverables == [
+        {"id": "module", "kind": "file", "target": "src/new_module.py"}
+    ]
 
     # Double-commit rejected.
     c2 = await handler.execute("task_batch_commit", {"proposal_id": prop_id})

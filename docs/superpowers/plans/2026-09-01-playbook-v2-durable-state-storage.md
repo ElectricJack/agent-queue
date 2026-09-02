@@ -261,6 +261,17 @@ Rules:
 3. Downgrade order is the reverse: `b3f2c0de0003` → `b3f2c0de0002` → `a3f1c0de0001` → `d3e7b1c9a204`. `playbook_v2_runs.artifact_sha256` references `playbook_artifacts`, so dropping the artifact tables first would leave a dangling FK on PostgreSQL.
 4. Neither branch may `alembic revision --autogenerate` a *second* revision for a late column. Add the column to the revision that creates its table and re-run `alembic downgrade` + `upgrade` locally. Two revisions per table would defeat rule 1.
 
+**Approved deviation (recorded 2026-09-02, Package 3 fix task `solid-harbor.59`).** As landed on `origin/main`, `b3f2c0de0002.down_revision` is **`e1b7c2a94d38`**, not the `a3f1c0de0001` this table locks.
+
+| | |
+|---|---|
+| What happened | `e1b7c2a94d38` ("repair double-quoted string server defaults on the playbook v2 tables") chains from `a3f1c0de0001` and merged to `main` before Task B did. |
+| Why the locked value could not be kept | Two revisions cannot both name `a3f1c0de0001` as their parent without forking the chain. Keeping the literal value would have produced two heads and broken **rule 2**, which is the invariant the whole ordering exists to serve — the literal parent is a means, single-head reachability is the end. |
+| What is still true | The ordering itself is unchanged and asserted: `a3f1c0de0001` → … → `b3f2c0de0002` → `b3f2c0de0003`, one head, and the FK-safe downgrade order of rule 3 is intact. `tests/test_migration_playbook_v2.py::test_the_package_three_chain_is_linear_and_ordered` pins the ancestry (rather than the literal parent) and `::test_single_head` pins rule 2. |
+| Rule 1, amended | A Package 3 revision must remain a *descendant* of `a3f1c0de0001` and an *ancestor* of nothing outside the package. If `main`'s head moves again before a Package 3 revision lands, that revision rebases onto the new tip rather than forking. |
+
+The deviation is also explained inline in `migrations/versions/b3f2c0de0002_playbook_v2_run_state.py`'s module docstring.
+
 ### 4.4 `RunRepository` — locked signatures
 
 Implemented by `PlaybookRunQueryMixin` in `src/database/queries/playbook_run_queries.py`, composed into both adapters. Declared as a `typing.Protocol` in `src/playbooks/run_state.py` so Package 4 can depend on the shape without importing the database package.
@@ -1127,12 +1138,25 @@ Health is recomputed and persisted (a) when an activation is written, (b) by the
 | completed run snapshots | 90 days | lifecycle is not terminal, or the run is pinned |
 | artifact rows + files | 90 days | referenced by an activation, referenced by any retained run, or within the newest 10 versions of its playbook |
 | `*.tmp-*` files under `artifacts/` | 1 hour | — |
+| orphaned `<64-hex>.json` files under `artifacts/` | 1 hour | any of `playbook_artifacts`, `playbook_activations` or `playbook_v2_runs` still names the hash |
 
 The artifact reference check is an explicit query, not a foreign key (§7.4): a candidate must have no row in `playbook_activations.active_artifact_sha256` and no row in `playbook_v2_runs.artifact_sha256`, and must not be among the ten highest `version` values for its `playbook_id`. Deleting the row and the file happens in that order, in one `immediate()` block for the row followed by the unlink — a crash between them leaves an unreferenced file, which the next sweep removes; the reverse order could leave a row pointing at a missing file, which would read as `unavailable` health on a playbook that was fine.
 
+"which the next sweep removes" is its own step, `_sweep_orphan_files`, and it has to be: `_unlink_artifacts` is only ever handed the `(sha, path)` pairs of the rows the *current* sweep deleted, and `_sweep_temp_files` only globs `*.json.tmp-*`, so neither can see a hash-named `*.json` file a previous process orphaned. Orphan discovery runs the other direction — list the directory, ask the database which of those hashes anything still names, unlink the rest — under three guards:
+
+* the stem must be a bare 64-hex digest, so a file `ArtifactStore` did not write is never a candidate;
+* the file must be older than `ORPHAN_FILE_TTL_SECONDS` (1 hour), because `put` writes the bytes before its caller writes the row. `put` therefore also `os.utime`s a file it *adopts* — content addressing means identical bytes are not rewritten, so without that an adopted file would keep the mtime of its first write and could age out between the adoption and the row write;
+* the directory is listed **before** the database is asked, so a row inserted during the sweep is seen and protects its file; the opposite order could read "no row", have the row appear, and then unlink underneath it.
+
+The reference query, `filter_referenced_artifact_shas`, spans all three tables rather than `playbook_artifacts` alone. It is deliberately a superset of "has an artifact row": the step is about to delete files, the FKs are `RESTRICT` but §7.4 leaves SQLite enforcement optional, so an activation or a retained run naming a hash protects the file on the strength of its own row. Its `IN` clause is chunked (`_SHA_BATCH`) because a directory scan is not bounded by anything the schema controls.
+
 ### 12.2 The sweep
 
-`ArtifactRetentionSweeper.sweep(now) -> dict[str, int]` (mirroring `MetricsSampler.prune`, `src/metrics/sampler.py:571`) returns counts per category. It is called from `run_one_cycle` at most once an hour, as a new step 13 immediately after `_check_paused_playbook_timeouts()` (`src/orchestrator/core.py:2758`), guarded by `self._last_playbook_retention_sweep` initialized beside `self._last_log_cleanup` (`src/orchestrator/core.py:300`) and wrapped in its own `try/except` so a sweep failure cannot abort a cycle. It no-ops unless `playbooks.v2_storage_enabled` is true.
+`ArtifactRetentionSweeper` lives in **`src/playbooks/retention.py`** — its own module rather than inside `artifact_store.py` or `activation.py`, because it is the one object in this package that reaches for both the database and the filesystem, and neither of those two modules should acquire the other's dependency. `ArtifactRetentionSweeper.sweep(now) -> dict[str, int]` (mirroring `MetricsSampler.prune`, `src/metrics/sampler.py:571`) returns counts per category: `pending_events`, `receipts`, `runs`, `artifact_rows`, `artifact_files`, `orphan_files`, `temp_files`, `health_downgraded` (the module-level `CATEGORIES` tuple), every key present on every sweep. Two details the table above leaves open, settled by the implementation:
+
+* **Runs share `v2_receipt_retention_days`.** §12.3 locks ten config fields and none of them is a run horizon; giving receipts a longer life than the run that owns them would be meaningless anyway, since collecting the run deletes its receipts.
+* **"Pinned" means structurally pinned.** `playbook_v2_runs` (§6.3) has no `pinned` column, so the only pin the schema can express is a *live* run naming this run as its `parent_run_id`. `purge_runs` holds those back; a terminal run with a null `completed_at` is also held back, because it carries no horizon to measure.
+* **The health refresh of §11 clause (b) is one-directional.** The sweep persists `unavailable` for an enabled activation whose artifact file is gone (a stat, and the state the doctor check reports); it never promotes an activation back to `ready`, which needs the validation record and the live contract fingerprints that Packages 2 and 5 own. It is called from `run_one_cycle` at most once an hour, as a new step 13 immediately after `_check_paused_playbook_timeouts()` (`src/orchestrator/core.py:2758`), guarded by `self._last_playbook_retention_sweep` initialized beside `self._last_log_cleanup` (`src/orchestrator/core.py:300`) and wrapped in its own `try/except` so a sweep failure cannot abort a cycle. It no-ops unless `playbooks.v2_storage_enabled` is true.
 
 The same commit adds the doctor check `playbooks.artifact_integrity` (`src/doctor/playbook_v2_checks.py`, registered in `src/doctor/default_registry`, owner `playbook-v2`, severity `warn`): every enabled activation's `active_artifact_sha256` has a row, a file, and a file whose hash matches its name. Its fix is `None` — a missing or mutated artifact is a rebuild decision (Package 6), not something a doctor should repair.
 
@@ -1280,6 +1304,7 @@ aq test tests/test_playbook_artifact_ref.py tests/test_playbook_artifact_store.p
 aq test tests/test_playbook_activation.py -q                                             # A-6..A-9
 aq test tests/test_playbook_run_repository.py tests/test_playbook_receipts.py -q         # B-1..B-8
 aq test tests/test_playbook_wait_repository.py -q                                        # B-9..B-13
+aq test tests/test_playbook_artifact_ref.py -q                                            # A-1
 aq test tests/test_migration_playbook_v2.py -m migration -q                              # J-1..J-4
 aq test tests/test_docs_sync.py -q                                                       # J-5
 ruff check src/playbooks src/database src/doctor/playbook_v2_checks.py \
@@ -1345,7 +1370,8 @@ Roadmap §7 requires that a change to a locked interface be propagated to every 
 1. **`ActivationHealth` has six values, not five.** `unavailable` is added for "the artifact row or file is gone", which is otherwise indistinguishable from `invalid` and is the only state a doctor check can act on. Package 5's plan already assumes six (`2026-09-01-playbook-v2-graph-api-ui.md` §4.4, §16); no other plan references the enum.
 2. **The attempt idempotency key is four-part, not three-part** (§9.1). The design spec's `<run_id>:<step_id>:<attempt>` collides across loop iterations; the roadmap's own Package 3 requirement names the iteration. Package 4's plan must construct keys with `receipts.idempotency_key(...)` rather than by hand.
 3. **Canonicalization is Package 2's, not this package's** (§5.1). An earlier draft of this plan proposed `exclude_none=False`; Package 2's landed plan specifies `exclude_none=True` backed by its absent-≡-null model invariant, and its version wins because the hash must be computed by exactly one function. This plan carries no second canonicalizer beyond the temporary, test-guarded fallback of §5.1.
-4. **`ArtifactRef` lives in `src/playbooks/artifact_ref.py`**, not in `artifact_store.py` as the roadmap's module map implies (§4.2). The roadmap's map is a module *ownership* statement; splitting one dataclass out of it is what lets two branches build in parallel without one importing the other's file I/O. Package 5's reconciliation script imports `src.playbooks.artifact_store.ArtifactRef`, so `artifact_store.py` **re-exports** it (`from src.playbooks.artifact_ref import ArtifactRef  # re-exported for the roadmap's module map`) and both import paths work.
+4. **The Package 3 migration chain is asserted by ancestry, not by a literal `down_revision`** — §4.3's approved deviation, recorded 2026-09-02. Rule 2 (one head) outranks the literal parent value, and `tests/test_migration_playbook_v2.py` pins both.
+5. **`ArtifactRef` lives in `src/playbooks/artifact_ref.py`**, not in `artifact_store.py` as the roadmap's module map implies (§4.2). The roadmap's map is a module *ownership* statement; splitting one dataclass out of it is what lets two branches build in parallel without one importing the other's file I/O. Package 5's reconciliation script imports `src.playbooks.artifact_store.ArtifactRef`, so `artifact_store.py` **re-exports** it (`from src.playbooks.artifact_ref import ArtifactRef  # re-exported for the roadmap's module map`) and both import paths work.
 
 ---
 

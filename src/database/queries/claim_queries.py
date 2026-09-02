@@ -10,9 +10,10 @@ race by design — the conditional UPDATEs make exactly one of them win.
 
 from __future__ import annotations
 
+import json
 import time
 
-from sqlalchemy import and_, case, exists, false, func, literal, select, update
+from sqlalchemy import Float, and_, case, cast, exists, false, func, literal, select, update
 
 from src.database.queries.blocked_state import apply_label_filters
 from src.database.queries.session_queries import _row_to_session
@@ -23,6 +24,7 @@ from src.database.tables import (
     agents,
     sessions,
     task_assignment_routes,
+    task_metadata,
     task_workspace_requirements,
     tasks,
     workspaces,
@@ -38,6 +40,14 @@ def _frontier_where(project_id: str):
         tasks.c.assigned_agent_id.is_(None),
         tasks.c.is_plan_subtask == 0,
     )
+
+
+# Kept in task metadata rather than a task column: this is operational
+# claim-state, not lifecycle state, and therefore needs no schema migration.
+PREPARE_BACKOFF_UNTIL_KEY = "claim_prepare_backoff_until"
+PREPARE_BACKOFF_ATTEMPTS_KEY = "claim_prepare_backoff_attempts"
+PREPARE_BACKOFF_INITIAL_SECONDS = 120.0
+PREPARE_BACKOFF_MAX_SECONDS = 300.0
 
 
 class ClaimQueryMixin:
@@ -134,6 +144,13 @@ class ClaimQueryMixin:
         if default_profile_id == profile_id:
             profile_ok = (tasks.c.profile_id == profile_id) | tasks.c.profile_id.is_(None)
         req = task_workspace_requirements.alias("req")
+        prepare_backoff_active = exists(
+            select(literal(1)).where(
+                task_metadata.c.task_id == tasks.c.id,
+                task_metadata.c.key == PREPARE_BACKOFF_UNTIL_KEY,
+                cast(task_metadata.c.value, Float) > time.time(),
+            )
+        )
         stmt = (
             select(tasks.c.id)
             .where(
@@ -144,6 +161,7 @@ class ClaimQueryMixin:
                         and_(req.c.task_id == tasks.c.id, req.c.kind_id != "project-repo")
                     )
                 ),
+                ~prepare_backoff_active,
             )
             .order_by(
                 case((tasks.c.affinity_agent_id == agent_id, 0), else_=1),
@@ -416,6 +434,7 @@ class ClaimQueryMixin:
         now,
         result,
         needs_attention,
+        prepare_backoff=False,
         expected_task_id=None,
         expected_claim_epoch=None,
         drain_after_release=False,
@@ -476,6 +495,32 @@ class ClaimQueryMixin:
             epoch = (out.row or {}).get("claim_epoch")
             if needs_attention:
                 await self._upsert_meta(task_id, "needs_attention", needs_attention, conn=conn)
+            if prepare_backoff:
+                raw_attempts = (
+                    await conn.execute(
+                        select(task_metadata.c.value).where(
+                            task_metadata.c.task_id == task_id,
+                            task_metadata.c.key == PREPARE_BACKOFF_ATTEMPTS_KEY,
+                        )
+                    )
+                ).scalar_one_or_none()
+                try:
+                    attempts = int(json.loads(raw_attempts)) if raw_attempts else 0
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    attempts = 0
+                attempts += 1
+                delay = min(
+                    PREPARE_BACKOFF_INITIAL_SECONDS * (2 ** (attempts - 1)),
+                    PREPARE_BACKOFF_MAX_SECONDS,
+                )
+                await self._upsert_meta_many(
+                    task_id,
+                    {
+                        PREPARE_BACKOFF_ATTEMPTS_KEY: attempts,
+                        PREPARE_BACKOFF_UNTIL_KEY: now + delay,
+                    },
+                    conn=conn,
+                )
         if task_id:
             await self.finish_task_session_attempt(
                 session_id, task_id=task_id, ended_at=now,
@@ -531,6 +576,7 @@ class ClaimQueryMixin:
         expected_task_id=None,
         expected_claim_epoch=None,
         drain_after_release=False,
+        prepare_backoff=False,
         conn=None,
     ) -> TransitionResult:
         kwargs = dict(
@@ -542,6 +588,7 @@ class ClaimQueryMixin:
             expected_task_id=expected_task_id,
             expected_claim_epoch=expected_claim_epoch,
             drain_after_release=drain_after_release,
+            prepare_backoff=prepare_backoff,
         )
         if conn is not None:
             return await self._release_claim_on(conn, session_id, **kwargs)

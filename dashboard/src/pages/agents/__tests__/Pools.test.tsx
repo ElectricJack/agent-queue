@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import LeftRail from "../../../shell/LeftRail";
@@ -7,7 +7,7 @@ import AgentWorkspace from "../AgentWorkspace";
 import type { FlockAgent } from "../../../api/agents";
 import type { PoolStatusRow, SessionSummary } from "../../../api/hooks";
 import { boundsOf, scaleRequest, validateBounds } from "../PoolScaleFields";
-import { poolEntries, poolProfileIds, isPoolAgent, formatIdle } from "../pools";
+import { poolEntries, poolProfileIds, isPoolAgent, formatIdle, splitBusyPoolEntries, useDebouncedBusyPoolEntries } from "../pools";
 import { parseAgentSelection, poolSelectionKey, selectionAddress } from "../useAgentSelection";
 import { TerminalMock, FitAddonMock, TerminalSocketMock } from "../../../testUtils/terminal";
 
@@ -134,6 +134,34 @@ describe("pool derivation", () => {
     expect(formatIdle(7300)).toBe("2h idle");
     expect(formatIdle(undefined)).toBe("0s idle");
   });
+
+  it("separates busy pools from configured pools without claimed work", () => {
+    const entries = poolEntries([
+      pool({ profile_id: "worker-busy", running_busy: 1 }),
+      pool({ profile_id: "worker-idle", running_busy: 0, running_idle: 2 }),
+    ], []);
+
+    expect(splitBusyPoolEntries(entries)).toEqual({
+      busy: [expect.objectContaining({ profileId: "worker-busy" })],
+      hiddenCount: 1,
+    });
+  });
+
+  it("debounces a pool's visibility after a status update", () => {
+    vi.useFakeTimers();
+    const busy = poolEntries([pool({ running_busy: 1 })], []);
+    const idle = poolEntries([pool({ running_busy: 0, running_idle: 1 })], []);
+    const { result, rerender } = renderHook(({ entries }) => useDebouncedBusyPoolEntries(entries), {
+      initialProps: { entries: busy },
+    });
+
+    expect(result.current).toEqual({ busy, hiddenCount: 0 });
+    rerender({ entries: idle });
+    expect(result.current).toEqual({ busy, hiddenCount: 0 });
+    act(() => { vi.advanceTimersByTime(1_000); });
+    expect(result.current).toEqual({ busy: [], hiddenCount: 1 });
+    vi.useRealTimers();
+  });
 });
 
 describe("pool selection keys", () => {
@@ -190,6 +218,18 @@ describe("pool bounds validation", () => {
 });
 
 describe("pools in the agent flock", () => {
+  it("shows only busy pools, with an idle-pool link to management", async () => {
+    api.poolStatus.mockResolvedValue({ data: { success: true, pools: [
+      pool({ profile_id: "worker-busy", running_busy: 1 }),
+      pool({ profile_id: "worker-idle", running_busy: 0, running_idle: 2 }),
+    ] } });
+    renderAgents("/");
+
+    expect(await screen.findByRole("button", { name: "Open worker-busy pool" }, SLOW)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Open worker-idle pool" })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "1 idle pool" })).toHaveAttribute("href", "/agents");
+  });
+
   it("badges the pool and shows its live supply, hiding the pool's own worker rows", async () => {
     renderAgents("/");
     const row = await screen.findByRole("button", { name: "Open worker-standard pool" }, SLOW);

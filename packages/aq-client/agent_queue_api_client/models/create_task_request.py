@@ -36,6 +36,7 @@ class CreateTaskRequest:
         attachments (list[Any] | None | Unset): List of absolute file paths to images or files that the agent should
             have access to when working on this task. These are typically paths to Discord attachment images that were
             downloaded locally. The agent will be told to read these files using the Read tool.
+        deliverables (list[Any] | None | Unset): Plan-derived implementation contract checked before a passing close.
         skip_verification (bool | Unset): If true, skip git verification on task completion. Use for
             investigation/research tasks that don't produce code changes requiring git cleanup. Default: False.
         affinity_agent_id (None | str | Unset): Preferred agent ID for context continuity. The scheduler will prefer
@@ -71,6 +72,7 @@ class CreateTaskRequest:
     intelligence_class: None | str | Unset = UNSET
     preferred_workspace_id: None | str | Unset = UNSET
     attachments: list[Any] | None | Unset = UNSET
+    deliverables: list[Any] | None | Unset = UNSET
     skip_verification: bool | Unset = False
     affinity_agent_id: None | str | Unset = UNSET
     affinity_reason: None | str | Unset = UNSET
@@ -138,6 +140,15 @@ class CreateTaskRequest:
 
         else:
             attachments = self.attachments
+
+        deliverables: list[Any] | None | Unset
+        if isinstance(self.deliverables, Unset):
+            deliverables = UNSET
+        elif isinstance(self.deliverables, list):
+            deliverables = self.deliverables
+
+        else:
+            deliverables = self.deliverables
 
         skip_verification = self.skip_verification
 
@@ -226,6 +237,8 @@ class CreateTaskRequest:
             field_dict["preferred_workspace_id"] = preferred_workspace_id
         if attachments is not UNSET:
             field_dict["attachments"] = attachments
+        if deliverables is not UNSET:
+            field_dict["deliverables"] = deliverables
         if skip_verification is not UNSET:
             field_dict["skip_verification"] = skip_verification
         if affinity_agent_id is not UNSET:
@@ -335,6 +348,23 @@ class CreateTaskRequest:
             return cast(list[Any] | None | Unset, data)
 
         attachments = _parse_attachments(d.pop("attachments", UNSET))
+
+        def _parse_deliverables(data: object) -> list[Any] | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, list):
+                    raise TypeError()
+                deliverables_type_0 = cast(list[Any], data)
+
+                return deliverables_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(list[Any] | None | Unset, data)
+
+        deliverables = _parse_deliverables(d.pop("deliverables", UNSET))
 
         skip_verification = d.pop("skip_verification", UNSET)
 
@@ -446,6 +476,7 @@ class CreateTaskRequest:
             intelligence_class=intelligence_class,
             preferred_workspace_id=preferred_workspace_id,
             attachments=attachments,
+            deliverables=deliverables,
             skip_verification=skip_verification,
             affinity_agent_id=affinity_agent_id,
             affinity_reason=affinity_reason,

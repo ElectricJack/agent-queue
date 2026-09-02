@@ -132,6 +132,16 @@ def _parse_node(raw: Any, index: int, defaults: dict) -> tuple[GraphNode | None,
     node.acceptance = acceptance
     errors.extend(errs)
 
+    from src.commands.task_commands import normalize_deliverables
+
+    deliverables, deliverables_error = normalize_deliverables(
+        raw.get("deliverables", defaults.get("deliverables"))
+    )
+    if deliverables_error:
+        errors.append(_err("bad_deliverable", deliverables_error, key))
+    else:
+        node.deliverables = deliverables
+
     labels, errs = _as_str_list(raw.get("labels", defaults.get("labels")), "labels", key)
     node.labels = labels
     errors.extend(errs)

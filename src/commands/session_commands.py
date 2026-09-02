@@ -25,6 +25,7 @@ import asyncio
 import logging
 import time
 import uuid
+from pathlib import Path
 
 from src.claim_file import remove_claim_file, remove_claim_file_if_matches
 from src.database.queries.task_queries import StaleClaim
@@ -758,6 +759,46 @@ class SessionCommandsMixin:
                 ),
             }
 
+        # Deliverables are a worker contract, not a best-effort review hint.
+        # Refuse before any metadata, hierarchy, or pipeline side effect so
+        # the same claim can add evidence or make a visible exception and
+        # retry the close.
+        from src.deliverables import evaluate_deliverables, parse_unmet_reasons
+
+        def _string_list(value) -> list[str]:
+            if value is None:
+                return []
+            if isinstance(value, str):
+                return [value] if value.strip() else []
+            return [str(item) for item in value if str(item).strip()]
+
+        waivers, waiver_error = parse_unmet_reasons(args.get("deliverable_unmet"), task.deliverables)
+        if waiver_error:
+            return {"success": False, "code": "deliverables.invalid_waiver", "error": waiver_error}
+        work_dir = getattr(session, "work_dir", None) if session is not None else None
+        deliverable_results = evaluate_deliverables(
+            task.deliverables,
+            root=Path(work_dir) if work_dir else Path.cwd(),
+            tests=_string_list(args.get("tests")),
+        )
+        unmet = [item for item in deliverable_results if not item["met"]]
+        for item in unmet:
+            item["reason"] = waivers.get(str(item["id"]), "")
+        unwaived = [item for item in unmet if not item["reason"]]
+        if outcome == "pass" and unwaived:
+            listed = ", ".join(
+                f"{item['id']} ({item['kind']}: {item['target']})" for item in unwaived
+            )
+            return {
+                "success": False,
+                "code": "deliverables.unmet",
+                "unmet_deliverables": unwaived,
+                "error": (
+                    f"close refused: declared deliverables are unmet: {listed}. "
+                    "Ship them, or pass --deliverable-unmet 'id: reason' for each intentional gap."
+                ),
+            }
+
         # Container-close semantics (swarm-work-model §7).
         open_children = await self.db.open_children(task_id)
         abandoned: list[str] = []
@@ -935,13 +976,6 @@ class SessionCommandsMixin:
         auto_commit = await self.db.get_task_meta(task_id, "work_commit_auto")
         commit = explicit_commit or str(auto_commit or "").strip()
 
-        def _string_list(value) -> list[str]:
-            if value is None:
-                return []
-            if isinstance(value, str):
-                return [value] if value.strip() else []
-            return [str(item) for item in value if str(item).strip()]
-
         # Append only: a reopened task may be closed again, and both accounts
         # remain available while task detail shows the latest one.
         await self.db.save_task_completion(
@@ -964,6 +998,7 @@ class SessionCommandsMixin:
                 ),
                 summary=summary,
                 notes=str(args.get("notes") or "").strip(),
+                deliverables=deliverable_results,
                 completed_at=time.time(),
             )
         )
@@ -973,6 +1008,19 @@ class SessionCommandsMixin:
         )
 
         if is_pool:
+            # Pool sessions acquire a slot before they know which task they
+            # will claim, so they cannot use dispatch-time branch affinity.
+            # Return a clean, pushed branch to detached HEAD before dropping
+            # the task lock; unpushed work intentionally remains pinned for
+            # the forensic retry path (worktree-execution §3.4).
+            slot = await self.orchestrator._slot_workspace_at(session.work_dir)
+            if slot is not None:
+                try:
+                    await self.orchestrator._worktree_slots().restore_slot_after_task(
+                        slot, task_id=task_id
+                    )
+                except Exception:
+                    logger.warning("Could not restore pool slot for %s", task_id, exc_info=True)
             # The workspace agent-lock is retained (``terminate_pool_session``
             # is the only path that drops it); only the task-hold is released.
             await self.db.release_claim(

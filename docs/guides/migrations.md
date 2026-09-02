@@ -11,6 +11,77 @@ See [[specs/database|Database spec]] for the current schema specification.
 
 ---
 
+## Who may run migrations
+
+Migrations against the database named in `~/.agent-queue/config.yaml` are
+**daemon-only**. `src/database/migration_guard.py` enforces it, and
+`run_schema_setup` consults it before touching Alembic.
+
+The policy is two independent facts, not a privilege ladder:
+
+| | |
+|---|---|
+| **who is asking** | `current_scope()` — `AQ_DB_SCOPE` env, then a scope declared with `set_process_scope()`, then `AQ_SESSION_ID` (⇒ `worker`), then pytest (⇒ `test`), else `cli`. |
+| **what they point at** | `is_production_database(url)` — read straight from `config.yaml`, deliberately ignoring `AGENT_QUEUE_DB` / `AQ_DATABASE_URL` so an override cannot redefine what "production" means. |
+
+`migration_decision()` combines them: **migrate**, unless the URL is
+production and the scope is neither `daemon` nor `operator` — then **verify**.
+Verifying reads `alembic_version`, and raises rather than repairing:
+
+* stamped at this checkout's head → proceed (a worker may *read* production);
+* stamped at a revision this checkout lacks → the unknown-revision diagnostic;
+* anything else → `SchemaBehindCode`: *schema behind code; ask the operator to
+  upgrade*.
+
+Every other database — every `tmp_path` SQLite file, every per-xdist-worker
+Postgres database, every e2e scratch DSN — is not production and migrates
+exactly as it always did.
+
+### Why the env var beats the process scope
+
+`AQ_DB_SCOPE` in the environment outranks `set_process_scope(DAEMON)`. Worker
+sessions carry `AQ_DB_SCOPE=worker`
+(`src.sessions.env.session_db_isolation`), so an `aq start` launched *inside a
+worktree slot* still resolves to `worker` and still refuses — which is one of
+the three ways the 2026-09-02 incident actually happened. An operator who
+needs to migrate from an unusual place sets `AQ_DB_SCOPE=operator` and owns
+that decision.
+
+### Operator commands
+
+```bash
+aq db current    # read-only: stamped revision(s) vs. this checkout's head
+aq db upgrade    # the one sanctioned migration path (refuses inside a slot)
+```
+
+### When production is already stamped with an orphan
+
+```bash
+aq doctor --check db.alembic_orphan          # which branch/file defines it
+aq doctor --check db.alembic_orphan --fix    # run that revision's own downgrade()
+```
+
+The check searches every `refs/remotes` and `refs/heads` for the migration
+file that declares the unknown revision, so the answer is a branch name and a
+path rather than a bare hex id. `--fix` borrows that file into
+`migrations/versions/` for exactly one `alembic downgrade` and removes it
+again, leaving the database at the orphan's parent. Stamping past an orphan
+whose file cannot be found anywhere is a second, separate opt-in
+(`AQ_DOCTOR_ALEMBIC_STAMP=1`), because it leaves whatever DDL the orphan
+applied in place.
+
+### The 2026-09-02 incident
+
+A worker session in a worktree slot ran Alembic against the production URL —
+directly, through a pytest fixture, and through an `aq start`. Production's
+`alembic_version` ended up naming `e7a2b9c41d05` and then `f2a4c6e8b0d2`,
+revisions that live only on unmerged branches. The daemon refused to start
+("Alembic preflight failed: alembic_version references unknown revision(s)")
+until the operator hand-wrote merge revision `23daf00e`.
+
+
+---
+
 ## Overview
 
 ```

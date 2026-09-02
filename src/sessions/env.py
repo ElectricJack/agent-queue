@@ -43,10 +43,13 @@ from src.env_scrub import STRIP_ALWAYS, scrub_env, scrub_env_from_config
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "AQ_MARKER_KEYS",
     "ADOPTION_MARKER",
+    "AQ_MARKER_KEYS",
+    "DB_ISOLATION_KEYS",
+    "SCRATCH_DB_RELPATH",
     "STARTUP_PROMPT_DELIVERED",
     "build_session_env",
+    "session_db_isolation",
     "session_markers",
 ]
 
@@ -72,6 +75,50 @@ AQ_MARKER_KEYS: tuple[str, ...] = (
     "AQ_API_URL",
     "AQ_API_TOKEN",
 )
+
+
+#: Where a session's scratch database lives, relative to its work dir.
+#: ``.aq/`` is already the session's private corner of the worktree (it holds
+#: ``claim.json``) and the repo gitignores it, so nothing here can be
+#: committed by accident.
+SCRATCH_DB_RELPATH = os.path.join(".aq", "scratch.db")
+
+#: The database-isolation block every session carries, on top of the nine
+#: identity markers.  ``AQ_DB_SCOPE`` is the guard
+#: (:mod:`src.database.migration_guard`); the two URL overrides are the
+#: somewhere-else it points db tooling at.
+DB_ISOLATION_KEYS: tuple[str, ...] = (
+    "AQ_DB_SCOPE",
+    "AQ_DATABASE_URL",
+    "AGENT_QUEUE_DB",
+)
+
+
+def session_db_isolation(work_dir: str) -> dict[str, str]:
+    """Env that keeps a session's database tooling off the production DB.
+
+    Two independent halves, because either alone has a hole:
+
+    * ``AQ_DB_SCOPE=worker`` makes :func:`src.database.migration_guard.
+      current_scope` resolve to ``worker`` for *everything* the session
+      launches — pytest, a stray ``alembic upgrade``, even an ``aq start``
+      inside the slot — so a migration against the production URL is refused
+      rather than applied.  This is the half that closes the 2026-09-02
+      incident, where an unmerged branch's revision landed in production's
+      ``alembic_version`` and the daemon then refused to boot.
+    * ``AQ_DATABASE_URL`` / ``AGENT_QUEUE_DB`` point the direct-DB CLI paths
+      at a per-slot scratch SQLite file instead of ``config.yaml``'s URL, so
+      the ordinary case never even reaches the guard.
+
+    Set as ``explicit`` env, so an operator who pins one of these in a
+    harness file or via ``extra_env`` still wins.
+    """
+    scratch = os.path.join(work_dir, SCRATCH_DB_RELPATH) if work_dir else ""
+    isolation = {"AQ_DB_SCOPE": "worker"}
+    if scratch:
+        isolation["AQ_DATABASE_URL"] = scratch
+        isolation["AGENT_QUEUE_DB"] = scratch
+    return isolation
 
 
 def session_markers(
@@ -127,7 +174,8 @@ def build_session_env(
     """Build the full child environment for one session launch.
 
     Layering, outermost first: the daemon environment (scrubbed) → the
-    harness's own ``env`` map → the ``AQ_*`` markers → ``extra_env``.
+    database-isolation block (:func:`session_db_isolation`) → the harness's
+    own ``env`` map → the ``AQ_*`` markers → ``extra_env``.
     Everything from the second layer inward is ``explicit`` as far as
     :func:`~src.env_scrub.scrub_env` is concerned, so an operator who names
     a key in a harness file means it and it survives.  ``extra_env`` is
@@ -141,6 +189,7 @@ def build_session_env(
     it; ``None`` is for unit tests that do not exercise the policy.
     """
     explicit: dict[str, str] = {}
+    explicit.update(session_db_isolation(work_dir))
     if harness_env:
         explicit.update({str(k): str(v) for k, v in harness_env.items()})
     explicit.update(

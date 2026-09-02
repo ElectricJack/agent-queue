@@ -75,6 +75,9 @@ from .compiled_playbook_node import CompiledPlaybookNode
 from .compiled_playbook_node_action_type_0 import CompiledPlaybookNodeActionType0
 from .compiled_playbook_node_for_each_type_0 import CompiledPlaybookNodeForEachType0
 from .compiled_playbook_node_output_type_0 import CompiledPlaybookNodeOutputType0
+from .compiler_diagnostic_counts_dto import CompilerDiagnosticCountsDTO
+from .compiler_diagnostic_dto import CompilerDiagnosticDTO
+from .compiler_diagnostic_dto_severity import CompilerDiagnosticDTOSeverity
 from .contract_change_dto import ContractChangeDTO
 from .contract_change_dto_change import ContractChangeDTOChange
 from .count_project_memory_files_request import CountProjectMemoryFilesRequest
@@ -340,6 +343,7 @@ from .get_task_request import GetTaskRequest
 from .get_task_response import GetTaskResponse
 from .get_task_response_422 import GetTaskResponse422
 from .get_task_response_children_type_0 import GetTaskResponseChildrenType0
+from .get_task_response_deliverables_item import GetTaskResponseDeliverablesItem
 from .get_task_response_parent_type_0 import GetTaskResponseParentType0
 from .get_task_result_request import GetTaskResultRequest
 from .get_task_result_response import GetTaskResultResponse
@@ -632,6 +636,17 @@ from .playbook_transition_detail_when_type_1 import PlaybookTransitionDetailWhen
 from .playbook_v2_graph_request import PlaybookV2GraphRequest
 from .playbook_v2_graph_response import PlaybookV2GraphResponse
 from .playbook_v2_graph_response_422 import PlaybookV2GraphResponse422
+from .playbook_v2_propose_request import PlaybookV2ProposeRequest
+from .playbook_v2_propose_response import PlaybookV2ProposeResponse
+from .playbook_v2_propose_response_422 import PlaybookV2ProposeResponse422
+from .playbook_v2_propose_response_artifact_type_0 import PlaybookV2ProposeResponseArtifactType0
+from .playbook_v2_propose_response_semantic_diff_type_0 import PlaybookV2ProposeResponseSemanticDiffType0
+from .playbook_v2_shadow_compile_request import PlaybookV2ShadowCompileRequest
+from .playbook_v2_shadow_compile_response import PlaybookV2ShadowCompileResponse
+from .playbook_v2_shadow_compile_response_422 import PlaybookV2ShadowCompileResponse422
+from .playbook_v2_validate_request import PlaybookV2ValidateRequest
+from .playbook_v2_validate_response import PlaybookV2ValidateResponse
+from .playbook_v2_validate_response_422 import PlaybookV2ValidateResponse422
 from .playbook_validate_request import PlaybookValidateRequest
 from .playbook_validate_response import PlaybookValidateResponse
 from .playbook_validate_response_422 import PlaybookValidateResponse422
@@ -880,6 +895,8 @@ from .set_project_constraint_response_422 import SetProjectConstraintResponse422
 from .set_task_status_request import SetTaskStatusRequest
 from .set_task_status_response import SetTaskStatusResponse
 from .set_task_status_response_422 import SetTaskStatusResponse422
+from .shadow_compile_row_dto import ShadowCompileRowDTO
+from .shadow_source_error_dto import ShadowSourceErrorDTO
 from .show_effective_profile_request import ShowEffectiveProfileRequest
 from .show_effective_profile_response import ShowEffectiveProfileResponse
 from .show_effective_profile_response_422 import ShowEffectiveProfileResponse422
@@ -962,12 +979,14 @@ from .task_comments_request import TaskCommentsRequest
 from .task_comments_response import TaskCommentsResponse
 from .task_comments_response_422 import TaskCommentsResponse422
 from .task_completion_detail import TaskCompletionDetail
+from .task_completion_detail_deliverables_item import TaskCompletionDetailDeliverablesItem
 from .task_control_response import TaskControlResponse
 from .task_deps_request import TaskDepsRequest
 from .task_deps_response import TaskDepsResponse
 from .task_deps_response_422 import TaskDepsResponse422
 from .task_detail import TaskDetail
 from .task_detail_children_type_0 import TaskDetailChildrenType0
+from .task_detail_deliverables_item import TaskDetailDeliverablesItem
 from .task_detail_parent_type_0 import TaskDetailParentType0
 from .task_dict import TaskDict
 from .task_heartbeat_request import TaskHeartbeatRequest
@@ -991,6 +1010,7 @@ from .task_set_response import TaskSetResponse
 from .task_set_response_422 import TaskSetResponse422
 from .task_set_response_children_type_0 import TaskSetResponseChildrenType0
 from .task_set_response_context_item import TaskSetResponseContextItem
+from .task_set_response_deliverables_item import TaskSetResponseDeliverablesItem
 from .task_set_response_parent_type_0 import TaskSetResponseParentType0
 from .task_set_response_provenance_item import TaskSetResponseProvenanceItem
 from .task_show_request import TaskShowRequest
@@ -998,6 +1018,7 @@ from .task_show_response import TaskShowResponse
 from .task_show_response_422 import TaskShowResponse422
 from .task_show_response_children_type_0 import TaskShowResponseChildrenType0
 from .task_show_response_context_item import TaskShowResponseContextItem
+from .task_show_response_deliverables_item import TaskShowResponseDeliverablesItem
 from .task_show_response_parent_type_0 import TaskShowResponseParentType0
 from .task_show_response_provenance_item import TaskShowResponseProvenanceItem
 from .task_status_summary import TaskStatusSummary
@@ -1126,6 +1147,9 @@ __all__ = (
     "CompilePlaybookRequest",
     "CompilePlaybookResponse",
     "CompilePlaybookResponse422",
+    "CompilerDiagnosticCountsDTO",
+    "CompilerDiagnosticDTO",
+    "CompilerDiagnosticDTOSeverity",
     "ContractChangeDTO",
     "ContractChangeDTOChange",
     "CountProjectMemoryFilesRequest",
@@ -1387,6 +1411,7 @@ __all__ = (
     "GetTaskResponse",
     "GetTaskResponse422",
     "GetTaskResponseChildrenType0",
+    "GetTaskResponseDeliverablesItem",
     "GetTaskResponseParentType0",
     "GetTaskResultRequest",
     "GetTaskResultResponse",
@@ -1677,6 +1702,17 @@ __all__ = (
     "PlaybookV2GraphRequest",
     "PlaybookV2GraphResponse",
     "PlaybookV2GraphResponse422",
+    "PlaybookV2ProposeRequest",
+    "PlaybookV2ProposeResponse",
+    "PlaybookV2ProposeResponse422",
+    "PlaybookV2ProposeResponseArtifactType0",
+    "PlaybookV2ProposeResponseSemanticDiffType0",
+    "PlaybookV2ShadowCompileRequest",
+    "PlaybookV2ShadowCompileResponse",
+    "PlaybookV2ShadowCompileResponse422",
+    "PlaybookV2ValidateRequest",
+    "PlaybookV2ValidateResponse",
+    "PlaybookV2ValidateResponse422",
     "PlaybookValidateRequest",
     "PlaybookValidateResponse",
     "PlaybookValidateResponse422",
@@ -1923,6 +1959,8 @@ __all__ = (
     "SetTaskStatusRequest",
     "SetTaskStatusResponse",
     "SetTaskStatusResponse422",
+    "ShadowCompileRowDTO",
+    "ShadowSourceErrorDTO",
     "ShowEffectiveProfileRequest",
     "ShowEffectiveProfileResponse",
     "ShowEffectiveProfileResponse422",
@@ -2003,12 +2041,14 @@ __all__ = (
     "TaskCommentsResponse",
     "TaskCommentsResponse422",
     "TaskCompletionDetail",
+    "TaskCompletionDetailDeliverablesItem",
     "TaskControlResponse",
     "TaskDepsRequest",
     "TaskDepsResponse",
     "TaskDepsResponse422",
     "TaskDetail",
     "TaskDetailChildrenType0",
+    "TaskDetailDeliverablesItem",
     "TaskDetailParentType0",
     "TaskDict",
     "TaskHeartbeatRequest",
@@ -2032,6 +2072,7 @@ __all__ = (
     "TaskSetResponse422",
     "TaskSetResponseChildrenType0",
     "TaskSetResponseContextItem",
+    "TaskSetResponseDeliverablesItem",
     "TaskSetResponseParentType0",
     "TaskSetResponseProvenanceItem",
     "TaskShowRequest",
@@ -2039,6 +2080,7 @@ __all__ = (
     "TaskShowResponse422",
     "TaskShowResponseChildrenType0",
     "TaskShowResponseContextItem",
+    "TaskShowResponseDeliverablesItem",
     "TaskShowResponseParentType0",
     "TaskShowResponseProvenanceItem",
     "TaskStatusSummary",

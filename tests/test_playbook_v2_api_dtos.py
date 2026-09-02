@@ -18,7 +18,10 @@ from src.api import codegen
 from src.api import models as api_models
 from src.api.models import playbook_v2
 from src.commands.handler import PAUSED_PLAYBOOK_COMMANDS
-from src.commands.playbook_v2_commands import PLAYBOOK_V2_COMMANDS
+from src.commands.playbook_v2_commands import (
+    PLAYBOOK_V2_COMMANDS,
+    PLAYBOOK_V2_COMPILER_COMMANDS,
+)
 from src.tools.definitions import _ALL_TOOL_DEFINITIONS, _TOOL_CATEGORIES
 
 SEVEN_COMMANDS = {
@@ -30,6 +33,13 @@ SEVEN_COMMANDS = {
     "playbook_pending_event_action",
     "playbook_run_overlay",
 }
+
+COMPILER_COMMANDS = {
+    "playbook_v2_validate",
+    "playbook_v2_propose",
+    "playbook_v2_shadow_compile",
+}
+ALL_V2_COMMANDS = SEVEN_COMMANDS | COMPILER_COMMANDS
 
 
 def _v2_models() -> list[type[BaseModel]]:
@@ -66,21 +76,22 @@ class TestRegistration:
         for name, model in playbook_v2.RESPONSE_MODELS.items():
             assert merged[name] is model
 
-    def test_response_models_dict_covers_exactly_the_seven(self):
-        assert set(playbook_v2.RESPONSE_MODELS) == SEVEN_COMMANDS
+    def test_response_models_dict_covers_package_two_and_five_surfaces(self):
+        assert set(playbook_v2.RESPONSE_MODELS) == ALL_V2_COMMANDS
         assert PLAYBOOK_V2_COMMANDS == frozenset(SEVEN_COMMANDS)
+        assert PLAYBOOK_V2_COMPILER_COMMANDS == frozenset(COMPILER_COMMANDS)
 
     def test_v2_commands_are_not_in_response_exclude_none(self):
         """Optional blocks serialize as explicit ``null`` so the TS client can
         type optionality.  ``RESPONSE_EXCLUDE_NONE`` is the V1 graph hack; this
         is the ratchet that keeps the V2 commands out of it."""
-        assert SEVEN_COMMANDS & codegen.RESPONSE_EXCLUDE_NONE == set()
+        assert ALL_V2_COMMANDS & codegen.RESPONSE_EXCLUDE_NONE == set()
 
     def test_every_command_has_a_tool_definition_and_category(self):
         """Without both, a command gets no HTTP route and no CLI verb."""
         defined = {t["name"] for t in _ALL_TOOL_DEFINITIONS}
-        assert SEVEN_COMMANDS <= defined
-        for name in SEVEN_COMMANDS:
+        assert ALL_V2_COMMANDS <= defined
+        for name in ALL_V2_COMMANDS:
             assert _TOOL_CATEGORIES[name] == "playbook"
 
     def test_every_command_pauses_with_the_playbook_subsystem(self):

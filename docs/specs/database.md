@@ -227,6 +227,116 @@ Partial unique index `uq_task_deps_single_parent` on `task_id` where
 parent per task. Created by migration revision `b2c3d4e5f6a7` after the
 existing data is canonicalised to satisfy it.
 
+### Table: `task_layouts`
+
+Derived spatial-layout projection for task-graph nodes. Each task has at most one row per
+project and layout variant. The `all` variant contains the complete task tree; the `active`
+variant omits finished tasks and may replace completed containers with stubs. Layout rows can
+be dropped and reproduced by running the backfill.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `project_id` | TEXT | PRIMARY KEY, NOT NULL, REFERENCES projects(id) | Project whose graph is laid out |
+| `variant` | TEXT | PRIMARY KEY, NOT NULL | `all` or `active` |
+| `task_id` | TEXT | PRIMARY KEY, NOT NULL, REFERENCES tasks(id) | Projected task |
+| `container_id` | TEXT | nullable | Immediate layout container; NULL for root-level nodes |
+| `path` | TEXT | NOT NULL | Materialized hierarchy path used for subtree reads and translations |
+| `depth` | INTEGER | NOT NULL | Hierarchy depth |
+| `rank` | INTEGER | NOT NULL | Dependency rank within the containing layout |
+| `order_key` | TEXT | NOT NULL | Stable sibling ordering key |
+| `w` | FLOAT | NOT NULL | Allocated box width |
+| `h` | FLOAT | NOT NULL | Allocated box height |
+| `rel_x` | FLOAT | NOT NULL | X coordinate relative to the containing layout |
+| `rel_y` | FLOAT | NOT NULL | Y coordinate relative to the containing layout |
+| `abs_x` | FLOAT | NOT NULL | Absolute canvas X coordinate |
+| `abs_y` | FLOAT | NOT NULL | Absolute canvas Y coordinate |
+| `kind` | TEXT | NOT NULL | `card`, `container`, or `stub` |
+| `agg_children` | INTEGER | NOT NULL DEFAULT 0 | Number of immediate children |
+| `agg_descendants` | INTEGER | NOT NULL DEFAULT 0 | Number of descendants |
+| `agg_completed` | INTEGER | NOT NULL DEFAULT 0 | Number of completed descendants |
+| `agg_running` | INTEGER | NOT NULL DEFAULT 0 | Number of running descendants |
+| `agg_blocked` | INTEGER | NOT NULL DEFAULT 0 | Number of blocked descendants |
+| `agg_active` | INTEGER | NOT NULL DEFAULT 0 | Number of non-finished descendants |
+
+Composite primary key: (`project_id`, `variant`, `task_id`). Checks
+`ck_task_layouts_variant` and `ck_task_layouts_kind` restrict `variant` and `kind` to the
+values listed above. Indexes: `idx_task_layouts_path` (`project_id`, `variant`, `path`),
+`idx_task_layouts_depth` (`project_id`, `variant`, `depth`), and
+`idx_task_layouts_container` (`project_id`, `variant`, `container_id`).
+
+### Table: `task_layout_cells`
+
+Cross-database spatial index for task-layout boxes. A task has one membership row for every
+8 by 8 unit cell overlapped by its allocated box. Membership rows are rewritten in the same
+transaction whenever publishing translates or resizes the corresponding layout row.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `project_id` | TEXT | PRIMARY KEY, NOT NULL | Project whose graph is indexed |
+| `variant` | TEXT | PRIMARY KEY, NOT NULL | Layout variant |
+| `cell_x` | INTEGER | PRIMARY KEY, NOT NULL | Horizontal cell coordinate |
+| `cell_y` | INTEGER | PRIMARY KEY, NOT NULL | Vertical cell coordinate |
+| `task_id` | TEXT | PRIMARY KEY, NOT NULL | Task occupying the cell |
+
+Composite primary key: (`project_id`, `variant`, `cell_x`, `cell_y`, `task_id`). Indexes:
+`idx_task_layout_cells_cell` (`project_id`, `variant`, `cell_x`, `cell_y`) for viewport
+queries and `idx_task_layout_cells_task` (`project_id`, `variant`, `task_id`) for replacing
+a task's memberships.
+
+### Table: `project_layout_meta`
+
+Publication metadata for one project's layout variant. The version, extent, node count, and
+layout-row changes are published atomically so readers never observe a mixed layout version.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `project_id` | TEXT | PRIMARY KEY, NOT NULL, REFERENCES projects(id) | Project whose layout is described |
+| `variant` | TEXT | PRIMARY KEY, NOT NULL | Layout variant |
+| `layout_version` | INTEGER | NOT NULL DEFAULT 0 | Monotonic version incremented on publish |
+| `extent_w` | FLOAT | NOT NULL DEFAULT 0 | Published canvas width |
+| `extent_h` | FLOAT | NOT NULL DEFAULT 0 | Published canvas height |
+| `node_count` | INTEGER | NOT NULL DEFAULT 0 | Number of published layout rows |
+| `updated_at` | FLOAT | NOT NULL | Unix timestamp of the latest publish |
+| `reconciled_at` | FLOAT | nullable | Unix timestamp of the latest reconciliation sweep |
+
+Composite primary key: (`project_id`, `variant`).
+
+### Table: `layout_dirty`
+
+Durable queue of task mutations that require layout reconciliation. Writers add marks in the
+same transaction as the source mutation; a successful publish consumes marks through the
+highest processed sequence number in its own transaction.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `seq` | INTEGER | PRIMARY KEY, AUTOINCREMENT | Queue sequence and publish fence |
+| `project_id` | TEXT | NOT NULL | Project requiring reconciliation |
+| `task_id` | TEXT | NOT NULL | Changed task |
+| `reason` | TEXT | NOT NULL | Mutation category that caused the mark |
+| `created_at` | FLOAT | NOT NULL | Unix timestamp used to debounce batches |
+
+Index: `idx_layout_dirty_project` (`project_id`, `seq`).
+
+### Table: `layout_jobs`
+
+Lifecycle records for user-requested Tidy work and initial-layout backfills. Only one queued or
+running job is admitted for a project/variant pair by the query layer; job failures retain their
+error text for inspection.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Job identifier |
+| `project_id` | TEXT | NOT NULL | Project to lay out |
+| `variant` | TEXT | NOT NULL | Layout variant |
+| `kind` | TEXT | NOT NULL | `tidy` or `backfill` |
+| `status` | TEXT | NOT NULL | `queued`, `running`, `done`, or `failed` |
+| `requested_at` | FLOAT | NOT NULL | Unix timestamp when the job was queued |
+| `started_at` | FLOAT | nullable | Unix timestamp when execution began |
+| `finished_at` | FLOAT | nullable | Unix timestamp when execution ended |
+| `error` | TEXT | nullable | Failure detail |
+
+Index: `idx_layout_jobs_project_status` (`project_id`, `status`).
+
 ### Table: `task_context`
 
 Arbitrary context blobs attached to a task (e.g., file contents, URLs, notes).
@@ -808,6 +918,157 @@ outside the artifact so pausing a playbook never rewrites immutable content.
 | `activated_at` | REAL | nullable | When the current artifact was activated |
 | `activated_by` | TEXT | nullable | Server-derived principal that activated it |
 | `updated_at` | REAL | NOT NULL | Set on every write |
+
+### Table: `playbook_v2_runs`
+
+One row per Playbook V2 run.  Named `playbook_v2_runs` rather than reusing
+`playbook_runs` because V1 runs must stay readable after V1 execution is
+removed.  `snapshot` holds the whole durable run state as canonical JSON;
+the columns beside it are the indexed projection of that same state, so an
+operator query is an index scan rather than a JSON parse of every row.
+`snapshot_version` is the optimistic-concurrency token every durable advance
+compares and increments.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `run_id` | TEXT | PRIMARY KEY | UUID string |
+| `playbook_id` | TEXT | NOT NULL | Playbook this run executes |
+| `artifact_sha256` | TEXT | NOT NULL, FK → playbook_artifacts (RESTRICT) | The pinned artifact — a run reads no mutable playbook content |
+| `rule_id` | TEXT | NOT NULL | The one rule this run executes |
+| `lifecycle` | TEXT | NOT NULL DEFAULT 'running' | One of: running, paused, cancelling, completed, failed, timed_out, cancelled |
+| `mode` | TEXT | NOT NULL DEFAULT 'live' | One of: live, dry_run, shadow |
+| `current_step_id` | TEXT | nullable | Step the run is sitting on |
+| `snapshot_version` | INTEGER | NOT NULL DEFAULT 0 | Compare-and-set token; advanced once per boundary |
+| `snapshot` | TEXT | NOT NULL DEFAULT '{}' | Canonical JSON of the whole run snapshot |
+| `snapshot_bytes` | INTEGER | NOT NULL DEFAULT 0 | Byte length of `snapshot`, capped by `playbooks.v2_max_snapshot_bytes` |
+| `event_type` | TEXT | NOT NULL DEFAULT '' | Trigger event type |
+| `event_id` | TEXT | nullable | Trigger event id |
+| `dispatch_id` | TEXT | nullable | One dispatch creates at most one run per rule |
+| `parent_run_id` | TEXT | nullable | Parent run for a nested execution |
+| `parent_step_id` | TEXT | nullable | Step of the parent run that spawned this one |
+| `deadline_at` | REAL | nullable | Whole-run deadline |
+| `cancel_requested_at` | REAL | nullable | When cancellation was requested |
+| `cancel_requested_by` | TEXT | nullable | Server-derived principal that requested it |
+| `cancel_reason` | TEXT | nullable | Operator-supplied reason |
+| `summary` | TEXT | NOT NULL DEFAULT '' | Human-readable outcome summary |
+| `error` | TEXT | nullable | Failure detail |
+| `error_code` | TEXT | nullable | Machine-readable failure code |
+| `started_at` | REAL | NOT NULL | Set on insert |
+| `updated_at` | REAL | NOT NULL | Set on every boundary |
+| `completed_at` | REAL | nullable | NULL until terminal |
+
+A partial unique index `uq_playbook_v2_runs_dispatch_rule` on
+`(dispatch_id, rule_id)` where `dispatch_id IS NOT NULL` makes "one matching
+event may create multiple rule runs, but each run executes exactly one rule"
+unforgeable — a retried dispatch cannot duplicate them.
+
+### Table: `playbook_step_receipts`
+
+One immutable row per step *attempt*.  Attempt identity is four-part —
+`(run_id, step_id, iteration, attempt)` — and is enforced by
+`uq_playbook_step_receipts_attempt`, so a replayed attempt after an ambiguous
+interruption is rejected by the database rather than by an in-memory guard a
+restart would have forgotten.  `principal`, `inputs` and `result` hold the
+default-deny receipt projection, never raw values.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `receipt_id` | TEXT | PRIMARY KEY | UUID string |
+| `run_id` | TEXT | NOT NULL, FK → playbook_v2_runs (CASCADE) | Run this attempt belongs to |
+| `artifact_sha256` | TEXT | NOT NULL | Artifact the attempt executed against |
+| `rule_id` | TEXT | NOT NULL | Rule being executed |
+| `step_id` | TEXT | NOT NULL | Step being attempted |
+| `step_kind` | TEXT | NOT NULL | Step kind (command, llm, decision, wait, terminal, …) |
+| `iteration` | INTEGER | NOT NULL DEFAULT -1 | `-1` outside a loop, `0..n` inside one |
+| `attempt` | INTEGER | NOT NULL DEFAULT 1 | 1-based attempt number |
+| `idempotency_key` | TEXT | NOT NULL | `<run>:<step>:<iteration|->:<attempt>` |
+| `snapshot_version` | INTEGER | NOT NULL DEFAULT 0 | Snapshot version this attempt ran against |
+| `contract_fingerprint` | TEXT | NOT NULL DEFAULT '' | Command contract fingerprint, compared as an opaque string |
+| `principal` | TEXT | NOT NULL DEFAULT '{}' | JSON, redacted |
+| `inputs` | TEXT | NOT NULL DEFAULT '{}' | JSON, default-deny projection |
+| `result` | TEXT | NOT NULL DEFAULT '{}' | JSON, default-deny projection |
+| `outcome` | TEXT | NOT NULL | One of: success, failure, skipped, timeout, cancelled, operator_decision_required |
+| `selected_transition` | TEXT | nullable | `<rule>::<step>::<outcome>`; the graph overlay joins on it |
+| `error` | TEXT | nullable | Failure detail |
+| `error_code` | TEXT | nullable | Machine-readable failure code |
+| `tokens_in` | INTEGER | NOT NULL DEFAULT 0 | LLM prompt tokens |
+| `tokens_out` | INTEGER | NOT NULL DEFAULT 0 | LLM completion tokens |
+| `cost_usd` | REAL | nullable | Attempt cost when known |
+| `wait_id` | TEXT | nullable | The wait this attempt suspended on |
+| `timed_out` | BOOLEAN | NOT NULL DEFAULT false | Whether the attempt hit its deadline |
+| `cancelled_at` | REAL | nullable | When cancellation was acknowledged |
+| `started_at` | REAL | NOT NULL | Set on insert |
+| `completed_at` | REAL | nullable | NULL while the attempt is open |
+| `duration_ms` | INTEGER | NOT NULL DEFAULT 0 | Attempt duration |
+
+### Table: `playbook_waits`
+
+One row per durable suspension point of a V2 run (design spec §10; Package 3
+child plan §6.5).  A wait is inert data, never code: `match` is a flat JSON
+mapping of dotted event field path to required literal, evaluated in Python
+over the candidate set narrowed by `idx_playbook_waits_match`, because a
+predicate read back from the database after a restart must not be able to
+execute anything.
+
+Registration happens on `commit_boundary`'s own connection, so a run is never
+suspended with its wait invisible.  `uq_playbook_waits_active_step` is a
+partial unique index over `state = 'active'`: one live wait per step
+instance, so a duplicated resume raises rather than producing two claimable
+rows.  `snapshot_version` records the snapshot the run is suspended *on* — a
+resume that finds it disagreeing with `playbook_v2_runs.snapshot_version`
+refuses with `wait_version_mismatch`.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `wait_id` | TEXT | PRIMARY KEY | Caller-assigned wait identifier |
+| `run_id` | TEXT | NOT NULL, FK → playbook_v2_runs (CASCADE) | Suspended run |
+| `step_id` | TEXT | NOT NULL | Step that opened the wait |
+| `iteration` | INTEGER | NOT NULL DEFAULT -1 | `-1` outside a loop, `0..n` inside one |
+| `kind` | TEXT | NOT NULL, CHECK | One of: event, timer, human, agent_task |
+| `event_type` | TEXT | NOT NULL DEFAULT '' | Empty matches any event type |
+| `correlation_key` | TEXT | NOT NULL DEFAULT '' | Digest of (kind, event_type, match), for operator search |
+| `match` | TEXT | NOT NULL DEFAULT '{}' | JSON: dotted field path → required literal |
+| `deadline_at` | REAL | nullable | NULL never expires |
+| `snapshot_version` | INTEGER | NOT NULL | Snapshot version the wait suspends |
+| `state` | TEXT | NOT NULL DEFAULT 'active', CHECK | One of: active, claimed, expired, cleared |
+| `claimed_event_id` | TEXT | nullable | Event that claimed it; NULL for an expiry |
+| `claimed_at` | REAL | nullable | When it was claimed or expired |
+| `created_at` | REAL | NOT NULL | Set on insert |
+
+### Table: `playbook_pending_events`
+
+An event that matched an activation which was not `ready` is retained here
+rather than dropped (child plan §10.3), so recovery is "rebuild, activate,
+dispatch the retained events" and never "the events are gone".
+
+Deduplication is `uq_playbook_pending_events_dedup`, a partial unique index
+over `resolved_at IS NULL AND dedup_key <> ''` — the index, not a pre-read,
+because a pre-read races.  An empty `dedup_key` therefore never deduplicates.
+Replay order is `ORDER BY received_at, pending_event_id`.  `resolved_at` /
+`resolved_by` / `resolution` are the operator-audit columns; resolution CASes
+on `resolved_at IS NULL`, so two operators clicking "dispatch" produce one
+dispatch.  Retention is 7 days by default, and a per-playbook quota
+(`playbooks.v2_max_pending_events_per_playbook`) keeps the table from being a
+denial-of-service surface reachable by any event producer.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `pending_event_id` | TEXT | PRIMARY KEY | UUID string |
+| `playbook_id` | TEXT | NOT NULL | Playbook the event was routed to |
+| `scope` | TEXT | NOT NULL DEFAULT 'system' | Activation scope |
+| `scope_identifier` | TEXT | NOT NULL DEFAULT '' | Project id for project scope, else empty |
+| `event_type` | TEXT | NOT NULL | Event type as received |
+| `event` | TEXT | NOT NULL DEFAULT '{}' | JSON event body |
+| `event_id` | TEXT | nullable | Producer's event id when it has one |
+| `dedup_key` | TEXT | NOT NULL DEFAULT '' | Empty disables deduplication |
+| `reason` | TEXT | NOT NULL, CHECK | One of: stale_contract, invalid_artifact, disabled, unavailable, question_required |
+| `attempts` | INTEGER | NOT NULL DEFAULT 0 | Dispatch attempts made after retention |
+| `last_error` | TEXT | nullable | Last dispatch failure |
+| `received_at` | REAL | NOT NULL | Arrival time; the replay order |
+| `expires_at` | REAL | NOT NULL | `received_at + retention`; collectable past it |
+| `resolved_at` | REAL | nullable | NULL while unresolved |
+| `resolved_by` | TEXT | nullable | Server-derived principal that resolved it |
+| `resolution` | TEXT | nullable, CHECK | One of: dispatched, discarded, expired |
 
 ### Table: `task_completion_records`
 
