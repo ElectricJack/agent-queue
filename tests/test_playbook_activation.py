@@ -855,6 +855,42 @@ async def test_read_path_reports_unavailable_when_the_artifact_file_is_gone(db, 
     assert records[0].reasons[0].code == "artifact_missing"
 
 
+@pytest.mark.asyncio
+async def test_read_path_and_doctors_report_a_mutated_artifact_sha_mismatch(db, tmp_path):
+    """Health must reject valid replacement bytes just as ArtifactStore.load does.
+
+    The ``db`` fixture runs this regression against SQLite and PostgreSQL.  In
+    particular, this keeps the activation-health path from trusting a mutable
+    path after ``ArtifactStore.load`` has rejected the same artifact.
+    """
+    from src.doctor.models import Severity
+    from src.doctor.playbook_v2_checks import _check_activation_stale, _check_artifact_integrity
+    from src.playbooks.activation import ActivationHealth, _load_definition, load_activation_health
+    from src.playbooks.artifact_store import ArtifactStore, ArtifactVerificationFailed
+    from tests.playbook_v2_helpers import StubContracts, StubProfiles
+
+    ref = await _activate_profiled_artifact(db, tmp_path)
+    replacement = _definition({"worker": "sha256:" + "f" * 64})
+    (tmp_path / "artifacts" / f"{ref.digest}.json").write_bytes(
+        ArtifactStore.canonical_bytes(replacement)
+    )
+    with pytest.raises(ArtifactVerificationFailed):
+        _load_definition(str(tmp_path / "artifacts" / f"{ref.digest}.json"), ref.artifact_sha256)
+
+    records = await load_activation_health(
+        db, contracts=StubContracts(), profiles=StubProfiles(), enabled_only=True
+    )
+    assert [record.health for record in records] == [ActivationHealth.UNAVAILABLE]
+    assert [reason.code for reason in records[0].reasons] == ["artifact_sha_mismatch"]
+
+    stale = await _check_activation_stale(_stale_ctx(db))
+    integrity = await _check_artifact_integrity(_stale_ctx(db))
+    assert stale.severity is Severity.WARN
+    assert stale.data["stale"][0]["reasons"][0]["code"] == "artifact_sha_mismatch"
+    assert integrity.severity is Severity.WARN
+    assert integrity.data["faults"][0]["problem"] == "hash_mismatch"
+
+
 # -- doctor: playbooks.activation_stale --------------------------------------
 
 
