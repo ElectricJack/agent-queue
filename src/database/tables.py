@@ -183,7 +183,15 @@ task_dependencies = Table(
     # populate this with the reason the follow-up was created; nullable keeps
     # legacy and purely structural edges valid.
     Column("description", Text, nullable=True),
-    CheckConstraint("task_id != depends_on_task_id"),
+    # Named explicitly with the name PostgreSQL auto-assigned in the baseline
+    # revision (``<table>_check``).  The constraint has always been declared
+    # here, but *unnamed* metadata check constraints are invisible to
+    # autogenerate's comparison, so every ``alembic revision --autogenerate``
+    # run saw an unmatched ``task_dependencies_check`` in the live schema and
+    # emitted a spurious "drop the self-dependency guard" operation.  The name
+    # is deployed on every existing database, so pinning it here converges
+    # metadata and schema without a migration.
+    CheckConstraint("task_id != depends_on_task_id", name="task_dependencies_check"),
     CheckConstraint(_TASK_DEP_TYPE_CHECK, name="ck_task_deps_dep_type"),
     # Composite indexes replace the former single-column pair: the leading
     # column keeps every existing lookup covered, the second serves the
