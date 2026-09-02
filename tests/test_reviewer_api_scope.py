@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import time
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -54,10 +55,11 @@ async def api(tmp_path, monkeypatch, request, generated_routers):
     handler = CommandHandler(orch, config)
     for pid in ("p", "other"):
         await db.create_project(Project(id=pid, name=pid))
-    for profile_id in ("reviewer", "coder"):
+    for profile_id in ("reviewer", "final-reviewer", "coder"):
         await db.upsert_profile(AgentProfile(
             id=profile_id, name=profile_id, harness="codex", needs_workspace=False,
             default_class="standard-low",
+            allowed_tools=["pr_merge", "git_diff"] if profile_id == "final-reviewer" else [],
         ))
     # The reviewed work, plus an unrelated completed task in the same project
     # and one in a second project.  All three are reopenable by construction —
@@ -66,6 +68,7 @@ async def api(tmp_path, monkeypatch, request, generated_routers):
         await db.create_task(Task(
             id=tid, project_id=pid, title=tid, description="Worker output",
             status=TaskStatus.DEFINED, profile_id="coder", branch_name=f"feature/{tid}",
+            pr_url=("https://example.invalid/pr/1" if tid == "reviewed" else None),
         ))
         await db.transition_task(tid, TaskStatus.COMPLETED, context="test")
 
@@ -89,13 +92,38 @@ async def api(tmp_path, monkeypatch, request, generated_routers):
     # The provenance edge the ``per-task-review`` pipeline rule writes.
     await db.add_dependency("reviewer-agent-job", "reviewed", "discovered-from")
 
+    await db.create_agent(Agent(
+        id="final-reviewer-agent", name="final-reviewer-agent", profile_id="final-reviewer",
+    ))
+    await db.create_task(Task(
+        id="final-reviewer-agent-job", project_id="p", title="final review",
+        description="Final review for branch feature/reviewed.", status=TaskStatus.IN_PROGRESS,
+        profile_id="final-reviewer", assigned_agent_id="final-reviewer-agent",
+        branch_name="feature/reviewed", pr_url="https://example.invalid/pr/1",
+    ))
+    await db.update_agent(
+        "final-reviewer-agent", state=AgentState.BUSY,
+        current_task_id="final-reviewer-agent-job",
+    )
+    await db.create_session(SessionRecord(
+        id="s-final-reviewer-agent", task_id="final-reviewer-agent-job", project_id="p",
+        agent_id="final-reviewer-agent", profile_id="final-reviewer", harness="codex",
+        provider="fake", name="s-final-reviewer-agent", lifecycle="task", state="running",
+        work_dir=str(tmp_path), epoch="test", instance_token="instance-final-reviewer-agent",
+        started_at=time.time(), last_claim_epoch=0,
+    ))
+    # A final review's branch-wide authority is its blocks -> review -> worker graph.
+    await db.add_dependency("final-reviewer-agent-job", "reviewer-agent-job", "blocks")
+
     store = SessionTokenStore(db)
     tokens = {
         worker: await store.mint(
             session_id=f"s-{worker}", task_id=f"{worker}-job", project_id="p",
         )
-        for worker in ("reviewer-agent", "worker-agent")
+        for worker in ("reviewer-agent", "worker-agent", "final-reviewer-agent")
     }
+    merge_pr = AsyncMock(return_value={"success": True, "sha": "merged"})
+    monkeypatch.setattr(orch.git, "amerge_pr", merge_pr)
     monkeypatch.setattr(deps, "_command_handler", handler)
     monkeypatch.setattr(deps, "_orchestrator", orch)
     monkeypatch.setattr(deps, "_token_store", store)
@@ -128,7 +156,9 @@ async def api(tmp_path, monkeypatch, request, generated_routers):
                 return payload["result"]
             return payload
 
-        yield SimpleNamespace(db=db, store=store, tokens=tokens, post=post, result=result)
+        yield SimpleNamespace(
+            db=db, store=store, tokens=tokens, post=post, result=result, merge_pr=merge_pr,
+        )
     await db.close()
 
 
@@ -185,7 +215,59 @@ async def test_reviewer_keeps_ordinary_access_to_its_own_review_task(api):
     }))
 
 
+async def test_final_reviewer_can_reopen_workers_from_its_review_branch(api):
+    result = api.result(await api.post("reopen_with_feedback", {
+        "task_id": "reviewed", "feedback": "CI is red.",
+    }, worker="final-reviewer-agent"))
+    assert result["reopened"] == "reviewed"
+
+
+async def test_final_reviewer_can_read_workers_from_its_review_branch(api):
+    result = api.result(await api.post(
+        "task_show", {"task_id": "reviewed"}, worker="final-reviewer-agent",
+    ))
+    assert result["id"] == "reviewed"
+
+
+async def test_final_reviewer_can_merge_its_review_branch_pr(api):
+    response = await api.post("pr_merge", {
+        "project_id": "p", "pr_url": "https://example.invalid/pr/1", "method": "squash",
+    }, worker="final-reviewer-agent")
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    result = payload.get("result", payload)
+    assert result["sha"] == "merged"
+    api.merge_pr.assert_awaited_once()
+    assert api.merge_pr.await_args.args[1] == "https://example.invalid/pr/1"
+    assert api.merge_pr.await_args.kwargs == {"method": "squash"}
+
+
+async def test_final_reviewer_can_call_git_diff(api):
+    response = await api.post("git_diff", {"project_id": "p"}, worker="final-reviewer-agent")
+    assert response.status_code != 403, response.text
+
+
 # --- the refusals ---------------------------------------------------------
+
+
+@pytest.mark.parametrize("command,args", [
+    ("reopen_with_feedback", {"task_id": "unrelated", "feedback": "not my branch"}),
+    ("task_show", {"task_id": "unrelated"}),
+    ("pr_merge", {"project_id": "p", "pr_url": "https://example.invalid/pr/2"}),
+])
+async def test_final_reviewer_cannot_reach_another_branch(api, command, args):
+    response = await api.post(command, args, worker="final-reviewer-agent")
+    assert response.status_code == 403, response.text
+
+
+@pytest.mark.parametrize("command,args", [
+    ("list_tasks", {}),
+    ("delete_task", {"task_id": "reviewed"}),
+    ("restart_task", {"task_id": "reviewed"}),
+])
+async def test_final_reviewer_does_not_gain_operator_commands(api, command, args):
+    response = await api.post(command, args, worker="final-reviewer-agent")
+    assert response.status_code == 403, response.text
 
 
 @pytest.mark.parametrize("command,args", [
