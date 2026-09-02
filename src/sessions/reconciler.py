@@ -662,6 +662,24 @@ class SessionReconciler:
                 session_id=row.id,
                 reason=verdict.reason,
             )
+            if not retriable:
+                # Terminal: the session died without closing and there is no
+                # retry left.  ``task.failed`` is what the reflection playbook
+                # and the failure-notification path trigger on, so a task that
+                # ends here has to raise it — otherwise the only exits that
+                # ever reflect are the ones an agent was alive to report.
+                await self._emit(
+                    "task.failed",
+                    task_id=task.id,
+                    project_id=task.project_id,
+                    title=task.title,
+                    status=TaskStatus.BLOCKED.value,
+                    context="session_exited_without_close_exhausted",
+                    error=(
+                        f"session {row.id} exited without close: {verdict.reason}; "
+                        "retry budget exhausted"
+                    ),
+                )
             if retriable:
                 await self._emit(
                     "task.restarted",
