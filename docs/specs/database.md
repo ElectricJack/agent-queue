@@ -809,6 +809,88 @@ outside the artifact so pausing a playbook never rewrites immutable content.
 | `activated_by` | TEXT | nullable | Server-derived principal that activated it |
 | `updated_at` | REAL | NOT NULL | Set on every write |
 
+### Table: `playbook_v2_runs`
+
+One row per Playbook V2 run.  Named `playbook_v2_runs` rather than reusing
+`playbook_runs` because V1 runs must stay readable after V1 execution is
+removed.  `snapshot` holds the whole durable run state as canonical JSON;
+the columns beside it are the indexed projection of that same state, so an
+operator query is an index scan rather than a JSON parse of every row.
+`snapshot_version` is the optimistic-concurrency token every durable advance
+compares and increments.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `run_id` | TEXT | PRIMARY KEY | UUID string |
+| `playbook_id` | TEXT | NOT NULL | Playbook this run executes |
+| `artifact_sha256` | TEXT | NOT NULL, FK → playbook_artifacts (RESTRICT) | The pinned artifact — a run reads no mutable playbook content |
+| `rule_id` | TEXT | NOT NULL | The one rule this run executes |
+| `lifecycle` | TEXT | NOT NULL DEFAULT 'running' | One of: running, paused, cancelling, completed, failed, timed_out, cancelled |
+| `mode` | TEXT | NOT NULL DEFAULT 'live' | One of: live, dry_run, shadow |
+| `current_step_id` | TEXT | nullable | Step the run is sitting on |
+| `snapshot_version` | INTEGER | NOT NULL DEFAULT 0 | Compare-and-set token; advanced once per boundary |
+| `snapshot` | TEXT | NOT NULL DEFAULT '{}' | Canonical JSON of the whole run snapshot |
+| `snapshot_bytes` | INTEGER | NOT NULL DEFAULT 0 | Byte length of `snapshot`, capped by `playbooks.v2_max_snapshot_bytes` |
+| `event_type` | TEXT | NOT NULL DEFAULT '' | Trigger event type |
+| `event_id` | TEXT | nullable | Trigger event id |
+| `dispatch_id` | TEXT | nullable | One dispatch creates at most one run per rule |
+| `parent_run_id` | TEXT | nullable | Parent run for a nested execution |
+| `parent_step_id` | TEXT | nullable | Step of the parent run that spawned this one |
+| `deadline_at` | REAL | nullable | Whole-run deadline |
+| `cancel_requested_at` | REAL | nullable | When cancellation was requested |
+| `cancel_requested_by` | TEXT | nullable | Server-derived principal that requested it |
+| `cancel_reason` | TEXT | nullable | Operator-supplied reason |
+| `summary` | TEXT | NOT NULL DEFAULT '' | Human-readable outcome summary |
+| `error` | TEXT | nullable | Failure detail |
+| `error_code` | TEXT | nullable | Machine-readable failure code |
+| `started_at` | REAL | NOT NULL | Set on insert |
+| `updated_at` | REAL | NOT NULL | Set on every boundary |
+| `completed_at` | REAL | nullable | NULL until terminal |
+
+A partial unique index `uq_playbook_v2_runs_dispatch_rule` on
+`(dispatch_id, rule_id)` where `dispatch_id IS NOT NULL` makes "one matching
+event may create multiple rule runs, but each run executes exactly one rule"
+unforgeable — a retried dispatch cannot duplicate them.
+
+### Table: `playbook_step_receipts`
+
+One immutable row per step *attempt*.  Attempt identity is four-part —
+`(run_id, step_id, iteration, attempt)` — and is enforced by
+`uq_playbook_step_receipts_attempt`, so a replayed attempt after an ambiguous
+interruption is rejected by the database rather than by an in-memory guard a
+restart would have forgotten.  `principal`, `inputs` and `result` hold the
+default-deny receipt projection, never raw values.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `receipt_id` | TEXT | PRIMARY KEY | UUID string |
+| `run_id` | TEXT | NOT NULL, FK → playbook_v2_runs (CASCADE) | Run this attempt belongs to |
+| `artifact_sha256` | TEXT | NOT NULL | Artifact the attempt executed against |
+| `rule_id` | TEXT | NOT NULL | Rule being executed |
+| `step_id` | TEXT | NOT NULL | Step being attempted |
+| `step_kind` | TEXT | NOT NULL | Step kind (command, llm, decision, wait, terminal, …) |
+| `iteration` | INTEGER | NOT NULL DEFAULT -1 | `-1` outside a loop, `0..n` inside one |
+| `attempt` | INTEGER | NOT NULL DEFAULT 1 | 1-based attempt number |
+| `idempotency_key` | TEXT | NOT NULL | `<run>:<step>:<iteration|->:<attempt>` |
+| `snapshot_version` | INTEGER | NOT NULL DEFAULT 0 | Snapshot version this attempt ran against |
+| `contract_fingerprint` | TEXT | NOT NULL DEFAULT '' | Command contract fingerprint, compared as an opaque string |
+| `principal` | TEXT | NOT NULL DEFAULT '{}' | JSON, redacted |
+| `inputs` | TEXT | NOT NULL DEFAULT '{}' | JSON, default-deny projection |
+| `result` | TEXT | NOT NULL DEFAULT '{}' | JSON, default-deny projection |
+| `outcome` | TEXT | NOT NULL | One of: success, failure, skipped, timeout, cancelled, operator_decision_required |
+| `selected_transition` | TEXT | nullable | `<rule>::<step>::<outcome>`; the graph overlay joins on it |
+| `error` | TEXT | nullable | Failure detail |
+| `error_code` | TEXT | nullable | Machine-readable failure code |
+| `tokens_in` | INTEGER | NOT NULL DEFAULT 0 | LLM prompt tokens |
+| `tokens_out` | INTEGER | NOT NULL DEFAULT 0 | LLM completion tokens |
+| `cost_usd` | REAL | nullable | Attempt cost when known |
+| `wait_id` | TEXT | nullable | The wait this attempt suspended on |
+| `timed_out` | BOOLEAN | NOT NULL DEFAULT false | Whether the attempt hit its deadline |
+| `cancelled_at` | REAL | nullable | When cancellation was acknowledged |
+| `started_at` | REAL | NOT NULL | Set on insert |
+| `completed_at` | REAL | nullable | NULL while the attempt is open |
+| `duration_ms` | INTEGER | NOT NULL DEFAULT 0 | Attempt duration |
+
 ### Table: `task_completion_records`
 
 Append-only audit records for accepted task-close operations.  This deliberately
