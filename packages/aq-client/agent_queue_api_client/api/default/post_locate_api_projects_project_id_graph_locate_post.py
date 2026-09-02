@@ -7,39 +7,30 @@ import httpx
 from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.http_validation_error import HTTPValidationError
+from ...models.locate_request import LocateRequest
 from ...models.locate_response import LocateResponse
-from ...types import UNSET, Response, Unset
+from ...types import Response
 
 
 def _get_kwargs(
     project_id: str,
     *,
-    variant: str | Unset = "active",
-    q: str | Unset = "",
-    status: str | Unset = "",
-    limit: int | Unset = 200,
+    body: LocateRequest,
 ) -> dict[str, Any]:
-
-    params: dict[str, Any] = {}
-
-    params["variant"] = variant
-
-    params["q"] = q
-
-    params["status"] = status
-
-    params["limit"] = limit
-
-    params = {k: v for k, v in params.items() if v is not UNSET and v is not None}
+    headers: dict[str, Any] = {}
 
     _kwargs: dict[str, Any] = {
-        "method": "get",
+        "method": "post",
         "url": "/api/projects/{project_id}/graph/locate".format(
             project_id=quote(str(project_id), safe=""),
         ),
-        "params": params,
     }
 
+    _kwargs["json"] = body.to_dict()
+
+    headers["Content-Type"] = "application/json"
+
+    _kwargs["headers"] = headers
     return _kwargs
 
 
@@ -81,19 +72,19 @@ def sync_detailed(
     project_id: str,
     *,
     client: AuthenticatedClient | Client,
-    variant: str | Unset = "active",
-    q: str | Unset = "",
-    status: str | Unset = "",
-    limit: int | Unset = 200,
+    body: LocateRequest,
 ) -> Response[Any | HTTPValidationError | LocateResponse]:
-    """Get Locate
+    """Post Locate
 
     Args:
         project_id (str):
-        variant (str | Unset):  Default: 'active'.
-        q (str | Unset):  Default: ''.
-        status (str | Unset):  Default: ''.
-        limit (int | Unset):  Default: 200.
+        body (LocateRequest): Where the matches for a filter are, in the geometry the canvas
+            draws.
+
+            Carries ``expanded`` for the same reason ``tiles`` and ``list`` are POSTs:
+            collapsing a container reflows everything after it, so a match's position
+            depends on the viewer's expanded set and cannot be answered from the
+            persisted layout alone.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -105,10 +96,7 @@ def sync_detailed(
 
     kwargs = _get_kwargs(
         project_id=project_id,
-        variant=variant,
-        q=q,
-        status=status,
-        limit=limit,
+        body=body,
     )
 
     response = client.get_httpx_client().request(
@@ -122,19 +110,19 @@ def sync(
     project_id: str,
     *,
     client: AuthenticatedClient | Client,
-    variant: str | Unset = "active",
-    q: str | Unset = "",
-    status: str | Unset = "",
-    limit: int | Unset = 200,
+    body: LocateRequest,
 ) -> Any | HTTPValidationError | LocateResponse | None:
-    """Get Locate
+    """Post Locate
 
     Args:
         project_id (str):
-        variant (str | Unset):  Default: 'active'.
-        q (str | Unset):  Default: ''.
-        status (str | Unset):  Default: ''.
-        limit (int | Unset):  Default: 200.
+        body (LocateRequest): Where the matches for a filter are, in the geometry the canvas
+            draws.
+
+            Carries ``expanded`` for the same reason ``tiles`` and ``list`` are POSTs:
+            collapsing a container reflows everything after it, so a match's position
+            depends on the viewer's expanded set and cannot be answered from the
+            persisted layout alone.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -147,10 +135,7 @@ def sync(
     return sync_detailed(
         project_id=project_id,
         client=client,
-        variant=variant,
-        q=q,
-        status=status,
-        limit=limit,
+        body=body,
     ).parsed
 
 
@@ -158,19 +143,19 @@ async def asyncio_detailed(
     project_id: str,
     *,
     client: AuthenticatedClient | Client,
-    variant: str | Unset = "active",
-    q: str | Unset = "",
-    status: str | Unset = "",
-    limit: int | Unset = 200,
+    body: LocateRequest,
 ) -> Response[Any | HTTPValidationError | LocateResponse]:
-    """Get Locate
+    """Post Locate
 
     Args:
         project_id (str):
-        variant (str | Unset):  Default: 'active'.
-        q (str | Unset):  Default: ''.
-        status (str | Unset):  Default: ''.
-        limit (int | Unset):  Default: 200.
+        body (LocateRequest): Where the matches for a filter are, in the geometry the canvas
+            draws.
+
+            Carries ``expanded`` for the same reason ``tiles`` and ``list`` are POSTs:
+            collapsing a container reflows everything after it, so a match's position
+            depends on the viewer's expanded set and cannot be answered from the
+            persisted layout alone.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -182,10 +167,7 @@ async def asyncio_detailed(
 
     kwargs = _get_kwargs(
         project_id=project_id,
-        variant=variant,
-        q=q,
-        status=status,
-        limit=limit,
+        body=body,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -197,19 +179,19 @@ async def asyncio(
     project_id: str,
     *,
     client: AuthenticatedClient | Client,
-    variant: str | Unset = "active",
-    q: str | Unset = "",
-    status: str | Unset = "",
-    limit: int | Unset = 200,
+    body: LocateRequest,
 ) -> Any | HTTPValidationError | LocateResponse | None:
-    """Get Locate
+    """Post Locate
 
     Args:
         project_id (str):
-        variant (str | Unset):  Default: 'active'.
-        q (str | Unset):  Default: ''.
-        status (str | Unset):  Default: ''.
-        limit (int | Unset):  Default: 200.
+        body (LocateRequest): Where the matches for a filter are, in the geometry the canvas
+            draws.
+
+            Carries ``expanded`` for the same reason ``tiles`` and ``list`` are POSTs:
+            collapsing a container reflows everything after it, so a match's position
+            depends on the viewer's expanded set and cannot be answered from the
+            persisted layout alone.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -223,9 +205,6 @@ async def asyncio(
         await asyncio_detailed(
             project_id=project_id,
             client=client,
-            variant=variant,
-            q=q,
-            status=status,
-            limit=limit,
+            body=body,
         )
     ).parsed

@@ -1413,9 +1413,9 @@
       }
     },
     "/api/projects/{project_id}/graph/locate": {
-      "get": {
-        "summary": "Get Locate",
-        "operationId": "get_locate_api_projects__project_id__graph_locate_get",
+      "post": {
+        "summary": "Post Locate",
+        "operationId": "post_locate_api_projects__project_id__graph_locate_post",
         "parameters": [
           {
             "name": "project_id",
@@ -1425,48 +1425,18 @@
               "type": "string",
               "title": "Project Id"
             }
-          },
-          {
-            "name": "variant",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "default": "active",
-              "title": "Variant"
-            }
-          },
-          {
-            "name": "q",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "default": "",
-              "title": "Q"
-            }
-          },
-          {
-            "name": "status",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "default": "",
-              "title": "Status"
-            }
-          },
-          {
-            "name": "limit",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "default": 200,
-              "title": "Limit"
-            }
           }
         ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LocateRequest"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -26117,6 +26087,41 @@
           "h"
         ],
         "title": "LocateHit"
+      },
+      "LocateRequest": {
+        "properties": {
+          "variant": {
+            "type": "string",
+            "title": "Variant",
+            "default": "active"
+          },
+          "expanded": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Expanded",
+            "default": []
+          },
+          "q": {
+            "type": "string",
+            "title": "Q",
+            "default": ""
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": ""
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "default": 200
+          }
+        },
+        "type": "object",
+        "title": "LocateRequest",
+        "description": "Where the matches for a filter are, in the geometry the canvas draws.\n\nCarries ``expanded`` for the same reason ``tiles`` and ``list`` are POSTs:\ncollapsing a container reflows everything after it, so a match's position\ndepends on the viewer's expanded set and cannot be answered from the\npersisted layout alone."
       },
       "LocateResponse": {
         "properties": {

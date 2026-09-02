@@ -11,6 +11,7 @@ from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
+from src.task_graph.layout.compaction import Box as BoxLike
 from src.task_graph.layout.model import LayoutRow
 
 
@@ -148,7 +149,7 @@ def remap_edges(
 
 def cap_stubs(
     edges: list[dict],
-    stub_rows: dict[str, LayoutRow],
+    stub_boxes: Mapping[str, BoxLike],
     visible: set[str],
     limit: int = 8,
 ) -> tuple[list[dict], list[dict], list[dict]]:
@@ -162,6 +163,9 @@ def cap_stubs(
 
     Each stub payload is `{id, x, y, w, h}`; the router enriches it with
     `project_id` and `title` before returning it to clients.
+
+    `stub_boxes` carries the box each far node is DRAWN at, which after a
+    collapse is its compacted box rather than the persisted one.
     """
     far_nodes: dict[tuple[str, str], set[str]] = defaultdict(set)
     kept: list[dict] = []
@@ -180,7 +184,7 @@ def cap_stubs(
             if f in visible and t in visible:
                 kept.append(e)
             continue
-        if far not in stub_rows:
+        if far not in stub_boxes:
             continue  # far endpoint has no row in this variant: drop
         slot_key = (anchor, direction)
         already_counted = far in far_nodes[slot_key]
@@ -190,8 +194,8 @@ def cap_stubs(
         if not already_counted:
             far_nodes[slot_key].add(far)
         kept.append(e)
-        r = stub_rows[far]
-        stubs.setdefault(far, {"id": far, "x": r.abs_x, "y": r.abs_y, "w": r.w, "h": r.h})
+        b = stub_boxes[far]
+        stubs.setdefault(far, {"id": far, "x": b.x, "y": b.y, "w": b.w, "h": b.h})
     more_list = [
         {"node_id": n, "direction": d, "more": len(far_ids)}
         for (n, d), far_ids in sorted(more.items())

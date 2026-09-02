@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fetchTiles, type TilesParams } from "../../../api/graphLayout";
 import {
+  dropCarried,
   emptyStore,
   evictFar,
   mergeTiles,
   missingCells,
   nodeCount,
+  retainForReflow,
   type LayoutStore,
 } from "./layoutStore";
 import {
@@ -87,9 +89,15 @@ export function useLayoutTiles(
       // subtree, so evicting by cell would throw away nodes the response just
       // delivered and make every pan re-download them.
       const root = !!paramsRef.current.root;
-      const merged = root
+      const fetched = root
         ? { ...mergeTiles(storeRef.current, batch, res), whole: true }
         : evictFar(mergeTiles(storeRef.current, batch, res), wantedRef.current);
+      // Nodes held over from the previous expanded set stop being useful the
+      // moment this generation has covered every visible cell: whatever the
+      // server did not send back is not on the canvas any more.
+      const merged = missingCells(fetched, wantedRef.current).length === 0
+        ? dropCarried(fetched)
+        : fetched;
       storeRef.current = merged;
       setStore(merged);
       const depth = paramsRef.current.maxDepth ?? null;
@@ -112,13 +120,20 @@ export function useLayoutTiles(
     }
   }, [projectId]);
 
-  // Params (or project) changed: everything cached describes a different graph.
+  // Params (or project) changed: every cell cached describes a different
+  // graph. The DRAWN nodes are kept, though — collapsing a container reflows
+  // its siblings, and the canvas animates them from where they were rather
+  // than blanking and re-mounting the whole graph. A different PROJECT shares
+  // nothing with what is drawn, so that case still starts empty.
+  const drawnProject = useRef<string | undefined>(undefined);
   useEffect(() => {
     inflight.current?.abort();
     inflight.current = null;
     dirty.current = false;
     failed.current = false;
-    const fresh = emptyStore();
+    const sameProject = projectId !== undefined && drawnProject.current === projectId;
+    drawnProject.current = projectId;
+    const fresh = sameProject ? retainForReflow(storeRef.current) : emptyStore();
     storeRef.current = fresh;
     setStore(fresh);
     setLoaded(false);

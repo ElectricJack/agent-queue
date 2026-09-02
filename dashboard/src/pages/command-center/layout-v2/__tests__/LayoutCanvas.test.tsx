@@ -15,11 +15,13 @@ interface FlowProps {
 const flow = vi.hoisted(() => ({ current: null as FlowProps | null }));
 const fitBounds = vi.hoisted(() => vi.fn());
 const setCenter = vi.hoisted(() => vi.fn());
+const setViewport = vi.hoisted(() => vi.fn());
+const getViewport = vi.hoisted(() => vi.fn(() => ({ x: 0, y: 0, zoom: 1 })));
 vi.mock("@xyflow/react", () => ({
   MarkerType: { ArrowClosed: "arrowclosed" },
   Position: { Top: "top", Bottom: "bottom", Left: "left", Right: "right" },
   ReactFlowProvider: ({ children }: { children: ReactNode }) => children,
-  useReactFlow: () => ({ fitBounds, setCenter }),
+  useReactFlow: () => ({ fitBounds, setCenter, setViewport, getViewport }),
   ReactFlow: (props: FlowProps) => {
     flow.current = props;
     return <div>
@@ -63,6 +65,7 @@ vi.mock("../../../../api/graphLayout", () => ({
 import { emptyStore, mergeTiles } from "../layoutStore";
 import { sizePx, toPx } from "../units";
 import LayoutCanvas from "../LayoutCanvas";
+import { setExpandedTaskIds } from "../../useGraphHierarchy";
 
 const n = (id: string, kind: string, x: number, y: number, extra: Record<string, unknown> = {}) => ({
   id, title: id, status: "READY", priority: 100, is_blocked: false, x, y, w: 1, h: 1, depth: 0,
@@ -91,9 +94,14 @@ beforeEach(() => {
   extents.pending = false;
   fitBounds.mockReset();
   setCenter.mockReset();
+  setViewport.mockReset();
+  getViewport.mockReset();
+  getViewport.mockReturnValue({ x: 0, y: 0, zoom: 1 });
   tiles.error = null;
   layoutNode.data = undefined;
   localStorage.clear();
+  // The expanded set is one live store, not per-component state.
+  setExpandedTaskIds(new Set());
 });
 afterEach(cleanup);
 
@@ -140,6 +148,57 @@ describe("LayoutCanvas", () => {
     act(() => (node.data as { onToggleChildren: (id: string) => void }).onToggleChildren("e"));
     await screen.findByTestId("node-e");
     expect((tiles.params as { expanded: string[] }).expanded).toEqual(["e"]);
+  });
+
+  it("toggling a container reflows its siblings to the positions the API returns", async () => {
+    // `e` is collapsed to one tile, with `z` laid out right below it.
+    tiles.store = mergeTiles(emptyStore(), ["0:0"], {
+      nodes: [n("e", "collapsed", 0, 0), n("z", "card", 0, 1.2)],
+      edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+    } as unknown as TilesResponse);
+    const view = render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+    const node = flow.current!.nodes.find((candidate) => candidate.id === "e")!;
+    act(() => (node.data as { onToggleChildren: (id: string) => void }).onToggleChildren("e"));
+    expect((tiles.params as { expanded: string[] }).expanded).toEqual(["e"]);
+
+    // Expanded, the server answers with `e` three units tall and `z` pushed
+    // down by exactly the space it took back.
+    tiles.store = mergeTiles(emptyStore(), ["0:0"], {
+      nodes: [n("e", "container", 0, 0, { w: 1, h: 3 }), n("z", "card", 0, 3.2)],
+      edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+    } as unknown as TilesResponse);
+    view.rerender(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+    const z = flow.current!.nodes.find((candidate) => candidate.id === "z")!;
+    expect(z.position).toEqual(toPx(0, 3.2));
+    // The toggled container is a fixed point of the compaction, so nothing
+    // needs to pan to keep it under the pointer.
+    expect(setViewport).not.toHaveBeenCalled();
+  });
+
+  it("pans to hold a toggled container still when the reflow does move it", () => {
+    tiles.store = mergeTiles(emptyStore(), ["0:0"], {
+      nodes: [n("e", "collapsed", 0, 0), n("z", "card", 0, 1.2)],
+      edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+    } as unknown as TilesResponse);
+    getViewport.mockReturnValue({ x: 40, y: 60, zoom: 2 });
+    const view = render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+    const before = flow.current!.nodes.find((candidate) => candidate.id === "e")!;
+    const node = before;
+    act(() => (node.data as { onToggleChildren: (id: string) => void }).onToggleChildren("e"));
+
+    // A concurrent republish can land `e` somewhere else entirely; the pin is
+    // what keeps the operator's eye on the container they clicked.
+    tiles.store = mergeTiles(emptyStore(), ["0:0"], {
+      nodes: [n("e", "collapsed", 0, 5), n("z", "card", 0, 6.2)],
+      edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+    } as unknown as TilesResponse);
+    view.rerender(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+    const moved = flow.current!.nodes.find((candidate) => candidate.id === "e")!;
+    expect(setViewport).toHaveBeenCalledWith({
+      x: before.position.x * 2 + 40 - moved.position.x * 2,
+      y: before.position.y * 2 + 60 - moved.position.y * 2,
+      zoom: 2,
+    });
   });
 
   it("does not claim an empty graph before the first tiles response", () => {

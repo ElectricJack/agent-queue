@@ -148,11 +148,15 @@ async def test_tiles_expanded_and_rect_culling(db, client_factory):
             json={**ALL, "rect": {"x0": 500, "y0": 500, "x1": 510, "y1": 510}},
         )
         assert r2.json()["nodes"] == []
-        # a rect covering only e's box still returns e (box intersection, not origin)
+        # a rect covering only e's box still returns e (box intersection, not
+        # origin). The expanded set has to match the one `e`'s box came from:
+        # collapsing `e` compacts it down to a single tile, so a rect cut from
+        # its expanded corner would no longer touch it.
         r3 = await ac.post(
             "/api/projects/p1/graph/tiles",
             json={
                 **ALL,
+                "expanded": ["e"],
                 "rect": {
                     "x0": e["x"] + e["w"] - 0.5,
                     "y0": e["y"] + e["h"] - 0.5,
@@ -372,7 +376,10 @@ async def test_node_returns_box_and_ancestors(db, client_factory):
 async def test_locate_returns_positions_capped(db, client_factory):
     await seed(db)
     async with client_factory() as ac:
-        r = await ac.get("/api/projects/p1/graph/locate?variant=all&q=title d&limit=3")
+        r = await ac.post(
+            "/api/projects/p1/graph/locate",
+            json={"variant": "all", "q": "title d", "limit": 3},
+        )
     body = r.json()
     assert len(body["hits"]) == 3 and body["truncated"] is True
     assert all({"id", "x", "y", "w", "h"} <= set(h) for h in body["hits"])
@@ -475,7 +482,9 @@ async def test_default_router_delegates_to_the_orchestrator_db(db, monkeypatch):
         assert lst.status_code == 200 and "e" in {n["id"] for n in lst.json()["nodes"]}
         node = await ac.get("/api/projects/p1/graph/node/g0?variant=all")
         assert node.status_code == 200 and node.json()["node"]["id"] == "g0"
-        loc = await ac.get("/api/projects/p1/graph/locate?variant=all&q=title e")
+        loc = await ac.post(
+            "/api/projects/p1/graph/locate", json={"variant": "all", "q": "title e"}
+        )
         assert loc.status_code == 200 and [h["id"] for h in loc.json()["hits"]] == ["e"]
         tidy = await ac.post("/api/projects/p1/graph/tidy", json={"variant": "all"})
         assert tidy.status_code == 200
@@ -551,35 +560,58 @@ async def test_locate_requires_a_filter(db, client_factory):
     """An unfiltered locate would scan the project; it is a 400, not a scan."""
     await seed(db)
     async with client_factory() as ac:
-        r = await ac.get("/api/projects/p1/graph/locate?variant=all")
+        r = await ac.post("/api/projects/p1/graph/locate", json={"variant": "all"})
         assert r.status_code == 400 and "requires q or status" in r.json()["detail"]
-        blank = await ac.get("/api/projects/p1/graph/locate?variant=all&q=%20&status=%20")
+        blank = await ac.post(
+            "/api/projects/p1/graph/locate", json={"variant": "all", "q": " ", "status": " "}
+        )
         assert blank.status_code == 400
     # a rejected request must not enqueue a backfill either
     assert await db.next_layout_job() is None
 
 
 async def test_locate_caps_and_orders_in_sql(db, client_factory, monkeypatch):
-    """The page comes back capped without ever loading the whole match set."""
+    """The page comes back capped without ever loading a row per match.
+
+    Locate resolves the same compacted geometry the matching tiles request
+    does — it has to, or a jump would land where the engine persisted the
+    card rather than where the canvas draws it — but that geometry is bounded
+    by the open containers, so the match set still only contributes ids.
+    """
     await seed(db)
+    seen: list[str] = []
+    real_rows = db.load_layout_rows
+    real_with_tasks = db.load_rows_with_tasks
 
-    def boom(*a, **kw):
-        raise AssertionError("locate must not load rows outside the page")
+    async def spy_rows(project_id, variant, task_ids):
+        seen.extend(task_ids)
+        return await real_rows(project_id, variant, task_ids)
 
-    monkeypatch.setattr(db, "load_layout_rows", boom)
-    monkeypatch.setattr(db, "load_matching_ids", boom)
+    async def spy_with_tasks(project_id, variant, task_ids):
+        seen.extend(task_ids)
+        return await real_with_tasks(project_id, variant, task_ids)
+
+    monkeypatch.setattr(db, "load_layout_rows", spy_rows)
+    monkeypatch.setattr(db, "load_rows_with_tasks", spy_with_tasks)
     async with client_factory() as ac:
-        r = await ac.get("/api/projects/p1/graph/locate?variant=all&q=title d&limit=4")
-        exact = await ac.get("/api/projects/p1/graph/locate?variant=all&q=title d&limit=10")
+        r = await ac.post(
+            "/api/projects/p1/graph/locate",
+            json={"variant": "all", "q": "title d", "limit": 4},
+        )
+        exact = await ac.post(
+            "/api/projects/p1/graph/locate",
+            json={"variant": "all", "q": "title d", "limit": 10},
+        )
     body = r.json()
     assert len(body["hits"]) == 4 and body["truncated"] is True
     assert [h["id"] for h in body["hits"]] == ["d0", "d1", "d2", "d3"]
     assert len(exact.json()["hits"]) == 10 and exact.json()["truncated"] is False
+    assert not ({f"d{i}" for i in range(10)} & set(seen)), seen
 
 
 async def test_locate_is_pending_before_the_first_layout(db, client_factory):
     async with client_factory() as ac:
-        r = await ac.get("/api/projects/p1/graph/locate?variant=all&q=x")
+        r = await ac.post("/api/projects/p1/graph/locate", json={"variant": "all", "q": "x"})
     assert r.status_code == 202 and r.json()["status"] == "layout_pending"
     assert (await db.next_layout_job())["kind"] == "backfill"
 
@@ -740,3 +772,133 @@ async def test_tidy_checks_scope_before_project_existence(db, scoped_client_fact
     # a permitted caller still gets the 404
     async with scoped_client_factory() as ac:
         assert (await ac.post("/api/projects/nope/graph/tidy", json={})).status_code == 404
+
+
+async def _tiles(ac, **over):
+    r = await ac.post("/api/projects/p1/graph/tiles", json={**ALL, **over})
+    assert r.status_code == 200, r.text
+    return {n["id"]: n for n in r.json()["nodes"]}
+
+
+async def test_collapsing_a_container_reclaims_its_space_for_the_rows_below(db, client_factory):
+    """The operator's complaint: siblings below a collapsed epic must move up.
+
+    ``z`` and ``hub`` sit below ``e`` in the root flow. Collapsing ``e``
+    shrinks it to one tile, and everything after it in reading order climbs
+    by exactly that delta.
+    """
+    await seed(db)
+    async with client_factory() as ac:
+        opened = await _tiles(ac, expanded=["e", "pkg"])
+        closed = await _tiles(ac, expanded=[])
+
+    delta = opened["e"]["h"] - closed["e"]["h"]
+    assert delta > 0 and (closed["e"]["w"], closed["e"]["h"]) == (1.0, 1.0)
+    for tid in ("z", "hub"):
+        assert closed[tid]["y"] == pytest.approx(opened[tid]["y"] - delta)
+        assert closed[tid]["x"] == pytest.approx(opened[tid]["x"])
+    assert closed["e"]["y"] == pytest.approx(opened["e"]["y"])
+
+
+async def test_expanding_restores_the_positions_collapsing_changed(db, client_factory):
+    await seed(db)
+    async with client_factory() as ac:
+        first = await _tiles(ac, expanded=["e", "pkg"])
+        await _tiles(ac, expanded=[])
+        again = await _tiles(ac, expanded=["e", "pkg"])
+    for tid, n in first.items():
+        assert (again[tid]["x"], again[tid]["y"]) == (n["x"], n["y"])
+        assert (again[tid]["w"], again[tid]["h"]) == (n["w"], n["h"])
+
+
+async def test_tiles_positions_are_deterministic_for_one_expanded_set(db, client_factory):
+    await seed(db)
+    async with client_factory() as ac:
+        a = await _tiles(ac, expanded=["e"])
+    # A fresh client means a cold geometry cache: determinism must come from
+    # the compaction itself, not from serving the same cached object twice.
+    async with client_factory() as ac:
+        b = await _tiles(ac, expanded=["e"])
+    assert a == b
+
+
+async def test_a_repeat_toggle_is_served_without_reloading_the_open_set(db, client_factory):
+    await seed(db)
+    async with client_factory() as ac:
+        await _tiles(ac, expanded=["e"])
+        real = db.load_rows_for_containers
+        calls: list[list] = []
+
+        async def spy(project_id, variant, container_ids):
+            calls.append(list(container_ids))
+            return await real(project_id, variant, container_ids)
+
+        db.load_rows_for_containers = spy
+        try:
+            await _tiles(ac, expanded=[])  # cold for this expanded set
+            assert calls
+            calls.clear()
+            await _tiles(ac, expanded=["e"])  # already resolved once
+            assert calls == []
+        finally:
+            db.load_rows_for_containers = real
+
+
+async def test_a_filtered_request_is_never_served_from_the_geometry_cache(db, client_factory):
+    """Matches come from live titles and statuses, which change without a
+    republished layout, so a filtered geometry must not be remembered."""
+    await seed(db)
+    async with client_factory() as ac:
+        assert {"g0", "g1"} <= set(await _tiles(ac, q="title g", expanded=["e", "pkg"]))
+        real = db.load_matching_ids
+        calls: list[str] = []
+
+        async def spy(project_id, variant, *, q, status):
+            calls.append(q)
+            return await real(project_id, variant, q=q, status=status)
+
+        db.load_matching_ids = spy
+        try:
+            await _tiles(ac, q="title g", expanded=["e", "pkg"])
+            assert calls == ["title g"]
+        finally:
+            db.load_matching_ids = real
+
+
+async def test_list_reports_the_same_compacted_positions_as_tiles(db, client_factory):
+    await seed(db)
+    async with client_factory() as ac:
+        tiles = await _tiles(ac, expanded=[])
+        r = await ac.post(
+            "/api/projects/p1/graph/list",
+            json={"variant": "all", "expanded": [], "limit": 200},
+        )
+    assert r.status_code == 200
+    for n in r.json()["nodes"]:
+        if n["id"] in tiles:
+            assert (n["x"], n["y"], n["w"], n["h"]) == (
+                tiles[n["id"]]["x"],
+                tiles[n["id"]]["y"],
+                tiles[n["id"]]["w"],
+                tiles[n["id"]]["h"],
+            )
+
+
+async def test_locate_reports_where_the_canvas_will_draw_the_hit(db, client_factory):
+    """A jump has to land on the card, not on the hole the collapse left."""
+    await seed(db)
+    async with client_factory() as ac:
+        tiles = await _tiles(ac, q="title d", expanded=[])
+        r = await ac.post(
+            "/api/projects/p1/graph/locate", json={"variant": "all", "q": "title d"}
+        )
+    assert r.status_code == 200
+    hits = {h["id"]: h for h in r.json()["hits"]}
+    assert hits and set(hits) <= set(tiles)
+    for tid, hit in hits.items():
+        assert (hit["x"], hit["y"], hit["w"], hit["h"]) == (
+            tiles[tid]["x"],
+            tiles[tid]["y"],
+            tiles[tid]["w"],
+            tiles[tid]["h"],
+        )

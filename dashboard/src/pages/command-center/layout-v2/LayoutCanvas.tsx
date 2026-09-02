@@ -81,6 +81,17 @@ interface LayerElements {
   error: Error | null;
 }
 
+/** Where a toggled container sat on screen, so the reflow can be pinned to it. */
+interface ReflowAnchor {
+  id: string;
+  screenX: number;
+  screenY: number;
+  worldX: number;
+  worldY: number;
+  /** The refetch for the new expanded set has been observed in flight. */
+  sawLoading: boolean;
+}
+
 interface LayerProps {
   projectId: string;
   projectNames: ReadonlyMap<string, string>;
@@ -158,7 +169,7 @@ function Inner(props: LayoutCanvasProps) {
     selectedTaskId, playbooks = NO_PLAYBOOKS, selectedPlaybookId, onPlaybookClick,
   } = props;
   const { expandedTaskIds, toggleExpanded } = useExpandedTaskIds();
-  const { fitBounds, setCenter } = useReactFlow();
+  const { fitBounds, setCenter, getViewport, setViewport: setFlowViewport } = useReactFlow();
   const wrapRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
   const [viewport, setViewport] = useState<Viewport | null>(initialViewport);
@@ -280,9 +291,30 @@ function Inner(props: LayoutCanvasProps) {
     onBackgroundClick?.();
   }, [onBackgroundClick]);
 
+  // Toggling a container reflows everything after it, so the container the
+  // operator clicked is pinned to the pixel it was already on: the reflow
+  // then reads as the siblings moving, not as the canvas jumping.
+  const reflowAnchor = useRef<ReflowAnchor | null>(null);
+  const nodesRef = useRef<Node[]>([]);
+  const toggleChildren = useCallback((id: string) => {
+    const node = nodesRef.current.find((candidate) => candidate.id === id);
+    if (node) {
+      const vp = getViewport();
+      reflowAnchor.current = {
+        id,
+        screenX: node.position.x * vp.zoom + vp.x,
+        screenY: node.position.y * vp.zoom + vp.y,
+        worldX: node.position.x,
+        worldY: node.position.y,
+        sawLoading: false,
+      };
+    }
+    toggleExpanded(id);
+  }, [getViewport, toggleExpanded]);
+
   const handlers = useMemo<FlowHandlers>(
-    () => ({ onOpenTask: openTask, onToggleChildren: toggleExpanded, onFocus: setFocus }),
-    [openTask, toggleExpanded, setFocus],
+    () => ({ onOpenTask: openTask, onToggleChildren: toggleChildren, onFocus: setFocus }),
+    [openTask, toggleChildren, setFocus],
   );
   const onElements = useCallback(
     (pid: string, elements: LayerElements) => setLayers((prev) => new Map(prev).set(pid, elements)),
@@ -332,6 +364,35 @@ function Inner(props: LayoutCanvasProps) {
   );
   const pending = projectIds.some((pid) => layers.get(pid)?.pending ?? true);
   const allLoaded = projectIds.every((pid) => layers.get(pid)?.loaded);
+
+  // The toggled container is still drawn at its old position while the new
+  // expanded set is in flight, so wait for it to actually move before
+  // compensating -- then pan by exactly the distance it travelled.
+  nodesRef.current = nodes;
+  useEffect(() => {
+    const pin = reflowAnchor.current;
+    if (!pin) return;
+    if (!allLoaded) {
+      pin.sawLoading = true;
+      return;
+    }
+    const node = nodes.find((candidate) => candidate.id === pin.id);
+    if (node && (node.position.x !== pin.worldX || node.position.y !== pin.worldY)) {
+      const vp = getViewport();
+      setFlowViewport({
+        x: pin.screenX - node.position.x * vp.zoom,
+        y: pin.screenY - node.position.y * vp.zoom,
+        zoom: vp.zoom,
+      });
+      reflowAnchor.current = null;
+    } else if (pin.sawLoading) {
+      // The new expanded set has landed and the container did not move (it
+      // is a fixed point of the compaction unless something else republished
+      // the layout underneath us): nothing to compensate.
+      reflowAnchor.current = null;
+    }
+  }, [nodes, allLoaded, getViewport, setFlowViewport]);
+
   // A failed tiles request must never be reported as an empty graph.
   const layerError = projectIds.map((pid) => layers.get(pid)?.error).find(Boolean) ?? null;
   const retryLayers = useCallback(
