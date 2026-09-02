@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import time
 
-from sqlalchemy import Float, and_, case, cast, exists, false, func, literal, select, update
+from sqlalchemy import Float, and_, case, cast, delete, exists, false, func, literal, select, update
 
 from src.database.queries.blocked_state import apply_label_filters
 from src.database.queries.session_queries import _row_to_session
@@ -409,15 +409,27 @@ class ClaimQueryMixin:
             )
             if supports_returning(c):
                 row = (await c.execute(stmt.returning(*sessions.c))).mappings().fetchone()
-                return _row_to_session(row) if row is not None else None
-            if (await c.execute(stmt)).rowcount != 1:
+            else:
+                if (await c.execute(stmt)).rowcount != 1:
+                    return None
+                row = (
+                    (await c.execute(select(sessions).where(sessions.c.id == session_id)))
+                    .mappings()
+                    .fetchone()
+                )
+            if row is None:
                 return None
-            row = (
-                (await c.execute(select(sessions).where(sessions.c.id == session_id)))
-                .mappings()
-                .fetchone()
+            # A claim only becomes usable after preparation has succeeded and
+            # this session row has atomically moved to ``active``.  Clear an
+            # earlier prepare/release warning at that exact point so it never
+            # shadows a live task in the dashboard or recovery logic.
+            await c.execute(
+                delete(task_metadata).where(
+                    task_metadata.c.task_id == task_id,
+                    task_metadata.c.key == "needs_attention",
+                )
             )
-            return _row_to_session(row) if row is not None else None
+            return _row_to_session(row)
 
         if conn is not None:
             return await _run(conn)

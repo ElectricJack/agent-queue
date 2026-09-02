@@ -108,6 +108,8 @@ class EditTaskArgs(CommandArgs):
     affinity_agent_id: str | None = None
     affinity_reason: str | None = None
     workspace_mode: str | None = None
+    needs_attention: str | None = None
+    clear_needs_attention: bool | None = None
 
 
 class EditTaskValue(CommandValue):
@@ -327,6 +329,8 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
             "preferred_workspace_id": "Preferred workspace",
             "integration_mode": "Integration mode",
             "workspace_mode": "Workspace mode",
+            "needs_attention": "Needs-attention code",
+            "clear_needs_attention": "Clear needs attention",
             "requires_kinds": "Required workspace kinds",
             "depends_on": "Depends on",
             "parent_id": "Parent task",

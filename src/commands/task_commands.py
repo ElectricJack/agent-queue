@@ -1950,6 +1950,8 @@ class TaskCommandsMixin:
         task = await self.db.get_task(args["task_id"])
         if not task:
             return {"error": f"Task '{args['task_id']}' not found"}
+        if args.get("clear_needs_attention") and args.get("needs_attention") is not None:
+            return {"error": "--clear-needs-attention and --needs-attention are mutually exclusive"}
         out_of_scope = self._assert_task_in_scope(task)
         if out_of_scope:
             return out_of_scope
@@ -2460,9 +2462,24 @@ class TaskCommandsMixin:
         if status_changed:
             await self.db.transition_task(args["task_id"], new_status, context="edit_task")
 
+        if args.get("clear_needs_attention") or (
+            status_changed and args.get("needs_attention") is None
+        ):
+            # An explicit operator status change is a recovery decision, so
+            # it dismisses the stale operational signal too.
+            await self.db.delete_task_meta(args["task_id"], "needs_attention")
+        elif args.get("needs_attention") is not None:
+            await self.db.set_task_meta(
+                args["task_id"], "needs_attention", args["needs_attention"]
+            )
+
         all_fields = list(updates.keys())
         if status_changed:
             all_fields.append("status")
+        if args.get("clear_needs_attention"):
+            all_fields.append("clear_needs_attention")
+        elif args.get("needs_attention") is not None:
+            all_fields.append("needs_attention")
 
         if not all_fields:
             return {
@@ -2470,7 +2487,7 @@ class TaskCommandsMixin:
                     "No fields to update. Provide project_id, title, description, priority, "
                     "task_type, status, max_retries, verification_type, profile_id, "
                     "integration_mode, skip_verification, intelligence_class, affinity_agent_id, "
-                    "affinity_reason, or workspace_mode."
+                    "affinity_reason, workspace_mode, needs_attention, or clear_needs_attention."
                 )
             }
 

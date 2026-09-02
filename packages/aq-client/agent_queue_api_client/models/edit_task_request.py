@@ -34,6 +34,8 @@ class EditTaskRequest:
         affinity_reason (None | str | Unset): Why this agent is preferred. Set to null to clear (optional)
         workspace_mode (None | str | Unset): Workspace lock mode. Set to null to clear (optional). 'branch-isolated' is
             DEPRECATED and behaves as 'exclusive' — see create_task.
+        needs_attention (None | str | Unset): Set the operator attention code (optional)
+        clear_needs_attention (bool | None | Unset): Clear the operator attention code (optional)
     """
 
     task_id: str
@@ -52,6 +54,8 @@ class EditTaskRequest:
     affinity_agent_id: None | str | Unset = UNSET
     affinity_reason: None | str | Unset = UNSET
     workspace_mode: None | str | Unset = UNSET
+    needs_attention: None | str | Unset = UNSET
+    clear_needs_attention: bool | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -147,6 +151,18 @@ class EditTaskRequest:
         else:
             workspace_mode = self.workspace_mode
 
+        needs_attention: None | str | Unset
+        if isinstance(self.needs_attention, Unset):
+            needs_attention = UNSET
+        else:
+            needs_attention = self.needs_attention
+
+        clear_needs_attention: bool | None | Unset
+        if isinstance(self.clear_needs_attention, Unset):
+            clear_needs_attention = UNSET
+        else:
+            clear_needs_attention = self.clear_needs_attention
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -184,6 +200,10 @@ class EditTaskRequest:
             field_dict["affinity_reason"] = affinity_reason
         if workspace_mode is not UNSET:
             field_dict["workspace_mode"] = workspace_mode
+        if needs_attention is not UNSET:
+            field_dict["needs_attention"] = needs_attention
+        if clear_needs_attention is not UNSET:
+            field_dict["clear_needs_attention"] = clear_needs_attention
 
         return field_dict
 
@@ -327,6 +347,24 @@ class EditTaskRequest:
 
         workspace_mode = _parse_workspace_mode(d.pop("workspace_mode", UNSET))
 
+        def _parse_needs_attention(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        needs_attention = _parse_needs_attention(d.pop("needs_attention", UNSET))
+
+        def _parse_clear_needs_attention(data: object) -> bool | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(bool | None | Unset, data)
+
+        clear_needs_attention = _parse_clear_needs_attention(d.pop("clear_needs_attention", UNSET))
+
         edit_task_request = cls(
             task_id=task_id,
             project_id=project_id,
@@ -344,6 +382,8 @@ class EditTaskRequest:
             affinity_agent_id=affinity_agent_id,
             affinity_reason=affinity_reason,
             workspace_mode=workspace_mode,
+            needs_attention=needs_attention,
+            clear_needs_attention=clear_needs_attention,
         )
 
         edit_task_request.additional_properties = d

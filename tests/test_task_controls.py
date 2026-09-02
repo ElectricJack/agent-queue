@@ -1013,6 +1013,19 @@ async def test_backoff_resume_clears_needs_attention(env):
     assert await env.db.get_task_meta("t", "needs_attention") is None
 
 
+async def test_completion_and_operator_edit_clear_or_set_needs_attention(env):
+    await env.db.set_task_meta("t", "needs_attention", "slot_reset_failed")
+    await env.db.transition_task("t", TaskStatus.COMPLETED, force=True)
+    assert await env.db.get_task_meta("t", "needs_attention") is None
+
+    set_result = await command(env, "edit_task", needs_attention="operator_review")
+    assert "error" not in set_result, set_result
+    assert await env.db.get_task_meta("t", "needs_attention") == "operator_review"
+    clear_result = await command(env, "edit_task", clear_needs_attention=True)
+    assert "error" not in clear_result, clear_result
+    assert await env.db.get_task_meta("t", "needs_attention") is None
+
+
 # ── The recovery write is guarded under the row lock ──────────────────────
 #
 # The cascade reads the status and the ``manual_pause`` snapshot in separate

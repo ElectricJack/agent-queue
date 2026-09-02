@@ -1750,7 +1750,7 @@ _ALL_TOOL_DEFINITIONS = [
             "Edit a task's properties: project_id, title, description, priority, task_type, "
             "status, max_retries, verification_type, profile_id, integration_mode, "
             "skip_verification, intelligence_class, affinity_agent_id, affinity_reason, "
-            "or workspace_mode. Use this "
+            "workspace_mode, needs_attention, or clear_needs_attention. Use this "
             "to move a task to a different project, rename tasks, change priority, override status "
             "(admin), assign a profile, adjust retry/verification settings, or set coordination "
             "parameters."
@@ -1832,6 +1832,14 @@ _ALL_TOOL_DEFINITIONS = [
                         "'branch-isolated' is DEPRECATED and behaves as "
                         "'exclusive' — see create_task."
                     ),
+                },
+                "needs_attention": {
+                    "type": "string",
+                    "description": "Set the operator attention code (optional)",
+                },
+                "clear_needs_attention": {
+                    "type": "boolean",
+                    "description": "Clear the operator attention code (optional)",
                 },
             },
             "required": ["task_id"],
