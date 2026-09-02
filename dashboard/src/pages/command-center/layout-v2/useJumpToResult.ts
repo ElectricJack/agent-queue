@@ -44,6 +44,10 @@ export function useJumpToResult(projectId: string | undefined, variant: Variant,
     return () => { stale = true; };
   }, [projectId, variant, query, filters.status, active]);
 
+  // The target outlives the toolbar otherwise, and a remount would fit the
+  // canvas to a hit from a query nobody is running any more.
+  useEffect(() => () => publishJumpTarget(null), []);
+
   const next = useCallback(() => {
     if (hits.length === 0) return;
     const at = (index + 1) % hits.length;

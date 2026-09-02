@@ -1,11 +1,11 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 
 const list = vi.hoisted(() => vi.fn());
 vi.mock("../../../../api/graphLayout", () => ({ fetchList: list }));
 
-import MobileLayoutList from "../MobileLayoutList";
+import MobileLayoutList, { MobileLayoutLists } from "../MobileLayoutList";
 
 const n = (id: string) => ({
   id, title: `Task ${id}`, status: "READY", priority: 100, is_blocked: false, x: 0, y: 0, w: 1, h: 1,
@@ -20,7 +20,7 @@ const props = {
 };
 
 beforeEach(() => list.mockReset());
-afterEach(cleanup);
+afterEach(() => { cleanup(); vi.useRealTimers(); });
 
 describe("MobileLayoutList", () => {
   it("renders the first page and loads more on demand", async () => {
@@ -48,5 +48,46 @@ describe("MobileLayoutList", () => {
     expect(await screen.findByText("Task z")).toBeInTheDocument();
     expect(screen.queryByText("Task a")).toBeNull();
     expect(list).toHaveBeenLastCalledWith("p1", expect.objectContaining({ q: "z", cursor: null }));
+  });
+
+  it("waits for a building layout instead of claiming the project is empty", async () => {
+    vi.useFakeTimers();
+    list
+      .mockResolvedValueOnce({ pending: true })
+      .mockResolvedValueOnce({ nodes: [n("a")], next_cursor: null, layout_version: 1 });
+    render(<MemoryRouter><MobileLayoutList {...props} /></MemoryRouter>);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(screen.getByRole("status")).toHaveTextContent("Laying out…");
+    expect(screen.queryByText("No tasks match these filters.")).toBeNull();
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    expect(screen.getByText("Task a")).toBeInTheDocument();
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+});
+
+describe("MobileLayoutLists", () => {
+  it("stacks one list per project under its own heading", async () => {
+    list.mockResolvedValue({ nodes: [n("a")], next_cursor: null, layout_version: 1 });
+    render(<MemoryRouter><MobileLayoutLists
+      projectIds={["p1", "p2"]} projectNames={new Map([["p1", "Alpha"], ["p2", "Beta"]])}
+      variant="active" filters={filters} expanded={new Set()} toggleExpanded={() => {}}
+      onTaskClick={() => {}} /></MemoryRouter>);
+
+    expect(await screen.findByRole("heading", { name: "Alpha" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Beta" })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getAllByText("Task a")).toHaveLength(2));
+  });
+
+  it("omits the headings for a single project", async () => {
+    list.mockResolvedValue({ nodes: [n("a")], next_cursor: null, layout_version: 1 });
+    render(<MemoryRouter><MobileLayoutLists
+      projectIds={["p1"]} projectNames={new Map([["p1", "Alpha"]])}
+      variant="active" filters={filters} expanded={new Set()} toggleExpanded={() => {}}
+      onTaskClick={() => {}} /></MemoryRouter>);
+
+    expect(await screen.findByText("Task a")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Alpha" })).toBeNull();
   });
 });

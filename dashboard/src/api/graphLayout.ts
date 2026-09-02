@@ -7,19 +7,23 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   getExtentApiProjectsProjectIdGraphExtentGet,
+  getJobApiProjectsProjectIdGraphJobsJobIdGet,
   getLocateApiProjectsProjectIdGraphLocateGet,
   getNodeApiProjectsProjectIdGraphNodeTaskIdGet,
   postListApiProjectsProjectIdGraphListPost,
   postTidyApiProjectsProjectIdGraphTidyPost,
   postTilesApiProjectsProjectIdGraphTilesPost,
   type ExtentResponse,
+  type LayoutJob,
   type ListResponse,
   type LocateResponse,
   type NodeResponse,
+  type TidyResponse,
   type TilesResponse,
 } from "@aq/ts-client";
 import { client } from "./client";
 import type { Rect } from "../pages/command-center/layout-v2/units";
+import { refetchLayout } from "../pages/command-center/layout-v2/liveRegistry";
 
 export type Variant = "all" | "active";
 
@@ -71,7 +75,7 @@ export async function fetchList(
   projectId: string,
   body: ListParams,
   signal?: AbortSignal,
-): Promise<ListResponse> {
+): Promise<ListResponse | { pending: true }> {
   const r = await postListApiProjectsProjectIdGraphListPost({
     client,
     signal,
@@ -79,6 +83,7 @@ export async function fetchList(
     body,
     throwOnError: true,
   });
+  if (r.response.status === 202) return { pending: true };
   return r.data as ListResponse;
 }
 
@@ -162,6 +167,34 @@ export async function locate(
   return r.data as LocateResponse;
 }
 
+const JOB_POLL_MS = 2000;
+const JOB_TIMEOUT_MS = 5 * 60_000;
+const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Resolves once every job has settled, or the bound expires. */
+async function awaitJobs(projectId: string, jobs: LayoutJob[]): Promise<void> {
+  const waiting = new Set(jobs.map((job) => job.id));
+  const deadline = Date.now() + JOB_TIMEOUT_MS;
+  while (waiting.size > 0 && Date.now() < deadline) {
+    await delay(JOB_POLL_MS);
+    for (const id of [...waiting]) {
+      const r = await getJobApiProjectsProjectIdGraphJobsJobIdGet({
+        client,
+        path: { project_id: projectId, job_id: id },
+        throwOnError: true,
+      });
+      const status = (r.data as LayoutJob).status;
+      // A failed job settles too: the caller reloads either way rather than
+      // leaving a half-tidied graph on screen.
+      if (status === "done" || status === "failed") waiting.delete(id);
+    }
+  }
+}
+
+/**
+ * Tidying re-runs the layout in the background, so the mutation stays pending
+ * until the enqueued jobs settle — only then is a reload worth anything.
+ */
 export function useTidyLayout(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
@@ -172,8 +205,14 @@ export function useTidyLayout(projectId: string) {
         body: {},
         throwOnError: true,
       });
+      await awaitJobs(projectId, (r.data as TidyResponse).jobs ?? []);
       return r.data;
     },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["layoutExtent", projectId] }),
+    onSuccess: () => {
+      // The extent moves and every tile is stale: the cached query and the
+      // mounted layers both have to be told.
+      void qc.invalidateQueries({ queryKey: ["layoutExtent", projectId] });
+      refetchLayout(projectId);
+    },
   });
 }
