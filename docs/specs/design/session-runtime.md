@@ -290,6 +290,9 @@ theme, "Bypass Permissions mode", resume selector, MCP trust, and rate-limit dia
 rate-limit dialog answers *Stop* and the session is quarantined with
 `sleep_reason=rate_limit`). The budget is shared, not per-dialog — Gas City's 9×8 s
 per-dialog budgets blew the start deadline.
+A rule's `pattern` is a literal substring unless the row sets `"is_regex": true`;
+an alternation (`A|B`) written without the flag is matched literally and never fires —
+the parser warns on that shape, and the shipped harnesses flag every alternation.
 
 **Nudge pipeline:** per-session lock → find the agent pane by `process_names` (never by
 window index) → text via `send-keys -l` when ≤ 4 KB, else `load-buffer` +

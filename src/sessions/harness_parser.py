@@ -207,7 +207,7 @@ def _config_block(text: str) -> tuple[dict | None, str, list[str]]:
     return data, notes, errors
 
 
-def _parse_dialogs(raw, errors: list[str]) -> tuple[DialogRule, ...]:
+def _parse_dialogs(raw, errors: list[str], warnings: list[str]) -> tuple[DialogRule, ...]:
     if raw is None:
         return ()
     if not isinstance(raw, list):
@@ -228,12 +228,23 @@ def _parse_dialogs(raw, errors: list[str]) -> tuple[DialogRule, ...]:
         if not isinstance(keys, list):
             errors.append(f"dialogs[{i}].keys must be a string or list of strings")
             continue
+        name = str(entry.get("name") or f"dialog-{i}")
+        is_regex = bool(entry.get("is_regex", False))
+        if "|" in pattern and not is_regex:
+            # A substring rule is matched literally, so an alternation
+            # written without ``is_regex`` can never fire — the shipped
+            # Claude trust rule sat inert this way for two weeks.
+            warnings.append(
+                f"dialogs[{i}] '{name}': pattern contains '|' but is_regex is not set — "
+                "it is matched as a literal substring and will never fire; "
+                'set "is_regex": true'
+            )
         rules.append(
             DialogRule(
-                name=str(entry.get("name") or f"dialog-{i}"),
+                name=name,
                 pattern=pattern,
                 keys=tuple(str(k) for k in keys),
-                is_regex=bool(entry.get("is_regex", False)),
+                is_regex=is_regex,
                 quarantine=bool(entry.get("quarantine", False)),
                 once=bool(entry.get("once", True)),
             )
@@ -336,7 +347,7 @@ def parse_harness_markdown(
         errors.append("'max_argv_prompt_bytes' must be a positive integer")
         max_argv = DEFAULT_MAX_ARGV_PROMPT_BYTES
 
-    dialogs = _parse_dialogs(config.get("dialogs"), errors)
+    dialogs = _parse_dialogs(config.get("dialogs"), errors, warnings)
 
     if errors:
         return ParsedHarness(errors=errors, warnings=warnings)
