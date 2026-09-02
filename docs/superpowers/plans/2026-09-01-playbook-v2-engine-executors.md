@@ -648,7 +648,7 @@ Package 3 owns `register`'s compare-and-set; Package 4 owns the rule that **even
 
 **Deadlines.** A dedicated `WaitScheduler` (in `engine.py`, not a new module) owns `deadline_at`. It polls `WaitRepository.due(now)` on the orchestrator cycle. It does **not** create `TimerService` entries: `src/timer_service.py:185` is a playbook-*trigger* scheduler whose entries are cron-like and operator-visible, and per-run waits are neither. The earlier of the wait deadline and the run deadline wins, and `StepReceipt.deadline_fired` records which (§3.3.3).
 
-`ReportingWaitExecutor` (dry-run and shadow) returns `control=ADVANCE, outcome="<the wait's declared timeout-free outcome>"`… **no**: it returns `control=UNRESOLVED` with `possible_outcomes = set(step.transitions)`, and the dry-run tree marks the node `simulated` with reason `wait_not_persisted`. It never registers a wait. Spec: "waits are reported without persisting a pause."
+`ReportingWaitExecutor` (dry-run and shadow) returns `control=UNRESOLVED` with `possible_outcomes = set(step.transitions)`, and the dry-run tree marks the node `unresolved` with reason `wait_not_persisted`. It never registers a wait and never advances on a guessed outcome — a wait's result is by definition external, so picking one would make the rest of the path fiction. Spec: "waits are reported without persisting a pause."
 
 ### 4.7 `ForEachExecutor` — `src/playbooks/executors/foreach.py`
 
@@ -736,7 +736,7 @@ class ChatResponse:
     usage: TokenUsage | None = None       # NEW, defaults to None
 ```
 
-`TokenUsage` lives in `src/playbooks/executors/base.py` per §3.1 and is imported by `src/llm/types.py`… **no** — that inverts the dependency. `TokenUsage` is defined in **`src/llm/types.py`** and re-exported from `src/playbooks/executors/base.py`, so the LLM layer never imports the playbook layer. §3.1's listing shows it in `base.py` for readability; the reconciliation commit must place the definition in `src/llm/types.py` and leave a re-export.
+**Where `TokenUsage` is defined.** §3.1 lists it under `src/playbooks/executors/base.py` for readability, but defining it there would make `src/llm/` import `src/playbooks/`, inverting the layering. The definition therefore lives in **`src/llm/types.py`** and `base.py` re-exports it. T-13 lands it in that position; §3.1's listing is a presentation convenience and the import direction is the binding rule.
 
 Per provider:
 
@@ -1445,3 +1445,31 @@ No full-repo `pytest`. Package 4 adds no API surface, so `openapi.json` does not
 ### 13.2 Rollback boundary
 
 Setting `playbooks.v2_engine=False` returns every one of the six sites to its V1 body. No stored V1 run is converted, no V1 table is altered, and V2 rows remain for inspection in Package 3's separate tables. The one change that is *not* behind the flag is the provider usage channel (§4.11) — it is additive with a `None` default and is a strict improvement to the V1 path's accounting as well, so it is deliberately not gated. T-13 confirms `tests/llm` and `tests/test_playbook_runner.py` stay green with it in place.
+
+---
+
+## 14. Roadmap §9 quality-bar coverage
+
+| Requirement | Where |
+|---|---|
+| Exact paths and symbols based on the live tree | §2.3 (observed vs expected, with line numbers), §2.4 reconciliation script |
+| Test-first steps with the failing assertion described | §5 — every task states its red assertions and, where the failure is not an assertion failure, what it fails *with* (e.g. T-1's `ModuleNotFoundError`, T-13's `AttributeError`) |
+| Representative fixture data, not placeholders | §6 — the Package 5 artifact reused verbatim, a six-event corpus, real `CommandContract` doubles, five hand-written crash snapshots |
+| API request and response examples when the package changes an endpoint | **Not applicable, and deliberately so.** Package 4 adds no endpoint and does not move `openapi.json` (§1.2, §12.3). The one command surface it implies — `playbook_run_resolve` for §4.8 — is explicitly assigned to Package 5, whose plan owns its DTOs |
+| Alembic upgrade and downgrade behaviour when the package changes storage | §10 — Package 4 owns no table; §10.2 gives the full conditional revision with a mirror-image downgrade, and §2.4/§10.2 both say to amend Package 3's revision in preference to adding it |
+| SQLite and PostgreSQL considerations | §11 |
+| Security analysis for any new boundary or identity flow | §7, seven subsections including two stated non-goals |
+| Observability and operator failure behaviour | §8 — six operator-visible stop shapes, each with the next action; five bus events; the two timings Package 7 reads by name |
+| Feature-flag ownership and named removal package | §9 — four fields, defaults, and Package 7 commit 4 named for `v2_engine` |
+| Per-task verification commands and expected outcomes | §5 per task, §12.2 for the sweep |
+| Small commit boundaries | §5.0 — eight commits, with the two additions to the roadmap's six recorded and justified |
+| Explicit mapping to the package exit gate | §13, plus §13.1's Required-outcome checklist and §13.2's rollback boundary |
+
+### 14.1 Open items this plan hands to other packages
+
+Each is a decision Package 4 cannot make alone; each names its owner so it is not discovered at integration time.
+
+1. **`invalid_output` vs `output_invalid`** — Package 7's plan §3.5 row 9 uses the wrong spelling. Owner: Package 7's reconciliation commit. §3.6.
+2. **`playbook_run_resolve`** — the operator-resolution command and UI for §4.8. Owner: Package 5. Package 4 ships `PlaybookEngine.resume(..., OperatorResolution(...))` and its receipt; without Package 5's surface, the only way to resolve an ambiguous run is a direct command invocation, which is acceptable for the Package 4 exit gate but not for cutover.
+3. **The three-column run idempotency index** `(playbook_id, rule_id, event_id)` — §4.2 depends on it. Owner: Package 3. If Package 3 shipped the two-column V1 shape on the V2 table, §10.2's conditional revision must also carry the index change, and `test_two_matching_rules_produce_two_runs` is the test that fails first.
+4. **`v2_engine` in Package 7's D1-c removal list** — §9. Owner: Package 7.
