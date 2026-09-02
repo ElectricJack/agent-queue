@@ -49,6 +49,7 @@ from src.playbooks.run_state import (
     RunSnapshot,
     SnapshotVersionConflict,
     StateLimits,
+    WaitVersionMismatch,
     check_result_size,
     deserialize_snapshot,
     serialize_snapshot,
@@ -629,6 +630,26 @@ class PlaybookRunQueryMixin:
         values = _wait_row(wait, snapshot_version)
         try:
             async with self._wait_conn(conn) as active:
+                # A boundary-owned connection has already CAS-advanced and
+                # locked the run.  Standalone registration happens just
+                # before that write, so fence it to the locked next version.
+                if conn is None:
+                    current_version = (
+                        await active.execute(
+                            select(playbook_v2_runs.c.snapshot_version)
+                            .where(playbook_v2_runs.c.run_id == wait.run_id)
+                            .with_for_update()
+                        )
+                    ).scalar_one_or_none()
+                    if current_version is not None:
+                        expected_version = int(current_version) + 1
+                        if snapshot_version != expected_version:
+                            raise WaitVersionMismatch(
+                                wait.wait_id,
+                                wait.run_id,
+                                expected_version,
+                                snapshot_version,
+                            )
                 await active.execute(insert(playbook_waits).values(**values))
         except IntegrityError as exc:
             # uq_playbook_waits_active_step — one live wait per step instance.
