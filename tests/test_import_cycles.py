@@ -13,11 +13,13 @@ hides the ordering entirely, so an in-process import proves nothing.
 
 from __future__ import annotations
 
+import pathlib
 import subprocess
 import sys
 
 import pytest
 
+_REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 #: Modules that sit on both sides of the command-handler / session boundary.
 #: Each must import cleanly as the *first* thing a process does.
 ENTRY_MODULES = [
@@ -37,6 +39,7 @@ def _import_in_fresh_interpreter(statement: str) -> subprocess.CompletedProcess:
         text=True,
         timeout=180,
         check=False,
+        cwd=_REPO_ROOT,
     )
 
 
@@ -82,3 +85,19 @@ def test_claim_commands_still_re_exports_the_claim_file_helpers() -> None:
 
     assert claim_commands.write_claim_file is write_claim_file
     assert claim_commands.read_claim_file is read_claim_file
+
+
+def test_claim_file_module_has_no_project_imports() -> None:
+    """``src.claim_file`` is a leaf on purpose — stdlib only."""
+    import ast
+
+    import src.claim_file
+
+    source = pathlib.Path(src.claim_file.__file__).read_text()
+    modules = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            modules.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            modules.add(node.module)
+    assert not [m for m in modules if m.split(".")[0] == "src"], sorted(modules)

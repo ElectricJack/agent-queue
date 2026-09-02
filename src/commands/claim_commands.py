@@ -6,6 +6,9 @@ import asyncio
 import logging
 import time
 
+# Re-exported for backwards compatibility: the claim-file helpers moved to the
+# leaf module ``src.claim_file`` so ``src.sessions.reconciler`` can use them
+# without importing ``src.commands`` (which imports the reconciler back).
 from src.claim_file import (
     CLAIM_FILE,
     read_claim_file,
@@ -17,9 +20,6 @@ from src.models import ClaimResult, TaskStatus
 
 logger = logging.getLogger(__name__)
 
-#: Re-exported from :mod:`src.claim_file` so existing call sites keep working.
-#: The helpers themselves live in that leaf module because the reconciler
-#: needs them and cannot import this package (see ``src/claim_file.py``).
 __all__ = [
     "CLAIM_FILE",
     "ClaimCommandsMixin",
