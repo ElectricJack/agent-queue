@@ -62,6 +62,7 @@ from src.playbooks.run_state import (
 )
 from src.playbooks.waits import (
     EMPTY_WAIT_CHANGES,
+    EVENT_ADDRESSABLE_WAIT_KINDS,
     MatchableEvent,
     WaitChangeSet,
     WaitClaim,
@@ -729,6 +730,10 @@ class PlaybookRunQueryMixin:
 
         The predicate is evaluated in Python over an index-narrowed candidate
         set (``idx_playbook_waits_match``) because ``match`` is inert JSON.
+        Only event-addressable kinds are candidates at all: a timer, human, or
+        agent-task wait carries no ``event_type`` and no ``match``, so without
+        the kind filter it would read as "matches every event" and an
+        unrelated event would resume a run before its deadline or answer.
         Candidates are keyset-paged in deterministic order so nonmatches do
         not consume ``limit``; the cap counts successful claims.  Each match
         is claimed by a CAS on ``state='active'``.  Two concurrent dispatches
@@ -744,6 +749,7 @@ class PlaybookRunQueryMixin:
             while len(claims) < limit:
                 filters = [
                     playbook_waits.c.state == "active",
+                    playbook_waits.c.kind.in_(sorted(EVENT_ADDRESSABLE_WAIT_KINDS)),
                     or_(
                         playbook_waits.c.event_type == event.event_type,
                         playbook_waits.c.event_type == "",
