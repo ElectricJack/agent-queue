@@ -274,6 +274,33 @@ async def test_oversize_result_fails_the_run_without_storing_it(db):
     assert "x" * 100 not in json.dumps([r.result for r in stored])
 
 
+async def test_commit_boundary_rejects_an_oversize_binding_with_a_redacted_receipt(db):
+    """The repository cap cannot be bypassed by constructing a snapshot directly."""
+    db.set_playbook_state_limits(
+        StateLimits(max_result_bytes=256 * 1024, max_snapshot_bytes=4_194_304)
+    )
+    snapshot = await db.create_run(make_snapshot())
+    bound_result = {"blob": "x" * 300_000}
+
+    with pytest.raises(StateLimitExceeded) as excinfo:
+        await db.commit_boundary(
+            replace(
+                snapshot,
+                current_step_id="ensure-task",
+                bindings={"ensure-task": bound_result},
+            ),
+            make_receipt(snapshot, result={}),
+        )
+
+    assert excinfo.value.kind == "result"
+    assert excinfo.value.step_id == "ensure-task"
+    assert excinfo.value.size > 256 * 1024
+    reloaded = await db.load_run(snapshot.run_id)
+    assert reloaded.version == 0
+    assert reloaded.bindings == {}
+    assert await db.list_receipts(snapshot.run_id) == []
+
+
 # -- B-4: create and load --------------------------------------------------
 
 

@@ -336,6 +336,12 @@ class PlaybookRunQueryMixin:
         # Before the transaction, so an oversized payload never reaches the
         # database and a limit breach costs nothing to roll back.
         check_result_size(snapshot.run_id, receipt.step_id, dict(receipt.result), limits=limits)
+        # ``receipt.result`` is deliberately a compact/redacted audit
+        # projection.  The actual step result is durable in the snapshot
+        # bindings, so validate each binding independently rather than
+        # trusting a caller to have used ``bind_step_output``.
+        for step_id, value in snapshot.bindings.items():
+            check_result_size(snapshot.run_id, step_id, value, limits=limits)
         expected = snapshot.version
         advanced = replace(snapshot, version=expected + 1)
         # The receipt is the durable record of *which* graph and rule ran, so
