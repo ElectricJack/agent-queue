@@ -2,7 +2,6 @@ import { useId, useState } from "react";
 import { ChevronDownIcon, ChevronRightIcon, UsersIcon, PlusIcon } from "@heroicons/react/24/outline";
 import { useAgentFlock, useFlockSubagents } from "../api/agents";
 import { useAgentSelection } from "../pages/agents/useAgentSelection";
-<<<<<<< HEAD
 import { AgentState, AgentEligibility, AgentWaitingQuestion, FlockSubagents } from "../pages/agents/AgentMetadata";
 import { PoolBadge, PoolQuarantine, PoolSupplyRow } from "../pages/agents/PoolMetadata";
 import { isPoolAgent, usePoolFlock } from "../pages/agents/pools";
