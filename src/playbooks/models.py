@@ -9,6 +9,13 @@ these dataclasses via :func:`generate_json_schema`.  Both representations are
 kept in sync: the dataclasses are the source of truth, the JSON Schema is
 derived.
 
+These are the **V1** models.  Playbook V2's artifact model lives in
+``src/playbooks/definition.py`` and shares no field with them: it is a strict,
+frozen, ``extra="forbid"`` Pydantic union with typed expressions
+(``src/playbooks/expressions.py``) and whole-graph validation
+(``src/playbooks/validation.py``).  The two coexist through the migration; the
+dataclasses here and ``playbook_schema.json`` are removed in Package 7.
+
 See ``docs/specs/design/playbooks.md`` Section 5 for the full specification.
 
 Typical usage::

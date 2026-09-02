@@ -6,9 +6,19 @@ import hashlib
 
 import pytest
 
+from tests.playbook_v2_helpers import twin
 
-def _definition() -> dict[str, object]:
-    return {"id": "task-review", "schema_version": 2, "steps": {"a": {"x": 1}}}
+
+def _definition():
+    """The smallest artifact the strict Package 2 model accepts.
+
+    This was a hand-rolled dict while Package 2 was in flight; now that
+    ``PlaybookDefinition`` exists, ``load`` verifies the strict schema before
+    returning (child plan §17.3), so the stored bytes must be a real artifact.
+    """
+    from src.playbooks.definition import PlaybookDefinition
+
+    return PlaybookDefinition.model_validate(twin())
 
 
 def test_put_writes_hash_named_canonical_bytes_and_is_idempotent(tmp_path):
