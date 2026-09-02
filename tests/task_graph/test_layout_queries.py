@@ -239,3 +239,51 @@ async def test_matching_ids_treats_like_metacharacters_literally(db):
     assert await db.load_matching_ids("p1", "all", q="50%", status="") == {"pct"}
     assert await db.load_matching_ids("p1", "all", q="50x", status="") == {"und"}
     assert await db.load_matching_ids("p1", "all", q="50_", status="") == set()
+
+
+async def test_matching_ids_escapes_metacharacters_inside_a_title(db):
+    """A literal '%' in a title is matched by a literal '%' needle only."""
+    await db.create_task(Task(id="pd", project_id="p1", title="100%_done", description=""))
+    await db.create_task(Task(id="px", project_id="p1", title="100x1done", description=""))
+    ws = WriteSet(upserts=[row("pd", 0, 0, "/pd/"), row("px", 1, 0, "/px/")])
+    await db.publish_layout("p1", "all", ws, consumed_seq=None, extent=(2, 1))
+    assert await db.load_matching_ids("p1", "all", q="100%", status="") == {"pd"}
+    assert await db.load_matching_ids("p1", "all", q="100x", status="") == {"px"}
+    # the '_' is literal too: it must not stand in for the 'x' in "100x1done"
+    assert await db.load_matching_ids("p1", "all", q="100%_", status="") == {"pd"}
+
+
+async def test_load_layout_rows_is_chunked(db):
+    """1,000 ids resolve in one call (the IN-list is split under the hood)."""
+    ids = [f"t{i:04d}" for i in range(1000)]
+    for t in ids:
+        await db.create_task(Task(id=t, project_id="p1", title=t, description=""))
+    ws = WriteSet(upserts=[row(t, i, 0, f"/{t}/") for i, t in enumerate(ids)])
+    await db.publish_layout("p1", "all", ws, consumed_seq=None, extent=(1000, 1))
+    rows = await db.load_layout_rows("p1", "all", ids)
+    assert len(rows) == 1000 and rows["t0999"].abs_x == 999
+    paths = await db.load_paths_by_ids("p1", "all", ids)
+    assert len(paths) == 1000 and paths["t0500"] == "/t0500/"
+    assert await db.load_paths_by_ids("p1", "all", []) == {}
+
+
+async def test_matching_rows_ordered_caps_in_sql(db):
+    for i, t in enumerate(("a", "b", "c")):
+        await db.create_task(Task(id=t, project_id="p1", title=f"Task {t}", description=""))
+    # reading order is (abs_y, abs_x, task_id) -- seeded out of that order
+    ws = WriteSet(
+        upserts=[row("a", 5, 9, "/a/"), row("b", 1, 1, "/b/"), row("c", 4, 1, "/c/")]
+    )
+    await db.publish_layout("p1", "all", ws, consumed_seq=None, extent=(9, 10))
+    rows, truncated = await db.load_matching_rows_ordered(
+        "p1", "all", q="task", status="", limit=2
+    )
+    assert [r.task_id for r in rows] == ["b", "c"] and truncated is True
+    rows, truncated = await db.load_matching_rows_ordered(
+        "p1", "all", q="task", status="", limit=3
+    )
+    assert [r.task_id for r in rows] == ["b", "c", "a"] and truncated is False
+    rows, truncated = await db.load_matching_rows_ordered(
+        "p1", "all", q="", status="DEFINED", limit=10
+    )
+    assert [r.task_id for r in rows] == ["b", "c", "a"] and truncated is False

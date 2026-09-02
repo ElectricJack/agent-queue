@@ -7,6 +7,14 @@ The gates loop calls ``get_gate_waiters`` once per gate.  That is the one
 non-bulk call in this module and it matches what the existing
 ``/api/projects/{id}/graph`` endpoint already does; gates per project are
 few, so it is left as-is rather than given a bulk query of its own.
+
+Scope policy: the read routes are un-scoped, exactly like
+:mod:`src.api.graph` — they expose project graph geometry the dashboard
+already renders.  The one mutation (``POST .../graph/tidy``, which queues
+layout jobs) is scoped: it runs ``check_request_scope`` the way a
+generated command route does and forwards the server-derived scope to
+``graph_tidy`` as ``args["_scope"]``, so the command's own agent-session
+guard sees a real scope instead of ``None``.
 """
 
 from __future__ import annotations
@@ -14,9 +22,10 @@ from __future__ import annotations
 import base64
 import math
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from src.api.auth import LOCAL_SCOPE, RequestScope
 from src.api.models.graph import GraphGate
 from src.api.models.graph_layout import (
     AncestorRef,
@@ -37,6 +46,7 @@ from src.api.models.graph_layout import (
     TilesRequest,
     TilesResponse,
 )
+from src.api.scope import check_request_scope
 from src.task_graph.layout.constants import CELL_SIZE, FINISHED_STATUSES, VARIANTS
 from src.task_graph.layout.view import (
     ancestors_of,
@@ -124,8 +134,15 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
         meta = await _meta_or_pending(project_id, variant)
         if meta is None:
             return JSONResponse(status_code=202, content={"status": "layout_pending"})
+        # `list_layout_jobs` is oldest-first.  Report what is happening now:
+        # the RUNNING job if one exists, else the most recently queued one —
+        # `jobs[0]` was the OLDEST queued, which is the least informative
+        # pick and, after a tidy, not the job the client just asked for.
         jobs = await db.list_layout_jobs(project_id, variant, statuses=("queued", "running"))
-        job = LayoutJob(**jobs[0]) if jobs else None
+        running = [j for j in jobs if j["status"] == "running"]
+        queued = [j for j in jobs if j["status"] == "queued"]
+        current = running[0] if running else (queued[-1] if queued else None)
+        job = LayoutJob(**current) if current else None
         return ExtentResponse(
             layout_version=meta["layout_version"],
             extent_w=meta["extent_w"],
@@ -165,7 +182,28 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
             root_rows = await db.load_layout_rows(project_id, variant, [req.root])
             if req.root not in root_rows:
                 raise HTTPException(status_code=404, detail=f"No layout node '{req.root}'")
-            cand = await db.load_rows_by_prefixes(project_id, variant, [root_rows[req.root].path])
+            # Focus does not cull by rect, but it must still not load the
+            # root's whole subtree: under the visibility rules the only rows
+            # that can be visible are the root itself and the direct children
+            # of the root and of every expanded container.  A collapsed
+            # child's subtree is never candidate material -- when it owns
+            # edges it is reached through `load_paths_by_prefixes` below,
+            # which fetches paths only.
+            cand = {
+                t: rt[0]
+                for t, rt in (
+                    await db.load_rows_for_containers(
+                        project_id, variant, [req.root, *req.expanded]
+                    )
+                ).items()
+            }
+            cand[req.root] = root_rows[req.root]
+            # The root's own ancestors: `resolve_visible` walks each row's
+            # ancestor chain, and a chain with a missing link is treated as
+            # not visible.
+            root_anc = [a for a in ancestors_of(root_rows[req.root].path) if a not in cand]
+            if root_anc:
+                cand.update(await db.load_layout_rows(project_id, variant, root_anc))
         else:
             # Every row in the rect's cells, NOT only the rows that intersect
             # the rect: the rect cull happens after visibility is resolved
@@ -186,8 +224,15 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
             matches = await db.load_matching_ids(
                 project_id, variant, q=req.q.strip(), status=status
             )
-            match_rows = await db.load_layout_rows(project_id, variant, list(matches))
-            forced = forced_expansion_for(matches, match_rows)
+            # Paths, not rows: `forced_expansion_for` reads nothing but each
+            # match's path, and `matches` is used purely for membership
+            # below.  A match set is bounded by the filter, not the viewport,
+            # so a full row per match was the one load here that scaled with
+            # the project.
+            match_paths = await db.load_paths_by_ids(project_id, variant, list(matches))
+            forced = set()
+            for path in match_paths.values():
+                forced.update(ancestors_of(path))
             if forced - set(cand):
                 cand.update(
                     await db.load_layout_rows(project_id, variant, list(forced - set(cand)))
@@ -382,13 +427,21 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
             nxt = base64.urlsafe_b64encode(str(offset + req.limit).encode()).decode()
         return ListResponse(nodes=nodes, next_cursor=nxt, layout_version=meta["layout_version"])
 
-    @router.get("/api/projects/{project_id}/graph/node/{task_id}", response_model=NodeResponse)
+    @router.get(
+        "/api/projects/{project_id}/graph/node/{task_id}",
+        response_model=NodeResponse,
+        responses={202: {"description": "layout pending"}},
+    )
     async def get_node(project_id: str, task_id: str, variant: str = "all"):
         await _project_or_404(project_id)
         variant = _variant(variant)
-        meta = await db.get_layout_meta(project_id, variant)
+        # Same pending contract as extent/tiles/list: a project whose
+        # variant has never been laid out answers 202 and gets a backfill
+        # queued, instead of a 404 the client cannot distinguish from a
+        # genuinely unknown task id.
+        meta = await _meta_or_pending(project_id, variant)
         if meta is None:
-            raise HTTPException(status_code=404, detail="no layout")
+            return JSONResponse(status_code=202, content={"status": "layout_pending"})
         rows = await db.load_rows_with_tasks(project_id, variant, [task_id])
         if task_id not in rows:
             raise HTTPException(status_code=404, detail=f"No layout node '{task_id}'")
@@ -415,7 +468,11 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
             layout_version=meta["layout_version"],
         )
 
-    @router.get("/api/projects/{project_id}/graph/locate", response_model=LocateResponse)
+    @router.get(
+        "/api/projects/{project_id}/graph/locate",
+        response_model=LocateResponse,
+        responses={202: {"description": "layout pending"}},
+    )
     async def get_locate(
         project_id: str,
         variant: str = "active",
@@ -426,37 +483,76 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
         await _project_or_404(project_id)
         variant = _variant(variant)
         status = _status(status)
+        q = q.strip()
+        # An unfiltered locate is a whole-project scan wearing a search
+        # endpoint's clothes.  Rejected before `_meta_or_pending`, so a
+        # malformed request never enqueues a backfill (same rule as tiles
+        # and list).
+        if not q and not status:
+            raise HTTPException(status_code=400, detail="locate requires q or status")
         if status in FINISHED_STATUSES:
             variant = "all"
         limit = max(1, min(limit, LOCATE_CAP))
-        ids = await db.load_matching_ids(project_id, variant, q=q.strip(), status=status)
-        rows = await db.load_layout_rows(project_id, variant, sorted(ids))
+        meta = await _meta_or_pending(project_id, variant)
+        if meta is None:
+            return JSONResponse(status_code=202, content={"status": "layout_pending"})
         # Reading order, not `depth_first_order`: only the match rows are
         # loaded, so their ancestors are absent and the depth-first sort keys
-        # would be incomplete.
-        ordered = sorted(rows, key=lambda t: (rows[t].abs_y, rows[t].abs_x, t))
+        # would be incomplete.  Filter, order and cap all happen in SQL.
+        rows, truncated = await db.load_matching_rows_ordered(
+            project_id, variant, q=q, status=status, limit=limit
+        )
         hits = [
             LocateHit(
-                id=t,
-                x=rows[t].abs_x,
-                y=rows[t].abs_y,
-                w=rows[t].w,
-                h=rows[t].h,
-                container_id=rows[t].container_id,
+                id=r.task_id,
+                x=r.abs_x,
+                y=r.abs_y,
+                w=r.w,
+                h=r.h,
+                container_id=r.container_id,
             )
-            for t in ordered[:limit]
+            for r in rows
         ]
-        return LocateResponse(hits=hits, truncated=len(ordered) > limit)
+        return LocateResponse(hits=hits, truncated=truncated)
 
-    @router.post("/api/projects/{project_id}/graph/tidy", response_model=TidyResponse)
-    async def post_tidy(project_id: str, req: TidyRequest):
+    @router.post(
+        "/api/projects/{project_id}/graph/tidy",
+        response_model=TidyResponse,
+        responses={403: {"description": "out of scope"}},
+    )
+    async def post_tidy(project_id: str, req: TidyRequest, request: Request = None):
         await _project_or_404(project_id)
         if req.variant is not None:
             _variant(req.variant)
+        args: dict = {
+            "project_id": project_id,
+            **({"variant": req.variant} if req.variant else {}),
+        }
+        # The same gate a generated command route applies (src/api/codegen.py):
+        # `graph_tidy` is not in AGENT_COMMAND_SET, so an ordinary agent
+        # session is refused here; a local caller or an elevated supervisor
+        # passes, with `project_id` enforced against the token's scope.
+        scope: RequestScope = (
+            getattr(request.state, "scope", LOCAL_SCOPE) if request is not None else LOCAL_SCOPE
+        )
+        scope_err = await check_request_scope("graph_tidy", args, scope, db=db)
+        if scope_err is not None:
+            return JSONResponse({"error": scope_err}, status_code=403)
         if command_handler is not None:
+            # Forwarded the way /api/execute does it, so `_cmd_graph_tidy`'s
+            # own agent-session guard reads a real scope rather than None.
             res = await command_handler.execute(
                 "graph_tidy",
-                {"project_id": project_id, **({"variant": req.variant} if req.variant else {})},
+                {
+                    **args,
+                    "_scope": {
+                        "kind": scope.kind,
+                        "session_id": scope.session_id,
+                        "task_id": scope.task_id,
+                        "project_id": scope.project_id,
+                        "elevated": scope.elevated,
+                    },
+                },
             )
             if not res.get("success"):
                 raise HTTPException(status_code=400, detail=res.get("error", "tidy failed"))
@@ -539,7 +635,11 @@ def _build_default_router() -> APIRouter:
             "/api/projects/{project_id}/graph/list", "POST", project_id=project_id, req=req
         )
 
-    @router.get("/api/projects/{project_id}/graph/node/{task_id}", response_model=NodeResponse)
+    @router.get(
+        "/api/projects/{project_id}/graph/node/{task_id}",
+        response_model=NodeResponse,
+        responses={202: {"description": "layout pending"}},
+    )
     async def get_node(project_id: str, task_id: str, variant: str = "all"):
         return await _call(
             "/api/projects/{project_id}/graph/node/{task_id}",
@@ -549,7 +649,11 @@ def _build_default_router() -> APIRouter:
             variant=variant,
         )
 
-    @router.get("/api/projects/{project_id}/graph/locate", response_model=LocateResponse)
+    @router.get(
+        "/api/projects/{project_id}/graph/locate",
+        response_model=LocateResponse,
+        responses={202: {"description": "layout pending"}},
+    )
     async def get_locate(
         project_id: str,
         variant: str = "active",
@@ -567,10 +671,20 @@ def _build_default_router() -> APIRouter:
             limit=limit,
         )
 
-    @router.post("/api/projects/{project_id}/graph/tidy", response_model=TidyResponse)
-    async def post_tidy(project_id: str, req: TidyRequest):
+    @router.post(
+        "/api/projects/{project_id}/graph/tidy",
+        response_model=TidyResponse,
+        responses={403: {"description": "out of scope"}},
+    )
+    async def post_tidy(project_id: str, req: TidyRequest, request: Request = None):
+        # `request` is forwarded so the factory route can read
+        # `request.state.scope` -- the mutation is scope-checked.
         return await _call(
-            "/api/projects/{project_id}/graph/tidy", "POST", project_id=project_id, req=req
+            "/api/projects/{project_id}/graph/tidy",
+            "POST",
+            project_id=project_id,
+            req=req,
+            request=request,
         )
 
     @router.get("/api/projects/{project_id}/graph/jobs/{job_id}", response_model=LayoutJob)

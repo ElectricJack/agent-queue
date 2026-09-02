@@ -359,20 +359,30 @@ class LayoutQueryMixin:
         )
 
     async def load_layout_rows(self, project_id, variant, task_ids):
+        """Rows for *task_ids*, keyed by task id.
+
+        Chunked like every other id-list query here: callers pass sets that
+        are bounded by the viewport in the common case but by a filter
+        match set (or a forced-expansion closure) in the worst one, which
+        can exceed the dialect's bound-parameter cap.
+        """
         from src.database.tables import task_layouts
 
         ids = list(task_ids)
         if not ids:
             return {}
+        out: dict = {}
         async with self._engine.begin() as conn:
-            res = await conn.execute(
-                select(task_layouts).where(
-                    task_layouts.c.project_id == project_id,
-                    task_layouts.c.variant == variant,
-                    task_layouts.c.task_id.in_(ids),
+            for chunk in _chunks(ids):
+                res = await conn.execute(
+                    select(task_layouts).where(
+                        task_layouts.c.project_id == project_id,
+                        task_layouts.c.variant == variant,
+                        task_layouts.c.task_id.in_(chunk),
+                    )
                 )
-            )
-            return {m["task_id"]: self._row_from_mapping(m) for m in res.mappings()}
+                out.update({m["task_id"]: self._row_from_mapping(m) for m in res.mappings()})
+        return out
 
     async def load_children_layout_rows(self, project_id, variant, container_id):
         from src.database.tables import task_layouts
@@ -879,6 +889,33 @@ class LayoutQueryMixin:
             )
             return {m["task_id"]: m["path"] for m in res.mappings()}
 
+    async def load_paths_by_ids(self, project_id, variant, task_ids) -> dict[str, str]:
+        """Light form of `load_layout_rows`: task_id -> path only.
+
+        The tiles filter path needs nothing but paths for a match set (to
+        derive the forced-expansion ancestors); membership testing needs no
+        row at all.  A match set is unbounded by the viewport, so loading a
+        full `LayoutRow` per match is the one place the endpoint's cost
+        tracked the project rather than the screen.
+        """
+        from src.database.tables import task_layouts
+
+        ids = list(task_ids)
+        if not ids:
+            return {}
+        out: dict[str, str] = {}
+        async with self._engine.begin() as conn:
+            for chunk in _chunks(ids):
+                res = await conn.execute(
+                    select(task_layouts.c.task_id, task_layouts.c.path).where(
+                        task_layouts.c.project_id == project_id,
+                        task_layouts.c.variant == variant,
+                        task_layouts.c.task_id.in_(chunk),
+                    )
+                )
+                out.update({m["task_id"]: m["path"] for m in res.mappings()})
+        return out
+
     async def load_edges_touching(self, task_ids):
         from sqlalchemy import or_
         from src.database.tables import task_dependencies as td
@@ -903,7 +940,9 @@ class LayoutQueryMixin:
                     seen[tuple(r)] = None
         return sorted(seen, key=lambda r: (r[0], r[1], r[2]))
 
-    async def load_matching_ids(self, project_id, variant, *, q, status):
+    @staticmethod
+    def _match_conditions(project_id, variant, *, q, status) -> list:
+        """WHERE terms shared by the id-only and row-returning filter reads."""
         from sqlalchemy import func, or_
         from src.database.tables import task_layouts, tasks
 
@@ -921,6 +960,12 @@ class LayoutQueryMixin:
             )
         if status:
             conds.append(tasks.c.status == status)
+        return conds
+
+    async def load_matching_ids(self, project_id, variant, *, q, status):
+        from src.database.tables import task_layouts, tasks
+
+        conds = self._match_conditions(project_id, variant, q=q, status=status)
         async with self._engine.begin() as conn:
             res = await conn.execute(
                 select(task_layouts.c.task_id)
@@ -928,3 +973,30 @@ class LayoutQueryMixin:
                 .where(*conds)
             )
             return {r[0] for r in res.fetchall()}
+
+    async def load_matching_rows_ordered(
+        self, project_id, variant, *, q, status, limit
+    ) -> tuple[list, bool]:
+        """The first *limit* matching rows in reading order, plus a flag.
+
+        Filter, ``ORDER BY abs_y, abs_x, task_id`` and ``LIMIT limit + 1``
+        all happen in SQL: ``locate`` used to fetch every matching id and
+        then every matching row before slicing in Python, so a broad needle
+        on a big project paid for the whole project to answer a 200-hit
+        page.  The extra row is how truncation is detected.
+
+        Returns ``(rows, truncated)`` — at most *limit* ``LayoutRow``s.
+        """
+        from src.database.tables import task_layouts, tasks
+
+        conds = self._match_conditions(project_id, variant, q=q, status=status)
+        async with self._engine.begin() as conn:
+            res = await conn.execute(
+                select(task_layouts)
+                .select_from(task_layouts.join(tasks, tasks.c.id == task_layouts.c.task_id))
+                .where(*conds)
+                .order_by(task_layouts.c.abs_y, task_layouts.c.abs_x, task_layouts.c.task_id)
+                .limit(limit + 1)
+            )
+            rows = [self._row_from_mapping(m) for m in res.mappings()]
+        return rows[:limit], len(rows) > limit

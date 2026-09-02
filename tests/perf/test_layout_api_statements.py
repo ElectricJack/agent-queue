@@ -49,3 +49,38 @@ async def test_tiles_p95_under_100ms_with_big_collapsed_epic_visible(pg):
         # p95 estimator: statistics.quantiles(times, n=20)[18] over 50 samples.
         p95 = statistics.quantiles(times, n=20)[18]
         assert p95 < 0.1, f"p95 {p95:.3f}s"
+
+
+async def test_tiles_focus_root_p95_under_100ms(pg):
+    """Focus on the 1,000-task epic: cost must track the open containers.
+
+    ``root`` disables the rect cap and ``max_depth``, so before the
+    container-scoped candidate load this request pulled epic0's entire
+    subtree on every poll.
+    """
+    app = FastAPI()
+    app.include_router(build_graph_layout_router(db=pg))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+        big = (await ac.get("/api/projects/perf/graph/node/epic0?variant=all")).json()["node"]
+        # Under `root` the rect neither caps nor culls; it is still required
+        # by the request model, so send the focused node's own box.
+        rect = {"x0": big["x"], "y0": big["y"], "x1": big["x"] + 1, "y1": big["y"] + 1}
+        for expanded in ([], ["epic0-pkg0"]):
+            payload = {
+                "variant": "all",
+                "rect": rect,
+                "root": "epic0",
+                "expanded": expanded,
+            }
+            # Discarded warm-up, as above.
+            r = await ac.post("/api/projects/perf/graph/tiles", json=payload)
+            assert r.status_code == 200, r.text
+            assert "epic0" in {n["id"] for n in r.json()["nodes"]}
+            times = []
+            for _ in range(50):
+                t0 = time.perf_counter()
+                r = await ac.post("/api/projects/perf/graph/tiles", json=payload)
+                times.append(time.perf_counter() - t0)
+                assert r.status_code == 200
+            p95 = statistics.quantiles(times, n=20)[18]
+            assert p95 < 0.1, f"expanded={expanded} p95 {p95:.3f}s"

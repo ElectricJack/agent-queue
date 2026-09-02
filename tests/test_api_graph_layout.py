@@ -6,6 +6,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
+from src.api.auth import LOCAL_SCOPE, RequestScope
 from src.api.graph_layout import build_graph_layout_router
 from src.database import Database
 from src.models import Agent, AgentState, Project, Task, TaskStatus
@@ -63,6 +64,46 @@ async def seed(db):
 
 
 ALL = {"variant": "all", "rect": {"x0": -1, "y0": -1, "x1": 60, "y1": 60}, "expanded": []}
+
+
+@pytest.fixture
+def scoped_client_factory(db):
+    """A client whose requests carry a chosen ``request.state.scope``.
+
+    ``TokenAuthMiddleware`` is what stamps the scope in production; these
+    tests are wired without it, so a one-line middleware stands in.
+    """
+
+    def _make(scope=None, command_handler=None) -> AsyncClient:
+        app = FastAPI()
+
+        @app.middleware("http")
+        async def _stamp(request, call_next):
+            request.state.scope = scope if scope is not None else LOCAL_SCOPE
+            return await call_next(request)
+
+        app.include_router(
+            build_graph_layout_router(db=db, command_handler=command_handler)
+        )
+        return AsyncClient(transport=ASGITransport(app=app), base_url="http://t")
+
+    return _make
+
+
+class _RecordingHandler:
+    """Stands in for ``CommandHandler`` and records what tidy was given."""
+
+    def __init__(self, db):
+        self.db = db
+        self.calls: list[tuple[str, dict]] = []
+
+    async def execute(self, name, args):
+        self.calls.append((name, dict(args)))
+        variants = [args["variant"]] if args.get("variant") else ["all", "active"]
+        jobs = [
+            await self.db.enqueue_layout_job(args["project_id"], v, "tidy") for v in variants
+        ]
+        return {"success": True, "jobs": jobs}
 
 
 async def test_extent_pending_then_ready(db, client_factory):
@@ -449,3 +490,216 @@ async def test_default_router_delegates_to_the_orchestrator_db(db, monkeypatch):
     # (`test_tidy_enqueues_and_jobs_reports` covers that).
     assert job.status_code == 200
     assert job.json()["id"] == job_id and job.json()["status"] == "queued"
+
+
+async def test_tidy_refuses_an_agent_session_scope(db, scoped_client_factory):
+    """The mutation is scoped like a generated command route."""
+    await seed(db)
+    agent = RequestScope(kind="session", session_id="s1", project_id="p1", task_id="g0")
+    handler = _RecordingHandler(db)
+    async with scoped_client_factory(scope=agent, command_handler=handler) as ac:
+        r = await ac.post("/api/projects/p1/graph/tidy", json={})
+    assert r.status_code == 403
+    assert "out of scope" in r.json()["error"]
+    # neither the handler nor the db fallback got to run
+    assert handler.calls == []
+    assert await db.list_layout_jobs("p1", "all", statuses=("queued", "running")) == []
+    assert await db.list_layout_jobs("p1", "active", statuses=("queued", "running")) == []
+
+
+async def test_tidy_refuses_an_agent_session_without_a_command_handler(db, scoped_client_factory):
+    """The guard is on the route, not only on the command."""
+    await seed(db)
+    agent = RequestScope(kind="session", session_id="s1", project_id="p1", task_id="g0")
+    async with scoped_client_factory(scope=agent) as ac:
+        r = await ac.post("/api/projects/p1/graph/tidy", json={"variant": "all"})
+    assert r.status_code == 403
+    assert await db.list_layout_jobs("p1", "all", statuses=("queued", "running")) == []
+
+
+async def test_tidy_refuses_an_elevated_scope_for_another_project(db, scoped_client_factory):
+    await seed(db)
+    other = RequestScope(kind="session", session_id="s1", project_id="p2", elevated=True)
+    async with scoped_client_factory(scope=other) as ac:
+        r = await ac.post("/api/projects/p1/graph/tidy", json={})
+    assert r.status_code == 403 and "project_id mismatch" in r.json()["error"]
+    assert await db.list_layout_jobs("p1", "all", statuses=("queued", "running")) == []
+
+
+@pytest.mark.parametrize(
+    "scope",
+    [
+        LOCAL_SCOPE,
+        RequestScope(kind="session", session_id="s1", project_id="p1", elevated=True),
+    ],
+    ids=["local", "elevated-supervisor"],
+)
+async def test_tidy_allows_local_and_elevated_scopes(db, scoped_client_factory, scope):
+    await seed(db)
+    handler = _RecordingHandler(db)
+    async with scoped_client_factory(scope=scope, command_handler=handler) as ac:
+        r = await ac.post("/api/projects/p1/graph/tidy", json={"variant": "all"})
+    assert r.status_code == 200
+    jobs = r.json()["jobs"]
+    assert [j["variant"] for j in jobs] == ["all"] and jobs[0]["status"] == "queued"
+    # the server-derived scope reached the command, so its own agent-session
+    # guard sees a real scope instead of None
+    name, args = handler.calls[0]
+    assert name == "graph_tidy"
+    assert args["_scope"]["kind"] == scope.kind
+    assert args["_scope"]["elevated"] is scope.elevated
+    assert await db.list_layout_jobs("p1", "all", statuses=("queued", "running"))
+
+
+async def test_locate_requires_a_filter(db, client_factory):
+    """An unfiltered locate would scan the project; it is a 400, not a scan."""
+    await seed(db)
+    async with client_factory() as ac:
+        r = await ac.get("/api/projects/p1/graph/locate?variant=all")
+        assert r.status_code == 400 and "requires q or status" in r.json()["detail"]
+        blank = await ac.get("/api/projects/p1/graph/locate?variant=all&q=%20&status=%20")
+        assert blank.status_code == 400
+    # a rejected request must not enqueue a backfill either
+    assert await db.next_layout_job() is None
+
+
+async def test_locate_caps_and_orders_in_sql(db, client_factory, monkeypatch):
+    """The page comes back capped without ever loading the whole match set."""
+    await seed(db)
+
+    def boom(*a, **kw):
+        raise AssertionError("locate must not load rows outside the page")
+
+    monkeypatch.setattr(db, "load_layout_rows", boom)
+    monkeypatch.setattr(db, "load_matching_ids", boom)
+    async with client_factory() as ac:
+        r = await ac.get("/api/projects/p1/graph/locate?variant=all&q=title d&limit=4")
+        exact = await ac.get("/api/projects/p1/graph/locate?variant=all&q=title d&limit=10")
+    body = r.json()
+    assert len(body["hits"]) == 4 and body["truncated"] is True
+    assert [h["id"] for h in body["hits"]] == ["d0", "d1", "d2", "d3"]
+    assert len(exact.json()["hits"]) == 10 and exact.json()["truncated"] is False
+
+
+async def test_locate_is_pending_before_the_first_layout(db, client_factory):
+    async with client_factory() as ac:
+        r = await ac.get("/api/projects/p1/graph/locate?variant=all&q=x")
+    assert r.status_code == 202 and r.json()["status"] == "layout_pending"
+    assert (await db.next_layout_job())["kind"] == "backfill"
+
+
+async def test_node_is_pending_before_the_first_layout(db, client_factory):
+    async with client_factory() as ac:
+        r = await ac.get("/api/projects/p1/graph/node/g0?variant=all")
+    assert r.status_code == 202 and r.json()["status"] == "layout_pending"
+    assert (await db.next_layout_job())["kind"] == "backfill"
+
+
+async def test_node_still_404s_for_an_unknown_id_once_laid_out(db, client_factory):
+    await seed(db)
+    async with client_factory() as ac:
+        assert (await ac.get("/api/projects/p1/graph/node/nope?variant=all")).status_code == 404
+
+
+async def test_extent_reports_the_running_job_then_the_newest_queued(db, client_factory):
+    """`jobs[0]` was the OLDEST queued job — the least useful thing to report."""
+    import time as _time
+
+    from sqlalchemy import insert
+
+    from src.database.tables import layout_jobs
+
+    async def put(job_id, status, at):
+        # Straight into the table: `enqueue_layout_job` deliberately dedupes
+        # onto any live job for the (project, variant), so it cannot build
+        # the running-plus-backlog state this endpoint has to summarise.
+        async with db._engine.begin() as conn:
+            await conn.execute(
+                insert(layout_jobs).values(
+                    id=job_id,
+                    project_id="p1",
+                    variant="all",
+                    kind="tidy",
+                    status=status,
+                    requested_at=at,
+                )
+            )
+
+    await seed(db)
+    now = _time.time()
+    await put("old", "queued", now - 30)
+    await put("new", "queued", now - 10)
+    async with client_factory() as ac:
+        # newest queued, not `jobs[0]`
+        r = await ac.get("/api/projects/p1/graph/extent?variant=all")
+        assert r.json()["job"]["id"] == "new" and r.json()["job"]["status"] == "queued"
+        # a RUNNING job outranks every queued one, however old it is
+        await put("busy", "running", now - 60)
+        r = await ac.get("/api/projects/p1/graph/extent?variant=all")
+        assert r.json()["job"]["id"] == "busy" and r.json()["job"]["status"] == "running"
+        # finished jobs are not reported at all
+        await db.finish_layout_job("busy", error=None)
+        await db.finish_layout_job("new", error=None)
+        r = await ac.get("/api/projects/p1/graph/extent?variant=all")
+        assert r.json()["job"]["id"] == "old"
+        await db.finish_layout_job("old", error=None)
+        r = await ac.get("/api/projects/p1/graph/extent?variant=all")
+        assert r.json()["job"] is None
+
+
+async def test_tiles_filter_never_loads_rows_for_the_match_set(db, client_factory, monkeypatch):
+    """Matches contribute paths (for forced expansion); nothing more."""
+    await seed(db)
+    real = db.load_layout_rows
+    seen: list[list[str]] = []
+
+    async def spy(project_id, variant, task_ids):
+        ids = list(task_ids)
+        seen.append(ids)
+        return await real(project_id, variant, ids)
+
+    monkeypatch.setattr(db, "load_layout_rows", spy)
+    async with client_factory() as ac:
+        r = await ac.post(
+            "/api/projects/p1/graph/tiles", json={**ALL, "q": "title g", "expanded": ["e", "pkg"]}
+        )
+    assert r.status_code == 200
+    ids = {n["id"] for n in r.json()["nodes"]}
+    assert {"g0", "g1"} <= ids  # matches shown ...
+    assert {"e", "pkg"} <= ids  # ... with their ancestors as context
+    assert all(n["context_only"] for n in r.json()["nodes"] if n["id"] in {"e", "pkg"})
+    # the match ids themselves are never passed to `load_layout_rows`
+    assert not any({"g0", "g1"} & set(batch) for batch in seen), seen
+
+
+async def test_tiles_focus_does_not_load_the_whole_subtree(db, client_factory, monkeypatch):
+    """Focus loads the open containers' children, not `LIKE '/e/%'`."""
+    await seed(db)
+    real = db.load_rows_by_prefixes
+    seen: list[list[str]] = []
+
+    async def spy(project_id, variant, prefixes):
+        seen.append(list(prefixes))
+        return await real(project_id, variant, prefixes)
+
+    monkeypatch.setattr(db, "load_rows_by_prefixes", spy)
+    async with client_factory() as ac:
+        r = await ac.post(
+            "/api/projects/p1/graph/tiles",
+            json={**ALL, "root": "e", "expanded": ["e"]},
+        )
+    assert r.status_code == 200
+    assert {n["id"] for n in r.json()["nodes"]} == {"e", "c0", "c1", "pkg"}
+    # `pkg` is collapsed, so its own path may still be asked for (hidden
+    # owner map) -- but never the root's, which would be the whole subtree.
+    assert all("/e/" not in prefixes for prefixes in seen), seen
+
+
+async def test_tiles_focus_expanded_child_still_shows_grandchildren(db, client_factory):
+    await seed(db)
+    async with client_factory() as ac:
+        r = await ac.post(
+            "/api/projects/p1/graph/tiles",
+            json={**ALL, "root": "e", "expanded": ["e", "pkg"]},
+        )
+    assert {n["id"] for n in r.json()["nodes"]} == {"e", "c0", "c1", "pkg", "g0", "g1"}
