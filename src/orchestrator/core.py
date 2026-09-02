@@ -372,17 +372,24 @@ class Orchestrator(
         self.formula_registry = FormulaRegistry()
         self.session_providers = default_session_registry(config)
         from src.intelligence_classes import load_intelligence_classes
+        from src.intelligence_classes.registry import IntelligenceClassRegistry
 
+        # One live registry, shared by reference: the vault watcher refreshes
+        # it in place so pool launch, agent create/edit, scheduler routing and
+        # prime all see a new model class without a daemon restart.
+        self.intelligence_classes = IntelligenceClassRegistry(
+            load_intelligence_classes(config.data_dir)
+        )
         self.session_spec_builder = SessionSpecBuilder(
             config,
             self.harness_registry,
-            intelligence_classes=load_intelligence_classes(config.data_dir),
+            intelligence_classes=self.intelligence_classes,
         )
         from src.llm import LLMClient
 
         self.llm = LLMClient(
             config.llm,
-            classes_loader=lambda: load_intelligence_classes(self.config.data_dir),
+            classes_loader=lambda: self.intelligence_classes.snapshot(),
             llm_logger=self.llm_logger if self.llm_logger._enabled else None,
         )
         # AQ_DAEMON_EPOCH: identifies this daemon *run*.  Provenance for
@@ -1676,6 +1683,12 @@ class Orchestrator(
         from src.sessions.harness_registry import register_harness_handlers
 
         register_harness_handlers(self.vault_watcher, self.harness_registry)
+        # Intelligence classes ride the same watcher — adding
+        # vault/intelligence-classes/<id>.md makes the class launchable
+        # immediately, with no restart (see the registry module docstring).
+        from src.intelligence_classes.registry import register_intelligence_class_handlers
+
+        register_intelligence_class_handlers(self.vault_watcher, self.intelligence_classes)
         # Formulas ride the same watcher — vault/formulas/*.md and
         # vault/projects/*/formulas/*.md, both scopes (swarm-work-model §13).
         from src.task_graph.formulas import load_from_vault, register_formula_handlers
@@ -2409,11 +2422,7 @@ class Orchestrator(
 
         # Vault layout now exists — (re)load intelligence classes so a fresh
         # install picks up the seeded defaults on its very first run.
-        from src.intelligence_classes import load_intelligence_classes
-
-        self.session_spec_builder._intelligence_classes = load_intelligence_classes(
-            self.config.data_dir
-        )
+        self.intelligence_classes.reload(self.config.data_dir)
 
         # Per-profile directories need DB access (not discoverable from FS),
         # so we handle them here.  Per-project dirs and all migrations are
@@ -3295,6 +3304,8 @@ class Orchestrator(
         # Reconciler runs first: ensures the agents table has idle rows
         # for any project with dispatchable READY tasks, subject to
         # project.max_concurrent_agents.  See spec §4.1.
+        # Read through the builder: it holds the live registry, and tests
+        # inject a plain dict there to pin a routing snapshot.
         classes = dict(self.session_spec_builder._intelligence_classes)
         # Route freshness is resolved before agent supply. This prevents an
         # unspecified task from creating a worker from a profile default.

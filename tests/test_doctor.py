@@ -77,6 +77,7 @@ class TestRegistry:
         from src.doctor.formula_checks import formula_checks
         from src.doctor.hierarchy_checks import hierarchy_checks
         from src.doctor.integration_checks import integration_checks
+        from src.doctor.intelligence_class_checks import intelligence_class_checks
         from src.doctor.playbook_v2_checks import playbook_v2_checks
         from src.doctor.pool_checks import pool_checks
         from src.doctor.profile_checks import profile_checks
@@ -91,6 +92,7 @@ class TestRegistry:
             | {c.id for c in pool_checks()}
             | {c.id for c in task_checks()}
             | {c.id for c in formula_checks()}
+            | {c.id for c in intelligence_class_checks()}
             | {c.id for c in resource_checks()}
             | {c.id for c in integration_checks()}
             | {c.id for c in capability_checks()}

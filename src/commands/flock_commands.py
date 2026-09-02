@@ -93,8 +93,9 @@ class FlockCommandsMixin:
                 return {}, f"Global harness '{harness_id}' not found"
         class_id = fields.get("intelligence_class")
         if class_id:
-            builder = getattr(self.orchestrator, "session_spec_builder", None)
-            classes = getattr(builder, "_intelligence_classes", {}) if builder else {}
+            # The live registry, so a class added to the vault a moment ago is
+            # accepted without a daemon restart.
+            classes = self._live_intelligence_classes() or {}
             if class_id not in classes:
                 return {}, f"Intelligence class '{class_id}' not found"
         return fields, None

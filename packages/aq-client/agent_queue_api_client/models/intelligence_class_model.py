@@ -24,6 +24,7 @@ class IntelligenceClassModel:
         name (str | Unset):  Default: ''.
         description (str | Unset):  Default: ''.
         mapping (IntelligenceClassModelMapping | Unset):
+        loaded (bool | Unset):  Default: True.
     """
 
     id: str
@@ -31,6 +32,7 @@ class IntelligenceClassModel:
     name: str | Unset = ""
     description: str | Unset = ""
     mapping: IntelligenceClassModelMapping | Unset = UNSET
+    loaded: bool | Unset = True
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -46,6 +48,8 @@ class IntelligenceClassModel:
         if not isinstance(self.mapping, Unset):
             mapping = self.mapping.to_dict()
 
+        loaded = self.loaded
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -60,6 +64,8 @@ class IntelligenceClassModel:
             field_dict["description"] = description
         if mapping is not UNSET:
             field_dict["mapping"] = mapping
+        if loaded is not UNSET:
+            field_dict["loaded"] = loaded
 
         return field_dict
 
@@ -83,12 +89,15 @@ class IntelligenceClassModel:
         else:
             mapping = IntelligenceClassModelMapping.from_dict(_mapping)
 
+        loaded = d.pop("loaded", UNSET)
+
         intelligence_class_model = cls(
             id=id,
             revision=revision,
             name=name,
             description=description,
             mapping=mapping,
+            loaded=loaded,
         )
 
         intelligence_class_model.additional_properties = d

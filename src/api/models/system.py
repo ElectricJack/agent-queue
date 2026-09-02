@@ -248,11 +248,16 @@ class IntelligenceClassModel(BaseModel):
     description: str = ""
     #: provider → config mapping this class resolves to.
     mapping: dict = {}
+    #: True when the class is in the daemon's live registry (launchable now),
+    #: not merely present on disk.
+    loaded: bool = True
 
 
 class ListIntelligenceClassesResponse(BaseModel):
     success: bool = True
     classes: list[IntelligenceClassModel] = []
+    #: One message per vault file the live registry could not parse.
+    errors: list[str] = []
 
 
 class EditIntelligenceClassConflictResponse(BaseModel):

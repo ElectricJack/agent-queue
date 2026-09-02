@@ -56,11 +56,7 @@ client = AuthenticatedClient(
 You can also disable certificate validation altogether, but beware that **this is a security risk**.
 
 ```python
-client = AuthenticatedClient(
-    base_url="https://internal_api.example.com",
-    token="SuperSecretToken",
-    verify_ssl=False,
-)
+client = AuthenticatedClient(base_url="https://internal_api.example.com", token="SuperSecretToken", verify_ssl=False)
 ```
 
 Things to know:
