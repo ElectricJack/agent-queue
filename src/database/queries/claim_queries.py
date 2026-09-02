@@ -164,7 +164,10 @@ class ClaimQueryMixin:
         if task_id is not None:
             stmt = stmt.where(tasks.c.id == task_id)
         if conn.dialect.name == "postgresql":
-            stmt = stmt.with_for_update(skip_locked=True)
+            # The routing gate adds a LEFT OUTER JOIN.  PostgreSQL cannot
+            # lock the nullable (route) side of that join, so explicitly
+            # lock only the task row that this query is selecting to claim.
+            stmt = stmt.with_for_update(of=tasks, skip_locked=True)
         row = (await conn.execute(stmt)).fetchone()
         return row[0] if row else None
 
