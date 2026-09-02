@@ -384,24 +384,42 @@ class LayoutQueryMixin:
                     cells.c.project_id == project_id, cells.c.variant == variant,
                     cells.c.task_id.in_(write_set.deletes)))
 
-            # upserts
+            # upserts — one INSERT ... ON CONFLICT statement executed with a
+            # list of parameter dicts (SQLAlchemy's "insertmanyvalues" path)
+            # rather than either a per-row round trip or a literal N-row
+            # ``.values([...])`` clause: an incremental batch touching dozens
+            # (or hundreds, on a root reflow) of rows was paying one network
+            # round trip per row before, and compiling a fresh N-row VALUES
+            # clause from scratch (dominated by
+            # ``crud.py:_extend_values_for_multiparams``) costs as much CPU
+            # as the round trips it replaces. Executing a single-row-shaped,
+            # cacheable statement with a params list lets the dialect batch
+            # and paginate rows itself, so recompilation cost is paid once
+            # regardless of row count.
             touched: list[tuple[str, float, float, float, float]] = []
-            for r in write_set.upserts:
-                vals = {
-                    "project_id": project_id, "variant": variant, "task_id": r.task_id,
-                    "container_id": r.container_id, "path": r.path, "depth": r.depth,
-                    "rank": r.rank, "order_key": r.order_key, "w": r.w, "h": r.h,
-                    "rel_x": r.rel_x, "rel_y": r.rel_y, "abs_x": r.abs_x, "abs_y": r.abs_y,
-                    "kind": r.kind, "agg_children": r.agg_children,
-                    "agg_descendants": r.agg_descendants, "agg_completed": r.agg_completed,
-                    "agg_running": r.agg_running, "agg_blocked": r.agg_blocked,
-                    "agg_active": r.agg_active,
-                }
-                ins = (postgresql.insert if dialect == "postgresql" else sqlite.insert)(task_layouts).values(**vals)
-                upd = {k: v for k, v in vals.items() if k not in ("project_id", "variant", "task_id")}
-                await conn.execute(ins.on_conflict_do_update(
-                    index_elements=["project_id", "variant", "task_id"], set_=upd))
-                touched.append((r.task_id, r.abs_x, r.abs_y, r.w, r.h))
+            if write_set.upserts:
+                rows_vals = [
+                    {
+                        "project_id": project_id, "variant": variant, "task_id": r.task_id,
+                        "container_id": r.container_id, "path": r.path, "depth": r.depth,
+                        "rank": r.rank, "order_key": r.order_key, "w": r.w, "h": r.h,
+                        "rel_x": r.rel_x, "rel_y": r.rel_y, "abs_x": r.abs_x, "abs_y": r.abs_y,
+                        "kind": r.kind, "agg_children": r.agg_children,
+                        "agg_descendants": r.agg_descendants, "agg_completed": r.agg_completed,
+                        "agg_running": r.agg_running, "agg_blocked": r.agg_blocked,
+                        "agg_active": r.agg_active,
+                    }
+                    for r in write_set.upserts
+                ]
+                update_cols = [
+                    k for k in rows_vals[0] if k not in ("project_id", "variant", "task_id")
+                ]
+                ins = (postgresql.insert if dialect == "postgresql" else sqlite.insert)(task_layouts)
+                upd = {k: ins.excluded[k] for k in update_cols}
+                stmt = ins.on_conflict_do_update(
+                    index_elements=["project_id", "variant", "task_id"], set_=upd)
+                await conn.execute(stmt, rows_vals)
+                touched.extend((r.task_id, r.abs_x, r.abs_y, r.w, r.h) for r in write_set.upserts)
 
             # translations — descendants only; the container's own row is
             # upserted separately by the pass that moved it (controller
