@@ -115,6 +115,12 @@ def test_explicit_broken_override_never_falls_back() -> None:
         select_assignment_playbook(_Manager(None), project)
 
 
+def test_unavailable_assignment_playbook_manager_is_a_domain_error() -> None:
+    """Coordinator callers can handle an unavailable manager per project."""
+    with pytest.raises(AssignmentPlaybookError, match="manager is unavailable"):
+        select_assignment_playbook(None, Project(id="p", name="P"))
+
+
 def test_default_assignment_playbook_is_seeded_write_if_absent(tmp_path: Path) -> None:
     first = ensure_default_playbooks(str(tmp_path))
     second = ensure_default_playbooks(str(tmp_path))
