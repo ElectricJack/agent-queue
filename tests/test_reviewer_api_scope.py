@@ -165,16 +165,16 @@ async def test_reviewer_reads_the_reviewed_task(api, command):
     assert result["project_id"] == "p"
 
 
-async def test_reviewer_annotates_the_reviewed_task(api):
-    result = api.result(await api.post("task_comment", {
+async def test_reviewer_cannot_annotate_the_reviewed_task(api):
+    response = await api.post("task_comment", {
         "task_id": "reviewed", "body": "Reviewed the diff; flag name is misleading.",
-    }))
-    assert result["comment"]["author_kind"] == "agent"
-    assert result["comment"]["author_id"] == "reviewer-agent"
+    })
+    assert response.status_code == 403, response.text
+
+
+async def test_reviewer_reads_the_reviewed_task_comments(api):
     listed = api.result(await api.post("task_comments", {"task_id": "reviewed"}))
-    assert [c["body"] for c in listed["comments"]] == [
-        "Reviewed the diff; flag name is misleading."
-    ]
+    assert listed["comments"] == []
 
 
 async def test_reviewer_keeps_ordinary_access_to_its_own_review_task(api):
@@ -269,6 +269,17 @@ async def test_rewriting_its_own_description_cannot_widen_a_reviewer_s_reach(api
     assert (await api.db.get_task("unrelated")).status == TaskStatus.COMPLETED
     # The edge still points at the real reviewed task, which stays reachable.
     api.result(await api.post("task_show", {"task_id": "reviewed"}))
+
+
+async def test_ambiguous_review_provenance_fails_closed_even_after_description_rewrite(api):
+    await api.db.add_dependency("reviewer-agent-job", "unrelated", "discovered-from")
+    api.result(await api.post("task_set", {
+        "task_id": "reviewer-agent-job",
+        "description": "Reviewing task: unrelated\nBranch: feature/unrelated",
+    }))
+    for task_id in ("reviewed", "unrelated"):
+        response = await api.post("task_show", {"task_id": task_id})
+        assert response.status_code == 403, response.text
 
 
 async def test_reviewer_does_not_gain_operator_commands(api):
