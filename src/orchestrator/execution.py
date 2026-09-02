@@ -1197,7 +1197,9 @@ class ExecutionMixin:
                 # stamps every review it creates with a ``review:task:`` /
                 # ``branch-review:`` dedup key, so a finishing task carrying
                 # one *is* a review whatever its profile says, and the rules
-                # guard on this flag as well.
+                # guard on this flag as well.  ``_on_playbook_trigger`` derives
+                # it from the task row too, so an emitter that predates this
+                # flag cannot reopen the recursion (task prime-cascade-64).
                 no_code = await self._task_produces_no_code(ctx)
                 await self._emit_task_event(
                     "task.completed",

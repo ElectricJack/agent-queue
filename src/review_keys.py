@@ -11,7 +11,15 @@ places need the same strings and must not drift from it:
   either key as ``review_task`` on ``task.completed`` so the review rules never
   review a review.  The older ``no_code`` flag came from the reviewer profile's
   ``read_only`` setting, which an operator can (and did) turn off; the dedup
-  key is the pipeline's own mark on the row and survives any profile edit.
+  key is the pipeline's own mark on the row and survives any profile edit;
+* the pipeline dispatch path (``Orchestrator._on_playbook_trigger``) sets the
+  same flag again from the hydrated task row via :func:`flag_review_task_event`.
+  The rules guard with ``truthy: false``, which passes on a *missing* key, so
+  an emitter that never sets it — a daemon still running code older than the
+  flag, container settlement, a hand-written event — used to fire the review
+  anyway and ``Review: Review: Review: ...`` chains grew six deep on the live
+  queue (task prime-cascade-64).  Deriving it at dispatch makes the guard hold
+  for every emitter.
 
 Kept dependency-free so both the doctor and the orchestrator can import it.
 """
@@ -46,3 +54,16 @@ def is_pipeline_review_task(dedup_key: str | None) -> bool:
     if not dedup_key:
         return False
     return dedup_key.startswith(PIPELINE_REVIEW_DEDUP_PREFIXES)
+
+
+def flag_review_task_event(event: dict, dedup_key: str | None) -> dict:
+    """Set ``review_task`` on *event* when *dedup_key* marks a pipeline review.
+
+    Mutates and returns *event*.  Only ever narrows: a flag the emitter already
+    set is left alone, and a task without a review key gets no flag at all, so
+    the ``truthy: false`` guards in the review rules read exactly as before for
+    ordinary work.
+    """
+    if is_pipeline_review_task(dedup_key):
+        event["review_task"] = True
+    return event
