@@ -65,6 +65,7 @@ async def orch(tmp_path):
     mock_git.aget_current_branch = AsyncMock(return_value="feature-1")
     mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
     mock_git.afind_open_pr = AsyncMock(return_value="https://github.com/org/repo/pull/42")
+    mock_git.ais_ancestor = AsyncMock(return_value=False)
     mock_git._arun = AsyncMock(return_value="0")
     mock_git.acommit_all = AsyncMock(return_value=True)
     mock_git.apush_branch = AsyncMock(return_value=None)
