@@ -40,7 +40,7 @@ def downgrade() -> None:
         sa.Column("name", sa.Text, nullable=False),
         sa.Column("enabled", sa.Integer, nullable=False, server_default="1"),
         sa.Column("trigger", sa.Text, nullable=False),
-        sa.Column("context_steps", sa.Text, nullable=False, server_default="'[]'"),
+        sa.Column("context_steps", sa.Text, nullable=False, server_default="[]"),
         sa.Column("prompt_template", sa.Text, nullable=False),
         sa.Column("llm_config", sa.Text, nullable=True),
         sa.Column("cooldown_seconds", sa.Integer, nullable=False, server_default="3600"),
@@ -67,7 +67,7 @@ def downgrade() -> None:
         sa.Column("actions_taken", sa.Text, nullable=True),
         sa.Column("skipped_reason", sa.Text, nullable=True),
         sa.Column("tokens_used", sa.Integer, nullable=False, server_default="0"),
-        sa.Column("status", sa.Text, nullable=False, server_default="'running'"),
+        sa.Column("status", sa.Text, nullable=False, server_default="running"),
         sa.Column("started_at", sa.Float, nullable=False),
         sa.Column("completed_at", sa.Float, nullable=True),
     )
