@@ -5,12 +5,25 @@ from __future__ import annotations
 import time
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from src.database.tables import playbook_activations, playbook_artifacts
 from src.playbooks.artifact_ref import ArtifactRef
+
+#: Everything but the surrogate key: a re-activation of the same
+#: ``(playbook_id, scope, scope_identifier)`` rewrites the record in place and
+#: keeps the ``activation_id`` anything else may already reference.
+_ACTIVATION_UPDATE_COLUMNS = (
+    "active_artifact_sha256",
+    "enabled",
+    "health",
+    "reasons",
+    "activated_at",
+    "activated_by",
+    "updated_at",
+)
 
 
 class ArtifactNotFound(ValueError):
@@ -105,19 +118,34 @@ class PlaybookArtifactQueryMixin:
                 "activated_by": activated_by,
                 "updated_at": now,
             }
-            insert_fn = pg_insert if conn.dialect.name == "postgresql" else sqlite_insert
-            statement = insert_fn(playbook_activations).values(**values)
-            await conn.execute(
-                statement.on_conflict_do_update(
-                    index_elements=[
-                        playbook_activations.c.playbook_id,
-                        playbook_activations.c.scope,
-                        playbook_activations.c.scope_identifier,
-                    ],
-                    set_={
-                        field: getattr(statement.excluded, field)
-                        for field in values
-                        if field != "activation_id"
-                    },
+            # An upsert, never insert-then-recover-from-IntegrityError: on
+            # PostgreSQL a constraint violation aborts the surrounding
+            # transaction, so a recovery UPDATE on the same connection dies
+            # with "current transaction is aborted" instead of updating.
+            dialect = conn.dialect.name
+            if dialect in ("postgresql", "sqlite"):
+                insert_fn = pg_insert if dialect == "postgresql" else sqlite_insert
+                statement = insert_fn(playbook_activations).values(**values)
+                await conn.execute(
+                    statement.on_conflict_do_update(
+                        index_elements=["playbook_id", "scope", "scope_identifier"],
+                        set_={
+                            column: statement.excluded[column]
+                            for column in _ACTIVATION_UPDATE_COLUMNS
+                        },
+                    )
                 )
+                return
+            # Generic fallback for any other dialect: update first, insert
+            # only when the row is genuinely absent.
+            result = await conn.execute(
+                update(playbook_activations)
+                .where(
+                    (playbook_activations.c.playbook_id == playbook_id)
+                    & (playbook_activations.c.scope == scope)
+                    & (playbook_activations.c.scope_identifier == scope_identifier)
+                )
+                .values(**{column: values[column] for column in _ACTIVATION_UPDATE_COLUMNS})
             )
+            if result.rowcount == 0:
+                await conn.execute(insert(playbook_activations).values(**values))

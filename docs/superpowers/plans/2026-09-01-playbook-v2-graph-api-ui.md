@@ -1698,6 +1698,170 @@ T-27, T-28, T-32 and T-36 to T-41, the §10 fixtures, and the §9 migration move
 with it. Commits 2-6 of §12 (the dashboard slice) are unaffected: they consume
 §4, which is checked in.
 
+### 16.3 Re-run on 2026-09-02 at `62667475` (task solid-harbor.46.1, second attempt)
+
+§3.2 was re-run after PR #180 (Package 3, `aq/solid-harbor.35`) and PR #181
+(commit 1 of this package, `feature/playbook-v2-pkg5-api`) merged to `main`.
+Result: **Package 3 is present; Packages 1, 2 and 4 are still absent on `main`
+and on every `origin/*` branch** (`git cat-file -e` against each remote ref for
+`definition.py`, `explanation.py`, `engine.py`, `receipts.py`,
+`contracts/registry.py`, `playbook_run_queries.py` — no hits).
+
+| Checklist item | Expected | Found at `62667475` |
+|---|---|---|
+| `src/playbooks/definition.py` (`PlaybookDefinition`, `Rule`, `SourceRef`) | P2 | absent |
+| `src/playbooks/explanation.py` (`explain_step`, `StepExplanation`, `EffectClause`) | P1 | absent |
+| `src/commands/contracts/registry.py` (`get_contract`) | P1 | absent |
+| `src/playbooks/artifact_store.py` (`ArtifactRef`, `ArtifactStore`) | P3 | **present** — `load(sha)` returns `PlaybookDefinition` when Package 2 is importable, else the parsed JSON |
+| `src/playbooks/activation.py` (`ActivationHealth`) | P3 | **present** — exactly the six §4.4 values (check 3 passes) |
+| `src/database/queries/playbook_artifact_queries.py` | P3 | **present** — `upsert_playbook_artifact`, `get_playbook_artifact`, `set_playbook_activation`; no list-artifacts or get/list-activation reads yet |
+| `src/database/queries/playbook_run_queries.py` | P3/P4 | absent |
+| `src/playbooks/receipts.py`, `src/playbooks/engine.py` | P4 | absent |
+| `playbook_activations` table (§3.2 check 2) | P3 | **present, with `activated_by`** — the activation half of §9 is unnecessary and will not ship |
+| `playbook_pending_events` table (§3.2 check 2) | P3/P4 | absent — the pending half of §9 stays with the package that creates the table; it is not an additive migration here |
+| V1 surfaces (§3.2 check 4) | present | `dashboard/src/pages/playbook-graph/` and `src/playbooks/graph_view.py` untouched |
+
+Consequence: the §16.2 deferral still stands. `project_graph` takes a
+`PlaybookDefinition` and an `explain_step` result, `diff_artifacts` takes two
+`PlaybookDefinition`s and the execution-fingerprint input set from
+`get_contract`, and `project_overlay` takes a `PlaybookRunV2` and `StepReceipt`
+rows — none of which exist. Every test named in §16.2 (T-4 to T-9, T-27, T-28,
+T-32, T-36 to T-41, T-43, T-44) consumes one of those inputs. The
+`_v2_storage_unavailable` seam remains in place; its module docstring was
+updated in this commit to say which packages have landed. Re-run §3.2 once
+Packages 1, 2 and 4 are on `main`.
+
+### 16.4 Re-run on 2026-09-02 at `d8086cb9` (task solid-harbor.46.1, third attempt)
+
+§3.2 was re-run a third time after PR #182 merged (an import-cycle fix; no
+playbook files). Every row of the §16.3 table is unchanged: checks 1-4 report
+the same modules present and absent, `playbook_pending_events` is still
+`ABSENT`, and a `git cat-file -e` sweep of all 280 `origin/*` refs finds no
+branch carrying `definition.py`, `explanation.py`, `contracts/registry.py`,
+`engine.py`, `receipts.py` or `playbook_run_queries.py`. No open PR touches
+them either. Nothing was built; the task was closed as blocked rather than
+re-queued a fourth time, because the queue has no dependency edge from this
+task to the Package 1, 2 and 4 tasks and each attempt re-derives the same
+result. The next attempt should be scheduled only after those three packages
+merge, and should start at §3.2.
+
+### 16.5 Re-run on 2026-09-02 at `d8086cb9` (task solid-harbor.46.1, fourth attempt)
+
+`origin/main` had not moved since §16.4, and the four §3.2 checks and the
+`origin/*` sweep gave the same result. Two facts recorded here so the next
+attempt does not re-derive them:
+
+- `ArtifactStore.load` (`src/playbooks/artifact_store.py`) returns the raw
+  JSON `dict` whenever `src.playbooks.definition` is absent, and
+  `playbook_artifact_queries.py` exposes only `upsert`/`get` artifact and
+  `set_playbook_activation` — there is no activation read. So even the
+  Package 3-only slice of item 1 (`playbook_activation_health`) has no input
+  model and no query to sit on without inventing Package 2/3 shapes (§3.3).
+- Open PR #191 (`aq/solid-harbor.35-rework`) reworks Package 3's
+  `artifact_store.py` and `playbook_artifact_queries.py`. It adds none of the
+  Package 1/2/4 files and no activation read query; the seam should not be
+  wired to Package 3 surfaces until it merges.
+
+This session's scope cannot list the queue or read any other task, so the
+missing `blocks` edges to the Package 1, 2 and 4 tasks could not be added
+from here; a human was asked (via `aq message send`) to add them and reopen.
+
+### 16.6 Re-run on 2026-09-02 at `d8086cb9` (task solid-harbor.46.1, fifth attempt)
+
+`origin/main` still at `d8086cb9`; the four §3.2 checks and the `origin/*`
+sweep (285 refs) are unchanged from §16.5. PRs #191 and #194 (both Package 3
+rework) are still open; no open PR adds a Package 1, 2 or 4 file. Two new
+facts, recorded so the loop can be stopped rather than re-run:
+
+- **The blockers by task id.** The Package 1, 2 and 4 inputs this package
+  needs are owned by `solid-harbor.26` (P1 — contracts registry and
+  explanation service; PAUSED), `solid-harbor.30` (P2 — strict definition
+  model; DEFINED) and `solid-harbor.39` (P4 — engine, receipts, run
+  queries; DEFINED). The `playbook_pending_events` table of §9 belongs to
+  `solid-harbor.36` (PAUSED). `solid-harbor.46.1` needs `blocks` edges to
+  the first three; this session's scope cannot add them.
+- **Why `--failure-class hard` does not stop the re-runs.** The `events`
+  table shows a `task.ready` / `promoted` row 30–60 s after every hard
+  close (09:41:04, 09:48:04, 09:52:39, 09:56:46 UTC). A hard close sets
+  BLOCKED (`src/orchestrator/execution.py`, `session_close_hard_failure`),
+  and the projected promotion rule (`src/orchestrator/monitoring.py`,
+  `_projected_promotion_decisions`) re-promotes any BLOCKED task with
+  `is_blocked = 0` that carries at least one blocking edge. This task's
+  only edge is its `parent-child` edge to `solid-harbor.46`, which counts,
+  so the failure-BLOCKED carve-out of design §4.4 never applies to a child
+  of a container. Filed as its own task (see the task comment); not fixed
+  here because it is orchestrator scope, not Package 5.
+
+### 16.7 Re-run on 2026-09-02 at `5a3c31b0` (task solid-harbor.46.1, eighth attempt)
+
+`origin/main` has moved to `5a3c31b0` — PR #191 (Package 3 rework) merged.
+The §3.2 checks are otherwise unchanged from §16.5/§16.6:
+
+- **Check 1.** Present on `main`: `src/playbooks/artifact_store.py`,
+  `src/playbooks/artifact_ref.py`, `src/playbooks/activation.py`,
+  `src/database/queries/playbook_artifact_queries.py`. Missing:
+  `src/playbooks/definition.py` (P2), `src/playbooks/explanation.py` and
+  `src/commands/contracts/registry.py` (P1), `src/playbooks/engine.py`,
+  `src/playbooks/receipts.py` and
+  `src/database/queries/playbook_run_queries.py` (P4).
+- **Check 2.** `playbook_activations` present with `activated_by`;
+  `playbook_pending_events` still absent from `src/database/tables.py`.
+- **`origin/*` sweep.** 289 refs; no ref carries any Package 1, 2 or 4 file.
+
+One thing did change, and it closes the §16.5 caveat: with #191 merged, the
+Package 3 surfaces the seam would bind to are now stable on `main`. They are
+still not sufficient on their own. `ArtifactStore.load` is typed
+`PlaybookDefinitionT`, which degrades to a raw `json.loads` dict while
+`src/playbooks/definition.py` is absent; `PlaybookArtifactQueryMixin` exposes
+only `upsert_playbook_artifact`, `get_playbook_artifact` and
+`set_playbook_activation` — there is still no activation *read*, and no run or
+receipt query at all. So item 1 of the task (artifact load **plus** activation
+read **plus** V2 run and receipts read) cannot be completed from P3 alone, and
+items 2–4 consume the P2 definition model and P1's `explain_step`, which §3.3
+forbids inventing here.
+
+Status is therefore unchanged: this package stays blocked on
+`solid-harbor.26` (P1), `solid-harbor.30` (P2) and `solid-harbor.39` (P4),
+and §9's `playbook_pending_events` half stays with `solid-harbor.36`.
+
+### 16.8 Re-run on 2026-09-02 at `4a49e615` (task solid-harbor.46.1, ninth attempt)
+
+`origin/main` has moved to `4a49e615` (four merges since `5a3c31b0`: #189,
+#186, #195, #193 — CLI/MCP schemas, OpenAPI guard rendering, pipeline
+review derivation, `aq test` path validation). None of them touches
+Package 1, 2 or 4.
+
+- **Check 1.** Unchanged from §16.7. Present on `main`:
+  `src/playbooks/artifact_store.py`, `src/playbooks/activation.py`,
+  `src/database/queries/playbook_artifact_queries.py`,
+  `src/api/models/playbook_v2.py`, `src/commands/playbook_v2_commands.py`.
+  Missing: `src/playbooks/definition.py` (P2),
+  `src/playbooks/explanation.py` and `src/commands/contracts/registry.py`
+  (P1), `src/playbooks/engine.py`, `src/playbooks/receipts.py` and
+  `src/database/queries/playbook_run_queries.py` (P4). Also still absent,
+  as expected: `graph_projection.py`, `artifact_diff.py`, `run_overlay.py`.
+- **Check 2.** `playbook_activations` present with `activated_by`;
+  `playbook_pending_events` still absent from `src/database/tables.py`
+  (the tables between `playbook_activations` and `workflows` are
+  `task_assignment_routes` and nothing else).
+- **`origin/*` sweep.** 290 refs; zero hits for any P1/P2/P4 file.
+- **Open PRs.** Six (#198, #197, #196, #194, #192, #184); none adds a
+  Package 1, 2 or 4 file.
+
+New this run, and the only material change: **PR #198
+("Keep terminal-BLOCKED tasks out of the BLOCKED-recovery rule,
+crisp-pinnacle-54") is open**, which is the fix for the re-promotion loop
+described in §16.6. Once it merges, a `fail --failure-class hard` close of
+this task will stay BLOCKED instead of being re-promoted within a minute,
+so the re-run churn should stop on its own. The remaining human action is
+narrower than in §16.6/§16.7: add `blocks` edges
+`solid-harbor.46.1 -> solid-harbor.26 / .30 / .39` (or pause this task) so
+the dependency is recorded rather than merely inert.
+
+Status otherwise unchanged: blocked on P1 (`solid-harbor.26`),
+P2 (`solid-harbor.30`) and P4 (`solid-harbor.39`); §9's
+`playbook_pending_events` half stays with `solid-harbor.36`.
+
 ---
 
 ## 17. Open items for the next child plans
@@ -1709,3 +1873,78 @@ with it. Commits 2-6 of §12 (the dashboard slice) are unaffected: they consume
 - **Package 6** consumes this surface for reviewed activation: its inventory can start read-only before Package 5 lands (roadmap §7), but no artifact may be activated until the diff and health UI of commit 4 exists.
 - **Package 7** deletes `playbook_graph_view`, `src/playbooks/graph_view.py`, `src/api/models/playbook.py`'s graph DTOs, `dashboard/src/pages/playbook-graph/`, the `graph` tab, and both flags from §8; then renames the `semantic` tab to `graph`. Nothing else in this package is temporary.
 - **Deferred deliberately:** live streaming of run overlays (the 5 s poll of §6.4 is sufficient for M5 and avoids coupling to `src/api/streams.py` before the engine's lifecycle events settle in Package 4), and an artifact-history browser beyond the activation panel's list. Both are follow-ups, not exit-gate requirements.
+
+### 16.9 Re-run on 2026-09-02 at `6f5a5237` (task solid-harbor.46.1, twelfth attempt)
+
+`origin/main` is `6f5a5237`. The precondition verdict is unchanged for the
+twelfth consecutive run, but this run **ships the §10 fixtures**, which are
+the one part of item 4 that does not depend on Packages 1, 2 or 4.
+
+- **Check 1.** Unchanged from §16.8. Missing: `src/playbooks/definition.py`
+  (P2), `src/playbooks/explanation.py` and
+  `src/commands/contracts/registry.py` (P1), `src/playbooks/engine.py`,
+  `src/playbooks/receipts.py` and
+  `src/database/queries/playbook_run_queries.py` (P4). Present:
+  `artifact_store.py`, `activation.py`, `playbook_artifact_queries.py`,
+  `api/models/playbook_v2.py`, `commands/playbook_v2_commands.py`.
+- **Check 2.** `playbook_activations` present with `activated_by`
+  (`tables.py:1013`); `playbook_pending_events` still absent — `grep` for
+  the table name in `src/database/tables.py` returns nothing.
+- **`origin/*` sweep.** 294 refs; zero hits for any of the six P1/P2/P4
+  files.
+- **Open PRs.** Eight (#194, #196, #197, #198, #199, #200, #201, #202);
+  none adds a Package 1, 2 or 4 file. #198 — the terminal-BLOCKED
+  re-promotion fix — is **still open**, so the re-run churn continues.
+
+#### What this run shipped
+
+The §10 fixtures are *data*, not code: §10.1 is given verbatim in this plan
+and §10.2 is a mechanical derivation of it, so authoring them invents no
+P1/P2/P4 type and does not violate §3.3. They are now on disk, and the
+structural properties §10 calls "load-bearing for a test" are asserted
+directly rather than left as prose:
+
+- `tests/fixtures/playbooks/v2/review-pipeline.artifact.json` — §10.1
+  transcribed verbatim from the fenced block above (13 steps, 2 rules,
+  version 5).
+- `tests/fixtures/playbooks/v2/review-pipeline.v6.artifact.json` — §10.2's
+  companion: an executable change to the `ensure_task` title template, one
+  reworded step title (`classify-risk`, presentation-only and byte-identical
+  otherwise), one added `check-gate` case, and a fresh `source_hash`. Drives
+  `executable_change=True`, `presentation_change_count=1`.
+- `tests/fixtures/playbooks/v2/review-pipeline.receipts.json` — §10.2's 11
+  receipts: `ensure-review-task` attempt 1 `failure` / attempt 2 `success`,
+  `classify-risk` `high`, `escalate` `completed`, `await-approval`
+  `approve`, `done`, plus five `open-gate` receipts at `iteration_index`
+  0–4 with iteration 3 `failure` under `failure_policy: collect`;
+  `truncated: False`. Every `selected_edge_id` is the §5.1 content-derived
+  form `f'{rule_id}::{step_id}::{outcome}'` and joins a transition declared
+  in the v5 artifact, so the overlay ids will join the projected graph's ids
+  by construction.
+- `tests/test_playbook_v2_fixtures.py` — 31 tests. They reach no further
+  than the frozen §4 `ReceiptDTO`, so they stay green while P1/P2/P4 are in
+  flight, and they pin the properties a later edit could silently drop: the
+  closed-subgraph invariant (no transition crosses a rule boundary), the
+  convergence pair, the loop-back edge, the `check-gate` case/default pair
+  that share a `(source, target)` and must stay independently selectable
+  (the V1 dedupe regression §5.1 names), the three terminals inside one
+  rule, the five reserved LLM outcomes, one of every `ValueKind`, the
+  retry that selects no edge, and the terminal that selects no edge.
+
+Note one correction the DTO forced: §4.1's `ValueKind` is the *expression*
+kind (`literal` / `event_ref` / `binding_ref` / `loop_ref` / `template` /
+`expression` / `redacted` / `unresolved`), not a data type. The declared
+type goes in `ExplanationValueDTO.type_name`. The receipts fixture is
+written accordingly and validated against `ReceiptDTO`.
+
+#### Still deferred, unchanged
+
+Items 1, 2, 3 and the T-4..T-44 test bodies all bind to P1/P2/P4 types.
+Item 5 is unchanged from §16.2: the `activated_by` half is unnecessary
+(the column shipped with P3) and the `playbook_pending_events` half must
+ship with that table's owner (solid-harbor.36), not as an additive
+migration here.
+
+Human action, unchanged: add `blocks` edges `solid-harbor.46.1 ->
+solid-harbor.26 / .30 / .39` (or pause this task), and merge PR #198 so a
+hard close stops being re-promoted within the minute.

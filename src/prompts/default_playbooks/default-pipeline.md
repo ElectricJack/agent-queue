@@ -41,30 +41,60 @@ Ships five rules:
   proposal so the approved batch is written into the task graph.
 
 Both review rules also require `event.no_code` to be falsy. The session close
-path sets `no_code: true` on `task.completed` when the task by construction
-left no commits behind — a `read_only: true` profile (the shipped `reviewer`
-and `final-reviewer`) or a close with `--work-outcome no-op`. Reviewer tasks
-run on a slot checked out on their own `aq/<id>` branch, so they carry a
-`branch_name` like any other session task; without this guard every finished
-review spawned a review *of the review*, recursively. Emitters that do not set
-the key (container settlement, custom pipelines) still fire the review.
+path sets `no_code: true` on `task.completed` when the task left no commits
+behind. Two things say so:
+
+- **by construction** — a `read_only: true` profile (the shipped `reviewer`
+  and `final-reviewer`) or a close with `--work-outcome no-op`;
+- **in fact** — the task branch carried no commits ahead of its base when the
+  completion pipeline asked, just before integration could merge it away
+  (`_branch_left_no_commits`). A branch with an empty diff has nothing for a
+  reviewer to read whatever produced it, including an ordinary worker that
+  closed `pass` having committed nothing. The question is only asked where
+  the answer survives the close — a worktree slot or `pull_request` mode; on
+  the legacy direct path verification has already merged the branch into the
+  default, so the review still fires there.
+
+Reviewer tasks run on a slot checked out on their own `aq/<id>` branch, so
+they carry a `branch_name` like any other session task; without this guard
+every finished review spawned a review *of the review*, recursively. Emitters
+that do not set the key (container settlement, custom pipelines) still fire
+the review.
 
 Both review rules also require `event.review_task` to be falsy. `no_code` is
 only as reliable as the reviewer profile's `read_only` flag: a project that
 gives its reviewers Write/Edit tools (`read_only: false`) disarms it and the
-recursion returns. `review_task` is structural instead — it is set when the
-finishing task carries the dedup key this pipeline stamps on every review it
-creates (`review:task:<task_id>` or `branch-review:<branch_name>`, see
-`src/review_keys.py`), so a review is recognised as a review whatever its
-profile says. A custom pipeline that keys its review tasks differently must
-either keep these prefixes or add its own guard.
+recursion returns. `review_task` is structural instead, and the close path sets
+it from either of two signals a profile edit cannot reach (`src/review_keys.py`
+owns both):
 
-Unlike `no_code`, `review_task` does not depend on which code path finished the
-task. `Orchestrator._emit_task_event` derives it from the task row's own dedup
-key for *every* `task.completed`, so container settlement — a review task that
-acquired children completes through that path, not through session close —
-carries the guard as well. Before that, settling a review container reopened
-the recursion the session-close guard had already closed.
+- the **dedup key** this pipeline stamps on every review it creates —
+  `review:task:<task_id>` or `branch-review:<branch_name>`;
+- the **reviewer role** — a `reviewer` or `final-reviewer` `profile_id`.
+
+The second exists because the first only marks rows the *shipped* pipeline
+created: a project that routes reviews through its own pipeline keys them
+however it likes, and with a non-read-only reviewer that left every guard blind
+and the `Review: Review: ...` chain grew again (task solid-beacon-50). A custom
+pipeline that both keys its review tasks differently *and* runs them under its
+own profile ids must add its own guard.
+
+The common event emitter derives both signals from the task row for every
+`task.completed`, so container settlement and future emitters cannot forget
+them (tasks prime-quest-67 and crisp-summit-88). The dispatch path
+(`Orchestrator._on_playbook_trigger`) derives it again from the hydrated task
+row, because `truthy: false` passes on a *missing* key: an older daemon or a
+hand-written event used to fire the review anyway (task prime-cascade-64).
+
+Neither event flag reaches a daemon still running code older than the flag, nor
+a vault copy of this file whose rules an operator edited (`ensure_default_playbooks`
+never refreshes a copy it does not recognise); both were true at once on the
+live box and the chains grew ten deep anyway (task solid-harbor-68). The last
+line of defence is therefore in the command every version of these rules must
+call: `ensure_task` refuses a `review:task:<X>` key when X itself carries a
+`review:task:` or `branch-review:` key, and the refusal follows the node's
+`on_failure` edge to `done`. Rules and event flags stop a review early; the
+command guarantees it.
 
 The `ensure_task` nodes below pin `profile_id` but no `intelligence_class`, so
 the assignment-routing playbook chooses the class for the tasks they create. A

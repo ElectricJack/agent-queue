@@ -40,11 +40,15 @@ _LEGACY_DEFAULT_PIPELINE_HASHES = frozenset(
         # guard: inert once the reviewer profiles are ``read_only: false``
         # (task sound-horizon-77.18.2).
         "9d00dee48cb3d031cf24ef6f7edac4b83ad71f5773baf2aede6f4701ffe226a3",
-        # Documented container settlement as an emitter that bypassed the
-        # ``review_task`` guard; the guard moved into ``_emit_task_event`` and
-        # now covers it (task grand-delta-24).  Rules unchanged — this entry
-        # only keeps unmodified vault copies on the current prose.
+        # Review rules with both guards, before the prose recorded profile-id
+        # recognition, dispatch's derived ``review_task``, and empty branches
+        # as ``no_code`` (tasks crisp-summit-88, prime-cascade-64, and
+        # bright-forge-78). Rules unchanged; prose only.
         "561434cc02575456cc722c46ba5563ee46e9df564fa2062c841333034b97e553",
+        # Both guards and the dispatch-derivation prose, before the prose
+        # recorded the ``ensure_task`` creation-point refusal (task
+        # solid-harbor-68).  Rules unchanged; prose only.
+        "21ff23549f6df0b908aecb73e54bd516610fd662eddf3a89760060a1b8fd2c5f",
     }
 )
 

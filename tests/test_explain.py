@@ -441,3 +441,22 @@ class TestBetweenTicks:
         res2 = await handler._cmd_explain_task({"task_id": task_row.id})
         codes = [r["code"] for r in res2["reasons"]]
         assert "workspace_locked" in codes
+
+
+class TestExplainAfterATerminalClose:
+    """A hard failure has no graph reason once the container is released.
+
+    Without naming the terminal mark, "why isn't X running" answered with an
+    empty graph for a task the cascade deliberately refuses to recover.
+    """
+
+    async def test_terminal_close_is_named(self, handler, db):
+        await mktask(db, "hard", status=TaskStatus.IN_PROGRESS)
+        await db.transition_task("hard", TaskStatus.BLOCKED, context="session_close_hard_failure")
+
+        res = await handler._cmd_explain_task({"task_id": "hard"})
+
+        assert "blocked_terminal" in res["reason_codes"]
+        details = {r["code"]: r["detail"] for r in res["reasons"]}
+        assert details["blocked_terminal"].startswith("session_close_hard_failure")
+        assert "restart or reopen" in details["blocked_terminal"]

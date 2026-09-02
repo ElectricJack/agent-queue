@@ -89,6 +89,31 @@ _READY_REASONS = {
 }
 
 
+#: ``task_metadata`` key marking a task whose *latest* entry into BLOCKED
+#: was a terminal decision rather than a graph condition.  Its value is the
+#: transition context that wrote it.  The BLOCKED-recovery rule of design
+#: §4.4 skips marked rows: the projection clearing (``is_blocked`` 1 -> 0)
+#: says nothing about a hard failure, and every child of a container carries
+#: a ``parent-child`` edge, so "has a blocking edge" alone cannot tell the
+#: two apart.  Written and removed inside ``_apply_transition`` so the mark
+#: can never be observed out of step with the status.
+TERMINAL_BLOCKED_META_KEY = "blocked_terminal"
+
+#: Transition contexts that make an entry into BLOCKED terminal: the session
+#: close's three BLOCKED legs, the execution timeout, and an operator stop.
+#: Leaving BLOCKED by any route (restart, reopen, supervisor recovery, admin
+#: skip) clears the mark; only an explicit decision brings the task back.
+TERMINAL_BLOCKED_CONTEXTS = frozenset(
+    {
+        "session_close_hard_failure",
+        "max_retries",
+        "session_close_pipeline_stop",
+        "timeout",
+        "stop_task",
+    }
+)
+
+
 def _ready_reason(context: str) -> str:
     """Resolve a ``transition_task`` context to its ``task.ready`` reason."""
     if context in _READY_REASONS:
@@ -827,6 +852,24 @@ class TaskQueryMixin:
             if not stable:
                 result.flipped = await self.recompute_blocked({task_id}, conn=conn)
 
+            # Terminal-BLOCKED bookkeeping (see TERMINAL_BLOCKED_META_KEY).
+            # Same transaction as the status write, so the promotion cascade
+            # never sees a hard-failed BLOCKED row without its mark.
+            if new_status == TaskStatus.BLOCKED:
+                if context in TERMINAL_BLOCKED_CONTEXTS:
+                    await self._upsert_meta(
+                        task_id, TERMINAL_BLOCKED_META_KEY, context, conn=conn
+                    )
+            elif current_status == TaskStatus.BLOCKED:
+                await conn.execute(
+                    delete(task_metadata).where(
+                        and_(
+                            task_metadata.c.task_id == task_id,
+                            task_metadata.c.key == TERMINAL_BLOCKED_META_KEY,
+                        )
+                    )
+                )
+
             if not was_frontier:
                 reason = _ready_reason(context)
                 for tid in await self._note_frontier_entry(conn, {task_id}, reason=reason):
@@ -1286,6 +1329,28 @@ class TaskQueryMixin:
                     )
                 )
             )
+
+    async def task_ids_with_meta(self, task_ids: list[str], key: str) -> set[str]:
+        """Of *task_ids*, which carry metadata *key* (any value)?
+
+        One query for a whole candidate set — the promotion cascade asks this
+        every cycle for every BLOCKED task, where a per-task ``get_task_meta``
+        would be one round-trip each.
+        """
+        if not task_ids:
+            return set()
+        async with self._engine.begin() as conn:
+            rows = (
+                await conn.execute(
+                    select(task_metadata.c.task_id).where(
+                        and_(
+                            task_metadata.c.task_id.in_(sorted(set(task_ids))),
+                            task_metadata.c.key == key,
+                        )
+                    )
+                )
+            ).fetchall()
+        return {r[0] for r in rows}
 
     # ---- task_labels (free-text tags — aq-surface spec `task_set`) ----
 

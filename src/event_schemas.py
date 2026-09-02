@@ -87,16 +87,16 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
     },
     "task.completed": {
         "required": ["task_id", "project_id", "title"],
-        # ``no_code``: set by the session close path when the task by
-        # construction left no commits behind (``read_only`` profile or
-        # ``--work-outcome no-op``).  The default pipeline's review rules
-        # skip such tasks; emitters that omit it are treated as code-bearing.
-        # ``review_task``: stamped by ``_emit_task_event`` itself, for every
-        # emitter, when the task is one the pipeline created as a review
-        # (``review:task:`` / ``branch-review:`` dedup key, see
-        # ``src/review_keys.py``).  The review rules skip these too,
-        # independent of any profile flag; a hand-rolled emit that bypasses
-        # ``_emit_task_event`` and omits the key is treated as ordinary work.
+        # ``no_code``: set by the session close path when the task left no
+        # commits behind — by construction (``read_only`` profile or
+        # ``--work-outcome no-op``) or in fact (the task branch carried no
+        # commits ahead of its base when the completion pipeline asked).
+        # The default pipeline's review rules skip such tasks; emitters that
+        # omit it are treated as code-bearing.
+        # ``review_task``: set by every emitter when either the task's dedup
+        # key or its reviewer profile identifies it as a review (see
+        # ``src/review_keys.py``).  The pipeline dispatch path also re-derives
+        # the dedup-key signal from the hydrated row for older emitters.
         "optional": ["agent_id", "agent_type", "no_code", "review_task"],
     },
     "task.failed": {
