@@ -1,0 +1,9 @@
+{
+  "artifact_diagnostics": [],
+  "loop_ids": [
+    "per-branch-final-review--gate-downstream-pr-merged",
+    "per-task-review--gate-downstream"
+  ],
+  "rule_count": 5,
+  "step_count": 19
+}

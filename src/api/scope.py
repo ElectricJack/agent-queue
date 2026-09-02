@@ -143,7 +143,14 @@ _TRIAGE_COMMANDS = frozenset({
     "list_profiles", "list_intelligence_classes", "task_route",
 })
 
-_PLAYBOOK_COMPILER_COMMANDS = frozenset({"playbook_validate", "playbook_install"})
+_PLAYBOOK_COMPILER_COMMANDS = frozenset(
+    {
+        "playbook_validate",
+        "playbook_install",
+        "playbook_v2_validate",
+        "playbook_v2_propose",
+    }
+)
 
 # A reviewer task's whole job is a verdict on *another* task: read it, and
 # either approve (close its own review task) or reject.  Rejection is
