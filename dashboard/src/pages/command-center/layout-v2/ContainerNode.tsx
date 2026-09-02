@@ -23,7 +23,7 @@ export default function ContainerNode({ data, selected }: ContainerNodeProps) {
         {(node.agg_blocked ?? 0) > 0 && <span className="shrink-0 text-amber-300">{node.agg_blocked} blocked</span>}
         <button type="button" aria-label={`Focus on ${node.title}`} className="nodrag nopan rounded p-0.5 hover:bg-white/10"
           onClick={(e) => { e.stopPropagation(); onFocus?.(node.id); }}><MagnifyingGlassPlusIcon className="h-3.5 w-3.5" /></button>
-        <button type="button" aria-label={`Collapse children of ${node.title}`} aria-expanded className="nodrag nopan rounded p-0.5 hover:bg-white/10"
+        <button type="button" aria-label={`Collapse children of ${node.title}`} aria-expanded={true} className="nodrag nopan rounded p-0.5 hover:bg-white/10"
           onClick={(e) => { e.stopPropagation(); onToggleChildren?.(node.id); }}><ChevronDownIcon className="h-3.5 w-3.5" /></button>
       </div>
       <Handle id="out-right" type="source" position={Position.Right} isConnectable={false} />

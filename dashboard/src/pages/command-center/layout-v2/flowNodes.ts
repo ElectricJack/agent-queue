@@ -37,7 +37,7 @@ export function toFlowElements(store: LayoutStore, ctx: FlowContext): { nodes: N
       const data: ContainerNodeData = { node: n, projectId: ctx.projectId, ...ctx.handlers };
       nodes.push({ id: n.id, type: "container", position, ...sizePx(n.w, n.h), zIndex: n.depth, selectable: false, draggable: false, connectable: false, data });
     } else {
-      nodes.push({ id: n.id, type: "task", position, ...sizePx(1, 1), zIndex: 10 + n.depth, draggable: false, connectable: false, data: taskData(n, ctx, gatesFor(n.id)) });
+      nodes.push({ id: n.id, type: "task", position, ...sizePx(1, 1), zIndex: 100 + n.depth, draggable: false, connectable: false, data: taskData(n, ctx, gatesFor(n.id)) });
     }
   }
   for (const s of store.stubs.values()) {
