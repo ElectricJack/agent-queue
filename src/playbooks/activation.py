@@ -245,10 +245,15 @@ def _load_definition(path: str | None, artifact_sha256: str | None) -> Any | Non
     it raises :class:`ArtifactVerificationFailed`, just like
     :meth:`ArtifactStore.load`, so callers cannot accidentally trust mutable
     content at the path stored in the artifact row.
+
+    Parsing goes through Package 2's ``load_definition_json`` for the same
+    reason :meth:`ArtifactStore.load` does: a hash-valid file can still carry a
+    duplicate object key, and health must not report ``ready`` for an artifact
+    the canonical loader refuses.
     """
     if not path:
         return None
-    from src.playbooks.definition import PlaybookDefinition
+    from src.playbooks.definition import load_definition_json
 
     target = Path(path)
     try:
@@ -259,7 +264,7 @@ def _load_definition(path: str | None, artifact_sha256: str | None) -> Any | Non
     if artifact_sha256 and actual_sha256 != artifact_sha256:
         raise ArtifactVerificationFailed(f"artifact at {target} does not match {artifact_sha256}")
     try:
-        return PlaybookDefinition.model_validate_json(data)
+        return load_definition_json(data.decode("utf-8"))
     except Exception:  # noqa: BLE001 - any malformed artifact reads as absent
         logger.warning("Playbook V2 artifact at %s could not be loaded for health", path)
         return None

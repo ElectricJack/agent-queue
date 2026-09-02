@@ -712,7 +712,11 @@ def load_definition_json(text: str) -> PlaybookDefinition:
 
     Package 3's ``ArtifactStore.load`` uses this rather than ``json.loads`` so a
     stored artifact cannot carry a duplicate key that a re-serialization would
-    silently resolve one way and a hash check the other.
+    silently resolve one way and a hash check the other.  Activation health
+    (``src/playbooks/activation.py:_load_definition``) reads stored artifacts
+    through it for the same reason: every read of stored artifact text is this
+    one parse, so nothing downstream can disagree with ``validate`` about what
+    an artifact says.
     """
     return PlaybookDefinition.model_validate(_load_no_duplicates(text))
 
