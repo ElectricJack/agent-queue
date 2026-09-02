@@ -1318,6 +1318,146 @@ class IntegrationConfig:
         return errors
 
 
+def _opt_int(value) -> int | None:
+    """``int(value)`` unless it is null/blank, in which case ``None``.
+
+    Lets ``cores:`` and friends be written as an explicit ``null`` (or left
+    out) to mean "derive it", without an ``int(None)`` crash at load time.
+    """
+    if value is None or value == "":
+        return None
+    return int(value)
+
+
+@dataclass
+class ResourceCgroupConfig:
+    """Hard per-session limits via cgroup v2 (resource-gating layer 3).
+
+    Off by default because it needs a one-time root step: the daemon's user
+    slice must have ``Delegate=yes`` (or a sudoers rule for
+    ``systemd-run --scope``) before an unprivileged process may create a
+    scope with its own CPU/memory controllers.  See
+    ``scripts/setup-cgroup-delegation.sh``.  When delegation is missing the
+    launcher logs once and falls back to layer 1 (env caps + nice) rather
+    than failing the launch — a box without systemd delegation still has to
+    be able to run agents.
+    """
+
+    enabled: bool = False
+    #: ``CPUQuota=`` percent.  100 = one core; 600 = six cores.
+    cpu_quota_percent: int = 600
+    #: ``MemoryMax=`` value, in systemd's syntax (``6G``, ``512M``).
+    memory_max: str = "6G"
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        if self.cpu_quota_percent <= 0:
+            errors.append(
+                ConfigError("resources.cgroups", "cpu_quota_percent", "must be positive")
+            )
+        if not str(self.memory_max).strip():
+            errors.append(
+                ConfigError("resources.cgroups", "memory_max", "must not be empty")
+            )
+        return errors
+
+
+@dataclass
+class ResourcesConfig:
+    """Resource gating so N concurrent agents cannot saturate one box.
+
+    The problem this exists for: 8 agents each running ``pytest -n auto`` on
+    a 24-core box is up to 192 test processes, load 60+, and SIGKILLed
+    sessions.  Three layers, each usable on its own:
+
+    1. **Session env caps** — every session launch carries
+       ``PYTEST_XDIST_AUTO_NUM_WORKERS`` and the BLAS/OpenMP/libuv thread
+       caps derived from :meth:`cpu_share`, plus ``nice -n session_nice`` on
+       the harness process so the daemon, dashboard and tmux stay
+       responsive under load.
+    2. **Global test semaphore** — ``aq test`` takes one of ``test_slots``
+       flock slots before running pytest, so the *sum* over all sessions is
+       bounded, not just each session individually.
+    3. **cgroup scopes** — see :class:`ResourceCgroupConfig`.
+
+    ``cores`` defaults to ``os.cpu_count()``; ``max_concurrent_agents`` is
+    the denominator of the per-session share and should match the largest
+    project's ``max_concurrent_agents``.
+    """
+
+    enabled: bool = True
+    #: Physical budget.  ``None`` → ``os.cpu_count()`` at read time.
+    cores: int | None = None
+    #: How many agents the box is expected to run at once.
+    max_concurrent_agents: int = 8
+    #: Explicit per-session core share.  ``None`` → derived (see
+    #: :meth:`cpu_share`).
+    per_session_cpu_share: int | None = None
+    #: ``nice`` increment applied to the harness process.  0 disables.
+    session_nice: int = 10
+    #: Concurrent ``aq test`` runs allowed across the whole box.
+    test_slots: int = 2
+    #: ``-n`` cap ``aq test`` enforces.  ``None`` → :meth:`cpu_share`.
+    test_workers: int | None = None
+    #: Seconds ``aq test`` waits for a slot before giving up.
+    test_wait_timeout: int = 1800
+    #: Slot poll interval while waiting, in seconds.
+    test_poll_interval: float = 2.0
+    #: ``-m`` expression ``aq test`` applies when the caller passed none.
+    test_deselect_markers: str = "not tmux and not integration and not perf"
+    #: doctor ``resources.load`` warns when the 5-minute load average
+    #: exceeds ``cores * load_warn_ratio``.
+    load_warn_ratio: float = 1.0
+    #: doctor ``resources.test_pressure`` warns above this many pytest
+    #: processes box-wide.
+    max_pytest_processes: int = 24
+    cgroups: ResourceCgroupConfig = field(default_factory=ResourceCgroupConfig)
+
+    def core_count(self) -> int:
+        """The core budget: configured ``cores``, else the machine's."""
+        if self.cores and self.cores > 0:
+            return int(self.cores)
+        return os.cpu_count() or 1
+
+    def cpu_share(self) -> int:
+        """Cores one session may assume it has.
+
+        ``per_session_cpu_share`` when set, else
+        ``cores // max_concurrent_agents``, floored at 1 so a small box or a
+        large agent count never derives 0 workers (``-n 0`` is not a thing
+        xdist accepts, and ``OMP_NUM_THREADS=0`` is undefined behaviour).
+        """
+        if self.per_session_cpu_share and self.per_session_cpu_share > 0:
+            return int(self.per_session_cpu_share)
+        agents = max(1, int(self.max_concurrent_agents or 1))
+        return max(1, self.core_count() // agents)
+
+    def test_worker_cap(self) -> int:
+        """``-n`` value ``aq test`` enforces."""
+        if self.test_workers and self.test_workers > 0:
+            return int(self.test_workers)
+        return self.cpu_share()
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        for key in ("cores", "per_session_cpu_share", "test_workers"):
+            value = getattr(self, key)
+            if value is not None and value <= 0:
+                errors.append(ConfigError("resources", key, "must be positive or null"))
+        for key in ("max_concurrent_agents", "test_slots"):
+            if getattr(self, key) <= 0:
+                errors.append(ConfigError("resources", key, "must be positive"))
+        for key in ("test_wait_timeout", "test_poll_interval", "max_pytest_processes"):
+            if getattr(self, key) < 0:
+                errors.append(ConfigError("resources", key, "must be >= 0"))
+        if not -20 <= self.session_nice <= 19:
+            errors.append(ConfigError("resources", "session_nice", "must be between -20 and 19"))
+        if self.load_warn_ratio <= 0:
+            errors.append(ConfigError("resources", "load_warn_ratio", "must be positive"))
+        errors.extend(self.cgroups.validate())
+        return errors
+
+
 @dataclass
 class SwarmConfig:
     """Pull-based worker pools (swarm-work-model §10–§12, §17).
@@ -1403,6 +1543,7 @@ class AppConfig:
     work_graph: WorkGraphConfig = field(default_factory=WorkGraphConfig)
     integration: IntegrationConfig = field(default_factory=IntegrationConfig)
     swarm: SwarmConfig = field(default_factory=SwarmConfig)
+    resources: ResourcesConfig = field(default_factory=ResourcesConfig)
     agent_profiles: list[AgentProfileConfig] = field(default_factory=list)
     global_token_budget_daily: int | None = None
     max_daily_playbook_tokens: int | None = None
@@ -1576,6 +1717,7 @@ class AppConfig:
         errors.extend(self.work_graph.validate())
         errors.extend(self.integration.validate())
         errors.extend(self.swarm.validate())
+        errors.extend(self.resources.validate())
         # ``supervisor_agent.enabled`` needs the message queue and named
         # sessions to exist (supervisor-agent spec §10).
         if self.supervisor_agent.enabled and not (self.messages.enabled and self.sessions.enabled):
@@ -1662,6 +1804,7 @@ class AppConfig:
         updated.work_graph = fresh.work_graph
         updated.integration = fresh.integration
         updated.swarm = fresh.swarm
+        updated.resources = fresh.resources
         updated.pricing = fresh.pricing
         updated.surface = fresh.surface
 
@@ -1691,6 +1834,7 @@ HOT_RELOADABLE_SECTIONS = {
     "work_graph",
     "integration",
     "swarm",
+    "resources",
     "pricing",
     "surface",
 }
@@ -1755,6 +1899,7 @@ _SECTION_FIELDS = {
     "state_machine",
     "work_graph",
     "swarm",
+    "resources",
     "agent_profiles",
     "global_token_budget_daily",
     "max_daily_playbook_tokens",
@@ -2436,6 +2581,34 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             scale_down_grace=int(sw.get("scale_down_grace", 120)),
             prepare_timeout=int(sw.get("prepare_timeout", 120)),
             max_filings_per_task=int(sw.get("max_filings_per_task", 20)),
+        )
+
+    if "resources" in raw and isinstance(raw["resources"], dict):
+        res = raw["resources"]
+        cg_raw = res.get("cgroups")
+        cgroups = ResourceCgroupConfig()
+        if isinstance(cg_raw, dict):
+            cgroups = ResourceCgroupConfig(
+                enabled=bool(cg_raw.get("enabled", False)),
+                cpu_quota_percent=int(cg_raw.get("cpu_quota_percent", 600)),
+                memory_max=str(cg_raw.get("memory_max", "6G")),
+            )
+        config.resources = ResourcesConfig(
+            enabled=bool(res.get("enabled", True)),
+            cores=_opt_int(res.get("cores")),
+            max_concurrent_agents=int(res.get("max_concurrent_agents", 8)),
+            per_session_cpu_share=_opt_int(res.get("per_session_cpu_share")),
+            session_nice=int(res.get("session_nice", 10)),
+            test_slots=int(res.get("test_slots", 2)),
+            test_workers=_opt_int(res.get("test_workers")),
+            test_wait_timeout=int(res.get("test_wait_timeout", 1800)),
+            test_poll_interval=float(res.get("test_poll_interval", 2.0)),
+            test_deselect_markers=str(
+                res.get("test_deselect_markers", ResourcesConfig.test_deselect_markers)
+            ),
+            load_warn_ratio=float(res.get("load_warn_ratio", 1.0)),
+            max_pytest_processes=int(res.get("max_pytest_processes", 24)),
+            cgroups=cgroups,
         )
 
     if "agent_profiles" in raw:

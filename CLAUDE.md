@@ -14,6 +14,7 @@ Agent Queue — self-improving orchestration platform for AI coding agents. Mana
 - **Workspaces:** `src/orchestrator/workspace.py` + `src/orchestrator/workspace_attachments.py` (multi-kind acquisition), `src/database/queries/workspace_queries.py` + `workspace_kinds_queries.py` + `task_requirements_queries.py`. Tasks declare `requires_kinds` at creation; orchestrator atomically acquires one workspace per declared kind in canonical lock order. Kinds are markdown in `vault/[projects/<pid>/]workspace-kinds/<id>.md` (system + project override) — built-ins seeded by migration: `project-repo` (writable, exclusive lock), `vault` (auto-attached, no lock), `readonly-dir`. See `docs/specs/design/workspaces-v2.md`.
 - **Formulas:** `src/task_graph/formulas.py` (registry, `extends` merge, vars), `src/commands/formula_commands.py` (`formula_list|show|cook`), provenance in `creator.write_plan`. Files: `vault/[projects/<pid>/]formulas/<name>.md` (frontmatter + one `aq-graph` block). Spec: design spec Part III.
 - **Swarm (claims/pools):** `src/database/queries/claim_queries.py` (claim transaction, epoch fence), `src/commands/claim_commands.py` (`task_claim`), `src/orchestrator/pools.py` (`_reconcile_pools`; pure `size_pools` in `scheduler.py`), pool carve-outs in `src/sessions/reconciler.py`, checks in `src/doctor/pool_checks.py`. Profiles with `lifecycle: pool` pull work via `aq task claim`; `lifecycle: task` keeps push. Off by default (`swarm.enabled`). Spec: `docs/superpowers/specs/2026-08-28-swarm-work-model-design.md` Part II.
+- **Resource gating:** `src/resources/` — `limits.py` (per-session env caps + `nice` + optional cgroup scopes, applied in `src/sessions/spec.py:_build`), `semaphore.py` (the box-wide `flock` slot semaphore behind `aq test`), `procs.py` (attribute load back to sessions). Config section `resources:`; checks in `src/doctor/resource_checks.py`; CLI in `src/cli/test_runner.py`. Guide: `docs/guides/resource-gating.md`.
 - **Config editor:** `src/config_editor.py` — ruamel round-trip writer behind `get_config` / `update_config` / `get_config_schema`. Validates via temp-file `load_config()` before swap.
 - **Intelligence:** `prompt_builder.py`, `tools/registry.py`, `llm_logger.py`. Reflection is a playbook, not a module.
 - **LLM direct path:** `src/llm/` — `LLMClient.complete`/`run_tools`, `LLMCallSpec`, config `llm:`, intelligence classes shared with sessions. Consumers: playbook nodes/transitions, plugin `invoke_llm`, the reference-stub enricher, and `aq vault rebuild-index --with-summaries`.
@@ -33,7 +34,7 @@ Agent Queue — self-improving orchestration platform for AI coding agents. Mana
 ```bash
 pip install -e ".[dev,cli]"
 pip install -e packages/aq-client      # typed API client (generated)
-pytest tests/test_orchestrator.py -n auto -q   # focused tests for what you changed (see Testing below)
+aq test tests/test_orchestrator.py                # focused tests for what you changed (see Testing below)
 ./run.sh start                         # start daemon
 ```
 
@@ -48,19 +49,28 @@ pytest tests/test_orchestrator.py -n auto -q   # focused tests for what you chan
 The suite is **11,330 tests** and, until the schema-cache work lands, every fresh test database replays 58 alembic migrations (~8 s each, ~2,700 tests pay it). A full run takes **~14 minutes on 24 cores and effectively never finishes serially**. Running it casually stalls every agent on the machine.
 
 Rules:
+- **Use `aq test`, not bare `pytest`, for anything past a single file.** It takes one of the box's global test slots first, so eight agents testing at once cannot become 200 test processes, and it applies the worker cap and the default marker deselects for you. Everything that is not an `--aq-*` option goes to pytest untouched:
+  ```bash
+  aq test tests/test_playbook_runner.py          # the file for the module you changed
+  aq test tests/test_claim_queries.py tests/test_pools.py
+  aq test tests/ -k "schema_setup or run_schema"
+  aq test --aq-status                            # who is holding the slots
+  aq test --aq-help                              # -h belongs to pytest
+  ```
+  A `waiting for 1 of 2 test slot(s)` line means the box is busy, not that you are stuck. Exit code 75 means no slot came free — retry, it is not a test failure. Plain `pytest` still works for a single quick file.
 - **Never run a bare `pytest` / `pytest tests/` mid-task.** Run only the tests for the code you touch.
-- **Always run in parallel:** add `-n auto` (pytest-xdist is installed). Single-file runs may go without it.
+- **Never override the worker count upward.** `-n auto` inside a session already resolves to this box's per-session share (`PYTEST_XDIST_AUTO_NUM_WORKERS`, derived from cores ÷ concurrent agents); passing a bigger `-n` bypasses the gating and is what took the box down on 2026-09-01. See [resource gating](docs/guides/resource-gating.md).
 - **Find focused tests** (the layout is one file per area, `tests/test_<area>.py`, plus `tests/perf/`, `tests/llm/`, `tests/fixtures/`):
   ```bash
-  pytest tests/test_playbook_runner.py -n auto -q          # the file for the module you changed
-  pytest tests/test_claim_queries.py tests/test_pools.py -n auto -q   # a few related files
-  pytest -k "schema_setup or run_schema" -n auto -q         # by name, across files
-  pytest --co -q -k <term> | tail -20                        # discover which tests mention <term>
-  pytest --lf -n auto -q                                     # re-run only what failed last time
-  pytest tests/test_x.py -x -q                               # stop at first failure while iterating
+  aq test tests/test_playbook_runner.py            # the file for the module you changed
+  aq test tests/test_claim_queries.py tests/test_pools.py    # a few related files
+  aq test tests/ -k "schema_setup or run_schema"   # by name, across files
+  aq test tests/test_x.py -x                       # stop at first failure while iterating
+  aq test --lf                                     # re-run only what failed last time
+  pytest --co -q -k <term> | tail -20              # collection only — no slot needed
   ```
-- **Skip the slow-by-nature markers** unless the change is about them: `-m "not tmux and not integration and not perf"` (real tmux, Milvus, latency budgets).
-- **One broader run at the end of a task, not during:** the area suite for what you changed (e.g. `pytest tests/test_playbook*.py tests/test_pipeline*.py -n auto -q`). The whole-repo run is for CI and explicit review gates only.
+- **Skip the slow-by-nature markers** unless the change is about them (real tmux, Milvus, latency budgets). `aq test` applies `-m "not tmux and not integration and not perf"` by default; pass your own `-m` (or `--aq-all-markers`) when the change *is* about them.
+- **One broader run at the end of a task, not during:** the area suite for what you changed (e.g. `aq test tests/test_playbook*.py tests/test_pipeline*.py`). The whole-repo run is for CI and explicit review gates only.
 - Ruff on changed files only: `ruff check <paths>`.
 
 ## Database Migrations (Alembic)

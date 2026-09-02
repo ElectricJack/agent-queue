@@ -1379,6 +1379,48 @@ class Orchestrator(
         await self._notify_stuck_chain(task)
         return None
 
+    def _log_resource_gating(self) -> None:
+        """State the resource budget once, at startup.
+
+        Silent gating is the kind that gets debugged for an hour: an agent
+        that sees ``-n auto`` resolve to 3 on a 24-core box needs to be able
+        to find, in the daemon log, the line that says why.  This also
+        triggers the cgroup-delegation probe so its "not delegated" notice
+        appears once here rather than at the first launch that wanted it.
+        """
+        from src.resources.limits import cgroup_delegation, resolve_budget
+
+        budget = resolve_budget(self.config)
+        if budget is None:
+            logger.info("Resource gating: disabled (resources.enabled = false)")
+            return
+        logger.info(
+            "Resource gating: %d core(s) / %d concurrent agent(s) -> %d worker(s) "
+            "per session, nice +%d, %d global test slot(s)",
+            budget.cores,
+            budget.max_concurrent_agents,
+            budget.cpu_share,
+            budget.nice,
+            budget.test_slots,
+        )
+        cgroups = getattr(self.config.resources, "cgroups", None)
+        if cgroups is not None and cgroups.enabled:
+            delegation = cgroup_delegation()
+            if delegation.available:
+                logger.info(
+                    "Resource gating: sessions launch in a systemd scope "
+                    "(CPUQuota=%d%%, MemoryMax=%s)",
+                    cgroups.cpu_quota_percent,
+                    cgroups.memory_max,
+                )
+            else:
+                logger.warning(
+                    "Resource gating: cgroups requested but not available (%s) — "
+                    "falling back to env caps + nice.  See "
+                    "scripts/setup-cgroup-delegation.sh",
+                    delegation.reason,
+                )
+
     async def initialize(self) -> None:
         """Bootstrap the orchestrator and all subsystems.
 
@@ -1411,6 +1453,7 @@ class Orchestrator(
         Called by ``main.py`` during startup, after ``load_config()`` but
         before the Discord bot connects.
         """
+        self._log_resource_gating()
         await self.db.initialize()
         from src.agents.configuration import ensure_supervisor_agent
         supervisor_agent = await ensure_supervisor_agent(self.db)

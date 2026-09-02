@@ -423,6 +423,50 @@ with the flag off, and `aq doctor` reports the same condition as
 `pools.disabled` (WARN, report-only — flipping the flag is an operator
 decision, not a repair).
 
+### 4.11a `resources` Section
+
+Maps to `ResourcesConfig` / `ResourceCgroupConfig` (`src/config.py`). The YAML
+key is `resources`. See `docs/guides/resource-gating.md` for the operational
+guide and `docs/analysis/2026-09-01-resource-gating-verification.md` for the
+before/after measurements.
+
+Bounds what concurrent agents may take from one machine. Three layers, each
+usable alone: per-session environment caps plus `nice` (applied by
+`src/sessions/spec.py:_build`), a box-wide `flock` semaphore that `aq test`
+takes before running pytest, and optional cgroup v2 scopes with hard
+`CPUQuota`/`MemoryMax`. The whole section is hot-reloadable — the launcher
+reads it per launch and `aq test` reads it per run.
+
+| YAML key | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | `bool` | `True` | Master switch. `false` derives nothing: launches carry no caps and no `nice`, and the `resources.*` doctor checks report `info`. |
+| `cores` | `int \| None` | `None` | Core budget. `None` reads `os.cpu_count()`. |
+| `max_concurrent_agents` | `int` | `8` | Denominator of the per-session share. Should match the largest project's `max_concurrent_agents`. |
+| `per_session_cpu_share` | `int \| None` | `None` | Explicit share override. `None` derives `cores // max_concurrent_agents`, floored at 1. |
+| `session_nice` | `int` | `10` | `nice` increment on the harness process, so the daemon, API, dashboard and tmux stay schedulable under agent load. `0` disables. |
+| `test_slots` | `int` | `2` | Concurrent `aq test` runs allowed box-wide. |
+| `test_workers` | `int \| None` | `None` | `-n` cap `aq test` enforces. `None` uses the per-session share. |
+| `test_wait_timeout` | `int` | `1800` | Seconds `aq test` waits for a slot before exiting `75` (`EX_TEMPFAIL`). |
+| `test_poll_interval` | `float` | `2.0` | Slot poll interval while waiting; also the cadence of the "waiting" line. |
+| `test_deselect_markers` | `str` | `"not tmux and not integration and not perf"` | `-m` expression `aq test` applies when the caller passed none. |
+| `load_warn_ratio` | `float` | `1.0` | `resources.load` warns when the 5-minute load average exceeds `cores × this`. |
+| `max_pytest_processes` | `int` | `24` | `resources.test_pressure` warns above this many pytest processes box-wide (xdist workers included). `0` disables the check. |
+| `cgroups.enabled` | `bool` | `False` | Launch each session inside a `systemd-run --user --scope`. Requires a one-time root step (`scripts/setup-cgroup-delegation.sh`); degrades to the other layers with a startup log line and a doctor warning when delegation is absent. |
+| `cgroups.cpu_quota_percent` | `int` | `600` | `CPUQuota=` percent. 100 = one core. |
+| `cgroups.memory_max` | `str` | `"6G"` | `MemoryMax=`, in systemd syntax. |
+
+Validation (`ResourcesConfig.validate`): `cores`, `per_session_cpu_share` and
+`test_workers` must be positive or null; `max_concurrent_agents` and
+`test_slots` must be positive; `test_wait_timeout`, `test_poll_interval` and
+`max_pytest_processes` must be `>= 0`; `session_nice` must be within
+`-20..19`; `load_warn_ratio` must be positive; `cgroups.cpu_quota_percent`
+must be positive and `cgroups.memory_max` non-empty.
+
+**Harness `env` blocks win.** `session_env_caps()` skips any key already
+present in the harness's own `env` map (`vault/harnesses/<id>.md`), so an
+operator-pinned `PYTEST_XDIST_AUTO_NUM_WORKERS` stays authoritative. Deleting
+that line is what switches a box over to the config-derived value.
+
 ### 4.12 `integration` Section
 
 Maps to `IntegrationConfig`. The YAML key is `integration`.
