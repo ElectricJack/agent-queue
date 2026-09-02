@@ -17617,6 +17617,214 @@
         "type": "object",
         "title": "ExplainTaskResponse"
       },
+      "ExplanationEffect": {
+        "properties": {
+          "operation": {
+            "type": "string",
+            "title": "Operation"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "condition": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Condition"
+          },
+          "subject": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subject"
+          }
+        },
+        "type": "object",
+        "required": [
+          "operation",
+          "text"
+        ],
+        "title": "ExplanationEffect"
+      },
+      "ExplanationInput": {
+        "properties": {
+          "field": {
+            "type": "string",
+            "title": "Field"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "value": {
+            "$ref": "#/components/schemas/ExplanationValue"
+          },
+          "required": {
+            "type": "boolean",
+            "title": "Required",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "field",
+          "label",
+          "value"
+        ],
+        "title": "ExplanationInput"
+      },
+      "ExplanationLoop": {
+        "properties": {
+          "source_text": {
+            "type": "string",
+            "title": "Source Text"
+          },
+          "item_binding": {
+            "type": "string",
+            "title": "Item Binding"
+          },
+          "source_raw": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Raw"
+          }
+        },
+        "type": "object",
+        "required": [
+          "source_text",
+          "item_binding"
+        ],
+        "title": "ExplanationLoop"
+      },
+      "ExplanationOutcome": {
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "title": "Outcome"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "classification": {
+            "type": "string",
+            "enum": [
+              "success",
+              "failure"
+            ],
+            "title": "Classification"
+          },
+          "target_node_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Node Id"
+          },
+          "target_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Label"
+          }
+        },
+        "type": "object",
+        "required": [
+          "outcome",
+          "label",
+          "classification"
+        ],
+        "title": "ExplanationOutcome"
+      },
+      "ExplanationResultBinding": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "fields": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Fields",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "ExplanationResultBinding"
+      },
+      "ExplanationValue": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "literal",
+              "event_ref",
+              "binding_ref",
+              "loop_ref",
+              "template",
+              "unresolved"
+            ],
+            "title": "Kind"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "raw": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Raw"
+          },
+          "redacted": {
+            "type": "boolean",
+            "title": "Redacted",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind",
+          "text"
+        ],
+        "title": "ExplanationValue"
+      },
       "ExportProfileRequest": {
         "properties": {
           "profile_id": {
@@ -24234,6 +24442,131 @@
         "type": "object",
         "title": "ModelTokens"
       },
+      "NodeExplanation": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "command": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Command"
+          },
+          "contract_fingerprint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contract Fingerprint"
+          },
+          "capability": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capability"
+          },
+          "effects": {
+            "items": {
+              "$ref": "#/components/schemas/ExplanationEffect"
+            },
+            "type": "array",
+            "title": "Effects",
+            "default": []
+          },
+          "inputs": {
+            "items": {
+              "$ref": "#/components/schemas/ExplanationInput"
+            },
+            "type": "array",
+            "title": "Inputs",
+            "default": []
+          },
+          "result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExplanationResultBinding"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "outcomes": {
+            "items": {
+              "$ref": "#/components/schemas/ExplanationOutcome"
+            },
+            "type": "array",
+            "title": "Outcomes",
+            "default": []
+          },
+          "loop": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExplanationLoop"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "idempotency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency"
+          },
+          "retry": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retry"
+          },
+          "unrendered_fields": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Unrendered Fields",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind",
+          "title"
+        ],
+        "title": "NodeExplanation"
+      },
       "NoteSummary": {
         "properties": {
           "name": {
@@ -24562,6 +24895,16 @@
           },
           "details": {
             "$ref": "#/components/schemas/CompiledPlaybookNode"
+          },
+          "explanation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NodeExplanation"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",

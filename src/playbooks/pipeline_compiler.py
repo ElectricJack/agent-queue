@@ -32,6 +32,7 @@ from typing import Any
 
 import yaml
 
+from src.commands.contracts import CONTRACTS
 from src.playbooks.compiler import CompilationResult
 from src.playbooks.models import CompiledPlaybook, PlaybookNode
 
@@ -39,20 +40,9 @@ logger = logging.getLogger(__name__)
 
 _JSON_BLOCK_RE = re.compile(r"```json\s*\n(.*?)```", re.DOTALL)
 
-PIPELINE_COMMAND_WHITELIST: frozenset[str] = frozenset(
-    {
-        "create_task",
-        "ensure_task",
-        "edit_task",
-        "add_dependency",
-        "gate_create",
-        "gate_resolve",
-        "list_tasks",
-        "get_downstream_tasks",
-        "task_batch_commit",
-        "task_route",
-    }
-)
+# The literal set is intentionally represented by registrations; changing the
+# commands available to a pipeline now requires its typed execution contract.
+PIPELINE_COMMAND_WHITELIST: frozenset[str] = CONTRACTS.names()
 
 
 def _err(node: str | None, field: str | None, message: str) -> dict[str, Any]:

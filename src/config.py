@@ -862,6 +862,8 @@ class PlaybooksConfig:
     """
 
     enabled: bool = False
+    #: Add contract-derived intent to V1 graph-view nodes.  Removed in Package 5.
+    contract_intent: bool = True
 
     def validate(self) -> list[ConfigError]:
         return []

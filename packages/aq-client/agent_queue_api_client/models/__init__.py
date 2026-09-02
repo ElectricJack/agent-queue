@@ -186,6 +186,14 @@ from .explain_reason import ExplainReason
 from .explain_task_request import ExplainTaskRequest
 from .explain_task_response import ExplainTaskResponse
 from .explain_task_response_422 import ExplainTaskResponse422
+from .explanation_effect import ExplanationEffect
+from .explanation_input import ExplanationInput
+from .explanation_loop import ExplanationLoop
+from .explanation_outcome import ExplanationOutcome
+from .explanation_outcome_classification import ExplanationOutcomeClassification
+from .explanation_result_binding import ExplanationResultBinding
+from .explanation_value import ExplanationValue
+from .explanation_value_kind import ExplanationValueKind
 from .export_profile_request import ExportProfileRequest
 from .export_profile_response import ExportProfileResponse
 from .export_profile_response_422 import ExportProfileResponse422
@@ -481,6 +489,7 @@ from .message_status_response_422 import MessageStatusResponse422
 from .metrics_sample import MetricsSample
 from .metrics_series_response import MetricsSeriesResponse
 from .model_tokens import ModelTokens
+from .node_explanation import NodeExplanation
 from .note_summary import NoteSummary
 from .orchestrator_control_request import OrchestratorControlRequest
 from .orchestrator_control_response import OrchestratorControlResponse
@@ -1092,6 +1101,14 @@ __all__ = (
     "ExplainTaskRequest",
     "ExplainTaskResponse",
     "ExplainTaskResponse422",
+    "ExplanationEffect",
+    "ExplanationInput",
+    "ExplanationLoop",
+    "ExplanationOutcome",
+    "ExplanationOutcomeClassification",
+    "ExplanationResultBinding",
+    "ExplanationValue",
+    "ExplanationValueKind",
     "ExportProfileRequest",
     "ExportProfileResponse",
     "ExportProfileResponse422",
@@ -1381,6 +1398,7 @@ __all__ = (
     "MetricsSample",
     "MetricsSeriesResponse",
     "ModelTokens",
+    "NodeExplanation",
     "NoteSummary",
     "OrchestratorControlRequest",
     "OrchestratorControlResponse",

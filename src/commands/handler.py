@@ -673,6 +673,12 @@ class CommandHandler(
             return True
         return False
 
+    def contracted_commands(self) -> frozenset[str]:
+        """Commands backed by a typed Playbook V2 contract (read-only)."""
+        from src.commands.contracts import CONTRACTS
+
+        return CONTRACTS.names()
+
     # -- Execution principal seam (Playbook V2 Package 0 §3.5) -------------
     #
     # This is the ONE place a principal is constructed for a request, and the

@@ -263,6 +263,7 @@ def build_nodes(
     *,
     show_prompts: bool = True,
     max_prompt_len: int = 60,
+    contract_intent: bool = True,
 ) -> list[dict[str, Any]]:
     """Build the node list for the graph view.
 
@@ -323,6 +324,16 @@ def build_nodes(
         # dashboard must never reconstruct this from the rendered edges or
         # the markdown source.
         node_data["details"] = node.to_dict()
+        if contract_intent:
+            from src.playbooks.explanation import render_node_explanation
+
+            explanation = render_node_explanation(
+                nid,
+                node_data["details"],
+                node_labels={node_id: node_id for node_id in playbook.nodes},
+            )
+            if explanation is not None:
+                node_data["explanation"] = explanation.model_dump(mode="json")
 
         nodes.append(node_data)
 
@@ -661,6 +672,7 @@ def build_graph_view(
     direction: str = "TD",
     show_prompts: bool = True,
     max_prompt_len: int = 60,
+    contract_intent: bool = True,
     active_runs: list[PlaybookRun] | None = None,
     run_overlay: PlaybookRun | None = None,
     all_runs: list[PlaybookRun] | None = None,
@@ -725,6 +737,7 @@ def build_graph_view(
         positions,
         show_prompts=show_prompts,
         max_prompt_len=max_prompt_len,
+        contract_intent=contract_intent,
     )
     edges = build_edges(playbook)
 

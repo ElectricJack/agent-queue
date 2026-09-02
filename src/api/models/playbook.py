@@ -7,6 +7,63 @@ from typing import Any, Literal
 from pydantic import BaseModel
 
 
+
+class ExplanationValue(BaseModel):
+    kind: Literal["literal", "event_ref", "binding_ref", "loop_ref", "template", "unresolved"]
+    text: str
+    raw: str | None = None
+    redacted: bool = False
+
+
+class ExplanationInput(BaseModel):
+    field: str
+    label: str
+    value: ExplanationValue
+    required: bool = False
+
+
+class ExplanationEffect(BaseModel):
+    operation: str
+    text: str
+    condition: str | None = None
+    subject: str | None = None
+
+
+class ExplanationOutcome(BaseModel):
+    outcome: str
+    label: str
+    classification: Literal["success", "failure"]
+    target_node_id: str | None = None
+    target_label: str | None = None
+
+
+class ExplanationResultBinding(BaseModel):
+    name: str
+    fields: list[str] = []
+
+
+class ExplanationLoop(BaseModel):
+    source_text: str
+    item_binding: str
+    source_raw: str | None = None
+
+
+class NodeExplanation(BaseModel):
+    kind: str
+    title: str
+    command: str | None = None
+    contract_fingerprint: str | None = None
+    capability: str | None = None
+    effects: list[ExplanationEffect] = []
+    inputs: list[ExplanationInput] = []
+    result: ExplanationResultBinding | None = None
+    outcomes: list[ExplanationOutcome] = []
+    loop: ExplanationLoop | None = None
+    idempotency: str | None = None
+    retry: str | None = None
+    unrendered_fields: list[str] = []
+
+
 class PlaybookLastRun(BaseModel):
     run_id: str
     status: str
@@ -252,6 +309,8 @@ class PlaybookGraphNode(BaseModel):
     on_timeout: str | None = None
     out_degree: int = 0
     details: CompiledPlaybookNode
+    #: Additive, pure contract projection; absent for legacy/uncontracted nodes.
+    explanation: NodeExplanation | None = None
 
 
 class PlaybookGraphEdge(BaseModel):
