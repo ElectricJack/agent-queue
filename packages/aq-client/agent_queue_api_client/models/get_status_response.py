@@ -22,11 +22,13 @@ class GetStatusResponse:
         projects (int | Unset):  Default: 0.
         tasks (TaskStatusSummary | Unset):
         orchestrator_paused (bool | Unset):  Default: False.
+        graph_layout_enabled (bool | Unset):  Default: False.
     """
 
     projects: int | Unset = 0
     tasks: TaskStatusSummary | Unset = UNSET
     orchestrator_paused: bool | Unset = False
+    graph_layout_enabled: bool | Unset = False
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -38,6 +40,8 @@ class GetStatusResponse:
 
         orchestrator_paused = self.orchestrator_paused
 
+        graph_layout_enabled = self.graph_layout_enabled
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({})
@@ -47,6 +51,8 @@ class GetStatusResponse:
             field_dict["tasks"] = tasks
         if orchestrator_paused is not UNSET:
             field_dict["orchestrator_paused"] = orchestrator_paused
+        if graph_layout_enabled is not UNSET:
+            field_dict["graph_layout_enabled"] = graph_layout_enabled
 
         return field_dict
 
@@ -66,10 +72,13 @@ class GetStatusResponse:
 
         orchestrator_paused = d.pop("orchestrator_paused", UNSET)
 
+        graph_layout_enabled = d.pop("graph_layout_enabled", UNSET)
+
         get_status_response = cls(
             projects=projects,
             tasks=tasks,
             orchestrator_paused=orchestrator_paused,
+            graph_layout_enabled=graph_layout_enabled,
         )
 
         get_status_response.additional_properties = d

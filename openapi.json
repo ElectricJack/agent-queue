@@ -19790,6 +19790,11 @@
             "type": "boolean",
             "title": "Orchestrator Paused",
             "default": false
+          },
+          "graph_layout_enabled": {
+            "type": "boolean",
+            "title": "Graph Layout Enabled",
+            "default": false
           }
         },
         "type": "object",

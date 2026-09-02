@@ -55,6 +55,16 @@ async def handler(db, config, mock_git):
     return h
 
 
+class TestGetStatusGraphLayoutFlag:
+    async def test_get_status_reports_graph_layout_flag(self, command_handler_factory):
+        h = await command_handler_factory()
+        r = await h.execute("get_status", {})
+        assert r["graph_layout_enabled"] is False
+        h.config.graph_layout.enabled = True
+        r2 = await h.execute("get_status", {})
+        assert r2["graph_layout_enabled"] is True
+
+
 class TestRunCommand:
     async def test_missing_working_dir_returns_error(self, handler):
         result = await handler.execute("run_command", {"command": "echo hi"})
