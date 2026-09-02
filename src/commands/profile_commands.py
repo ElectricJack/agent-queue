@@ -1063,3 +1063,99 @@ class ProfileCommandsMixin:
                 self.config.security, "capability_enforcement", "audit"
             ),
         }
+
+    async def _cmd_profile_drift(self, args: dict) -> dict:
+        """Report vault system profiles that diverge from their shipped default.
+
+        ``vault.ensure_default_profiles()`` is write-if-absent, so a vault
+        copy seeded by an older release keeps that release's schema and
+        semantics forever.  That is correct for operator edits and wrong for
+        the load-bearing ``## Config`` fields — a stale ``read_only: false``
+        on ``reviewer`` re-arms the require-a-PR close gate for a session
+        that is told never to push (``src/orchestrator/git_ops.py``).
+
+        Read-only.  The repair is ``profile_reseed``, which is explicit and
+        per-profile so operator edits are never silently discarded.
+
+        Args:
+            profile_id (str): Optional — report only this system profile.
+            drifted_only (bool): Only report profiles that diverge.
+
+        Returns:
+            ``{"success": True, "profiles": [...], "checked": int,
+            "drifted_count": int}`` — one row per profile with ``status``,
+            the diverging semantic ``config`` fields, and missing/extra
+            section headings.
+        """
+        from src.profiles.drift import diff_profile, scan_profile_drift, system_profile_ids
+
+        data_dir = self.config.data_dir
+        profile_id = (args.get("profile_id") or "").strip()
+        if profile_id:
+            if profile_id not in system_profile_ids():
+                return {"error": f"'{profile_id}' is not a shipped system profile"}
+            drifts = [diff_profile(profile_id, data_dir)]
+        else:
+            drifts = scan_profile_drift(data_dir)
+
+        drifted_only = bool(args.get("drifted_only"))
+        rows = [d.to_dict() for d in drifts if not drifted_only or d.is_drifted]
+        return {
+            "success": True,
+            "profiles": rows,
+            "checked": len(drifts),
+            "drifted_count": sum(1 for d in drifts if d.is_drifted),
+        }
+
+    async def _cmd_profile_reseed(self, args: dict) -> dict:
+        """Restore one vault system profile from its shipped default.
+
+        The explicit, opt-in counterpart to startup seeding, which never
+        overwrites.  The existing file is copied to ``profile.md.bak-<epoch>``
+        before being replaced unless ``backup=False``, and the new text is
+        synced straight to the DB so the change takes effect without waiting
+        for the vault watcher.
+
+        Args:
+            profile_id (str): Required — the system profile to reseed.
+            backup (bool): Keep a ``.bak-<epoch>`` copy (default True).
+
+        Returns:
+            ``{"success": True, "profile_id", "path", "backup_path",
+            "created"}``.
+        """
+        from pathlib import Path
+
+        from src.profiles.drift import reseed_profile, system_profile_ids
+        from src.profiles.sync import sync_profile_text_to_db
+
+        profile_id = (args.get("profile_id") or "").strip()
+        if not profile_id:
+            return {"error": "profile_id is required"}
+        if profile_id not in system_profile_ids():
+            return {
+                "error": (
+                    f"'{profile_id}' is not a shipped system profile "
+                    f"(one of: {', '.join(system_profile_ids())})"
+                )
+            }
+
+        backup = args.get("backup")
+        result = await asyncio.to_thread(
+            reseed_profile,
+            self.config.data_dir,
+            profile_id,
+            None,
+            True if backup is None else bool(backup),
+        )
+
+        markdown = Path(result["path"]).read_text(encoding="utf-8")
+        sync_result = await sync_profile_text_to_db(
+            markdown, self.db, source_path=result["path"], fallback_id=profile_id
+        )
+        result["success"] = True
+        if sync_result.warnings:
+            result["warnings"] = sync_result.warnings
+        if not sync_result.success:
+            result["sync_errors"] = sync_result.errors
+        return result
