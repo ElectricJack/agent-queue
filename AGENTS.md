@@ -7,19 +7,28 @@ Everything in **CLAUDE.md** applies here too — read it first for the repo map,
 The suite is **11,330 tests** and, until the schema-cache work lands, every fresh test database replays 58 alembic migrations (~8 s each, ~2,700 tests pay it). A full run takes **~14 minutes on 24 cores and effectively never finishes serially**. Running it casually stalls every agent on the machine.
 
 Rules:
+- **Use `aq test`, not bare `pytest`, for anything past a single file.** It takes one of the box's global test slots first, so eight agents testing at once cannot become 200 test processes, and it applies the worker cap and the default marker deselects for you. Everything that is not an `--aq-*` option goes to pytest untouched:
+  ```bash
+  aq test tests/test_playbook_runner.py          # the file for the module you changed
+  aq test tests/test_claim_queries.py tests/test_pools.py
+  aq test tests/ -k "schema_setup or run_schema"
+  aq test --aq-status                            # who is holding the slots
+  aq test --aq-help                              # -h belongs to pytest
+  ```
+  A `waiting for 1 of 2 test slot(s)` line means the box is busy, not that you are stuck. Exit code 75 means no slot came free — retry, it is not a test failure. Plain `pytest` still works for a single quick file.
 - **Never run a bare `pytest` / `pytest tests/` mid-task.** Run only the tests for the code you touch.
-- **Always run in parallel:** add `-n auto` (pytest-xdist is installed). Single-file runs may go without it.
+- **Never override the worker count upward.** `-n auto` inside a session already resolves to this box's per-session share (`PYTEST_XDIST_AUTO_NUM_WORKERS`, derived from cores ÷ concurrent agents); passing a bigger `-n` bypasses the gating and is what took the box down on 2026-09-01. See [resource gating](docs/guides/resource-gating.md).
 - **Find focused tests** (the layout is one file per area, `tests/test_<area>.py`, plus `tests/perf/`, `tests/llm/`, `tests/fixtures/`):
   ```bash
-  pytest tests/test_playbook_runner.py -n auto -q          # the file for the module you changed
-  pytest tests/test_claim_queries.py tests/test_pools.py -n auto -q   # a few related files
-  pytest -k "schema_setup or run_schema" -n auto -q         # by name, across files
-  pytest --co -q -k <term> | tail -20                        # discover which tests mention <term>
-  pytest --lf -n auto -q                                     # re-run only what failed last time
-  pytest tests/test_x.py -x -q                               # stop at first failure while iterating
+  aq test tests/test_playbook_runner.py            # the file for the module you changed
+  aq test tests/test_claim_queries.py tests/test_pools.py    # a few related files
+  aq test tests/ -k "schema_setup or run_schema"   # by name, across files
+  aq test tests/test_x.py -x                       # stop at first failure while iterating
+  aq test --lf                                     # re-run only what failed last time
+  pytest --co -q -k <term> | tail -20              # collection only — no slot needed
   ```
-- **Skip the slow-by-nature markers** unless the change is about them: `-m "not tmux and not integration and not perf"` (real tmux, Milvus, latency budgets).
-- **One broader run at the end of a task, not during:** the area suite for what you changed (e.g. `pytest tests/test_playbook*.py tests/test_pipeline*.py -n auto -q`). The whole-repo run is for CI and explicit review gates only.
+- **Skip the slow-by-nature markers** unless the change is about them (real tmux, Milvus, latency budgets). `aq test` applies `-m "not tmux and not integration and not perf"` by default; pass your own `-m` (or `--aq-all-markers`) when the change *is* about them.
+- **One broader run at the end of a task, not during:** the area suite for what you changed (e.g. `aq test tests/test_playbook*.py tests/test_pipeline*.py`). The whole-repo run is for CI and explicit review gates only.
 - Ruff on changed files only: `ruff check <paths>`.
 
 ## Working as an aq worker

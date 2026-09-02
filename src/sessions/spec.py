@@ -31,6 +31,7 @@ import logging
 import re
 from pathlib import Path
 
+from src.resources.limits import session_env_caps, wrap_session_argv
 from src.sessions.env import build_session_env
 from src.sessions.harness_parser import Harness
 from src.sessions.provider import SessionSpec
@@ -436,6 +437,15 @@ class SessionSpecBuilder:
                 # Claude's environment takes precedence over --effort. Keep
                 # inherited daemon settings from overriding the chosen class.
                 launch_env["CLAUDE_CODE_EFFORT_LEVEL"] = thinking
+
+        # Resource gating layer 1 (docs/guides/resource-gating.md).  Passing
+        # the harness's own env map as ``skip`` keeps an operator-pinned
+        # value authoritative — the derived cap fills the gap, it does not
+        # overrule a deliberate one.
+        launch_env.update(
+            session_env_caps(self.config, skip=getattr(harness, "env_map", None) or {})
+        )
+        argv = wrap_session_argv(argv, self.config, scope_name=session_name)
 
         env = build_session_env(
             session_id=session_id,
