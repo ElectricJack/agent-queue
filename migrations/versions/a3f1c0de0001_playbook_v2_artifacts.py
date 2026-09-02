@@ -7,6 +7,14 @@ Create Date: 2026-09-01
 Additive: two new tables, no existing table touched.  Ordered first in the
 Package 3 chain because playbook_v2_runs.artifact_sha256 references
 playbook_artifacts (roadmap section 7 / child plan section 4.3).
+
+The string ``server_default`` values below are deliberately *unquoted*
+(``server_default="system"``, not ``server_default="'system'"``).  A plain
+string is rendered by SQLAlchemy as a SQL literal, so the quoted form emits
+``DEFAULT '''system'''`` and stores the quote characters — which violates
+``ck_playbook_artifacts_scope``.  This file originally shipped with the
+quoted form; revision ``e1b7c2a94d38`` repairs databases already built from
+it.  Do not "restore" the quotes.
 """
 
 import sqlalchemy as sa
@@ -23,17 +31,17 @@ def upgrade() -> None:
         "playbook_artifacts",
         sa.Column("artifact_sha256", sa.Text(), nullable=False),
         sa.Column("playbook_id", sa.Text(), nullable=False),
-        sa.Column("scope", sa.Text(), server_default="'system'", nullable=False),
-        sa.Column("scope_identifier", sa.Text(), server_default="''", nullable=False),
+        sa.Column("scope", sa.Text(), server_default="system", nullable=False),
+        sa.Column("scope_identifier", sa.Text(), server_default="", nullable=False),
         sa.Column("schema_generation", sa.Integer(), server_default="2", nullable=False),
         sa.Column("version", sa.Integer(), server_default="0", nullable=False),
         sa.Column("source_digest", sa.Text(), nullable=False),
         sa.Column("contract_fingerprint", sa.Text(), nullable=False),
-        sa.Column("profile_fingerprint", sa.Text(), server_default="''", nullable=False),
+        sa.Column("profile_fingerprint", sa.Text(), server_default="", nullable=False),
         sa.Column("compiler_build", sa.Text(), nullable=False),
         sa.Column("path", sa.Text(), nullable=False),
         sa.Column("size_bytes", sa.Integer(), server_default="0", nullable=False),
-        sa.Column("validation", sa.Text(), server_default="'{}'", nullable=False),
+        sa.Column("validation", sa.Text(), server_default="{}", nullable=False),
         sa.Column("compiled_at", sa.Text(), nullable=True),
         sa.Column("created_at", sa.Float(), nullable=False),
         sa.PrimaryKeyConstraint("artifact_sha256"),
@@ -52,12 +60,12 @@ def upgrade() -> None:
         "playbook_activations",
         sa.Column("activation_id", sa.Text(), nullable=False),
         sa.Column("playbook_id", sa.Text(), nullable=False),
-        sa.Column("scope", sa.Text(), server_default="'system'", nullable=False),
-        sa.Column("scope_identifier", sa.Text(), server_default="''", nullable=False),
+        sa.Column("scope", sa.Text(), server_default="system", nullable=False),
+        sa.Column("scope_identifier", sa.Text(), server_default="", nullable=False),
         sa.Column("active_artifact_sha256", sa.Text(), nullable=True),
         sa.Column("enabled", sa.Boolean(), server_default=sa.false(), nullable=False),
-        sa.Column("health", sa.Text(), server_default="'disabled'", nullable=False),
-        sa.Column("reasons", sa.Text(), server_default="'[]'", nullable=False),
+        sa.Column("health", sa.Text(), server_default="disabled", nullable=False),
+        sa.Column("reasons", sa.Text(), server_default="[]", nullable=False),
         sa.Column("activated_at", sa.Float(), nullable=True),
         sa.Column("activated_by", sa.Text(), nullable=True),
         sa.Column("updated_at", sa.Float(), nullable=False),
