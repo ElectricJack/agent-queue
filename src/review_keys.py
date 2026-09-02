@@ -86,7 +86,7 @@ def reviewed_task_id(dedup_key: str | None) -> str | None:
 
 def is_pipeline_review_task(dedup_key: str | None) -> bool:
     """True when *dedup_key* marks a task the pipeline itself created as a review."""
-    if not dedup_key:
+    if not isinstance(dedup_key, str) or not dedup_key:
         return False
     return dedup_key.startswith(PIPELINE_REVIEW_DEDUP_PREFIXES)
 
