@@ -636,6 +636,25 @@ arrived is still stored, because losing a Start must not make a session look lik
 it is running a child forever.
 The SQLite-to-PostgreSQL copy inventory includes this table.
 
+### Table: `metrics_samples`
+
+Fleet Metrics tab time-series buckets. Each row stores one JSON metric sample
+for a resolution and bucket timestamp; keeping the payload dict-shaped permits
+new per-harness, profile, and model series without a schema migration. The
+unique bucket constraint makes sampling and roll-up writes idempotent after a
+duplicate tick or restart.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | INTEGER | PRIMARY KEY, autoincrement | Sample row identifier |
+| `resolution` | TEXT | NOT NULL | Retention tier and bucket step: `1s`, `1m`, or `1h` |
+| `bucket_ts` | FLOAT | NOT NULL | Unix timestamp floored to the resolution |
+| `payload` | TEXT | NOT NULL | JSON-encoded metric sample body |
+
+Unique constraint `uq_metrics_samples_bucket` covers (`resolution`,
+`bucket_ts`). Index `idx_metrics_samples_res_ts` covers (`resolution`,
+`bucket_ts`) for ordered range reads.
+
 ### Table: `messages`
 
 Inter-agent message queue (supervisor/agent messaging).
