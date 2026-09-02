@@ -1,71 +1,29 @@
-import type { PlaybookGraphNode } from "../../api/client";
+import type { NodeExplanation, PlaybookGraphNode } from "../../api/client";
+import type { ExplanationEffect, ExplanationInput } from "../../api/client";
 
 /* The contract-derived intent payload the graph-view response attaches to each
- * contracted node. Declared here verbatim from the Package 1 child plan §3.6 so
- * this surface can be built and tested before the backend registration lands;
- * once `NodeExplanation` is part of the generated client this file becomes the
- * generated import plus an assignability check (child plan §11). Every
- * component in this directory imports the shape from here, never from a
- * component, so that swap stays a two-line edit. */
+ * contracted node.
+ *
+ * The shapes are the GENERATED client models — the same Pydantic definitions in
+ * `src/api/models/playbook.py` that the backend renders from its command
+ * contracts. This file hand-declared them while the backend registration was
+ * still landing (Package 1 child plan §3.6, §11); keeping that copy would mean
+ * a second, unversioned definition of a wire type the server owns, and the two
+ * could disagree with nothing failing. Components import the shape from here
+ * rather than from the client directly, so this stays the one seam. */
 
-export interface ExplanationValue {
-  kind: "literal" | "event_ref" | "binding_ref" | "loop_ref" | "template" | "unresolved";
-  text: string;
-  raw?: string | null;
-  redacted?: boolean;
-}
+export type {
+  ExplanationEffect,
+  ExplanationInput,
+  ExplanationLoop,
+  ExplanationOutcome,
+  ExplanationResultBinding,
+  ExplanationValue,
+  NodeExplanation,
+} from "../../api/client";
 
-export interface ExplanationInput {
-  field: string;
-  label: string;
-  value: ExplanationValue;
-  required?: boolean;
-}
-
-export interface ExplanationEffect {
-  operation: string;
-  text: string;
-  condition?: string | null;
-  subject?: string | null;
-}
-
-export interface ExplanationOutcome {
-  outcome: string;
-  label: string;
-  classification: "success" | "failure";
-  target_node_id?: string | null;
-  target_label?: string | null;
-}
-
-export interface ExplanationResultBinding {
-  name: string;
-  fields?: string[];
-}
-
-export interface ExplanationLoop {
-  source_text: string;
-  item_binding: string;
-  source_raw?: string | null;
-}
-
-export interface NodeExplanation {
-  kind: string;
-  title: string;
-  command?: string | null;
-  contract_fingerprint?: string | null;
-  capability?: string | null;
-  effects?: ExplanationEffect[];
-  inputs?: ExplanationInput[];
-  result?: ExplanationResultBinding | null;
-  outcomes?: ExplanationOutcome[];
-  loop?: ExplanationLoop | null;
-  idempotency?: string | null;
-  retry?: string | null;
-  unrendered_fields?: string[];
-}
-
-/** The generated `PlaybookGraphNode` widened by the additive `explanation`
- *  field. Dropped in favour of the generated model on the reconciliation. */
+/** A graph node carrying its explanation. `PlaybookGraphNode.explanation` is
+ *  part of the generated model now, so this is a name, not a widening. */
 export type ExplainedPlaybookGraphNode = PlaybookGraphNode & {
   explanation?: NodeExplanation | null;
 };

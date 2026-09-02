@@ -257,6 +257,74 @@ def _run_edges(run: PlaybookRun) -> set[tuple[str, str]]:
 # ---------------------------------------------------------------------------
 
 
+def _successors(node: Any) -> list[str]:
+    """Every node id this node can hand control to."""
+    out: list[str] = []
+    if node.goto is not None:
+        out.append(node.goto)
+    out.extend(t.goto for t in node.transitions)
+    if node.on_timeout:
+        out.append(node.on_timeout)
+    if node.action:
+        out.extend(
+            target
+            for hop in ("on_success", "on_failure")
+            if isinstance(target := node.action.get(hop), str)
+        )
+    return out
+
+
+def node_event_types(playbook: CompiledPlaybook) -> dict[str, str]:
+    """Map each node to the event type whose rule can reach it.
+
+    The explanation renderer needs this: an ``{{event.task.branch_name}}``
+    argument can only be described — or recognised as sensitive — against the
+    schema of the event that actually triggers the node's rule.
+
+    A multi-rule pipeline records ``pipeline_rules`` as
+    ``{event_type: [{"entry": "<rule-id>-<entry>"} ...]}`` and the rules'
+    subgraphs are disjoint (``_normalize_nodes`` prefixes every id with the
+    rule id), so walking forward from each entry attributes every node
+    exactly.  A node reachable from two different event types is left out
+    rather than attributed to one of them: no guessing.  For a single-trigger
+    playbook every node belongs to that trigger; for a multi-trigger one
+    without rules there is nothing to disambiguate with, so the map is empty.
+    """
+    mapping: dict[str, str] = {}
+    ambiguous: set[str] = set()
+
+    def _walk(entry: str, event_type: str) -> None:
+        queue, seen = [entry], set()
+        while queue:
+            nid = queue.pop()
+            if nid in seen or nid not in playbook.nodes:
+                continue
+            seen.add(nid)
+            if mapping.setdefault(nid, event_type) != event_type:
+                ambiguous.add(nid)
+            queue.extend(_successors(playbook.nodes[nid]))
+
+    rules = playbook.pipeline_rules or {}
+    if rules:
+        for event_type, metas in rules.items():
+            if not isinstance(event_type, str):
+                continue
+            for meta in metas if isinstance(metas, list) else [metas]:
+                entry = meta.get("entry") if isinstance(meta, dict) else meta
+                if isinstance(entry, str):
+                    _walk(entry, event_type)
+    else:
+        triggers = {
+            t.event_type if hasattr(t, "event_type") else t if isinstance(t, str) else None
+            for t in playbook.triggers
+        }
+        triggers.discard(None)
+        if len(triggers) == 1:
+            mapping = dict.fromkeys(playbook.nodes, next(iter(triggers)))
+
+    return {nid: event for nid, event in mapping.items() if nid not in ambiguous}
+
+
 def build_nodes(
     playbook: CompiledPlaybook,
     positions: dict[str, dict[str, int]],
@@ -273,6 +341,7 @@ def build_nodes(
     from src.playbooks.graph import _topo_order
 
     order = _topo_order(playbook)
+    event_types = node_event_types(playbook) if contract_intent else {}
     nodes: list[dict[str, Any]] = []
 
     for nid in order:
@@ -330,6 +399,7 @@ def build_nodes(
             explanation = render_node_explanation(
                 nid,
                 node_data["details"],
+                event_type=event_types.get(nid),
                 node_labels={node_id: node_id for node_id in playbook.nodes},
             )
             if explanation is not None:

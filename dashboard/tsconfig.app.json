@@ -7,6 +7,10 @@
     "skipLibCheck": true,
 
     "moduleResolution": "bundler",
+    // The playbook-graph test fixtures import the backend's golden explanation
+    // payloads from tests/fixtures/contracts/ so the two suites assert the same
+    // rendered copy.  Vite/Vitest resolve JSON natively; tsc needs telling.
+    "resolveJsonModule": true,
     "allowImportingTsExtensions": true,
     "isolatedModules": true,
     "moduleDetection": "force",

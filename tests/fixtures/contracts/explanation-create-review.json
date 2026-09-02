@@ -1,0 +1,98 @@
+{
+  "kind": "command",
+  "title": "Ensure a task exists",
+  "command": "ensure_task",
+  "capability": "ensure_task",
+  "effects": [
+    {
+      "operation": "create_or_reuse",
+      "text": "Create or reuse a task keyed by \"dedup_key\"",
+      "condition": null,
+      "subject": "task"
+    }
+  ],
+  "inputs": [
+    {
+      "field": "project_id",
+      "label": "Project",
+      "value": {
+        "kind": "event_ref",
+        "text": "this event's project",
+        "raw": "{{event.project_id}}",
+        "redacted": false
+      },
+      "required": false
+    },
+    {
+      "field": "dedup_key",
+      "label": "Deduplication key",
+      "value": {
+        "kind": "template",
+        "text": "\"review:task:\" + this event's task",
+        "raw": "review:task:{{event.task_id}}",
+        "redacted": false
+      },
+      "required": true
+    },
+    {
+      "field": "title",
+      "label": "Title",
+      "value": {
+        "kind": "template",
+        "text": "\"Review: \" + this event's title",
+        "raw": "Review: {{event.title}}",
+        "redacted": false
+      },
+      "required": true
+    },
+    {
+      "field": "description",
+      "label": "Description",
+      "value": {
+        "kind": "template",
+        "text": "\"Branch: \" + this event's task branch",
+        "raw": "Branch: {{event.task.branch_name}}",
+        "redacted": false
+      },
+      "required": false
+    },
+    {
+      "field": "profile_id",
+      "label": "Agent profile",
+      "value": {
+        "kind": "literal",
+        "text": "reviewer",
+        "raw": null,
+        "redacted": false
+      },
+      "required": false
+    }
+  ],
+  "result": {
+    "name": "review",
+    "fields": [
+      "task_id",
+      "created"
+    ]
+  },
+  "outcomes": [
+    {
+      "outcome": "success",
+      "label": "Success",
+      "classification": "success",
+      "target_node_id": "per-task-review-link-discovered-from",
+      "target_label": "per-task-review-link-discovered-from"
+    },
+    {
+      "outcome": "failure",
+      "label": "Failure",
+      "classification": "failure",
+      "target_node_id": "per-task-review-done",
+      "target_label": "per-task-review-done"
+    }
+  ],
+  "loop": null,
+  "idempotency": "Repeating with the same deduplication key reuses the existing task",
+  "retry": "Safe to retry",
+  "unrendered_fields": []
+}

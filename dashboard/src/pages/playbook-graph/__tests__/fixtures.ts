@@ -143,169 +143,51 @@ export const pipelineLayout: PlaybookGraphLayout = {
   },
 };
 
-/* Contract-derived intent fixtures. Transcribed from the Package 1 child plan's
- * golden explanations (§10.2, §10.3) so the dashboard asserts the same rendered
- * strings the backend suite pins. `node()` above deliberately leaves
- * `explanation` undefined, so every pre-existing test keeps exercising the
- * uncontracted fallback path — which is also the flag-off path. */
+/* Contract-derived intent fixtures.
+ *
+ * The two contract explanations are IMPORTED from the backend goldens in
+ * `tests/fixtures/contracts/` — the exact payloads
+ * `render_node_explanation` produces for `pipeline-intent.md`, pinned by
+ * `tests/test_contract_intent_parity.py`. Transcribing them into TypeScript by
+ * hand (what this file did) meant the dashboard asserted copy the backend had
+ * never rendered: the two drifted the moment the contract's presentation
+ * changed, and nothing failed. Regenerate the goldens on the backend and both
+ * suites move together.
+ *
+ * `node()` above deliberately leaves `explanation` undefined, so every
+ * pre-existing test keeps exercising the uncontracted fallback path — which is
+ * also the flag-off path. */
 
-/** §10.2 — `ensure_task` under the per-task-review rule. */
-export const createReviewExplanation: NodeExplanation = {
-  kind: "command",
-  title: "Ensure a review task exists",
-  command: "ensure_task",
-  capability: "ensure_task",
-  effects: [
-    {
-      operation: "create_or_reuse",
-      text: 'Create or reuse a task keyed by "dedup_key"',
-      condition: null,
-      subject: "task",
-    },
-  ],
-  inputs: [
-    {
-      field: "project_id",
-      label: "Project",
-      required: false,
-      value: {
-        kind: "event_ref",
-        text: "this event's project",
-        raw: "{{event.project_id}}",
-        redacted: false,
-      },
-    },
-    {
-      field: "dedup_key",
-      label: "Deduplication key",
-      required: true,
-      value: {
-        kind: "template",
-        text: '"review:task:" + this event\'s task',
-        raw: "review:task:{{event.task_id}}",
-        redacted: false,
-      },
-    },
-    {
-      field: "title",
-      label: "Title",
-      required: true,
-      value: {
-        kind: "template",
-        text: '"Review: " + this event\'s title',
-        raw: "Review: {{event.title}}",
-        redacted: false,
-      },
-    },
-    {
-      field: "description",
-      label: "Description",
-      required: false,
-      value: {
-        kind: "template",
-        text: '"Branch: " + this event\'s task branch',
-        raw: "Branch: {{event.task.branch_name}}",
-        redacted: false,
-      },
-    },
-    {
-      field: "profile_id",
-      label: "Agent profile",
-      required: false,
-      value: { kind: "literal", text: "reviewer", raw: null, redacted: false },
-    },
-  ],
-  result: { name: "review", fields: ["task_id", "created"] },
-  outcomes: [
-    {
-      outcome: "success",
-      label: "Success",
-      classification: "success",
-      target_node_id: "per-task-review-link-discovered-from",
-      target_label: "per-task-review-link-discovered-from",
-    },
-    {
-      outcome: "failure",
-      label: "Failure",
-      classification: "failure",
-      target_node_id: "per-task-review-done",
-      target_label: "per-task-review-done",
-    },
-  ],
-  loop: null,
-  idempotency: "Repeating with the same deduplication key reuses the existing task",
-  retry: "Safe to retry",
-  unrendered_fields: [],
-};
+import createReviewGolden from "../../../../../tests/fixtures/contracts/explanation-create-review.json";
+import gateDownstreamGolden from "../../../../../tests/fixtures/contracts/explanation-gate-downstream.json";
 
-/** §10.3 — the `for_each` gate node: a loop, a conditional effect, a
- *  `loop_ref` value, no result binding, and an unrendered argument. */
-export const gateDownstreamExplanation: NodeExplanation = {
-  kind: "command",
-  title: "Open a gate for each downstream task",
-  command: "gate_create",
-  capability: "gate_create",
-  effects: [
-    {
-      operation: "create_or_reuse",
-      text: 'Create or reuse a gate keyed by "await_id"',
-      condition: null,
-      subject: "gate",
-    },
-    {
-      operation: "link",
-      text: "Block the waiting tasks until the gate resolves",
-      condition: "when waiter_task_ids is provided",
-      subject: "gate",
-    },
-  ],
-  inputs: [
-    {
-      field: "await_id",
-      label: "Await id",
-      required: true,
-      value: {
-        kind: "template",
-        text: '"gate:review:" + each dep\'s id',
-        raw: "gate:review:{{dep.id}}",
-        redacted: false,
-      },
-    },
-    {
-      field: "waiter_task_ids",
-      label: "Waiting tasks",
-      required: false,
-      value: { kind: "loop_ref", text: "each dep's id", raw: "{{dep.id}}", redacted: false },
-    },
-  ],
-  result: null,
-  outcomes: [
-    {
-      outcome: "success",
-      label: "Success",
-      classification: "success",
-      target_node_id: "gate-downstream-done",
-      target_label: "gate-downstream-done",
-    },
-  ],
-  loop: {
-    source_text: "each item in downstream.tasks",
-    item_binding: "dep",
-    source_raw: "outputs.downstream.tasks",
-  },
-  idempotency: "Repeating with the same await_id reuses the existing gate",
-  retry: "Not safe to retry",
+/** `ensure_task` under the per-task-review rule. */
+export const createReviewExplanation = createReviewGolden as NodeExplanation;
+
+/** The `for_each` gate node: a loop, a conditional effect, a `loop_ref` value
+ *  and no result binding. */
+export const gateDownstreamExplanation = gateDownstreamGolden as NodeExplanation;
+
+/** The gate node with an argument the contract does not declare. No shipped
+ *  node has one — `unrendered_fields` is the renderer's promise that an
+ *  unknown executable key is still shown rather than dropped, so the fixture
+ *  is a deliberate variation on a real payload, not a claim about it. */
+export const explanationWithUnrenderedField: NodeExplanation = {
+  ...gateDownstreamExplanation,
   unrendered_fields: ["reason"],
 };
 
-/** A contract whose argument the registry marks sensitive. The placeholder is
- *  the only thing the payload carries; there is no secret to leak. */
+/** A contract whose argument the registry marks sensitive. No built-in
+ *  declares `sensitive_args` yet (the backend proves the policy with a
+ *  synthetic contract in `tests/test_playbook_explanation.py`), so this
+ *  fixture is synthetic too: the placeholder is the only thing the payload
+ *  carries, and there is no secret to leak. */
 export const redactedExplanation: NodeExplanation = {
   kind: "command",
-  title: "Route the task to an agent",
+  title: "Route a task to a profile",
   command: "task_route",
   capability: "task_route",
-  effects: [{ operation: "update", text: "Route the task to a profile", subject: "task" }],
+  effects: [{ operation: "update", text: "Update the task's routing", subject: "task_routing" }],
   inputs: [
     {
       field: "webhook_token",
@@ -346,15 +228,22 @@ export const explanationNode: ExplainedPlaybookGraphNode = {
 
 /** The looping gate node, with its `for_each` payload intact. */
 export const loopExplanationNode: ExplainedPlaybookGraphNode = {
-  ...node("gate-downstream-open-gate", {
+  ...node("per-task-review-gate-downstream", {
     out_degree: 1,
     details: {
       action: {
         command: "gate_create",
-        args: { await_id: "gate:review:{{dep.id}}", waiter_task_ids: "{{dep.id}}", reason: "review" },
-        on_success: "gate-downstream-done",
+        args: {
+          project_id: "{{event.project_id}}",
+          gate_type: "task",
+          title: "Awaiting review of {{event.task_id}}",
+          await_id: "{{outputs.review.task_id}}",
+          waiter_task_ids: ["{{outputs.dep.id}}"],
+        },
+        on_success: "per-task-review-done",
+        on_failure: "per-task-review-done",
+        for_each: { source: "outputs.downstream.tasks", as: "dep" },
       },
-      for_each: { items: "outputs.downstream.tasks", as: "dep" },
     },
   }),
   explanation: gateDownstreamExplanation,

@@ -526,6 +526,17 @@ class Orchestrator(
         playbook markdown edits never take effect.
         """
         self._command_handler = handler
+
+        # Playbook V2 Package 1: the contract registry's built-in adapters
+        # call the legacy handler through this provider.  Installing it here
+        # rather than at each construction site is what makes the registered
+        # ``invoke`` adapters operational in every process that has a handler
+        # (daemon, API app, embedded MCP), and the late-bound lambda keeps a
+        # later re-set honoured.
+        from src.commands.contracts.builtin import set_handler_provider
+
+        set_handler_provider(lambda: self._command_handler)
+
         playbook_manager = getattr(self, "playbook_manager", None)
         if playbook_manager is not None and hasattr(
             playbook_manager, "set_command_handler"

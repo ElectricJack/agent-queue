@@ -212,16 +212,35 @@ class TaskRouteValue(CommandValue):
 _handler_provider: Callable[[], Any] | None = None
 
 
-def set_handler_provider(provider: Callable[[], Any]) -> None:
-    """Install the existing handler provider at the execution boundary."""
+def set_handler_provider(provider: Callable[[], Any] | None) -> None:
+    """Install the legacy ``CommandHandler`` lookup used by every adapter.
+
+    Production installs this from ``Orchestrator.set_command_handler`` — the
+    one seam every ``CommandHandler`` construction site in the process goes
+    through (``src/main.py``, ``src/api/app.py``, ``src/embedded_mcp.py``).
+    The provider is a late-bound callable rather than a handler instance so a
+    later re-set is honoured and no reference outlives the orchestrator.
+    Passing ``None`` uninstalls it, which is what a test teardown wants.
+    """
     global _handler_provider
     _handler_provider = provider
 
 
+def handler_provider_installed() -> bool:
+    """True when :func:`set_handler_provider` has been wired up."""
+    return _handler_provider is not None
+
+
 def _handler() -> Any:
     if _handler_provider is None:
-        raise RuntimeError("no legacy CommandHandler provider installed")
-    return _handler_provider()
+        raise RuntimeError(
+            "no CommandHandler provider installed; "
+            "Orchestrator.set_command_handler installs it in production"
+        )
+    handler = _handler_provider()
+    if handler is None:
+        raise RuntimeError("the installed CommandHandler provider returned None")
+    return handler
 
 
 def _outcome_of(name: str, raw: dict[str, Any]) -> str:
@@ -278,6 +297,194 @@ def _outcomes(*successes: str) -> tuple[OutcomeSpec, ...]:
     ) + (OutcomeSpec(name="rejected", classification=OutcomeClass.FAILURE),)
 
 
+# -- Presentation ---------------------------------------------------------
+#
+# Copy is authored here and nowhere else.  It is the single source of every
+# human-facing string in a rendered explanation: the renderer only ever reads
+# these labels, and the dashboard reads the goldens in
+# ``tests/fixtures/contracts/`` that the renderer produces from them.  Auto
+# generating a title from the command name (what this file did before) meant
+# the backend and the hand-written dashboard fixtures disagreed about what an
+# operator sees, which is exactly the divergence the contract exists to stop.
+#
+# Nothing here is fingerprinted, so improving a label never stales a playbook
+# (child plan §3.1).  Every ``arg_labels`` / ``result_labels`` key must name a
+# real model field and every ``subject_labels`` key a subject the command's own
+# effect clauses use; ``test_presentation_labels_name_real_fields`` pins that.
+
+PRESENTATIONS: dict[str, CommandPresentation] = {
+    "create_task": CommandPresentation(
+        title="Create a task",
+        summary="Create a new task, without checking whether a similar one exists.",
+        arg_labels={
+            "title": "Title",
+            "project_id": "Project",
+            "description": "Description",
+            "priority": "Priority",
+            "task_type": "Task type",
+            "profile_id": "Agent profile",
+            "intelligence_class": "Intelligence class",
+            "preferred_workspace_id": "Preferred workspace",
+            "integration_mode": "Integration mode",
+            "workspace_mode": "Workspace mode",
+            "requires_kinds": "Required workspace kinds",
+            "depends_on": "Depends on",
+            "parent_id": "Parent task",
+            "labels": "Labels",
+            "reason": "Reason",
+            "discovered_from": "Discovered from",
+            "affinity_agent_id": "Preferred agent",
+            "affinity_reason": "Preferred-agent reason",
+            "dedup_key": "Deduplication key",
+        },
+        outcome_labels={"created": "Created", "rejected": "Rejected"},
+        result_labels={"task_id": "Task", "status": "Status", "gate_id": "Routing gate"},
+        subject_labels={"task": "a task"},
+    ),
+    "ensure_task": CommandPresentation(
+        title="Ensure a task exists",
+        summary="Create the task, or reuse the one already keyed by this deduplication key.",
+        arg_labels={
+            "dedup_key": "Deduplication key",
+            "title": "Title",
+            "project_id": "Project",
+            "description": "Description",
+            "priority": "Priority",
+            "profile_id": "Agent profile",
+            "intelligence_class": "Intelligence class",
+            "initial_status": "Initial status",
+        },
+        outcome_labels={"created": "Created", "reused": "Reused", "rejected": "Rejected"},
+        result_labels={"task_id": "Task", "created": "Was created"},
+        subject_labels={"task": "a task"},
+    ),
+    "edit_task": CommandPresentation(
+        title="Edit a task",
+        summary="Change fields on an existing task.",
+        arg_labels={
+            "task_id": "Task",
+            "project_id": "Project",
+            "title": "Title",
+            "description": "Description",
+            "priority": "Priority",
+            "task_type": "Task type",
+            "status": "Status",
+            "max_retries": "Maximum retries",
+            "verification_type": "Verification type",
+            "profile_id": "Agent profile",
+            "integration_mode": "Integration mode",
+            "skip_verification": "Skip verification",
+            "intelligence_class": "Intelligence class",
+            "affinity_agent_id": "Preferred agent",
+            "affinity_reason": "Preferred-agent reason",
+            "workspace_mode": "Workspace mode",
+        },
+        outcome_labels={"updated": "Updated", "rejected": "Rejected"},
+        result_labels={"fields": "Changed fields", "old_status": "Old status", "new_status": "New status"},
+        subject_labels={"task": "the task"},
+    ),
+    "add_dependency": CommandPresentation(
+        title="Link a task dependency",
+        summary="Record that one task depends on another.",
+        arg_labels={
+            "task_id": "Task",
+            "depends_on": "Depends on",
+            "dep_type": "Dependency type",
+            "reason": "Reason",
+        },
+        outcome_labels={
+            "linked": "Linked",
+            "already_linked": "Already linked",
+            "rejected": "Rejected",
+        },
+        result_labels={"task_title": "Task", "depends_on_title": "Depends on"},
+        subject_labels={"dependency_edge": "a dependency between two tasks"},
+    ),
+    "gate_create": CommandPresentation(
+        title="Open a gate",
+        summary="Open a gate, and block the tasks waiting on it until it resolves.",
+        arg_labels={
+            "project_id": "Project",
+            "gate_type": "Gate type",
+            "title": "Title",
+            "question": "Question",
+            "timeout_at": "Times out at",
+            "waiter_task_ids": "Waiting tasks",
+        },
+        outcome_labels={
+            "created": "Created",
+            "reused": "Reused",
+            "skipped": "Skipped",
+            "rejected": "Rejected",
+        },
+        result_labels={"gate_id": "Gate", "was_created": "Was created", "reason": "Reason"},
+        subject_labels={"gate": "a gate", "gate_waiter": "the waiting tasks to the gate"},
+    ),
+    "gate_resolve": CommandPresentation(
+        title="Resolve a gate",
+        summary="Resolve an open gate and unblock every task waiting on it.",
+        arg_labels={
+            "gate_id": "Gate",
+            "resolved_by": "Resolved by",
+            "resolution": "Resolution",
+        },
+        outcome_labels={
+            "resolved": "Resolved",
+            "refused_routing_gate": "Refused — routing gate",
+            "rejected": "Rejected",
+        },
+        result_labels={"unblocked_task_ids": "Unblocked tasks"},
+        subject_labels={"gate": "the gate"},
+    ),
+    "list_tasks": CommandPresentation(
+        title="List tasks",
+        summary="Read the task list, without changing anything.",
+        arg_labels={
+            "project_id": "Project",
+            "status": "Status",
+            "display_mode": "Display mode",
+            "show_dependencies": "Show dependencies",
+            "limit": "Limit",
+        },
+        outcome_labels={"listed": "Listed"},
+        result_labels={"tasks": "Tasks", "total": "Total", "by_project": "Tasks by project"},
+        subject_labels={"task_list": "the task list"},
+    ),
+    "get_downstream_tasks": CommandPresentation(
+        title="List downstream tasks",
+        summary="Read the tasks that depend on this one, without changing anything.",
+        arg_labels={"task_id": "Task"},
+        outcome_labels={"listed": "Listed", "rejected": "Rejected"},
+        result_labels={"tasks": "Downstream tasks"},
+        subject_labels={"downstream_tasks": "the tasks that depend on this one"},
+    ),
+    "task_batch_commit": CommandPresentation(
+        title="Commit a proposed task batch",
+        summary="Turn an approved proposal into real tasks and dependencies.",
+        arg_labels={"proposal_id": "Proposal"},
+        outcome_labels={"committed": "Committed", "rejected": "Rejected"},
+        result_labels={"task_ids": "Created tasks"},
+        subject_labels={"task_graph": "the proposed task graph"},
+    ),
+    "task_route": CommandPresentation(
+        title="Route a task to a profile",
+        summary="Assign the agent profile that will run the task, and clear its routing gate.",
+        arg_labels={
+            "task_id": "Task",
+            "profile_id": "Agent profile",
+            "intelligence_class": "Intelligence class",
+            "workspace_id": "Workspace",
+        },
+        outcome_labels={"routed": "Routed", "rejected": "Rejected"},
+        result_labels={"resolved_gate_ids": "Resolved gates"},
+        subject_labels={
+            "task_routing": "the task's routing",
+            "routing_gate": "the task's routing gate",
+        },
+    ),
+}
+
+
 def _contract(
     name: str,
     args: type[CommandArgs],
@@ -300,9 +507,7 @@ def _contract(
             retry_safe=retry_safe,
             effects=effects,
         ),
-        presentation=CommandPresentation(
-            title=name.replace("_", " ").title(), summary=name.replace("_", " ")
-        ),
+        presentation=PRESENTATIONS[name],
     )
 
 

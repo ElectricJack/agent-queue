@@ -52,6 +52,9 @@ class EventFieldSpec(TypedDict):
     """Descriptive field metadata used by contracted playbook intent."""
 
     type: str
+    #: A bare noun phrase with no leading article: the explanation renderer
+    #: substitutes it into "this event's <description>", so "project" reads and
+    #: "the project the task belongs to" does not.
     description: str
     sensitive: NotRequired[bool]
     hydrated: NotRequired[bool]
@@ -111,19 +114,19 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
         # the dedup-key signal from the hydrated row for older emitters.
         "optional": ["agent_id", "agent_type", "no_code", "review_task"],
         "fields": {
-            "task_id": {"type": "string", "description": "the completed task"},
-            "project_id": {"type": "string", "description": "the project the task belongs to"},
-            "title": {"type": "string", "description": "the task title"},
-            "agent_id": {"type": "string", "description": "the agent that completed the task"},
-            "agent_type": {"type": "string", "description": "the profile id of that agent"},
-            "no_code": {"type": "boolean", "description": "whether the task produced code"},
+            "task_id": {"type": "string", "description": "task"},
+            "project_id": {"type": "string", "description": "project"},
+            "title": {"type": "string", "description": "title"},
+            "agent_id": {"type": "string", "description": "agent"},
+            "agent_type": {"type": "string", "description": "agent profile"},
+            "no_code": {"type": "boolean", "description": "no-code flag"},
             "review_task": {
                 "type": "boolean",
-                "description": "whether the completed task is itself a review task",
+                "description": "review-task flag",
             },
             "task": {
                 "type": "object",
-                "description": "the completed task row",
+                "description": "task row",
                 "hydrated": True,
                 "fields": {
                     "branch_name": {"type": "string", "description": "task branch"},
@@ -287,13 +290,13 @@ _WORK_GRAPH_SCHEMAS: dict[str, EventSchema] = {
         "required": ["gate_id", "project_id", "resolved_by"],
         "optional": ["resolution", "unblocked_task_ids", "gate_type", "await_id"],
         "fields": {
-            "gate_id": {"type": "string", "description": "the resolved gate"},
-            "project_id": {"type": "string", "description": "the gate project"},
-            "resolved_by": {"type": "string", "description": "the resolving principal"},
-            "resolution": {"type": "string", "description": "the gate resolution"},
-            "unblocked_task_ids": {"type": "array", "description": "the unblocked tasks"},
-            "gate_type": {"type": "string", "description": "the gate type"},
-            "await_id": {"type": "string", "description": "the await identifier"},
+            "gate_id": {"type": "string", "description": "gate"},
+            "project_id": {"type": "string", "description": "project"},
+            "resolved_by": {"type": "string", "description": "resolving principal"},
+            "resolution": {"type": "string", "description": "resolution"},
+            "unblocked_task_ids": {"type": "array", "description": "unblocked tasks"},
+            "gate_type": {"type": "string", "description": "gate type"},
+            "await_id": {"type": "string", "description": "await identifier"},
         },
     },
     "gate.expired": {
@@ -877,16 +880,16 @@ _SPEC_SCHEMAS: dict[str, EventSchema] = {
         "required": ["project_id", "spec_path"],
         "optional": [],
         "fields": {
-            "project_id": {"type": "string", "description": "the specification project"},
-            "spec_path": {"type": "string", "description": "the approved specification path"},
+            "project_id": {"type": "string", "description": "project"},
+            "spec_path": {"type": "string", "description": "specification path"},
         },
     },
     "proposal.ready": {
         "required": ["project_id", "proposal_id"],
         "optional": [],
         "fields": {
-            "project_id": {"type": "string", "description": "the proposal project"},
-            "proposal_id": {"type": "string", "description": "the ready proposal"},
+            "project_id": {"type": "string", "description": "project"},
+            "proposal_id": {"type": "string", "description": "proposal"},
         },
     },
     "proposal.status_changed": {
