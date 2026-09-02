@@ -51,6 +51,7 @@ from src.models import (
 from src.orchestrator import Orchestrator
 from src.plugins.registry import PluginRegistry
 from src.runtimes.base import Runtime
+from tests.assignment_routing_helpers import install_already_routed
 
 
 # ---------------------------------------------------------------------------
@@ -535,6 +536,7 @@ class TestPromptTiersEmptyWhilePaused:
         registry = _CapturingRegistry()
         orch = Orchestrator(_base_config(tmp_path), runtimes=registry)
         await orch.initialize()
+        install_already_routed(orch)
         try:
             assert orch.plugin_registry.get_service("memory") is None
 

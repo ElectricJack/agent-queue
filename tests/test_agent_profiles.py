@@ -15,6 +15,7 @@ Covers:
 import pytest
 
 from src.runtimes.base import Runtime
+from tests.assignment_routing_helpers import install_already_routed
 from src.config import AppConfig, AgentProfileConfig, load_config
 from src.database import Database
 from src.models import (
@@ -857,6 +858,7 @@ class TestProfileEnforcement:
         )
         orch = Orchestrator(config, runtimes=factory)
         await orch.initialize()
+        install_already_routed(orch)
         yield orch, factory
         if orch._running_tasks:
             import asyncio

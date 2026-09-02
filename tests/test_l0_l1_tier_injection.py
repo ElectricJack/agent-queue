@@ -18,6 +18,7 @@ import pytest
 from unittest.mock import AsyncMock
 
 from src.runtimes.base import Runtime
+from tests.assignment_routing_helpers import install_already_routed
 from src.config import AppConfig
 from src.models import (
     Agent,
@@ -193,6 +194,7 @@ async def orch_env(tmp_path):
     factory = CapturingMockAdapterFactory()
     o = Orchestrator(config, runtimes=factory)
     await o.initialize()
+    install_already_routed(o)
     yield o, factory
     await o.wait_for_running_tasks(timeout=10)
     await o.shutdown()

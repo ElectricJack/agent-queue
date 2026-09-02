@@ -1,10 +1,8 @@
 import asyncio
 import os
-import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from sqlalchemy import text
 from src.orchestrator import Orchestrator
 from src.models import (
     AgentProfile,
@@ -20,6 +18,7 @@ from src.models import (
 )
 from src.runtimes.base import Runtime
 from src.config import AppConfig, AutoTaskConfig
+from tests.assignment_routing_helpers import install_already_routed
 
 
 class MockAdapter(Runtime):
@@ -86,6 +85,7 @@ async def orch(tmp_path):
     config.worktrees.enabled = False
     o = Orchestrator(config, runtimes=MockAdapterFactory())
     await o.initialize()
+    install_already_routed(o)
     yield o
     # Drain any remaining background tasks before closing DB
     await _drain_running_tasks(o)
