@@ -52,12 +52,23 @@ the key (container settlement, custom pipelines) still fire the review.
 Both review rules also require `event.review_task` to be falsy. `no_code` is
 only as reliable as the reviewer profile's `read_only` flag: a project that
 gives its reviewers Write/Edit tools (`read_only: false`) disarms it and the
-recursion returns. `review_task` is structural instead — the close path sets it
-when the finishing task carries the dedup key this pipeline stamps on every
-review it creates (`review:task:<task_id>` or `branch-review:<branch_name>`,
-see `src/review_keys.py`), so a review is recognised as a review whatever its
-profile says. A custom pipeline that keys its review tasks differently must
-either keep these prefixes or add its own guard.
+recursion returns. `review_task` is structural instead — it is set when the
+finishing task carries the dedup key this pipeline stamps on every review it
+creates (`review:task:<task_id>` or `branch-review:<branch_name>`, see
+`src/review_keys.py`), so a review is recognised as a review whatever its
+profile says. It is derived inside `_emit_task_event` from the task row rather
+than passed by a call site, so every emitter of `task.completed` — the session
+close path, container settlement, anything added later — carries it, and none
+can forget it and silently re-arm the recursion.
+
+Neither guard is the floor. Both live in this file, which is copied into the
+vault and is never auto-upgraded once an operator edits it, and a custom
+pipeline that keys its review tasks differently disarms `review_task` too.
+`ensure_task` therefore refuses a `review:task:<X>` key outright when `X` is
+itself a review, whatever the playbook asked for: the review chain stops at
+depth 1 in the command handler. Six-deep `Review: Review: ...` lineages
+reached the live queue when only the playbook guards existed
+(task prime-quest-67).
 
 The `ensure_task` nodes below pin `profile_id` but no `intelligence_class`, so
 the assignment-routing playbook chooses the class for the tasks they create. A

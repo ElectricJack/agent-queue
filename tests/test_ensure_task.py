@@ -268,3 +268,75 @@ async def test_ensure_task_rejects_unknown_class_for_triage(handler, db):
     )
     assert res["success"] is False
     assert "no-such-class" in res["error"]
+
+
+# ---------------------------------------------------------------------------
+# Recursion bound: no review of a review (task prime-quest-67)
+# ---------------------------------------------------------------------------
+
+
+async def test_ensure_task_refuses_a_review_of_a_review(handler, db, reviewer):
+    """``review:task:<X>`` is refused when ``X`` is itself a pipeline review.
+
+    The default pipeline guards this with ``event.review_task`` in its ``when``
+    clause, but that guard lives in a user-editable vault playbook and depends
+    on the emitter setting the flag.  Six-deep ``Review: Review: ...`` lineages
+    reached the live queue when both slipped (prime-quest-67).  This is the
+    structural floor: whatever a playbook asks for, the review chain stops at
+    depth 1.
+    """
+    first = await handler.execute(
+        "ensure_task",
+        {
+            "project_id": PROJECT_ID,
+            "dedup_key": "review:task:work-1",
+            "title": "Review: Work",
+            "profile_id": reviewer,
+        },
+    )
+    assert first["success"] is True, first
+
+    second = await handler.execute(
+        "ensure_task",
+        {
+            "project_id": PROJECT_ID,
+            "dedup_key": f"review:task:{first['task_id']}",
+            "title": "Review: Review: Work",
+            "profile_id": reviewer,
+        },
+    )
+    assert second["success"] is False, second
+    assert "review of a review" in second["error"]
+    assert await db.find_task_by_dedup_key(PROJECT_ID, f"review:task:{first['task_id']}") is None
+
+
+async def test_ensure_task_allows_a_review_of_ordinary_work(handler, db, reviewer):
+    """The bound must not touch the first review layer, which is the whole point."""
+    work = await handler.execute(
+        "create_task", {"project_id": PROJECT_ID, "title": "Work", "profile_id": reviewer}
+    )
+    res = await handler.execute(
+        "ensure_task",
+        {
+            "project_id": PROJECT_ID,
+            "dedup_key": f"review:task:{work['created']}",
+            "title": "Review: Work",
+            "profile_id": reviewer,
+        },
+    )
+    assert res["success"] is True, res
+    assert res["created"] is True
+
+
+async def test_ensure_task_review_bound_ignores_unknown_reviewed_task(handler, db, reviewer):
+    """An id that names no row cannot be a review, so the bound stays out of the way."""
+    res = await handler.execute(
+        "ensure_task",
+        {
+            "project_id": PROJECT_ID,
+            "dedup_key": "review:task:never-existed-9",
+            "title": "Review: Ghost",
+            "profile_id": reviewer,
+        },
+    )
+    assert res["success"] is True, res

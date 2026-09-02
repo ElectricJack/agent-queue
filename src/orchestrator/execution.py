@@ -21,7 +21,6 @@ from src.notifications.events import (
     TaskThreadOpenEvent,
 )
 from src.profiles.sync import underlying_agent_type
-from src.review_keys import is_pipeline_review_task
 from src.models import (
     AgentOutput,
     AgentResult,
@@ -1189,15 +1188,15 @@ class ExecutionMixin:
                 # not set the key (container settlement, hand-written events)
                 # still fires the review, so this only ever narrows.
                 #
-                # ``review_task`` is the structural half of the same guard.
-                # ``no_code`` is only as good as the reviewer profile's
-                # ``read_only`` flag: an operator who hands the reviewer
-                # Write/Edit tools (``read_only: false``) turns it off and the
-                # recursion is back (task sound-horizon-77.18.2).  The pipeline
-                # stamps every review it creates with a ``review:task:`` /
-                # ``branch-review:`` dedup key, so a finishing task carrying
-                # one *is* a review whatever its profile says, and the rules
-                # guard on this flag as well.
+                # The structural half of the same guard, ``review_task``, is
+                # not passed here: it is a property of the task row, not of
+                # this call site, so ``_emit_task_event`` derives it from
+                # ``task.dedup_key`` for every emitter of ``task.completed``.
+                # Stamping it here alone left container settlement
+                # (``monitoring._on_containers_settled``) emitting the event
+                # without it, and an absent key reads falsy under
+                # ``truthy: false`` — the recursion re-armed silently
+                # (task prime-quest-67).
                 no_code = await self._task_produces_no_code(ctx)
                 await self._emit_task_event(
                     "task.completed",
@@ -1205,7 +1204,6 @@ class ExecutionMixin:
                     agent_id=task.assigned_agent_id,
                     agent_type=task.profile_id,
                     no_code=no_code,
-                    review_task=is_pipeline_review_task(task.dedup_key),
                 )
             except Exception:
                 # Best-effort, exactly like the notification below it: a

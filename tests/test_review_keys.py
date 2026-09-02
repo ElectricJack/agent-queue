@@ -55,3 +55,25 @@ def test_default_pipeline_source_uses_these_prefixes():
     src = DEFAULT_PIPELINE_PATH.read_text(encoding="utf-8")
     assert f'"dedup_key": "{REVIEW_TASK_DEDUP_PREFIX}{{{{event.task_id}}}}"' in src
     assert f'"dedup_key": "{BRANCH_REVIEW_DEDUP_PREFIX}{{{{event.task.branch_name}}}}"' in src
+
+
+@pytest.mark.parametrize(
+    ("dedup_key", "expected"),
+    [
+        ("review:task:abc", "abc"),
+        ("review:task:", None),
+        ("branch-review:aq/feature", None),
+        ("triage-open", None),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_reviewed_task_id(dedup_key, expected):
+    """The reviewed task's id, recoverable from the review's own dedup key.
+
+    ``_cmd_ensure_task`` uses it to refuse a review of a review without
+    knowing anything about the pipeline that asked for one.
+    """
+    from src.review_keys import reviewed_task_id
+
+    assert reviewed_task_id(dedup_key) == expected

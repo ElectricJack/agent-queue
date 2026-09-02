@@ -19,7 +19,7 @@ import pytest
 from src.commands.handler import CommandHandler
 from src.config import AppConfig, DiscordConfig
 from src.database import Database
-from src.models import AgentProfile, Project
+from src.models import AgentProfile, Project, Task
 from src.orchestrator import Orchestrator
 from src.orchestrator.core import _eval_pipeline_when
 
@@ -459,3 +459,57 @@ async def test_per_branch_review_gates_downstream_with_pr_merged(
         and g.get("await_id") == "https://github.com/o/r/pull/9"
         for g in gates
     ), f"expected pr-merged gate on {dep} awaiting PR URL; got: {gates}"
+
+
+# ---------------------------------------------------------------------------
+# The ``review_task`` flag is emitter-independent (task prime-quest-67)
+# ---------------------------------------------------------------------------
+
+
+async def test_emit_task_completed_derives_review_task_from_the_dedup_key(
+    command_handler_factory,
+):
+    """Every ``task.completed`` carries ``review_task``, not just the close path's.
+
+    The flag used to be passed by hand from ``execution.py``'s close path
+    alone.  Container settlement (``monitoring._on_containers_settled``) emits
+    the same event without it, and an absent key reads falsy under
+    ``{"field": "event.review_task", "truthy": false}`` — so the review rules
+    fired and reviewed a review.  Deriving it in ``_emit_task_event`` means no
+    emitter can forget it.
+    """
+    h = await command_handler_factory()
+    o = h.orchestrator
+
+    review = Task(
+        id="r1", project_id="p", title="Review: T1", description="", dedup_key="review:task:t1"
+    )
+    await o._emit_task_event("task.completed", review)
+    assert o.bus.emit.await_args.args[1]["review_task"] is True
+
+    o.bus.emit.reset_mock()
+    work = Task(id="t1", project_id="p", title="T1", description="", dedup_key=None)
+    await o._emit_task_event("task.completed", work)
+    assert o.bus.emit.await_args.args[1]["review_task"] is False
+
+
+async def test_emit_task_event_lets_the_caller_override_review_task(command_handler_factory):
+    """An explicit kwarg still wins — the derivation is only the default."""
+    h = await command_handler_factory()
+    o = h.orchestrator
+
+    work = Task(id="t1", project_id="p", title="T1", description="", dedup_key=None)
+    await o._emit_task_event("task.completed", work, review_task=True)
+    assert o.bus.emit.await_args.args[1]["review_task"] is True
+
+
+async def test_emit_only_task_completed_carries_review_task(command_handler_factory):
+    """Other task.* events keep their registered payloads (``event_schemas``)."""
+    h = await command_handler_factory()
+    o = h.orchestrator
+
+    review = Task(
+        id="r1", project_id="p", title="Review: T1", description="", dedup_key="review:task:t1"
+    )
+    await o._emit_task_event("task.ready", review, reason="graph")
+    assert "review_task" not in o.bus.emit.await_args.args[1]
