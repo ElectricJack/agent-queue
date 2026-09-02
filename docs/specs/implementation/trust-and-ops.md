@@ -281,6 +281,12 @@ check (ids per design §5.2):
   the profile→binary mapping for the 14+ ACP agents lives in `acpx`. A probe that
   times out must `kill()` **and reap** the child; cancelling `communicate()` alone
   leaks the process. `tmux` deferred to the contributed check.
+- `harness.drift` — `audit_vault_harnesses` (`src/sessions/harness_manifest.py`)
+  classifies each `vault/harnesses/<name>.md` as current / stale / edited / missing
+  by sha256 against `SHIPPED_HARNESS_HASHES`; edited copies are also run through
+  `parse_harness_markdown` and reported WARN when they carry errors or warnings.
+  fix = `sync_vault_harnesses` (the same routine `ensure_default_harnesses` runs at
+  startup: create missing, refresh stale, never touch edited).
 - `leases.stale`, `sessions.stale`, `tmux.server`, `worktrees.orphans` — **not
   implemented here**: [[session-runtime]] and [[worktree-execution]] register them
   at startup via `DoctorRegistry.register()`. Doctor ships the ids reserved and

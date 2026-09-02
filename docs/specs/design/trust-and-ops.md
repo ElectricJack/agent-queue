@@ -237,6 +237,7 @@ doctor never hangs and never dies on one bad check.
 | `db.migrations` | Alembic revision at script head | error | no (prints `alembic upgrade head`) |
 | `vault.parse` | profiles, harnesses, workspace kinds, MCP files parse | error per broken file | no |
 | `harness.binaries` | required binaries respond. **As landed:** `git` required; `gh`, `claude`, `acpx` optional. Narrowed from "per configured harness" — deriving the set means mapping every active profile's `runtime`/`agent_name` to a binary, and that mapping lives in `acpx`, not here | error (`git`) / warn (optional) | no |
+| `harness.drift` | `vault/harnesses/*.md` vs the shipped defaults, using the manifest of every hash each shipped file has ever had (`src/sessions/harness_manifest.py`). A copy that matches an *older* shipped version is `stale` (startup seeding refreshes it, so this only shows between upgrade and restart); one that matches nothing is `edited` — an operator's, never touched, but a shipped fix cannot reach it. `aq vault reset-harness <name>` restores the shipped file on request | warn (stale; edited copy that parses with errors/warnings) / info (edited, missing) | yes — seed missing + refresh stale copies only; edited copies are never overwritten |
 | `tmux.server` | tmux socket probe (contributed by [[session-runtime]]) | error when sessions enabled; info otherwise | no |
 | `sessions.stale` | session rows vs process table (contributed by [[session-runtime]]) | warn | yes — reconcile rows through the exit classifier |
 | `worktrees.orphans` | orphan worktree dirs, stale `.git/worktrees` entries (contributed by [[worktree-execution]]). **As landed:** slot worktrees whose `.aq-worktree.json` names a task no longer in `tasks` — a released slot stays on its last task's branch (worktree-execution §3.4), so a deleted task leaves `aq/<task_id>` checked out and git refuses it to every other slot. Report-only: `git worktree prune` does not clear a live worktree's own checkout, and resetting a slot off a branch is an operator call | warn | no — see "as landed" |
@@ -271,8 +272,10 @@ or worktree directories that contain content; those always remain human decision
 (principle #5) — which is why `profiles.system_drift` ships without a fix: the
 vault profile is an operator-owned file, so its repair is the explicit,
 per-profile `aq agent profile-reseed` (backs the old file up to
-`profile.md.bak-<epoch>` first). Fixable checks: `sessions.stale`, `worktrees.orphans` (prune only),
-`leases.stale`, `db.wal_size`, `logs.llm_size`, plus plugin checks that declare a fix
+`profile.md.bak-<epoch>` first). Fixable checks: `sessions.stale`, `worktrees.orphans`
+(prune only), `leases.stale`, `db.wal_size`, `logs.llm_size`, `harness.drift`
+(overwrites only copies byte-identical to a version we shipped), plus plugin checks
+that declare a fix
 meeting the same rules. `--fix` re-runs each fixed check and reports the post-fix
 severity with `fix_applied: true`.
 

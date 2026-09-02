@@ -514,39 +514,84 @@ class TaskQueryMixin:
     async def resume_task(self, task_id: str) -> Task:
         """Remove only the explicit hold; keep approval and dependency state."""
         async with self.immediate() as conn:
-            row = (await conn.execute(
-                select(tasks).where(tasks.c.id == task_id).with_for_update()
-            )).mappings().fetchone()
+            row = await self._lock_task_row(conn, task_id)
             if row is None:
                 raise ValueError(f"Task '{task_id}' not found")
             if row["status"] != TaskStatus.PAUSED.value:
                 raise ValueError(f"Task is not paused (status: {row['status']})")
-            encoded = (await conn.execute(select(task_metadata.c.value).where(
-                task_metadata.c.task_id == task_id, task_metadata.c.key == "manual_pause"
-            ))).scalar_one_or_none()
-            saved = json.loads(encoded) if encoded is not None else {}
-            if saved.get("cleanup_pending"):
-                raise ValueError("Task is paused but its session has not stopped; retry Resume.")
-            prior = TaskStatus(saved.get("status", "READY"))
-            if prior in (TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS, TaskStatus.PAUSED):
-                prior = (
-                    TaskStatus.IN_PROGRESS if await self.is_container(task_id, conn=conn)
-                    else TaskStatus.READY
-                )
-            await conn.execute(delete(task_metadata).where(
-                task_metadata.c.task_id == task_id,
-                task_metadata.c.key == "manual_pause_withholds_children",
-            ))
-            result = await self._apply_transition(
-                conn, task_id, prior, context="manual_resume", force=True,
-                _manual_pause_control=True, resume_after=None, assigned_agent_id=None,
-            )
-            await conn.execute(delete(task_metadata).where(
-                task_metadata.c.task_id == task_id, task_metadata.c.key == "manual_pause"
-            ))
+            encoded = await self._read_manual_pause(conn, task_id)
+            result = await self._resume_locked(conn, task_id, encoded)
         await self.log_blocked_flips(result.flipped)
         await self._notify_ready(result.ready)
         return await self.get_task(task_id)
+
+    async def recover_orphaned_pause(self, task_id: str) -> Task | None:
+        """Resume a task wedged in PAUSED with no timer and no operator hold.
+
+        ``PAUSED`` + ``resume_after IS NULL`` is the operator-hold sentinel,
+        and a real hold always carries the ``manual_pause`` snapshot written
+        in :meth:`pause_task`'s own transaction.  That state *without* the
+        snapshot is unreachable: no timer promotes it and the manual-pause
+        fence rejects every other lifecycle write.
+
+        Unlike :meth:`resume_task` this is guarded, not forced.  The status,
+        the timer and the snapshot are all checked *after* the task-row lock
+        is taken, in the same transaction as the write, so a hold (or a
+        backoff timer) that landed after the caller looked is left exactly
+        as it was — the cascade's own reads happen in separate transactions
+        and cannot tell a fresh hold from a wedge.  Returns the resumed task,
+        or ``None`` when the task was not orphaned.
+        """
+        async with self.immediate() as conn:
+            row = await self._lock_task_row(conn, task_id)
+            if (
+                row is None
+                or row["status"] != TaskStatus.PAUSED.value
+                or row["resume_after"] is not None
+            ):
+                return None
+            if await self._read_manual_pause(conn, task_id) is not None:
+                return None
+            result = await self._resume_locked(conn, task_id, None)
+        await self.log_blocked_flips(result.flipped)
+        await self._notify_ready(result.ready)
+        return await self.get_task(task_id)
+
+    async def _lock_task_row(self, conn, task_id: str):
+        """The task row under ``FOR UPDATE``, or ``None`` when it does not exist."""
+        return (await conn.execute(
+            select(tasks).where(tasks.c.id == task_id).with_for_update()
+        )).mappings().fetchone()
+
+    async def _read_manual_pause(self, conn, task_id: str) -> str | None:
+        """The encoded ``manual_pause`` snapshot on *conn*, or ``None`` without a hold."""
+        return (await conn.execute(select(task_metadata.c.value).where(
+            task_metadata.c.task_id == task_id, task_metadata.c.key == "manual_pause"
+        ))).scalar_one_or_none()
+
+    async def _resume_locked(self, conn, task_id: str, encoded: str | None) -> TransitionResult:
+        """Restore a PAUSED task from its hold snapshot; the caller holds the row lock."""
+        saved = json.loads(encoded) if encoded is not None else {}
+        if saved.get("cleanup_pending"):
+            raise ValueError("Task is paused but its session has not stopped; retry Resume.")
+        prior = TaskStatus(saved.get("status", "READY"))
+        if prior in (TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS, TaskStatus.PAUSED):
+            prior = (
+                TaskStatus.IN_PROGRESS if await self.is_container(task_id, conn=conn)
+                else TaskStatus.READY
+            )
+        await conn.execute(delete(task_metadata).where(
+            task_metadata.c.task_id == task_id,
+            task_metadata.c.key == "manual_pause_withholds_children",
+        ))
+        result = await self._apply_transition(
+            conn, task_id, prior, context="manual_resume", force=True,
+            _manual_pause_control=True, resume_after=None, assigned_agent_id=None,
+        )
+        await conn.execute(delete(task_metadata).where(
+            task_metadata.c.task_id == task_id, task_metadata.c.key == "manual_pause"
+        ))
+        return result
 
     def set_state_machine_enforcement(self, enforce: bool) -> None:
         """Toggle state-machine enforcement in ``transition_task``.

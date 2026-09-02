@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import textwrap
 
+import pytest
+
 from src.sessions.harness_parser import (
     parse_harness_markdown,
     resolve_base,
@@ -422,3 +424,104 @@ class TestShippedClaudeHarness:
         assert result["created"] == []
         assert "claude.md" in result["skipped"]
         assert "my-claude" in target.read_text(encoding="utf-8")
+
+
+class TestDialogPatternShape:
+    """An alternation without ``is_regex`` is a rule that can never fire."""
+
+    def test_alternation_without_is_regex_warns_and_stays_literal(self):
+        parsed = parse_harness_markdown(
+            _md('{"command": "x", "dialogs": [{"name": "t", "pattern": "A|B", "keys": ["Enter"]}]}')
+        )
+        assert parsed.is_valid
+        (rule,) = parsed.harness.dialogs
+        assert rule.is_regex is False  # refuse to guess — the file says what it says
+        assert any("'t'" in w and "is_regex" in w for w in parsed.warnings), parsed.warnings
+
+    def test_alternation_with_is_regex_is_silent(self):
+        parsed = parse_harness_markdown(
+            _md(
+                '{"command": "x", "dialogs": '
+                '[{"name": "t", "pattern": "A|B", "keys": ["Enter"], "is_regex": true}]}'
+            )
+        )
+        assert parsed.warnings == []
+        assert parsed.harness.dialogs[0].is_regex is True
+
+
+class TestShippedDialogRulesMatchTheirScreens:
+    """Every shipped dialog rule must fire on the screen it was written for.
+
+    ``tests/test_tmux_startup_dialogs.py`` proves ``_await_ready`` answers a
+    trust screen *given a rule that matches it*; this pins that the rules
+    the daemon actually ships do match.  The Claude trust rule was an
+    alternation without ``is_regex`` from 2026-08-20 until this test, so
+    startup never answered Claude's trust screen at all.
+    """
+
+    @staticmethod
+    def _shipped(harness_id: str):
+        from pathlib import Path
+
+        import src.sessions as sessions_pkg
+
+        path = Path(sessions_pkg.__file__).parent / "default_harnesses" / f"{harness_id}.md"
+        parsed = parse_harness_markdown(path.read_text(encoding="utf-8"), fallback_id=harness_id)
+        assert parsed.is_valid, parsed.errors
+        assert parsed.warnings == [], parsed.warnings
+        return parsed.harness
+
+    @pytest.mark.parametrize(
+        ("harness_id", "rule_name", "screen"),
+        [
+            ("claude", "trust-folder", " Do you trust the files in this folder?\n\n ❯ No, exit\n"),
+            (
+                "claude",
+                "trust-folder",
+                " Is this a project you created or one you trust?\n\n ❯ No, exit\n",
+            ),
+            ("claude", "theme", " Choose the text style that looks best with your terminal\n"),
+            (
+                "claude",
+                "bypass-permissions",
+                "WARNING: Claude Code running in Bypass Permissions mode\n",
+            ),
+            ("claude", "mcp-trust", " New MCP server found in .mcp.json: foo\n"),
+            ("claude", "rate-limit", " You are approaching your usage limit\n"),
+            (
+                "codex",
+                "trust-directory",
+                "  Do you trust the contents of this directory?\n\n› 1. Yes, continue\n",
+            ),
+            ("codex", "login-required", "  Sign in with ChatGPT to use Codex\n"),
+            ("codex", "login-required", "  Run `codex login` to authenticate\n"),
+            ("gemini", "trust-folder", " Do you trust the files in this folder?\n"),
+            ("gemini", "trust-folder", " Do you trust the contents of this directory?\n"),
+            ("gemini", "theme-select", " Select Theme\n"),
+            ("gemini", "auth-select", " How would you like to authenticate for this project?\n"),
+            ("gemini", "login-required", " Please sign in to continue\n"),
+        ],
+    )
+    def test_shipped_rule_fires_on_its_screen(self, harness_id, rule_name, screen):
+        from src.sessions.dialogs import first_match
+
+        harness = self._shipped(harness_id)
+        matched = first_match(harness.dialogs, screen)
+        assert matched is not None, f"{harness_id}:{rule_name} did not match {screen!r}"
+        assert matched.name == rule_name
+
+    @pytest.mark.parametrize("harness_id", ["claude", "codex", "gemini"])
+    def test_shipped_rules_stay_quiet_on_a_bare_composer(self, harness_id):
+        # The readiness poll refuses a capture on which any rule matches, so
+        # a rule that fires on the ordinary composer would starve startup.
+        from src.sessions.dialogs import first_match
+
+        harness = self._shipped(harness_id)
+        composer = f"welcome\n\n{harness.ready_prompt_prefix or '> '}\n"
+        assert first_match(harness.dialogs, composer) is None
+
+    @pytest.mark.parametrize("harness_id", ["claude", "codex", "gemini"])
+    def test_every_shipped_alternation_is_flagged_regex(self, harness_id):
+        harness = self._shipped(harness_id)
+        unflagged = [r.name for r in harness.dialogs if "|" in r.pattern and not r.is_regex]
+        assert unflagged == []

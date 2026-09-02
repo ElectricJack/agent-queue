@@ -50,7 +50,6 @@ vault watcher; no restart, no release.
     {
       "name": "trust-folder",
       "pattern": "Do you trust the files in this folder|Is this a project you created or one you trust",
-      "is_regex": true,
       "keys": [
         "Enter"
       ]
