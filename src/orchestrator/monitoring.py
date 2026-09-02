@@ -767,6 +767,44 @@ class MonitoringMixin:
         except Exception as e:
             logger.warning("Paused playbook timeout sweep failed: %s", e)
 
+    async def _sweep_playbook_v2_retention(self) -> None:
+        """Collect aged-out Playbook V2 state (durable-state child plan §12.2).
+
+        Three guards, in the order that makes the common case free:
+
+        * ``playbooks.v2_storage_enabled`` is false by default, so on a stock
+          install this returns before touching the clock;
+        * the sweep runs at most once per
+          ``playbooks.v2_retention_sweep_interval_seconds`` (default an
+          hour), throttled by ``_last_playbook_retention_sweep`` the same way
+          ``_last_log_cleanup`` throttles log cleanup;
+        * every failure is swallowed with a warning.  A retention sweep is
+          pure housekeeping — letting it abort the scheduler cycle would turn
+          "an artifact file is unreadable" into "the daemon stopped
+          dispatching", which is precisely the trade the try/except exists to
+          refuse.
+
+        The throttle stamp is advanced *before* the sweep runs, so a sweep
+        that raises does not retry every 5 s for an hour.
+        """
+        playbooks = self.config.playbooks
+        if not getattr(playbooks, "v2_storage_enabled", False):
+            return
+        now = time.time()
+        interval = max(int(getattr(playbooks, "v2_retention_sweep_interval_seconds", 3600)), 1)
+        if now - self._last_playbook_retention_sweep < interval:
+            return
+        self._last_playbook_retention_sweep = now
+        try:
+            from src.playbooks.retention import ArtifactRetentionSweeper
+
+            sweeper = ArtifactRetentionSweeper(
+                self.db, playbooks, self.config.compiled_root
+            )
+            await sweeper.sweep(now)
+        except Exception as e:
+            logger.warning("Playbook V2 retention sweep failed: %s", e)
+
     async def _find_stuck_downstream(self, blocked_task_id: str) -> list[Task]:
         """BFS walk of the dependency graph to find orphaned DEFINED tasks.
 
