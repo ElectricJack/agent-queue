@@ -1200,7 +1200,15 @@ class ExecutionMixin:
                 # guard on this flag as well.  ``_on_playbook_trigger`` derives
                 # it from the task row too, so an emitter that predates this
                 # flag cannot reopen the recursion (task prime-cascade-64).
-                no_code = await self._task_produces_no_code(ctx)
+                #
+                # ``ctx.branch_no_commits`` is the third and last layer: the
+                # branch itself carried no commits ahead of its base when the
+                # completion pipeline asked, so there is literally nothing for
+                # a reviewer to read (task bright-forge-78).  It catches what
+                # the other two cannot — a renamed reviewer profile, a custom
+                # pipeline that keys its reviews differently, or an ordinary
+                # worker that closed ``pass`` having committed nothing.
+                no_code = await self._task_produces_no_code(ctx) or ctx.branch_no_commits
                 await self._emit_task_event(
                     "task.completed",
                     task,
