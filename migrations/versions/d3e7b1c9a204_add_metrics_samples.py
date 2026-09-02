@@ -1,7 +1,7 @@
 """add metrics_samples plus the two indexes the sampler range-scans
 
 Revision ID: d3e7b1c9a204
-Revises: 33bdb059ceff
+Revises: 3b560dbd527c
 Create Date: 2026-09-01
 
 ``metrics_samples`` backs the dashboard Metrics tab: one row per
@@ -20,7 +20,7 @@ import sqlalchemy as sa
 
 
 revision = "d3e7b1c9a204"
-down_revision = "33bdb059ceff"
+down_revision = "3b560dbd527c"
 branch_labels = None
 depends_on = None
 
