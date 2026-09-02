@@ -44,6 +44,10 @@ _LEGACY_DEFAULT_PIPELINE_HASHES = frozenset(
         # derived ``review_task`` and empty branches as ``no_code`` (tasks
         # prime-cascade-64 and bright-forge-78). Rules unchanged; prose only.
         "561434cc02575456cc722c46ba5563ee46e9df564fa2062c841333034b97e553",
+        # Both guards and the dispatch-derivation prose, before the prose
+        # recorded the ``ensure_task`` creation-point refusal (task
+        # solid-harbor-68).  Rules unchanged; prose only.
+        "21ff23549f6df0b908aecb73e54bd516610fd662eddf3a89760060a1b8fd2c5f",
     }
 )
 

@@ -76,6 +76,16 @@ the review anyway, and `Review: Review: Review: ...` chains six deep reached
 the live queue (task prime-cascade-64). A custom pipeline that keys its review
 tasks differently must either keep these prefixes or add its own guard.
 
+Neither event flag reaches a daemon still running code older than the flag, nor
+a vault copy of this file whose rules an operator edited (`ensure_default_playbooks`
+never refreshes a copy it does not recognise); both were true at once on the
+live box and the chains grew ten deep anyway (task solid-harbor-68). The last
+line of defence is therefore in the command every version of these rules must
+call: `ensure_task` refuses a `review:task:<X>` key when X itself carries a
+`review:task:` or `branch-review:` key, and the refusal follows the node's
+`on_failure` edge to `done`. Rules and event flags stop a review early; the
+command guarantees it.
+
 The `ensure_task` nodes below pin `profile_id` but no `intelligence_class`, so
 the assignment-routing playbook chooses the class for the tasks they create. A
 pinned profile is a compatibility constraint, not a route: until that decision

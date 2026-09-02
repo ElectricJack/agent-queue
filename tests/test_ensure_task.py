@@ -268,3 +268,110 @@ async def test_ensure_task_rejects_unknown_class_for_triage(handler, db):
     )
     assert res["success"] is False
     assert "no-such-class" in res["error"]
+
+
+async def _seed_reviewer(db):
+    await db.upsert_profile(AgentProfile(id="reviewer", name="Reviewer"))
+
+
+async def test_ensure_task_refuses_a_review_of_a_pipeline_review(handler, db):
+    """``review:task:<X>`` is refused when X is itself a pipeline review row.
+
+    Every earlier guard sat on the ``task.completed`` event: ``no_code`` (off
+    once the reviewer profiles are ``read_only: false``, as on the live box),
+    ``review_task`` set at close, ``review_task`` derived at dispatch.  A
+    daemon running older code, or an operator-edited vault copy of the
+    pipeline whose rules lack the guards, still reached this command with the
+    review's own id and grew ``Review: Review: Review: ...`` chains ten deep
+    (task solid-harbor-68).  The command that creates the row is the one
+    place every version of the pipeline must pass through, so it refuses here
+    whatever the event or the rules said.
+    """
+    await _seed_reviewer(db)
+    await db.create_task(
+        Task(
+            id="orig",
+            project_id=PROJECT_ID,
+            title="Original work",
+            description="",
+            status=TaskStatus.COMPLETED,
+        )
+    )
+    first = await handler.execute(
+        "ensure_task",
+        {
+            "project_id": PROJECT_ID,
+            "dedup_key": "review:task:orig",
+            "title": "Review: Original work",
+            "profile_id": "reviewer",
+        },
+    )
+    assert first["success"] is True and first["created"] is True
+    review_id = first["task_id"]
+
+    second = await handler.execute(
+        "ensure_task",
+        {
+            "project_id": PROJECT_ID,
+            "dedup_key": f"review:task:{review_id}",
+            "title": "Review: Review: Original work",
+            "profile_id": "reviewer",
+        },
+    )
+    assert second["success"] is False
+    assert "review" in second["error"].lower()
+    assert await db.find_task_by_dedup_key(PROJECT_ID, f"review:task:{review_id}") is None
+    reviews = [t for t in await db.list_tasks(project_id=PROJECT_ID) if t.profile_id == "reviewer"]
+    assert [t.id for t in reviews] == [review_id]
+
+
+async def test_ensure_task_refuses_a_review_of_a_final_review(handler, db):
+    """A ``branch-review:`` row is a pipeline review too and gets no review of its own."""
+    await _seed_reviewer(db)
+    await db.create_task(
+        Task(
+            id="final-1",
+            project_id=PROJECT_ID,
+            title="Final review: feat/x",
+            description="",
+            status=TaskStatus.COMPLETED,
+            dedup_key="branch-review:feat/x",
+        )
+    )
+    res = await handler.execute(
+        "ensure_task",
+        {
+            "project_id": PROJECT_ID,
+            "dedup_key": "review:task:final-1",
+            "title": "Review: Final review: feat/x",
+            "profile_id": "reviewer",
+        },
+    )
+    assert res["success"] is False
+    assert await db.find_task_by_dedup_key(PROJECT_ID, "review:task:final-1") is None
+
+
+async def test_ensure_task_still_reviews_ordinary_and_unknown_tasks(handler, db):
+    """The refusal is narrow: ordinary work, and ids with no row, are reviewed as before."""
+    await _seed_reviewer(db)
+    await db.create_task(
+        Task(
+            id="work-1",
+            project_id=PROJECT_ID,
+            title="Work",
+            description="",
+            status=TaskStatus.COMPLETED,
+            dedup_key="spec-ingest:docs/x.md",
+        )
+    )
+    for reviewed in ("work-1", "no-such-row"):
+        res = await handler.execute(
+            "ensure_task",
+            {
+                "project_id": PROJECT_ID,
+                "dedup_key": f"review:task:{reviewed}",
+                "title": f"Review: {reviewed}",
+                "profile_id": "reviewer",
+            },
+        )
+        assert res["success"] is True and res["created"] is True, (reviewed, res)
