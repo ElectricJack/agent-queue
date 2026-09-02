@@ -412,6 +412,9 @@ token_ledger = Table(
     Column("input_tokens", Integer, nullable=True),
     Column("output_tokens", Integer, nullable=True),
     Column("timestamp", Float, nullable=False),
+    # The metrics sampler reads a trailing window off this append-only,
+    # unbounded table every few seconds to compute tokens/minute.
+    Index("idx_token_ledger_timestamp", "timestamp"),
 )
 
 events = Table(
@@ -473,6 +476,9 @@ task_completion_records = Table(
     Column("notes", Text, nullable=False, server_default="''"),
     Column("completed_at", Float, nullable=False),
     Index("idx_task_completion_records_task_time", "task_id", "completed_at"),
+    # Completions-per-hour scans by time alone; the composite above cannot
+    # serve it because ``task_id`` is the leading column.
+    Index("idx_task_completion_records_completed_at", "completed_at"),
 )
 
 system_config = Table(
@@ -590,6 +596,14 @@ agent_profiles = Table(
     Column("model", Text, nullable=False, server_default="''"),
     Column("permission_mode", Text, nullable=False, server_default="''"),
     Column("allowed_tools", Text, nullable=False, server_default="'[]'"),
+    # Normalized capability namespaces (Playbook V2 Package 0 §3.1), stored
+    # as JSON arrays of text like ``allowed_tools`` above.  NULL is
+    # meaningful: it is the signal that the legacy ``allowed_tools`` adapter
+    # should run.  Backfilling would erase the distinction between "authored
+    # as none" ('[]') and "not authored" (NULL).
+    Column("harness_tools", Text, nullable=True),
+    Column("aq_commands", Text, nullable=True),
+    Column("plugin_tools", Text, nullable=True),
     Column("mcp_servers", Text, nullable=False, server_default="'{}'"),
     Column("system_prompt_suffix", Text, nullable=False, server_default="''"),
     Column("install", Text, nullable=False, server_default="'{}'"),
@@ -1067,6 +1081,32 @@ subagent_events = Table(
     CheckConstraint("event IN ('start','stop')", name="ck_subagent_events_event"),
     Index("idx_subagent_events_session", "session_id", "event"),
     Index("idx_subagent_events_occurred", "occurred_at"),
+)
+
+# ---------------------------------------------------------------------------
+# Fleet metrics time series (dashboard Metrics tab).
+#
+# One row per (resolution, bucket).  ``payload`` is the JSON sample body
+# rather than a wide column set: the metric surface is dict-shaped (counts
+# per harness, per profile, per model) and still growing, and a schema
+# migration per new series would make the sampler expensive to extend.
+#
+# ``UNIQUE(resolution, bucket_ts)`` is what makes the writer idempotent —
+# a tick that fires twice for the same second, or a roll-up re-run after a
+# restart, updates the bucket it already wrote instead of duplicating it.
+# ---------------------------------------------------------------------------
+metrics_samples = Table(
+    "metrics_samples",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    # "1s" | "1m" | "1h" -- the retention tier as well as the step.
+    Column("resolution", Text, nullable=False),
+    # Sample time floored to the resolution, so buckets line up across
+    # restarts and two daemons cannot interleave half-seconds.
+    Column("bucket_ts", Float, nullable=False),
+    Column("payload", Text, nullable=False),
+    UniqueConstraint("resolution", "bucket_ts", name="uq_metrics_samples_bucket"),
+    Index("idx_metrics_samples_res_ts", "resolution", "bucket_ts"),
 )
 
 message_discord_receipts = Table(

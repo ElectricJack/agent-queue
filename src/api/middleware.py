@@ -90,8 +90,51 @@ class TokenAuthMiddleware(BaseHTTPMiddleware):
                     status_code=401,
                 )
 
+        # Playbook V2 Package 0 §3.7: attach server-derived identity after
+        # ``store.validate()`` returns.  Neither field is minted into the
+        # token or persisted — they come from the live ``sessions`` row, so
+        # a profile edit takes effect without re-minting.
+        if scope.kind == "session" and scope.session_id:
+            scope = await _attach_derived_identity(scope)
+
         request.state.scope = scope
         if scope.kind == "session" and scope.session_id:
             with structlog.contextvars.bound_contextvars(session_id=scope.session_id):
                 return await call_next(request)
         return await call_next(request)
+
+
+async def _attach_derived_identity(scope):
+    """Return *scope* with ``profile_id`` / ``policy_fingerprint`` filled in.
+
+    Uses the same resolver the ``CommandHandler`` seam uses, so the two
+    surfaces cannot disagree about who a token belongs to.  Any failure
+    leaves the scope untouched: this is observability and echo-back for the
+    caller, never the enforcement path — that lives at dispatch.
+    """
+    import dataclasses
+    import logging
+
+    handler = deps._command_handler
+    if handler is None:
+        return scope
+    try:
+        principal = await handler._principal_from_scope(
+            {
+                "kind": "session",
+                "session_id": scope.session_id,
+                "task_id": scope.task_id,
+                "project_id": scope.project_id,
+                "elevated": scope.elevated,
+            }
+        )
+    except Exception:  # pragma: no cover — identity echo must never 500
+        logging.getLogger(__name__).debug(
+            "could not derive identity for session %s", scope.session_id, exc_info=True
+        )
+        return scope
+    return dataclasses.replace(
+        scope,
+        profile_id=principal.profile_id,
+        policy_fingerprint=principal.policy.fingerprint(),
+    )

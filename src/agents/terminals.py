@@ -254,6 +254,7 @@ async def _start_locked(orchestrator, agent_id, config):
             session_key=resume_key or (session_id if harness.session_id_flag else None),
             state="running",
             desired_state="running",
+            hooks_provisioned=spec.hooks_provisioned,
             **resolve_launch_settings(profile, harness, builder),
         )
         await db.create_session(row, release_agent_reservation=True)

@@ -61,6 +61,10 @@ export function EventStreamProvider({ children }: { children: ReactNode }) {
   );
 
   const addEvent = useCallback((event: NotifyEvent) => {
+    // Metrics ticks arrive once a second and would evict the whole activity
+    // buffer every eight minutes.  The Metrics page reads them off the raw
+    // subscription instead.
+    if (event.event_type?.startsWith("metrics.")) return;
     const entry: EventEntry = {
       id: nextId.current++,
       timestamp: new Date(),

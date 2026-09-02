@@ -25,19 +25,23 @@ class PlaybookServices:
     runtimes: Any = None  # RuntimeRegistry for harness-less one-shot node sessions
 
     def node_tools(self, allowed: list[str] | None) -> list[dict]:
-        """Tool definitions for one node: exactly ``allowed`` (validated against the
-        registry) or the registry's full catalogue when the profile lists none.
-        Unscoped playbooks are trusted; ``profile_id:`` (the ``allowed`` branch) is
-        the sandboxing mechanism, so the unscoped default must not be limited to the
-        core set."""
+        """Tool definitions for one node: exactly the names in ``allowed``.
+
+        Two behaviours changed in Playbook V2 Package 0 §3.1/§5.4:
+
+        - ``allowed is None`` (no policy declared) now means **no tools**, not
+          the registry's full catalogue.  "Missing means everything" is the
+          same default-open shape as an empty capability set meaning "all",
+          and the spec forbids it.  A playbook that needs tools names them.
+        - An unknown name is **filtered** rather than raised on.  A policy is
+          an allowlist, and a name the registry does not (yet) know is simply
+          not granted; raising turned a narrowing intent into a hard failure
+          at run time.
+        """
+        known = {t["name"]: t for t in self.tool_registry.get_all_tools()}
         if allowed is None:
-            tools = self.tool_registry.get_all_tools()
-        else:
-            known = {t["name"]: t for t in self.tool_registry.get_all_tools()}
-            unknown = sorted(set(allowed) - set(known))
-            if unknown:
-                raise ValueError(f"Unknown tool names in profile allowed_tools: {unknown}")
-            tools = [known[n] for n in allowed]
+            return []
+        tools = [known[n] for n in allowed if n in known]
         return [t for t in tools if t["name"] not in _EXCLUDED_TOOLS]
 
     @classmethod

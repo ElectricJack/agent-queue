@@ -7,6 +7,7 @@
 
 // Reuse API types where possible
 import type { Task, Agent } from "../api/hooks";
+import type { MetricsSample } from "../api/metrics";
 
 // --- Base fields present on every event ---
 
@@ -386,6 +387,17 @@ export interface ProposalStatusChangedEvent extends BaseEvent {
   status: "committed" | "discarded";
 }
 
+// --- Fleet metrics (Metrics tab) ---
+
+/**
+ * One sampler tick, once a second.  The payload is the stored sample merged
+ * onto the frame, so a live tick and a row from ``/api/metrics/series`` have
+ * exactly the same shape and the chart appends one to the other unchanged.
+ */
+export interface MetricsTickEvent extends BaseEvent, MetricsSample {
+  event_type: "metrics.tick";
+}
+
 // --- Union type ---
 
 export type NotifyEvent =
@@ -430,4 +442,5 @@ export type NotifyEvent =
   | AgentChangedEvent
   | AgentWaitingQuestionEvent
   | CommandInvokedEvent
-  | ProposalStatusChangedEvent;
+  | ProposalStatusChangedEvent
+  | MetricsTickEvent;

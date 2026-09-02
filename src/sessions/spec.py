@@ -31,6 +31,7 @@ import logging
 import re
 from pathlib import Path
 
+from src.profiles.capabilities import HARNESS_TOOL_NAMES
 from src.resources.limits import session_env_caps, wrap_session_argv
 from src.sessions.env import build_session_env
 from src.sessions.harness_parser import Harness
@@ -621,57 +622,71 @@ class SessionSpecBuilder:
     #: session through the ``aq`` CLI (i.e. through ``Bash``) rather than as
     #: a tool the harness can be told about — sessions are launched without
     #: ``--mcp-config``, so there is no MCP tool surface to restrict.
-    _HARNESS_TOOL_NAMES: frozenset[str] = frozenset(
-        {
-            "Bash", "Read", "Write", "Edit", "Glob", "Grep", "Skill",
-            "WebSearch", "WebFetch", "Task", "TodoWrite", "NotebookEdit",
-        }
-    )
+    #:
+    #: Defined once, in ``src/profiles/capabilities.py``, so the launcher's
+    #: idea of a harness tool and the capability classifier's cannot drift.
+    _HARNESS_TOOL_NAMES: frozenset[str] = HARNESS_TOOL_NAMES
 
     def _resolve_allowed_tools(self, profile, harness) -> list[str]:
         """Tool names to pass to the harness's allowlist flag.
 
-        Returns an empty list to mean "emit no flag", which leaves the CLI on
-        its own defaults.  That is the answer for three distinct cases: the
-        profile declares nothing, it declares ``["*"]`` (explicitly all), or
-        the harness has no ``tools_flag`` and therefore cannot be restricted.
+        Reads the profile's ``harness_tools`` namespace via
+        :func:`~src.profiles.capabilities.capability_policy_for`, so an
+        authored ``## Capabilities`` block is what the launcher enforces and
+        a legacy ``allowed_tools`` list is adapted without granting new
+        rights.
 
-        ``aq`` command names in the allowlist are dropped, with a log line
-        naming them.  They are not tools the CLI knows: a session gets its
-        daemon access through the ``aq`` CLI, so those names describe
-        *intent* that the harness cannot enforce.  Dropping them silently is
-        what let profiles carry allowlists nobody applied.
+        Returns an empty list to mean "emit no flag", which leaves the CLI on
+        its own defaults.  Two cases reach that now: the harness has no
+        ``tools_flag`` and therefore cannot be restricted, or the profile
+        declares no harness tools at all.  ``["*"]`` is no longer one of
+        them — a wildcard is rejected at parse and at sync (Playbook V2
+        Package 0 §3.2), so it cannot reach this function.
+
+        ``aq`` command names live in their own namespace and never reach the
+        flag: a session gets its daemon access through the ``aq`` CLI, which
+        the harness cannot gate.  The server-side check at dispatch is the
+        boundary for those — see ``src/commands/authorization.py``.
         """
-        declared = list(getattr(profile, "allowed_tools", None) or [])
-        if not declared:
-            return []
-        if "*" in declared:
-            return []
-        if not harness.tools_flag:
+        from src.profiles.capabilities import capability_policy_for
+
+        policy = capability_policy_for(profile)
+        # ``getattr`` rather than attribute access: this is now reached for
+        # every profile (the legacy adapter never yields an empty policy), so
+        # a harness object without the field must degrade to "cannot
+        # restrict" rather than raise mid-launch.
+        if not getattr(harness, "tools_flag", ""):
             logger.info(
                 "harness %r has no tools_flag; profile %r allowlist not enforced",
-                harness.id,
+                getattr(harness, "id", "?"),
                 getattr(profile, "id", "?"),
             )
             return []
 
-        keep = [t for t in declared if t in self._HARNESS_TOOL_NAMES]
-        dropped = [t for t in declared if t not in self._HARNESS_TOOL_NAMES]
+        # Defensive filter: a legacy-derived policy classified its names with
+        # no plugin registry wired, so an unrecognised entry could in
+        # principle land here.  Keeping the log line preserves the old
+        # diagnostic for profiles that have not migrated yet.
+        keep = sorted(policy.harness_tools & self._HARNESS_TOOL_NAMES)
+        dropped = sorted(policy.harness_tools - self._HARNESS_TOOL_NAMES)
         if dropped:
             logger.debug(
-                "profile %r: %d allowlist entr(ies) are aq commands, not harness "
-                "tools, and reach the session through the aq CLI instead: %s",
+                "profile %r: %d harness_tools entr(ies) are not names this "
+                "launcher recognises and were dropped: %s",
                 getattr(profile, "id", "?"),
                 len(dropped),
-                ", ".join(sorted(dropped)),
+                ", ".join(dropped),
             )
         if not keep:
-            # Every entry was an aq command.  Emitting an empty flag would
-            # disable *all* tools including Bash, which is how the session
-            # reaches aq in the first place — that would strand the agent.
+            # Emitting an empty flag would disable *all* tools including
+            # Bash, which is how the session reaches aq in the first place —
+            # that would strand the agent.  A profile that authored an empty
+            # ``harness_tools`` alongside non-empty ``aq_commands`` is a
+            # parse error (§3.2 rule 5), so reaching here means the profile
+            # is a deliberate no-op or still on the legacy shape.
             logger.warning(
-                "profile %r declares no harness tools (only aq commands); "
-                "leaving the CLI on its defaults rather than disabling every tool",
+                "profile %r declares no harness tools; leaving the CLI on its "
+                "defaults rather than disabling every tool",
                 getattr(profile, "id", "?"),
             )
             return []

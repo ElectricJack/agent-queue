@@ -102,3 +102,22 @@ class TestDatabaseSpecSync:
             "docs/specs/database.md documents columns that no longer exist: "
             + ", ".join(sorted(problems))
         )
+
+    def test_projects_table_documents_every_schema_column(self):
+        """Project policy columns must ship with their operator-facing contract."""
+        text = _DB_SPEC.read_text(encoding="utf-8")
+        sections = re.split(
+            r"^#{2,4}\s+Table:\s+`([a-z_][a-z0-9_]*)`", text, flags=re.MULTILINE
+        )
+        projects_body = sections[sections.index("projects") + 1]
+        documented = {
+            match.group(1)
+            for line in projects_body.splitlines()
+            if (match := re.match(r"^\|\s+`([a-z_][a-z0-9_]*)`", line))
+        }
+        actual = {column.name for column in metadata.tables["projects"].columns}
+
+        assert documented == actual, (
+            "docs/specs/database.md project columns differ from src/database/tables.py: "
+            f"missing={sorted(actual - documented)}, stale={sorted(documented - actual)}"
+        )

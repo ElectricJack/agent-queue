@@ -10,6 +10,7 @@ const CommandCenterGraph = lazy(() => import("./pages/command-center/Graph"));
 const CommandCenterTasks = lazy(() => import("./pages/command-center/Tasks"));
 
 const CommandCenter = lazy(() => import("./pages/CommandCenter"));
+const Metrics = lazy(() => import("./pages/metrics/Metrics"));
 
 const SettingsLayout = lazy(() => import("./pages/settings/SettingsLayout"));
 const SystemPlaybooks = lazy(() => import("./pages/system/Playbooks"));
@@ -145,6 +146,7 @@ export default function App() {
           <Route element={<AppShellV2 />}>
             <Route index element={<Navigate to="/command-center" replace />} />
             <Route path="agents" element={<AgentWorkspace />} />
+            <Route path="metrics" element={<Metrics />} />
             <Route path="chat/:projectId" element={<Navigate to="/agents" replace />} />
 
             <Route path="command-center/agents" element={<Navigate to="/agents" replace />} />

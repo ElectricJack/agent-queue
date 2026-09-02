@@ -562,11 +562,6 @@ class TestDriftDetection:
             "gate_resolve",
             "gate_show",
             "project_ready",
-            # Harness-hook receiver behind ``aq subagent event --hook-json``
-            # (src/commands/surface_commands.py).  Fired by the harness's own
-            # SubagentStart/SubagentStop hooks, not by the LLM, so it is left
-            # to auto-discovery rather than given a rich schema.
-            "subagent_event",
         }
         tools = await mcp_server.list_tools()
         extra = {t.name for t in tools} - {d["name"] for d in _ALL_TOOL_DEFINITIONS}
@@ -673,6 +668,11 @@ class TestDriftDetection:
             # elevated/local-only on HTTP, so it carries a codegen-only
             # schema rather than an LLM-facing definition.
             "session_token",
+            # Harness-hook telemetry writer (src/commands/surface_commands.py).
+            # Excluded from MCP outright (DEFAULT_EXCLUDED_COMMANDS): the hook
+            # calls it over the CLI/HTTP surface and the session comes from the
+            # bearer scope, so there is no LLM-facing definition to write.
+            "subagent_event",
         }
         all_commands = _discover_all_commands()
         explicit = {d["name"] for d in _ALL_TOOL_DEFINITIONS}

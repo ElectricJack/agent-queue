@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from src.profiles.capabilities import CapabilityPolicy
 from src.profiles.parser import parse_profile
 from src.vault import ensure_default_profiles, ensure_vault_layout
 
@@ -88,6 +89,18 @@ def test_seeded_supervisor_profile_has_named_session_config(tmp_path):
     assert isinstance(parsed.config.get("idle_timeout"), int)
 
 
+def test_seeded_supervisor_can_use_advertised_worker_message_surface(tmp_path):
+    """Supervisor capability policy grants the worker messaging commands it documents."""
+    ensure_default_profiles(str(tmp_path))
+    text = _vault_profile_path(tmp_path, "supervisor").read_text(encoding="utf-8")
+    parsed = parse_profile(text)
+    assert parsed.capabilities is not None
+    policy = CapabilityPolicy.from_namespaces(**parsed.capabilities)
+
+    assert policy.allows_aq_command("agent_message")
+    assert policy.allows_aq_command("message_status")
+
+
 def test_seeded_planner_profile_is_task_lifecycle(tmp_path):
     """Planner ships as a task-lifecycle profile."""
     ensure_default_profiles(str(tmp_path))
@@ -129,9 +142,17 @@ def test_reviewer_profile_parses_and_lacks_merge_authority():
     parsed = parse_profile(src)
     assert parsed.is_valid, parsed.errors
     assert parsed.frontmatter.id == "reviewer"
-    tools = parsed.tools.get("allowed", [])
+    tools = (parsed.capabilities or {}).get("aq_commands", [])
     assert "pr_merge" not in tools, "reviewer must not have merge authority"
-    assert "reopen_with_feedback" in tools
+    assert {
+        "get_task",
+        "task_show",
+        "task_comments",
+        "task_heartbeat",
+        "task_close",
+        "reopen_with_feedback",
+    } <= set(tools)
+    assert "task_comment" not in tools
     assert parsed.config.get("needs_workspace") is True
     assert parsed.config.get("read_only") is True
 
@@ -144,10 +165,10 @@ def test_final_reviewer_profile_has_merge_authority():
     parsed = parse_profile(src)
     assert parsed.is_valid, parsed.errors
     assert parsed.frontmatter.id == "final-reviewer"
-    tools = parsed.tools.get("allowed", [])
+    tools = (parsed.capabilities or {}).get("aq_commands", [])
     assert "pr_merge" in tools, "final-reviewer must have merge authority"
     assert parsed.config.get("needs_workspace") is True
-    assert parsed.config.get("read_only") is False
+    assert parsed.config.get("read_only") is True
 
 
 def test_seeded_final_reviewer_profile_parses_without_errors(tmp_path):
@@ -164,7 +185,7 @@ def test_reviewer_profile_lacks_merge_authority_after_seeding(tmp_path):
     ensure_default_profiles(str(tmp_path))
     text = _vault_profile_path(tmp_path, "reviewer").read_text(encoding="utf-8")
     parsed = parse_profile(text)
-    tools = parsed.tools.get("allowed", [])
+    tools = (parsed.capabilities or {}).get("aq_commands", [])
     assert "pr_merge" not in tools, "reviewer must not have merge authority after seeding"
 
 
@@ -204,7 +225,7 @@ def test_spec_ingest_profile_shape():
     assert parsed.frontmatter.id == "spec-ingest"
     assert parsed.config.get("harness") == "claude"
     assert parsed.config.get("needs_workspace") is False
-    tools = parsed.tools.get("allowed", [])
+    tools = (parsed.capabilities or {}).get("aq_commands", [])
     assert "task_batch_propose" in tools
     assert "list_tasks" in tools
     assert "get_downstream_tasks" in tools
@@ -222,6 +243,6 @@ def test_playbook_compiler_profile_shape():
     assert parsed.frontmatter.id == "playbook-compiler"
     assert parsed.config.get("harness") == "claude"
     assert parsed.config.get("needs_workspace") is False
-    tools = parsed.tools.get("allowed", [])
+    tools = (parsed.capabilities or {}).get("aq_commands", [])
     assert "playbook_validate" in tools
     assert "playbook_install" in tools

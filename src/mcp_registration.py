@@ -54,15 +54,21 @@ DEFAULT_EXCLUDED_COMMANDS = {
     "update_and_restart",
     "run_command",  # dangerous for external MCP clients
     "load_tools",  # supervisor-internal meta-tool, not for MCP agents
-    # Harness hook receiver; it is an authenticated agent-session API path,
-    # not an interactive MCP tool.
-    "subagent_event",
     # Mints a bearer token for an arbitrary session — a credential minter is
     # never something an MCP client should reach, even a trusted one.  It
     # stays available on the CLI/HTTP surface (``aq session token``), which
     # is loopback + elevated-only.  Dev/e2e facility; see
     # ``SessionCommandsMixin._cmd_session_token``.
     "session_token",
+    # Harness-hook telemetry writer, not an agent action.  ``subagent_event``
+    # records one SubagentStart/SubagentStop emitted by the harness's own hook
+    # process, and it takes the session identity from the bearer token's scope
+    # rather than the payload (see
+    # ``SurfaceCommandsMixin._cmd_subagent_event``).  Its callers are the
+    # harness hook via ``aq subagent event --hook-json`` and the HTTP surface
+    # that backs it; an LLM has no reason to hand-write its own subagent
+    # telemetry, and exposing it would only invite fabricated counts.
+    "subagent_event",
 }
 
 
@@ -216,6 +222,17 @@ def register_command_tools(
        tool-definition updates.
 
     Commands in the *excluded* set are skipped in both passes.
+
+    **Capability filtering is not applied here** (Playbook V2 Package 0
+    §4.3).  Registration happens once at daemon start, with no request and
+    therefore no ``ExecutionPrincipal`` to filter against — the tool table is
+    process-wide, not per-caller.  Parity is preserved where it is
+    observable: every handler registered here delegates to
+    ``CommandHandler.execute``, which applies the capability gate before
+    dispatch, and the per-caller discovery surfaces that *do* have a
+    principal (``load_tools`` and ``/api/tools``) filter with the same
+    ``command_allowed`` predicate.  A tool published here but denied to a
+    given caller therefore fails closed at execution rather than running.
 
     Args:
         mcp_server: The FastMCP instance to register tools on.

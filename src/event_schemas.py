@@ -925,6 +925,34 @@ _FORMULA_SCHEMAS: dict[str, EventSchema] = {
 
 
 # ---------------------------------------------------------------------------
+# Fleet metrics (dashboard Metrics tab)
+#
+# One frame per sampler tick.  Every field beyond ``ts`` is optional because
+# the sample is deliberately partial when a source is unavailable — a box
+# with no ``/proc/meminfo`` still reports agents and tasks.
+# ---------------------------------------------------------------------------
+
+_METRICS_SCHEMAS: dict[str, EventSchema] = {
+    "metrics.tick": {
+        "required": ["ts"],
+        "optional": [
+            "agents",
+            "tasks",
+            "subagents",
+            "tokens",
+            "slots",
+            "machine",
+            "daemon",
+            "stall",
+            "throughput",
+            "merges_per_hour",
+            "sampler",
+        ],
+    },
+}
+
+
+# ---------------------------------------------------------------------------
 # Combined registry
 # ---------------------------------------------------------------------------
 
@@ -953,6 +981,7 @@ EVENT_SCHEMAS: dict[str, EventSchema] = {
     **_SWARM_SCHEMAS,
     **_COMMAND_SCHEMAS,
     **_FORMULA_SCHEMAS,
+    **_METRICS_SCHEMAS,
 }
 """Master registry of all event schemas.
 

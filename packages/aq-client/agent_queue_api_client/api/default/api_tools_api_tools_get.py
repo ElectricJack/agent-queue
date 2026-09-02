@@ -43,7 +43,12 @@ def sync_detailed(
 ) -> Response[Any]:
     """Api Tools
 
-     Return all tool definitions for CLI auto-generation.
+     Return the tool definitions this caller could actually dispatch.
+
+    Filtered with the *same* predicate the dispatch gate uses (Playbook V2
+    Package 0 §4.3), so a published name is a runnable name.  A loopback
+    caller has no session scope and therefore sees everything, which is the
+    behaviour this endpoint has always had for the CLI.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -68,7 +73,12 @@ async def asyncio_detailed(
 ) -> Response[Any]:
     """Api Tools
 
-     Return all tool definitions for CLI auto-generation.
+     Return the tool definitions this caller could actually dispatch.
+
+    Filtered with the *same* predicate the dispatch gate uses (Playbook V2
+    Package 0 §4.3), so a published name is a runnable name.  A loopback
+    caller has no session scope and therefore sees everything, which is the
+    behaviour this endpoint has always had for the CLI.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

@@ -340,80 +340,255 @@ class PlaybookCompiler:
         source_hash: str,
         version: int,
     ) -> dict[str, Any]:
-        """Merge authoritative frontmatter fields into a compiled JSON dict.
+        """Deprecated thin delegate to :func:`apply_source_authority`.
 
-        Frontmatter values always win — the ``id``, ``triggers``, ``scope``,
-        etc. always match the source file's YAML.  Also injects
-        ``source_hash``, ``version``, and ``compiled_at`` which are
-        computed by the compiler.
+        Kept so external deterministic tooling that already calls this
+        staticmethod keeps working.  It cannot derive ``scope`` from a vault
+        path (it has none), so it falls back to the frontmatter ``scope`` and
+        has no activation record to consult for ``enabled``.
 
-        Retained here so the ``playbook-compiler`` agent (or any external
-        deterministic tool) can reuse the exact merge behaviour the
-        Phase 5 compiler used to apply.  Body-rewrite of ``aq://`` URIs
-        is preserved via :func:`~src.aq_uri.rewrite_aq_uris`.
+        **Removal package: Package 2**, when the V2 compiler owns authority.
         """
-        from datetime import datetime, timezone
+        merged, _diagnostics = apply_source_authority(
+            compiled,
+            frontmatter=frontmatter,
+            rel_path="",
+            source_hash=source_hash,
+            version=version,
+            existing_enabled=None,
+        )
+        return merged
 
-        result = dict(compiled)
 
-        result["id"] = frontmatter["id"]
-        raw_triggers = frontmatter["triggers"]
-        normalized_triggers: list[str | dict] = []
-        for t in raw_triggers:
-            if isinstance(t, str):
-                normalized_triggers.append(t)
-            elif isinstance(t, dict):
-                event_type = t.get("type") or t.get("event_type", "")
-                trigger_dict: dict = {"event_type": event_type}
-                if "filter" in t:
-                    trigger_dict["filter"] = t["filter"]
-                normalized_triggers.append(trigger_dict)
-            else:
-                normalized_triggers.append(t)
-        result["triggers"] = normalized_triggers
-        result["scope"] = frontmatter["scope"]
-        result["source_hash"] = source_hash
-        result["version"] = version
-        result["compiled_at"] = datetime.now(timezone.utc).isoformat()
+# ---------------------------------------------------------------------------
+# Source authority (Playbook V2 Package 0 §3.8)
+# ---------------------------------------------------------------------------
 
-        if "cooldown" in frontmatter:
-            result["cooldown_seconds"] = int(frontmatter["cooldown"])
+#: Compiled-artifact fields the *compiler agent* owns.  Everything else is
+#: owned by the operator's vault frontmatter, the vault path, or the server.
+COMPILER_OWNED_FIELDS: frozenset[str] = frozenset({"nodes", "rules", "entry_nodes", "entry"})
 
-        if "llm_config" in frontmatter and isinstance(frontmatter["llm_config"], dict):
-            result["llm_config"] = frontmatter["llm_config"]
-        if "transition_llm_config" in frontmatter and isinstance(
-            frontmatter["transition_llm_config"], dict
-        ):
-            result["transition_llm_config"] = frontmatter["transition_llm_config"]
-        for key in ("llm_config", "transition_llm_config"):
-            cfg = result.get(key)
-            if isinstance(cfg, dict):
-                dropped = sorted(
-                    set(cfg) - {"provider", "model", "intelligence_class", "max_tokens"}
+#: ``llm_config`` keys the LLM call spec can actually carry.
+_LLM_CONFIG_KEYS: frozenset[str] = frozenset(
+    {"provider", "model", "intelligence_class", "max_tokens"}
+)
+
+
+@dataclass(frozen=True)
+class AuthorityDiagnostic:
+    """One field the compiler artifact claimed and the server took back."""
+
+    field: str
+    authored: object  # what the source .md says (or the server derived)
+    proposed: object  # what the compiler artifact claimed
+    message: str
+
+
+def _compiled_scope_from_rel_path(rel_path: str) -> str | None:
+    """Map a vault-relative path onto a ``CompiledPlaybook.scope`` string.
+
+    Returns ``None`` when the path is not a recognised playbook location, in
+    which case the caller keeps the frontmatter value.
+    """
+    if not rel_path:
+        return None
+    from src.playbooks.handler import derive_playbook_scope
+
+    scope_name, identifier = derive_playbook_scope(rel_path)
+    if scope_name == "system":
+        return "system"
+    if scope_name == "project":
+        return "project"
+    if scope_name == "supervisor":
+        return "agent-type:supervisor"
+    if scope_name == "agent_type" and identifier:
+        return f"agent-type:{identifier}"
+    return None
+
+
+def _normalize_triggers(raw_triggers: Any) -> list[Any]:
+    normalized: list[Any] = []
+    for t in raw_triggers or []:
+        if isinstance(t, str):
+            normalized.append(t)
+        elif isinstance(t, dict):
+            event_type = t.get("type") or t.get("event_type", "")
+            trigger_dict: dict = {"event_type": event_type}
+            if "filter" in t:
+                trigger_dict["filter"] = t["filter"]
+            normalized.append(trigger_dict)
+        else:
+            normalized.append(t)
+    return normalized
+
+
+def apply_source_authority(
+    compiled: dict[str, Any],
+    *,
+    frontmatter: dict[str, Any],
+    rel_path: str,
+    source_hash: str,
+    version: int,
+    existing_enabled: bool | None,
+) -> tuple[dict[str, Any], list[AuthorityDiagnostic]]:
+    """Make the source file and the server authoritative over a compiled artifact.
+
+    The ``playbook-compiler`` agent reads untrusted Markdown prose, so its
+    JSON output is model output: it owns ``nodes``/``rules`` and nothing
+    else.  Field ownership (child plan §3.8):
+
+    ==========================  ========  =====================================
+    Field                       Owner     Source of truth
+    ==========================  ========  =====================================
+    ``id``                      server    ``frontmatter["id"]``
+    ``scope``                   server    :func:`derive_playbook_scope` on
+                                          *rel_path* — never the artifact, so a
+                                          file under ``projects/acme/`` cannot
+                                          declare ``scope: system``
+    ``triggers``                author    frontmatter, normalized
+    ``profile_id``              author    frontmatter; absent → field removed
+    ``enabled``                 operator  *existing_enabled* when an activation
+                                          record exists, else frontmatter
+    ``cooldown_seconds``,       author    frontmatter
+    ``max_tokens``,
+    ``llm_config``,
+    ``transition_llm_config``
+    ``version``,                server    computed
+    ``source_hash``,
+    ``compiled_at``
+    ``kind``, ``role``          author    frontmatter
+    ``nodes``, ``rules``        compiler  the artifact
+    ==========================  ========  =====================================
+
+    Returns the merged dict plus one :class:`AuthorityDiagnostic` per field
+    the artifact claimed and the server overrode.  Overriding is
+    silent-proof, not silent: the diagnostics are returned in
+    ``playbook_install``'s structured response and logged at ``warning``.
+    """
+    from datetime import datetime, timezone
+
+    result = dict(compiled)
+    diagnostics: list[AuthorityDiagnostic] = []
+    playbook_id = frontmatter.get("id", compiled.get("id"))
+
+    def _take(field: str, authored: Any, message: str) -> None:
+        """Set *field* to *authored*, recording a diagnostic if it changed."""
+        proposed = compiled.get(field, None)
+        present = field in compiled
+        if authored is None:
+            result.pop(field, None)
+            changed = present and proposed is not None
+        else:
+            result[field] = authored
+            changed = present and proposed != authored
+        if changed:
+            diagnostics.append(
+                AuthorityDiagnostic(
+                    field=field, authored=authored, proposed=proposed, message=message
                 )
-                if dropped:
-                    logger.warning(
-                        "playbook %s: %s keys %s are ignored",
-                        result.get("id"),
-                        key,
-                        dropped,
-                    )
+            )
+            logger.warning(
+                "playbook_authority_override playbook=%s field=%s authored=%r "
+                "proposed=%r source=%s",
+                playbook_id,
+                field,
+                authored,
+                proposed,
+                rel_path or "<unknown>",
+            )
 
-        if "max_tokens" in frontmatter:
-            result["max_tokens"] = int(frontmatter["max_tokens"])
+    # -- server-owned ------------------------------------------------------
+    _take("id", frontmatter.get("id", compiled.get("id")), "id comes from source frontmatter")
 
-        result.pop("profile_id", None)
-        if "profile_id" in frontmatter and frontmatter["profile_id"]:
-            result["profile_id"] = str(frontmatter["profile_id"]).strip()
+    derived_scope = _compiled_scope_from_rel_path(rel_path)
+    if derived_scope is None:
+        derived_scope = frontmatter.get("scope")
+    _take(
+        "scope",
+        derived_scope,
+        f"scope is derived from the vault path {rel_path}" if rel_path
+        else "scope comes from source frontmatter",
+    )
 
-        result.pop("enabled", None)
-        if "enabled" in frontmatter:
-            result["enabled"] = bool(frontmatter["enabled"])
+    _take("source_hash", source_hash, "source_hash is computed from the .md")
+    _take("version", version, "version is owned by the server")
+    result.pop("compiled_at", None)
+    previous_compiled_at = compiled.get("compiled_at")
+    result["compiled_at"] = datetime.now(timezone.utc).isoformat()
+    if previous_compiled_at is not None and previous_compiled_at != result["compiled_at"]:
+        diagnostics.append(
+            AuthorityDiagnostic(
+                field="compiled_at",
+                authored=result["compiled_at"],
+                proposed=previous_compiled_at,
+                message="compiled_at is stamped by the server",
+            )
+        )
 
-        return result
+    # -- author-owned (source frontmatter) ---------------------------------
+    _take(
+        "triggers",
+        _normalize_triggers(frontmatter.get("triggers", [])),
+        "triggers come from source frontmatter",
+    )
+
+    cooldown = frontmatter.get("cooldown", frontmatter.get("cooldown_seconds"))
+    _take(
+        "cooldown_seconds",
+        int(cooldown) if cooldown is not None else None,
+        "cooldown_seconds comes from source frontmatter",
+    )
+
+    max_tokens = frontmatter.get("max_tokens")
+    _take(
+        "max_tokens",
+        int(max_tokens) if max_tokens is not None else None,
+        "max_tokens comes from source frontmatter",
+    )
+
+    for key in ("llm_config", "transition_llm_config"):
+        cfg = frontmatter.get(key)
+        cfg = dict(cfg) if isinstance(cfg, dict) else None
+        _take(key, cfg, f"{key} comes from source frontmatter")
+        if isinstance(cfg, dict):
+            dropped = sorted(set(cfg) - _LLM_CONFIG_KEYS)
+            if dropped:
+                logger.warning(
+                    "playbook %s: %s keys %s are ignored",
+                    playbook_id,
+                    key,
+                    dropped,
+                )
+
+    raw_profile_id = frontmatter.get("profile_id")
+    _take(
+        "profile_id",
+        str(raw_profile_id).strip() if raw_profile_id else None,
+        "profile_id comes from source frontmatter"
+        + ("" if raw_profile_id else "; the source declares none"),
+    )
+
+    for key in ("kind", "role"):
+        if key in frontmatter:
+            _take(key, frontmatter[key], f"{key} comes from source frontmatter")
+
+    # -- operator-owned ----------------------------------------------------
+    if existing_enabled is not None:
+        _take("enabled", bool(existing_enabled), "enabled is owned by the activation record")
+    else:
+        _take(
+            "enabled",
+            bool(frontmatter.get("enabled", True)),
+            "enabled comes from source frontmatter",
+        )
+
+    return result, diagnostics
 
 
 __all__ = [
+    "apply_source_authority",
+    "AuthorityDiagnostic",
+    "COMPILER_OWNED_FIELDS",
     "CompilationResult",
     "DEFAULT_MAX_TOKENS",
     "PlaybookCompiler",

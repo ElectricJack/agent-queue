@@ -46,7 +46,7 @@
     "/api/tools": {
       "get": {
         "summary": "Api Tools",
-        "description": "Return all tool definitions for CLI auto-generation.",
+        "description": "Return the tool definitions this caller could actually dispatch.\n\nFiltered with the *same* predicate the dispatch gate uses (Playbook V2\nPackage 0 \u00a74.3), so a published name is a runnable name.  A loopback\ncaller has no session scope and therefore sees everything, which is the\nbehaviour this endpoint has always had for the CLI.",
         "operationId": "api_tools_api_tools_get",
         "responses": {
           "200": {
@@ -1123,6 +1123,78 @@
         }
       }
     },
+    "/api/metrics/series": {
+      "get": {
+        "summary": "Get Metrics Series",
+        "operationId": "get_metrics_series_api_metrics_series_get",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "From"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "To"
+            }
+          },
+          {
+            "name": "step",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "auto",
+              "title": "Step"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricsSeriesResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/proposals/{proposal_id}": {
       "get": {
         "summary": "Get Proposal",
@@ -2129,6 +2201,53 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ListProjectProfilesResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/agent/profile-audit": {
+      "post": {
+        "tags": [
+          "agent"
+        ],
+        "summary": "Report which agent profiles still derive their capabilities from the legacy allowed_tools list rather than an explicit ## Capabilities block. One row per profile with its source (explicit/legacy), the three capability namespaces, and the policy fingerprint \u2014 the migration list to clear before capability enforcement is set to 'enforce'.",
+        "description": "Report which agent profiles still derive their capabilities from the legacy allowed_tools list rather than an explicit ## Capabilities block. One row per profile with its source (explicit/legacy), the three capability namespaces, and the policy fingerprint \u2014 the migration list to clear before capability enforcement is set to 'enforce'.",
+        "operationId": "profile_audit",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfileAuditRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileAuditResponse"
                 }
               }
             }
@@ -12186,6 +12305,50 @@
         "title": "AgentMessageResponse",
         "description": "Durable supervisor message queued for one or more live workers."
       },
+      "AgentMetrics": {
+        "properties": {
+          "total": {
+            "type": "integer",
+            "title": "Total",
+            "default": 0
+          },
+          "by_state": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object",
+            "title": "By State",
+            "default": {}
+          },
+          "by_harness": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object",
+            "title": "By Harness",
+            "default": {}
+          },
+          "by_profile": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object",
+            "title": "By Profile",
+            "default": {}
+          },
+          "by_lifecycle": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object",
+            "title": "By Lifecycle",
+            "default": {}
+          }
+        },
+        "type": "object",
+        "title": "AgentMetrics",
+        "description": "Live sessions, split the three ways the tab graphs them."
+      },
       "AgentQuestionDetail": {
         "properties": {
           "id": {
@@ -15237,6 +15400,22 @@
           "project_id"
         ],
         "title": "CreateTaskResponse"
+      },
+      "DaemonMetrics": {
+        "properties": {
+          "uptime_seconds": {
+            "type": "number",
+            "title": "Uptime Seconds",
+            "default": 0
+          },
+          "restarts": {
+            "type": "number",
+            "title": "Restarts",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "DaemonMetrics"
       },
       "DbPreflightHierarchyRequest": {
         "properties": {},
@@ -22867,6 +23046,90 @@
         "type": "object",
         "title": "LogEntry"
       },
+      "MachineMetrics": {
+        "properties": {
+          "load1": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Load1"
+          },
+          "load5": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Load5"
+          },
+          "load15": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Load15"
+          },
+          "cpu_count": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cpu Count"
+          },
+          "mem_total_mb": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mem Total Mb"
+          },
+          "mem_free_mb": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mem Free Mb"
+          },
+          "mem_available_mb": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mem Available Mb"
+          }
+        },
+        "type": "object",
+        "title": "MachineMetrics",
+        "description": "Nulls mean the platform does not expose the value, not zero."
+      },
       "McpServerSummary": {
         "properties": {
           "name": {
@@ -23816,6 +24079,159 @@
           "message"
         ],
         "title": "MessageStatusResponse"
+      },
+      "MetricsSample": {
+        "properties": {
+          "ts": {
+            "type": "number",
+            "title": "Ts"
+          },
+          "agents": {
+            "$ref": "#/components/schemas/AgentMetrics",
+            "default": {
+              "total": 0,
+              "by_state": {},
+              "by_harness": {},
+              "by_profile": {},
+              "by_lifecycle": {}
+            }
+          },
+          "tasks": {
+            "$ref": "#/components/schemas/TaskMetrics",
+            "default": {
+              "READY": 0.0,
+              "IN_PROGRESS": 0.0,
+              "ASSIGNED": 0.0,
+              "PAUSED": 0.0,
+              "BLOCKED": 0.0,
+              "WAITING_INPUT": 0.0,
+              "other": 0.0,
+              "total": 0.0
+            }
+          },
+          "subagents": {
+            "$ref": "#/components/schemas/SubagentMetrics",
+            "default": {
+              "total": 0.0,
+              "native": 0.0,
+              "aq": 0.0,
+              "complete": true,
+              "by_session": {}
+            }
+          },
+          "tokens": {
+            "$ref": "#/components/schemas/TokenMetrics",
+            "default": {
+              "input_per_min": 0.0,
+              "output_per_min": 0.0,
+              "total_per_min": 0.0,
+              "unattributed_per_min": 0.0,
+              "by_model": {}
+            }
+          },
+          "slots": {
+            "$ref": "#/components/schemas/SlotMetrics",
+            "default": {
+              "used": 0.0,
+              "total": 0.0
+            }
+          },
+          "machine": {
+            "$ref": "#/components/schemas/MachineMetrics",
+            "default": {}
+          },
+          "daemon": {
+            "$ref": "#/components/schemas/DaemonMetrics",
+            "default": {
+              "uptime_seconds": 0.0,
+              "restarts": 0.0
+            }
+          },
+          "stall": {
+            "$ref": "#/components/schemas/StallMetrics",
+            "default": {
+              "nudges_per_hour": 0.0,
+              "kills_per_hour": 0.0
+            }
+          },
+          "throughput": {
+            "$ref": "#/components/schemas/ThroughputMetrics",
+            "default": {
+              "completions_per_hour": 0.0,
+              "prs_per_hour": 0.0
+            }
+          },
+          "merges_per_hour": {
+            "type": "number",
+            "title": "Merges Per Hour",
+            "default": 0
+          },
+          "sampler": {
+            "$ref": "#/components/schemas/SamplerMetrics",
+            "default": {
+              "collect_ms": 0.0
+            }
+          }
+        },
+        "type": "object",
+        "required": [
+          "ts"
+        ],
+        "title": "MetricsSample",
+        "description": "One point on every series.\n\n``ts`` is the bucket start, not the collection instant, so points line up\nexactly across resolutions."
+      },
+      "MetricsSeriesResponse": {
+        "properties": {
+          "step": {
+            "type": "string",
+            "title": "Step"
+          },
+          "from_ts": {
+            "type": "number",
+            "title": "From Ts"
+          },
+          "to_ts": {
+            "type": "number",
+            "title": "To Ts"
+          },
+          "truncated": {
+            "type": "boolean",
+            "title": "Truncated",
+            "default": false
+          },
+          "samples": {
+            "items": {
+              "$ref": "#/components/schemas/MetricsSample"
+            },
+            "type": "array",
+            "title": "Samples",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "step",
+          "from_ts",
+          "to_ts"
+        ],
+        "title": "MetricsSeriesResponse",
+        "description": "``GET /api/metrics/series``.\n\n``step`` is the resolution actually served, which may be coarser than\nthe one requested when ``step=auto`` or when the requested span would\nexceed ``max_points``."
+      },
+      "ModelTokens": {
+        "properties": {
+          "input_per_min": {
+            "type": "number",
+            "title": "Input Per Min",
+            "default": 0
+          },
+          "output_per_min": {
+            "type": "number",
+            "title": "Output Per Min",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "ModelTokens"
       },
       "NoteSummary": {
         "properties": {
@@ -25866,6 +26282,125 @@
           "name"
         ],
         "title": "ProbedToolModel"
+      },
+      "ProfileAuditRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": "Only audit this project's profiles"
+          },
+          "legacy_only": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Legacy Only",
+            "description": "Only report profiles that still need migration"
+          }
+        },
+        "type": "object",
+        "title": "ProfileAuditRequest"
+      },
+      "ProfileAuditResponse": {
+        "properties": {
+          "profiles": {
+            "items": {
+              "$ref": "#/components/schemas/ProfileAuditRow"
+            },
+            "type": "array",
+            "title": "Profiles",
+            "default": []
+          },
+          "legacy_count": {
+            "type": "integer",
+            "title": "Legacy Count",
+            "default": 0
+          },
+          "enforcement": {
+            "type": "string",
+            "title": "Enforcement",
+            "default": "audit"
+          }
+        },
+        "type": "object",
+        "title": "ProfileAuditResponse"
+      },
+      "ProfileAuditRow": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source",
+            "default": "legacy"
+          },
+          "harness_tools": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Harness Tools",
+            "default": []
+          },
+          "aq_commands": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Aq Commands",
+            "default": []
+          },
+          "plugin_tools": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Plugin Tools",
+            "default": []
+          },
+          "fingerprint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fingerprint"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "title": "ProfileAuditRow",
+        "description": "One profile's capability policy, as ``profile_audit`` reports it."
       },
       "ProfileDetail": {
         "properties": {
@@ -28025,6 +28560,18 @@
         ],
         "title": "RunPlaybookResponse"
       },
+      "SamplerMetrics": {
+        "properties": {
+          "collect_ms": {
+            "type": "number",
+            "title": "Collect Ms",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "SamplerMetrics",
+        "description": "The sampler's own per-tick cost, so its overhead is observable."
+      },
       "ScanStubStalenessRequest": {
         "properties": {
           "project_id": {
@@ -29136,6 +29683,28 @@
         "type": "object",
         "title": "SessionSleepRequest"
       },
+      "SessionSubagents": {
+        "properties": {
+          "native": {
+            "type": "number",
+            "title": "Native",
+            "default": 0
+          },
+          "aq": {
+            "type": "number",
+            "title": "Aq",
+            "default": 0
+          },
+          "hooks": {
+            "type": "boolean",
+            "title": "Hooks",
+            "default": true
+          }
+        },
+        "type": "object",
+        "title": "SessionSubagents",
+        "description": "One live session's children.\n\n``hooks`` is False when the session was launched without its harness\nsub-agent hooks wired, which makes ``native`` a floor rather than a total."
+      },
       "SessionSummary": {
         "properties": {
           "id": {
@@ -30084,6 +30653,34 @@
         ],
         "title": "SkipTaskResponse"
       },
+      "SlotMetrics": {
+        "properties": {
+          "used": {
+            "type": "number",
+            "title": "Used",
+            "default": 0
+          },
+          "total": {
+            "type": "number",
+            "title": "Total",
+            "default": 0
+          },
+          "cap": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cap"
+          }
+        },
+        "type": "object",
+        "title": "SlotMetrics",
+        "description": "Worktree slots.  ``cap`` is null when worktree execution is off."
+      },
       "SpecApproveRequest": {
         "properties": {
           "project_id": {
@@ -30120,6 +30717,23 @@
         },
         "type": "object",
         "title": "SpecApproveResponse"
+      },
+      "StallMetrics": {
+        "properties": {
+          "nudges_per_hour": {
+            "type": "number",
+            "title": "Nudges Per Hour",
+            "default": 0
+          },
+          "kills_per_hour": {
+            "type": "number",
+            "title": "Kills Per Hour",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "StallMetrics",
+        "description": "Stall-ladder activity in the trailing hour.\n\nSourced from bus events the reconciler does not persist, so both counters\nrestart with the daemon \u2014 read them next to ``daemon.uptime_seconds``."
       },
       "StartAgentTerminalRequest": {
         "properties": {
@@ -30626,6 +31240,41 @@
         ],
         "title": "SubagentEventResponse",
         "description": "Receipt for one ``SubagentStart`` / ``SubagentStop`` hook delivery."
+      },
+      "SubagentMetrics": {
+        "properties": {
+          "total": {
+            "type": "number",
+            "title": "Total",
+            "default": 0
+          },
+          "native": {
+            "type": "number",
+            "title": "Native",
+            "default": 0
+          },
+          "aq": {
+            "type": "number",
+            "title": "Aq",
+            "default": 0
+          },
+          "complete": {
+            "type": "boolean",
+            "title": "Complete",
+            "default": true
+          },
+          "by_session": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/SessionSubagents"
+            },
+            "type": "object",
+            "title": "By Session",
+            "default": {}
+          }
+        },
+        "type": "object",
+        "title": "SubagentMetrics",
+        "description": "Fleet sub-agent totals plus the per-session drill-down.\n\n``complete`` is the conjunction over live sessions: one session without\nhooks makes ``native`` and ``total`` lower bounds for the whole fleet."
       },
       "SubagentRollup": {
         "properties": {
@@ -31907,6 +32556,52 @@
         "type": "object",
         "title": "TaskHeartbeatRequest"
       },
+      "TaskMetrics": {
+        "properties": {
+          "READY": {
+            "type": "number",
+            "title": "Ready",
+            "default": 0
+          },
+          "IN_PROGRESS": {
+            "type": "number",
+            "title": "In Progress",
+            "default": 0
+          },
+          "ASSIGNED": {
+            "type": "number",
+            "title": "Assigned",
+            "default": 0
+          },
+          "PAUSED": {
+            "type": "number",
+            "title": "Paused",
+            "default": 0
+          },
+          "BLOCKED": {
+            "type": "number",
+            "title": "Blocked",
+            "default": 0
+          },
+          "WAITING_INPUT": {
+            "type": "number",
+            "title": "Waiting Input",
+            "default": 0
+          },
+          "other": {
+            "type": "number",
+            "title": "Other",
+            "default": 0
+          },
+          "total": {
+            "type": "number",
+            "title": "Total",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "TaskMetrics"
+      },
       "TaskProgressRequest": {
         "properties": {
           "task_id": {
@@ -33090,6 +33785,22 @@
         "type": "object",
         "title": "TaskStatusSummary"
       },
+      "ThroughputMetrics": {
+        "properties": {
+          "completions_per_hour": {
+            "type": "number",
+            "title": "Completions Per Hour",
+            "default": 0
+          },
+          "prs_per_hour": {
+            "type": "number",
+            "title": "Prs Per Hour",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "ThroughputMetrics"
+      },
       "TokenAuditRequest": {
         "properties": {
           "days": {
@@ -33183,6 +33894,41 @@
         },
         "type": "object",
         "title": "TokenAuditResponse"
+      },
+      "TokenMetrics": {
+        "properties": {
+          "input_per_min": {
+            "type": "number",
+            "title": "Input Per Min",
+            "default": 0
+          },
+          "output_per_min": {
+            "type": "number",
+            "title": "Output Per Min",
+            "default": 0
+          },
+          "total_per_min": {
+            "type": "number",
+            "title": "Total Per Min",
+            "default": 0
+          },
+          "unattributed_per_min": {
+            "type": "number",
+            "title": "Unattributed Per Min",
+            "default": 0
+          },
+          "by_model": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ModelTokens"
+            },
+            "type": "object",
+            "title": "By Model",
+            "default": {}
+          }
+        },
+        "type": "object",
+        "title": "TokenMetrics",
+        "description": "Rates over the trailing 60 seconds of the token ledger.\n\n``unattributed_per_min`` is ledger volume that carried no input/output\nsplit \u2014 reported separately rather than folded into a model's rate, the\nsame honesty rule ``get_costs`` applies to pricing."
       },
       "TranscriptEntryModel": {
         "properties": {

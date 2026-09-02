@@ -225,6 +225,7 @@ Failures come back as `hierarchy.<code>`. The full list (also in `aq schema`'s
 | `open_descendants` | archive refused: a *deeper* descendant is non-terminal |
 | `has_children` | delete refused: the task is a container (use `--cascade`) |
 | `live_descendants` | abandon/cascade refused: a descendant has a live session |
+| `manually_paused_descendants` | abandon refused: resume hand-paused descendants first |
 | `cycle_check_skipped` | internal: the bulk graph-creation path was handed a task that is not a fresh leaf |
 
 ## Dependencies

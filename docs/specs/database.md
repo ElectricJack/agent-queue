@@ -145,6 +145,7 @@ Authorized project moves transfer known active-task comment ownership in the sam
 | `repo_url` | TEXT | DEFAULT '' | Repository URL for the project (added via migration) |
 | `repo_default_branch` | TEXT | DEFAULT 'main' | Default branch name (added via migration) |
 | `default_profile_id` | TEXT | nullable REFERENCES agent_profiles(id) | Default agent profile (added via migration) |
+| `assignment_playbook_id` | TEXT | nullable | Assignment-routing playbook selected for the project; NULL uses the bundled system default. Added by Alembic `a7c91e4d2b63` |
 | `integration_mode` | TEXT | nullable | Project-level integration policy: `'direct'`, `'pull_request'`, or NULL (fall through to config `integration.default_mode`). Added by Alembic `c4d5e6f7a8b9` |
 | `created_at` | REAL | NOT NULL | Unix timestamp, set on insert |
 
@@ -635,6 +636,25 @@ for time-ordered listing. The fold clamps at zero: a `stop` whose `start` never
 arrived is still stored, because losing a Start must not make a session look like
 it is running a child forever.
 The SQLite-to-PostgreSQL copy inventory includes this table.
+
+### Table: `metrics_samples`
+
+Fleet Metrics tab time-series buckets. Each row stores one JSON metric sample
+for a resolution and bucket timestamp; keeping the payload dict-shaped permits
+new per-harness, profile, and model series without a schema migration. The
+unique bucket constraint makes sampling and roll-up writes idempotent after a
+duplicate tick or restart.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | INTEGER | PRIMARY KEY, autoincrement | Sample row identifier |
+| `resolution` | TEXT | NOT NULL | Retention tier and bucket step: `1s`, `1m`, or `1h` |
+| `bucket_ts` | FLOAT | NOT NULL | Unix timestamp floored to the resolution |
+| `payload` | TEXT | NOT NULL | JSON-encoded metric sample body |
+
+Unique constraint `uq_metrics_samples_bucket` covers (`resolution`,
+`bucket_ts`). Index `idx_metrics_samples_res_ts` covers (`resolution`,
+`bucket_ts`) for ordered range reads.
 
 ### Table: `messages`
 

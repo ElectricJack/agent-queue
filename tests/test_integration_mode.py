@@ -16,6 +16,7 @@ import pytest
 from src.config import AppConfig
 from src.models import (
     Agent,
+    AgentProfile,
     AgentOutput,
     AgentResult,
     PhaseResult,
@@ -65,6 +66,7 @@ async def orch(tmp_path):
     mock_git.aget_current_branch = AsyncMock(return_value="feature-1")
     mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
     mock_git.afind_open_pr = AsyncMock(return_value="https://github.com/org/repo/pull/42")
+    mock_git.ais_ancestor = AsyncMock(return_value=False)
     mock_git._arun = AsyncMock(return_value="0")
     mock_git.acommit_all = AsyncMock(return_value=True)
     mock_git.apush_branch = AsyncMock(return_value=None)
@@ -189,6 +191,11 @@ class TestPhaseVerifyByMode:
 
         result = await orch._phase_verify(ctx)
         assert result == PhaseResult.STOP
+        orch.git.ais_ancestor.assert_awaited_once_with(
+            ws.workspace_path,
+            "feature-2",
+            "origin/main",
+        )
 
     async def test_direct_mode_auto_merges_to_default(self, orch):
         task = _direct_task()
@@ -448,6 +455,19 @@ class TestNoCodeTasksSkipThePrGate:
         """Any profile: ``aq task close --work-outcome no-op`` means no code."""
         task, ctx = await self._no_pr_ctx(orch, "t-noop", "aq/t-noop")
         ctx.work_outcome = "no-op"
+        await self._assert_clean_pass(orch, task, ctx)
+
+    async def test_project_read_only_profile_closes_without_a_pr(self, orch):
+        """A project override's declarative read-only flag skips the gate."""
+        await orch.db.create_profile(AgentProfile(id="custom-review", name="custom-review"))
+        await orch.db.create_profile(
+            AgentProfile(
+                id="project:p-1:custom-review", name="custom-review", read_only=True
+            )
+        )
+        task, ctx = await self._no_pr_ctx(
+            orch, "t-custom-review", "aq/t-custom-review", profile_id="custom-review"
+        )
         await self._assert_clean_pass(orch, task, ctx)
 
     async def test_shipped_worker_still_needs_a_pr(self, orch):

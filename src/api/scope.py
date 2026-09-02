@@ -8,8 +8,6 @@ happens.
 
 from __future__ import annotations
 
-import re
-
 from src.api.auth import RequestScope
 
 AGENT_COMMAND_SET: frozenset[str] = frozenset(
@@ -154,15 +152,8 @@ _PLAYBOOK_COMPILER_COMMANDS = frozenset({"playbook_validate", "playbook_install"
 # These are capabilities of a saved, actively assigned reviewer session, and
 # they reach exactly one task: the one this review was spawned for.
 _REVIEWER_COMMANDS = frozenset({
-    "reopen_with_feedback", "task_show", "get_task", "task_comment", "task_comments",
+    "reopen_with_feedback", "task_show", "get_task", "task_comments",
 })
-
-#: The reviewed task id as the default pipeline writes it into the review
-#: task's description ("Reviewing task: <id>").  Only ever used to *narrow*
-#: an already-authoritative set of ``discovered-from`` edges — a session can
-#: rewrite its own description via ``task_set``, so the description alone
-#: must never grant reach.
-_REVIEWING_TASK_RE = re.compile(r"^[ \t]*Reviewing task:[ \t]*(\S+)[ \t]*$", re.MULTILINE)
 
 
 async def reviewed_task_for_reviewer(db, scope: RequestScope) -> str | None:
@@ -172,8 +163,9 @@ async def reviewed_task_for_reviewer(db, scope: RequestScope) -> str | None:
     instead of a boolean: the grant is scoped to the reviewed task rather than
     to the project's whole queue.  The reviewed task is taken from the review
     task's ``discovered-from`` edges (written by the ``per-task-review``
-    pipeline rule alongside the review task itself); the description's
-    "Reviewing task:" line only disambiguates among those edges.
+    pipeline rule alongside the review task itself).  The human-readable
+    description is agent-editable and therefore never participates in the
+    authorization decision.
     """
     from src.models import AgentState, TaskStatus
 
@@ -218,11 +210,6 @@ async def reviewed_task_for_reviewer(db, scope: RequestScope) -> str | None:
 
     edges = await db.get_typed_dependencies(review.id)
     targets = {dep_id for dep_id, dep_type in edges if dep_type == "discovered-from"}
-    if not targets:
-        return None
-    named = _REVIEWING_TASK_RE.search(review.description or "")
-    if named and named.group(1) in targets:
-        targets = {named.group(1)}
     if len(targets) != 1:
         return None
     reviewed_id = next(iter(targets))

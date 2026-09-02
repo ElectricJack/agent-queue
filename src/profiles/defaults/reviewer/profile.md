@@ -17,37 +17,50 @@ tags: [system, review, dv2-phase2]
 }
 ```
 
-## Tools
+## Capabilities
 
 ```json
 {
-  "allowed": [
+  "harness_tools": [
     "Bash",
     "Read",
-    "Write",
-    "Edit",
     "Glob",
     "Grep",
     "Task",
     "TodoWrite",
     "Skill",
     "WebSearch",
-    "WebFetch",
-    "NotebookEdit",
+    "WebFetch"
+  ],
+  "aq_commands": [
+    "get_schema",
     "get_task",
-    "task_show",
-    "task_comment",
-    "task_comments",
-    "task_heartbeat",
+    "message_inbox",
+    "message_reply",
+    "message_send",
+    "prime",
+    "reopen_with_feedback",
+    "session_drain_ack",
     "task_close",
-    "reopen_with_feedback"
+    "task_comments",
+    "task_handoff",
+    "task_heartbeat",
+    "task_set",
+    "task_show"
+  ],
+  "plugin_tools": [
+    "memory_save",
+    "memory_search"
   ]
 }
 ```
 
 <!-- tools-rationale -->
 Every command named in the Role section above appears in this list. A profile whose instructions call a tool it cannot reach stalls at the sandbox with "not in active set".
-Role calls `task_close` (approve) and `reopen_with_feedback` (reject); `get_task`/`task_show` read the reviewed task and `task_comment`/`task_comments` record the verdict's evidence on it. `task_heartbeat` keeps the lease alive while reading a long diff. No merge, no write tools — this profile is read_only and must never push.
+Role calls `task_close` (approve) and `reopen_with_feedback` (reject);
+`get_task`/`task_show` and `task_comments` read the reviewed task.
+`task_heartbeat` keeps the lease alive while reading a long diff. No merge,
+no write tools — this profile is read_only and must never push.
 
 
 ## MCP Servers
@@ -75,7 +88,7 @@ reviewed task's title, description, and summary, and produce a verdict.
    feedback".
 
 Your token reaches exactly one task other than your own: the reviewed
-one. `task_show`/`get_task`, `task_comment`/`task_comments` and
+one. `task_show`/`get_task`, `task_comments` and
 `reopen_with_feedback` work on it; every other task in the project is
 refused. That reach comes from the `discovered-from` edge the pipeline
 wrote between your review task and the reviewed task, so rewriting your
