@@ -20,6 +20,7 @@ from src.api import dependencies as deps
 from src.api.execute import router as execute_router
 from src.api.health import router as health_router
 from src.api.graph import router as graph_router
+from src.api.graph_layout import router as graph_layout_router
 from src.api.routers.proposals import router as proposals_router
 from src.api.messages import router as messages_router
 from src.api.metrics import router as metrics_router
@@ -161,6 +162,10 @@ def create_app(
     # Fleet metrics history: GET /api/metrics/series — cold start and zoom
     # for the Metrics tab, which otherwise follows metrics.tick over the WS.
     app.include_router(metrics_router)
+
+    # Viewport-bounded layout endpoints (spatial-layout design §5):
+    # /api/projects/{id}/graph/extent + /tiles + /list + /node + /locate + /tidy + /jobs
+    app.include_router(graph_layout_router)
 
     # Task proposal read (Phase 6): GET /api/proposals/{id}
     app.include_router(proposals_router)

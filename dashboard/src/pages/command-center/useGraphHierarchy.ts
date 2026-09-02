@@ -35,11 +35,28 @@ function persistExpandedTaskIds(ids: ReadonlySet<string>) {
  *  The one non-click change is filter-driven: an active filter temporarily
  *  auto-expands the ancestors of a match so it can be seen, flagged as
  *  `autoExpanded` and reverted when the filter clears. It never writes to the
- *  persisted set. */
+ *  persisted set. The expanded-task set is shared by both canvases through
+ *  one storage key. */
+export function useExpandedTaskIds() {
+  const [expandedTaskIds, setExpandedTaskIds] = useState<ReadonlySet<string>>(readExpandedTaskIds);
+
+  useEffect(() => persistExpandedTaskIds(expandedTaskIds), [expandedTaskIds]);
+
+  const toggleExpanded = useCallback((id: string) => {
+    setExpandedTaskIds((previous) => {
+      const next = new Set(previous);
+      if (!next.delete(id)) next.add(id);
+      return next;
+    });
+  }, []);
+
+  return { expandedTaskIds, toggleExpanded };
+}
+
 export function useGraphHierarchy({
   graph, matchingTaskIds, filtering,
 }: Pick<GraphViewProps, "graph" | "matchingTaskIds" | "filtering">) {
-  const [expandedTaskIds, setExpandedTaskIds] = useState<ReadonlySet<string>>(readExpandedTaskIds);
+  const { expandedTaskIds, toggleExpanded } = useExpandedTaskIds();
   const [knownOrder, setKnownOrder] = useState<string[]>(() => graph.tasks.map((task) => task.id));
   const order = useMemo(() => retainTaskOrder(knownOrder, graph.tasks), [knownOrder, graph.tasks]);
 
@@ -49,19 +66,9 @@ export function useGraphHierarchy({
     }
   }, [order, knownOrder]);
 
-  useEffect(() => persistExpandedTaskIds(expandedTaskIds), [expandedTaskIds]);
-
   const projection = useMemo(
     () => projectHierarchy(graph, { expandedTaskIds, matchingTaskIds, filtering, orderedTaskIds: order }),
     [graph, expandedTaskIds, matchingTaskIds, filtering, order],
   );
-  const toggleExpanded = useCallback((id: string) => {
-    setExpandedTaskIds((previous) => {
-      const next = new Set(previous);
-      if (!next.delete(id)) next.add(id);
-      return next;
-    });
-  }, []);
-
   return { projection, toggleExpanded };
 }

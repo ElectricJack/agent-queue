@@ -1,8 +1,8 @@
 import { useNodes, ViewportPortal } from "@xyflow/react";
-import { NODE_WIDTH, type GraphAgent } from "./types";
+import { NODE_WIDTH, type GraphWorker } from "./types";
 
 interface Props {
-  agents: GraphAgent[];
+  agents: GraphWorker[];
   visibleTaskById?: ReadonlyMap<string, string>;
 }
 
@@ -11,7 +11,7 @@ interface Props {
 export default function AgentAvatarLayer({ agents, visibleTaskById }: Props) {
   const nodes = useNodes();
   const nodesById = new Map(nodes.map((node) => [node.id, node]));
-  const docked = new Map<string, GraphAgent[]>();
+  const docked = new Map<string, GraphWorker[]>();
   for (const agent of agents) {
     if (!agent.current_task_id) continue;
     const target = visibleTaskById ? visibleTaskById.get(agent.current_task_id) : agent.current_task_id;
@@ -23,15 +23,19 @@ export default function AgentAvatarLayer({ agents, visibleTaskById }: Props) {
       {[...docked].map(([id, workers]) => {
         const node = nodesById.get(id)!;
         const names = workers.map((worker) => worker.name).join(", ");
-        const label = `${names}${workers.some((worker) => worker.current_task_id !== id) ? " (working in collapsed tasks)" : ""}`;
+        const inCollapsed = workers.some((worker) => worker.in_collapsed || worker.current_task_id !== id);
+        const label = `${names}${inCollapsed ? " (working in collapsed tasks)" : ""}`;
+        // Container cards are far wider than a task card, and the server-laid
+        // out cards sit at zIndex 100+depth, so the badge needs its own band.
+        const width = node.width ?? node.measured?.width ?? NODE_WIDTH;
         return (
           <div
             key={id}
             role="img"
             aria-label={label}
             title={label}
-            className="pointer-events-none absolute z-30 flex items-center gap-1 rounded-full border-2 border-white bg-indigo-500 px-1.5 py-0.5 text-[10px] font-bold text-white shadow"
-            style={{ left: node.position.x + NODE_WIDTH - 20, top: node.position.y - 12 }}
+            className="pointer-events-none absolute flex items-center gap-1 rounded-full border-2 border-white bg-indigo-500 px-1.5 py-0.5 text-[10px] font-bold text-white shadow"
+            style={{ left: node.position.x + width - 20, top: node.position.y - 12, zIndex: 1000 }}
           >
             {workers[0]!.name.slice(0, 2).toUpperCase()}
             {workers.length > 1 && <span>+{workers.length - 1}</span>}

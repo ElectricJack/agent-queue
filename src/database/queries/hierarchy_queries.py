@@ -287,6 +287,16 @@ class HierarchyQueryMixin:
         if parent_id:
             affected.add(parent_id)
 
+        # Marked after every validation has passed (a raising set_parent
+        # writes nothing) and before the edge writes, while the previous
+        # parent is still the one recorded on the row.
+        await self.mark_layout_dirty(
+            task_row.project_id,
+            [task_id],
+            f"parent.changed:{old_parent or '-'}",
+            conn=conn,
+        )
+
         await conn.execute(
             delete(task_dependencies).where(
                 and_(
@@ -421,6 +431,15 @@ class HierarchyQueryMixin:
             )
 
         old_parents = {r.parent_task_id for r in child_rows if r.parent_task_id}
+        # One mark per child, carrying that child's own previous parent —
+        # same contract as set_parent, written before the edges move.
+        for row in child_rows:
+            await self.mark_layout_dirty(
+                row.project_id,
+                [row.id],
+                f"parent.changed:{row.parent_task_id or '-'}",
+                conn=conn,
+            )
         now = time.time()
         await conn.execute(
             delete(task_dependencies).where(

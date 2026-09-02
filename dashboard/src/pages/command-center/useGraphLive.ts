@@ -4,6 +4,8 @@ import type { ProjectGraphResponse } from "@aq/ts-client";
 import { useEventStream, type ConnectionStatus } from "../../ws/useEventStream";
 import type { NotifyEvent } from "../../ws/types";
 import { projectGraphKey } from "../../api/graph";
+import { refetchLayout } from "./layout-v2/liveRegistry";
+import { layoutExtentPrefix } from "../../api/graphLayout";
 import type { GraphTaskNode } from "./types";
 
 // Coalesce a burst, but do not postpone indefinitely while agents keep working.
@@ -43,6 +45,13 @@ export function useGraphLive(projectIds: string[]) {
           await qc.cancelQueries(filters);
           if (pending.get(pid) === entry && selectedRef.current.includes(pid)) {
             await qc.invalidateQueries(filters);
+            // The tiled layout lives outside React Query's cache, so mounted
+            // layers are told separately — on the same coalesced schedule.
+            refetchLayout(pid);
+            // The extent is a cached query and drives the status strip's task
+            // count and the canvas bounds; without this it only refreshed on
+            // its 60 s poll, so the strip lagged a completed task by a minute.
+            await qc.invalidateQueries({ queryKey: layoutExtentPrefix(pid) });
           }
         } finally {
           if (pending.get(pid) === entry) {

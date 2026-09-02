@@ -115,6 +115,7 @@ from src.orchestrator.context import ContextMixin
 from src.orchestrator.events import EventsMixin
 from src.orchestrator.sync_workflow import SyncWorkflowMixin
 from src.orchestrator.pools import PoolsMixin
+from src.orchestrator.layout_step import LayoutStepMixin
 from src.orchestrator.triage import TriageMixin
 
 from src.playbooks.conditions import eval_pipeline_when as _eval_pipeline_when
@@ -189,6 +190,7 @@ class Orchestrator(
     EventsMixin,
     SyncWorkflowMixin,
     PoolsMixin,
+    LayoutStepMixin,
 ):
     """Coordinates the full task lifecycle across multiple projects and agents.
 
@@ -2782,6 +2784,13 @@ class Orchestrator(
 
             # 10. Auto-archive stale terminal tasks (~once per hour).
             await self._auto_archive_tasks()
+
+            # Task graph layout: consume durable dirty marks, run one job, reconcile.
+            # Layout is a projection — a failure here must never abort the cycle.
+            try:
+                await self._run_layout_step()
+            except Exception as e:
+                logger.warning("Layout step failed: %s", e)
 
             # 11. V1 memory compaction removed (roadmap 8.6).
             # Memory lifecycle is now managed by MemoryPlugin.

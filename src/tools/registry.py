@@ -160,6 +160,10 @@ CATEGORIES: dict[str, CategoryMeta] = {
             "and cook (create the resulting graph in one transaction)"
         ),
     ),
+    "graph": CategoryMeta(
+        name="graph",
+        description=("Server-side spatial task-graph layout — synchronous rebuild and tidy jobs"),
+    ),
 }
 
 
