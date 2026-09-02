@@ -535,6 +535,71 @@ class PlaybookRunQueryMixin:
             )
         return len(doomed)
 
+    async def purge_runs(self, before: float, *, limit: int = 1000) -> int:
+        """Delete terminal run snapshots (and their children) completed before ``before``.
+
+        Three things keep a run out of the candidate set (§12.1: "never
+        collected while lifecycle is not terminal, or the run is pinned"):
+
+        * a non-terminal lifecycle — the run can still be resumed;
+        * a null ``completed_at`` — a terminal row that never recorded a
+          completion time has no horizon to measure against, so it is left
+          for an operator rather than guessed at;
+        * **pinning.**  The schema carries no ``pinned`` column (child plan
+          §6.3), so the only pin this package can honour is the structural
+          one: a run that a *live* run still names as its
+          ``parent_run_id``.  Collecting a live sub-run's parent would strip
+          the only record of why that sub-run exists, so those are held back
+          until the child itself goes terminal and ages out.
+
+        Receipts and waits are deleted explicitly rather than left to
+        ``ON DELETE CASCADE``: the cascade is real on PostgreSQL but inert on
+        SQLite, where ``PRAGMA foreign_keys`` is off for ordinary
+        connections, so relying on it would leak both tables on the default
+        development backend.
+        """
+        terminal = [state.value for state in TERMINAL_LIFECYCLES]
+        async with self.immediate() as conn:
+            live_parents = (
+                select(playbook_v2_runs.c.parent_run_id)
+                .where(
+                    playbook_v2_runs.c.parent_run_id.is_not(None),
+                    playbook_v2_runs.c.lifecycle.not_in(terminal),
+                )
+                .scalar_subquery()
+            )
+            doomed = (
+                (
+                    await conn.execute(
+                        select(playbook_v2_runs.c.run_id)
+                        .where(
+                            playbook_v2_runs.c.lifecycle.in_(terminal),
+                            playbook_v2_runs.c.completed_at.is_not(None),
+                            playbook_v2_runs.c.completed_at < before,
+                            playbook_v2_runs.c.run_id.not_in(live_parents),
+                        )
+                        .limit(limit)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            if not doomed:
+                return 0
+            run_ids = list(doomed)
+            await conn.execute(
+                delete(playbook_step_receipts).where(
+                    playbook_step_receipts.c.run_id.in_(run_ids)
+                )
+            )
+            await conn.execute(
+                delete(playbook_waits).where(playbook_waits.c.run_id.in_(run_ids))
+            )
+            await conn.execute(
+                delete(playbook_v2_runs).where(playbook_v2_runs.c.run_id.in_(run_ids))
+            )
+        return len(run_ids)
+
     # -- waits (§4.5) --------------------------------------------------------
 
     @asynccontextmanager
