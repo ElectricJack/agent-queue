@@ -33,6 +33,7 @@ from src.database.tables import (
     merge_slots,
     messages,
     message_discord_receipts,
+    metrics_samples,
     playbook_runs,
     plugin_data,
     plugins,
@@ -92,6 +93,7 @@ _ORDERED_TABLES = [
     task_session_attempts,
     agent_questions,
     subagent_events,
+    metrics_samples,
     # FK → agent_profiles
     projects,
     # FK → projects

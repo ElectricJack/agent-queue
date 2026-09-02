@@ -73,6 +73,8 @@ def _register_typed_schemas(monkeypatch):
 
 # Maps event_type -> minimal valid payload (all required fields present)
 _CANONICAL_PAYLOADS: dict[str, dict] = {
+    # Fleet metrics
+    "metrics.tick": {"ts": 1.0},
     # Task lifecycle
     "task.updated": {"task_id": "t-1", "project_id": "proj-1", "title": "Task", "seq": 1},
     "task.deleted": {"task_id": "t-1", "project_id": "proj-1", "title": "Task", "seq": 1},
