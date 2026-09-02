@@ -23,6 +23,7 @@ from sqlalchemy import (
     Table,
     Text,
     UniqueConstraint,
+    false,
     text,
     true,
 )
@@ -627,7 +628,7 @@ agent_profiles = Table(
         "read_only",
         Boolean,
         nullable=False,
-        server_default=text("0"),
+        server_default=false(),
     ),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
@@ -687,7 +688,7 @@ sessions = Table(
     # launched with, and today's harness file may have been edited since.
     # This is what lets ``subagent_counts`` say "complete" instead of
     # "unknown" -- and say "unknown" honestly for the sessions that lack it.
-    Column("hooks_provisioned", Boolean, nullable=False, server_default=text("0")),
+    Column("hooks_provisioned", Boolean, nullable=False, server_default=false()),
     Index("idx_sessions_agent", "agent_id", "state"),
     Index("idx_sessions_task_id", "task_id"),
     Index("idx_sessions_state", "state"),
@@ -780,7 +781,7 @@ api_session_tokens = Table(
     # per-project supervisor sessions so the supervisor can run every
     # ``aq`` command on behalf of the operator; task sessions and other
     # workers stay on the narrow AGENT_COMMAND_SET.
-    Column("elevated", Boolean, nullable=False, server_default=text("0")),
+    Column("elevated", Boolean, nullable=False, server_default=false()),
     Index("idx_api_session_tokens_session", "session_id"),
     Index("idx_api_session_tokens_expires", "expires_at"),
 )
