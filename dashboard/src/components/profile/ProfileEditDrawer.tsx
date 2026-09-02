@@ -5,7 +5,11 @@ import IntelligenceClassPicker from "./IntelligenceClassPicker";
 import McpServerSelector from "./McpServerSelector";
 import ToolPicker from "./ToolPicker";
 import { Section, Field } from "./FormSection";
-import { profileToForm, type ProfileFormState as FormState } from "./profileForm";
+import {
+  profileToForm,
+  projectProfileEditPayload,
+  type ProfileFormState as FormState,
+} from "./profileForm";
 
 interface Props {
   open: boolean;
@@ -57,17 +61,7 @@ export default function ProfileEditDrawer({ open, onClose, projectId, agentType 
   const onSave = async () => {
     setFatal(null);
     try {
-      await edit.mutateAsync({
-        project_id: projectId,
-        agent_type: agentType,
-        name: form.name || null,
-        description: form.description || null,
-        default_class: form.default_class || "",
-        permission_mode: form.permission_mode || null,
-        system_prompt_suffix: form.system_prompt_suffix || null,
-        allowed_tools: form.allowed_tools,
-        mcp_servers: form.mcp_servers,
-      } as unknown as Parameters<typeof edit.mutateAsync>[0]);
+      await edit.mutateAsync(projectProfileEditPayload(projectId, agentType, form));
       onClose();
     } catch (err) {
       setFatal(err instanceof Error ? err.message : String(err));
