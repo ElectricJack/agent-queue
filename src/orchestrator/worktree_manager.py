@@ -111,6 +111,21 @@ def task_branch_name(task_id: str) -> str:
     return f"{BRANCH_PREFIX}{task_id}"
 
 
+def _norm_path(path: str | Path) -> str:
+    """Comparable form of a filesystem path.
+
+    Slot paths arrive from two sources that need not agree byte-for-byte —
+    the ``workspaces`` row and ``git worktree list`` — so they are compared
+    resolved (git reports the real path of a symlinked slot dir) and
+    case-folded (development happens on Windows, the runtime is WSL2).
+    """
+    try:
+        resolved = os.path.realpath(str(path))
+    except OSError:  # pragma: no cover - defensive
+        resolved = os.path.abspath(str(path))
+    return os.path.normcase(resolved)
+
+
 class WorktreeSlotManager:
     """Create, reset and salvage slot worktrees for one daemon.
 
@@ -627,6 +642,61 @@ class WorktreeSlotManager:
         if not slot_ws.base_workspace_id:
             return None
         return await self.db.get_workspace(slot_ws.base_workspace_id)
+
+    async def find_slot_holding_branch(
+        self,
+        base_ws: Workspace,
+        slots: list[Workspace],
+        branch: str | None,
+    ) -> str | None:
+        """Workspace id of the slot that currently has *branch* checked out.
+
+        Design §3.4 leaves a released slot **on its last task's branch** — the
+        branch is the durable artifact — so on a retry the task's own
+        ``aq/<task_id>`` is still checked out in the slot that ran it last.
+        Handing the retry a *different* slot makes ``git switch`` fail with
+        "already checked out", and nothing moves the old slot off the branch
+        on its own, so the task collides on every attempt forever.
+
+        The fix is affinity at acquisition: prefer the slot that already
+        holds the branch.  That preference is **derived, never recorded** —
+        ``git worktree list --porcelain`` in the base is the same source git
+        itself consults when it refuses the checkout, so the answer cannot
+        drift from the refusal it is meant to avoid.  A stale sentinel, a
+        manual ``git switch`` in a slot or a daemon restart all resolve
+        correctly with no state to migrate.
+
+        Returns ``None`` when no slot holds it (the ordinary first-run case),
+        when the branch does not exist, or when the base cannot be queried —
+        every one of which means "no preference", not an error.
+        """
+        if not branch or not slots:
+            return None
+        try:
+            entries = await self.git.aworktree_list(base_ws.workspace_path)
+        except Exception as e:  # best-effort: a hint, never a hard dependency
+            logger.debug(
+                "Could not list worktrees of %s for branch affinity: %s",
+                base_ws.workspace_path,
+                e,
+            )
+            return None
+
+        holders = {
+            _norm_path(entry["path"])
+            for entry in entries
+            if entry.get("branch") == branch and entry.get("path")
+        }
+        if not holders:
+            return None
+        for slot in slots:
+            if slot.workspace_path and _norm_path(slot.workspace_path) in holders:
+                return slot.id
+        # The branch is checked out, but in the base or some worktree that is
+        # not one of our slots.  No slot preference can help; the caller falls
+        # back to any free slot and the existing branch-busy reporting covers
+        # the collision.
+        return None
 
     async def _default_branch(self, base_path: str) -> str:
         try:
