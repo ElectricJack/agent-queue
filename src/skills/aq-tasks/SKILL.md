@@ -13,26 +13,39 @@ for arguments.
 
 ## Read paths (safe, no side effects)
 
+Available to any caller, including a non-elevated worker or reviewer session:
+
 ```bash
-aq task list                        # active tasks, current project scope
-aq task list --status IN_PROGRESS   # filter by status
-aq task list --json --brief         # scriptable projection
 aq task show <task_id>              # full detail for one task
 aq task comments <task_id>          # durable comment history, newest first
-aq task get <task_id>               # single-row summary
-aq task explain <task_id>           # "why isn't this running?" — blockers,
-                                    # gates, budget, cooldown, lease info.
-                                    # Quote the actual reason it returns,
-                                    # don't theorize.
-aq task deps <task_id>              # dependency graph for one task
-aq task tree <task_id>              # subtask tree, expanded
-aq task result <task_id>            # result payload from a completed task
 aq task children <id> [--recursive] [--status S] [--limit N] [--offset N]
                                     # direct or recursive children of a container
 aq task progress <id>               # computed group progress: counts, waves,
                                     # max parallelism — never stored, always
                                     # derived from the current graph
 ```
+
+Operator reads — a local CLI caller or an elevated (supervisor / triage)
+session. A plain worker or reviewer token gets `out of scope: <command>`,
+so do not build a workflow on them:
+
+```bash
+aq task list                        # active tasks, current project scope
+aq task list --status IN_PROGRESS   # filter by status
+aq task list --json --brief         # scriptable projection
+aq task get --task-id <task_id>     # single-row summary
+aq task explain --task-id <task_id> # "why isn't this running?" — blockers,
+                                    # gates, budget, cooldown, lease info.
+                                    # Quote the actual reason it returns,
+                                    # don't theorize.
+aq task deps --task-id <task_id>    # dependency graph for one task
+aq task tree <task_id>              # subtask tree, expanded
+aq task result <task_id>            # result payload from a completed task
+```
+
+A worker or reviewer session reaches exactly one task — its own — plus,
+for a reviewer, the single task named by its review's `discovered-from`
+edge. Anything else is `out of scope: task_id mismatch`.
 
 ## Findings and task comments
 
@@ -146,11 +159,13 @@ If a task is `WAITING_INPUT`, respond with:
 aq task input-response --task-id <id> --response "<the answer>"
 ```
 
-## Creating tasks (elevated / supervisor only)
+## Creating tasks
 
-Non-elevated worker sessions cannot create tasks — the daemon returns
-`out of scope: create_task`. If you're the supervisor, or you're running
-a task whose profile is elevated:
+`create_task` is on the agent surface: a worker or reviewer session may
+file emergent work it discovers. A worker-filed task starts DEFINED with a
+`discovered-from` edge back to the filing task; a root filing also opens a
+routing gate, so triage — not the filer — dedupes and routes it. `--from-spec`,
+`--graph` and `create_task_graph` stay elevated/supervisor-only.
 
 ```bash
 # Ad-hoc task creation
@@ -250,8 +265,13 @@ aq task restore <task_id>
 
 ## Rules of thumb
 
-- Read before writing. `aq task get` / `aq task show` before any mutation.
+- Read before writing. `aq task show <id>` before any mutation (`aq task get`
+  is an operator read and a worker token is refused it).
 - Explain non-obvious moves. When you close a task with `--outcome pass`, the
   summary should tell the reviewer what you did and why; link to relevant findings and comments.
-- Don't create tasks from a worker session. That's the supervisor's
-  job — message the supervisor if you notice missing work.
+- File emergent work rather than widening your own scope: `aq task create`
+  from a worker session is expected, and lands behind a routing gate for
+  triage. Don't build task *graphs* from a worker session — `--graph`,
+  `--from-spec` and `formula cook` are supervisor-only.
+- Don't retry an `out of scope: <command>` error. It is a property of your
+  token, not a transient failure; say so in a comment and close or ask instead.
