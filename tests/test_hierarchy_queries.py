@@ -161,7 +161,7 @@ async def test_live_descendant_sessions_reports_holder_of_any_subtree_task(any_d
 
 
 async def test_live_descendant_sessions_can_exclude_the_root(any_db):
-    """``include_root=False`` ignores a session holding the root itself.
+    """``exclude_root=True`` ignores a session holding the root itself.
 
     A task-scoped worker closing its own container is necessarily live on
     the root; ``abandon_subtree`` never touches the root, so that session
@@ -194,7 +194,7 @@ async def test_live_descendant_sessions_can_exclude_the_root(any_db):
             ("root-1", "container")
         ]
         assert (
-            await db.live_descendant_sessions("container", conn=conn, include_root=False) == []
+            await db.live_descendant_sessions("container", conn=conn, exclude_root=True) == []
         )
 
 
