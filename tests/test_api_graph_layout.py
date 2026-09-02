@@ -265,6 +265,16 @@ async def test_list_paginates_in_layout_order(db, client_factory):
         assert too_big.status_code == 400
 
 
+async def test_list_validation_runs_before_any_backfill(db, client_factory):
+    async with client_factory() as ac:
+        bad_limit = await ac.post("/api/projects/p1/graph/list", json={"variant": "all", "limit": 0})
+        bad_cursor = await ac.post(
+            "/api/projects/p1/graph/list", json={"variant": "all", "cursor": "!!not-base64!!"}
+        )
+    assert bad_limit.status_code == 400 and bad_cursor.status_code == 400
+    assert await db.next_layout_job() is None
+
+
 async def test_node_returns_box_and_ancestors(db, client_factory):
     await seed(db)
     async with client_factory() as ac:

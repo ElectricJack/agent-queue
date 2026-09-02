@@ -320,12 +320,11 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
             raise HTTPException(status_code=400, detail=f"limit must be 1..{LIST_CAP}")
         if len(req.expanded) > EXPANDED_CAP:
             raise HTTPException(status_code=400, detail=f"expanded exceeds {EXPANDED_CAP}")
-        meta = await _meta_or_pending(project_id, variant)
-        if meta is None:
-            return JSONResponse(status_code=202, content={"status": "layout_pending"})
         # The cursor is an opaque base64 of the offset into the resolved,
         # depth-first ordering — stable for a given (variant, expanded,
-        # filter) tuple within one layout version.
+        # filter) tuple within one layout version.  Decoded with the rest of
+        # the request checks, before `_meta_or_pending`, so a malformed
+        # request never enqueues a backfill.
         offset = 0
         if req.cursor:
             # binascii.Error, UnicodeDecodeError and int()'s own failure are
@@ -336,6 +335,9 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
                 raise HTTPException(status_code=400, detail="bad cursor") from None
             if offset < 0:
                 raise HTTPException(status_code=400, detail="bad cursor")
+        meta = await _meta_or_pending(project_id, variant)
+        if meta is None:
+            return JSONResponse(status_code=202, content={"status": "layout_pending"})
         all_rows = await db.load_all_rows_with_tasks(project_id, variant)
         rows = {t: rt[0] for t, rt in all_rows.items()}
         matches: set[str] | None = None
