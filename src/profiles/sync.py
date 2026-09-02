@@ -308,6 +308,7 @@ async def sync_profile_to_db(
         default_class=profile_dict.get("default_class", ""),
         needs_workspace=profile_dict.get("needs_workspace", True),
         read_only=profile_dict.get("read_only", False),
+        allow_base_checkout=profile_dict.get("allow_base_checkout", False),
         min_active=profile_dict.get("min_active"),
         max_active=profile_dict.get("max_active"),
         max_claims_per_session=profile_dict.get("max_claims_per_session"),

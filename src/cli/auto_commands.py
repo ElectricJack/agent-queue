@@ -202,31 +202,79 @@ class StructuredParam(click.ParamType):
         return parsed
 
 
+class NullableParam(click.ParamType):
+    """A scalar option that also accepts the literal ``null`` to clear it.
+
+    A schema type like ``["integer", "null"]`` means "an int, or an
+    explicit null that removes the value".  The union used to collapse to
+    a bare ``int``, so ``--max null`` was rejected by Click and there was
+    no other spelling: omitting the flag means "leave unchanged".  From
+    the CLI a pool could never go from a numeric cap back to unbounded.
+
+    ``null`` (any case, surrounded by whitespace or not) converts to
+    :data:`EXPLICIT_NULL`, which the callback turns back into a real
+    ``None`` while keeping the key present.  Everything else is handed to
+    the underlying type unchanged.
+    """
+
+    def __init__(self, inner: type | click.ParamType) -> None:
+        self.inner = click.types.convert_type(inner)
+        self.name = self.inner.name
+
+    def convert(self, value, param, ctx):
+        if isinstance(value, str) and value.strip().lower() == "null":
+            return EXPLICIT_NULL
+        if value is EXPLICIT_NULL:
+            return value
+        return self.inner.convert(value, param, ctx)
+
+    def get_metavar(self, *args, **kwargs):  # pragma: no cover - cosmetic
+        return self.inner.get_metavar(*args, **kwargs)
+
+    def get_missing_message(self, *args, **kwargs):  # pragma: no cover
+        return self.inner.get_missing_message(*args, **kwargs)
+
+
 def _schema_to_click_type(prop_schema: dict) -> type | click.Choice | click.ParamType | None:
     """Map a JSON Schema property to a Click parameter type."""
-    if "enum" in prop_schema:
-        return click.Choice(prop_schema["enum"], case_sensitive=False)
-
     schema_type = prop_schema.get("type", "string")
+    type_names = set(schema_type) if isinstance(schema_type, list) else {schema_type}
+
+    if "enum" in prop_schema:
+        choices = [c for c in prop_schema["enum"] if c is not None]
+        nullable = "null" in type_names or len(choices) != len(prop_schema["enum"])
+        if nullable:
+            # ``null`` is spelled out in the choice list so `--help` shows
+            # the way to clear the field; NullableParam intercepts it
+            # before the Choice ever sees it.
+            return NullableParam(click.Choice([*choices, "null"], case_sensitive=False))
+        return click.Choice(choices, case_sensitive=False)
+
     if isinstance(schema_type, list):
         # A union (``update_config``'s ``data`` is
         # object|array|string|number|boolean|null).  If a structured value
         # is legal at all, the text has to be parsed — otherwise the one
         # spelling that matters most gets sent as a string.
-        if {"object", "array"} & set(schema_type):
+        if {"object", "array"} & type_names:
             return StructuredParam("json")
         schema_type = next((t for t in schema_type if t != "null"), "string")
+
     if schema_type == "integer":
-        return int
+        base: type | click.ParamType = int
     elif schema_type == "number":
-        return float
+        base = float
     elif schema_type == "boolean":
+        # Rendered as a `--flag/--no-flag` pair, which has no place to put
+        # a literal ``null``; leave it alone.
         return bool
-    elif schema_type == "string":
-        return str
     elif schema_type in ("object", "array"):
         return StructuredParam(schema_type)
-    return str
+    else:
+        base = str
+
+    if "null" in type_names:
+        return NullableParam(base)
+    return base
 
 
 def _strip_category_prefix(cmd_name: str, category: str) -> str:

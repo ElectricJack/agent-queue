@@ -18,6 +18,8 @@ from src.models import (
 )
 from src.runtimes.base import Runtime
 from src.config import AppConfig, AutoTaskConfig
+from src.intelligence_classes import IntelligenceClass
+from src.sessions.harness_parser import Harness
 from tests.assignment_routing_helpers import install_already_routed
 
 
@@ -115,6 +117,77 @@ async def _run_cycle_and_wait(orch):
     await orch.run_one_cycle()
     await orch.wait_for_running_tasks()
 
+
+_SESSION_CLASSES = {
+    "standard-medium": IntelligenceClass(
+        "standard-medium", "Standard", "", {"anthropic": {"model": "claude-sonnet-5"}}
+    ),
+}
+
+
+@pytest.fixture
+async def session_orch(tmp_path):
+    """An orchestrator that dispatches the way production does: as a session.
+
+    The plain ``orch`` fixture injects a ``MockAdapterFactory`` into
+    ``_runtimes``, a seam ``_execute_task`` no longer consults — with the
+    runtime subsystem removed it requires ``sessions.enabled`` plus a profile
+    carrying a ``harness`` (``_is_session_routed``), and raises otherwise.
+    Scheduling tests that need a task to actually leave READY use this
+    fixture and the ``fake`` session provider instead.
+    """
+    config = AppConfig(
+        database_path=str(tmp_path / "test.db"),
+        workspace_dir=str(tmp_path / "workspaces"),
+        data_dir=str(tmp_path / "data"),
+    )
+    config.worktrees.enabled = False
+    config.sessions.enabled = True
+    config.sessions.provider = "fake"
+    o = Orchestrator(config)
+    await o.initialize()
+    o.session_spec_builder._intelligence_classes = dict(_SESSION_CLASSES)
+    # Branch setup is not what these tests assert on, and the workspaces
+    # below are bare directories rather than real clones.
+    o.git = AsyncMock()
+    o.harness_registry.upsert(
+        Harness(
+            id="claude",
+            name="claude",
+            command="claude",
+            prompt_mode="arg",
+            session_id_flag="--session-id",
+            process_names=("claude",),
+        )
+    )
+    install_already_routed(o)
+    yield o
+    await _drain_running_tasks(o)
+    await o.shutdown()
+
+
+async def _create_session_project(orch, *, project_id: str = "p-1") -> None:
+    """A profile with a harness, a project defaulting to it, and a workspace."""
+    await orch.db.create_profile(
+        AgentProfile(
+            id="claude",
+            name="claude",
+            harness="claude",
+            default_class="standard-medium",
+        )
+    )
+    await orch.db.create_project(Project(id=project_id, name="alpha", default_profile_id="claude"))
+    path = os.path.join(orch.config.workspace_dir, project_id)
+    os.makedirs(path, exist_ok=True)
+    await orch.db.create_workspace(
+        Workspace(
+            id=f"ws-{project_id}",
+            project_id=project_id,
+            workspace_path=path,
+            source_type=RepoSourceType.LINK,
+            kind_id="project-repo",
+        )
+    )
 
 
 async def test_conditional_completion_cascades_contingency_to_noop_and_emits_event(
@@ -248,74 +321,60 @@ async def test_child_completion_settles_all_terminal_container_ancestors_once(
         await orch.db.close()
 
 
-@pytest.mark.skip(
-    reason="legacy runtime dispatch was removed; session lifecycle is tested separately"
-)
 class TestOrchestratorLifecycle:
-    async def test_full_task_lifecycle(self, orch):
-        """DEFINED → READY → ASSIGNED → IN_PROGRESS → COMPLETED"""
-        await _create_project_with_workspace(orch.db)
-        await orch.db.create_agent(Agent(id="a-1", name="claude-1", profile_id="claude"))
+    """The orchestrator cycle's half of a task's life: promotion and dispatch.
+
+    These once drove a task all the way to COMPLETED through a
+    ``MockAdapterFactory`` that returned an ``AgentOutput`` from
+    ``Runtime.wait()``.  The runtime subsystem is gone: dispatch now launches
+    a session and returns, and the terminal transition arrives later from the
+    agent's own ``aq task close``.  Two of the old cases are therefore no
+    longer expressible here and are not restated below:
+
+    * ``test_failed_task_retries`` — retry-on-failure now runs off session
+      close and session death; covered by
+      ``test_session_commands.py::TestEndToEndOnFakeProvider::test_transient_failure_retries_instead_of_going_terminal``
+      and
+      ``test_session_reconciler.py::TestExitHandling::test_productive_death_pauses_with_a_backoff_never_silently_ready``.
+    * ``test_paused_on_token_exhaustion`` — the behaviour itself was removed
+      with the runtime pipeline.  ``AgentResult.PAUSED_TOKENS`` survives only
+      as an enum member in ``src/models.py``; nothing in ``src/`` consumes it,
+      so there is no PAUSED-on-token-exhaustion path left to assert.
+
+    The completion half of the lifecycle lives with the close protocol:
+    ``test_session_commands.py::TestEndToEndOnFakeProvider::test_full_lifecycle``
+    drives launch → ``task_close`` → COMPLETED, and
+    ``...::test_disabled_sessions_fail_instead_of_using_a_runtime`` pins the
+    "no session harness" error these cases used to trip over.
+    """
+
+    async def test_full_task_lifecycle(self, session_orch):
+        """DEFINED → READY → IN_PROGRESS, with a session actually launched."""
+        orch = session_orch
+        await _create_session_project(orch)
         await orch.db.create_task(
             Task(
                 id="t-1",
                 project_id="p-1",
                 title="Test",
                 description="Do it",
-                status=TaskStatus.READY,
+                status=TaskStatus.DEFINED,
             )
         )
 
         await _run_cycle_and_wait(orch)
 
         task = await orch.db.get_task("t-1")
-        assert task.status == TaskStatus.COMPLETED
+        assert task.status == TaskStatus.IN_PROGRESS
+        assert task.assigned_agent_id is not None
+        session = await orch.db.get_session_for_task("t-1")
+        assert session is not None
+        assert session.harness == "claude"
 
-    async def test_failed_task_retries(self, orch):
-        orch._runtimes = MockAdapterFactory(result=AgentResult.FAILED)
-        await _create_project_with_workspace(orch.db)
-        await orch.db.create_agent(Agent(id="a-1", name="claude-1", profile_id="claude"))
-        await orch.db.create_task(
-            Task(
-                id="t-1",
-                project_id="p-1",
-                title="Test",
-                description="Do it",
-                status=TaskStatus.READY,
-                max_retries=2,
-            )
-        )
-
-        await _run_cycle_and_wait(orch)
-
-        task = await orch.db.get_task("t-1")
-        # Should be READY for retry (failed once, max 2)
-        assert task.status == TaskStatus.READY
-        assert task.retry_count == 1
-
-    async def test_paused_on_token_exhaustion(self, orch):
-        orch._runtimes = MockAdapterFactory(result=AgentResult.PAUSED_TOKENS)
-        await _create_project_with_workspace(orch.db)
-        await orch.db.create_agent(Agent(id="a-1", name="claude-1", profile_id="claude"))
-        await orch.db.create_task(
-            Task(
-                id="t-1",
-                project_id="p-1",
-                title="Test",
-                description="Do it",
-                status=TaskStatus.READY,
-            )
-        )
-
-        await _run_cycle_and_wait(orch)
-
-        task = await orch.db.get_task("t-1")
-        assert task.status == TaskStatus.PAUSED
-        assert task.resume_after is not None
-
-    async def test_dependencies_block_scheduling(self, orch):
-        await _create_project_with_workspace(orch.db)
-        await orch.db.create_agent(Agent(id="a-1", name="claude-1", profile_id="claude"))
+    async def test_dependencies_block_scheduling(self, session_orch):
+        """A dependent task is not promoted until its blocker is COMPLETED."""
+        orch = session_orch
+        await _create_session_project(orch)
         await orch.db.create_task(
             Task(
                 id="t-1",
@@ -336,17 +395,20 @@ class TestOrchestratorLifecycle:
         )
         await orch.db.add_dependency("t-2", depends_on="t-1")
 
-        # t-1 has no deps so it gets promoted to READY and executed.
-        # After t-1 completes, the pipeline re-checks DEFINED tasks,
-        # promoting t-2 to READY within the same cycle.
+        # t-1 has no deps, so it is promoted and dispatched.  t-2 must stay
+        # DEFINED: its blocker is running, not done.
         await _run_cycle_and_wait(orch)
 
-        t1 = await orch.db.get_task("t-1")
-        t2 = await orch.db.get_task("t-2")
-        # t-1 was promoted, scheduled, executed, completed
-        assert t1.status == TaskStatus.COMPLETED
-        # t-2 gets promoted to READY in the same cycle (post-completion re-check)
-        assert t2.status == TaskStatus.READY
+        assert (await orch.db.get_task("t-1")).status == TaskStatus.IN_PROGRESS
+        assert (await orch.db.get_task("t-2")).status == TaskStatus.DEFINED
+
+        # Once the blocker completes the way a real agent completes it — via
+        # a terminal transition — the next cycle promotes t-2.
+        await orch.db.transition_task("t-1", TaskStatus.COMPLETED, context="test_close")
+
+        await _run_cycle_and_wait(orch)
+
+        assert (await orch.db.get_task("t-2")).status != TaskStatus.DEFINED
 
 
 class TestRecoverStaleState:
@@ -469,33 +531,23 @@ def _make_plan_toucher(workspace):
     return _touch_plan_files
 
 
-@pytest.mark.skip(
-    reason="legacy runtime dispatch was removed; session lifecycle is tested separately"
-)
 class TestAgentReconcilerWiring:
     """Regression: ensures the AgentReconciler runs at the top of each
     scheduling tick so READY tasks dispatch without manual `aq agent create`.
     See docs/superpowers/specs/2026-05-07-agent-reconciliation-design.md §7.
     """
 
-    async def test_ready_task_dispatches_with_only_workspace_and_default_profile(self, orch):
+    async def test_ready_task_dispatches_with_only_workspace_and_default_profile(
+        self, session_orch
+    ):
         """The original quick-ember bug: project with workspace +
         default_profile_id + READY task should dispatch within one cycle —
         no manual agent creation. Tests the full reconciler → scheduler →
-        executor chain.
+        executor chain, now terminating in a session launch rather than in
+        the removed runtime adapter.
         """
-        # Profile must exist before project references it.
-        await orch.db.create_profile(AgentProfile(id="claude", name="claude", harness="claude"))
-        # Project with default_profile_id and a workspace.
-        await orch.db.create_project(Project(id="p-1", name="alpha", default_profile_id="claude"))
-        await orch.db.create_workspace(
-            Workspace(
-                id="ws-p-1",
-                project_id="p-1",
-                workspace_path=str(orch.config.workspace_dir + "/p-1"),
-                source_type=RepoSourceType.LINK,
-            )
-        )
+        orch = session_orch
+        await _create_session_project(orch)
         # READY task with no profile_id (falls back to project default).
         await orch.db.create_task(
             Task(
@@ -510,12 +562,11 @@ class TestAgentReconcilerWiring:
         await _run_cycle_and_wait(orch)
 
         task = await orch.db.get_task("regression-task")
-        # Real dispatch path may pass through ASSIGNED → IN_PROGRESS;
-        # accept any non-READY state.
-        assert task.status != TaskStatus.READY
-        agents = await orch.db.list_agents()
-        assert len(agents) >= 1
-
+        assert task.status == TaskStatus.IN_PROGRESS
+        # The agent the reconciler supplied, not one the test created.
+        assert task.assigned_agent_id is not None
+        worker = await orch.db.get_agent(task.assigned_agent_id)
+        assert worker.profile_id == "claude"
 
 
 class TestPlanApprovalBlocking:
@@ -1371,6 +1422,7 @@ class TestPhaseVerifyApprovalTask:
             return "0"
 
         mock_git._arun = AsyncMock(side_effect=_arun)
+        mock_git.ais_ancestor = AsyncMock(return_value=False)
         mock_git.acommit_all = AsyncMock(return_value=True)
         mock_git.apush_branch = AsyncMock(return_value=None)
         mock_git.aabort_in_progress_operations = AsyncMock()
@@ -1438,12 +1490,85 @@ class TestPhaseVerifyApprovalTask:
         # On task branch but no PR
         orch.git.aget_current_branch = AsyncMock(return_value="feature-2")
         orch.git.afind_open_pr = AsyncMock(return_value=None)
+        orch.git.ais_ancestor = AsyncMock(return_value=False)
 
         ws = await orch.db.get_workspace("ws-1")
         ctx = self._make_ctx(orch, task, ws.workspace_path)
 
         result = await orch._phase_verify(ctx)
         assert result == PhaseResult.STOP
+
+    async def test_passes_when_merged_pr_is_found(self, pipeline_orch):
+        """A merged PR proves the task's branch has already shipped."""
+        orch = pipeline_orch
+        from src.models import PhaseResult
+
+        task = Task(
+            id="t-merged-pr",
+            project_id="p-1",
+            title="Test",
+            description="test",
+            branch_name="feature-merged",
+            status=TaskStatus.IN_PROGRESS,
+            integration_mode="pull_request",
+        )
+        await orch.db.create_task(task)
+        orch.git.aget_current_branch = AsyncMock(return_value="feature-merged")
+        orch.git.afind_open_pr = AsyncMock(return_value="https://github.com/org/repo/pull/99")
+
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = self._make_ctx(orch, task, ws.workspace_path)
+
+        assert await orch._phase_verify(ctx) == PhaseResult.CONTINUE
+        assert ctx.pr_url == "https://github.com/org/repo/pull/99"
+
+    async def test_closed_unmerged_pr_still_fails(self, pipeline_orch):
+        """The lookup excludes CLOSED PRs, so an unmerged branch still fails."""
+        orch = pipeline_orch
+        from src.models import PhaseResult
+
+        task = Task(
+            id="t-closed-pr",
+            project_id="p-1",
+            title="Test",
+            description="test",
+            branch_name="feature-closed",
+            status=TaskStatus.IN_PROGRESS,
+            integration_mode="pull_request",
+        )
+        await orch.db.create_task(task)
+        orch.git.aget_current_branch = AsyncMock(return_value="feature-closed")
+        orch.git.afind_open_pr = AsyncMock(return_value=None)
+        orch.git.ais_ancestor = AsyncMock(return_value=False)
+
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = self._make_ctx(orch, task, ws.workspace_path)
+
+        assert await orch._phase_verify(ctx) == PhaseResult.STOP
+
+    async def test_passes_when_branch_is_already_merged_without_pr(self, pipeline_orch):
+        """Direct or squash integration is sufficient even without a PR record."""
+        orch = pipeline_orch
+        from src.models import PhaseResult
+
+        task = Task(
+            id="t-merged-branch",
+            project_id="p-1",
+            title="Test",
+            description="test",
+            branch_name="feature-integrated",
+            status=TaskStatus.IN_PROGRESS,
+            integration_mode="pull_request",
+        )
+        await orch.db.create_task(task)
+        orch.git.aget_current_branch = AsyncMock(return_value="feature-integrated")
+        orch.git.afind_open_pr = AsyncMock(return_value=None)
+        orch.git.ais_ancestor = AsyncMock(return_value=True)
+
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = self._make_ctx(orch, task, ws.workspace_path)
+
+        assert await orch._phase_verify(ctx) == PhaseResult.CONTINUE
 
 
 class TestPhaseVerifyIntermediateSubtask:

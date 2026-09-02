@@ -27,6 +27,17 @@ from src.orchestrator.merge_slot import (
 
 logger = logging.getLogger(__name__)
 
+#: ``aq task close --work-outcome`` value meaning "nothing was produced"
+#: (work-graph design §"outcome metadata").
+WORK_OUTCOME_NO_OP = "no-op"
+
+#: Stage profiles whose prompt forbids editing code ("Never edit code. Your
+#: workspace is read-only.").  They never commit, push or open a PR on their
+#: own task branch, so the git-verification and integration phases have
+#: nothing to check for them.  Mirrors the review-producer set in
+#: ``task_commands.reopen_with_feedback``.
+NO_CODE_PROFILE_IDS = frozenset({"reviewer", "final-reviewer"})
+
 
 class GitOpsMixin:
     """Git operations methods mixed into Orchestrator."""
@@ -344,6 +355,56 @@ class GitOpsMixin:
     # The completion pipeline runs: commit → verify → integrate.
     # Each phase receives a PipelineContext and returns a PhaseResult.
 
+    def _task_produces_no_code(self, ctx: PipelineContext) -> bool:
+        """True when the task by construction leaves no commits behind.
+
+        Two signals, either is enough:
+
+        * the agent closed with ``--work-outcome no-op`` — its own statement
+          that nothing was produced;
+        * the task runs one of the read-only review stage profiles
+          (``reviewer`` / ``final-reviewer``): their prompt forbids editing
+          code, they report verdicts through ``reopen_with_feedback`` and
+          ``pr_merge``, and they never push or open a PR on their own
+          ``aq/<id>`` branch.
+
+        Such a task has nothing to push, PR or merge, so
+        :meth:`_phase_verify` waves it through and
+        :meth:`_run_completion_pipeline` skips integration.  Demanding a PR
+        from a reviewer burned every verification retry and left a clean
+        review verdict BLOCKED (task swift-ridge-95).
+        """
+        if (ctx.work_outcome or "").strip().lower() == WORK_OUTCOME_NO_OP:
+            return True
+        return (ctx.task.profile_id or "") in NO_CODE_PROFILE_IDS
+
+    async def _sweep_uncommitted_before_skip(self, ctx: PipelineContext) -> None:
+        """Best-effort dirty-slot cleanup on a verification path that skips the checks.
+
+        A task that bypasses git verification must still not leave dirty
+        state that bleeds into the next task on the same workspace.
+        """
+        workspace = ctx.workspace_path
+        task = ctx.task
+        if not workspace or not await self.git.avalidate_checkout(workspace):
+            return
+        try:
+            if await self.git.ahas_uncommitted_changes(workspace):
+                current = await self.git.aget_current_branch(workspace)
+                await self._auto_remediate_uncommitted(
+                    workspace,
+                    task.id,
+                    current,
+                    project_id=task.project_id,
+                    agent_id=ctx.agent.id,
+                )
+        except Exception as e:
+            logger.warning(
+                "Task %s: auto-remediation during skip failed: %s",
+                task.id,
+                e,
+            )
+
     async def _effective_integration_mode(self, task: Task) -> str:
         """Resolve the effective integration mode for *task*.
 
@@ -393,7 +454,17 @@ class GitOpsMixin:
         # tasks the verify phase already handled the merge; for worktree
         # slots this is where rebase + push + merge happens under the
         # per-project merge slot lease.  Worktree-execution spec §6.5.
-        if await self._task_is_worktree_mode(ctx):
+        # A no-code task (reviewer stage, ``--work-outcome no-op``) has
+        # nothing to integrate — running it would only force-push an empty
+        # ``aq/<id>`` branch to origin.
+        if self._task_produces_no_code(ctx):
+            logger.info(
+                "Task %s: no-code task (profile=%s, work_outcome=%s), skipping integration",
+                ctx.task.id,
+                ctx.task.profile_id,
+                ctx.work_outcome or "-",
+            )
+        elif await self._task_is_worktree_mode(ctx):
             try:
                 result = await self._phase_integrate(ctx)
             except Exception as e:
@@ -484,28 +555,28 @@ class GitOpsMixin:
             # Still auto-remediate uncommitted changes so the workspace is
             # clean for the next task.  Without this, a crashed agent leaves
             # dirty state that bleeds into subsequent tasks.
-            if workspace and await self.git.avalidate_checkout(workspace):
-                try:
-                    if await self.git.ahas_uncommitted_changes(workspace):
-                        current = await self.git.aget_current_branch(workspace)
-                        await self._auto_remediate_uncommitted(
-                            workspace,
-                            task.id,
-                            current,
-                            project_id=task.project_id,
-                            agent_id=ctx.agent.id,
-                        )
-                except Exception as e:
-                    logger.warning(
-                        "Task %s: auto-remediation during skip failed: %s",
-                        task.id,
-                        e,
-                    )
+            await self._sweep_uncommitted_before_skip(ctx)
             return PhaseResult.CONTINUE
 
         # Skip verification if the task opted out (e.g. research/investigation tasks)
         if task.skip_verification:
             logger.info("Task %s: skip_verification=True, skipping git verification", task.id)
+            return PhaseResult.CONTINUE
+
+        # A task that produces no code — a reviewer / final-reviewer stage
+        # task, or any task closed with ``--work-outcome no-op`` — has
+        # nothing to push, PR or merge.  The require-a-PR gate below would
+        # only burn its verification retries and append misleading feedback
+        # to a clean review verdict.  Sweep dirty state and pass.
+        if self._task_produces_no_code(ctx):
+            logger.info(
+                "Task %s: no-code task (profile=%s, work_outcome=%s), "
+                "skipping git verification",
+                task.id,
+                task.profile_id,
+                ctx.work_outcome or "-",
+            )
+            await self._sweep_uncommitted_before_skip(ctx)
             return PhaseResult.CONTINUE
 
         if not workspace or not await self.git.avalidate_checkout(workspace):
@@ -813,6 +884,17 @@ class GitOpsMixin:
                     pr_url = await self.git.afind_open_pr(workspace, task.branch_name)
                     if pr_url:
                         ctx.pr_url = pr_url
+                    elif await self.git.ais_ancestor(
+                        workspace,
+                        task.branch_name,
+                        f"origin/{default_branch}",
+                    ):
+                        logger.info(
+                            "Task %s: branch '%s' is already integrated into '%s'",
+                            task.id,
+                            task.branch_name,
+                            default_branch,
+                        )
                     else:
                         failures.append(
                             (

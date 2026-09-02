@@ -906,14 +906,20 @@ class AgentProfile:
     idle_timeout: int | None = None
     default_class: str = ""
     needs_workspace: bool = True
-    # When True, this profile MUST NOT mutate its acquired workspace.  The
-    # orchestrator enforces this at workspace-acquisition time: an exclusive
-    # lock on the mutable ``project-repo`` kind is refused, so a read-only
-    # profile can never accidentally hold a write lock (T3 reviewer
-    # follow-up).  Declaratively, profiles with ``read_only: true`` should
-    # not list write/edit/commit/push tools either — the acquisition guard
-    # is the belt-and-braces defense.
+    # When True, this profile MUST NOT mutate its acquired workspace.  It is
+    # a declarative statement of write *intent*: profiles with
+    # ``read_only: true`` do not list write/edit/commit/push tools, and the
+    # shipped reviewer profile is checked for that.  It deliberately does
+    # **not** change workspace acquisition any more — skipping the lock used
+    # to hand read-only agents the kind's base checkout, which is the one
+    # workspace no session may touch (see
+    # :mod:`src.orchestrator.base_workspace`).
     read_only: bool = False
+    # Opt-in escape hatch for the base-checkout guard.  A session's
+    # ``work_dir`` may not be a base workspace — the clone that hosts the
+    # slot worktrees, routinely a human's own checkout — unless its profile
+    # sets ``allow_base_checkout: true``.  Nothing shipped sets it.
+    allow_base_checkout: bool = False
     max_session_age: int | None = None
     # lifecycle: pool (swarm-work-model §9).  NULL = unlimited claims.
     min_active: int | None = None
@@ -1367,6 +1373,11 @@ class PipelineContext:
     #: read-only task).  Such a branch cannot get a PR, and there is nothing
     #: for ``_phase_integrate`` to rebase, push or merge.
     no_change: bool = False
+    #: ``--work-outcome`` from ``aq task close`` (``shipped`` | ``no-op`` |
+    #: ``blocked`` | ``abandoned``), empty when the agent gave none.  Git
+    #: verification reads ``no-op`` as "this task produced no code": there is
+    #: nothing to push, PR or merge, so the require-a-PR gate does not apply.
+    work_outcome: str = ""
 
 
 @dataclass(frozen=True)

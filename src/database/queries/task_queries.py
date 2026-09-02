@@ -374,6 +374,50 @@ class TaskQueryMixin:
                 flipped = await self.recompute_blocked({task_id}, conn=conn)
         await self.log_blocked_flips(flipped)
 
+    async def append_task_attachment(self, task_id: str, path: str) -> list[str] | None:
+        """Append one attachment path without losing concurrent uploads."""
+        async with self.immediate() as conn:
+            row = (
+                await conn.execute(
+                    select(tasks.c.attachments)
+                    .where(tasks.c.id == task_id)
+                    .with_for_update()
+                )
+            ).mappings().fetchone()
+            if row is None:
+                return None
+            attachments = json.loads(row["attachments"]) if row["attachments"] else []
+            if path not in attachments:
+                attachments.append(path)
+                await conn.execute(
+                    update(tasks)
+                    .where(tasks.c.id == task_id)
+                    .values(attachments=json.dumps(attachments), updated_at=time.time())
+                )
+            return attachments
+
+    async def remove_task_attachment(self, task_id: str, path: str) -> list[str] | None:
+        """Remove one attachment path in the same serialized write boundary."""
+        async with self.immediate() as conn:
+            row = (
+                await conn.execute(
+                    select(tasks.c.attachments)
+                    .where(tasks.c.id == task_id)
+                    .with_for_update()
+                )
+            ).mappings().fetchone()
+            if row is None:
+                return None
+            attachments = json.loads(row["attachments"]) if row["attachments"] else []
+            if path in attachments:
+                attachments.remove(path)
+                await conn.execute(
+                    update(tasks)
+                    .where(tasks.c.id == task_id)
+                    .values(attachments=json.dumps(attachments), updated_at=time.time())
+                )
+            return attachments
+
     async def pause_task(self, task_id: str) -> dict:
         """Persist an operator hold and fence the previous claim in one transaction."""
         async with self.immediate() as conn:

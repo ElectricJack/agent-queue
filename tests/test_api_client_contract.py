@@ -12,7 +12,9 @@ tests are the executable conformance guard:
 2. the generated request/response models round-trip a real typed route over
    ASGI, including the documented 422 error shape;
 3. codegen routers cover every discovered non-excluded command exactly once,
-   and no ``API_EXCLUDED`` command (``run_command`` above all) gets a route.
+   and no ``API_EXCLUDED`` command (``run_command`` above all) gets a route;
+4. the committed ``openapi.json`` — the artifact both clients are generated
+   from — still equals the spec that same ``create_app()`` serves.
 
 The generated client is read from the repo checkout (``packages/aq-client``),
 not from whatever copy happens to be installed, so the guard always compares
@@ -22,6 +24,7 @@ the committed artifacts of *this* revision.
 from __future__ import annotations
 
 import importlib
+import json
 import re
 import sys
 from pathlib import Path
@@ -273,3 +276,51 @@ def test_codegen_routes_keep_execute_exclusions_off_every_live_router():
     assert "run_command" in API_EXCLUDED
     for cmd in API_EXCLUDED:
         assert cmd not in routed_set, f"API_EXCLUDED command {cmd} got a typed route"
+
+
+def test_committed_openapi_json_matches_the_live_app_surface():
+    """The committed ``openapi.json`` is the spec ``create_app()`` actually serves.
+
+    ``openapi.json`` is a build artifact that nothing regenerates per commit,
+    so a change to ``src/api/models`` used to land with the spec — and every
+    client generated from it — silently behind.  That is how
+    ``PoolStatusRow.quarantined_reason`` reached ``main`` without reaching a
+    single typed consumer.  Regenerating needs no daemon (see
+    ``src.api.spec``), so there is no reason to let it drift.
+    """
+    from src.api.spec import SPEC_PATH, build_openapi_spec, render_openapi_spec
+
+    live = build_openapi_spec()
+    committed = json.loads(SPEC_PATH.read_text(encoding="utf-8"))
+
+    if live == committed:
+        # Also pin the on-disk rendering so the file the scripts write and
+        # the file in git stay diffable line-for-line.
+        assert SPEC_PATH.read_text(encoding="utf-8") == render_openapi_spec(committed), (
+            f"{SPEC_PATH.name} is valid but not formatted the way "
+            "scripts/regenerate-api-client.sh --offline writes it — regenerate it."
+        )
+        return
+
+    live_paths = {(m.lower(), p) for p, ms in live["paths"].items() for m in ms}
+    committed_paths = {(m.lower(), p) for p, ms in committed["paths"].items() for m in ms}
+    live_schemas = set(live.get("components", {}).get("schemas", {}))
+    committed_schemas = set(committed.get("components", {}).get("schemas", {}))
+    changed_schemas = sorted(
+        name
+        for name in live_schemas & committed_schemas
+        if live["components"]["schemas"][name] != committed["components"]["schemas"][name]
+    )
+
+    raise AssertionError(
+        "openapi.json is out of sync with the app create_app() serves, so "
+        "packages/aq-client and the dashboard's TS client are stale too. "
+        "Regenerate with:\n"
+        "  ./scripts/regenerate-api-client.sh --offline\n"
+        "  ./scripts/regenerate-ts-client.sh --from-file\n"
+        f"operations missing from openapi.json: {sorted(live_paths - committed_paths)}\n"
+        f"stale operations in openapi.json: {sorted(committed_paths - live_paths)}\n"
+        f"schemas missing from openapi.json: {sorted(live_schemas - committed_schemas)}\n"
+        f"stale schemas in openapi.json: {sorted(committed_schemas - live_schemas)}\n"
+        f"schemas whose definition changed: {changed_schemas}"
+    )
