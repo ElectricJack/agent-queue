@@ -1,6 +1,20 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
 
+/* Collapsing or expanding a container reflows its siblings (the space it
+   gave up is reclaimed). Sliding the cards there makes the move followable;
+   without it the graph would jump-cut to a different arrangement. Pans and
+   zooms transform the viewport, not the nodes, so they are unaffected. */
+.react-flow__node {
+  transition: transform 220ms ease, width 220ms ease, height 220ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .react-flow__node {
+    transition: none;
+  }
+}
+
 .react-flow__node.aq-focused {
   outline: 2px solid rgb(129 140 248);
   outline-offset: 2px;

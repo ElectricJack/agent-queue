@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { TilesResponse } from "@aq/ts-client";
-import { emptyStore, evictFar, mergeTiles, missingCells, nodeCount } from "../layoutStore";
+import {
+  dropCarried, emptyStore, evictFar, mergeTiles, missingCells, nodeCount, retainForReflow,
+} from "../layoutStore";
 
 const node = (id: string, x: number, y: number, w = 1, h = 1) => ({
   id, title: id, status: "READY", priority: 100, is_blocked: false, x, y, w, h, depth: 0,
@@ -67,6 +69,34 @@ describe("layoutStore", () => {
     }));
     expect([...s.stubOverflow.keys()]).toEqual(["a|out"]);
   });
+  it("retains the drawn nodes across an expanded-set change so the reflow can animate", () => {
+    const first = mergeTiles(emptyStore(), ["0:0"], res([node("e", 0, 0), node("z", 0, 3.2)]));
+    const next = retainForReflow(first);
+    // Nothing is loaded any more -- every visible cell is refetched -- but
+    // the cards stay on screen at their old positions.
+    expect(missingCells(next, ["0:0"])).toEqual(["0:0"]);
+    expect([...next.carried].sort()).toEqual(["e", "z"]);
+    expect(next.nodes.get("z")!.y).toBe(3.2);
+
+    // Eviction must not throw a carried node away before it is re-delivered.
+    expect(evictFar(next, ["99:99"]).nodes.has("z")).toBe(true);
+
+    const merged = mergeTiles(next, ["0:0"], res([node("e", 0, 0), node("z", 0, 1.2)]));
+    expect(merged.carried.size).toBe(0);
+    expect(merged.nodes.get("z")!.y).toBe(1.2);
+  });
+
+  it("drops a carried node the new expanded set never sent back", () => {
+    const first = mergeTiles(emptyStore(), ["0:0"], res([node("e", 0, 0), node("c0", 0, 1)]));
+    const merged = mergeTiles(retainForReflow(first), ["0:0"], res([node("e", 0, 0)]));
+    // `c0` is inside `e`, which is now collapsed: it is still drawn ...
+    expect(merged.nodes.has("c0")).toBe(true);
+    // ... until the generation has fully landed, and then it is gone.
+    const settled = dropCarried(merged);
+    expect(settled.nodes.has("c0")).toBe(false);
+    expect(settled.nodes.has("e")).toBe(true);
+  });
+
   it("a root response marks the store whole so nothing is ever missing", () => {
     const s = { ...mergeTiles(emptyStore(), ["0:0"], res([node("a", 0, 0)])), whole: true };
     expect(missingCells(s, ["5:5", "9:9"])).toEqual([]);

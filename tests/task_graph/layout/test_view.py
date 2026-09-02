@@ -1,3 +1,4 @@
+from src.task_graph.layout.compaction import Box
 from src.task_graph.layout.model import LayoutRow
 from src.task_graph.layout.view import (
     ancestors_of,
@@ -116,8 +117,8 @@ def test_cap_stubs_keeps_eight_then_summarizes():
         {"from": f"d{i}", "to": "hub", "dep_type": "blocks", "description": None, "count": 1}
         for i in range(12)
     ]
-    stub_rows = {f"d{i}": row(f"d{i}", f"/d{i}/", 0, x=float(i)) for i in range(12)}
-    kept, stubs, more = cap_stubs(edges, stub_rows, set(hub), limit=8)
+    stub_boxes = {f"d{i}": Box(float(i), 0.0, 1.0, 1.0) for i in range(12)}
+    kept, stubs, more = cap_stubs(edges, stub_boxes, set(hub), limit=8)
     assert len(kept) == 8 and len(stubs) == 8
     assert more == [{"node_id": "hub", "direction": "in", "more": 4}]
 
@@ -138,8 +139,8 @@ def test_cap_stubs_counts_distinct_far_nodes_not_edges():
         {"from": "far", "to": "hub", "dep_type": t, "description": None, "count": 1}
         for t in dep_types
     ]
-    stub_rows = {"far": row("far", "/far/", 0)}
-    kept, stubs, more = cap_stubs(edges, stub_rows, set(hub), limit=2)
+    stub_boxes = {"far": Box(0.0, 0.0, 1.0, 1.0)}
+    kept, stubs, more = cap_stubs(edges, stub_boxes, set(hub), limit=2)
     assert len(kept) == 4 and len(stubs) == 1
     assert more == []
 

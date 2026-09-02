@@ -110,7 +110,7 @@ describe("layout-aware task controls", () => {
     mocks.layoutV2 = true;
     mount("/projects/alpha/graph?q=check");
     await waitFor(() => expect(screen.getByRole("button", { name: "Next result (1)" })).toBeInTheDocument());
-    expect(mocks.locate).toHaveBeenCalledWith("alpha", "active", "check", "");
+    expect(mocks.locate).toHaveBeenCalledWith("alpha", "active", "check", "", []);
 
     vi.spyOn(window, "confirm").mockReturnValueOnce(false);
     await userEvent.click(screen.getByRole("button", { name: "Tidy layout" }));

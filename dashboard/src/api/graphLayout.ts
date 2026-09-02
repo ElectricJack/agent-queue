@@ -9,7 +9,7 @@ import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/rea
 import {
   getExtentApiProjectsProjectIdGraphExtentGet,
   getJobApiProjectsProjectIdGraphJobsJobIdGet,
-  getLocateApiProjectsProjectIdGraphLocateGet,
+  postLocateApiProjectsProjectIdGraphLocatePost,
   getNodeApiProjectsProjectIdGraphNodeTaskIdGet,
   postListApiProjectsProjectIdGraphListPost,
   postTidyApiProjectsProjectIdGraphTidyPost,
@@ -165,11 +165,15 @@ export async function locate(
   variant: Variant,
   q: string,
   status: string,
+  expanded: string[] = [],
 ): Promise<LocateResponse> {
-  const r = await getLocateApiProjectsProjectIdGraphLocateGet({
+  // `expanded` rides along because a hit's position depends on it: collapsing
+  // a container reflows everything after it, so the persisted coordinate is
+  // not where the canvas draws the match.
+  const r = await postLocateApiProjectsProjectIdGraphLocatePost({
     client,
     path: { project_id: projectId },
-    query: { variant, q, status },
+    body: { variant, q, status, expanded },
     throwOnError: true,
   });
   return r.data as LocateResponse;

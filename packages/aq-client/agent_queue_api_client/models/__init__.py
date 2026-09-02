@@ -520,6 +520,7 @@ from .list_workspaces_request import ListWorkspacesRequest
 from .list_workspaces_response import ListWorkspacesResponse
 from .list_workspaces_response_422 import ListWorkspacesResponse422
 from .locate_hit import LocateHit
+from .locate_request import LocateRequest
 from .locate_response import LocateResponse
 from .log_entry import LogEntry
 from .loop_iteration_overlay_dto import LoopIterationOverlayDTO
@@ -1585,6 +1586,7 @@ __all__ = (
     "ListWorkspacesResponse",
     "ListWorkspacesResponse422",
     "LocateHit",
+    "LocateRequest",
     "LocateResponse",
     "LogEntry",
     "LoopIterationOverlayDTO",

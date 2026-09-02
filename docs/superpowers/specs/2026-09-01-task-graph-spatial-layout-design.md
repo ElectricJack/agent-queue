@@ -141,6 +141,55 @@ a band boundary O(log n) times over its life. The cost of a crossing is describe
 A user-triggered **Tidy layout** action deliberately relaxes the invariant and produces an
 optimized layout from scratch.
 
+### 3.5 Derived compaction for the viewer's expanded set
+
+The persisted layout is the **fully expanded** geometry: every container carries the
+footprint it needs with all of its descendants drawn. That is what makes it stable and
+shareable — it does not depend on who is looking at it.
+
+But collapse is a structural change the viewer made, not a rendering trick. A collapsed
+container occupies **one card-sized tile**, and everything laid out after it in reading
+order reclaims the space it gave up. Expanding pushes them back. Without this, collapsing
+a 60-task epic leaves a screen-sized hole and the tasks below it stay off-screen, which is
+the opposite of what collapsing is for.
+
+The compaction is *derived*, never persisted: the expanded set is the viewer's own state
+(localStorage, per project, per 6.5), so nothing about it belongs in `task_layouts`. It is
+computed per request in `src/task_graph/layout/compaction.py` as a pure function of
+`(persisted rows, collapsed set)`:
+
+- Each fully-loaded scope is re-packed from the rows the engine published. A child keeps
+  its visual **line** and its **order within that line**; it slides left by the width its
+  earlier line-mates gave up, and its line slides up by the height the earlier lines gave
+  up. Gaps are therefore inherited, not re-derived, and the graph stays recognisable
+  across a toggle.
+- A container's new content size is measured exactly the way `flow_container` measures it
+  and re-banded through `band_up`, so 3.4's growth bands still bound how far a change
+  propagates.
+- Sizing runs bottom-up and placement top-down, so a collapsed grandchild shrinks its
+  parent, which lifts the parent's later siblings.
+- **Identity.** With nothing collapsed every delta is zero, so compaction reproduces the
+  engine's own coordinates exactly — wrapped ranks and serpentine folds included.
+  Expanding therefore restores the published layout, and a live update that does not
+  change structure cannot make anything jump. This is what keeps 3.4's determinism rules
+  intact.
+- The **toggled container is a fixed point**: only nodes *after* it in reading order move,
+  so the viewport needs no correction to keep it under the pointer.
+
+What compaction deliberately does **not** do is re-wrap. Lines are inherited, not
+re-derived, so a scope whose children each filled a line of their own (a rank of wide
+epics, say) collapses into a narrow column rather than repacking into a grid: the vertical
+space comes back, the horizontal packing does not. That is the price of "the graph stays
+recognisable", and re-deriving the wrap would mean re-running `flow_container` — which
+needs the sibling edges and the serpentine chains, and would no longer be the identity on
+the published layout. Re-wrapping belongs to the density work (§3.2), not here.
+
+Only scopes whose children are loaded in full may be re-packed — a missing sibling would
+silently shrink the line it belonged to. Every other scope keeps the interior the engine
+published (it still moves, because its container moved). Level-of-detail culling feeds the
+same mechanism: a container returned as `collapsed` because it is deeper than `max_depth`
+shrinks exactly like an explicitly collapsed one.
+
 ## 4. Layout engine
 
 Location: `src/task_graph/layout/`. Pure Python, no external layout library. Deterministic
@@ -376,13 +425,27 @@ Response:
 - `gates` filtered to the returned tasks.
 - `layout_version`.
 
-Implementation, all bulk: cell lookup on `task_layout_cells`, layout rows for the matched
-ids, visibility resolution using `path` and `expanded`, one `task_dependencies` query for
-edges touching the visible subtrees (`path LIKE` per visible collapsed root, unioned),
-one agents query. The per-task N+1 in the current endpoint is gone. Work is proportional
-to the visible nodes plus the edge rows of visible collapsed subtrees; the latter is the
-one term that can exceed the viewport, and the perf test pins it with a 1,000-task
-collapsed epic.
+Implementation, all bulk: the children of every open container (`[None, *expanded]`, or
+`[root, *expanded]` under focus), visibility resolution using `path` and `expanded`,
+compaction per 3.5, then the rect cull **in compacted coordinates**; one
+`task_dependencies` query for edges touching the visible subtrees (`path LIKE` per visible
+collapsed root, unioned), one agents query. The per-task N+1 in the current endpoint is
+gone.
+
+The candidate set is the open set rather than a `task_layout_cells` lookup because after a
+collapse the persisted cell index no longer says what lands in the rect — only the
+compaction does, and it needs every child of every open container to run. That is the same
+bound `list` already accepts (5.3): a response costs |open containers| worth of children,
+never a whole project. Work is otherwise proportional to the visible nodes plus the edge
+rows of visible collapsed subtrees; the latter is the one term that can exceed the
+viewport, and the perf test pins it with a 1,000-task collapsed epic.
+
+Because a compacted geometry is a pure function of the published layout and the viewer's
+expanded set, an **unfiltered** result is cached per router under
+`(project, variant, layout_version, root, max_depth, expanded)`, so toggling a container
+back and forth is a dictionary hit rather than a reload and a re-flow. A filtered request
+is never cached: its match set comes from live task titles and statuses, which change
+without republishing the layout.
 
 ### 5.3 `POST /api/projects/{id}/graph/list`
 
@@ -397,10 +460,19 @@ Returns the node's layout fields plus `ancestors`: the ordered list of
 `{id, title, x, y, w, h}` from the root child down to the parent. Used to fit the view on
 a fresh `?focus=` deep link, to build breadcrumbs, and to jump to a `locate` result.
 
-### 5.5 `GET /api/projects/{id}/graph/locate?variant=&q=&status=&limit=`
+### 5.5 `POST /api/projects/{id}/graph/locate`
 
-Returns matching task ids with `x, y, w, h, container_id`, capped at 200, for jump-to
-navigation.
+Body `{variant, expanded, q, status, limit}`. Returns matching task ids with
+`x, y, w, h, container_id`, capped at 200, for jump-to navigation. Requires `q` or
+`status`: an unfiltered locate is a whole-project scan wearing a search endpoint's
+clothes.
+
+POST, and carrying `expanded`, for the same reason `tiles` and `list` are: a hit's
+position depends on what the viewer has collapsed (3.5), so the persisted coordinate is
+not where the canvas draws the match. The match set is still selected, ordered and capped
+in SQL — it contributes ids, never a row per match — and the positions come from the same
+compacted geometry the matching `tiles` request resolves, filter-forced expansion
+included.
 
 ### 5.6 `POST /api/projects/{id}/graph/tidy`
 
@@ -461,10 +533,18 @@ and is what the current implementation effectively does today.
 
 ### 6.5 Collapse
 
-The expanded set stays in `useGraphHierarchy.ts` and localStorage. All containers start
-collapsed, as today. Collapsing a container leaves its footprint empty, because the layout
-is computed for the expanded world. This is accepted: stability is worth more than
-compactness, and the `active` variant and focus mode are the tools for decluttering.
+The expanded set stays in `useGraphHierarchy.ts` and localStorage — one live store shared
+by every consumer, because the toolbar has to send the same set to `locate` that the
+canvas is drawing. All containers start collapsed, as today.
+
+Collapsing a container reclaims its footprint: the server returns the compacted geometry
+for the expanded set the request carried (3.5). The canvas animates the move rather than
+cutting to it — `useLayoutTiles` keeps the drawn nodes on screen while the new expanded
+set is in flight (they are marked `carried` and dropped once the generation has fully
+landed), so the cards keep their DOM identity and a 220 ms CSS transform transition slides
+them, honouring `prefers-reduced-motion`. The toggled container is a fixed point of the
+compaction, so nothing needs to pan; a pin is still recorded and applied if it does move,
+which only happens when something republishes the layout underneath the toggle.
 
 ### 6.6 Focus mode
 
@@ -631,6 +711,13 @@ Changes made after an external review of the first draft, with the finding each 
   (16).
 - Validation rules, empty-layout semantics, and POST bodies for large inputs (17).
 
+- §3.5, §5.2, §5.5 and §6.5: collapsing a container now reclaims its footprint instead of
+  leaving a hole. The first draft accepted the hole ("stability is worth more than
+  compactness"); operator feedback on 2026-09-02 rejected that — with the Playbook V2 epic
+  collapsed, the tasks below it did not move, so collapsing bought nothing. The compaction
+  is derived per request and is the identity when nothing is collapsed, so §3.4's stability
+  rules survive intact. Its cost is that `tiles` loads the open set rather than the rect's
+  cells, and `locate` became a POST carrying `expanded`.
 - §9 incremental batch budget amended from 200 ms to 300 ms after measurement (Stage 1 implementation).
 - §5.1: extent no longer carries header-band content; the dashboard's existing playbooks hook supplies it (Stage 2 implementation).
 
@@ -645,6 +732,13 @@ Shipped behind `dashboard.graph_layout.enabled`, with these gaps recorded rather
 
 - Containers are allocated at growth-band sizes, so a box can look roughly twice as large as
   its contents; focus therefore fits to a half-empty rectangle and the cards inside render small.
+- `extent` (5.1) still reports the **fully expanded** extent: it is a GET with no expanded
+  set, and a compacted extent is smaller, so the all-projects view stacks projects further
+  apart than the compacted content needs. Nothing overlaps — the expanded extent is an upper
+  bound — and a single project is unaffected, since its offset is zero.
+- `list` (5.3) loads a row per match under a filter rather than the forced containers' full
+  scopes, so those scopes are not re-packed and its filtered coordinates can differ from the
+  canvas's. Invisible today: the mobile list pages its cards rather than positioning them.
 - All-projects focus resolves the focused node against the first project in scope, so a
   `?focus=` deep link into any other project's node does not resolve.
 - The status strip shows no matching count under the flag (`matchingCount={null}`): filtering is
