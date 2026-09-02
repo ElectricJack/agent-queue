@@ -20,6 +20,11 @@ dependencies = [
     "ruamel.yaml>=0.18",
     "fastapi>=0.135.0",
     "pydantic>=2.0",
+    # Playbook V2 validates author-supplied `LlmStep.output_schema` as draft
+    # 2020-12 before it reaches a provider's structured-output API
+    # (src/playbooks/validation.py, child plan §10.3). Runtime need, not a
+    # test-only one; it was previously present only transitively via `mcp`.
+    "jsonschema>=4.20",
     # Pin starlette to >=1.3.1 to address multiple 2026 CVEs (PYSEC-2026-161,
     # 248, 249, 2280, 2281) — request-parsing DoS and boundary-parsing issues.
     "starlette>=1.3.1",
