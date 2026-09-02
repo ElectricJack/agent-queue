@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from collections.abc import Callable
 from dataclasses import asdict
 
@@ -57,6 +58,11 @@ logger = logging.getLogger(__name__)
 #: paused project or an exhausted budget fails ``_admission_reason`` on the
 #: claim, and no free workspace starves ``_launch_pool_session``.
 _PUSH_ONLY_REASON_CODES = frozenset({"no_idle_agent", "no_compatible_agent", "rate_limited"})
+
+
+def _fmt_epoch(ts: float) -> str:
+    """Epoch seconds → local ``YYYY-MM-DD HH:MM:SS`` for human reason text."""
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(float(ts)))
 
 
 def _normalize_label_list(raw) -> list[str]:
@@ -3084,6 +3090,28 @@ class TaskCommandsMixin:
             reasons.append(Reason(
                 code="needs_attention", detail=str(needs_attention), ref=str(task_id),
             ))
+
+        # A cooling-down PAUSED task is not blocked by anything in the graph
+        # — it is waiting out a backoff (rate limit, rapid crash, stalled
+        # restart, session exit without close).  Without this the answer to
+        # "why isn't X running" was silence for the whole cooldown.
+        if task.status is TaskStatus.PAUSED:
+            if task.resume_after:
+                remaining = max(0.0, float(task.resume_after) - time.time())
+                reasons.append(Reason(
+                    code="paused_backoff",
+                    detail=(
+                        f"paused until {_fmt_epoch(task.resume_after)} "
+                        f"({remaining:.0f}s remaining); resumes automatically"
+                    ),
+                    ref=str(task_id),
+                ))
+            else:
+                reasons.append(Reason(
+                    code="paused_manually",
+                    detail="paused with no resume time; resume with `aq task resume`",
+                    ref=str(task_id),
+                ))
 
         # 1. hold:* labels (task is deliberately withheld).
         try:

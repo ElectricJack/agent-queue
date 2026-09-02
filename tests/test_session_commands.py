@@ -47,6 +47,35 @@ class _Bus:
         return [t for t, _ in self.events]
 
 
+class _StubAssignmentRouting:
+    """Pass-through route resolver.
+
+    ``ExecutionMixin._check_agent_routing`` asks the coordinator for a fresh
+    route before every assignment.  These tests are about the session
+    lifecycle, not the routing model, so the route just echoes back what the
+    task already carries.  Without it every ``_execute_task`` in this file
+    dies on ``'_Orch' object has no attribute 'assignment_routing'`` — the
+    mixin's own method shadows ``_StubOrchestrator``'s override via the MRO.
+    """
+
+    async def routes_for(self, tasks):
+        from src.orchestrator.assignment_routing import AssignmentDecision
+
+        return {
+            t.id: AssignmentDecision(
+                task_id=t.id,
+                input_hash="stub",
+                intelligence_class=t.intelligence_class,
+                provider=None,
+                reason="stub",
+            )
+            for t in tasks
+        }
+
+    async def explain(self, task):
+        return None, None
+
+
 class _StubOrchestrator:
     """Just enough orchestrator for the command mixin and the launch fork.
 
@@ -74,7 +103,7 @@ class _StubOrchestrator:
         # task never constructs a runtime.
         self._runtimes = None
         self.llm_logger = None
-        self.assignment_routing = _StaticAssignmentRouting()
+        self.assignment_routing = _StubAssignmentRouting()
         self.session_reconciler = SessionReconciler(
             db, config, providers, harnesses=harnesses, bus=self.bus, epoch="epoch-test"
         )
@@ -1043,6 +1072,67 @@ class TestEndToEndOnFakeProvider:
         # ...and the resources are still freed, against the database.
         assert (await db.get_agent("a1")).state is AgentState.IDLE
         assert (await db.get_workspace("ws1")).locked_by_task_id is None
+
+    async def test_fixable_verification_refuses_the_close_and_keeps_the_session(
+        self, db, real_orch, real_handler, provider, tmp_path, monkeypatch
+    ):
+        """The close/verification loop must not kill the worker it needs.
+
+        Reopening the task to READY put a live session next to a task that
+        was no longer IN_PROGRESS, which is exactly what the reconciler's
+        orphan rule drains — so the agent asked to push and open the PR was
+        killed five seconds later.  A close from a live session is now
+        *refused* instead: the task keeps its status, agent, workspace and
+        claim, the agent gets the issue list back, and a second close after
+        fixing them succeeds.
+        """
+        import asyncio
+
+        await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+        session = await db.get_session_for_task("t1")
+
+        async def _stop_with_feedback(ctx):
+            assert ctx.close_session_live is True, "the live session must be visible here"
+            ctx.verification_retry_in_session = True
+            ctx.verification_issues = ["No open PR found for branch aq/t1."]
+            ctx.verification_feedback = "push and open a PR, then close again"
+            return None, False
+
+        monkeypatch.setattr(real_orch, "_run_completion_pipeline", _stop_with_feedback)
+        args = {
+            "task_id": "t1",
+            "session_id": session.id,
+            "outcome": "pass",
+            "work_outcome": "shipped",
+            "summary": "Work done.",
+        }
+        close = await asyncio.wait_for(real_handler.execute("task_close", args), timeout=2)
+
+        assert close["success"] is False
+        assert close["result"] == "verification_failed"
+        assert close["issues"] == ["No open PR found for branch aq/t1."]
+        assert "No open PR" in close["error"]
+
+        # Nothing was torn down: the reconciler must have no reason to act.
+        task = await db.get_task("t1")
+        assert task.status is TaskStatus.IN_PROGRESS
+        assert task.assigned_agent_id == "a1"
+        assert (await db.get_agent("a1")).state is AgentState.BUSY
+        ws = await db.get_workspace("ws1")
+        assert ws.locked_by_task_id == "t1" and ws.locked_by_agent_id == "a1"
+
+        # The orphan sweep drained the worker in the original bug.  With the
+        # task still IN_PROGRESS it leaves the session alone.
+        await real_orch.session_reconciler.tick(now=time.time())
+        assert (await db.get_session(session.id)).state == "running"
+
+        # Second close, after the agent fixed the git state, completes.
+        async def _ok(ctx):
+            return "https://github.com/org/repo/pull/7", True
+
+        monkeypatch.setattr(real_orch, "_run_completion_pipeline", _ok)
+        again = await asyncio.wait_for(real_handler.execute("task_close", args), timeout=2)
+        assert again["success"] is True and again["status"] == "COMPLETED"
 
     async def test_verification_reopen_returns_ready_and_releases_resources(
         self, db, real_orch, real_handler, provider, tmp_path, monkeypatch

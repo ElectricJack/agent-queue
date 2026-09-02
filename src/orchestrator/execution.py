@@ -912,6 +912,7 @@ class ExecutionMixin:
         notes: str = "",
         expect_claim_epoch: int | None = None,
         pool: bool = False,
+        session_live: bool = False,
     ) -> dict:
         """Run the completion pipeline for a session-closed task.
 
@@ -967,6 +968,7 @@ class ExecutionMixin:
             repo=repo,
             default_branch=default_branch,
             project=project,
+            close_session_live=session_live,
         )
 
         pr_url = None
@@ -981,6 +983,30 @@ class ExecutionMixin:
                     exc_info=True,
                 )
                 completed_ok = False
+
+        # Git verification found only fixable issues and the closing session
+        # is still live: the close is refused rather than the task reopened.
+        # Nothing is transitioned and nothing is released — the task keeps
+        # its IN_PROGRESS status, its agent, its workspace and its claim, so
+        # the reconciler's orphan rule (live session, task not IN_PROGRESS)
+        # never sees a reason to drain the worker that has to fix this.
+        if outcome == "pass" and ctx.verification_retry_in_session:
+            current = await self.db.get_task(task.id)
+            logger.info(
+                "Task %s: close refused, %d fixable verification issue(s) returned "
+                "to the live session",
+                task.id,
+                len(ctx.verification_issues),
+            )
+            return {
+                "status": (current or task).status.value,
+                "pr_url": None,
+                "pipeline_ok": False,
+                "retry_count": None,
+                "verification_retry": True,
+                "issues": list(ctx.verification_issues),
+                "feedback": ctx.verification_feedback,
+            }
 
         # ``retry_count`` is only carried on the transient leg; the other
         # branches are terminal and must not bump the counter.
