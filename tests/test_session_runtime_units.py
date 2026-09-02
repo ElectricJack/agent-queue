@@ -19,7 +19,7 @@ from types import SimpleNamespace
 import pytest
 
 from src.sessions import proctable
-from src.sessions.dialogs import DialogBudget, run_dialog_dismissal
+from src.sessions.dialogs import DialogBudget, first_match, run_dialog_dismissal
 from src.sessions.provider import DialogRule
 from src.sessions.state_cache import TmuxStateCache, TmuxUnavailable
 from src.sessions.transcripts.watcher import TranscriptWatcher
@@ -98,6 +98,43 @@ class TestDialogDismissal:
             fired=set(),
         )
         assert outcome.budget_exhausted
+
+    async def test_quiet_window_catches_a_dialog_painted_late(self):
+        # Claude and Codex both paint their trust screen after the first
+        # frames; a pass that returns on the first quiet capture leaves it
+        # up and the session sits blocked (smart-orbit.7).
+        screen = _Screen(["❯ ", "❯ ", "Do you trust this folder?", "❯ "])
+        outcome = await run_dialog_dismissal(
+            capture=screen.capture,
+            send_keys=screen.send,
+            dialogs=(_rule("trust", "Do you trust"),),
+            budget=DialogBudget(5.0),
+            fired=set(),
+            quiet_seconds=1.0,
+        )
+        assert outcome.fired == ["trust"]
+        assert screen.sent == [("Enter",)]
+
+    async def test_quiet_window_returns_when_the_pane_stays_clear(self):
+        screen = _Screen(["❯ "])
+        started = time.monotonic()
+        outcome = await run_dialog_dismissal(
+            capture=screen.capture,
+            send_keys=screen.send,
+            dialogs=(_rule("trust", "Do you trust"),),
+            budget=DialogBudget(5.0),
+            fired=set(),
+            quiet_seconds=0.4,
+        )
+        elapsed = time.monotonic() - started
+        assert outcome.fired == []
+        assert not outcome.budget_exhausted
+        assert 0.4 <= elapsed < 2.0  # waited the window, then stopped
+
+    def test_first_match_skips_a_spent_once_rule(self):
+        rules = (_rule("trust", "Do you trust", once=True),)
+        assert first_match(rules, "Do you trust this?") is not None
+        assert first_match(rules, "Do you trust this?", fired={"trust"}) is None
 
     async def test_invalid_regex_is_skipped_not_fatal(self):
         screen = _Screen(["anything"])
