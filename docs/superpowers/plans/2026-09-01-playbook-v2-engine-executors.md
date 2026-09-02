@@ -665,6 +665,12 @@ The executor is a pure state transition over the loop frame and returns `GOTO`:
 | Frame present, body returned failure, policy `continue` | append outcome only; advance index |
 | Frame present, body returned failure, policy `collect` | append `{index, outcome, error}` to `aggregate.errors`; advance index; at the end outcome is `completed` with a non-empty `errors` list |
 
+**How the executor learns the iteration's outcome.** The body is an ordinary sub-path whose last step transitions *back into the loop node* — in the §6.1 fixture that is `check-gate` → `for-each-task`, and `check-gate` is a `DecisionStep` whose outcome is a case label, not a success/failure word. So classification cannot be "read the outcome name". The locked rule is:
+
+> When a transition targets the run's owning `ForEachStep`, the engine records `(producing_step_id, producing_outcome)` on the loop frame. The iteration is **failed** when that outcome is a member of `ENGINE_RESERVED_OUTCOMES`, **or** is a declared outcome the producing step's contract classifies `OutcomeClass.FAILURE`. It is **successful** otherwise.
+
+This makes an author's intent explicit and local: routing a body step's failure edge *back to the loop node* is how one says "this failure is per-item"; routing it to a terminal is how one says "this failure ends the rule". T-7's `test_decision_returning_to_the_loop_counts_as_success` and `test_command_failure_edge_returning_to_the_loop_counts_as_failed` pin both halves.
+
 Two rules the live `pipeline_runner._run_for_each` (`:165-186`) breaks and this one keeps:
 
 - **The loop item lives in `scope.loop`, not `scope.bindings`.** `with_loop_item` returns a new scope; there is no `pop` and no `finally`, so a failure branch cannot read a stale item. T-7's `test_loop_item_cannot_shadow_a_binding` builds an artifact with a binding named `task` and an item binding named `task` and asserts Package 2 rejects it at compile time *and* that `with_loop_item` raises if it somehow reaches runtime.
@@ -1114,3 +1120,328 @@ aq test tests/test_assignment_routing_coordinator.py tests/test_playbook_command
         tests/test_cancel_playbook_run.py -q
 ruff check src/orchestrator src/commands/playbook_commands.py src/playbooks src/workflow_stage_resume_handler.py
 ```
+
+---
+
+## 6. Fixture data
+
+### 6.1 The artifact — reused verbatim from Package 5
+
+`tests/fixtures/playbooks/v2/review-pipeline.artifact.json`, defined in full in Package 5's plan §10.1. **Package 4 does not fork it, extend it, or write a second engine-specific artifact.** Reusing the same bytes is what makes "the engine executed the graph the API renders" true by construction rather than by review: if Package 4 needed a differently shaped artifact to execute, that difference would be a real semantic disagreement and should surface as a failing test in one package, not as two fixtures that quietly diverge.
+
+What it already gives this package, per step kind:
+
+| Package 4 needs | The fixture supplies |
+|---|---|
+| Two rules on two events | `review-on-task-completed` (`task.completed`), `sweep-on-spec-created` (`spec.created`) → T-1's multi-run dispatch |
+| `CommandStep` with a template input | `ensure-review-task` (`ensure_task`) → T-2 |
+| `LlmStep` with a budget and every reserved edge | `classify-risk`: `max_calls: 2`, `max_output_tokens: 1024`, `max_total_tokens: 8000`, `timeout_seconds: 120`; edges `low`, `high`, `invalid_output`, `budget_exceeded`, `provider_error`, `timed_out`, `cancelled` → T-13/T-14 and the 7-way dry-run fork |
+| `AgentTaskStep` with `cancel_child: false` | `escalate` (`wait_for_completion: true`, `timeout_seconds: 3600`) → T-8 |
+| `WaitStep` with a typed correlation key | `await-approval` (`binding_ref` → `review.task_id`, `timeout_seconds: 86400`) → T-6 |
+| `ForEachStep` with `failure_policy: collect` | `for-each-task` over `downstream.tasks`, item binding `task`, `body_entry: open-gate`, `continuation: sweep-done` → T-7 |
+| A body that re-enters the loop node via a decision | `open-gate` → `check-gate` → `for-each-task` (both case and default) → the §4.7 iteration-outcome rule |
+| Convergence and a loop-back edge | `classify-risk:low` and `escalate:completed` → `await-approval`; `await-approval:revise` → `ensure-review-task` → T-11's path bounds |
+| Three terminals in one rule | `review-unavailable`, `cancelled-end`, `done` → T-5's lifecycle mapping |
+
+**One addition Package 4 makes, in its own file.** T-2 needs a command with *two* failure-classified outcomes routed to different steps, which the shared fixture does not contain. Rather than mutate it, Package 4 adds `tests/fixtures/playbooks/v2/two-failure-outcomes.artifact.json`: a single rule, one `CommandStep` on `list_tasks` whose contract double declares `ok` (SUCCESS), `not_found` (FAILURE) and `conflict` (FAILURE), with `transitions: {ok: done, not_found: no-tasks, conflict: retry-later, runtime_error: failed-end}`. Four terminals. That is the smallest artifact that makes classification-based routing fail.
+
+### 6.2 Event corpus — `tests/fixtures/playbooks/v2/engine-events/*.json`
+
+Six realistic bus payloads, matching `src/event_schemas.py`'s declared required/optional fields for each type. They are the input to T-1, T-12 and every mode-parity assertion.
+
+| File | Event | Purpose |
+|---|---|---|
+| `task-completed-code.json` | `task.completed` with `task_type: "code"` | Both fixture rules' guards: rule 1 matches |
+| `task-completed-docs.json` | `task.completed` with `task_type: "docs"` | Rule 1's filter rejects — the negative guard case |
+| `spec-created.json` | `spec.created` | Rule 2 matches |
+| `task-completed-and-spec-created.json` | a synthetic event carrying both types' fields | Not a real bus event; drives `test_two_matching_rules_produce_two_runs` deterministically without depending on two dispatches |
+| `spec-created-empty-downstream.json` | `spec.created` where `list_tasks` returns `[]` | T-7's empty-collection path |
+| `task-completed-no-project.json` | `task.completed` with `project_id` absent | The `record_token_usage` skip path (§4.11) and the `sync_playbook_run_task` no-project branch |
+
+Each carries a stable `event_id` so idempotency assertions are reproducible.
+
+### 6.3 Contract doubles — `tests/fixtures/contracts/engine_contracts.py`
+
+The engine tests must not depend on Package 1's *real* `ensure_task` behaviour, or a Package 1 change breaks Package 4's suite for reasons unrelated to the engine. The doubles are real `CommandContract` objects over toy Pydantic models, registered into a **fresh `ContractRegistry()`** per test (Package 1's `register()` refuses replacement, so the module singleton is never mutated):
+
+```python
+class EnsureTaskArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    project_id: str
+    title: str
+    dedup_key: str | None = None
+
+class EnsureTaskResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    task_id: str
+    created: bool
+
+ENSURE_TASK = CommandContract(
+    execution=ExecutionContract(
+        name="ensure_task",
+        args_model=EnsureTaskArgs, result_model=EnsureTaskResult,
+        outcomes=(OutcomeSpec(name="created", classification=OutcomeClass.SUCCESS),
+                  OutcomeSpec(name="reused",  classification=OutcomeClass.SUCCESS),
+                  OutcomeSpec(name="rejected",classification=OutcomeClass.FAILURE)),
+        capability="ensure_task",
+        side_effect=SideEffectClass.CREATE,
+        idempotency=IdempotencySpec(mode="keyed", key_field="dedup_key"),
+        retry_safe=True,
+        receipt_projection=("task_id", "created"),
+    ),
+    presentation=CommandPresentation(title="Ensure a review task exists",
+                                     summary="Create or reuse the matching task"),
+)
+```
+
+Plus `LIST_TASKS` (`retry_safe=True`, `idempotency.mode="natural"`, `receipt_projection=("count",)`), `GATE_CREATE` (`retry_safe=False`, `idempotency.mode="none"` — the non-retry-safe case T-10 needs), and `TWO_FAILURES` (§6.1). A scripted `invoke` adapter returns queued `CommandResult`s and records every call, so `test_two_failure_outcomes_take_different_edges` and every "adapter was not called" assertion have one recording surface.
+
+### 6.4 Snapshot fixtures — `tests/fixtures/playbooks/v2/snapshots/*.json`
+
+Five hand-written `RunSnapshot` payloads representing the exact states a crash leaves behind, one per T-15 parameterisation: `mid-command.json` (started receipt, no completion), `mid-llm-turn.json` (one completed tool turn, one in flight), `mid-agent-task.json` (`child_task_id` set, lifecycle still `running`), `pre-wait.json` (wait computed, `register` never returned), `mid-loop.json` (`{index: 1, aggregate: [one entry]}`). Hand-written rather than captured, so the test asserts against a *stated* expectation of what a crash looks like instead of against whatever the implementation happened to write.
+
+---
+
+## 7. Security analysis
+
+Package 4 introduces the first V2 code that actually invokes commands, calls models, and creates tasks. Five boundaries.
+
+### 7.1 The engine is not an authorization decision point
+
+Every command invocation goes through Package 1's registration adapter, which reaches `CommandHandler.execute`, where Package 0's `authorize_command` already runs. §3.4 step 5 calls `authorize_command` *additionally*, before the adapter, so an artifact can route a denial to a visible edge — but the engine never grants. There is no code path in `src/playbooks/` that constructs an `ExecutionPrincipal` with a policy wider than the one it received. T-16's `test_engine_never_widens_a_policy` asserts it statically: `grep`-style AST check that `narrow(` is the only `CapabilityPolicy`-producing call in `src/playbooks/`, and that `CapabilityPolicy(` and `.union(` appear nowhere in the package.
+
+### 7.2 Delegation narrows three ways and cannot widen
+
+§4.5 step 1. The intersection is computed with `CapabilityPolicy.intersect`, which is the only transform the type exposes (Package 0 documents that there is no widening method). The AI-parent subset rule is checked separately because intersection alone would silently *narrow* a too-broad child rather than refusing it, and the spec says the child's profile "must be a capability subset of the parent AI principal" — a requirement, not a clamp. T-8's `test_ai_parent_requires_the_child_profile_to_be_a_subset`.
+
+### 7.3 A model-visible tool list is a projection, never the gate
+
+The `LlmStep`'s published tool schemas are `step.tools ∩ principal.policy.aq_commands`. A model that calls a tool outside that list is denied at `authorize_command`, exactly as an off-list call from any other principal would be. The projection exists to reduce confusion, not to enforce. T-14's `test_tool_calls_are_authorized_at_dispatch_not_by_the_published_schema` publishes a narrow list and then calls outside it, which is the only way to prove the two are independent.
+
+### 7.4 Cancellation grants nothing
+
+`PlaybookEngine.cancel(..., cancel_children=True)` issues the child cancellation with the **narrowed child principal** recorded on the snapshot, not the caller's. A parent whose own authority has since been reduced cannot use cancellation as a way to act on a child it could no longer create. `cancel_child` defaults to `False`, so shared or reused child work is never killed implicitly. T-8's `test_cancellation_grants_no_new_authority`.
+
+### 7.5 Operator resolution is an operator action
+
+`OperatorResolution` requires the `playbook_admin` AQ capability and is refused for `PrincipalKind.PLAYBOOK`. Without that rule, a playbook that reached `operator_decision_required` could call `playbook_run_resolve` on itself and accept an outcome nobody verified — turning "stop and ask a human" into "make one up". T-10's `test_a_playbook_principal_cannot_resolve_its_own_run`.
+
+### 7.6 Redaction is default-deny and is not the executor author's judgement call
+
+§3.3.4. One helper, three call sites, one test that walks every fixture receipt. The failure mode this guards against is an executor author adding `receipt_inputs=resolved_inputs` for debuggability and leaking an API token that a contract marked sensitive. `project_for_receipt` cannot express that: it takes an allow-list, not a deny-list.
+
+### 7.7 Non-goals, stated so they are not assumed
+
+- Package 4 does not audit the **content** of an LLM's output for prompt injection. The mitigation the design relies on is structural: the output must validate against a declared schema, and only a declared enum field selects an edge. Prose in the response cannot move the run (T-14's adversarial-prose case).
+- Package 4 does not sandbox command side effects. A contracted command with `SideEffectClass.DELETE` deletes; the control is which capability an artifact's principal holds, which is Package 0's.
+
+---
+
+## 8. Observability and operator failure behaviour
+
+### 8.1 What the operator sees when a run stops
+
+Every stop is a receipt plus a run status, and there are exactly six shapes. Each names the next action, because "the run failed" without one is what makes an operator restart something they should have inspected.
+
+| Situation | Status | Receipt outcome | Reason field | Operator action |
+|---|---|---|---|---|
+| Contract or profile fingerprint moved mid-run | `failed` | `contract_violation` | `execution_contract_changed` + the changed dependency name | Rebuild and review the artifact; start a **fresh** run. The old run is never resumed against a new graph |
+| Plugin transiently gone | `paused` | `unavailable` | `dependency_unavailable` + provider name | Restore the provider; the run resumes against the same artifact |
+| Ambiguous interruption of a non-retry-safe command | `paused` | `interrupted` | `operator_decision_required` + the attempt key | One explicit resolution (§4.8) |
+| Budget breach | `failed` (or the mapped edge) | `budget_exceeded` | which limit, and the observed usage | Raise the budget in the source and rebuild, or accept the mapped edge |
+| Structured output invalid after retries | mapped edge | `invalid_output` | the validation error path, not the model's text | Fix the schema or the prompt in the source |
+| Result or snapshot too large | `failed` | `state_limit_exceeded` | which limit, and the observed size | Narrow the step's declared output |
+
+### 8.2 Bus events and metrics
+
+New bus events, all emitted **after** a successful `commit_boundary` (§3.4 step 11): `playbook.v2.run.started`, `playbook.v2.step.completed`, `playbook.v2.run.paused`, `playbook.v2.run.resumed`, `playbook.v2.run.finished`. Payloads carry `run_id`, `dispatch_id`, `rule_id`, `step_id`, `attempt`, `artifact_sha256`, `outcome` — and no resolved values, since a bus payload is not receipt-redacted.
+
+Two timings Package 7's cutover acceptance table reads by name, so they are fixed here:
+
+- **`playbook.dispatch_ms`** — event arrival → the first run's first `commit_boundary`.
+- **`playbook.resume_ms`** — the causing event's arrival → the resumed run's next `commit_boundary`.
+
+Both go through the existing `metrics.tick` bus convention (`src/metrics/sampler.py`), never `log_event`, per CLAUDE.md.
+
+Package 7 also reads a **`RunRepository.commit_boundary` conflict counter** (its acceptance measure 5). Package 3 owns the counter; Package 4's obligation is only that it never swallows a `SnapshotVersionConflict` (§3.3.1), which is what makes the counter meaningful.
+
+Logs carry `artifact_sha256`, `rule_id`, `run_id`, `step_id`, `attempt`, `principal_kind`, `profile_id` and `contract_fingerprint`, per roadmap §10, inside the existing `CorrelationContext(run_id=...)` the V1 runners already use (`core.py:1005`, `playbook_commands.py:955`).
+
+---
+
+## 9. Feature flags — owner, default, removal package
+
+All four live on `PlaybooksConfig` (`src/config.py`), which today is `enabled: bool = False` plus a `validate()` returning `[]`.
+
+| Field | Default | Meaning | Removal |
+|---|---|---|---|
+| `v2_engine: bool` | `False` | Makes the V2 path reachable at the six §4.1 sites. **This is Package 4's entire rollback boundary:** setting it `False` restores V1 with no database downgrade, because V2 runs live in Package 3's separate tables | **Package 7**, commit 4 (`refactor: remove v1 playbook execution runtime`), where it is replaced by `playbooks.runtime` |
+| `v2_dry_run_max_paths: int` | `32` | Roadmap default | Permanent — an operational bound, not a migration flag |
+| `v2_dry_run_max_step_visits: int` | `1000` | Roadmap default | Permanent |
+| `cancellation_grace_seconds: int` | `30` | §4.9 | Permanent |
+
+`PlaybooksConfig.validate()` gains: both dry-run bounds must be `>= 1`; `cancellation_grace_seconds` must be `>= 0`; and `v2_engine` may not be `True` while `enabled` is `False`, because the whole playbook subsystem is paused by that flag and a half-enabled state would make "the engine did nothing" ambiguous. `tests/test_config.py` gains one case per rule.
+
+Package 7's plan §3.8 lists `playbooks.v2_api` and `playbooks.v2_activation_writes` as its own removals; `v2_engine` is added to that list by this plan and must appear in Package 7's D1-c reconciliation.
+
+---
+
+## 10. Storage — Package 4 owns no tables, and one conditional revision
+
+Package 3 owns `playbook_artifacts`, `playbook_activations`, the V2 run/snapshot table, `playbook_step_receipts`, `playbook_waits` and `playbook_pending_events`. Package 4 adds **no** table and **no** column of its own. What it does own is the list of fields it cannot execute without, and an explicit fallback if Package 3 ships without them.
+
+### 10.1 Fields Package 4 requires from Package 3
+
+| Field | On | Used by |
+|---|---|---|
+| `lifecycle` admitting `cancelling` | V2 run table | §4.9 |
+| `cancel_requested: bool`, `cancel_ack_state: text\|null` | snapshot | §4.9 |
+| `version: int` (optimistic concurrency) | snapshot | §3.3.1 |
+| `loop_frame: json\|null` with `{step_id, index, item_binding, aggregate, last_body_step_id, last_body_outcome}` | snapshot | §4.7 |
+| `llm_transcript: json\|null` | snapshot | §4.4 tool turns |
+| `child_task_id: text\|null` | snapshot **and** receipt | §4.5 |
+| `usage_input_tokens`, `usage_output_tokens`, `usage_reported: bool` | receipt | §4.11 |
+| `deadline_fired: text\|null`, `cancellation: text\|null` | receipt | §3.3.3 |
+| `iteration_index: int\|null`, `attempt: int`, `idempotency_key: text` | receipt | §3.3.2 |
+| Unique index on `(playbook_id, rule_id, event_id)` where `event_id IS NOT NULL` | V2 run table | §4.2 |
+
+The existing V1 index is `(playbook_id, event_id)` (`src/database/tables.py:946`) and the existing status check constraint is `('running','paused','completed','failed','timed_out','cancelled')` (`:955`) — **neither is altered by Package 4**. V1 rows keep V1 semantics so historical runs stay readable after Package 7.
+
+### 10.2 The conditional revision, if Package 3 ships without them
+
+Only if §2.4's reconciliation shows a field above is missing. One revision, `xxxxxxxxxxxx_playbook_v2_engine_fields`, chaining after the then-current head:
+
+```python
+def upgrade() -> None:
+    with op.batch_alter_table("playbook_run_snapshots") as b:
+        b.add_column(sa.Column("cancel_requested", sa.Boolean(), nullable=False,
+                               server_default=sa.text("0")))
+        b.add_column(sa.Column("cancel_ack_state", sa.Text(), nullable=True))
+        b.add_column(sa.Column("loop_frame", sa.Text(), nullable=True))
+        b.add_column(sa.Column("llm_transcript", sa.Text(), nullable=True))
+        b.add_column(sa.Column("child_task_id", sa.Text(), nullable=True))
+    with op.batch_alter_table("playbook_step_receipts") as b:
+        b.add_column(sa.Column("usage_input_tokens", sa.Integer(), nullable=False,
+                               server_default=sa.text("0")))
+        b.add_column(sa.Column("usage_output_tokens", sa.Integer(), nullable=False,
+                               server_default=sa.text("0")))
+        b.add_column(sa.Column("usage_reported", sa.Boolean(), nullable=False,
+                               server_default=sa.text("0")))
+        b.add_column(sa.Column("deadline_fired", sa.Text(), nullable=True))
+        b.add_column(sa.Column("cancellation", sa.Text(), nullable=True))
+        b.add_column(sa.Column("child_task_id", sa.Text(), nullable=True))
+
+def downgrade() -> None:
+    # Mirror image; every column is nullable or server-defaulted and additive,
+    # so the downgrade loses V2 engine detail and nothing else. V1 tables are
+    # untouched in both directions.
+    with op.batch_alter_table("playbook_step_receipts") as b:
+        for c in ("child_task_id", "cancellation", "deadline_fired", "usage_reported",
+                  "usage_output_tokens", "usage_input_tokens"):
+            b.drop_column(c)
+    with op.batch_alter_table("playbook_run_snapshots") as b:
+        for c in ("child_task_id", "llm_transcript", "loop_frame",
+                  "cancel_ack_state", "cancel_requested"):
+            b.drop_column(c)
+```
+
+`src/database/tables.py` is edited **in the same commit** as the revision, per CLAUDE.md. Storage is the one place where "add it if it is missing" would otherwise become two competing schemas, so the escalation rule in §2.4 applies with full force: prefer amending Package 3's revision over adding this one, and add this one only when Package 3 has already merged.
+
+### 10.3 The `cancelling` lifecycle value
+
+Whether it is a CHECK constraint or an application-level enum is Package 3's decision. Package 4's requirement is only that the value round-trips. If Package 3 used a CHECK constraint listing the six V1 statuses, the conditional revision above also drops and recreates it with seven — and because PostgreSQL and SQLite differ on constraint alteration, that must go through `batch_alter_table`, which is why every statement above already does.
+
+---
+
+## 11. SQLite and PostgreSQL
+
+- **Every DDL above is additive and uses `batch_alter_table`**, which is the project's existing pattern for SQLite's lack of `ALTER COLUMN`. `server_default=sa.text("0")` for booleans matches the codebase's existing boolean-default convention (`tests/test_migration_boolean_defaults.py` exists precisely to police it).
+- **No enum types.** Lifecycle and outcome are `Text`, matching every existing status column. A PostgreSQL `CREATE TYPE`/`DROP TYPE` pair would need separate up/down handling and would make the downgrade lossy.
+- **The engine's atomicity requirement is `commit_boundary`'s, not the engine's own.** Package 4 opens no transaction; it calls one repository method. On SQLite that is `db.immediate()` (the pattern at `assignment_routing.py:519`); on PostgreSQL it is an ordinary transaction with `SELECT … FOR UPDATE` on the snapshot row. Both satisfy §3.3.1's version check.
+- **Postgres is production** (project convention; local instance on `:5533`). The restart tests in T-15 use a shared **SQLite file** because they need a `SIGKILL`-able child process with a trivially shareable database; the *concurrency* assertions (`SnapshotVersionConflict`, the wait race) additionally run against PostgreSQL, where they are meaningful — SQLite's single-writer locking can mask a lost-update bug that PostgreSQL's `READ COMMITTED` exposes. Concretely, `tests/test_v2_waits.py` and `tests/test_v2_restart_resume.py` are parameterised over the project's existing database fixture so CI's PostgreSQL job covers both.
+- **`asyncio.timeout` and `SIGKILL` are POSIX-shaped.** The integration-marked restart tests are skipped on non-POSIX platforms with an explicit `pytest.mark.skipif`, not silently.
+
+---
+
+## 12. Verification
+
+### 12.1 Per-task
+
+Each task's *Verify* block in §5. Iterate with `-x` on the single file being changed.
+
+### 12.2 Package sweep — run once, before the exit gate
+
+```bash
+# New suites
+aq test tests/test_v2_engine.py tests/test_command_executor.py tests/test_v2_receipts.py \
+        tests/test_v2_waits.py tests/test_v2_foreach.py tests/test_v2_cancellation.py \
+        tests/test_llm_usage.py tests/test_llm_executor.py tests/test_agent_task_executor.py \
+        tests/test_v2_dry_run.py tests/test_v2_shadow.py tests/test_v2_restart_resume.py \
+        tests/test_v2_entry_points.py tests/test_assignment_routing_v2.py -q
+
+# The restart coverage the default marker set deselects
+aq test tests/test_v2_restart_resume.py -m integration -q
+
+# Existing suites this package must not regress (V1 stays authoritative)
+aq test tests/test_playbook_runner.py tests/test_pipeline_runner.py \
+        tests/test_playbook_commands.py tests/test_playbook_resume_handler.py \
+        tests/test_playbook_run_idempotency.py tests/test_playbook_state_machine.py \
+        tests/test_dry_run_playbook.py tests/test_cancel_playbook_run.py \
+        tests/test_playbook_run_events.py tests/test_playbook_run_bus_events.py \
+        tests/test_assignment_routing_coordinator.py tests/test_default_pipeline.py \
+        tests/llm tests/test_config.py -q
+
+# Orchestrator seam
+aq test tests/ -k "playbook and (trigger or dispatch)" -q
+
+ruff check src/playbooks src/orchestrator src/commands src/llm tests
+```
+
+Expected outcome: all green. `aq test` exit code 75 means no test slot was free — retry; it is not a failure.
+
+### 12.3 What is deliberately *not* run
+
+No full-repo `pytest`. Package 4 adds no API surface, so `openapi.json` does not move and neither generated client needs regeneration — if a change in this package *does* move `openapi.json`, that is a signal the package has grown an API surface it should not have, and §1.2 applies. No dashboard tests: Package 5 owns every dashboard file.
+
+---
+
+## 13. Mapping to the roadmap's Package 4 exit gate
+
+> **Every V2 step kind runs through one engine with durable boundaries. Live, dry-run, and shadow modes traverse the same graph, and shadow mode can compare decisions without producing side effects.**
+
+| Exit-gate clause | Proof |
+|---|---|
+| *Every V2 step kind* | `tests/test_v2_engine.py::test_every_step_kind_has_a_registered_executor` (parameterised over the seven discriminator values in `src/playbooks/definition.py`, so adding an eighth step type fails this test) + the seven executors' own suites |
+| *runs through one engine* | T-16's six-site parameterisation; §7.1's static check that no second traversal exists in `src/playbooks/` |
+| *with durable boundaries* | T-3 (one commit per attempt, no write before the boundary, no retry on conflict), T-15 (restart at command, LLM, agent-task, wait and loop) |
+| *Live, dry-run, and shadow traverse the same graph* | T-11's `test_live_and_dry_run_select_the_same_edges`; T-12's `test_shadow_and_live_select_the_same_rules_for_the_corpus`; §3.1.2's object-identity assertion for the three deterministic executors |
+| *shadow can compare decisions* | T-12's `test_shadow_records_rules_selected_and_commands` — the two `DispatchResult` fields Package 6's parity harness consumes |
+| *without producing side effects* | T-12's class-attribute assertion (structural) **and** the five raising doubles (behavioural), plus §3.3.5's absence of `RunRepository` from shadow's `EngineServices` |
+
+### 13.1 Roadmap Required-outcome checklist
+
+| Roadmap outcome | Where |
+|---|---|
+| Start exactly one durable run per matching rule | §4.2, T-1 |
+| Execute `CommandStep` only through its registered contract and handler | §4.3, T-2 |
+| Validate runtime arguments again at the command boundary | §4.3 step 2, T-2 |
+| Execute `LlmStep` with profile, schema, budget, timeout, receipt | §4.4, T-14 |
+| Record provider-reported usage; conservative estimates otherwise | §4.11, T-13 — **and the fail-closed rule for hard total-token budgets** |
+| Execute `AgentTaskStep` with an intersection-narrowed principal | §4.5, §7.2, T-8 |
+| Persist child identity before suspension; reconcile idempotently | §4.5 steps 3 and 5, T-8 |
+| Propagate cancellation without granting authority | §4.9, §7.4, T-8/T-9 |
+| Evaluate decisions and templates without arbitrary code execution | §4.14, T-5 |
+| Persist loop cursor and scope on both sides of each body transition | §4.7, T-7 |
+| Event waits, timer waits, timeout edges, restart-safe matching | §4.6, T-6, T-15 |
+| Explicit success/failure/retry/cancellation/terminal outcomes | §3.6, §4.9, §4.14 |
+| Stop for operator action on ambiguous external outcomes | §4.8, T-10 |
+| Bound dry-run to 32 paths / 1,000 visits | §4.10, §9, T-11 |
+| Preview executors against the real graph, contracts, validator, transitions | §3.1.2, §4.10, T-11 |
+| Shadow with zero command, AI, task, gate or external side effects | §4.3, §3.3.5, T-12 |
+| Pipeline and assignment routing on the same engine | §4.1 sites 1–3, §4.12, T-16/T-17 |
+| Assignment-routing cache stays caller-owned; keys include artifact identity | §4.12, T-17 |
+| Receipts and lifecycle events sufficient for overlays and parity | §3.3.3, §8.2, T-4 |
+
+### 13.2 Rollback boundary
+
+Setting `playbooks.v2_engine=False` returns every one of the six sites to its V1 body. No stored V1 run is converted, no V1 table is altered, and V2 rows remain for inspection in Package 3's separate tables. The one change that is *not* behind the flag is the provider usage channel (§4.11) — it is additive with a `None` default and is a strict improvement to the V1 path's accounting as well, so it is deliberately not gated. T-13 confirms `tests/llm` and `tests/test_playbook_runner.py` stay green with it in place.
