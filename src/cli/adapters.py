@@ -104,6 +104,15 @@ def _wrap(obj: Any, aliases: dict[str, str] | None = None) -> DictProxy | TypedP
     return TypedProxy(obj, aliases=aliases)
 
 
+def plain_proxy(d: Any) -> DictProxy | TypedProxy:
+    """Wrap a response with no field aliasing (dict or typed model).
+
+    For formatters that use attribute access on a payload which has no
+    aliased fields — e.g. ``task_progress``.
+    """
+    return _wrap(d)
+
+
 def task_proxy(d: Any) -> DictProxy | TypedProxy:
     """Wrap a task response for formatters.
 
