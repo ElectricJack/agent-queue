@@ -31,7 +31,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 
-from src.commands.claim_commands import read_claim_file, remove_claim_file_if_matches
+from src.claim_file import read_claim_file, remove_claim_file_if_matches
 from src.models import SessionRecord, TaskStatus
 from src.sessions.exit_classifier import ExitVerdict, Verdict, classify_exit
 from src.sessions.provider import (
