@@ -2,8 +2,6 @@ import { z } from "zod";
 import type {
   PaneManifest,
   PaneViewProps,
-  PaneToolbarAction,
-  ShortcutBinding,
   HeroIcon,
 } from "../types";
 
@@ -26,9 +24,9 @@ test("PaneViewProps carries typed args + shell hooks", () => {
   const propsShape: PaneViewProps<Args> = {
     args: { taskId: "t1" },
     close: () => {},
-    setArgs: (_next: Args) => {},
-    setToolbar: (_a: PaneToolbarAction[]) => {},
-    setShortcuts: (_b: ShortcutBinding[]) => {},
+    setArgs: () => {},
+    setToolbar: () => {},
+    setShortcuts: () => {},
   };
   expect(propsShape.args.taskId).toBe("t1");
 });

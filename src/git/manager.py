@@ -2234,7 +2234,7 @@ class GitManager:
         checkout_path: str,
         branch_name: str,
     ) -> str | None:
-        """Return the URL of an open PR delivering *branch_name*, or None.
+        """Return an open or merged PR URL delivering *branch_name*, or ``None``.
 
         Matches the head branch **name** first, then falls back to matching
         the head **commit**.  A PR delivers commits, not a name: a task
@@ -2245,7 +2245,9 @@ class GitManager:
         PR whose head commit is this branch's tip (or the workspace's
         ``HEAD``, for when the agent never moved the task branch) counts.
 
-        Best-effort throughout: any gh/git failure returns None.
+        A merged pull request is evidence that the branch's work has already
+        shipped. Closed-but-unmerged PRs deliberately remain a failure.
+        Best-effort throughout: any gh/git failure returns ``None``.
         """
         url = await self._open_pr_url_by_head_name(checkout_path, branch_name)
         if url:
@@ -2277,11 +2279,11 @@ class GitManager:
                     "--head",
                     branch_name,
                     "--state",
-                    "open",
+                    "all",
                     "--json",
-                    "url",
+                    "url,state",
                     "--jq",
-                    ".[0].url",
+                    '.[] | select(.state == "OPEN" or .state == "MERGED") | .url',
                 ],
                 cwd=checkout_path,
                 timeout=self._GIT_TIMEOUT,
@@ -2299,7 +2301,7 @@ class GitManager:
         tips: set[str],
         branch_name: str,
     ) -> str | None:
-        """URL of an open PR whose head commit is one of *tips*, or None."""
+        """URL of an open or merged PR whose head commit is one of *tips*."""
         try:
             result = await self._arun_subprocess(
                 [
@@ -2307,9 +2309,9 @@ class GitManager:
                     "pr",
                     "list",
                     "--state",
-                    "open",
+                    "all",
                     "--json",
-                    "url,headRefName,headRefOid",
+                    "url,state,headRefName,headRefOid",
                     "--limit",
                     "100",
                 ],
@@ -2329,7 +2331,11 @@ class GitManager:
         for pr in prs:
             if not isinstance(pr, dict):
                 continue
-            if pr.get("headRefOid") in tips and pr.get("url"):
+            if (
+                pr.get("state") in {"OPEN", "MERGED"}
+                and pr.get("headRefOid") in tips
+                and pr.get("url")
+            ):
                 logger.info(
                     "Accepting open PR %s from branch '%s' for '%s' "
                     "(same head commit %s)",
@@ -2340,6 +2346,22 @@ class GitManager:
                 )
                 return pr["url"]
         return None
+
+    async def ais_ancestor(
+        self,
+        checkout_path: str,
+        ancestor: str,
+        descendant: str,
+    ) -> bool:
+        """Return whether *ancestor* is reachable from *descendant*."""
+        try:
+            await self._arun(
+                ["merge-base", "--is-ancestor", _validate_ref(ancestor), _validate_rev(descendant)],
+                cwd=checkout_path,
+            )
+            return True
+        except GitError:
+            return False
 
     async def ahas_non_plan_changes(
         self,

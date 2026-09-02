@@ -1072,6 +1072,19 @@ class SessionReconciler:
                 title=task.title,
                 reason="session_not_live",
             )
+            # This is terminal for the task, not merely an inconsistent
+            # session row.  The attention event explains the operational
+            # condition, while task.failed drives reflection and failure
+            # notifications for the task that could no longer run.
+            await self._emit(
+                "task.failed",
+                task_id=task.id,
+                project_id=task.project_id,
+                title=task.title,
+                status=TaskStatus.BLOCKED.value,
+                context="session_not_live",
+                error=f"session {row.id} is {row.state}; task has no live session",
+            )
 
     # -- step 5: named desired-state ---------------------------------------
 
@@ -1305,6 +1318,18 @@ class SessionReconciler:
                     session_id=row.id,
                     reason="stuck_timeout",
                 )
+                await self._emit(
+                    "task.failed",
+                    task_id=task.id,
+                    project_id=task.project_id,
+                    title=task.title,
+                    status=TaskStatus.BLOCKED.value,
+                    context="stuck_timeout",
+                    error=(
+                        f"session {row.id} exceeded stuck_timeout_seconds "
+                        f"({limit:g}s)"
+                    ),
+                )
 
     # -- shared actions ----------------------------------------------------
 
@@ -1476,4 +1501,13 @@ class SessionReconciler:
                 title=task.title,
                 session_id=row.id,
                 reason=reason,
+            )
+            await self._emit(
+                "task.failed",
+                task_id=task.id,
+                project_id=task.project_id,
+                title=task.title,
+                status=TaskStatus.BLOCKED.value,
+                context=f"session_{reason}",
+                error=f"session {row.id} quarantined: {reason}",
             )

@@ -8,6 +8,8 @@ import asyncio
 import json
 import pathlib
 import subprocess
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from src.git.manager import GitManager, GitError
@@ -149,6 +151,30 @@ class TestAsyncGetCurrentBranch:
     async def test_returns_branch(self, clone, mgr):
         branch = await mgr.aget_current_branch(clone)
         assert branch == "main"
+
+
+class TestAsyncFindOpenPr:
+    @pytest.mark.asyncio
+    async def test_accepts_merged_pr_and_excludes_closed_pr(self, mgr, monkeypatch):
+        """Verification can use merged PRs but must reject closed-unmerged ones."""
+        monkeypatch.setattr(
+            mgr,
+            "_arun_subprocess",
+            AsyncMock(
+                return_value=SimpleNamespace(stdout="https://github.com/o/r/pull/42\n")
+            ),
+        )
+
+        assert await mgr.afind_open_pr("/repo", "feature-x") == "https://github.com/o/r/pull/42"
+        args = mgr._arun_subprocess.await_args.args[0]
+        assert args[args.index("--state") + 1] == "all"
+        assert "MERGED" in args[args.index("--jq") + 1]
+        assert "CLOSED" not in args[args.index("--jq") + 1]
+
+    @pytest.mark.asyncio
+    async def test_ancestor_recognizes_branch_at_default_tip(self, mgr, clone):
+        await mgr.acreate_branch(clone, "feature-x")
+        assert await mgr.ais_ancestor(clone, "feature-x", "main") is True
 
 
 class TestAsyncGetStatus:

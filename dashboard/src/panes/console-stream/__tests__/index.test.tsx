@@ -72,6 +72,7 @@ beforeEach(() => {
   Object.defineProperty(navigator, "clipboard", {
     value: { writeText: vi.fn().mockResolvedValue(undefined) },
     configurable: true,
+    writable: true,
   });
   window.localStorage.removeItem("aq:session:id");
 });

@@ -204,7 +204,7 @@ the discovery flow.
 | YAML key | Type | Default | Description |
 |---|---|---|---|
 | `plan_file_patterns` | `list[str]` | `[".claude/plan.md", "plan.md", "docs/plans/*.md", "plans/*.md", "docs/plan.md"]` | Ordered list of file path patterns (relative to the repo root) that pre-task workspace cleanup deletes before an agent starts. Glob patterns are supported. |
-| `max_verification_retries` | `int` | `2` | Maximum reopen attempts when git verification fails on task completion. |
+| `max_verification_retries` | `int` | `2` | Maximum reopen attempts when git verification fails on task completion. Tasks that produce no code — the `reviewer` / `final-reviewer` stage profiles, or any task closed with `--work-outcome no-op` — skip git verification and integration entirely, so the budget is never spent on a branch that was never meant to carry a PR. |
 
 ### 4.9 `memory` Section
 

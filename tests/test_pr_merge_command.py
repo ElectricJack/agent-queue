@@ -153,7 +153,13 @@ async def test_cmd_pr_merge_routes_through_git_manager(monkeypatch, handler):
     )
     assert result["success"] is True
     assert result["sha"] == "abc123"
-    assert calls["args"] == ("/tmp/p1", "https://github.com/o/r/pull/1", "squash")
+    # gh runs outside any checkout: given a full PR URL it resolves the repo
+    # from the URL, so pr_merge no longer borrows the project's base clone
+    # (which is routinely the operator's own working tree).
+    checkout_path, url, method = calls["args"]
+    assert (url, method) == ("https://github.com/o/r/pull/1", "squash")
+    assert checkout_path == handler.config.data_dir
+    assert checkout_path != "/tmp/p1"
 
 
 @pytest.mark.asyncio

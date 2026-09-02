@@ -55,3 +55,35 @@ npm run build      # tsc -b && vite build
 npm run typecheck  # tsc -b --noEmit
 npm run lint       # eslint
 ```
+
+## Tests
+
+```
+npm install                                 # from the repo root
+npm run generate:ts-client -- --from-file   # from the repo root
+npx vitest run                              # from dashboard/
+```
+
+`packages/aq-ts-client/src` is generated and not committed. In a fresh
+worktree it does not exist, and without it most test files fail to import
+`@aq/ts-client` — generate it once before the first run.
+
+Two invariants keep the suite deterministic; don't undo them without reading
+`docs/superpowers/specs/2026-09-01-dashboard-vitest-flakiness.md`:
+
+- **`isolate` stays on.** Sharing a module registry and a jsdom across files
+  made the suite order-dependent — leaked `vi.mock` registrations and a
+  poisoned `navigator.clipboard` that stopped whole files from being
+  collected, with a different victim each run.
+- **`maxWorkers` is capped**, from the daemon's `AQ_CPU_SHARE` /
+  `AQ_TEST_WORKERS` when running inside a session. Vitest's default is half
+  the box's cores, which oversubscribes a machine shared by several agents
+  and pushes `findBy*` past its timeout. Override with `VITEST_MAX_WORKERS`.
+
+Stub globals with `Object.defineProperty(..., { configurable: true, writable:
+true })`. Omitting `writable` leaves a read-only property that makes a later
+`Object.assign` on the same global throw.
+
+`vitest.config.ts` is in `tsconfig.node.json`'s `include`, so a config key that
+a Vitest major has removed fails `npm run typecheck` instead of being ignored
+at runtime.
