@@ -43,6 +43,7 @@ API_URL = os.environ.get("AQ_API_URL", "http://127.0.0.1:8099").rstrip("/")
 PROJECT = "e2e"
 OTHER_PROJECT = "other"
 POOL_PROFILE = "worker"
+POOL_CLASS = "standard-medium"
 
 #: How long a scenario waits for the 5s cascade to converge before failing.
 CONVERGE_TIMEOUT = float(os.environ.get("AQ_E2E_CONVERGE_TIMEOUT", "60"))
@@ -206,6 +207,10 @@ def create_task(title: str, *, project_id: str = PROJECT, profile: str | None = 
     args = {"project_id": project_id, "title": title, "description": f"e2e: {title}"}
     if profile:
         args["profile_id"] = profile
+    if profile == POOL_PROFILE:
+        # Tier 1 has no assignment-playbook LLM. Explicit classification is
+        # therefore the fixture's deterministic assignment decision.
+        args["intelligence_class"] = POOL_CLASS
     result = api("create_task", args)
     task_id = result.get("created") or result.get("task_id")
     check(task_id, f"create_task({title}) returned no id: {result}")
@@ -260,15 +265,21 @@ class Worker:
         return out
 
     def drain_ack(self) -> dict:
-        return self.aq("session", "drain-ack", "--session-id", self.session_id)
+        # A fresh-context close already marks a pool session for teardown.
+        # The reconciler may stop it and revoke its token before this separate
+        # CLI process receives a response, so the caller verifies durable
+        # session state instead of treating an empty/error response as failure.
+        return self.aq(
+            "session", "drain-ack", "--session-id", self.session_id, check_ok=False
+        )
 
 
 def fresh_workers(count: int) -> list[Worker]:
     """Put the pool in a known state: exactly *count* idle, unspent workers.
 
     Scenarios that ran earlier leave the pool in whatever shape they
-    finished in — sessions part-way through their two claims, one retired
-    and replaced, tasks half-worked.  S5 and S7 both need workers that can
+    finished in — sessions part-way through a claim, one retired and
+    replaced, tasks half-worked.  S5 and S7 both need workers that can
     still claim, and S7 additionally needs an *empty* frontier so the one
     task it creates is the only thing to race for.  Rebuilding beats
     guessing:
@@ -429,7 +440,8 @@ def s1_pool_sizing(state: dict) -> str:
 
 
 def s2_claim_loop(state: dict) -> str:
-    """The full worker loop: claim, fence, close --claim-next, exhaust, retire."""
+    """The full worker loop: claim, fence, request next, drain, replace."""
+    initial_session_ids = {session["id"] for session in pool_sessions()}
     worker = idle_worker()
     state["s2_session"] = worker.session_id
 
@@ -450,21 +462,16 @@ def s2_claim_loop(state: dict) -> str:
     beat = worker.aq("task", "heartbeat", "--claim-epoch", str(worker.claim_epoch))
     check(beat.get("success"), f"heartbeat with the current epoch was refused: {beat}")
 
-    second = worker.close(claim_next=True, summary="S2 first task")
-    nxt = second.get("next") or {}
-    check(nxt.get("result") == "claimed", f"close --claim-next did not claim again: {nxt}")
-    check(nxt["task"]["id"] != first_task, "close --claim-next re-served the same task")
-    check(nxt["session"]["claims"] == 2, f"claim counter should be 2: {nxt['session']}")
-
-    third = worker.close(claim_next=True, summary="S2 second task")
-    nxt = third.get("next") or {}
+    closed = worker.close(claim_next=True, summary="S2 task")
+    nxt = closed.get("next") or {}
     check(
-        nxt.get("result") == "session_exhausted",
-        f"expected session_exhausted at max_claims_per_session=2, got {nxt.get('result')}",
+        nxt.get("result") == "drain_requested",
+        f"fresh-context close --claim-next should request a drain, got {nxt.get('result')}",
     )
+    check(nxt["session"]["claims"] == 1, f"claim counter should be 1: {nxt['session']}")
+    check(task_show(first_task)["status"] in ("COMPLETED", "DONE"), "first task did not close")
 
-    ack = worker.drain_ack()
-    check(ack.get("success"), f"drain-ack refused: {ack}")
+    worker.drain_ack()
 
     # The reconciler now retires the agent, frees the workspace, and the
     # sizer starts a replacement for the still-unclaimed third task.
@@ -477,9 +484,13 @@ def s2_claim_loop(state: dict) -> str:
     def _retired():
         shown = aq("session", "show", worker.session_id)
         row = shown.get("session") or shown
-        return row.get("state") == "stopped"
+        return row if row.get("state") == "stopped" else None
 
-    wait_for(_retired, what=f"session {worker.session_id} to reach state=stopped")
+    stopped = wait_for(_retired, what=f"session {worker.session_id} to reach state=stopped")
+    check(
+        stopped.get("end_reason") == "drained",
+        f"fresh-context session stopped for {stopped.get('end_reason')!r}, not 'drained'",
+    )
 
     orphan_check = _swarm_checks().get("pools.orphan_agents", {})
     check(
@@ -488,15 +499,15 @@ def s2_claim_loop(state: dict) -> str:
     )
 
     replacement = wait_for(
-        lambda: (lambda live: live if any(s["id"] != worker.session_id for s in live) else None)(
-            pool_sessions()
+        lambda: next(
+            (s for s in pool_sessions() if s["id"] not in initial_session_ids),
+            None,
         ),
-        what="a replacement pool session",
+        what="a fresh-context replacement pool session",
     )
-    new_ids = [s["id"] for s in replacement if s["id"] != worker.session_id]
     return (
-        f"claimed 2/2 then session_exhausted; {worker.session_id} retired, "
-        f"replaced by {new_ids[0]}"
+        f"claimed 1/1 then drain_requested; {worker.session_id} retired, "
+        f"replaced by {replacement['id']}"
     )
 
 
@@ -510,17 +521,36 @@ def s3_worker_filed_work(state: dict) -> str:
 
     filed = api(
         "create_task",
-        {"title": "S3 discovered work", "description": "filed by a worker mid-task"},
+        {
+            "title": "S3 discovered work",
+            "description": "filed by a worker mid-task",
+            "reason": "follow-up work discovered while executing the held task",
+        },
         token=worker.token,
     )
     filed_id = filed.get("created") or filed.get("task_id")
     check(filed_id, f"worker-filed create_task returned no id: {filed}")
     state["s3_filed"] = filed_id
+    check(
+        filed.get("status") == "DEFINED",
+        f"worker-filed create response must start DEFINED, got {filed.get('status')}",
+    )
 
     row = task_show(filed_id)
-    check(row["status"] == "DEFINED", f"worker-filed work must start DEFINED, got {row['status']}")
+    check(
+        row["status"] in ("DEFINED", "READY"),
+        f"worker-filed work moved to unexpected status {row['status']}",
+    )
+    check(row["is_blocked"], "worker-filed work lost its routing blocker")
     check(row["project_id"] == PROJECT, "worker-filed work escaped the session's project")
-    check(row["profile_id"] is None, f"unrouted work should carry no profile: {row['profile_id']}")
+    check(
+        row["profile_id"] == POOL_PROFILE,
+        f"worker-filed work did not inherit the caller profile: {row['profile_id']}",
+    )
+    check(
+        row["intelligence_class"] is None,
+        f"unrouted work should carry no intelligence class: {row['intelligence_class']}",
+    )
 
     deps = aq("task", "deps", "--task-id", filed_id)
     origins = [
@@ -542,12 +572,21 @@ def s3_worker_filed_work(state: dict) -> str:
     # `task_route` is the only resolver for a routing gate (dv2 phase 1).
     # A triage *agent* calls it; with no LLM in Tier 1 the operator surface
     # stands in, which exercises the same command the agent would run.
-    routed = aq("task", "route", "--task-id", filed_id, "--profile-id", POOL_PROFILE)
+    routed = aq(
+        "task", "route",
+        "--task-id", filed_id,
+        "--profile-id", POOL_PROFILE,
+        "--intelligence-class", POOL_CLASS,
+    )
     check(routed.get("success"), f"task route failed: {routed}")
     check(routed["resolved_gate_ids"], "routing did not resolve the gate")
 
     after = task_show(filed_id)
     check(after["profile_id"] == POOL_PROFILE, f"profile not written: {after['profile_id']}")
+    check(
+        after["intelligence_class"] == POOL_CLASS,
+        f"intelligence class not written: {after['intelligence_class']}",
+    )
     gate = api("gate_show", {"gate_id": gate_id})
     status = (gate.get("gate") or gate).get("status")
     check(status == "resolved", f"routing gate {gate_id} is still {status}")
@@ -707,6 +746,7 @@ def _set_swarm_enabled(enabled: bool) -> None:
     # scripts/e2e-env.sh writes.
     data = {
         "enabled": enabled,
+        "fresh_context_per_task": True,
         "claim_wait_max": 30,
         "max_starts_per_tick": 2,
         "max_drains_per_tick": 5,
