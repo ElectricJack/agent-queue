@@ -24,16 +24,13 @@ tags: [system, review, merge-authority, dv2-phase2]
   "harness_tools": [
     "Bash",
     "Read",
-    "Write",
-    "Edit",
     "Glob",
     "Grep",
     "Task",
     "TodoWrite",
     "Skill",
     "WebSearch",
-    "WebFetch",
-    "NotebookEdit"
+    "WebFetch"
   ],
   "aq_commands": [
     "get_schema",
