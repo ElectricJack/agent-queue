@@ -1423,9 +1423,16 @@ class TestPhaseVerifyApprovalTask:
         )
         await orch.db.create_task(task)
 
-        # On task branch but no PR
+        # On task branch with real commits but no PR
         orch.git.aget_current_branch = AsyncMock(return_value="feature-2")
         orch.git.afind_open_pr = AsyncMock(return_value=None)
+
+        async def _run(args, cwd=None, **_kw):
+            if args and args[0] == "rev-list" and "origin/main..HEAD" in args:
+                return "2"
+            return "0"
+
+        orch.git._arun = AsyncMock(side_effect=_run)
 
         ws = await orch.db.get_workspace("ws-1")
         ctx = self._make_ctx(orch, task, ws.workspace_path)

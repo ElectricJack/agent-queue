@@ -409,6 +409,28 @@ class GitOpsMixin:
 
         return (ctx.pr_url, True)
 
+    async def _commits_ahead_of_default(
+        self, workspace: str, default_branch: str, *, has_remote: bool
+    ) -> int | None:
+        """Count the commits on ``HEAD`` that are not on the default branch.
+
+        Prefers ``origin/<default>`` when a remote exists and falls back to
+        the local default branch when that ref cannot be resolved.  Returns
+        ``None`` when neither can be counted so callers keep their stricter
+        path -- an unknown count must never relax a gate.
+        """
+        bases = [f"origin/{default_branch}"] if has_remote else []
+        bases.append(default_branch)
+        for base in bases:
+            try:
+                out = await self.git._arun(
+                    ["rev-list", f"{base}..HEAD", "--count"], cwd=workspace
+                )
+                return int(out.strip())
+            except (GitError, ValueError):
+                continue
+        return None
+
     async def _phase_verify(self, ctx: PipelineContext) -> PhaseResult:
         """Pipeline phase: verify the agent left the workspace in the expected git state.
 
@@ -744,8 +766,31 @@ class GitOpsMixin:
             else:
                 if has_remote:
                     pr_url = await self.git.afind_open_pr(workspace, task.branch_name)
+                    # A task that produced no commits has nothing to open
+                    # a PR for (``gh pr create`` refuses: "No commits
+                    # between main and <branch>").  Review, research and
+                    # triage tasks are all like this.  Being on the
+                    # default branch is one way to have no work, but a
+                    # worktree slot cannot check the default branch out --
+                    # it is already checked out in the primary worktree --
+                    # so check the condition that hatch approximated: no
+                    # commits ahead of the default branch.  An unknown
+                    # count keeps the PR requirement.
+                    ahead: int | None = None
+                    if not pr_url:
+                        ahead = await self._commits_ahead_of_default(
+                            workspace, default_branch, has_remote=has_remote
+                        )
                     if pr_url:
                         ctx.pr_url = pr_url
+                    elif ahead == 0:
+                        logger.info(
+                            "Task %s: branch '%s' has no commits ahead of '%s'; "
+                            "no PR required",
+                            task.id,
+                            task.branch_name,
+                            default_branch,
+                        )
                     else:
                         failures.append(
                             (
@@ -1340,7 +1385,24 @@ class GitOpsMixin:
             # Task branches are owned by one agent so --force-with-lease
             # is safe for the branch itself.  We NEVER push to default
             # from here; that's the base-side merge below.
+            #
+            # A branch with no commits ahead of the rebase target (review,
+            # research, triage tasks) has nothing to publish: pushing it
+            # would only litter the remote with a copy of the default
+            # branch.  Only a *known* zero skips the push.
+            ahead: int | None = None
             if has_remote:
+                ahead = await self._commits_ahead_of_default(
+                    workspace, default_branch, has_remote=has_remote
+                )
+            if has_remote and ahead == 0:
+                logger.info(
+                    "Task %s: branch '%s' has no commits ahead of %s; skipping push",
+                    task.id,
+                    branch,
+                    rebase_target,
+                )
+            elif has_remote:
                 # Lease-guarded push (finding #1): the rebase above may
                 # have run longer than ``merge_slot_ttl_seconds``; if
                 # ``break_expired_merge_slots`` handed the slot to
