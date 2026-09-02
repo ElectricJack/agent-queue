@@ -1,0 +1,102 @@
+{
+  "kind": "command",
+  "title": "Open a gate",
+  "command": "gate_create",
+  "capability": "gate_create",
+  "effects": [
+    {
+      "operation": "create",
+      "text": "Create a gate",
+      "condition": null,
+      "subject": "gate"
+    },
+    {
+      "operation": "link",
+      "text": "Link the waiting tasks to the gate",
+      "condition": "when waiter_task_ids is provided",
+      "subject": "gate_waiter"
+    }
+  ],
+  "inputs": [
+    {
+      "field": "project_id",
+      "label": "Project",
+      "value": {
+        "kind": "event_ref",
+        "text": "this event's project",
+        "raw": "{{event.project_id}}",
+        "redacted": false
+      },
+      "required": true
+    },
+    {
+      "field": "gate_type",
+      "label": "Gate type",
+      "value": {
+        "kind": "literal",
+        "text": "task",
+        "raw": null,
+        "redacted": false
+      },
+      "required": true
+    },
+    {
+      "field": "title",
+      "label": "Title",
+      "value": {
+        "kind": "template",
+        "text": "\"Awaiting review of \" + this event's task",
+        "raw": "Awaiting review of {{event.task_id}}",
+        "redacted": false
+      },
+      "required": true
+    },
+    {
+      "field": "await_id",
+      "label": "Await id",
+      "value": {
+        "kind": "binding_ref",
+        "text": "review's task_id",
+        "raw": "{{outputs.review.task_id}}",
+        "redacted": false
+      },
+      "required": false
+    },
+    {
+      "field": "waiter_task_ids",
+      "label": "Waiting tasks",
+      "value": {
+        "kind": "loop_ref",
+        "text": "each dep's id",
+        "raw": "{{outputs.dep.id}}",
+        "redacted": false
+      },
+      "required": false
+    }
+  ],
+  "result": null,
+  "outcomes": [
+    {
+      "outcome": "success",
+      "label": "Success",
+      "classification": "success",
+      "target_node_id": "per-task-review-done",
+      "target_label": "per-task-review-done"
+    },
+    {
+      "outcome": "failure",
+      "label": "Failure",
+      "classification": "failure",
+      "target_node_id": "per-task-review-done",
+      "target_label": "per-task-review-done"
+    }
+  ],
+  "loop": {
+    "source_text": "each item in downstream.tasks",
+    "item_binding": "dep",
+    "source_raw": "outputs.downstream.tasks"
+  },
+  "idempotency": "Repeating with the same await_id reuses the existing gate",
+  "retry": "Not safe to retry",
+  "unrendered_fields": []
+}

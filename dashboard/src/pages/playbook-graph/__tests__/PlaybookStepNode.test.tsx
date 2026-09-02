@@ -8,7 +8,7 @@ afterEach(cleanup);
 describe("PlaybookStepCard preview", () => {
   it("previews a contracted node by its intent, not its command name", () => {
     render(<PlaybookStepCard data={{ node: explanationNode }} />);
-    expect(screen.getByText("Ensure a review task exists")).toBeInTheDocument();
+    expect(screen.getByText("Ensure a task exists")).toBeInTheDocument();
     expect(screen.queryByText("ensure_task")).not.toBeInTheDocument();
   });
 
@@ -20,7 +20,7 @@ describe("PlaybookStepCard preview", () => {
   it("falls back to the compiled command for an uncontracted action node", () => {
     render(<PlaybookStepCard data={{ node: uncontractedNode }} />);
     expect(screen.getByText("ensure_task")).toBeInTheDocument();
-    expect(screen.queryByText("Ensure a review task exists")).not.toBeInTheDocument();
+    expect(screen.queryByText("Ensure a task exists")).not.toBeInTheDocument();
   });
 
   it("falls back to the prompt preview when there is no action at all", () => {

@@ -8,8 +8,18 @@ import re
 from collections.abc import Mapping
 from typing import Any, assert_never
 
+from src.api.models.playbook import (
+    ExplanationEffect,
+    ExplanationInput,
+    ExplanationLoop,
+    ExplanationOutcome,
+    ExplanationResultBinding,
+    ExplanationValue,
+    NodeExplanation,
+)
 from src.commands.contracts.models import (
     REDACTED,
+    CommandContract,
     CommandPresentation,
     CreateClause,
     CreateOrReuseClause,
@@ -22,15 +32,6 @@ from src.commands.contracts.models import (
     redact_args,
 )
 from src.commands.contracts.registry import CONTRACTS, ContractRegistry
-from src.api.models.playbook import (
-    ExplanationEffect,
-    ExplanationInput,
-    ExplanationLoop,
-    ExplanationOutcome,
-    ExplanationResultBinding,
-    ExplanationValue,
-    NodeExplanation,
-)
 from src.event_schemas import event_field_is_sensitive, resolve_event_path
 
 logger = logging.getLogger(__name__)
@@ -84,6 +85,52 @@ def render_effect(
     return ExplanationEffect(
         operation=clause.kind, text=text, condition=condition, subject=clause.subject.value
     )
+
+
+def canonical_effect(contract: CommandContract[Any, Any]) -> ExplanationEffect:
+    """The lossless fallback for a contract that declares no effect clause.
+
+    Design spec :360/:389 — "a lossless canonical field/value rendering is
+    always available when no richer clause applies"; the renderer never hides
+    a command's effect and never invents one.  Built from the two things the
+    execution contract always has: its side-effect class and its argument
+    names.
+    """
+    execution = contract.execution
+    fields = ", ".join(execution.args_model.model_fields) or "no arguments"
+    return ExplanationEffect(
+        operation=execution.side_effect.value,
+        text=f"{execution.side_effect.value.replace('_', ' ').capitalize()} using {fields}",
+        condition=None,
+        subject=None,
+    )
+
+
+def _arg_label(field: str, presentation: CommandPresentation) -> str:
+    """The operator-facing name of an argument, never the bare field name."""
+    return presentation.arg_labels.get(field) or field.replace("_", " ").capitalize()
+
+
+def _idempotency_text(contract: CommandContract[Any, Any]) -> str:
+    """One sentence about repeating the call, derived from the contract.
+
+    ``keyed`` names the key by its presentation label and the reused object by
+    the subject of the contract's first effect clause, so the sentence moves
+    with the contract rather than being authored twice.
+    """
+    execution = contract.execution
+    mode = execution.idempotency.mode
+    if mode == "natural":
+        return "Repeating this operation is naturally idempotent"
+    if mode == "none":
+        return "Repeating this repeats the effect"
+    key = execution.idempotency.key_field or ""
+    label = contract.presentation.arg_labels.get(key)
+    key_text = label[0].lower() + label[1:] if label else key
+    subject = (
+        execution.effects[0].subject.value.replace("_", " ") if execution.effects else "result"
+    )
+    return f"Repeating with the same {key_text} reuses the existing {subject}"
 
 
 def _event_value(reference: str, event_type: str | None) -> ExplanationValue:
@@ -186,9 +233,7 @@ def render_node_explanation(
             inputs.append(
                 ExplanationInput(
                     field=field,
-                    label=contract.presentation.arg_labels.get(
-                        field, field.replace("_", " ").title()
-                    ),
+                    label=_arg_label(field, contract.presentation),
                     value=value,
                     required=contract.execution.args_model.model_fields[field].is_required(),
                 )
@@ -220,16 +265,22 @@ def render_node_explanation(
             if isinstance(output, Mapping) and isinstance(output.get("as"), str)
             else None
         )
+        # ``source`` is the executable key the pipeline runner reads
+        # (``PipelineRunner._run_for_each``); the rendered line must name the
+        # same expression the loop actually iterates, minus the ``outputs.``
+        # scope prefix that is noise to a reader.
+        loop_source = loop.get("source") if isinstance(loop, Mapping) else None
         loop_info = (
             ExplanationLoop(
-                source_text=str(loop.get("in", "each item")),
+                source_text=f"each item in {loop_source.removeprefix('outputs.')}"
+                if isinstance(loop_source, str) and loop_source
+                else "each item",
                 item_binding=loop_name,
-                source_raw=str(loop.get("in")),
+                source_raw=loop_source if isinstance(loop_source, str) else None,
             )
             if loop_name and isinstance(loop, Mapping)
             else None
         )
-        idem = contract.execution.idempotency
         return NodeExplanation(
             kind="command",
             title=contract.presentation.title,
@@ -239,16 +290,13 @@ def render_node_explanation(
             effects=[
                 render_effect(c, raw_args, contract.presentation)
                 for c in contract.execution.effects
-            ],
+            ]
+            or [canonical_effect(contract)],
             inputs=inputs,
             result=result,
             outcomes=outcomes,
             loop=loop_info,
-            idempotency=f"Repeating with the same {idem.key_field} reuses the existing result"
-            if idem.mode == "keyed"
-            else "Repeating this operation is naturally idempotent"
-            if idem.mode == "natural"
-            else None,
+            idempotency=_idempotency_text(contract),
             retry="Safe to retry" if contract.execution.retry_safe else "Not safe to retry",
             unrendered_fields=unrendered,
         )

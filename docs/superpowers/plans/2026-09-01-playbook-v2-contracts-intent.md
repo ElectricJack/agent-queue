@@ -305,6 +305,8 @@ InvokeAdapter = Callable[[CommandArgs, CommandContext], Awaitable[CommandResult[
 PreviewAdapter = Callable[[CommandArgs, CommandContext], Awaitable[CommandResult[Any]]]
 ```
 
+The `CommandHandler` the adapters call is installed by `Orchestrator.set_command_handler` via `builtin.set_handler_provider` — the single seam every construction site in the process goes through (`src/main.py`, `src/api/app.py`, `src/embedded_mcp.py`). Without that wiring a registered `invoke` raises `RuntimeError: no CommandHandler provider installed` in production, which is a registration rather than a command; the provider is a late-bound callable so a later re-set is honoured. (Added after the Package 1 exit gate, which found the provider had no production installer.)
+
 Every built-in adapter in `src/commands/contracts/builtin.py` has the same three-step body and is the **only** place duck-typing is permitted, precisely so it is auditable in one file:
 
 1. call the existing `CommandHandler.execute(name, args.model_dump(exclude_none=True))`;
@@ -497,6 +499,8 @@ CONTRACTS: ContractRegistry = ContractRegistry()   # module singleton
 4. **any effect clause has no renderer** — `register()` calls `can_render(clause)` from `src/playbooks/explanation.py`. This is the roadmap's "Fail contract registration when an effect cannot be rendered".
 
 **Import cycle, resolved explicitly.** `src/playbooks/explanation.py` imports clause types from `src/commands/contracts/models.py`; `registry.py` needs `can_render` from `explanation.py`. `registry.py` performs that import **inside `register()`**, not at module scope. This is deliberate and must not be "cleaned up": moving the renderer into `contracts/` would put playbook presentation inside the command boundary, and moving clause types into `playbooks/` would make the command layer depend on the playbook layer.
+
+**The deferred import is necessary but not sufficient** (corrected after the Package 1 exit gate). Registering the built-ins as an import-time side effect of `src/commands/contracts/__init__.py` re-created the cycle from the other end: `import src.playbooks.explanation` runs that `__init__` at `explanation.py`'s first import line, and the deferred `from src.playbooks.explanation import can_render` then re-enters a module that has not yet defined it — `ImportError: cannot import name 'can_render' from partially initialized module`. Importing graph-view or explanation directly therefore crashed. `ContractRegistry` instead takes an `autoload` flag and registers the built-ins on the first **read** (`get` / `names`, and so `require` / `fingerprint` / `registry_fingerprint` / `required_capability`), guarded by an `RLock` and a re-entrancy flag because `register_builtin_contracts` itself calls `get`. `CONTRACTS = ContractRegistry(autoload=True)`; a bare `ContractRegistry()` still loads nothing, which is what tests want. `tests/test_command_contracts_registry.py::test_the_explanation_module_can_be_imported_first` pins all three import orders in a subprocess.
 
 Renderer exhaustiveness is enforced twice: structurally by a `match` over the closed union ending in `case _ as unreachable: assert_never(unreachable)` in `render_effect`, and at runtime by `tests/test_playbook_explanation.py::test_every_clause_kind_has_a_renderer`, which iterates `EFFECT_CLAUSE_TYPES` and asserts `can_render` for a constructed instance of each. Adding a clause type without a renderer fails both, and `mypy`/`ruff` flag the non-exhaustive match.
 
@@ -815,6 +819,12 @@ Notes the implementer must honor rather than "tidy":
 
 The `ensure_task` clause is the spec's worked example (`:360`): the renderer emits *"Create or reuse a task keyed by `dedup_key`"* only because `key_arg` is present and resolves against `args_model`, never as free text.
 
+### 4.2b Presentation copy
+
+Every command's `CommandPresentation` is authored by hand in `PRESENTATIONS` in `src/commands/contracts/builtin.py` — title, one-sentence summary, `arg_labels`, `outcome_labels`, `result_labels`, and a `subject_labels` entry for each subject its own effect clauses use. Deriving copy from the command name (`name.replace("_", " ").title()`, what the first implementation did) produced "Ensure Task" and "Dedup Key", which disagreed with the acceptance copy and with the dashboard fixtures, so there were two sources of truth for what an operator reads. There is now one: these labels, and the goldens the renderer produces from them (§10.2).
+
+The renderer reads nothing else. Where a label is absent it falls back to the field name in sentence case (`await_id` → "Await id"), never to invented copy, and the `keyed` idempotency sentence names the key by its label when one exists and by its raw field name otherwise. `tests/test_builtin_command_contracts.py::test_presentation_is_authored_and_names_only_real_fields` pins that every key names a real field, outcome, or subject.
+
 ### 4.3 Side-effect and idempotency declarations
 
 | Command | `side_effect` | `idempotency` | `retry_safe` |
@@ -887,7 +897,7 @@ so a contract added for a non-playbook purpose fails the build rather than quiet
 
 ### 5.4 Denial and error surfaces leak nothing new
 
-A contract lookup miss returns `explanation=None`, not an error — a node naming an uncontracted command renders exactly as it does today. `ContractRegistrationError` is raised at import time in the daemon process (`register_builtin_contracts` runs from `src/commands/contracts/__init__.py`) and is never returned to a client; §8 covers what an operator sees when it fires. `denial_result` (`src/commands/authorization.py:184`) is unchanged and still reports only the command name.
+A contract lookup miss returns `explanation=None`, not an error — a node naming an uncontracted command renders exactly as it does today. `ContractRegistrationError` is raised on the daemon's first read of `CONTRACTS` (registration is a lazy bootstrap, not an import-time side effect — see §3.5), which in practice is startup, and is never returned to a client; §8 covers what an operator sees when it fires. `denial_result` (`src/commands/authorization.py:184`) is unchanged and still reports only the command name.
 
 ---
 
@@ -1133,10 +1143,14 @@ without regenerating the goldens in this directory.
 
 The expected `NodeExplanation` for node id `per-task-review-create-review` — the rule-id prefix is applied by `_normalize_nodes` (`src/playbooks/pipeline_compiler.py:239`). `contract_fingerprint` is asserted against the registry at test time rather than pinned in the file, so a contract change breaks one focused test instead of every golden.
 
+**This file is the single source of truth for rendered copy.** `dashboard/src/pages/playbook-graph/__tests__/fixtures.ts` *imports* it rather than transcribing it (corrected after the Package 1 exit gate, which found the hand-written TypeScript fixtures asserting copy the backend never rendered). `tests/test_contract_intent_parity.py::test_fixture_node_matches_its_golden` pins it against the renderer, so the backend and the dashboard cannot drift.
+
+`title` is the **command's** presentation title, not a node-specific sentence: a `CommandPresentation` describes `ensure_task`, and the same contract renders for every node that calls it. The plan's earlier draft pinned "Ensure a review task exists", which no per-command contract can produce.
+
 ```json
 {
   "kind": "command",
-  "title": "Ensure a review task exists",
+  "title": "Ensure a task exists",
   "command": "ensure_task",
   "capability": "ensure_task",
   "effects": [
@@ -1148,23 +1162,84 @@ The expected `NodeExplanation` for node id `per-task-review-create-review` — t
     }
   ],
   "inputs": [
-    {"field": "project_id", "label": "Project", "required": false,
-     "value": {"kind": "event_ref", "text": "this event's project", "raw": "{{event.project_id}}", "redacted": false}},
-    {"field": "dedup_key", "label": "Deduplication key", "required": true,
-     "value": {"kind": "template", "text": "\"review:task:\" + this event's task", "raw": "review:task:{{event.task_id}}", "redacted": false}},
-    {"field": "title", "label": "Title", "required": true,
-     "value": {"kind": "template", "text": "\"Review: \" + this event's title", "raw": "Review: {{event.title}}", "redacted": false}},
-    {"field": "description", "label": "Description", "required": false,
-     "value": {"kind": "template", "text": "\"Branch: \" + this event's task branch", "raw": "Branch: {{event.task.branch_name}}", "redacted": false}},
-    {"field": "profile_id", "label": "Agent profile", "required": false,
-     "value": {"kind": "literal", "text": "reviewer", "raw": null, "redacted": false}}
+    {
+      "field": "project_id",
+      "label": "Project",
+      "value": {
+        "kind": "event_ref",
+        "text": "this event's project",
+        "raw": "{{event.project_id}}",
+        "redacted": false
+      },
+      "required": false
+    },
+    {
+      "field": "dedup_key",
+      "label": "Deduplication key",
+      "value": {
+        "kind": "template",
+        "text": "\"review:task:\" + this event's task",
+        "raw": "review:task:{{event.task_id}}",
+        "redacted": false
+      },
+      "required": true
+    },
+    {
+      "field": "title",
+      "label": "Title",
+      "value": {
+        "kind": "template",
+        "text": "\"Review: \" + this event's title",
+        "raw": "Review: {{event.title}}",
+        "redacted": false
+      },
+      "required": true
+    },
+    {
+      "field": "description",
+      "label": "Description",
+      "value": {
+        "kind": "template",
+        "text": "\"Branch: \" + this event's task branch",
+        "raw": "Branch: {{event.task.branch_name}}",
+        "redacted": false
+      },
+      "required": false
+    },
+    {
+      "field": "profile_id",
+      "label": "Agent profile",
+      "value": {
+        "kind": "literal",
+        "text": "reviewer",
+        "raw": null,
+        "redacted": false
+      },
+      "required": false
+    }
   ],
-  "result": {"name": "review", "fields": ["task_id", "created"]},
+  "result": {
+    "name": "review",
+    "fields": [
+      "task_id",
+      "created"
+    ]
+  },
   "outcomes": [
-    {"outcome": "success", "label": "Success", "classification": "success",
-     "target_node_id": "per-task-review-link-discovered-from", "target_label": "per-task-review-link-discovered-from"},
-    {"outcome": "failure", "label": "Failure", "classification": "failure",
-     "target_node_id": "per-task-review-done", "target_label": "per-task-review-done"}
+    {
+      "outcome": "success",
+      "label": "Success",
+      "classification": "success",
+      "target_node_id": "per-task-review-link-discovered-from",
+      "target_label": "per-task-review-link-discovered-from"
+    },
+    {
+      "outcome": "failure",
+      "label": "Failure",
+      "classification": "failure",
+      "target_node_id": "per-task-review-done",
+      "target_label": "per-task-review-done"
+    }
   ],
   "loop": null,
   "idempotency": "Repeating with the same deduplication key reuses the existing task",
@@ -1173,13 +1248,13 @@ The expected `NodeExplanation` for node id `per-task-review-create-review` — t
 }
 ```
 
-`"this event's task branch"` is produced from the §3.7 `description` for `task.completed` → `task` → `branch_name`, which is why that description must read as a noun phrase, not a sentence.
+`"this event's task branch"` is produced from the §3.7 `description` for `task.completed` → `task` → `branch_name`, which is why that description — and every other one on a contracted event type — must be a bare noun phrase with no leading article: the renderer substitutes it into `this event's <description>`.
 
 ### 10.3 Golden explanation — `tests/fixtures/contracts/explanation-gate-downstream.json`
 
 Covers the `for_each` node, the conditional clause, and the `loop_ref` value kind. It pins:
 
-- `loop` to `{"source_text": "each item in downstream.tasks", "item_binding": "dep", "source_raw": "outputs.downstream.tasks"}`;
+- `loop` to `{"source_text": "each item in downstream.tasks", "item_binding": "dep", "source_raw": "outputs.downstream.tasks"}` — `for_each.source` is the key `PipelineRunner._run_for_each` actually reads, so the rendered line names the expression the loop iterates;
 - two effects, the second with `"condition": "when waiter_task_ids is provided"` from the `arg_present` predicate;
 - the `waiter_task_ids` input with `"kind": "loop_ref"` and `"text": "each dep's id"`;
 - `"result": null` (the node has no `output` binding);
@@ -1206,7 +1281,9 @@ Written once, in `T-8`, from the implementation's own output, and then treated a
 
 ### 10.5 Dashboard fixture
 
-`dashboard/src/pages/playbook-graph/__tests__/fixtures.ts` gains `explanationNode`, transcribed from the §10.2 golden as a TS literal, plus a `pipelineGraph` variant whose nodes carry `explanation`. The existing `node()` helper keeps `explanation` undefined, so every current test continues to exercise the no-explanation fallback path — which is how the flag-off behavior in §9 stays covered.
+`dashboard/src/pages/playbook-graph/__tests__/fixtures.ts` gains `explanationNode`, whose `explanation` is **imported** from the §10.2 golden JSON (`tsconfig.app.json` sets `resolveJsonModule`; Vite and Vitest resolve JSON natively), plus a `pipelineGraph` variant whose nodes carry `explanation`. The existing `node()` helper keeps `explanation` undefined, so every current test continues to exercise the no-explanation fallback path — which is how the flag-off behavior in §9 stays covered. Two fixtures stay hand-written and are labelled synthetic in the file: a redacted input (no built-in declares `sensitive_args` yet) and an `unrendered_fields` variation (no shipped node carries an undeclared argument).
+
+The TypeScript shapes in `dashboard/src/pages/playbook-graph/explanation.ts` are re-exports of the **generated** client models. The verbatim hand-declaration in §3.6 existed so Task B could start before the backend landed; keeping it after the fact would be a second, unversioned definition of a wire type the server owns.
 
 ---
 

@@ -117,7 +117,7 @@ describe("PlaybookNodeInspector contract intent", () => {
   it("shows the contract's intent instead of the raw action for a contracted node", () => {
     render(<PlaybookNodeInspector node={explanationNode} />);
     const intent = section("Intent");
-    expect(within(intent).getByRole("heading", { name: "Ensure a review task exists" })).toBeInTheDocument();
+    expect(within(intent).getByRole("heading", { name: "Ensure a task exists" })).toBeInTheDocument();
     expect(within(intent).getByText('Create or reuse a task keyed by "dedup_key"')).toBeInTheDocument();
     expect(within(intent).getByText("this event's project")).toBeInTheDocument();
   });

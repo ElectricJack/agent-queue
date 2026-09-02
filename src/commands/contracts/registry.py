@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -32,8 +33,41 @@ class CommandRegistration:
 
 
 class ContractRegistry:
-    def __init__(self) -> None:
+    """A registry of typed command contracts.
+
+    ``autoload`` makes the built-in contracts arrive on the first *read*
+    rather than as an import-time side effect of ``src.commands.contracts``.
+    That is what keeps ``import src.playbooks.explanation`` working: the
+    package ``__init__`` can no longer re-enter a half-built ``explanation``
+    module to reach ``can_render`` (child plan §3.5 keeps the renderer in the
+    playbook layer, so the deferred import inside ``register`` is the only
+    direction this dependency may run).  Tests build a bare
+    ``ContractRegistry()``, which loads nothing.
+    """
+
+    def __init__(self, *, autoload: bool = False) -> None:
         self._registrations: dict[str, CommandRegistration] = {}
+        self._autoload = autoload
+        self._loading = False
+        self._lock = threading.RLock()
+
+    def _ensure_loaded(self) -> None:
+        """Register the built-ins once, on first read."""
+        if not self._autoload:
+            return
+        with self._lock:
+            if not self._autoload or self._loading:
+                return
+            self._loading = True
+            try:
+                # Deferred so importing this module never imports the
+                # contract definitions, which import this module back.
+                from src.commands.contracts.builtin import register_builtin_contracts
+
+                register_builtin_contracts(self)
+                self._autoload = False
+            finally:
+                self._loading = False
 
     def register(self, registration: CommandRegistration) -> None:
         if registration.name in self._registrations:
@@ -51,6 +85,7 @@ class ContractRegistry:
         self._registrations[registration.name] = registration
 
     def get(self, name: str) -> CommandRegistration | None:
+        self._ensure_loaded()
         return self._registrations.get(name)
 
     def require(self, name: str) -> CommandRegistration:
@@ -60,6 +95,7 @@ class ContractRegistry:
         return registration
 
     def names(self) -> frozenset[str]:
+        self._ensure_loaded()
         return frozenset(self._registrations)
 
     def fingerprint(self, name: str) -> str:
@@ -74,4 +110,5 @@ class ContractRegistry:
         return registration.contract.execution.capability if registration else None
 
 
-CONTRACTS = ContractRegistry()
+#: The process-wide registry.  Reading it loads the built-in contracts.
+CONTRACTS = ContractRegistry(autoload=True)

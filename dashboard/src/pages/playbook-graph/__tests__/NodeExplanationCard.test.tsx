@@ -4,6 +4,7 @@ import NodeExplanationCard from "../NodeExplanationCard";
 import {
   createReviewExplanation,
   gateDownstreamExplanation,
+  explanationWithUnrenderedField,
   redactedExplanation,
 } from "./fixtures";
 
@@ -17,7 +18,7 @@ describe("NodeExplanationCard", () => {
 
   it("leads with the contract's title", () => {
     render(<NodeExplanationCard explanation={createReviewExplanation} />);
-    expect(screen.getByRole("heading", { name: "Ensure a review task exists" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Ensure a task exists" })).toBeInTheDocument();
   });
 
   it("renders each declared effect as a sentence", () => {
@@ -32,7 +33,7 @@ describe("NodeExplanationCard", () => {
   it("shows a conditional effect's predicate alongside it", () => {
     render(<NodeExplanationCard explanation={gateDownstreamExplanation} />);
     const effects = screen.getByRole("group", { name: "Effects" });
-    expect(within(effects).getByText("Block the waiting tasks until the gate resolves")).toBeInTheDocument();
+    expect(within(effects).getByText("Link the waiting tasks to the gate")).toBeInTheDocument();
     expect(within(effects).getByText("when waiter_task_ids is provided")).toBeInTheDocument();
   });
 
@@ -96,7 +97,7 @@ describe("NodeExplanationCard", () => {
   });
 
   it("lists every executable argument the contract could not render richly", () => {
-    render(<NodeExplanationCard explanation={gateDownstreamExplanation} />);
+    render(<NodeExplanationCard explanation={explanationWithUnrenderedField} />);
     expect(within(screen.getByRole("group", { name: "Other fields" })).getByText("reason")).toBeInTheDocument();
   });
 
