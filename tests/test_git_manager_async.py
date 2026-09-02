@@ -161,7 +161,9 @@ class TestAsyncFindOpenPr:
             mgr,
             "_arun_subprocess",
             AsyncMock(
-                return_value=SimpleNamespace(stdout="https://github.com/o/r/pull/42\n")
+                return_value=SimpleNamespace(
+                    returncode=0, stdout="https://github.com/o/r/pull/42\n"
+                )
             ),
         )
 
@@ -1100,7 +1102,8 @@ class TestAfindOpenPr:
             calls.append(args)
             if "--head" in args:
                 return SimpleNamespace(returncode=0, stdout=by_name, stderr="")
-            return SimpleNamespace(returncode=0, stdout=json.dumps(prs or []), stderr="")
+            open_prs = [{"state": "OPEN", **pr} for pr in (prs or [])]
+            return SimpleNamespace(returncode=0, stdout=json.dumps(open_prs), stderr="")
 
         monkeypatch.setattr(mgr, "_arun_subprocess", fake_subprocess)
         return calls
