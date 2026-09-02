@@ -763,6 +763,52 @@ One row per playbook execution. Playbooks replaced the removed `hooks` /
 | `paused_at` | REAL | nullable | Set when the run pauses on a human/event wait |
 | `waiting_for_event` | TEXT | nullable | Event type the run is waiting for |
 
+### Table: `playbook_artifacts`
+
+One row per immutable compiled Playbook V2 artifact, addressed by the SHA-256 of
+its canonical bytes.  The artifact body itself lives on disk at
+`{compiled_root}/artifacts/<sha256>.json`; this table is the index, never the
+payload.  See `docs/superpowers/specs/2026-09-01-playbook-v2-semantic-graph-design.md`
+§ "Storage and activation".
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `artifact_sha256` | TEXT | PRIMARY KEY | `sha256:<64 lowercase hex>` over the canonical bytes |
+| `playbook_id` | TEXT | NOT NULL | Playbook this artifact compiles |
+| `scope` | TEXT | NOT NULL DEFAULT 'system' | One of: system, project, agent_type, supervisor |
+| `scope_identifier` | TEXT | NOT NULL DEFAULT '' | Project or agent-type id; `''` for system scope |
+| `schema_generation` | INTEGER | NOT NULL DEFAULT 2 | Artifact schema generation this build stores |
+| `version` | INTEGER | NOT NULL DEFAULT 0 | Authored playbook version |
+| `source_digest` | TEXT | NOT NULL | Digest of the authored Markdown the artifact came from |
+| `contract_fingerprint` | TEXT | NOT NULL | Fingerprint of the command contracts compiled against |
+| `profile_fingerprint` | TEXT | NOT NULL DEFAULT '' | Capability-policy fingerprint, compared as an opaque string |
+| `compiler_build` | TEXT | NOT NULL | Compiler build that produced the bytes |
+| `path` | TEXT | NOT NULL | On-disk location of the artifact file |
+| `size_bytes` | INTEGER | NOT NULL DEFAULT 0 | Byte length of the artifact file |
+| `validation` | TEXT | NOT NULL DEFAULT '{}' | JSON validation summary (counts and questions, not diagnostics) |
+| `compiled_at` | TEXT | nullable | Compiler-reported timestamp string |
+| `created_at` | REAL | NOT NULL | Set on insert |
+
+### Table: `playbook_activations`
+
+Operational activation metadata for a playbook in one scope: which artifact hash
+is live, whether an operator has enabled it, and its readiness health.  Kept
+outside the artifact so pausing a playbook never rewrites immutable content.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `activation_id` | TEXT | PRIMARY KEY | UUID string |
+| `playbook_id` | TEXT | NOT NULL | Playbook being activated |
+| `scope` | TEXT | NOT NULL DEFAULT 'system' | One of: system, project, agent_type, supervisor |
+| `scope_identifier` | TEXT | NOT NULL DEFAULT '' | `''` rather than NULL so the scope UNIQUE constraint is total |
+| `active_artifact_sha256` | TEXT | nullable, FK → playbook_artifacts (RESTRICT) | NULL until first activated |
+| `enabled` | BOOLEAN | NOT NULL DEFAULT false | Operator intent, independent of health |
+| `health` | TEXT | NOT NULL DEFAULT 'disabled' | One of: ready, question_required, invalid, disabled, stale_contract, unavailable |
+| `reasons` | TEXT | NOT NULL DEFAULT '[]' | JSON list of health reason objects |
+| `activated_at` | REAL | nullable | When the current artifact was activated |
+| `activated_by` | TEXT | nullable | Server-derived principal that activated it |
+| `updated_at` | REAL | NOT NULL | Set on every write |
+
 ### Table: `task_completion_records`
 
 Append-only audit records for accepted task-close operations.  This deliberately

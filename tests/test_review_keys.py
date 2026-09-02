@@ -55,3 +55,26 @@ def test_default_pipeline_source_uses_these_prefixes():
     src = DEFAULT_PIPELINE_PATH.read_text(encoding="utf-8")
     assert f'"dedup_key": "{REVIEW_TASK_DEDUP_PREFIX}{{{{event.task_id}}}}"' in src
     assert f'"dedup_key": "{BRANCH_REVIEW_DEDUP_PREFIX}{{{{event.task.branch_name}}}}"' in src
+
+
+@pytest.mark.parametrize(
+    ("dedup_key", "expected"),
+    [
+        ("review:task:abc", {"task_id": "abc", "review_task": True}),
+        ("branch-review:aq/x", {"task_id": "abc", "review_task": True}),
+        ("spec-ingest:x", {"task_id": "abc"}),
+        (None, {"task_id": "abc"}),
+    ],
+)
+def test_flag_review_task_event_only_narrows(dedup_key, expected):
+    """The dispatch path sets ``review_task`` from the row; it never clears it."""
+    from src.review_keys import flag_review_task_event
+
+    event = {"task_id": "abc"}
+    assert flag_review_task_event(event, dedup_key) is event
+    assert event == expected
+
+    # An emitter that already flagged the task keeps its flag either way.
+    flagged = {"task_id": "abc", "review_task": True}
+    flag_review_task_event(flagged, dedup_key)
+    assert flagged["review_task"] is True

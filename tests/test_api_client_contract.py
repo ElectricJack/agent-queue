@@ -150,8 +150,8 @@ async def test_live_openapi_operations_match_generated_python_client(live_app):
 async def test_generated_client_models_round_trip_real_typed_route(live_app):
     """Plan 2: generated models serialize/parse against a real ASGI route."""
     _import_repo_client()
-    from agent_queue_api_client.client import Client
     from agent_queue_api_client.api.task import task_show
+    from agent_queue_api_client.client import Client
     from agent_queue_api_client.models.task_show_request import TaskShowRequest
     from agent_queue_api_client.models.task_show_response import TaskShowResponse
     from agent_queue_api_client.models.task_show_response_422 import TaskShowResponse422
@@ -213,7 +213,12 @@ def test_codegen_routes_keep_execute_exclusions_off_every_live_router():
     from src.api.codegen import API_EXCLUDED, build_category_routers
     from src.mcp_registration import _discover_all_commands
     from src.plugins.internal import collect_internal_tool_definitions
-    from src.tools import CATEGORIES, _ALL_TOOL_DEFINITIONS, _CLI_CATEGORY_OVERRIDES, _TOOL_CATEGORIES
+    from src.tools import (
+        _ALL_TOOL_DEFINITIONS,
+        _CLI_CATEGORY_OVERRIDES,
+        _TOOL_CATEGORIES,
+        CATEGORIES,
+    )
 
     routed: list[str] = []
     for router in build_category_routers():

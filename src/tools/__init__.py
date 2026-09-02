@@ -8,6 +8,7 @@ Re-exports the public API so callers can use::
 from src.tools.definitions import (
     _ALL_TOOL_DEFINITIONS,
     _CLI_CATEGORY_OVERRIDES,
+    _FALLBACK_INPUT_SCHEMAS,
     _TOOL_CATEGORIES,
 )
 from src.tools.registry import CATEGORIES, CategoryMeta, ToolRegistry
@@ -18,5 +19,6 @@ __all__ = [
     "ToolRegistry",
     "_ALL_TOOL_DEFINITIONS",
     "_CLI_CATEGORY_OVERRIDES",
+    "_FALLBACK_INPUT_SCHEMAS",
     "_TOOL_CATEGORIES",
 ]

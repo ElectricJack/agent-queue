@@ -67,3 +67,35 @@ def test_sparse_workspace_pool_and_profile_rows_render_without_keyerror():
     # And a fully absent list key behaves like the empty list.
     out = _render("list_workspaces", {})
     assert "Workspaces" in out
+
+
+def test_task_progress_renders_a_raw_response_dict():
+    """`aq task progress` crashed with AttributeError: the ``task_progress``
+    spec had no proxy, so ``_render_progress`` got the raw response dict and
+    ``p.parent_id`` blew up.  Render a real payload end-to-end."""
+    out = _render("task_progress", {
+        "success": True,
+        "parent_id": "eager-impact-14",
+        "total": 5,
+        "done": 2,
+        "ready": 1,
+        "blocked": 1,
+        "in_progress": 1,
+        "waves": [["a", "b"], ["c"]],
+        "max_parallelism": 2,
+        "depth": 2,
+    })
+    assert "eager-impact-14: 2/5 done, 1 ready, 1 blocked, 1 in progress" in out
+    assert "waves: 2, max parallelism: 2" in out
+    assert "1. a, b" in out and "2. c" in out
+
+
+def test_task_progress_renders_a_typed_response_model():
+    """The same spec must handle the generated client's typed model."""
+    from src.api.models.task import TaskProgressResponse
+
+    out = _render("task_progress", TaskProgressResponse(
+        success=True, parent_id="p-1", total=0, done=0, ready=0, blocked=0,
+        in_progress=0, waves=[], max_parallelism=0, depth=0,
+    ))
+    assert "p-1: 0/0 done" in out

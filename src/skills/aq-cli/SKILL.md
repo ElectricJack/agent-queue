@@ -16,18 +16,26 @@ source of truth.
 ## Command groups
 
 ```
-aq agent      — profile CRUD, list agents, tool discovery
+aq agent      — profile CRUD, list agents, live-worker messaging
+aq doctor     — health checks for this install, with fixes
 aq file       — read / write / edit / glob / grep on files
+aq formula    — reusable task-graph templates (list / show / cook)
 aq git        — branch / commit / push / PR / merge
 aq mcp        — MCP server registry + tool catalog
 aq memory     — semantic memory search, project profiles
+aq message    — inter-agent and user message queue
 aq note       — project notes (list / read / write / append / delete)
 aq playbook   — playbook compilation, runs, HITL, health
+aq pool       — worker pool sizing (status / scale)
 aq project    — project CRUD, workspaces, channels, budgets
+aq session    — inspect and steer agent sessions
 aq status     — one-shot system-status overview
 aq system     — diagnostics, config, prompt management
-aq task       — task lifecycle, approval, dependencies, results, archives
+aq task       — task lifecycle, gates, dependencies, results, archives
+aq vault      — vault migration and inspection
 ```
+
+`aq --help` lists the full set; the above is the part you reach for most.
 
 ## Discovery workflow
 
@@ -57,15 +65,19 @@ aq --help-all | grep -A5 gate     # every gate-related command
 - `--brief` — trims each entity to a compact projection (still readable).
   Composes with `--json`.
 
+Both are options on the top-level `aq` group, so they go **before** the
+subcommand: `aq --json task list` works, while putting `--json` after
+`task list` fails with `No such option: '--json'`.
+
 Example:
 
 ```bash
-aq task list --json | jq '.[] | select(.status=="READY") | .id'
+aq --json task list | jq '.[] | select(.status=="READY") | .id'
 ```
 
 ## Scope + authentication
 
-The CLI talks to the daemon on `127.0.0.1:8091` (or whatever `--api-url`
+The CLI talks to the daemon on `127.0.0.1:8081` (or whatever `--api-url`
 overrides). When running inside a session started by the daemon, the
 session's bearer token is injected automatically and every command is
 scope-checked at the daemon: a session-scoped token can only touch its

@@ -364,6 +364,13 @@ class PipelineEngine:
                     hydrated["task"] = (
                         vars(task_row) if hasattr(task_row, "__dict__") else {}
                     )
+        # Mirrors the orchestrator: a pipeline-created review row flags the
+        # event as ``review_task`` regardless of what the emitter sent.
+        from src.review_keys import flag_review_task_event
+
+        task_dict = hydrated.get("task")
+        if isinstance(task_dict, dict):
+            flag_review_task_event(hydrated, task_dict.get("dedup_key"))
 
         # Select rule(s) for this event type.
         graph = self._compiled.to_dict()

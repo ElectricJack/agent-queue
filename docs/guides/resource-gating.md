@@ -129,9 +129,19 @@ While it waits, it prints a line per poll naming the current holders. That
 is deliberate: the daemon reads terminal silence as a stall, so an agent
 queued behind a busy box has to *look* queued.
 
-Exit codes are pytest's, with one addition: **75** (`EX_TEMPFAIL`) means no
-slot came free within `test_wait_timeout`. That is "come back later", not
-"your tests failed".
+Exit codes are pytest's, with two additions: **75** (`EX_TEMPFAIL`) means no
+slot came free within `test_wait_timeout` — that is "come back later", not
+"your tests failed" — and **4** means one of the paths you named does not
+exist, so nothing was run.
+
+The path check happens before a slot is taken, because pytest under xdist
+turns a mistyped path into `no tests ran` rather than `file or directory not
+found`: a run that collected and executed *nothing* otherwise reads as a
+clean pass. Only unambiguously path-shaped arguments are checked (they
+contain a `/` or end in `.py`), and a `::node-id` suffix is stripped before
+the stat, so `-k` and `-m` expressions are never mistaken for paths. For the
+same reason pytest's exit code **5** (nothing collected) is reported with an
+explicit "nothing was verified" line.
 
 ### Why `flock`
 

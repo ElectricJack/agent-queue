@@ -958,6 +958,72 @@ playbook_runs = Table(
     Index("idx_playbook_runs_status", "status"),
 )
 
+
+# ---------------------------------------------------------------------------
+# Playbook V2 storage (docs/superpowers/plans/2026-09-01-playbook-v2-durable-
+# state-storage.md §6).  V1's ``playbook_runs`` above is untouched and stays
+# readable after cutover; the V2 tables below are additive and inert until
+# Package 4's engine writes to them.
+# ---------------------------------------------------------------------------
+
+playbook_artifacts = Table(
+    "playbook_artifacts",
+    metadata,
+    Column("artifact_sha256", Text, primary_key=True),
+    Column("playbook_id", Text, nullable=False),
+    Column("scope", Text, nullable=False, server_default="'system'"),
+    Column("scope_identifier", Text, nullable=False, server_default="''"),
+    Column("schema_generation", Integer, nullable=False, server_default="2"),
+    Column("version", Integer, nullable=False, server_default="0"),
+    Column("source_digest", Text, nullable=False),
+    Column("contract_fingerprint", Text, nullable=False),
+    Column("profile_fingerprint", Text, nullable=False, server_default="''"),
+    Column("compiler_build", Text, nullable=False),
+    Column("path", Text, nullable=False),
+    Column("size_bytes", Integer, nullable=False, server_default="0"),
+    Column("validation", Text, nullable=False, server_default="'{}'"),
+    Column("compiled_at", Text, nullable=True),
+    Column("created_at", Float, nullable=False),
+    CheckConstraint(
+        "scope IN ('system', 'project', 'agent_type', 'supervisor')",
+        name="ck_playbook_artifacts_scope",
+    ),
+    Index("idx_playbook_artifacts_playbook", "playbook_id", "version"),
+    Index("idx_playbook_artifacts_source", "source_digest"),
+    Index("idx_playbook_artifacts_created", "created_at"),
+)
+
+playbook_activations = Table(
+    "playbook_activations",
+    metadata,
+    Column("activation_id", Text, primary_key=True),
+    Column("playbook_id", Text, nullable=False),
+    Column("scope", Text, nullable=False, server_default="'system'"),
+    Column("scope_identifier", Text, nullable=False, server_default="''"),
+    Column(
+        "active_artifact_sha256",
+        Text,
+        ForeignKey("playbook_artifacts.artifact_sha256", ondelete="RESTRICT"),
+        nullable=True,
+    ),
+    Column("enabled", Boolean, nullable=False, server_default=false()),
+    Column("health", Text, nullable=False, server_default="'disabled'"),
+    Column("reasons", Text, nullable=False, server_default="'[]'"),
+    Column("activated_at", Float, nullable=True),
+    Column("activated_by", Text, nullable=True),
+    Column("updated_at", Float, nullable=False),
+    CheckConstraint(
+        "health IN ('ready', 'question_required', 'invalid', 'disabled', "
+        "'stale_contract', 'unavailable')",
+        name="ck_playbook_activations_health",
+    ),
+    UniqueConstraint(
+        "playbook_id", "scope", "scope_identifier",
+        name="uq_playbook_activations_scope",
+    ),
+    Index("idx_playbook_activations_health", "health"),
+)
+
 task_assignment_routes = Table(
     "task_assignment_routes",
     metadata,

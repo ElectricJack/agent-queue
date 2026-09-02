@@ -26,7 +26,7 @@ import logging
 import time
 import uuid
 
-from src.commands.claim_commands import remove_claim_file, remove_claim_file_if_matches
+from src.claim_file import remove_claim_file, remove_claim_file_if_matches
 from src.database.queries.task_queries import StaleClaim
 from src.models import TaskCompletion, TaskStatus
 from src.sessions.provider import (

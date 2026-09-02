@@ -2,9 +2,12 @@
 # Regenerate the typed Python API client from the daemon's OpenAPI spec.
 #
 # Usage:
-#   ./scripts/regenerate-api-client.sh              # daemon must be running
 #   ./scripts/regenerate-api-client.sh --offline    # build the spec in-process
+#   ./scripts/regenerate-api-client.sh              # fetch it from a running daemon
 #   ./scripts/regenerate-api-client.sh --from-file  # use saved openapi.json
+#
+# --offline is the canonical path: the spec is a pure function of the
+# checkout, so it needs no daemon and cannot pick up another instance's state.
 #
 # Prerequisites:
 #   pip install openapi-python-client
@@ -38,9 +41,15 @@ case "${1:-}" in
         echo "Using saved spec: $SPEC_FILE"
         ;;
     *)
+        # The daemon serves the spec minified.  Writing that straight to
+        # openapi.json produces a single-line, undiffable file that the drift
+        # guard in tests/test_api_client_contract.py rejects, so render it
+        # through the same src.api.spec writer --offline uses.  json parsing
+        # happens before anything is written, so a failed fetch (pipefail is
+        # on) leaves the existing openapi.json untouched.
         echo "Fetching OpenAPI spec from $API_URL/openapi.json ..."
-        curl -sf "$API_URL/openapi.json" > "$SPEC_FILE"
-        echo "Saved to $SPEC_FILE"
+        curl -sf "$API_URL/openapi.json" \
+            | (cd "$ROOT_DIR" && python3 -m src.api.spec --stdin "$SPEC_FILE")
         ;;
 esac
 

@@ -1,5 +1,8 @@
 """Contains all the data models used in inputs/outputs"""
 
+from .activation_health_reason_dto import ActivationHealthReasonDTO
+from .activation_state_dto import ActivationStateDTO
+from .activation_state_dto_health import ActivationStateDTOHealth
 from .add_dependency_request import AddDependencyRequest
 from .add_dependency_response import AddDependencyResponse
 from .add_dependency_response_422 import AddDependencyResponse422
@@ -19,6 +22,9 @@ from .agent_question_detail import AgentQuestionDetail
 from .agent_settings import AgentSettings
 from .agent_summary import AgentSummary
 from .agent_waiting_question import AgentWaitingQuestion
+from .ai_budget_dto import AiBudgetDTO
+from .ai_node_detail_dto import AiNodeDetailDTO
+from .ai_node_detail_dto_output_schema_type_0 import AiNodeDetailDTOOutputSchemaType0
 from .append_note_request import AppendNoteRequest
 from .append_note_response import AppendNoteResponse
 from .append_note_response_422 import AppendNoteResponse422
@@ -28,6 +34,7 @@ from .archive_settings_response_422 import ArchiveSettingsResponse422
 from .archive_task_request import ArchiveTaskRequest
 from .archive_task_response import ArchiveTaskResponse
 from .archive_task_response_422 import ArchiveTaskResponse422
+from .artifact_ref_dto import ArtifactRefDTO
 from .ask_human_request import AskHumanRequest
 from .ask_human_response_422 import AskHumanResponse422
 from .assignment_route_detail import AssignmentRouteDetail
@@ -35,6 +42,8 @@ from .body_upload_attachment_api_tasks_task_id_attachments_post import BodyUploa
 from .cancel_playbook_run_request import CancelPlaybookRunRequest
 from .cancel_playbook_run_response import CancelPlaybookRunResponse
 from .cancel_playbook_run_response_422 import CancelPlaybookRunResponse422
+from .cancellation_facts_dto import CancellationFactsDTO
+from .capability_namespaces_dto import CapabilityNamespacesDTO
 from .catalog_entry_model import CatalogEntryModel
 from .check_profile_request import CheckProfileRequest
 from .check_profile_response import CheckProfileResponse
@@ -51,6 +60,7 @@ from .claude_usage_response_422 import ClaudeUsageResponse422
 from .claude_usage_response_active_sessions_item import ClaudeUsageResponseActiveSessionsItem
 from .claude_usage_response_model_usage_type_0 import ClaudeUsageResponseModelUsageType0
 from .claude_usage_response_rate_limit_type_0 import ClaudeUsageResponseRateLimitType0
+from .cluster_bounds_dto import ClusterBoundsDTO
 from .commit_changes_request import CommitChangesRequest
 from .commit_changes_response import CommitChangesResponse
 from .commit_changes_response_422 import CommitChangesResponse422
@@ -64,6 +74,8 @@ from .compiled_playbook_node import CompiledPlaybookNode
 from .compiled_playbook_node_action_type_0 import CompiledPlaybookNodeActionType0
 from .compiled_playbook_node_for_each_type_0 import CompiledPlaybookNodeForEachType0
 from .compiled_playbook_node_output_type_0 import CompiledPlaybookNodeOutputType0
+from .contract_change_dto import ContractChangeDTO
+from .contract_change_dto_change import ContractChangeDTOChange
 from .count_project_memory_files_request import CountProjectMemoryFilesRequest
 from .count_project_memory_files_response import CountProjectMemoryFilesResponse
 from .count_project_memory_files_response_422 import CountProjectMemoryFilesResponse422
@@ -103,6 +115,7 @@ from .create_task_response_depends_on_item import CreateTaskResponseDependsOnIte
 from .daemon_metrics import DaemonMetrics
 from .db_preflight_hierarchy_request import DbPreflightHierarchyRequest
 from .db_preflight_hierarchy_response_422 import DbPreflightHierarchyResponse422
+from .delegation_policy_dto import DelegationPolicyDTO
 from .delete_agent_request import DeleteAgentRequest
 from .delete_agent_response import DeleteAgentResponse
 from .delete_agent_response_422 import DeleteAgentResponse422
@@ -143,6 +156,9 @@ from .dry_run_playbook_response import DryRunPlaybookResponse
 from .dry_run_playbook_response_422 import DryRunPlaybookResponse422
 from .dry_run_playbook_response_mock_event import DryRunPlaybookResponseMockEvent
 from .dry_run_playbook_response_node_trace_item import DryRunPlaybookResponseNodeTraceItem
+from .edge_diff_dto import EdgeDiffDTO
+from .edge_diff_dto_change import EdgeDiffDTOChange
+from .edge_overlay_dto import EdgeOverlayDTO
 from .edit_agent_request import EditAgentRequest
 from .edit_agent_response_422 import EditAgentResponse422
 from .edit_file_request import EditFileRequest
@@ -175,10 +191,13 @@ from .edit_task_response_422 import EditTaskResponse422
 from .edit_workspace_request import EditWorkspaceRequest
 from .edit_workspace_response import EditWorkspaceResponse
 from .edit_workspace_response_422 import EditWorkspaceResponse422
+from .effect_clause_dto import EffectClauseDTO
+from .effect_clause_dto_kind import EffectClauseDTOKind
 from .ensure_task_request import EnsureTaskRequest
 from .ensure_task_response import EnsureTaskResponse
 from .ensure_task_response_422 import EnsureTaskResponse422
 from .env_var_reference import EnvVarReference
+from .event_group_dto import EventGroupDTO
 from .event_trigger import EventTrigger
 from .execute_request import ExecuteRequest
 from .execute_request_args import ExecuteRequestArgs
@@ -186,9 +205,14 @@ from .explain_reason import ExplainReason
 from .explain_task_request import ExplainTaskRequest
 from .explain_task_response import ExplainTaskResponse
 from .explain_task_response_422 import ExplainTaskResponse422
+from .explanation_row_dto import ExplanationRowDTO
+from .explanation_row_dto_source import ExplanationRowDTOSource
+from .explanation_value_dto import ExplanationValueDTO
+from .explanation_value_dto_kind import ExplanationValueDTOKind
 from .export_profile_request import ExportProfileRequest
 from .export_profile_response import ExportProfileResponse
 from .export_profile_response_422 import ExportProfileResponse422
+from .field_change_dto import FieldChangeDTO
 from .file_entry import FileEntry
 from .file_inspection_record import FileInspectionRecord
 from .find_merge_conflict_workspaces_request import FindMergeConflictWorkspacesRequest
@@ -360,13 +384,28 @@ from .glob_files_request import GlobFilesRequest
 from .glob_files_response import GlobFilesResponse
 from .glob_files_response_422 import GlobFilesResponse422
 from .graph_agent import GraphAgent
+from .graph_diagnostic_dto import GraphDiagnosticDTO
+from .graph_diagnostic_dto_severity import GraphDiagnosticDTOSeverity
 from .graph_edge import GraphEdge
+from .graph_edge_dto import GraphEdgeDTO
+from .graph_edge_dto_kind import GraphEdgeDTOKind
 from .graph_gate import GraphGate
+from .graph_layout_dto import GraphLayoutDTO
+from .graph_layout_dto_cluster_bounds import GraphLayoutDTOClusterBounds
+from .graph_layout_dto_direction import GraphLayoutDTODirection
+from .graph_layout_dto_grid_positions import GraphLayoutDTOGridPositions
+from .graph_legend_dto import GraphLegendDTO
+from .graph_legend_dto_edge_kinds import GraphLegendDTOEdgeKinds
+from .graph_legend_dto_step_kinds import GraphLegendDTOStepKinds
+from .graph_node_dto import GraphNodeDTO
+from .graph_node_dto_step_kind import GraphNodeDTOStepKind
 from .graph_task_node import GraphTaskNode
 from .grep_request import GrepRequest
 from .grep_response import GrepResponse
 from .grep_response_422 import GrepResponse422
+from .grid_position_dto import GridPositionDTO
 from .http_validation_error import HTTPValidationError
+from .idempotency_dto import IdempotencyDTO
 from .import_profile_request import ImportProfileRequest
 from .import_profile_response import ImportProfileResponse
 from .import_profile_response_422 import ImportProfileResponse422
@@ -421,6 +460,8 @@ from .list_mcp_tool_catalog_response_servers import ListMcpToolCatalogResponseSe
 from .list_notes_request import ListNotesRequest
 from .list_notes_response import ListNotesResponse
 from .list_notes_response_422 import ListNotesResponse422
+from .list_playbook_pending_events_response import ListPlaybookPendingEventsResponse
+from .list_playbook_pending_events_response_by_reason import ListPlaybookPendingEventsResponseByReason
 from .list_playbook_runs_request import ListPlaybookRunsRequest
 from .list_playbook_runs_response import ListPlaybookRunsResponse
 from .list_playbook_runs_response_422 import ListPlaybookRunsResponse422
@@ -451,6 +492,9 @@ from .list_workspaces_request import ListWorkspacesRequest
 from .list_workspaces_response import ListWorkspacesResponse
 from .list_workspaces_response_422 import ListWorkspacesResponse422
 from .log_entry import LogEntry
+from .loop_iteration_overlay_dto import LoopIterationOverlayDTO
+from .loop_node_detail_dto import LoopNodeDetailDTO
+from .loop_node_detail_dto_failure_policy import LoopNodeDetailDTOFailurePolicy
 from .machine_metrics import MachineMetrics
 from .mcp_server_summary import McpServerSummary
 from .memory_save_request import MemorySaveRequest
@@ -481,15 +525,37 @@ from .message_status_response_422 import MessageStatusResponse422
 from .metrics_sample import MetricsSample
 from .metrics_series_response import MetricsSeriesResponse
 from .model_tokens import ModelTokens
+from .node_advanced_dto import NodeAdvancedDTO
+from .node_advanced_dto_result_schema_type_0 import NodeAdvancedDTOResultSchemaType0
+from .node_advanced_dto_typed_step import NodeAdvancedDTOTypedStep
+from .node_badge_dto import NodeBadgeDTO
+from .node_badge_dto_kind import NodeBadgeDTOKind
+from .node_overlay_dto import NodeOverlayDTO
+from .node_overlay_dto_state import NodeOverlayDTOState
 from .note_summary import NoteSummary
+from .operator_decision_dto import OperatorDecisionDTO
+from .operator_decision_dto_options_item import OperatorDecisionDTOOptionsItem
 from .orchestrator_control_request import OrchestratorControlRequest
 from .orchestrator_control_response import OrchestratorControlResponse
 from .orchestrator_control_response_422 import OrchestratorControlResponse422
+from .outcome_explanation_dto import OutcomeExplanationDTO
 from .pause_project_request import PauseProjectRequest
 from .pause_project_response import PauseProjectResponse
 from .pause_project_response_422 import PauseProjectResponse422
 from .pause_task_request import PauseTaskRequest
 from .pause_task_response_422 import PauseTaskResponse422
+from .pending_event_dto import PendingEventDTO
+from .pending_event_dto_event import PendingEventDTOEvent
+from .pending_event_dto_reason import PendingEventDTOReason
+from .playbook_activate_request import PlaybookActivateRequest
+from .playbook_activate_response_422 import PlaybookActivateResponse422
+from .playbook_activation_health_request import PlaybookActivationHealthRequest
+from .playbook_activation_health_response import PlaybookActivationHealthResponse
+from .playbook_activation_health_response_422 import PlaybookActivationHealthResponse422
+from .playbook_activation_health_response_by_health import PlaybookActivationHealthResponseByHealth
+from .playbook_artifact_diff_request import PlaybookArtifactDiffRequest
+from .playbook_artifact_diff_response import PlaybookArtifactDiffResponse
+from .playbook_artifact_diff_response_422 import PlaybookArtifactDiffResponse422
 from .playbook_graph_edge import PlaybookGraphEdge
 from .playbook_graph_edge_edge_type import PlaybookGraphEdgeEdgeType
 from .playbook_graph_identity import PlaybookGraphIdentity
@@ -518,11 +584,25 @@ from .playbook_install_response import PlaybookInstallResponse
 from .playbook_install_response_422 import PlaybookInstallResponse422
 from .playbook_last_run import PlaybookLastRun
 from .playbook_node_llm_config import PlaybookNodeLlmConfig
+from .playbook_pending_event_action_request import PlaybookPendingEventActionRequest
+from .playbook_pending_event_action_response import PlaybookPendingEventActionResponse
+from .playbook_pending_event_action_response_422 import PlaybookPendingEventActionResponse422
+from .playbook_pending_event_action_response_action import PlaybookPendingEventActionResponseAction
+from .playbook_pending_events_request import PlaybookPendingEventsRequest
+from .playbook_pending_events_response_422 import PlaybookPendingEventsResponse422
+from .playbook_run_overlay_request import PlaybookRunOverlayRequest
+from .playbook_run_overlay_response import PlaybookRunOverlayResponse
+from .playbook_run_overlay_response_422 import PlaybookRunOverlayResponse422
+from .playbook_run_overlay_response_lifecycle import PlaybookRunOverlayResponseLifecycle
+from .playbook_run_overlay_response_trigger_event import PlaybookRunOverlayResponseTriggerEvent
 from .playbook_run_path_entry import PlaybookRunPathEntry
 from .playbook_run_summary import PlaybookRunSummary
 from .playbook_summary import PlaybookSummary
 from .playbook_transition_detail import PlaybookTransitionDetail
 from .playbook_transition_detail_when_type_1 import PlaybookTransitionDetailWhenType1
+from .playbook_v2_graph_request import PlaybookV2GraphRequest
+from .playbook_v2_graph_response import PlaybookV2GraphResponse
+from .playbook_v2_graph_response_422 import PlaybookV2GraphResponse422
 from .playbook_validate_request import PlaybookValidateRequest
 from .playbook_validate_response import PlaybookValidateResponse
 from .playbook_validate_response_422 import PlaybookValidateResponse422
@@ -635,12 +715,16 @@ from .read_prompt_request import ReadPromptRequest
 from .read_prompt_response import ReadPromptResponse
 from .read_prompt_response_422 import ReadPromptResponse422
 from .ready_task import ReadyTask
+from .receipt_dto import ReceiptDTO
+from .receipt_dto_step_kind import ReceiptDTOStepKind
 from .record_file_inspection_request import RecordFileInspectionRequest
 from .record_file_inspection_response import RecordFileInspectionResponse
 from .record_file_inspection_response_422 import RecordFileInspectionResponse422
 from .recover_workflow_request import RecoverWorkflowRequest
 from .recover_workflow_response import RecoverWorkflowResponse
 from .recover_workflow_response_422 import RecoverWorkflowResponse422
+from .redaction_row_dto import RedactionRowDTO
+from .redaction_row_dto_policy import RedactionRowDTOPolicy
 from .release_project_constraint_request import ReleaseProjectConstraintRequest
 from .release_project_constraint_response import ReleaseProjectConstraintResponse
 from .release_project_constraint_response_422 import ReleaseProjectConstraintResponse422
@@ -681,6 +765,12 @@ from .resume_project_response import ResumeProjectResponse
 from .resume_project_response_422 import ResumeProjectResponse422
 from .resume_task_request import ResumeTaskRequest
 from .resume_task_response_422 import ResumeTaskResponse422
+from .retry_policy_dto import RetryPolicyDTO
+from .rule_cluster_dto import RuleClusterDTO
+from .rule_cluster_dto_trigger_filter_type_0 import RuleClusterDTOTriggerFilterType0
+from .rule_diff_dto import RuleDiffDTO
+from .rule_diff_dto_change import RuleDiffDTOChange
+from .run_budget_dto import RunBudgetDTO
 from .run_playbook_request import RunPlaybookRequest
 from .run_playbook_request_event_type_0 import RunPlaybookRequestEventType0
 from .run_playbook_response import RunPlaybookResponse
@@ -739,6 +829,7 @@ from .set_control_interface_response_422 import SetControlInterfaceResponse422
 from .set_default_branch_request import SetDefaultBranchRequest
 from .set_default_branch_response import SetDefaultBranchResponse
 from .set_default_branch_response_422 import SetDefaultBranchResponse422
+from .set_playbook_activation_response import SetPlaybookActivationResponse
 from .set_playbook_enabled_request import SetPlaybookEnabledRequest
 from .set_playbook_enabled_response import SetPlaybookEnabledResponse
 from .set_playbook_enabled_response_422 import SetPlaybookEnabledResponse422
@@ -766,12 +857,18 @@ from .skip_task_request import SkipTaskRequest
 from .skip_task_response import SkipTaskResponse
 from .skip_task_response_422 import SkipTaskResponse422
 from .slot_metrics import SlotMetrics
+from .source_ref_dto import SourceRefDTO
 from .spec_approve_request import SpecApproveRequest
 from .spec_approve_response import SpecApproveResponse
 from .spec_approve_response_422 import SpecApproveResponse422
 from .stall_metrics import StallMetrics
 from .start_agent_terminal_request import StartAgentTerminalRequest
 from .start_agent_terminal_response_422 import StartAgentTerminalResponse422
+from .step_diff_dto import StepDiffDTO
+from .step_diff_dto_change import StepDiffDTOChange
+from .step_diff_dto_step_kind_type_0 import StepDiffDTOStepKindType0
+from .step_explanation_dto import StepExplanationDTO
+from .step_explanation_dto_renderer import StepExplanationDTORenderer
 from .stop_task_request import StopTaskRequest
 from .stop_task_response import StopTaskResponse
 from .stop_task_response_422 import StopTaskResponse422
@@ -878,6 +975,7 @@ from .token_audit_response_daily_item import TokenAuditResponseDailyItem
 from .token_audit_response_top_tasks_item import TokenAuditResponseTopTasksItem
 from .token_metrics import TokenMetrics
 from .token_metrics_by_model import TokenMetricsByModel
+from .token_usage_dto import TokenUsageDTO
 from .transcript_entry_model import TranscriptEntryModel
 from .transcript_entry_model_usage_type_0 import TranscriptEntryModelUsageType0
 from .update_and_restart_request import UpdateAndRestartRequest
@@ -892,6 +990,11 @@ from .update_playbook_source_response import UpdatePlaybookSourceResponse
 from .update_playbook_source_response_422 import UpdatePlaybookSourceResponse422
 from .validation_error import ValidationError
 from .validation_error_context import ValidationErrorContext
+from .wait_facts_dto import WaitFactsDTO
+from .wait_facts_dto_deadline_source_type_0 import WaitFactsDTODeadlineSourceType0
+from .wait_facts_dto_wait_kind import WaitFactsDTOWaitKind
+from .wait_node_detail_dto import WaitNodeDetailDTO
+from .wait_node_detail_dto_wait_kind import WaitNodeDetailDTOWaitKind
 from .withheld_task import WithheldTask
 from .workspace_doctor_request import WorkspaceDoctorRequest
 from .workspace_doctor_response_422 import WorkspaceDoctorResponse422
@@ -906,6 +1009,9 @@ from .write_note_response import WriteNoteResponse
 from .write_note_response_422 import WriteNoteResponse422
 
 __all__ = (
+    "ActivationHealthReasonDTO",
+    "ActivationStateDTO",
+    "ActivationStateDTOHealth",
     "AddDependencyRequest",
     "AddDependencyResponse",
     "AddDependencyResponse422",
@@ -925,6 +1031,9 @@ __all__ = (
     "AgentSettings",
     "AgentSummary",
     "AgentWaitingQuestion",
+    "AiBudgetDTO",
+    "AiNodeDetailDTO",
+    "AiNodeDetailDTOOutputSchemaType0",
     "AppendNoteRequest",
     "AppendNoteResponse",
     "AppendNoteResponse422",
@@ -934,13 +1043,16 @@ __all__ = (
     "ArchiveTaskRequest",
     "ArchiveTaskResponse",
     "ArchiveTaskResponse422",
+    "ArtifactRefDTO",
     "AskHumanRequest",
     "AskHumanResponse422",
     "AssignmentRouteDetail",
     "BodyUploadAttachmentApiTasksTaskIdAttachmentsPost",
+    "CancellationFactsDTO",
     "CancelPlaybookRunRequest",
     "CancelPlaybookRunResponse",
     "CancelPlaybookRunResponse422",
+    "CapabilityNamespacesDTO",
     "CatalogEntryModel",
     "CheckoutBranchRequest",
     "CheckoutBranchResponse",
@@ -957,6 +1069,7 @@ __all__ = (
     "ClaudeUsageResponseActiveSessionsItem",
     "ClaudeUsageResponseModelUsageType0",
     "ClaudeUsageResponseRateLimitType0",
+    "ClusterBoundsDTO",
     "CommitChangesRequest",
     "CommitChangesResponse",
     "CommitChangesResponse422",
@@ -970,6 +1083,8 @@ __all__ = (
     "CompilePlaybookRequest",
     "CompilePlaybookResponse",
     "CompilePlaybookResponse422",
+    "ContractChangeDTO",
+    "ContractChangeDTOChange",
     "CountProjectMemoryFilesRequest",
     "CountProjectMemoryFilesResponse",
     "CountProjectMemoryFilesResponse422",
@@ -1009,6 +1124,7 @@ __all__ = (
     "DaemonMetrics",
     "DbPreflightHierarchyRequest",
     "DbPreflightHierarchyResponse422",
+    "DelegationPolicyDTO",
     "DeleteAgentRequest",
     "DeleteAgentResponse",
     "DeleteAgentResponse422",
@@ -1049,6 +1165,9 @@ __all__ = (
     "DryRunPlaybookResponse422",
     "DryRunPlaybookResponseMockEvent",
     "DryRunPlaybookResponseNodeTraceItem",
+    "EdgeDiffDTO",
+    "EdgeDiffDTOChange",
+    "EdgeOverlayDTO",
     "EditAgentRequest",
     "EditAgentResponse422",
     "EditFileRequest",
@@ -1081,10 +1200,13 @@ __all__ = (
     "EditWorkspaceRequest",
     "EditWorkspaceResponse",
     "EditWorkspaceResponse422",
+    "EffectClauseDTO",
+    "EffectClauseDTOKind",
     "EnsureTaskRequest",
     "EnsureTaskResponse",
     "EnsureTaskResponse422",
     "EnvVarReference",
+    "EventGroupDTO",
     "EventTrigger",
     "ExecuteRequest",
     "ExecuteRequestArgs",
@@ -1092,9 +1214,14 @@ __all__ = (
     "ExplainTaskRequest",
     "ExplainTaskResponse",
     "ExplainTaskResponse422",
+    "ExplanationRowDTO",
+    "ExplanationRowDTOSource",
+    "ExplanationValueDTO",
+    "ExplanationValueDTOKind",
     "ExportProfileRequest",
     "ExportProfileResponse",
     "ExportProfileResponse422",
+    "FieldChangeDTO",
     "FileEntry",
     "FileInspectionRecord",
     "FindMergeConflictWorkspacesRequest",
@@ -1262,13 +1389,28 @@ __all__ = (
     "GlobFilesResponse",
     "GlobFilesResponse422",
     "GraphAgent",
+    "GraphDiagnosticDTO",
+    "GraphDiagnosticDTOSeverity",
     "GraphEdge",
+    "GraphEdgeDTO",
+    "GraphEdgeDTOKind",
     "GraphGate",
+    "GraphLayoutDTO",
+    "GraphLayoutDTOClusterBounds",
+    "GraphLayoutDTODirection",
+    "GraphLayoutDTOGridPositions",
+    "GraphLegendDTO",
+    "GraphLegendDTOEdgeKinds",
+    "GraphLegendDTOStepKinds",
+    "GraphNodeDTO",
+    "GraphNodeDTOStepKind",
     "GraphTaskNode",
     "GrepRequest",
     "GrepResponse",
     "GrepResponse422",
+    "GridPositionDTO",
     "HTTPValidationError",
+    "IdempotencyDTO",
     "ImportProfileRequest",
     "ImportProfileResponse",
     "ImportProfileResponse422",
@@ -1321,6 +1463,8 @@ __all__ = (
     "ListNotesRequest",
     "ListNotesResponse",
     "ListNotesResponse422",
+    "ListPlaybookPendingEventsResponse",
+    "ListPlaybookPendingEventsResponseByReason",
     "ListPlaybookRunsRequest",
     "ListPlaybookRunsResponse",
     "ListPlaybookRunsResponse422",
@@ -1351,6 +1495,9 @@ __all__ = (
     "ListWorkspacesResponse",
     "ListWorkspacesResponse422",
     "LogEntry",
+    "LoopIterationOverlayDTO",
+    "LoopNodeDetailDTO",
+    "LoopNodeDetailDTOFailurePolicy",
     "MachineMetrics",
     "McpServerSummary",
     "MemorySaveRequest",
@@ -1381,15 +1528,37 @@ __all__ = (
     "MetricsSample",
     "MetricsSeriesResponse",
     "ModelTokens",
+    "NodeAdvancedDTO",
+    "NodeAdvancedDTOResultSchemaType0",
+    "NodeAdvancedDTOTypedStep",
+    "NodeBadgeDTO",
+    "NodeBadgeDTOKind",
+    "NodeOverlayDTO",
+    "NodeOverlayDTOState",
     "NoteSummary",
+    "OperatorDecisionDTO",
+    "OperatorDecisionDTOOptionsItem",
     "OrchestratorControlRequest",
     "OrchestratorControlResponse",
     "OrchestratorControlResponse422",
+    "OutcomeExplanationDTO",
     "PauseProjectRequest",
     "PauseProjectResponse",
     "PauseProjectResponse422",
     "PauseTaskRequest",
     "PauseTaskResponse422",
+    "PendingEventDTO",
+    "PendingEventDTOEvent",
+    "PendingEventDTOReason",
+    "PlaybookActivateRequest",
+    "PlaybookActivateResponse422",
+    "PlaybookActivationHealthRequest",
+    "PlaybookActivationHealthResponse",
+    "PlaybookActivationHealthResponse422",
+    "PlaybookActivationHealthResponseByHealth",
+    "PlaybookArtifactDiffRequest",
+    "PlaybookArtifactDiffResponse",
+    "PlaybookArtifactDiffResponse422",
     "PlaybookGraphEdge",
     "PlaybookGraphEdgeEdgeType",
     "PlaybookGraphIdentity",
@@ -1418,11 +1587,25 @@ __all__ = (
     "PlaybookInstallResponse422",
     "PlaybookLastRun",
     "PlaybookNodeLlmConfig",
+    "PlaybookPendingEventActionRequest",
+    "PlaybookPendingEventActionResponse",
+    "PlaybookPendingEventActionResponse422",
+    "PlaybookPendingEventActionResponseAction",
+    "PlaybookPendingEventsRequest",
+    "PlaybookPendingEventsResponse422",
+    "PlaybookRunOverlayRequest",
+    "PlaybookRunOverlayResponse",
+    "PlaybookRunOverlayResponse422",
+    "PlaybookRunOverlayResponseLifecycle",
+    "PlaybookRunOverlayResponseTriggerEvent",
     "PlaybookRunPathEntry",
     "PlaybookRunSummary",
     "PlaybookSummary",
     "PlaybookTransitionDetail",
     "PlaybookTransitionDetailWhenType1",
+    "PlaybookV2GraphRequest",
+    "PlaybookV2GraphResponse",
+    "PlaybookV2GraphResponse422",
     "PlaybookValidateRequest",
     "PlaybookValidateResponse",
     "PlaybookValidateResponse422",
@@ -1533,12 +1716,16 @@ __all__ = (
     "ReadPromptResponse",
     "ReadPromptResponse422",
     "ReadyTask",
+    "ReceiptDTO",
+    "ReceiptDTOStepKind",
     "RecordFileInspectionRequest",
     "RecordFileInspectionResponse",
     "RecordFileInspectionResponse422",
     "RecoverWorkflowRequest",
     "RecoverWorkflowResponse",
     "RecoverWorkflowResponse422",
+    "RedactionRowDTO",
+    "RedactionRowDTOPolicy",
     "ReleaseProjectConstraintRequest",
     "ReleaseProjectConstraintResponse",
     "ReleaseProjectConstraintResponse422",
@@ -1579,6 +1766,12 @@ __all__ = (
     "ResumeProjectResponse422",
     "ResumeTaskRequest",
     "ResumeTaskResponse422",
+    "RetryPolicyDTO",
+    "RuleClusterDTO",
+    "RuleClusterDTOTriggerFilterType0",
+    "RuleDiffDTO",
+    "RuleDiffDTOChange",
+    "RunBudgetDTO",
     "RunPlaybookRequest",
     "RunPlaybookRequestEventType0",
     "RunPlaybookResponse",
@@ -1637,6 +1830,7 @@ __all__ = (
     "SetDefaultBranchRequest",
     "SetDefaultBranchResponse",
     "SetDefaultBranchResponse422",
+    "SetPlaybookActivationResponse",
     "SetPlaybookEnabledRequest",
     "SetPlaybookEnabledResponse",
     "SetPlaybookEnabledResponse422",
@@ -1664,12 +1858,18 @@ __all__ = (
     "SkipTaskResponse",
     "SkipTaskResponse422",
     "SlotMetrics",
+    "SourceRefDTO",
     "SpecApproveRequest",
     "SpecApproveResponse",
     "SpecApproveResponse422",
     "StallMetrics",
     "StartAgentTerminalRequest",
     "StartAgentTerminalResponse422",
+    "StepDiffDTO",
+    "StepDiffDTOChange",
+    "StepDiffDTOStepKindType0",
+    "StepExplanationDTO",
+    "StepExplanationDTORenderer",
     "StopTaskRequest",
     "StopTaskResponse",
     "StopTaskResponse422",
@@ -1774,6 +1974,7 @@ __all__ = (
     "TokenAuditResponseTopTasksItem",
     "TokenMetrics",
     "TokenMetricsByModel",
+    "TokenUsageDTO",
     "TranscriptEntryModel",
     "TranscriptEntryModelUsageType0",
     "UpdateAndRestartRequest",
@@ -1788,6 +1989,11 @@ __all__ = (
     "UpdatePlaybookSourceResponse422",
     "ValidationError",
     "ValidationErrorContext",
+    "WaitFactsDTO",
+    "WaitFactsDTODeadlineSourceType0",
+    "WaitFactsDTOWaitKind",
+    "WaitNodeDetailDTO",
+    "WaitNodeDetailDTOWaitKind",
     "WithheldTask",
     "WorkspaceDoctorRequest",
     "WorkspaceDoctorResponse422",

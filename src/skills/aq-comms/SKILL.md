@@ -15,7 +15,8 @@ The daemon's message bus carries three kinds of frames: agent → user
 
 ```bash
 aq message inbox                              # your session's pending messages
-aq message inbox --json                       # structured
+aq --json message inbox                       # structured (--json is a
+                                              # top-level flag, before the group)
 aq message list --project <pid>               # everything sent in a project
 aq message list --thread-id dashboard:<pid>   # filter to a chat thread
 ```
@@ -65,8 +66,7 @@ human operator; other recipient IDs identify the specific session or task.
 Replies preserve threading so the receiver can trace the exchange:
 
 ```bash
-aq message reply --message-id <original_msg_id> \
-  --body "Yes, proceed. I've cleared the gate."
+aq message reply <original_msg_id> "Yes, proceed. I've cleared the gate."
 ```
 
 ## Report a blocker

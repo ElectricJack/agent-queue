@@ -307,15 +307,21 @@ def test_cli_context_includes_surrounding_lines(log_file: Path):
 
 
 def test_logs_command_survives_direct_daemon_import():
-    """``src.cli.daemon`` must not register its own ``logs`` command.
+    """``src.cli.logs`` must own ``aq logs`` whatever the import order is.
 
-    ``app.py`` imports ``daemon`` before ``logs`` so the full command normally
-    wins, but a test that imports ``src.cli.daemon`` directly (``tests/
-    test_cli_daemon.py``) enters ``app.py`` through the circular
-    ``from .app import cli``; the daemon module then finishes importing
-    *after* ``logs.py`` and a second ``@cli.command("logs")`` there silently
-    replaces the real one, which is how CI lost ``aq logs -F``. Check in a
-    fresh interpreter so this file's own import order cannot mask it.
+    ``src.cli.daemon`` used to register a second, filter-less
+    ``@cli.command("logs")``. ``app.py`` imports ``daemon`` before ``logs`` so
+    the full command normally won, but any module that imports
+    ``src.cli.daemon`` directly (``tests/test_cli_daemon.py``) enters
+    ``app.py`` through the circular ``from .app import cli``; the daemon
+    module then finished importing *after* ``logs.py`` and its duplicate
+    silently replaced the real one, which is how CI lost ``aq logs -F``.
+
+    Assert on the *resolved* command's filter options rather than on the
+    absence of a particular line in ``daemon.py``, so any future duplicate
+    registration from any module fails here too. Run it in a fresh
+    interpreter, daemon-first, so this file's own import order cannot mask
+    the clash.
     """
     import subprocess
     import sys
@@ -325,7 +331,9 @@ def test_logs_command_survives_direct_daemon_import():
         "from src.cli.app import cli\n"
         "cmd = cli.commands['logs']\n"
         "assert cmd.callback.__module__ == 'src.cli.logs', cmd.callback.__module__\n"
-        "assert any('-F' in o.opts for o in cmd.params), [o.opts for o in cmd.params]\n"
+        "opts = {o for p in cmd.params for o in p.opts}\n"
+        "missing = {'-F', '--level', '--task-id', '--grep', '--since', '--component'} - opts\n"
+        "assert not missing, sorted(missing)\n"
     )
     result = subprocess.run(
         [sys.executable, "-c", code],
