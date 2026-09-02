@@ -14,6 +14,8 @@ from src.models import Project, Task, TaskStatus
 from src.task_graph import parse_graph
 from src.task_graph.creator import build_plan, write_plan
 
+pytestmark = pytest.mark.perf
+
 PROJECT_ID = "proj"
 
 

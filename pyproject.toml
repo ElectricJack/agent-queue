@@ -155,6 +155,7 @@ where = ["."]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests", "packages"]
+addopts = "-n auto --dist loadfile --durations=10 -m \"not tmux and not integration and not perf\""
 markers = [
     "functional: tests that launch real Claude CLI (require auth + API key)",
     "functional_mcp: functional tests requiring npm/npx for MCP servers",

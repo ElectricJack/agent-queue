@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import tempfile
 import time
 
 import pytest
@@ -50,7 +51,9 @@ async def test_unknown_alembic_revision_fails_without_rewriting_version(tmp_path
         await engine.dispose()
 
 
-async def test_startup_data_migrations_are_idempotent_and_preserve_same_project_links(tmp_path):
+async def test_startup_data_migrations_are_idempotent_and_preserve_same_project_links(
+    tmp_path, disable_schema_cache
+):
     engine = create_sqlite_engine(str(tmp_path / "idempotent.db"))
     try:
         await run_schema_setup(engine)
@@ -64,6 +67,59 @@ async def test_startup_data_migrations_are_idempotent_and_preserve_same_project_
         await engine.dispose()
 
 
+async def test_fresh_temp_sqlite_uses_migrated_schema_cache(tmp_path, monkeypatch):
+    """A fresh test database is copied from one fully migrated template.
+
+    Removing the schema-cache path in ``run_schema_setup`` must make this
+    fail: no template is produced, even though Alembic can still migrate the
+    target database directly.
+    """
+    cache_root = tmp_path / "cache-root"
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(cache_root))
+    monkeypatch.setenv("AQ_SCHEMA_CACHE", "1")
+
+    engine = create_sqlite_engine(str(tmp_path / "cached.db"))
+    try:
+        await run_schema_setup(engine)
+        cache_files = list((cache_root / "aq-schema-cache").glob("*.db"))
+        assert len(cache_files) == 1
+        async with engine.connect() as conn:
+            assert (
+                await conn.execute(text("SELECT version_num FROM alembic_version"))
+            ).scalar() is not None
+    finally:
+        await engine.dispose()
+
+
+async def test_corrupt_schema_cache_template_rebuilds_from_alembic(tmp_path, monkeypatch):
+    """A damaged template never leaves a fresh database without a schema."""
+    cache_root = tmp_path / "cache-root"
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(cache_root))
+    monkeypatch.setenv("AQ_SCHEMA_CACHE", "1")
+
+    first = create_sqlite_engine(str(tmp_path / "first.db"))
+    try:
+        await run_schema_setup(first)
+    finally:
+        await first.dispose()
+
+    template = next((cache_root / "aq-schema-cache").glob("*.db"))
+    template.write_bytes(b"not a sqlite database")
+
+    second = create_sqlite_engine(str(tmp_path / "second.db"))
+    try:
+        await run_schema_setup(second)
+        async with second.connect() as conn:
+            assert (
+                await conn.execute(text("SELECT version_num FROM alembic_version"))
+            ).scalar() is not None
+    finally:
+        await second.dispose()
+
+    assert template.read_bytes().startswith(b"SQLite format 3\000")
+
+
+@pytest.mark.perf
 def test_sqlite_head_window_downgrade_reupgrade_preserves_and_transforms_data(tmp_path):
     """head -> below the hierarchy pair -> head, with data in the window.
 
@@ -133,6 +189,7 @@ def test_sqlite_head_window_downgrade_reupgrade_preserves_and_transforms_data(tm
     engine.dispose()
 
 
+@pytest.mark.perf
 def test_one_way_token_ledger_downgrade_is_documented_lossy(tmp_path):
     """Below-hierarchy history: c4e1a9d7b310's downgrade is one-way by design.
 

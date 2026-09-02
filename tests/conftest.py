@@ -11,6 +11,16 @@ import pytest
 
 from src.models import TaskContext  # noqa: F401  (re-exported for test modules)
 
+# Fresh per-test SQLite databases use the migration template cache. Individual
+# migration tests can request ``disable_schema_cache`` to exercise Alembic.
+os.environ.setdefault("AQ_SCHEMA_CACHE", "1")
+
+
+@pytest.fixture
+def disable_schema_cache(monkeypatch):
+    """Force a test through the real Alembic chain instead of the template."""
+    monkeypatch.setenv("AQ_SCHEMA_CACHE", "0")
+
 
 @pytest.fixture(scope="session")
 def claude_cli_path() -> str:
