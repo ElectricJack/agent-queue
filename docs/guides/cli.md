@@ -186,7 +186,8 @@ aq test --aq-help                      # help (-h/--help belong to pytest)
 running, so concurrent agents cannot each spawn a full-width test run. It
 adds `-n <per-session cap>` and `-m "not perf and not migration and not slow and not tmux and not
 integration"` only when you did not pass your own. It needs no daemon — the lock
-is a file under `~/.agent-queue/locks/test-slots/` — and the slot is
+is a file under `{data_dir}/locks/test-slots/` (defaulting to
+`~/.agent-queue/locks/test-slots/`) — and the slot is
 released by the kernel even if the run is killed.
 
 Exit codes are pytest's, plus **75** (`EX_TEMPFAIL`) for "no slot came free

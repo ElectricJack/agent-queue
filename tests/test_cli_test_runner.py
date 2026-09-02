@@ -13,7 +13,13 @@ import pytest
 from click.testing import CliRunner
 
 from src.cli.app import cli
-from src.cli.test_runner import _caps, _compose_pytest_argv, _has_flag, _xdist_disabled
+from src.cli.test_runner import (
+    _caps,
+    _compose_pytest_argv,
+    _has_flag,
+    _run_forwarding_signals,
+    _xdist_disabled,
+)
 from src.config import ResourcesConfig
 
 #: ``_compose_pytest_argv`` returns a full command line whose first three
@@ -102,7 +108,9 @@ class TestArgvComposition:
 
 
 class TestCapResolution:
-    def test_config_supplies_the_caps(self):
+    def test_config_supplies_the_caps(self, monkeypatch):
+        monkeypatch.delenv("AQ_TEST_SLOTS", raising=False)
+        monkeypatch.delenv("AQ_TEST_WORKERS", raising=False)
         res = ResourcesConfig(cores=24, max_concurrent_agents=8, test_slots=3)
         slots, workers, markers, poll, timeout = _caps(res)
         assert (slots, workers) == (3, 3)
@@ -147,6 +155,26 @@ class TestCommand:
         assert result.exit_code == 0
         assert "Test slots" in result.output
 
+    def test_custom_data_dir_owns_the_semaphore(self, runner, monkeypatch, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        data_dir = tmp_path / "custom-data"
+        config_path.write_text(
+            f"data_dir: {data_dir}\n"
+            f"database_path: {tmp_path / 'aq.db'}\n"
+            "discord:\n"
+            "  bot_token: test-token\n"
+            "  guild_id: '1'\n"
+        )
+        monkeypatch.setattr("src.cli.test_runner.CONFIG_PATH", str(config_path))
+        monkeypatch.setenv("AQ_TEST_SLOTS", "1")
+        monkeypatch.setattr("src.cli.test_runner._run_forwarding_signals", lambda _argv: 0)
+
+        result = runner.invoke(cli, ["test", "tests/test_config.py"])
+
+        assert result.exit_code == 0
+        assert (data_dir / "locks" / "test-slots").is_dir()
+        assert not (tmp_path / "locks" / "test-slots").exists()
+
     def test_a_full_box_fails_retryably_rather_than_hanging(self, runner, monkeypatch, tmp_path):
         monkeypatch.setattr("src.cli.test_runner.CONFIG_PATH", str(tmp_path / "config.yaml"))
         monkeypatch.setenv("AQ_TEST_SLOTS", "1")
@@ -170,6 +198,35 @@ class TestCommand:
         # EX_TEMPFAIL: "come back later", not "your tests failed".
         assert result.exit_code == 75
         assert "no test slot free" in result.output
+
+
+class TestSignalForwarding:
+    def test_inheritable_slot_fd_reaches_the_pytest_process(self, tmp_path):
+        import os
+        import sys
+
+        from src.resources.semaphore import SlotSemaphore
+
+        acquired = SlotSemaphore(tmp_path / "slots", 1).try_acquire()
+        assert acquired is not None
+        _, fd = acquired
+        observed = tmp_path / "inherited.txt"
+        script = (
+            "import os, pathlib, sys; "
+            "fd = int(sys.argv[1]); "
+            "path = pathlib.Path(sys.argv[2]); "
+            "\ntry: os.fstat(fd)\n"
+            "except OSError: path.write_text('closed')\n"
+            "else: path.write_text('inherited')\n"
+        )
+        try:
+            assert _run_forwarding_signals(
+                [sys.executable, "-c", script, str(fd), str(observed)]
+            ) == 0
+        finally:
+            os.close(fd)
+
+        assert observed.read_text() == "inherited"
 
 
 class TestDefaultDeselectsMatchPyproject:
