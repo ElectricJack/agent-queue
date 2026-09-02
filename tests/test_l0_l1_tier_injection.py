@@ -53,8 +53,6 @@ tests belong back here when that lands.
 
 from unittest.mock import AsyncMock
 
-import pytest
-
 from src.models import Task, TaskContext, TaskStatus
 from tests.session_dispatch_helpers import (
     create_session_profile,
@@ -193,14 +191,6 @@ class TestL0RoleFromProfile:
         bodies = prime_bodies(await render_prime(orch, "t-1"))
         assert bodies["role"] == "You are a QA specialist."
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "task calm-stone: prime builds the role section from task.profile_id "
-            "only, so a task inheriting the project's default profile launches "
-            "with that profile on its session row but gets no L0 Role"
-        ),
-    )
     async def test_l0_role_from_project_default_profile(self, session_orch):
         """A task without its own profile_id still gets L0 from the project default."""
         orch = session_orch
