@@ -219,6 +219,19 @@ class LayoutQueryMixin:
             )
             return {m["task_id"]: self._row_from_mapping(m) for m in res.mappings()}
 
+    async def load_subtree_ids(self, project_id, variant, path_prefix) -> list[str]:
+        """Task ids of the row at ``path_prefix`` and every row beneath it."""
+        from src.database.tables import task_layouts
+        async with self._engine.begin() as conn:
+            res = await conn.execute(
+                select(task_layouts.c.task_id).where(
+                    task_layouts.c.project_id == project_id,
+                    task_layouts.c.variant == variant,
+                    task_layouts.c.path.like(path_prefix + "%"),
+                )
+            )
+            return [r[0] for r in res.fetchall()]
+
     async def load_cells(self, project_id, variant, task_ids) -> dict[str, list[tuple[int, int]]]:
         from src.database.tables import task_layout_cells as cells
         async with self._engine.begin() as conn:
