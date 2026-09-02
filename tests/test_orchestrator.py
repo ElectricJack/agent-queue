@@ -23,24 +23,6 @@ from src.sessions.harness_parser import Harness
 from tests.assignment_routing_helpers import install_already_routed
 
 
-
-def _ahead_of_default(default_branch: str = "main") -> AsyncMock:
-    """A ``_arun`` mock whose branch carries commits beyond the default branch.
-
-    ``_phase_verify`` treats "zero commits ahead of the default branch" as the
-    no-change case (a worktree task cannot check out the default branch to
-    signal that), so PR-path tests need rev-list to report real work.
-    """
-
-    async def _run(args, cwd=None, **kwargs):
-        ahead = {f"{default_branch}..HEAD", f"origin/{default_branch}..HEAD"}
-        if args and args[0] == "rev-list" and ahead & set(args):
-            return "1"
-        return "0"
-
-    return AsyncMock(side_effect=_run)
-
-
 class MockAdapter(Runtime):
     def __init__(self, result=AgentResult.COMPLETED, tokens=1000, on_wait=None):
         self._result = result
@@ -1469,7 +1451,6 @@ class TestPhaseVerifyApprovalTask:
             integration_mode="pull_request",
         )
         await orch.db.create_task(task)
-        orch.git._arun = _ahead_of_default()
 
         ws = await orch.db.get_workspace("ws-1")
         ctx = self._make_ctx(orch, task, ws.workspace_path)
@@ -1494,10 +1475,9 @@ class TestPhaseVerifyApprovalTask:
         )
         await orch.db.create_task(task)
 
-        # On task branch, one commit ahead of main, but no PR
+        # On task branch but no PR
         orch.git.aget_current_branch = AsyncMock(return_value="feature-2")
         orch.git.afind_open_pr = AsyncMock(return_value=None)
-        orch.git._arun = _ahead_of_default()
         orch.git.ais_ancestor = AsyncMock(return_value=False)
 
         ws = await orch.db.get_workspace("ws-1")

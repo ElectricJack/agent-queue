@@ -480,27 +480,6 @@ class GitOpsMixin:
 
         return (ctx.pr_url, True)
 
-    async def _branch_has_no_commits(
-        self, workspace: str, default_branch: str, has_remote: bool
-    ) -> bool:
-        """True when HEAD carries no commits beyond the default branch.
-
-        The remote-tracking ref is authoritative when there is a remote; a
-        local-only repo falls back to the local default branch.  Any git
-        failure (missing ref, unborn branch, detached weirdness) returns
-        False so the caller keeps its stricter pre-existing behaviour.
-        """
-        bases = [f"origin/{default_branch}", default_branch] if has_remote else [default_branch]
-        for base in bases:
-            try:
-                out = await self.git._arun(
-                    ["rev-list", f"{base}..HEAD", "--count"], cwd=workspace
-                )
-            except Exception:
-                continue
-            return (out or "").strip() == "0"
-        return False
-
     async def _phase_verify(self, ctx: PipelineContext) -> PhaseResult:
         """Pipeline phase: verify the agent left the workspace in the expected git state.
 
@@ -829,17 +808,8 @@ class GitOpsMixin:
                         True,  # fixable — agent can commit and push
                     )
                 )
-            # Allow being on default if no changes were made (research task).
-            # In a worktree the agent *cannot* get back onto the default
-            # branch — `git checkout main` fails with "'main' is already used
-            # by worktree at <root>" — so the equivalent no-change signal is a
-            # task branch with zero commits ahead of the default branch.  A
-            # review/research task that legitimately produced no commits has
-            # no PR to open (`gh pr create` would fail with no commits
-            # between the branches), so demanding one is an unclosable gate.
-            if current_branch == default_branch or await self._branch_has_no_commits(
-                workspace, default_branch, has_remote
-            ):
+            # Allow being on default if no changes were made (research task)
+            if current_branch == default_branch:
                 # No-change task — acceptable, skip PR checks
                 pass
             else:

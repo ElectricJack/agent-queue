@@ -109,24 +109,6 @@ def _direct_task(task_id: str = "t-direct", **kw) -> Task:
     )
 
 
-def _branch_ahead(orch, default_branch: str = "main") -> None:
-    """Make ``git rev-list <default>..HEAD --count`` report real commits.
-
-    The default fixture mock answers ``0`` to every ``_arun``, which now reads
-    as "no commits ahead of the default branch" — the no-change case that
-    skips the PR check.  Tests that exercise the PR path need a branch that
-    actually carries work.
-    """
-
-    async def _run(args, cwd=None, **kwargs):
-        ahead = {f"{default_branch}..HEAD", f"origin/{default_branch}..HEAD"}
-        if args and args[0] == "rev-list" and ahead & set(args):
-            return "1"
-        return "0"
-
-    orch.git._arun = AsyncMock(side_effect=_run)
-
-
 def _ctx(orch, task, ws_path) -> PipelineContext:
     return PipelineContext(
         task=task,
@@ -185,7 +167,6 @@ class TestPhaseVerifyByMode:
     async def test_pr_mode_requires_open_pr_and_never_merges(self, orch):
         task = _pr_task()
         await orch.db.create_task(task)
-        _branch_ahead(orch)
         ws = await orch.db.get_workspace("ws-1")
         ctx = _ctx(orch, task, ws.workspace_path)
 
@@ -203,33 +184,11 @@ class TestPhaseVerifyByMode:
         await orch.db.create_task(task)
         orch.git.aget_current_branch = AsyncMock(return_value="feature-2")
         orch.git.afind_open_pr = AsyncMock(return_value=None)
-        _branch_ahead(orch)
         ws = await orch.db.get_workspace("ws-1")
         ctx = _ctx(orch, task, ws.workspace_path)
 
         result = await orch._phase_verify(ctx)
         assert result == PhaseResult.STOP
-
-    async def test_pr_mode_accepts_a_branch_with_no_commits(self, orch):
-        """A worktree task that produced no commits has no PR to open.
-
-        In a worktree the agent cannot check out the default branch at all
-        ('main' is already used by worktree at <root>), so the
-        ``current_branch == default_branch`` escape is unreachable and
-        ``gh pr create`` would fail with no commits between the branches.
-        Zero commits ahead of the default branch is the same no-change case.
-        """
-        task = _pr_task("t-pr-empty", branch_name="aq/empty")
-        await orch.db.create_task(task)
-        orch.git.aget_current_branch = AsyncMock(return_value="aq/empty")
-        orch.git.afind_open_pr = AsyncMock(return_value=None)
-        ws = await orch.db.get_workspace("ws-1")
-        ctx = _ctx(orch, task, ws.workspace_path)
-
-        # Fixture default: rev-list answers "0" — no commits ahead of main.
-        assert await orch._phase_verify(ctx) == PhaseResult.CONTINUE
-        assert ctx.verification_issues in (None, [])
-        orch.git.afind_open_pr.assert_not_awaited()
 
     async def test_direct_mode_auto_merges_to_default(self, orch):
         task = _direct_task()
@@ -383,7 +342,6 @@ class TestVerificationRetryKeepsTheSessionAlive:
         await orch.db.transition_task(task.id, TaskStatus.IN_PROGRESS)
         orch.git.aget_current_branch = AsyncMock(return_value=branch)
         orch.git.afind_open_pr = AsyncMock(return_value=None)
-        _branch_ahead(orch)
         ws = await orch.db.get_workspace("ws-1")
         return task, _ctx(orch, task, ws.workspace_path)
 
