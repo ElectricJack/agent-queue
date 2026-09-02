@@ -1,9 +1,7 @@
 import type { ReactNode } from "react";
-import type {
-  PlaybookGraphNode,
-  PlaybookNodeLlmConfig,
-  PlaybookTransitionDetail,
-} from "../../api/client";
+import type { PlaybookNodeLlmConfig, PlaybookTransitionDetail } from "../../api/client";
+import NodeExplanationCard from "./NodeExplanationCard";
+import type { ExplainedPlaybookGraphNode } from "./explanation";
 import { NODE_TYPE_LABELS } from "./types";
 
 /** A labelled block. Every compiled field lives inside one of these, so the
@@ -59,10 +57,10 @@ function condition(transition: PlaybookTransitionDetail) {
 }
 
 export interface PlaybookNodeInspectorProps {
-  node: PlaybookGraphNode | null;
+  node: ExplainedPlaybookGraphNode | null;
 }
 
-/** Read-only view of one compiled node's `details`.
+/** Read-only view of one compiled node's intent and `details`.
  *
  *  Everything here comes from the graph-view response — the inspector never
  *  fetches, and never reconstructs configuration from the rendered edges.
@@ -93,6 +91,13 @@ export default function PlaybookNodeInspector({ node }: PlaybookNodeInspectorPro
   if (d.timeout_seconds != null) timeoutRows.push(["execution", `${d.timeout_seconds}s`]);
   if (d.pause_timeout_seconds != null) timeoutRows.push(["pause", `${d.pause_timeout_seconds}s`]);
   if (d.on_timeout) timeoutRows.push(["on timeout", d.on_timeout]);
+
+  /* Contract-derived intent replaces the raw action as the default reading of
+   * the node. The compiled payloads are never dropped — they move under the
+   * Advanced disclosure, which opens by default for an uncontracted node so
+   * that node (and the flag-off path) reads exactly as it does today. */
+  const explanation = node.explanation ?? null;
+  const hasRawPayloads = Boolean(d.action || d.for_each || d.output);
 
   const nodeLlm = d.llm_config ? llmRows(d.llm_config) : [];
   const transitionLlm = d.transition_llm_config ? llmRows(d.transition_llm_config) : [];
@@ -154,22 +159,36 @@ export default function PlaybookNodeInspector({ node }: PlaybookNodeInspectorPro
         </Section>
       )}
 
-      {d.action && (
-        <Section name="Action">
-          <Payload value={d.action} />
+      {explanation && (
+        <Section name="Intent">
+          <NodeExplanationCard explanation={explanation} />
         </Section>
       )}
 
-      {d.for_each && (
-        <Section name="For each">
-          <Payload value={d.for_each} />
-        </Section>
-      )}
+      {hasRawPayloads && (
+        <details open={!explanation} className="min-w-0 space-y-2">
+          <summary className="cursor-pointer text-[10px] font-semibold uppercase tracking-wide text-gray-500">
+            Advanced
+          </summary>
 
-      {d.output && (
-        <Section name="Output">
-          <Payload value={d.output} />
-        </Section>
+          {d.action && (
+            <Section name="Action">
+              <Payload value={d.action} />
+            </Section>
+          )}
+
+          {d.for_each && (
+            <Section name="For each">
+              <Payload value={d.for_each} />
+            </Section>
+          )}
+
+          {d.output && (
+            <Section name="Output">
+              <Payload value={d.output} />
+            </Section>
+          )}
+        </details>
       )}
 
       {timeoutRows.length > 0 && (

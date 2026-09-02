@@ -1,4 +1,5 @@
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
+import { effectLine } from "./explanation";
 import {
   NODE_HEIGHT,
   NODE_TYPE_LABELS,
@@ -26,7 +27,12 @@ export function PlaybookStepCard({ data, selected = false }: CardProps) {
   const { node, onSelect } = data;
   const tone = NODE_TYPE_TONES[node.type] ?? NODE_TYPE_TONES.action;
   const typeLabel = NODE_TYPE_LABELS[node.type] ?? node.type;
-  const preview = actionCommand(node.details.action) ?? node.prompt_preview;
+  /* Contract intent leads when the node has it; `actionCommand` stays as the
+   * fallback for an uncontracted action, and the prompt preview behind that. */
+  const explanation = node.explanation;
+  const preview = explanation?.title ?? actionCommand(node.details.action) ?? node.prompt_preview;
+  const firstEffect = explanation?.effects?.[0];
+  const detail = firstEffect ? effectLine(firstEffect) : null;
 
   return (
     <button
@@ -49,7 +55,14 @@ export function PlaybookStepCard({ data, selected = false }: CardProps) {
         <span className="rounded bg-black/40 px-1 py-0.5 text-[9px] uppercase tracking-wide">{typeLabel}</span>
       </span>
       {preview && (
-        <span className="line-clamp-3 w-full text-[10px] leading-4 opacity-90">{preview}</span>
+        <span className={`w-full text-[10px] leading-4 opacity-90 ${detail ? "line-clamp-2" : "line-clamp-3"}`}>
+          {preview}
+        </span>
+      )}
+      {detail && (
+        <span className="line-clamp-1 w-full text-[10px] leading-4 opacity-70" title={detail}>
+          {detail}
+        </span>
       )}
       <span className="mt-auto flex w-full items-center gap-1 text-[9px] opacity-75">
         {node.timeout_seconds ? <span className="rounded bg-white/10 px-1">{node.timeout_seconds}s timeout</span> : null}
