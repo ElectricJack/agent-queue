@@ -484,6 +484,15 @@ class Orchestrator(
         # Read and cleared by _execute_task's no-workspace backoff so it can
         # stay quiet about an expected wait.  Keyed by task id.
         self._workspace_wait_reasons: dict[str, str] = {}
+        # Tasks parked in the no-workspace backoff purely because every
+        # worktree slot was taken — ``{task_id: project_id}``.  That wait ends
+        # the moment any slot frees, so the cascade cuts the backoff short
+        # (see ``MonitoringMixin._resume_slot_starved_tasks``) rather than
+        # leaving a high-priority task invisible to the scheduler's priority
+        # ordering for a full backoff window while lower-priority READY tasks
+        # keep taking the slots it waited for.  In-memory by design: losing it
+        # across a restart only costs the ordinary backoff.
+        self._slot_starved_pauses: dict[str, str] = {}
 
     def _git_mutex(self, workspace_path: str) -> asyncio.Lock:
         """Get or create an asyncio.Lock for shared git operations on a workspace."""

@@ -669,6 +669,41 @@ class WorkspaceQueryMixin:
             total += max(0, worktree_slot_cap - locked_slots)
         return total
 
+    async def count_free_slots(
+        self, project_id: str, *, worktree_slot_cap: int
+    ) -> int:
+        """Unlocked, in-cap **slot rows** a task could acquire right now.
+
+        Deliberately *inventory*, not capacity — the opposite question to
+        :meth:`count_available_workspaces`, which counts a worktree kind's
+        unused cap headroom because slots are created lazily.  Headroom is
+        the right answer for "may the reconciler create an agent?"; it is the
+        wrong answer for "has a slot actually come free?", which is what the
+        cascade asks before cutting a slot-starved task's backoff short.  A
+        project mid-ramp has headroom every cycle and would otherwise be told
+        "yes" forever.
+
+        Counts only rows of worktree-mode kinds whose ``slot_index`` is below
+        *worktree_slot_cap*: exactly the candidate set
+        :meth:`acquire_one_unlocked` will consider.
+        """
+        rows = [w for w in await self.list_workspaces(project_id) if w.enabled]
+
+        kinds: dict[str, object] = {}
+        for w in rows:
+            kid = w.kind_id or "project-repo"
+            if kid not in kinds:
+                kinds[kid] = await self.resolve_workspace_kind(project_id, kid)
+
+        return sum(
+            1
+            for w in rows
+            if w.slot_index is not None
+            and w.slot_index < worktree_slot_cap
+            and w.locked_by_agent_id is None
+            and _is_worktree_mode(kinds.get(w.kind_id or "project-repo"))
+        )
+
     @staticmethod
     def _row_to_workspace(row) -> Workspace:
         """Convert a database row to a Workspace model."""

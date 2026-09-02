@@ -407,8 +407,13 @@ class PoolsMixin:
                 return None
 
             worktrees_enabled = self._worktrees_enabled()
+            fresh_slot: str | None = None
             if worktrees_enabled and kind.is_git_repo:
-                await self._ensure_worktree_slots(project, kind.id)
+                # Prefer the slot this launch just paid for, so a concurrent
+                # dispatch cannot take it out from under us (the pool launch
+                # has the same growth-then-lose race task dispatch had).
+                growth = await self._ensure_worktree_slots(project, kind.id)
+                fresh_slot = growth.created.get(kind.id)
 
             workspace = await self.db.acquire_one_unlocked(
                 project_id=project.id,
@@ -416,7 +421,7 @@ class PoolsMixin:
                 mode=kind.default_lock_mode,
                 locked_by_task_id=None,
                 locked_by_agent_id=agent.id,
-                prefer_workspace_id=None,
+                prefer_workspace_id=fresh_slot,
                 kind_mode=(kind.mode if worktrees_enabled and kind.is_git_repo else None),
                 worktree_slot_cap=(self._project_slot_cap(project) if worktrees_enabled else None),
             )
