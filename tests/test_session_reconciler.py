@@ -1562,7 +1562,7 @@ class TestOrphanStep:
         assert (await db.get_session("n1")).state == "running"
 
     async def test_open_task_with_a_non_live_row_is_released(
-        self, db, provider, releasing_reconciler, tmp_path
+        self, db, provider, releasing_reconciler, bus, tmp_path
     ):
         """B3's mirror: nothing else looks at this.
 
