@@ -10,6 +10,11 @@ from .agent_message_request import AgentMessageRequest
 from .agent_message_response import AgentMessageResponse
 from .agent_message_response_422 import AgentMessageResponse422
 from .agent_message_response_recipients_item import AgentMessageResponseRecipientsItem
+from .agent_metrics import AgentMetrics
+from .agent_metrics_by_harness import AgentMetricsByHarness
+from .agent_metrics_by_lifecycle import AgentMetricsByLifecycle
+from .agent_metrics_by_profile import AgentMetricsByProfile
+from .agent_metrics_by_state import AgentMetricsByState
 from .agent_question_detail import AgentQuestionDetail
 from .agent_settings import AgentSettings
 from .agent_summary import AgentSummary
@@ -94,6 +99,7 @@ from .create_task_request import CreateTaskRequest
 from .create_task_response import CreateTaskResponse
 from .create_task_response_422 import CreateTaskResponse422
 from .create_task_response_depends_on_item import CreateTaskResponseDependsOnItem
+from .daemon_metrics import DaemonMetrics
 from .db_preflight_hierarchy_request import DbPreflightHierarchyRequest
 from .db_preflight_hierarchy_response_422 import DbPreflightHierarchyResponse422
 from .delete_agent_request import DeleteAgentRequest
@@ -444,6 +450,7 @@ from .list_workspaces_request import ListWorkspacesRequest
 from .list_workspaces_response import ListWorkspacesResponse
 from .list_workspaces_response_422 import ListWorkspacesResponse422
 from .log_entry import LogEntry
+from .machine_metrics import MachineMetrics
 from .mcp_server_summary import McpServerSummary
 from .memory_save_request import MemorySaveRequest
 from .memory_save_response_422 import MemorySaveResponse422
@@ -470,6 +477,9 @@ from .message_send_request_pane_open_type_0 import MessageSendRequestPaneOpenTyp
 from .message_status_request import MessageStatusRequest
 from .message_status_response import MessageStatusResponse
 from .message_status_response_422 import MessageStatusResponse422
+from .metrics_sample import MetricsSample
+from .metrics_series_response import MetricsSeriesResponse
+from .model_tokens import ModelTokens
 from .note_summary import NoteSummary
 from .orchestrator_control_request import OrchestratorControlRequest
 from .orchestrator_control_response import OrchestratorControlResponse
@@ -671,6 +681,7 @@ from .run_playbook_request_event_type_0 import RunPlaybookRequestEventType0
 from .run_playbook_response import RunPlaybookResponse
 from .run_playbook_response_422 import RunPlaybookResponse422
 from .run_playbook_response_node_trace_item import RunPlaybookResponseNodeTraceItem
+from .sampler_metrics import SamplerMetrics
 from .scan_stub_staleness_request import ScanStubStalenessRequest
 from .scan_stub_staleness_response import ScanStubStalenessResponse
 from .scan_stub_staleness_response_422 import ScanStubStalenessResponse422
@@ -711,6 +722,7 @@ from .session_show_request import SessionShowRequest
 from .session_show_response_422 import SessionShowResponse422
 from .session_sleep_request import SessionSleepRequest
 from .session_sleep_response_422 import SessionSleepResponse422
+from .session_subagents import SessionSubagents
 from .session_summary import SessionSummary
 from .session_token_request import SessionTokenRequest
 from .session_token_response import SessionTokenResponse
@@ -748,9 +760,11 @@ from .shutdown_response_422 import ShutdownResponse422
 from .skip_task_request import SkipTaskRequest
 from .skip_task_response import SkipTaskResponse
 from .skip_task_response_422 import SkipTaskResponse422
+from .slot_metrics import SlotMetrics
 from .spec_approve_request import SpecApproveRequest
 from .spec_approve_response import SpecApproveResponse
 from .spec_approve_response_422 import SpecApproveResponse422
+from .stall_metrics import StallMetrics
 from .start_agent_terminal_request import StartAgentTerminalRequest
 from .start_agent_terminal_response_422 import StartAgentTerminalResponse422
 from .stop_task_request import StopTaskRequest
@@ -765,6 +779,8 @@ from .stub_scan_project import StubScanProject
 from .stub_scan_totals import StubScanTotals
 from .stuck_task import StuckTask
 from .stuck_tasks_thresholds import StuckTasksThresholds
+from .subagent_metrics import SubagentMetrics
+from .subagent_metrics_by_session import SubagentMetricsBySession
 from .subagent_rollup import SubagentRollup
 from .tail_api_streams_stream_id_tail_get_response_tail_api_streams_stream_id_tail_get import (
     TailApiStreamsStreamIdTailGetResponseTailApiStreamsStreamIdTailGet,
@@ -809,6 +825,7 @@ from .task_detail_parent_type_0 import TaskDetailParentType0
 from .task_dict import TaskDict
 from .task_heartbeat_request import TaskHeartbeatRequest
 from .task_heartbeat_response_422 import TaskHeartbeatResponse422
+from .task_metrics import TaskMetrics
 from .task_progress_request import TaskProgressRequest
 from .task_progress_response import TaskProgressResponse
 from .task_progress_response_422 import TaskProgressResponse422
@@ -840,12 +857,15 @@ from .task_status_summary import TaskStatusSummary
 from .task_status_summary_by_status import TaskStatusSummaryByStatus
 from .task_status_summary_in_progress_item import TaskStatusSummaryInProgressItem
 from .task_status_summary_ready_to_work_item import TaskStatusSummaryReadyToWorkItem
+from .throughput_metrics import ThroughputMetrics
 from .token_audit_request import TokenAuditRequest
 from .token_audit_response import TokenAuditResponse
 from .token_audit_response_422 import TokenAuditResponse422
 from .token_audit_response_by_project_item import TokenAuditResponseByProjectItem
 from .token_audit_response_daily_item import TokenAuditResponseDailyItem
 from .token_audit_response_top_tasks_item import TokenAuditResponseTopTasksItem
+from .token_metrics import TokenMetrics
+from .token_metrics_by_model import TokenMetricsByModel
 from .transcript_entry_model import TranscriptEntryModel
 from .transcript_entry_model_usage_type_0 import TranscriptEntryModelUsageType0
 from .update_and_restart_request import UpdateAndRestartRequest
@@ -884,6 +904,11 @@ __all__ = (
     "AgentMessageResponse",
     "AgentMessageResponse422",
     "AgentMessageResponseRecipientsItem",
+    "AgentMetrics",
+    "AgentMetricsByHarness",
+    "AgentMetricsByLifecycle",
+    "AgentMetricsByProfile",
+    "AgentMetricsByState",
     "AgentQuestionDetail",
     "AgentSettings",
     "AgentSummary",
@@ -968,6 +993,7 @@ __all__ = (
     "CreateTaskResponse",
     "CreateTaskResponse422",
     "CreateTaskResponseDependsOnItem",
+    "DaemonMetrics",
     "DbPreflightHierarchyRequest",
     "DbPreflightHierarchyResponse422",
     "DeleteAgentRequest",
@@ -1312,6 +1338,7 @@ __all__ = (
     "ListWorkspacesResponse",
     "ListWorkspacesResponse422",
     "LogEntry",
+    "MachineMetrics",
     "McpServerSummary",
     "MemorySaveRequest",
     "MemorySaveResponse422",
@@ -1338,6 +1365,9 @@ __all__ = (
     "MessageStatusRequest",
     "MessageStatusResponse",
     "MessageStatusResponse422",
+    "MetricsSample",
+    "MetricsSeriesResponse",
+    "ModelTokens",
     "NoteSummary",
     "OrchestratorControlRequest",
     "OrchestratorControlResponse",
@@ -1537,6 +1567,7 @@ __all__ = (
     "RunPlaybookResponse",
     "RunPlaybookResponse422",
     "RunPlaybookResponseNodeTraceItem",
+    "SamplerMetrics",
     "ScanStubStalenessRequest",
     "ScanStubStalenessResponse",
     "ScanStubStalenessResponse422",
@@ -1577,6 +1608,7 @@ __all__ = (
     "SessionShowResponse422",
     "SessionSleepRequest",
     "SessionSleepResponse422",
+    "SessionSubagents",
     "SessionSummary",
     "SessionTokenRequest",
     "SessionTokenResponse",
@@ -1614,9 +1646,11 @@ __all__ = (
     "SkipTaskRequest",
     "SkipTaskResponse",
     "SkipTaskResponse422",
+    "SlotMetrics",
     "SpecApproveRequest",
     "SpecApproveResponse",
     "SpecApproveResponse422",
+    "StallMetrics",
     "StartAgentTerminalRequest",
     "StartAgentTerminalResponse422",
     "StopTaskRequest",
@@ -1631,6 +1665,8 @@ __all__ = (
     "StubScanTotals",
     "StuckTask",
     "StuckTasksThresholds",
+    "SubagentMetrics",
+    "SubagentMetricsBySession",
     "SubagentRollup",
     "TailApiStreamsStreamIdTailGetResponseTailApiStreamsStreamIdTailGet",
     "TaskBatchAckResponse",
@@ -1673,6 +1709,7 @@ __all__ = (
     "TaskDict",
     "TaskHeartbeatRequest",
     "TaskHeartbeatResponse422",
+    "TaskMetrics",
     "TaskProgressRequest",
     "TaskProgressResponse",
     "TaskProgressResponse422",
@@ -1704,12 +1741,15 @@ __all__ = (
     "TaskStatusSummaryByStatus",
     "TaskStatusSummaryInProgressItem",
     "TaskStatusSummaryReadyToWorkItem",
+    "ThroughputMetrics",
     "TokenAuditRequest",
     "TokenAuditResponse",
     "TokenAuditResponse422",
     "TokenAuditResponseByProjectItem",
     "TokenAuditResponseDailyItem",
     "TokenAuditResponseTopTasksItem",
+    "TokenMetrics",
+    "TokenMetricsByModel",
     "TranscriptEntryModel",
     "TranscriptEntryModelUsageType0",
     "UpdateAndRestartRequest",
