@@ -22,9 +22,12 @@ import json
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from src.playbooks.waits import EMPTY_WAIT_CHANGES, WaitChangeSet, WaitSpec
+
+if TYPE_CHECKING:
+    from src.playbooks.receipts import StepReceipt
 
 #: Defaults for ``playbooks.v2_max_result_bytes`` / ``v2_max_snapshot_bytes``.
 DEFAULT_MAX_RESULT_BYTES = 262_144
@@ -567,7 +570,7 @@ class RunRepository(Protocol):
     async def commit_boundary(
         self,
         snapshot: RunSnapshot,
-        receipt: Any,
+        receipt: StepReceipt,
         wait_changes: WaitChangeSet = EMPTY_WAIT_CHANGES,
     ) -> RunSnapshot: ...
 
@@ -586,4 +589,4 @@ class RunRepository(Protocol):
 
     async def list_receipts(
         self, run_id: str, *, limit: int = 500, offset: int = 0
-    ) -> list[Any]: ...
+    ) -> list[StepReceipt]: ...
