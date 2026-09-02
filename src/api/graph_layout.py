@@ -11,6 +11,7 @@ few, so it is left as-is rather than given a bulk query of its own.
 
 from __future__ import annotations
 
+import base64
 import math
 
 from fastapi import APIRouter, HTTPException
@@ -18,12 +19,18 @@ from fastapi.responses import JSONResponse
 
 from src.api.models.graph import GraphGate
 from src.api.models.graph_layout import (
+    AncestorRef,
     ExtentResponse,
     LayoutEdge,
     LayoutJob,
     LayoutNode,
     LayoutStub,
     LayoutWorker,
+    ListRequest,
+    ListResponse,
+    LocateHit,
+    LocateResponse,
+    NodeResponse,
     StubOverflow,
     TilesRequest,
     TilesResponse,
@@ -32,6 +39,7 @@ from src.task_graph.layout.constants import CELL_SIZE, FINISHED_STATUSES, VARIAN
 from src.task_graph.layout.view import (
     ancestors_of,
     cap_stubs,
+    depth_first_order,
     dock_workers,
     forced_expansion_for,
     owner_map,
@@ -295,6 +303,125 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
             return JSONResponse(status_code=202, content={"status": "layout_pending"})
         return res
 
+    @router.post(
+        "/api/projects/{project_id}/graph/list",
+        response_model=ListResponse,
+        responses={202: {"description": "layout pending"}},
+    )
+    async def post_list(project_id: str, req: ListRequest):
+        await _project_or_404(project_id)
+        variant = _variant(req.variant)
+        status = _status(req.status)
+        if status in FINISHED_STATUSES:
+            variant = "all"
+        if not (1 <= req.limit <= LIST_CAP):
+            raise HTTPException(status_code=400, detail=f"limit must be 1..{LIST_CAP}")
+        if len(req.expanded) > EXPANDED_CAP:
+            raise HTTPException(status_code=400, detail=f"expanded exceeds {EXPANDED_CAP}")
+        meta = await _meta_or_pending(project_id, variant)
+        if meta is None:
+            return JSONResponse(status_code=202, content={"status": "layout_pending"})
+        # The cursor is an opaque base64 of the offset into the resolved,
+        # depth-first ordering — stable for a given (variant, expanded,
+        # filter) tuple within one layout version.
+        offset = 0
+        if req.cursor:
+            # binascii.Error, UnicodeDecodeError and int()'s own failure are
+            # all ValueError subclasses.
+            try:
+                offset = int(base64.urlsafe_b64decode(req.cursor.encode()).decode())
+            except ValueError:
+                raise HTTPException(status_code=400, detail="bad cursor") from None
+            if offset < 0:
+                raise HTTPException(status_code=400, detail="bad cursor")
+        all_rows = await db.load_all_rows_with_tasks(project_id, variant)
+        rows = {t: rt[0] for t, rt in all_rows.items()}
+        matches: set[str] | None = None
+        forced: set[str] = set()
+        if req.q.strip() or status:
+            matches = await db.load_matching_ids(project_id, variant, q=req.q.strip(), status=status)
+            forced = forced_expansion_for(matches, rows)
+        vis = resolve_visible(
+            rows, expanded=set(req.expanded), max_depth=None, root=None, forced_expanded=forced
+        )
+        ordered = [
+            t
+            for t in depth_first_order({t: rows[t] for t in vis.visible})
+            if matches is None or t in matches or t in forced
+        ]
+        page = ordered[offset : offset + req.limit]
+        nodes = [
+            _node(rows[t], all_rows[t][1], vis.visible[t], matches is not None and t not in matches)
+            for t in page
+        ]
+        nxt = None
+        if offset + req.limit < len(ordered):
+            nxt = base64.urlsafe_b64encode(str(offset + req.limit).encode()).decode()
+        return ListResponse(nodes=nodes, next_cursor=nxt, layout_version=meta["layout_version"])
+
+    @router.get("/api/projects/{project_id}/graph/node/{task_id}", response_model=NodeResponse)
+    async def get_node(project_id: str, task_id: str, variant: str = "all"):
+        await _project_or_404(project_id)
+        variant = _variant(variant)
+        meta = await db.get_layout_meta(project_id, variant)
+        if meta is None:
+            raise HTTPException(status_code=404, detail="no layout")
+        rows = await db.load_rows_with_tasks(project_id, variant, [task_id])
+        if task_id not in rows:
+            raise HTTPException(status_code=404, detail=f"No layout node '{task_id}'")
+        row, task = rows[task_id]
+        anc_ids = ancestors_of(row.path)
+        anc = await db.load_rows_with_tasks(project_id, variant, anc_ids)
+        ancestors = [
+            AncestorRef(
+                id=a,
+                title=anc[a][1]["title"],
+                x=anc[a][0].abs_x,
+                y=anc[a][0].abs_y,
+                w=anc[a][0].w,
+                h=anc[a][0].h,
+            )
+            for a in anc_ids
+            if a in anc
+        ]
+        # No viewport state here, so the stored kind is reported as-is: a
+        # container is a container, never "collapsed".
+        return NodeResponse(
+            node=_node(row, task, row.kind),
+            ancestors=ancestors,
+            layout_version=meta["layout_version"],
+        )
+
+    @router.get("/api/projects/{project_id}/graph/locate", response_model=LocateResponse)
+    async def get_locate(
+        project_id: str,
+        variant: str = "active",
+        q: str = "",
+        status: str = "",
+        limit: int = LOCATE_CAP,
+    ):
+        await _project_or_404(project_id)
+        variant = _variant(variant)
+        status = _status(status)
+        if status in FINISHED_STATUSES:
+            variant = "all"
+        limit = max(1, min(limit, LOCATE_CAP))
+        ids = await db.load_matching_ids(project_id, variant, q=q.strip(), status=status)
+        rows = await db.load_layout_rows(project_id, variant, sorted(ids))
+        ordered = depth_first_order(rows)
+        hits = [
+            LocateHit(
+                id=t,
+                x=rows[t].abs_x,
+                y=rows[t].abs_y,
+                w=rows[t].w,
+                h=rows[t].h,
+                container_id=rows[t].container_id,
+            )
+            for t in ordered[:limit]
+        ]
+        return LocateResponse(hits=hits, truncated=len(ordered) > limit)
+
     return router
 
 
@@ -343,6 +470,44 @@ def _build_default_router() -> APIRouter:
     async def post_tiles(project_id: str, req: TilesRequest):
         return await _call(
             "/api/projects/{project_id}/graph/tiles", "POST", project_id=project_id, req=req
+        )
+
+    @router.post(
+        "/api/projects/{project_id}/graph/list",
+        response_model=ListResponse,
+        responses={202: {"description": "layout pending"}},
+    )
+    async def post_list(project_id: str, req: ListRequest):
+        return await _call(
+            "/api/projects/{project_id}/graph/list", "POST", project_id=project_id, req=req
+        )
+
+    @router.get("/api/projects/{project_id}/graph/node/{task_id}", response_model=NodeResponse)
+    async def get_node(project_id: str, task_id: str, variant: str = "all"):
+        return await _call(
+            "/api/projects/{project_id}/graph/node/{task_id}",
+            "GET",
+            project_id=project_id,
+            task_id=task_id,
+            variant=variant,
+        )
+
+    @router.get("/api/projects/{project_id}/graph/locate", response_model=LocateResponse)
+    async def get_locate(
+        project_id: str,
+        variant: str = "active",
+        q: str = "",
+        status: str = "",
+        limit: int = LOCATE_CAP,
+    ):
+        return await _call(
+            "/api/projects/{project_id}/graph/locate",
+            "GET",
+            project_id=project_id,
+            variant=variant,
+            q=q,
+            status=status,
+            limit=limit,
         )
 
     return router

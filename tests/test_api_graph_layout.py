@@ -241,6 +241,51 @@ async def test_tiles_status_filter_is_case_insensitive(db, client_factory):
     assert {n["id"] for n in r.json()["nodes"]} == {"e", "c1"}
 
 
+async def test_list_paginates_in_layout_order(db, client_factory):
+    await seed(db)
+    async with client_factory() as ac:
+        r1 = await ac.post(
+            "/api/projects/p1/graph/list",
+            json={"variant": "all", "expanded": ["e"], "limit": 3},
+        )
+        b1 = r1.json()
+        assert len(b1["nodes"]) == 3 and b1["next_cursor"]
+        r2 = await ac.post(
+            "/api/projects/p1/graph/list",
+            json={"variant": "all", "expanded": ["e"], "limit": 3, "cursor": b1["next_cursor"]},
+        )
+        b2 = r2.json()
+        ids = [n["id"] for n in b1["nodes"] + b2["nodes"]]
+        assert len(ids) == len(set(ids))
+        # children follow their parent
+        assert ids.index("e") < ids.index("c0") and ids.index("e") < ids.index("pkg")
+        too_big = await ac.post(
+            "/api/projects/p1/graph/list", json={"variant": "all", "limit": 500}
+        )
+        assert too_big.status_code == 400
+
+
+async def test_node_returns_box_and_ancestors(db, client_factory):
+    await seed(db)
+    async with client_factory() as ac:
+        r = await ac.get("/api/projects/p1/graph/node/g0?variant=all")
+    body = r.json()
+    assert body["node"]["id"] == "g0" and body["node"]["depth"] == 2
+    assert [a["id"] for a in body["ancestors"]] == ["e", "pkg"]
+    assert body["ancestors"][0]["title"] == "Title e"
+    async with client_factory() as ac:
+        assert (await ac.get("/api/projects/p1/graph/node/nope?variant=all")).status_code == 404
+
+
+async def test_locate_returns_positions_capped(db, client_factory):
+    await seed(db)
+    async with client_factory() as ac:
+        r = await ac.get("/api/projects/p1/graph/locate?variant=all&q=title d&limit=3")
+    body = r.json()
+    assert len(body["hits"]) == 3 and body["truncated"] is True
+    assert all({"id", "x", "y", "w", "h"} <= set(h) for h in body["hits"])
+
+
 async def test_default_router_delegates_to_the_orchestrator_db(db, monkeypatch):
     """The statically declared router resolves the live db at request time."""
     from src.api import dependencies as deps
