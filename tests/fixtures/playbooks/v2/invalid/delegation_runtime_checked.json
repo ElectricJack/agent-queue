@@ -1,0 +1,142 @@
+{
+  "schema_version": 2,
+  "id": "twin",
+  "version": 1,
+  "scope": {
+    "type": "system"
+  },
+  "source_hash": "sha256:0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+  "compiled_at": "2026-09-01T00:00:00Z",
+  "compiled_against": {
+    "commands": {
+      "demo_command": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    }
+  },
+  "rules": [
+    {
+      "id": "r1",
+      "name": "Rule one",
+      "trigger": {
+        "event_type": "task.completed"
+      },
+      "entry_step": "act",
+      "source": {
+        "path": "system/playbooks/twin.md",
+        "start_line": 1,
+        "end_line": 1
+      }
+    }
+  ],
+  "steps": {
+    "act": {
+      "type": "command",
+      "rule": "r1",
+      "title": "Act",
+      "command": "demo_command",
+      "inputs": {
+        "project_id": {
+          "type": "event_ref",
+          "path": "project_id"
+        }
+      },
+      "save_result_as": "bound",
+      "transitions": {
+        "done": "classify",
+        "skipped": "classify",
+        "runtime_error": "oops"
+      },
+      "source": {
+        "path": "system/playbooks/twin.md",
+        "start_line": 2,
+        "end_line": 2
+      }
+    },
+    "end": {
+      "type": "terminal",
+      "rule": "r1",
+      "title": "Done",
+      "outcome": "completed",
+      "source": {
+        "path": "system/playbooks/twin.md",
+        "start_line": 3,
+        "end_line": 3
+      }
+    },
+    "oops": {
+      "type": "terminal",
+      "rule": "r1",
+      "title": "Failed",
+      "outcome": "failed",
+      "source": {
+        "path": "system/playbooks/twin.md",
+        "start_line": 4,
+        "end_line": 4
+      }
+    },
+    "classify": {
+      "type": "llm",
+      "rule": "r1",
+      "title": "Classify",
+      "profile_id": "worker",
+      "prompt": {
+        "type": "literal",
+        "value": "classify"
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "risk": {
+            "enum": [
+              "low",
+              "high"
+            ]
+          }
+        },
+        "required": [
+          "risk"
+        ]
+      },
+      "outcome_field": "risk",
+      "budget": {
+        "max_calls": 1,
+        "max_output_tokens": 256,
+        "max_total_tokens": 1024,
+        "timeout_seconds": 60
+      },
+      "transitions": {
+        "low": "delegate",
+        "high": "delegate",
+        "runtime_error": "oops"
+      },
+      "source": {
+        "path": "system/playbooks/twin.md",
+        "start_line": 5,
+        "end_line": 5
+      },
+      "tool_use": {
+        "enabled": false,
+        "aq_commands": []
+      }
+    },
+    "delegate": {
+      "type": "agent_task",
+      "rule": "r1",
+      "title": "Delegate",
+      "profile_id": "worker",
+      "objective": {
+        "type": "literal",
+        "value": "do the thing"
+      },
+      "transitions": {
+        "completed": "end",
+        "failed": "oops",
+        "runtime_error": "oops"
+      },
+      "source": {
+        "path": "system/playbooks/twin.md",
+        "start_line": 8,
+        "end_line": 8
+      }
+    }
+  }
+}

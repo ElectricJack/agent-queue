@@ -10,12 +10,12 @@
   "purpose": "routine",
   "compiled_against": {
     "commands": {
-      "ensure_task": "sha256:aa11bb22cc33dd44ee55ff6677889900aabbccddeeff00112233445566778899",
-      "gate_create": "sha256:bb22cc33dd44ee55ff6677889900aabbccddeeff001122334455667788990011",
-      "list_tasks": "sha256:cc33dd44ee55ff6677889900aabbccddeeff00112233445566778899001122"
+      "ensure_task": "sha256:4b35696e1543b60b340641db99370be0cf94b2e5982e5926fb2b1aa55a5fc4bc",
+      "gate_create": "sha256:cef412074d2e82ff21c66ce7aac359b3fd4211e7a2a7ec5f451db6ddf023500d",
+      "list_tasks": "sha256:7037abfad41135976dc8a97fd05114d0760e42560da22331f372c1258745477f"
     },
     "profiles": {
-      "reviewer": "sha256:dd44ee55ff6677889900aabbccddeeff0011223344556677889900112233"
+      "reviewer": "sha256:dd44ee55ff6677889900aabbccddeeff00112233445566778899001122334455"
     }
   },
   "rules": [
@@ -25,7 +25,7 @@
       "trigger": {
         "event_type": "task.completed",
         "filter": {
-          "task_type": "code"
+          "review_task": false
         }
       },
       "entry_step": "ensure-review-task",
@@ -37,10 +37,10 @@
       }
     },
     {
-      "id": "sweep-on-spec-created",
-      "name": "Sweep downstream tasks for a new spec",
+      "id": "sweep-on-spec-approved",
+      "name": "Sweep downstream tasks for an approved spec",
       "trigger": {
-        "event_type": "spec.created",
+        "event_type": "spec.approved",
         "filter": null
       },
       "entry_step": "list-downstream",
@@ -48,7 +48,7 @@
         "path": "system/playbooks/default-pipeline.md",
         "start_line": 48,
         "end_line": 71,
-        "heading": "Sweep downstream tasks for a new spec"
+        "heading": "Sweep downstream tasks for an approved spec"
       }
     }
   ],
@@ -75,12 +75,26 @@
               "path": "title"
             }
           ]
+        },
+        "dedup_key": {
+          "type": "template",
+          "parts": [
+            {
+              "type": "literal",
+              "value": "review-of-"
+            },
+            {
+              "type": "event_ref",
+              "path": "task_id"
+            }
+          ]
         }
       },
       "save_result_as": "review",
       "transitions": {
-        "success": "classify-risk",
-        "failure": "review-unavailable",
+        "created": "classify-risk",
+        "reused": "classify-risk",
+        "rejected": "review-unavailable",
         "runtime_error": "review-unavailable"
       },
       "source": {
@@ -122,20 +136,38 @@
         "budget_exceeded": "review-unavailable",
         "provider_error": "review-unavailable",
         "timed_out": "review-unavailable",
-        "cancelled": "cancelled-end"
+        "cancelled": "cancelled-end",
+        "runtime_error": "review-unavailable"
       },
       "source": {
         "path": "system/playbooks/default-pipeline.md",
         "start_line": 29,
         "end_line": 34
-      }
+      },
+      "prompt": {
+        "type": "template",
+        "parts": [
+          {
+            "type": "literal",
+            "value": "Assess the review risk of task "
+          },
+          {
+            "type": "event_ref",
+            "path": "title"
+          }
+        ]
+      },
+      "outcome_field": "risk"
     },
     "escalate": {
       "type": "agent_task",
       "rule": "review-on-task-completed",
       "title": "Escalate to a senior reviewer",
       "profile_id": "reviewer",
-      "objective": "Re-review the change and record the riskiest line",
+      "objective": {
+        "type": "literal",
+        "value": "Re-review the change and record the riskiest line"
+      },
       "wait_for_completion": true,
       "cancel_child": false,
       "timeout_seconds": 3600,
@@ -144,7 +176,8 @@
         "completed": "await-approval",
         "failed": "review-unavailable",
         "timed_out": "review-unavailable",
-        "cancelled": "cancelled-end"
+        "cancelled": "cancelled-end",
+        "runtime_error": "review-unavailable"
       },
       "source": {
         "path": "system/playbooks/default-pipeline.md",
@@ -167,13 +200,22 @@
       "transitions": {
         "approve": "done",
         "revise": "ensure-review-task",
-        "timed_out": "review-unavailable"
+        "timed_out": "review-unavailable",
+        "runtime_error": "review-unavailable"
       },
       "source": {
         "path": "system/playbooks/default-pipeline.md",
         "start_line": 41,
         "end_line": 44
-      }
+      },
+      "awaited": {
+        "type": "literal",
+        "value": "Approve the review"
+      },
+      "outcomes": [
+        "approve",
+        "revise"
+      ]
     },
     "review-unavailable": {
       "type": "terminal",
@@ -210,7 +252,7 @@
     },
     "list-downstream": {
       "type": "command",
-      "rule": "sweep-on-spec-created",
+      "rule": "sweep-on-spec-approved",
       "title": "List downstream tasks",
       "command": "list_tasks",
       "inputs": {
@@ -225,8 +267,7 @@
       },
       "save_result_as": "downstream",
       "transitions": {
-        "success": "for-each-task",
-        "failure": "sweep-failed",
+        "listed": "for-each-task",
         "runtime_error": "sweep-failed"
       },
       "source": {
@@ -237,7 +278,7 @@
     },
     "for-each-task": {
       "type": "foreach",
-      "rule": "sweep-on-spec-created",
+      "rule": "sweep-on-spec-approved",
       "title": "For each downstream task",
       "collection": {
         "type": "binding_ref",
@@ -250,7 +291,8 @@
       "continuation": "sweep-done",
       "transitions": {
         "completed": "sweep-done",
-        "failed": "sweep-failed"
+        "failed": "sweep-failed",
+        "runtime_error": "sweep-failed"
       },
       "source": {
         "path": "system/playbooks/default-pipeline.md",
@@ -260,7 +302,7 @@
     },
     "open-gate": {
       "type": "command",
-      "rule": "sweep-on-spec-created",
+      "rule": "sweep-on-spec-approved",
       "title": "Open a spec-ingest gate",
       "command": "gate_create",
       "inputs": {
@@ -289,8 +331,10 @@
       },
       "save_result_as": "gate",
       "transitions": {
-        "success": "check-gate",
-        "failure": "sweep-failed",
+        "created": "check-gate",
+        "reused": "check-gate",
+        "skipped": "check-gate",
+        "rejected": "sweep-failed",
         "runtime_error": "sweep-failed"
       },
       "source": {
@@ -301,7 +345,7 @@
     },
     "check-gate": {
       "type": "decision",
-      "rule": "sweep-on-spec-created",
+      "rule": "sweep-on-spec-approved",
       "title": "Was the gate already open?",
       "cases": [
         {
@@ -348,7 +392,7 @@
     },
     "sweep-done": {
       "type": "terminal",
-      "rule": "sweep-on-spec-created",
+      "rule": "sweep-on-spec-approved",
       "title": "Sweep complete",
       "outcome": "completed",
       "source": {
@@ -359,7 +403,7 @@
     },
     "sweep-failed": {
       "type": "terminal",
-      "rule": "sweep-on-spec-created",
+      "rule": "sweep-on-spec-approved",
       "title": "Sweep failed",
       "outcome": "failed",
       "source": {

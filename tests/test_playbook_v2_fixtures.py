@@ -51,7 +51,7 @@ class TestBaseArtifact:
 
     def test_two_rules_on_two_distinct_events(self, v5):
         events = [r["trigger"]["event_type"] for r in v5["rules"]]
-        assert events == ["task.completed", "spec.created"]
+        assert events == ["task.completed", "spec.approved"]
 
     def test_every_step_kind_appears(self, v5):
         kinds = {s["type"] for s in v5["steps"].values()}
@@ -198,7 +198,7 @@ class TestReceipts:
             for r in receipts
             if r["step_id"] == "ensure-review-task"
         ]
-        assert attempts == [(1, "failure"), (2, "success")]
+        assert attempts == [(1, "rejected"), (2, "created")]
 
     def test_a_retried_attempt_selects_no_edge(self, receipts):
         retried = next(
@@ -216,7 +216,7 @@ class TestReceipts:
 
     def test_exactly_one_iteration_failed_and_the_rest_still_ran(self, receipts):
         gates = [r for r in receipts if r["step_id"] == "open-gate"]
-        failed = [r for r in gates if r["outcome"] == "failure"]
+        failed = [r for r in gates if r["outcome"] == "rejected"]
         assert len(failed) == 1
         assert failed[0]["iteration_index"] == 3
         assert len(gates) == 5, "failure_policy: collect keeps the loop going"
