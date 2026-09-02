@@ -7,11 +7,14 @@ places need the same strings and must not drift from it:
 
 * ``src/doctor/integration_checks.py`` looks for the ``review:task:`` row to
   decide whether a finished PR was ever reviewed;
-* the session close path (``execution.py``) flags a finishing task that carries
-  either key as ``review_task`` on ``task.completed`` so the review rules never
-  review a review.  The older ``no_code`` flag came from the reviewer profile's
+* ``Orchestrator._emit_task_event`` flags a finishing task that carries either
+  key as ``review_task`` on ``task.completed`` so the review rules never review
+  a review.  The older ``no_code`` flag came from the reviewer profile's
   ``read_only`` setting, which an operator can (and did) turn off; the dedup
   key is the pipeline's own mark on the row and survives any profile edit.
+  The flag is stamped in the shared emitter rather than at the session close
+  path so container settlement — the other emitter of ``task.completed`` —
+  carries it too.
 
 Kept dependency-free so both the doctor and the orchestrator can import it.
 """
@@ -42,7 +45,13 @@ def branch_review_dedup_key(branch_name: str) -> str:
 
 
 def is_pipeline_review_task(dedup_key: str | None) -> bool:
-    """True when *dedup_key* marks a task the pipeline itself created as a review."""
-    if not dedup_key:
+    """True when *dedup_key* marks a task the pipeline itself created as a review.
+
+    Anything that is not a non-empty string is "not a review": the caller is
+    ``Orchestrator._emit_task_event``, which reads the key off whatever task
+    object it was handed, and answering *maybe* there would make the review
+    rules stand down on ordinary work.
+    """
+    if not isinstance(dedup_key, str) or not dedup_key:
         return False
     return dedup_key.startswith(PIPELINE_REVIEW_DEDUP_PREFIXES)

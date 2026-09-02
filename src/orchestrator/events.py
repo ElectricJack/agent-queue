@@ -13,6 +13,7 @@ from src.notifications.events import (
     TextNotifyEvent,
 )
 from src.models import Task, TaskStatus
+from src.review_keys import is_pipeline_review_task
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,24 @@ class EventsMixin:
             "title": getattr(task, "title", ""),
         }
         payload.update(extra)
+        if event_type == "task.completed":
+            # The default pipeline's review rules stand down on
+            # ``event.review_task`` — without it a finished review carries a
+            # ``branch_name`` like any other session task and spawns a review
+            # *of the review*, recursively ("Review: Review: ..." chains on
+            # empty branches, task grand-delta-24).  The flag is derived here,
+            # centrally, rather than at each call site: ``task.completed`` has
+            # two emitters and only the session close path
+            # (``execution.py``) used to set it, leaving container settlement
+            # (``monitoring.py:_on_containers_settled``) unguarded — a review
+            # task that acquires children completes through *that* path.  The
+            # task row's own dedup key is available wherever the event is
+            # raised, so every emitter gets the guard for free.
+            #
+            # ``setdefault``: an emitter that computed the flag itself wins.
+            payload.setdefault(
+                "review_task", is_pipeline_review_task(getattr(task, "dedup_key", None))
+            )
         await self.bus.emit(event_type, payload)
 
     async def _emit_blocked_flips(self, flipped: set[str], *, reason: str = "graph") -> None:
