@@ -31,10 +31,17 @@ function Location() {
   return <output aria-label="Current location">{location.pathname}{location.search}|{location.state?.agentSelection}</output>;
 }
 
+// The flock cache holds the whole list_agents response — the roster and the
+// sub-agent rollup are derived from one poll, so seeding it means seeding that
+// shape rather than a bare array.
+function flock(rows: FlockAgent[]) {
+  return { agents: rows, count: rows.length };
+}
+
 function renderActions(rows: FlockAgent[] = [worker], onOpenTerminal = vi.fn()) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   clients.push(client);
-  client.setQueryData(["agents", "flock"], rows);
+  client.setQueryData(["agents", "flock"], flock(rows));
   render(<QueryClientProvider client={client}>
     <MemoryRouter initialEntries={["/projects/demo/command-center/graph?task=task-1"]}>
       <TaskActions task={task} onOpenTerminal={onOpenTerminal} />
@@ -71,10 +78,10 @@ describe("task terminal shortcut", () => {
 
   it("tracks reassignment from the live flock even when the task detail still names the old agent", async () => {
     const { client } = renderActions();
-    act(() => client.setQueryData(["agents", "flock"], [
+    act(() => client.setQueryData(["agents", "flock"], flock([
       { ...worker, current_task_id: "task-2" },
       { ...worker, id: "new/worker", name: "Fable Raven", session_id: "session-2", session_state: "draining" },
-    ]));
+    ])));
     await userEvent.setup().click(screen.getByRole("button", { name: "Open agent terminal" }));
     expect(screen.getByLabelText("Current location")).toHaveTextContent("/agents?agent=new%2Fworker|replace");
   });
@@ -82,7 +89,7 @@ describe("task terminal shortcut", () => {
   it("removes the shortcut when the session ends", async () => {
     const { client } = renderActions();
     expect(screen.getByRole("button", { name: "Open agent terminal" })).toBeInTheDocument();
-    act(() => client.setQueryData(["agents", "flock"], [{ ...worker, session_id: null, session_state: "stopped" }]));
+    act(() => client.setQueryData(["agents", "flock"], flock([{ ...worker, session_id: null, session_state: "stopped" }])));
     await waitFor(() => expect(screen.queryByRole("button", { name: "Open agent terminal" })).not.toBeInTheDocument());
   });
 });

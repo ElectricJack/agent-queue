@@ -1,8 +1,8 @@
 import { useId, useState } from "react";
 import { ChevronDownIcon, ChevronRightIcon, UsersIcon, PlusIcon } from "@heroicons/react/24/outline";
-import { useAgentFlock } from "../api/agents";
+import { useAgentFlock, useFlockSubagents } from "../api/agents";
 import { useAgentSelection } from "../pages/agents/useAgentSelection";
-import { AgentState, AgentEligibility, AgentWaitingQuestion } from "../pages/agents/AgentMetadata";
+import { AgentState, AgentEligibility, AgentWaitingQuestion, FlockSubagents } from "../pages/agents/AgentMetadata";
 import { PoolBadge, PoolQuarantine, PoolSupplyRow } from "../pages/agents/PoolMetadata";
 import { isPoolAgent, usePoolFlock } from "../pages/agents/pools";
 
@@ -10,6 +10,7 @@ const COLLAPSED_KEY = "aq:flock:collapsed";
 
 export default function AgentFlock() {
   const { data: roster = [], isLoading, error, refetch } = useAgentFlock();
+  const { data: subagents } = useFlockSubagents();
   const selection = useAgentSelection();
   const { entries: pools, poolIds } = usePoolFlock();
   // Pool members are reachable through their pool entry; listing each
@@ -44,7 +45,10 @@ export default function AgentFlock() {
           <Chevron className="h-3 w-3" />
           <UsersIcon className="h-4 w-4" />
           <span>Agent flock</span>
-          <span className="ml-auto font-mono text-[10px] text-gray-500">{agents.length + pools.length}</span>
+          <span className="ml-auto flex items-center gap-1.5">
+            <FlockSubagents rollup={subagents} />
+            <span className="font-mono text-[10px] text-gray-500">{agents.length + pools.length}</span>
+          </span>
         </button>
         <button type="button" data-listnav="1" aria-label="Add agent" title="Add agent"
           onClick={() => selection.setAdding(true)}

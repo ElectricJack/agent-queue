@@ -192,6 +192,37 @@ class TestExplainCommand:
 # ── Capacity reasons (build_capacity_reasons golden set) ─────────────────
 
 
+class TestExplainAfterASessionExitedWithoutClose:
+    """"Why isn't X running" must answer for a worker that vanished.
+
+    An exit-without-close used to land the task in BLOCKED with no logged
+    transition and nothing in ``explain`` beyond the graph reasons — which
+    were empty, because no dependency or gate was involved.  The task is now
+    PAUSED on a backoff, and both halves of the story are named.
+    """
+
+    async def test_needs_attention_and_the_backoff_are_both_named(self, handler, db):
+        await mktask(db, "exited", status=TaskStatus.PAUSED,
+                     resume_after=time.time() + 120)
+        await db.set_task_meta("exited", "needs_attention", "session_exited_open")
+
+        res = await handler._cmd_explain_task({"task_id": "exited"})
+
+        assert "needs_attention" in res["reason_codes"]
+        assert "paused_backoff" in res["reason_codes"]
+        details = {r["code"]: r["detail"] for r in res["reasons"]}
+        assert details["needs_attention"] == "session_exited_open"
+        assert "resumes automatically" in details["paused_backoff"]
+
+    async def test_a_manual_pause_is_distinguished_from_a_backoff(self, handler, db):
+        await mktask(db, "held", status=TaskStatus.PAUSED)
+
+        res = await handler._cmd_explain_task({"task_id": "held"})
+
+        assert "paused_manually" in res["reason_codes"]
+        assert "paused_backoff" not in res["reason_codes"]
+
+
 class TestBuildCapacityReasons:
     def test_no_idle_agent(self):
         proj = Project(id=PROJECT_ID, name="p")

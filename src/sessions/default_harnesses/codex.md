@@ -28,7 +28,11 @@ vault watcher; no restart, no release.
   "ready_prompt_prefix": "› ",
   "process_names": ["codex"],
   "skip_escape_before_enter": true,
-  "supports_hooks": false,
+  "supports_hooks": true,
+  "hook_files": {
+    ".codex/hooks.json": "hooks/codex.json"
+  },
+  "hook_trust_flag": "--dangerously-bypass-hook-trust",
   "instructions_file": "AGENTS.md",
   "dialogs": [
     {
@@ -78,11 +82,40 @@ cleanly from a rollout written by the previous process — so it is left as a
 deliberate next step rather than flipped untested. Until then restarts
 start fresh.
 
-**`supports_hooks: false`.** Codex has no settings-file hook mechanism like
-Claude's `--settings`, so there is no prompt-boundary `aq inbox --inject`
-path. Queued messages reach a Codex session via nudge (keystrokes into the
-pane) or transcript-tail fallback; task completion is unaffected because it
-is explicit (`aq task close` through the injected CLI/MCP surface).
+**`supports_hooks: true` — discovery, not a flag** (verified live against
+codex-cli 0.151.0 on 2026-09-01). Codex has no settings-file flag like
+Claude's `--settings`; it discovers hooks from `~/.codex/hooks.json` and
+`<cwd>/.codex/hooks.json`. `SessionSpecBuilder` therefore writes the
+project-level file into the session's work_dir and passes no flag for it —
+which is why `_compose_argv`'s "a written-but-unpointed hook file is a lie"
+rule has a second branch (`hook_trust_flag`) rather than one.
+
+**`hook_trust_flag` is load-bearing.** A discovered hook file does *not*
+run until it has been trusted: Codex persists a per-file
+`{enabled, trusted_hash}` and only grants it through an interactive
+"Hooks need review / Trust all and continue" screen, which a headless
+session can never answer. Project `trust_level = "trusted"` is **not**
+enough — measured: a fully trusted scratch repo with a valid
+`.codex/hooks.json` fired nothing until the flag was added.
+`--dangerously-bypass-hook-trust` is Codex's own documented hatch
+("Intended only for automation that already vets hook sources"), and this
+daemon writes the file itself. It is emitted only alongside
+`permission_flag`, so it inherits the isolated-worktree argument in
+claude.md rather than widening it: in a linked checkout Codex keeps hook
+review and the session simply reports no native subagent telemetry.
+
+The events wired today are `SubagentStart` / `SubagentStop`, both of which
+carry `session_id`, `turn_id`, `agent_id`, `agent_type`, `cwd`,
+`hook_event_name` and `transcript_path` (Stop adds `agent_transcript_path`
+and `last_assistant_message`) — enough to pair a child's start with its
+stop by `agent_id`. Handlers **must** carry `"type": "command"`; omitting
+it makes Codex log `failed to parse hooks config … missing field 'type'`
+and silently run no hooks at all.
+
+There is still no prompt-boundary hook, so queued messages reach a Codex
+session via nudge (keystrokes into the pane) or transcript-tail fallback;
+task completion is unaffected because it is explicit (`aq task close`
+through the injected CLI/MCP surface).
 
 **Transcripts are read** (2026-08-27). Codex records sessions under
 `~/.codex/sessions/YYYY/MM/DD/rollout-<iso>-<uuid>.jsonl`, keyed by date
@@ -111,6 +144,13 @@ that could ride `args` if you want sandboxed-but-automatic instead.
 **`skip_escape_before_enter: true` is load-bearing** — Escape in the Codex
 composer backtracks/clears; a blind Escape-then-Enter sequence would eat
 the nudge text.
+
+**The trust screen is painted late, and its rows start with `›`.** Codex's
+trust menu renders `› 1. Yes, continue` — the same prefix the readiness poll
+looks for — and it can land *after* the first dismissal pass. Startup
+therefore refuses readiness on any capture where a rule above matches, and
+holds the final pass open for `sessions.dialog_settle_seconds` (default
+1.5 s). Verified live on Codex 0.151 (task smart-orbit.7).
 
 **Startup noise is harmless:** an update banner, a bubblewrap PATH warning,
 and possible MCP-startup warnings all render above the composer and need no

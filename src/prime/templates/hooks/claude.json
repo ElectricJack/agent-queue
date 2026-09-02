@@ -14,6 +14,20 @@
           {"type": "command", "command": "aq handoff --auto", "timeout": 30}
         ]
       }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {"type": "command", "command": "aq subagent event --hook-json", "timeout": 10}
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {"type": "command", "command": "aq subagent event --hook-json", "timeout": 10}
+        ]
+      }
     ]
   }
 }

@@ -1,11 +1,14 @@
 """Conservative legacy history import on a disposable database."""
 
+import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, text
 
 PRIOR = "d37b821a6f04"
 REVISION = "e8b39a10c572"
+
+pytestmark = pytest.mark.migration
 
 
 def test_legacy_backfill_is_conservative_and_idempotent(tmp_path):

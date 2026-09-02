@@ -27,7 +27,7 @@ import logging
 import time
 import uuid
 
-from src.commands.claim_commands import remove_claim_file
+from src.commands.claim_commands import remove_claim_file, remove_claim_file_if_matches
 from src.database.queries.task_queries import StaleClaim
 from src.models import TaskCompletion, TaskStatus
 from src.sessions.provider import (
@@ -36,7 +36,7 @@ from src.sessions.provider import (
     NotSubmitted,
     SessionHandle,
 )
-from src.sessions.reconciler import DRAIN_ACK_KEY
+from src.sessions.reconciler import DRAIN_ACK_KEY, LIVE_SESSION_STATES as _LIVE_SESSION_STATES
 
 logger = logging.getLogger(__name__)
 
@@ -724,6 +724,16 @@ class SessionCommandsMixin:
         if fence_err:
             return fence_err
         is_pool = bool(session and session.lifecycle == "pool")
+        # A close issued *by* a session whose row is still live can be handed
+        # fixable git-verification issues in place instead of reopening the
+        # task — see ``PipelineContext.close_session_live``.  A local /
+        # elevated close (no session in scope) has no agent to hand them to,
+        # so it keeps the reopen-to-READY behaviour.
+        session_live = bool(
+            caller_session_id
+            and session is not None
+            and session.state in _LIVE_SESSION_STATES
+        )
 
         # --- close-with-summary enforcement (Dv2 Phase 2 §7) --------------
         # Tasks executed by workspace-needing profiles must carry a
@@ -766,18 +776,48 @@ class SessionCommandsMixin:
             # — returning from within ``async with`` would commit the
             # transaction rather than leave it untouched.
             live: list = []
+            paused: list[str] = []
             abandon_result = None
             async with self.db.immediate() as conn:
-                live = await self.db.live_descendant_sessions(task_id, conn=conn)
+                # ``exclude_root``: the closing task's own session — the
+                # worker calling ``task_close``, or the container-root
+                # session driving it — is live by definition.  Counting it
+                # made every ``--abandon-children`` close refuse, even with
+                # nothing but a PAUSED unassigned child underneath.
+                live = await self.db.live_descendant_sessions(
+                    task_id, conn=conn, exclude_root=True
+                )
                 if not live:
+                    # A hand-paused descendant cannot be transitioned
+                    # (``ManualPauseActive``).  Detect it here so the caller
+                    # gets a structured refusal naming the ids rather than an
+                    # exception escaping from inside the transaction.
+                    paused = await self.db.manually_paused_descendants(task_id, conn=conn)
+                if not live and not paused:
                     abandon_result = await self.db.abandon_subtree(task_id, conn=conn)
             if live:
+                held = sorted({t for _, t in live})
                 return {
                     "success": False,
                     "code": "hierarchy.live_descendants",
-                    "error": "descendants are held by live sessions; stop them first "
-                    "(aq task stop <id> / aq session kill <name>)",
+                    "error": (
+                        "descendants are held by live sessions: "
+                        + ", ".join(held)
+                        + "; stop them first (aq task stop <id> / aq session kill <name>)"
+                    ),
                     "sessions": [{"session_id": s, "task_id": t} for s, t in live],
+                    "live_descendants": held,
+                }
+            if paused:
+                return {
+                    "success": False,
+                    "code": "hierarchy.manually_paused_descendants",
+                    "error": (
+                        "descendants are manually paused: "
+                        + ", ".join(paused)
+                        + "; resume them first (aq task resume <id>)"
+                    ),
+                    "manually_paused_descendants": paused,
                 }
             # Post-commit: audit rows and settlement notification, same
             # sequencing as ``transition_task`` (never inside the write
@@ -820,6 +860,7 @@ class SessionCommandsMixin:
         # owning another task, unknown session, ...) exit above and do
         # not revoke.
         stale = False
+        retry_in_session = False
         try:
             expect_claim_epoch = int(claim_epoch) if claim_epoch is not None else None
             result = await self.orchestrator.complete_session_task(
@@ -831,7 +872,9 @@ class SessionCommandsMixin:
                 notes=str(args.get("notes") or ""),
                 expect_claim_epoch=expect_claim_epoch,
                 pool=is_pool,
+                session_live=session_live,
             )
+            retry_in_session = bool(result.get("verification_retry"))
         except StaleClaim as exc:
             # The up-front fence (``_assert_session_owns``) makes this a
             # narrow race — only a concurrent claim between that check and
@@ -842,7 +885,9 @@ class SessionCommandsMixin:
         finally:
             # Pool sessions keep their instance token — the workflow keeps
             # going (``claim_next``) so revoking here would kill it mid-loop.
-            if not is_pool and not stale:
+            # A close refused for verification keeps its token too: the same
+            # session is about to fix the git state and close again.
+            if not is_pool and not stale and not retry_in_session:
                 token_store = getattr(self.orchestrator, "token_store", None)
                 if token_store is not None and session is not None:
                     try:
@@ -850,6 +895,28 @@ class SessionCommandsMixin:
                     except Exception:
                         # Revoke is best-effort — expiry is the safety net.
                         pass
+
+        if retry_in_session:
+            # Not a close: the task is still IN_PROGRESS under this session's
+            # claim, and the agent has to fix the listed git issues and call
+            # ``aq task close`` again.  No completion record, no claim
+            # release, no token revoke — nothing about the run ended.
+            issues = result.get("issues") or []
+            bullets = "\n".join(f"- {msg}" for msg in issues)
+            return {
+                "success": False,
+                "result": "verification_failed",
+                "task_id": task_id,
+                "status": result.get("status"),
+                "issues": issues,
+                "feedback": result.get("feedback") or "",
+                "error": (
+                    "close refused: git verification found issues you can still "
+                    f"fix from this workspace:\n{bullets}\n"
+                    "The task is still yours (IN_PROGRESS, same claim). Fix these, "
+                    "then run `aq task close` again."
+                ),
+            }
 
         final_task = await self.db.get_task(task_id)
         # Capture the final branch tip after verification/integration. The
@@ -912,13 +979,11 @@ class SessionCommandsMixin:
                 task_status=TaskStatus(result["status"]),
                 context="session_close",
                 now=time.time(),
+                expected_task_id=task_id,
+                expected_claim_epoch=expect_claim_epoch,
+                drain_after_release=self.config.swarm.fresh_context_per_task,
             )
-            remove_claim_file(session.work_dir)
-            if self.config.swarm.fresh_context_per_task:
-                # Only after close/release: keep context for active work, human
-                # questions and retries. The reconciler stops this idle session
-                # before its global worker/workspace can serve another task.
-                await self.db.update_session(session.id, desired_state="stopped")
+            remove_claim_file_if_matches(session.work_dir, task_id, expect_claim_epoch)
         elif session is not None and session.lifecycle == "task" and session.work_dir:
             # Push launches join the claim fence too (execution.py) and
             # write the same claim file — clean it up on a task-session

@@ -874,6 +874,11 @@ class SessionsConfig:
     restart_window_seconds: int = 600
     restart_backoff_seconds: int = 30
     dialog_budget_seconds: int = 8
+    #: How long the pane must stay free of declared startup dialogs before
+    #: a session counts as started.  Claude and Codex both paint their
+    #: trust screen after the first frames, so a zero window declares a
+    #: still-blocked session ready.
+    dialog_settle_seconds: float = 1.5
     nudge_debounce_ms: int = 500
     state_cache_ttl_seconds: int = 2
     transcript_poll_seconds: int = 2
@@ -927,6 +932,7 @@ class SessionsConfig:
             "nudge_debounce_ms",
             "state_cache_ttl_seconds",
             "transcript_poll_seconds",
+            "dialog_settle_seconds",
         ):
             if getattr(self, name) < 0:
                 errors.append(ConfigError("sessions", name, "must be >= 0"))
@@ -1109,7 +1115,7 @@ class MessagesConfig:
     Substrate placeholder — see docs/specs/implementation/supervisor-agent.md §10.
     """
 
-    enabled: bool = False  # table + commands usable; delivery engine runs
+    enabled: bool = True  # native supervisor messaging is available by default
     delivery_interval: float = 5.0  # piggybacks the cascade cycle
     reply_timeout: float = 120.0  # transcript-tail fallback trigger
     transcript_tail_fallback: bool = True
@@ -2460,6 +2466,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             restart_window_seconds=int(se.get("restart_window_seconds", 600)),
             restart_backoff_seconds=int(se.get("restart_backoff_seconds", 30)),
             dialog_budget_seconds=int(se.get("dialog_budget_seconds", 8)),
+            dialog_settle_seconds=float(se.get("dialog_settle_seconds", 1.5)),
             nudge_debounce_ms=int(se.get("nudge_debounce_ms", 500)),
             state_cache_ttl_seconds=int(se.get("state_cache_ttl_seconds", 2)),
             transcript_poll_seconds=int(se.get("transcript_poll_seconds", 2)),
@@ -2510,7 +2517,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
     if "messages" in raw and isinstance(raw["messages"], dict):
         ms_cfg = raw["messages"]
         config.messages = MessagesConfig(
-            enabled=bool(ms_cfg.get("enabled", False)),
+            enabled=bool(ms_cfg.get("enabled", True)),
             delivery_interval=float(ms_cfg.get("delivery_interval", 5.0)),
             reply_timeout=float(ms_cfg.get("reply_timeout", 120.0)),
             transcript_tail_fallback=bool(ms_cfg.get("transcript_tail_fallback", True)),

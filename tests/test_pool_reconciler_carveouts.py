@@ -290,9 +290,16 @@ class TestPrepareTimeoutFlagGate:
 
 
 class TestOrphans:
-    async def test_pool_orphan_terminates_with_reason_orphaned(self, db, reconciler):
+    async def test_terminal_pool_task_releases_hold_without_terminating_worker(self, db, reconciler):
         sid = await held_pool_session(db)
         await db.transition_task("t1", TaskStatus.COMPLETED, context="test", force=True)
         live, now = await observe(reconciler)
         await reconciler._step_orphans(live, now)
-        assert (await db.get_session(sid)).state == "stopped"
+        session = await db.get_session(sid)
+        assert (session.state, session.desired_state, session.task_id) == (
+            "running",
+            "stopped",
+            None,
+        )
+        assert (await db.get_agent("agent-1")).state == AgentState.IDLE
+        assert (await db.get_workspace_for_agent("agent-1")).locked_by_agent_id == "agent-1"

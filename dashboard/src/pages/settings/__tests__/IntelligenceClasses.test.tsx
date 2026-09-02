@@ -92,7 +92,7 @@ describe("Intelligence class editing", () => {
       spare: null,
     };
     const { client } = renderPage();
-    client.setQueryData(["agents", "flock"], [{ id: "agent-1", model: "old-model" }]);
+    client.setQueryData(["agents", "flock"], { agents: [{ id: "agent-1", model: "old-model" }], count: 1 });
     client.setQueryData(["agents", "detail", "agent-1"], { model: "old-model" });
     client.setQueryData(["effective-profile", "project-1", "worker"], { model: "old-model" });
     const dialog = openEditor();

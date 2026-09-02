@@ -130,5 +130,16 @@ async def test_route_then_existing_scheduler_selects_concrete_agent(tmp_path):
             ("task", "existing-worker")
         ]
         services.llm.run_tools.assert_awaited_once()
+
+        # Reserving the task bumps ``tasks.updated_at``.  The decision has to
+        # outlive that write, otherwise ``_launch_session_for_task`` re-checks
+        # routing, finds none, and fails the launch it just won.
+        assert await db.assign_task_to_agent("task", "existing-worker") is True
+        assigned = await db.get_task("task")
+        after_assignment = await orch.assignment_routing.routes_for([assigned])
+        assert after_assignment["task"].intelligence_class == "fast-low"
+        assert await orch._check_agent_routing(
+            assigned, await db.get_agent("existing-worker")
+        ) is None
     finally:
         await db.close()

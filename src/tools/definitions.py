@@ -53,6 +53,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "delete_profile": "agent",
     "list_available_tools": "agent",
     "check_profile": "agent",
+    "agent_message": "agent",
     "install_profile": "agent",
     "export_profile": "agent",
     "import_profile": "agent",
@@ -75,6 +76,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "message_reply": "message",
     "message_inbox": "message",
     "message_list": "message",
+    "message_status": "message",
     # vault — reference stub management
     "scan_stub_staleness": "system",
     # memory — provided by the external aq-memory plugin (install via `aq plugin install`)
@@ -4042,6 +4044,33 @@ _ALL_TOOL_DEFINITIONS = [
                     "default": 100,
                 },
             },
+        },
+    },
+    {
+        "name": "message_status",
+        "description": "Report whether a queued message is queued, delivered, or acknowledged.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"message_id": {"type": "string", "description": "Message id"}},
+            "required": ["message_id"],
+        },
+    },
+    {
+        "name": "agent_message",
+        "description": (
+            "Send durable supervisor guidance to a live worker. A target may be a task id, "
+            "agent id/name, or session id; all_running broadcasts to every live worker."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "target": {"type": "string", "description": "Task, agent, or session id"},
+                "body": {"type": "string", "description": "Message body"},
+                "all_running": {"type": "boolean", "default": False},
+                "profile": {"type": "string", "description": "Optional profile filter for broadcast"},
+                "wait": {"type": "integer", "description": "Wait up to 60 seconds for delivery"},
+            },
+            "required": ["body"],
         },
     },
     {

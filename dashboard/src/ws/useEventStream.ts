@@ -196,6 +196,12 @@ export function useEventStream(options: UseEventStreamOptions = {}) {
         queryClient.invalidateQueries({ queryKey: ["agents"] });
       }
 
+      if (type.startsWith("pool.")) {
+        queryClient.invalidateQueries({ queryKey: ["pools"] });
+        queryClient.invalidateQueries({ queryKey: ["sessions", "pool"] });
+        return;
+      }
+
       // Prefix-based invalidation for the wave-4 event families (gate.*,
       // message.*, session.*, task.blocked/unblocked). Handled *before* the
       // notify.* switch so the union type stays simple.
