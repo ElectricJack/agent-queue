@@ -33,8 +33,35 @@ class SystemCommandsMixin:
         from src.intelligence_classes.editing import class_row
 
         classes = await asyncio.to_thread(load_intelligence_classes, self.config.data_dir)
-        rows = sorted((class_row(cls) for cls in classes.values()), key=lambda row: row["id"])
-        return {"success": True, "classes": rows}
+        # ``loaded`` answers the question the file listing cannot: is this
+        # class in the *live* registry the daemon launches sessions from?
+        # A class present on disk but absent here means the watcher has not
+        # picked it up (or rejected it) — run ``aq system reload-config``.
+        live = self._live_intelligence_classes()
+        rows = []
+        for cls in classes.values():
+            row = class_row(cls)
+            row["loaded"] = live is None or cls.id in live
+            rows.append(row)
+        rows.sort(key=lambda row: row["id"])
+        errors = sorted(getattr(live, "errors", {}).values()) if live is not None else []
+        return {"success": True, "classes": rows, "errors": errors}
+
+    def _live_intelligence_classes(self):
+        """The orchestrator's live class registry, or ``None`` when absent."""
+        registry = getattr(self.orchestrator, "intelligence_classes", None)
+        if registry is not None:
+            return registry
+        builder = getattr(self.orchestrator, "session_spec_builder", None)
+        return getattr(builder, "_intelligence_classes", None)
+
+    async def _reload_intelligence_classes(self) -> dict:
+        """Rescan ``vault/intelligence-classes`` into the live registry."""
+        registry = getattr(self.orchestrator, "intelligence_classes", None)
+        if registry is None:
+            return {"success": False, "error": "Intelligence-class registry is not active"}
+        errors = await asyncio.to_thread(registry.reload, self.config.data_dir)
+        return {"success": True, "count": len(registry), "errors": errors}
 
     async def _cmd_edit_intelligence_class(self, args: dict) -> dict:
         """Edit one global class; explicit saves never auto-upgrade its models."""
@@ -64,11 +91,17 @@ class SystemCommandsMixin:
                     expected_revision=args.get("expected_revision"),
                 )
                 classes = await asyncio.to_thread(load_intelligence_classes, self.config.data_dir)
-                builder = getattr(self.orchestrator, "session_spec_builder", None)
-                if builder is not None:
-                    # Lenses and reconcilers retain this builder object. Only its
-                    # class map changes; running sessions are left untouched.
-                    builder._intelligence_classes = classes
+                live = self._live_intelligence_classes()
+                if hasattr(live, "replace"):
+                    # The live registry is shared by reference with every
+                    # consumer, so publishing here reaches all of them.
+                    live.replace(classes)
+                else:
+                    builder = getattr(self.orchestrator, "session_spec_builder", None)
+                    if builder is not None:
+                        # Lenses and reconcilers retain this builder object. Only its
+                        # class map changes; running sessions are left untouched.
+                        builder._intelligence_classes = classes
                 return {"success": True, "intelligence_class": class_row(classes.get(saved.id, saved))}
 
         # Cancelling an HTTP request cannot cancel the persistence thread. Keep
@@ -321,6 +354,9 @@ class SystemCommandsMixin:
         Returns a summary of which sections changed, which were applied,
         and which require a restart.
         """
+        # A config reload is the operator's "pick up what I changed on disk"
+        # gesture, so it also refreshes the vault-backed class registry.
+        await self._reload_intelligence_classes()
         watcher = self.orchestrator._config_watcher
         if not watcher:
             return {"error": "Config watcher is not active (no config file path)"}

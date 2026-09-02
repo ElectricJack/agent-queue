@@ -1111,7 +1111,12 @@ class TaskCommandsMixin:
             return "intelligence_class must be a nonempty class id"
         from src.intelligence_classes import load_intelligence_classes, resolve_class
 
-        classes = load_intelligence_classes(self.config.data_dir)
+        # Prefer the live registry so routing validation and session launch
+        # agree — including on a file that stopped parsing, where the registry
+        # keeps the last good class.
+        classes = self._live_intelligence_classes()
+        if classes is None:
+            classes = load_intelligence_classes(self.config.data_dir)
         cls = classes.get(class_id)
         if cls is None:
             return f"intelligence class '{class_id}' not found in vault"

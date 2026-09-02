@@ -205,9 +205,13 @@ class SessionSpecBuilder:
         self.config = config
         self.harnesses = harnesses
         # ``{class_id: IntelligenceClass}`` — empty by default so callers that
-        # do not care about class-driven model overrides work unchanged.
-        # Populated by the orchestrator from ``load_intelligence_classes``.
-        self._intelligence_classes = intelligence_classes or {}
+        # do not care about class-driven model overrides work unchanged.  The
+        # orchestrator passes its live ``IntelligenceClassRegistry`` here, so
+        # a class added to the vault is resolvable without a restart; hence
+        # the ``is None`` test — an empty registry is falsy but must be kept.
+        self._intelligence_classes = (
+            intelligence_classes if intelligence_classes is not None else {}
+        )
 
     # -- public API --------------------------------------------------------
 

@@ -44,31 +44,52 @@ def _parse_file(path: str) -> IntelligenceClass | None:
     return _parse_text(raw.decode("utf-8"), path, revision=hashlib.sha256(raw).hexdigest())
 
 
+def _parse_class_file(path: str) -> tuple[IntelligenceClass | None, str | None]:
+    """Read and parse *path*, returning ``(class, error_message)``.
+
+    The error string is what the registry records for ``aq doctor`` — it
+    names *why* the file was rejected rather than only that it was.
+    """
+    try:
+        with open(path, "rb") as f:
+            raw = f.read()
+        text = raw.decode("utf-8")
+    except (OSError, UnicodeError) as exc:
+        return None, f"unreadable file: {exc}"
+    return _parse_text_result(text, path, revision=hashlib.sha256(raw).hexdigest())
+
+
 def _parse_text(text: str, path: str, *, revision: str = "") -> IntelligenceClass | None:
+    return _parse_text_result(text, path, revision=revision)[0]
+
+
+def _parse_text_result(
+    text: str, path: str, *, revision: str = ""
+) -> tuple[IntelligenceClass | None, str | None]:
     frontmatter = _FRONTMATTER_RE.match(text)
     if frontmatter is None:
         logger.warning("intelligence-class %s: no valid frontmatter", path)
-        return None
+        return None, "no valid frontmatter"
     try:
         fm = yaml.safe_load(frontmatter.group(1)) or {}
     except yaml.YAMLError:
         logger.warning("intelligence-class %s: bad YAML frontmatter", path)
-        return None
+        return None, "bad YAML frontmatter"
     if not isinstance(fm, dict):
-        return None
+        return None, "frontmatter must be a mapping"
     body = text[frontmatter.end():]
     block = _JSON_BLOCK_RE.search(body)
     if block is None:
         logger.warning("intelligence-class %s: missing fenced json block", path)
-        return None
+        return None, "missing fenced json block"
     try:
         mapping = json.loads(block.group(1))
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as exc:
         logger.warning("intelligence-class %s: bad JSON", path)
-        return None
+        return None, f"bad JSON: {exc}"
     if not isinstance(mapping, dict):
         logger.warning("intelligence-class %s: mapping must be an object", path)
-        return None
+        return None, "mapping must be an object"
     return IntelligenceClass(
         id=str(fm.get("id") or os.path.splitext(os.path.basename(path))[0]),
         name=str(fm.get("name") or ""),
@@ -76,7 +97,7 @@ def _parse_text(text: str, path: str, *, revision: str = "") -> IntelligenceClas
         mapping=mapping,
         revision=revision,
         customized=fm.get("customized") is True,
-    )
+    ), None
 
 
 # These identify historical bundled settings, independently of future defaults.

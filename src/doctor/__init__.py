@@ -14,6 +14,7 @@ from src.doctor.db_checks import db_checks
 from src.doctor.formula_checks import formula_checks
 from src.doctor.hierarchy_checks import hierarchy_checks
 from src.doctor.integration_checks import integration_checks
+from src.doctor.intelligence_class_checks import intelligence_class_checks
 from src.doctor.models import (
     RESERVED_CHECK_IDS,
     CheckResult,
@@ -43,6 +44,7 @@ __all__ = [
     "db_checks",
     "profile_checks",
     "formula_checks",
+    "intelligence_class_checks",
     "resource_checks",
     "integration_checks",
     "run_doctor",
@@ -64,6 +66,8 @@ def default_registry() -> DoctorRegistry:
     for check in task_checks():
         registry.register(check)
     for check in formula_checks():
+        registry.register(check)
+    for check in intelligence_class_checks():
         registry.register(check)
     for check in resource_checks():
         registry.register(check)

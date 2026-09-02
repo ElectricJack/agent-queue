@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
@@ -21,10 +21,12 @@ class ListIntelligenceClassesResponse:
     Attributes:
         success (bool | Unset):  Default: True.
         classes (list[IntelligenceClassModel] | Unset):
+        errors (list[str] | Unset):
     """
 
     success: bool | Unset = True
     classes: list[IntelligenceClassModel] | Unset = UNSET
+    errors: list[str] | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -37,6 +39,10 @@ class ListIntelligenceClassesResponse:
                 classes_item = classes_item_data.to_dict()
                 classes.append(classes_item)
 
+        errors: list[str] | Unset = UNSET
+        if not isinstance(self.errors, Unset):
+            errors = self.errors
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({})
@@ -44,6 +50,8 @@ class ListIntelligenceClassesResponse:
             field_dict["success"] = success
         if classes is not UNSET:
             field_dict["classes"] = classes
+        if errors is not UNSET:
+            field_dict["errors"] = errors
 
         return field_dict
 
@@ -63,9 +71,12 @@ class ListIntelligenceClassesResponse:
 
                 classes.append(classes_item)
 
+        errors = cast(list[str], d.pop("errors", UNSET))
+
         list_intelligence_classes_response = cls(
             success=success,
             classes=classes,
+            errors=errors,
         )
 
         list_intelligence_classes_response.additional_properties = d

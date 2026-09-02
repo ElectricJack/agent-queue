@@ -24876,6 +24876,11 @@
             "type": "object",
             "title": "Mapping",
             "default": {}
+          },
+          "loaded": {
+            "type": "boolean",
+            "title": "Loaded",
+            "default": true
           }
         },
         "type": "object",
@@ -25612,6 +25617,14 @@
             },
             "type": "array",
             "title": "Classes",
+            "default": []
+          },
+          "errors": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Errors",
             "default": []
           }
         },
