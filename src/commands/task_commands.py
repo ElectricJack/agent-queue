@@ -47,6 +47,7 @@ from src.commands.helpers import (
     _format_task_tree,
     format_dependency_list,
 )
+from src.review_keys import PIPELINE_REVIEW_PROFILE_IDS
 from src.task_summary import write_task_summary
 
 logger = logging.getLogger(__name__)
@@ -2615,7 +2616,7 @@ class TaskCommandsMixin:
         except Exception:
             candidates = []
         terminal = {"COMPLETED", "FAILED", "BLOCKED"}
-        review_profile_ids = {"reviewer", "final-reviewer"}
+        review_profile_ids = PIPELINE_REVIEW_PROFILE_IDS
         # The review that is *doing* the rejecting is the one review here that
         # is not stale: it just produced this verdict, and the reviewer profile
         # is documented to call ``task_close(success)`` on it next.  Cancelling

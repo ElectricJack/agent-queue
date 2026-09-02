@@ -484,3 +484,83 @@ async def test_worker_close_is_not_flagged_review_task(orchestrator_factory):
     completed = _emitted(orch.bus, "task.completed")
     assert len(completed) == 1
     assert completed[0]["review_task"] is False
+
+
+@pytest.mark.asyncio
+async def test_keyless_review_close_is_flagged_by_its_profile(
+    orchestrator_factory, pipeline_engine_factory
+):
+    """``ensure_task`` is not the only way a review row is born.
+
+    A review created by hand, by a formula, or by a project's own flow carries
+    no ``review:task:`` key at all — only the ``reviewer`` profile the pipeline
+    pins on its own review nodes.  On the dedup key alone such a task was not
+    recognised as a review and its close queued a review of it, which then
+    queued a review of *that* (task crisp-summit-88).  The profile is the
+    second half of the same structural mark.
+    """
+    orch = await orchestrator_factory()
+    h = orch.command_handler
+    await _seed(h)
+    await h.db.upsert_profile(AgentProfile(id="reviewer", name="Reviewer", read_only=False))
+    await h.db.upsert_profile(AgentProfile(id="final-reviewer", name="Final", read_only=False))
+    engine = pipeline_engine_factory(handler=h)
+
+    review_id = (
+        await h.execute(
+            "create_task",
+            {"project_id": "p", "title": "Review: Do work", "profile_id": "reviewer"},
+        )
+    )["created"]
+    await h.db.update_task(
+        review_id, branch_name=f"aq/{review_id}", pr_url="https://github.com/o/r/pull/9"
+    )
+
+    await _close_pass(h, review_id)
+
+    completed = _emitted(orch.bus, "task.completed")
+    assert len(completed) == 1
+    assert completed[0]["no_code"] is False, "read_only=false profile: the old guard is inert"
+    assert completed[0]["review_task"] is True, "no dedup key, but the profile says review"
+
+    await engine.dispatch("task.completed", completed[0], event_id="keyless-review-closed")
+
+    assert await _review_rows(h, review_id) == [], "spawned a review of the review"
+    tasks = await h.db.list_tasks(project_id="p")
+    assert [t for t in tasks if t.profile_id == "final-reviewer"] == []
+
+
+@pytest.mark.asyncio
+async def test_container_settlement_flags_a_settled_review(orchestrator_factory):
+    """Container settlement is the *other* ``task.completed`` emitter.
+
+    It passed neither guard key, so a review task that finishes by settlement
+    rather than by a session close — it had children — announced itself as
+    ordinary code-bearing work and the review rules queued a review of it.
+    """
+    orch = await orchestrator_factory()
+    h = orch.command_handler
+    await _seed(h)
+    await h.db.upsert_profile(AgentProfile(id="reviewer", name="Reviewer", read_only=False))
+    orch._emit_text_notify = AsyncMock()
+    orch._check_workflow_stage_completion = AsyncMock()
+
+    review_id = (
+        await h.execute(
+            "create_task",
+            {"project_id": "p", "title": "Review: Do work", "profile_id": "reviewer"},
+        )
+    )["created"]
+    worker_id = (
+        await h.execute(
+            "create_task",
+            {"project_id": "p", "title": "Do work", "profile_id": "worker"},
+        )
+    )["created"]
+
+    await orch._on_containers_settled([review_id, worker_id])
+
+    completed = _emitted(orch.bus, "task.completed")
+    by_task = {p["task_id"]: p for p in completed}
+    assert by_task[review_id]["review_task"] is True
+    assert by_task[worker_id]["review_task"] is False

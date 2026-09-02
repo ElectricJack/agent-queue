@@ -16,6 +16,7 @@ from src.notifications.events import (
     StuckDefinedTaskEvent,
 )
 from src.models import DepType, Task, TaskStatus
+from src.review_keys import is_pipeline_review_task
 from src.task_summary import write_task_summary
 
 logger = logging.getLogger(__name__)
@@ -430,7 +431,19 @@ class MonitoringMixin:
                 if task is None:
                     continue
                 try:
-                    await self._emit_task_event("task.completed", task)
+                    # ``review_task`` carries the same recursion guard the
+                    # session close path emits (see execution.py): a review
+                    # that settles as a container is still a review, and
+                    # without the flag default-pipeline.md's review rules
+                    # queued a review of it (task crisp-summit-88).  ``no_code``
+                    # is deliberately absent — it comes from a session's
+                    # pipeline context, which settlement has none of, and the
+                    # rules read a missing key as code-bearing.
+                    await self._emit_task_event(
+                        "task.completed",
+                        task,
+                        review_task=is_pipeline_review_task(task.dedup_key, task.profile_id),
+                    )
                 except Exception:
                     logger.exception("task.completed emit failed for container %s", cid)
                 try:

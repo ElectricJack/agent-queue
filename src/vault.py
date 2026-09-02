@@ -40,6 +40,10 @@ _LEGACY_DEFAULT_PIPELINE_HASHES = frozenset(
         # guard: inert once the reviewer profiles are ``read_only: false``
         # (task sound-horizon-77.18.2).
         "9d00dee48cb3d031cf24ef6f7edac4b83ad71f5773baf2aede6f4701ffe226a3",
+        # Same rules, prose describing ``review_task`` as coming from the
+        # dedup key alone: a keyless review still reviewed itself, and
+        # container settlement never set the key (task crisp-summit-88).
+        "561434cc02575456cc722c46ba5563ee46e9df564fa2062c841333034b97e553",
     }
 )
 

@@ -24,6 +24,7 @@ from src.orchestrator.merge_slot import (
     release_merge_slot,
     renew_merge_slot,
 )
+from src.review_keys import PIPELINE_REVIEW_PROFILE_IDS
 
 logger = logging.getLogger(__name__)
 
@@ -33,8 +34,9 @@ WORK_OUTCOME_NO_OP = "no-op"
 
 #: Legacy stage profile ids used only when profile resolution is unavailable.
 #: The declarative ``AgentProfile.read_only`` flag is the normal no-code
-#: signal; these preserve the old safe skip for unsynced profile rows.
-NO_CODE_PROFILE_IDS = frozenset({"reviewer", "final-reviewer"})
+#: signal; these preserve the old safe skip for unsynced profile rows.  Same
+#: set the pipeline pins on its review nodes, so it lives in one place.
+NO_CODE_PROFILE_IDS = PIPELINE_REVIEW_PROFILE_IDS
 
 
 class GitOpsMixin:

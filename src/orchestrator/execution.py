@@ -1195,9 +1195,14 @@ class ExecutionMixin:
                 # Write/Edit tools (``read_only: false``) turns it off and the
                 # recursion is back (task sound-horizon-77.18.2).  The pipeline
                 # stamps every review it creates with a ``review:task:`` /
-                # ``branch-review:`` dedup key, so a finishing task carrying
-                # one *is* a review whatever its profile says, and the rules
-                # guard on this flag as well.
+                # ``branch-review:`` dedup key *and* runs it under ``reviewer``
+                # / ``final-reviewer``, so a finishing task carrying either
+                # mark *is* a review whatever its profile flags say, and the
+                # rules guard on this flag as well.  The profile half matters
+                # because ``ensure_task`` is not the only way a review row is
+                # born: one created by hand or by a project's own flow has no
+                # dedup key, and on the key alone it reviewed itself (task
+                # crisp-summit-88).
                 no_code = await self._task_produces_no_code(ctx)
                 await self._emit_task_event(
                     "task.completed",
@@ -1205,7 +1210,7 @@ class ExecutionMixin:
                     agent_id=task.assigned_agent_id,
                     agent_type=task.profile_id,
                     no_code=no_code,
-                    review_task=is_pipeline_review_task(task.dedup_key),
+                    review_task=is_pipeline_review_task(task.dedup_key, task.profile_id),
                 )
             except Exception:
                 # Best-effort, exactly like the notification below it: a

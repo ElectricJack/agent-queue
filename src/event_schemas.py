@@ -91,9 +91,10 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
         # construction left no commits behind (``read_only`` profile or
         # ``--work-outcome no-op``).  The default pipeline's review rules
         # skip such tasks; emitters that omit it are treated as code-bearing.
-        # ``review_task``: set by the same path when the task is one the
-        # pipeline created as a review (``review:task:`` / ``branch-review:``
-        # dedup key, see ``src/review_keys.py``).  The review rules skip these
+        # ``review_task``: set by every emitter when the task is one the
+        # pipeline created as a review — either a ``review:task:`` /
+        # ``branch-review:`` dedup key or a ``reviewer`` / ``final-reviewer``
+        # profile, see ``src/review_keys.py``.  The review rules skip these
         # too, independent of any profile flag; emitters that omit it are
         # treated as ordinary work.
         "optional": ["agent_id", "agent_type", "no_code", "review_task"],

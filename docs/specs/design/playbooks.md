@@ -1230,8 +1230,9 @@ EVENT_SCHEMAS = {
         # no_code: the close path's "left no commits behind" verdict
         # (read_only profile / --work-outcome no-op); review rules skip it.
         # review_task: the task is one the pipeline created as a review
-        # (review:task: / branch-review: dedup key); review rules skip it
-        # regardless of the reviewer profile's flags.
+        # (review:task: / branch-review: dedup key, or a reviewer /
+        # final-reviewer profile); review rules skip it regardless of the
+        # reviewer profile's flags.
         "optional": ["agent_id", "agent_type", "no_code", "review_task"],
     },
     "git.commit": {

@@ -52,12 +52,20 @@ the key (container settlement, custom pipelines) still fire the review.
 Both review rules also require `event.review_task` to be falsy. `no_code` is
 only as reliable as the reviewer profile's `read_only` flag: a project that
 gives its reviewers Write/Edit tools (`read_only: false`) disarms it and the
-recursion returns. `review_task` is structural instead — the close path sets it
-when the finishing task carries the dedup key this pipeline stamps on every
-review it creates (`review:task:<task_id>` or `branch-review:<branch_name>`,
-see `src/review_keys.py`), so a review is recognised as a review whatever its
-profile says. A custom pipeline that keys its review tasks differently must
-either keep these prefixes or add its own guard.
+recursion returns. `review_task` is structural instead. Every `task.completed`
+emitter — the session close path and container settlement alike — sets it when
+the finishing task carries either mark this pipeline puts on the reviews it
+creates (see `src/review_keys.py`):
+
+- the `ensure_task` dedup key, `review:task:<task_id>` or
+  `branch-review:<branch_name>`;
+- the pinned `profile_id`, `reviewer` or `final-reviewer`.
+
+Either mark alone is enough, so a review is recognised as a review whatever its
+profile flags say, and a review created outside `ensure_task` — by hand, by a
+formula, by a project's own flow — is recognised even with no dedup key at all.
+A custom pipeline that keys *and* staffs its review tasks differently must add
+its own guard.
 
 The `ensure_task` nodes below pin `profile_id` but no `intelligence_class`, so
 the assignment-routing playbook chooses the class for the tasks they create. A
