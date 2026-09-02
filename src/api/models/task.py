@@ -29,6 +29,7 @@ class TaskCompletionDetail(BaseModel):
     pr_url: str | None = None
     summary: str = ""
     notes: str = ""
+    deliverables: list[dict[str, Any]] = []
     completed_at: float = 0.0
 
 
@@ -79,6 +80,7 @@ class TaskDetail(BaseModel):
     skip_verification: bool = False
     pr_url: str | None = None
     attachments: list[str] = []
+    deliverables: list[dict[str, str]] = []
     depends_on: list[TaskRef] = []
     blocks: list[TaskRef] = []
     subtasks: list[TaskRef] = []

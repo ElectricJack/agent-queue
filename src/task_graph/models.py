@@ -107,6 +107,7 @@ class GraphNode:
     title: str = ""
     description: str = ""
     acceptance: list[str] = field(default_factory=list)
+    deliverables: list[dict[str, str]] = field(default_factory=list)
     context: list[GraphContext] = field(default_factory=list)
     needs: list[GraphNeed] = field(default_factory=list)
     labels: list[str] = field(default_factory=list)
@@ -124,6 +125,7 @@ class GraphNode:
             "title": self.title,
             "description": self.description,
             "acceptance": list(self.acceptance),
+            "deliverables": [dict(item) for item in self.deliverables],
             "context": [c.to_dict() for c in self.context],
             "needs": [n.to_dict() for n in self.needs],
             "labels": list(self.labels),

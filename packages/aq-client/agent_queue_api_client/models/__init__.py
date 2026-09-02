@@ -343,6 +343,7 @@ from .get_task_request import GetTaskRequest
 from .get_task_response import GetTaskResponse
 from .get_task_response_422 import GetTaskResponse422
 from .get_task_response_children_type_0 import GetTaskResponseChildrenType0
+from .get_task_response_deliverables_item import GetTaskResponseDeliverablesItem
 from .get_task_response_parent_type_0 import GetTaskResponseParentType0
 from .get_task_result_request import GetTaskResultRequest
 from .get_task_result_response import GetTaskResultResponse
@@ -977,12 +978,14 @@ from .task_comments_request import TaskCommentsRequest
 from .task_comments_response import TaskCommentsResponse
 from .task_comments_response_422 import TaskCommentsResponse422
 from .task_completion_detail import TaskCompletionDetail
+from .task_completion_detail_deliverables_item import TaskCompletionDetailDeliverablesItem
 from .task_control_response import TaskControlResponse
 from .task_deps_request import TaskDepsRequest
 from .task_deps_response import TaskDepsResponse
 from .task_deps_response_422 import TaskDepsResponse422
 from .task_detail import TaskDetail
 from .task_detail_children_type_0 import TaskDetailChildrenType0
+from .task_detail_deliverables_item import TaskDetailDeliverablesItem
 from .task_detail_parent_type_0 import TaskDetailParentType0
 from .task_dict import TaskDict
 from .task_heartbeat_request import TaskHeartbeatRequest
@@ -1006,6 +1009,7 @@ from .task_set_response import TaskSetResponse
 from .task_set_response_422 import TaskSetResponse422
 from .task_set_response_children_type_0 import TaskSetResponseChildrenType0
 from .task_set_response_context_item import TaskSetResponseContextItem
+from .task_set_response_deliverables_item import TaskSetResponseDeliverablesItem
 from .task_set_response_parent_type_0 import TaskSetResponseParentType0
 from .task_set_response_provenance_item import TaskSetResponseProvenanceItem
 from .task_show_request import TaskShowRequest
@@ -1013,6 +1017,7 @@ from .task_show_response import TaskShowResponse
 from .task_show_response_422 import TaskShowResponse422
 from .task_show_response_children_type_0 import TaskShowResponseChildrenType0
 from .task_show_response_context_item import TaskShowResponseContextItem
+from .task_show_response_deliverables_item import TaskShowResponseDeliverablesItem
 from .task_show_response_parent_type_0 import TaskShowResponseParentType0
 from .task_show_response_provenance_item import TaskShowResponseProvenanceItem
 from .task_status_summary import TaskStatusSummary
@@ -1405,6 +1410,7 @@ __all__ = (
     "GetTaskResponse",
     "GetTaskResponse422",
     "GetTaskResponseChildrenType0",
+    "GetTaskResponseDeliverablesItem",
     "GetTaskResponseParentType0",
     "GetTaskResultRequest",
     "GetTaskResultResponse",
@@ -2033,12 +2039,14 @@ __all__ = (
     "TaskCommentsResponse",
     "TaskCommentsResponse422",
     "TaskCompletionDetail",
+    "TaskCompletionDetailDeliverablesItem",
     "TaskControlResponse",
     "TaskDepsRequest",
     "TaskDepsResponse",
     "TaskDepsResponse422",
     "TaskDetail",
     "TaskDetailChildrenType0",
+    "TaskDetailDeliverablesItem",
     "TaskDetailParentType0",
     "TaskDict",
     "TaskHeartbeatRequest",
@@ -2062,6 +2070,7 @@ __all__ = (
     "TaskSetResponse422",
     "TaskSetResponseChildrenType0",
     "TaskSetResponseContextItem",
+    "TaskSetResponseDeliverablesItem",
     "TaskSetResponseParentType0",
     "TaskSetResponseProvenanceItem",
     "TaskShowRequest",
@@ -2069,6 +2078,7 @@ __all__ = (
     "TaskShowResponse422",
     "TaskShowResponseChildrenType0",
     "TaskShowResponseContextItem",
+    "TaskShowResponseDeliverablesItem",
     "TaskShowResponseParentType0",
     "TaskShowResponseProvenanceItem",
     "TaskStatusSummary",

@@ -1168,6 +1168,22 @@ _ALL_TOOL_DEFINITIONS = [
                         "read these files using the Read tool."
                     ),
                 },
+                "deliverables": {
+                    "type": "array",
+                    "description": "Plan-derived implementation contract checked before a passing close.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string"},
+                            "kind": {
+                                "type": "string",
+                                "enum": ["file", "test", "command", "flag", "registration"],
+                            },
+                            "target": {"type": "string"},
+                        },
+                        "required": ["id", "kind", "target"],
+                    },
+                },
                 "skip_verification": {
                     "type": "boolean",
                     "description": (
@@ -4502,6 +4518,11 @@ _ALL_TOOL_DEFINITIONS = [
                     "items": {"type": "string"},
                     "description": "Other commands run while completing the task (optional)",
                 },
+                "deliverable_unmet": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Explicit exception entries formatted 'deliverable-id: reason'.",
+                },
                 "summary": {
                     "type": "string",
                     "description": (
@@ -5156,6 +5177,22 @@ _ALL_TOOL_DEFINITIONS = [
                             "priority": {
                                 "type": "integer",
                                 "description": "Priority (default 100).",
+                            },
+                            "deliverables": {
+                                "type": "array",
+                                "description": "Plan-derived implementation contract for this proposed task.",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "id": {"type": "string"},
+                                        "kind": {
+                                            "type": "string",
+                                            "enum": ["file", "test", "command", "flag", "registration"],
+                                        },
+                                        "target": {"type": "string"},
+                                    },
+                                    "required": ["id", "kind", "target"],
+                                },
                             },
                         },
                         "required": ["tempId", "title", "description"],

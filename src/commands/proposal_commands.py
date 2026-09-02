@@ -361,6 +361,7 @@ async def _create_one_task(
             "title": spec["title"],
             "description": spec.get("description", ""),
             "priority": spec.get("priority", 100),
+            "deliverables": spec.get("deliverables", []),
             "metadata": {"proposal_source": source},
         },
     )

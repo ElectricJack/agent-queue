@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
+
+if TYPE_CHECKING:
+    from ..models.task_completion_detail_deliverables_item import TaskCompletionDetailDeliverablesItem
+
 
 T = TypeVar("T", bound="TaskCompletionDetail")
 
@@ -29,6 +33,7 @@ class TaskCompletionDetail:
         pr_url (None | str | Unset):
         summary (str | Unset):  Default: ''.
         notes (str | Unset):  Default: ''.
+        deliverables (list[TaskCompletionDetailDeliverablesItem] | Unset):
         completed_at (float | Unset):  Default: 0.0.
     """
 
@@ -46,6 +51,7 @@ class TaskCompletionDetail:
     pr_url: None | str | Unset = UNSET
     summary: str | Unset = ""
     notes: str | Unset = ""
+    deliverables: list[TaskCompletionDetailDeliverablesItem] | Unset = UNSET
     completed_at: float | Unset = 0.0
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -100,6 +106,13 @@ class TaskCompletionDetail:
 
         notes = self.notes
 
+        deliverables: list[dict[str, Any]] | Unset = UNSET
+        if not isinstance(self.deliverables, Unset):
+            deliverables = []
+            for deliverables_item_data in self.deliverables:
+                deliverables_item = deliverables_item_data.to_dict()
+                deliverables.append(deliverables_item)
+
         completed_at = self.completed_at
 
         field_dict: dict[str, Any] = {}
@@ -133,6 +146,8 @@ class TaskCompletionDetail:
             field_dict["summary"] = summary
         if notes is not UNSET:
             field_dict["notes"] = notes
+        if deliverables is not UNSET:
+            field_dict["deliverables"] = deliverables
         if completed_at is not UNSET:
             field_dict["completed_at"] = completed_at
 
@@ -140,6 +155,8 @@ class TaskCompletionDetail:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.task_completion_detail_deliverables_item import TaskCompletionDetailDeliverablesItem
+
         d = dict(src_dict)
         id = d.pop("id")
 
@@ -197,6 +214,15 @@ class TaskCompletionDetail:
 
         notes = d.pop("notes", UNSET)
 
+        _deliverables = d.pop("deliverables", UNSET)
+        deliverables: list[TaskCompletionDetailDeliverablesItem] | Unset = UNSET
+        if _deliverables is not UNSET:
+            deliverables = []
+            for deliverables_item_data in _deliverables:
+                deliverables_item = TaskCompletionDetailDeliverablesItem.from_dict(deliverables_item_data)
+
+                deliverables.append(deliverables_item)
+
         completed_at = d.pop("completed_at", UNSET)
 
         task_completion_detail = cls(
@@ -214,6 +240,7 @@ class TaskCompletionDetail:
             pr_url=pr_url,
             summary=summary,
             notes=notes,
+            deliverables=deliverables,
             completed_at=completed_at,
         )
 

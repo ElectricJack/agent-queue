@@ -61,3 +61,4 @@ See [docs/guides/migrations.md](docs/guides/migrations.md) and
 - Keep the task record current: `aq task comment <id> --body "Finding: ..."` for findings/decisions/evidence; update the description when confirmed findings change how the task should be completed.
 - Emergent work: file it with `aq task create` plus a `discovered-from` edge and a reason; if your task is a child of an epic, create the new task as a child of the same epic (`--parent`).
 - Close explicitly: push your branch, open the PR, then `aq task close <id> --outcome pass --summary "..."`. Heartbeat (`aq task heartbeat <id>`) before anything that runs quiet for minutes.
+- Before a passing close, re-read the plan section you implemented and reconcile the task's Deliverables checklist. Record each test command with `--test`; if an item is deliberately unshipped, use `--deliverable-unmet 'id: reason'` so the reviewer sees the exception.

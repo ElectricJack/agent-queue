@@ -465,6 +465,9 @@ class Task:
     attachments: list[str] = field(
         default_factory=list
     )  # absolute paths to attached files (images, etc.)
+    # Plan-derived contract items. Each entry has ``id``, ``kind`` and
+    # ``target`` so the worker can reconcile the plan before closing.
+    deliverables: list[dict[str, str]] = field(default_factory=list)
     skip_verification: bool = False  # if True, skip git verification on completion
     workflow_id: str | None = None  # FK to workflows table (coordination playbooks)
     affinity_agent_id: str | None = None  # preferred agent ID for context continuity
@@ -537,6 +540,9 @@ class TaskCompletion:
     pr_url: str | None = None
     summary: str = ""
     notes: str = ""
+    # Immutable close-time evaluation; later edits to the task declaration
+    # cannot rewrite what this completion claimed or explicitly waived.
+    deliverables: list[dict[str, str | bool]] = field(default_factory=list)
     completed_at: float = 0.0
 
 

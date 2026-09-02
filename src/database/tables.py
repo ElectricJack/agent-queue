@@ -102,6 +102,7 @@ tasks = Table(
         nullable=True,
     ),
     Column("attachments", Text, nullable=True, server_default="[]"),
+    Column("deliverables", Text, nullable=False, server_default="[]"),
     Column("skip_verification", Integer, nullable=False, server_default="0"),
     Column("workflow_id", Text, ForeignKey("workflows.workflow_id", use_alter=True), nullable=True),
     Column("affinity_agent_id", Text, nullable=True),
@@ -568,6 +569,7 @@ task_completion_records = Table(
     Column("pr_url", Text, nullable=True),
     Column("summary", Text, nullable=False, server_default=""),
     Column("notes", Text, nullable=False, server_default=""),
+    Column("deliverables", Text, nullable=False, server_default="[]"),
     Column("completed_at", Float, nullable=False),
     Index("idx_task_completion_records_task_time", "task_id", "completed_at"),
     # Completions-per-hour scans by time alone; the composite above cannot

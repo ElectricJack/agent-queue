@@ -7,6 +7,7 @@ interactive prompts (wizard, confirmation dialogs, fuzzy search).
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import click
@@ -208,6 +209,12 @@ def _create_task_graph(
         "stored on the edge back to its origin"
     ),
 )
+@click.option(
+    "--deliverable",
+    "deliverables",
+    multiple=True,
+    help="Plan item JSON with id, kind, and target; repeatable.",
+)
 @click.pass_context
 @_handle_errors
 def task_create(
@@ -226,6 +233,7 @@ def task_create(
     dry_run: bool,
     parent_id: str | None,
     reason: str | None,
+    deliverables: tuple[str, ...],
 ) -> None:
     """Create a new task (interactive wizard or via flags).
 
@@ -296,6 +304,14 @@ def task_create(
         params["parent_id"] = parent_id
     if reason and "reason" not in params:
         params["reason"] = reason
+    if deliverables:
+        try:
+            parsed = [json.loads(value) for value in deliverables]
+        except json.JSONDecodeError as exc:
+            raise click.UsageError(f"--deliverable must be a JSON object: {exc.msg}") from exc
+        if not all(isinstance(item, dict) for item in parsed):
+            raise click.UsageError("--deliverable must be a JSON object")
+        params["deliverables"] = parsed
 
     async def _create():
         async with _get_client(api_url) as client:

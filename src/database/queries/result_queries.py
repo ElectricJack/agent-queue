@@ -95,6 +95,7 @@ class ResultQueryMixin:
                     pr_url=completion.pr_url,
                     summary=completion.summary,
                     notes=completion.notes,
+                    deliverables=json.dumps(completion.deliverables),
                     completed_at=completion.completed_at,
                 )
             )
@@ -138,5 +139,6 @@ class ResultQueryMixin:
             pr_url=row["pr_url"],
             summary=row["summary"],
             notes=row["notes"],
+            deliverables=json.loads(row.get("deliverables") or "[]"),
             completed_at=row["completed_at"],
         )
