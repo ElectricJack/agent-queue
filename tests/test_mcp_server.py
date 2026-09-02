@@ -281,6 +281,14 @@ class TestDynamicToolRegistration:
         for cmd in DEFAULT_EXCLUDED_COMMANDS:
             assert cmd not in tool_names
 
+    async def test_hook_receiver_stays_excluded_from_mcp(self, mcp_server):
+        """Harness telemetry is an authenticated session API path, not an MCP tool."""
+        from src.mcp_registration import DEFAULT_EXCLUDED_COMMANDS
+
+        tools = await mcp_server.list_tools()
+        assert "subagent_event" in DEFAULT_EXCLUDED_COMMANDS
+        assert "subagent_event" not in {tool.name for tool in tools}
+
     async def test_tools_have_descriptions(self, mcp_server):
         tools = await mcp_server.list_tools()
         for tool in tools:
