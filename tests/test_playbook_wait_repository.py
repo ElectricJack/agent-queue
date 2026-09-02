@@ -20,7 +20,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 import pytest
-from sqlalchemy import insert, select
+from sqlalchemy import insert, select, update
 
 from src.database import Database
 from src.database.tables import playbook_artifacts, playbook_pending_events, playbook_waits
@@ -265,6 +265,35 @@ async def test_stale_snapshot_version_is_rejected_before_registration(db):
         )
         == []
     )
+
+
+async def test_claim_limit_counts_successes_not_nonmatching_candidates(db):
+    await db.create_run(make_snapshot())
+    waits = (
+        make_wait(wait_id="wait-1", step_id="step-1", match={"pr.number": 7}),
+        make_wait(wait_id="wait-2", step_id="step-2", match={"pr.number": 8}),
+        make_wait(wait_id="wait-3", step_id="step-3"),
+        make_wait(wait_id="wait-4", step_id="step-4"),
+        make_wait(wait_id="wait-5", step_id="step-5"),
+    )
+    for wait in waits:
+        await db.register(wait, 1)
+
+    # Force pagination across the wait_id tie-break so the first SQL-sized
+    # page contains only same-type, nonmatching waits.
+    async with db.immediate() as conn:
+        await conn.execute(update(playbook_waits).values(created_at=NOW))
+
+    claims = await db.claim_for_event(
+        Event("pr.merged", "evt-9", {"pr": {"number": 41}}), now=NOW + HOUR, limit=2
+    )
+
+    assert [claim.wait_id for claim in claims] == ["wait-3", "wait-4"]
+    assert [wait.wait_id for wait in await db.list_active("run-1")] == [
+        "wait-1",
+        "wait-2",
+        "wait-5",
+    ]
 
 
 async def test_a_second_active_wait_for_a_step_is_rejected(db):

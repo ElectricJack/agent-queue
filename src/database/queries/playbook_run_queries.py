@@ -27,7 +27,7 @@ from contextlib import asynccontextmanager
 from dataclasses import replace
 from typing import Any
 
-from sqlalchemy import delete, func, insert, or_, select, update
+from sqlalchemy import and_, delete, func, insert, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
@@ -662,49 +662,73 @@ class PlaybookRunQueryMixin:
         """Claim every active wait this event satisfies, at most once each.
 
         The predicate is evaluated in Python over an index-narrowed candidate
-        set (``idx_playbook_waits_match``) because ``match`` is inert JSON,
-        then each candidate is claimed by a CAS on ``state='active'``.  Two
-        concurrent dispatches of the same event therefore produce exactly one
-        claim per wait: the loser's UPDATE matches zero rows.
+        set (``idx_playbook_waits_match``) because ``match`` is inert JSON.
+        Candidates are keyset-paged in deterministic order so nonmatches do
+        not consume ``limit``; the cap counts successful claims.  Each match
+        is claimed by a CAS on ``state='active'``.  Two concurrent dispatches
+        of the same event therefore produce exactly one claim per wait: the
+        loser's UPDATE matches zero rows.
         """
+        if limit <= 0:
+            return []
+
         claims: list[WaitClaim] = []
+        cursor: tuple[float, str] | None = None
         async with self.immediate() as conn:
-            rows = (
-                (
-                    await conn.execute(
-                        select(playbook_waits)
-                        .where(
-                            playbook_waits.c.state == "active",
-                            or_(
-                                playbook_waits.c.event_type == event.event_type,
-                                playbook_waits.c.event_type == "",
+            while len(claims) < limit:
+                filters = [
+                    playbook_waits.c.state == "active",
+                    or_(
+                        playbook_waits.c.event_type == event.event_type,
+                        playbook_waits.c.event_type == "",
+                    ),
+                ]
+                if cursor is not None:
+                    created_at, wait_id = cursor
+                    filters.append(
+                        or_(
+                            playbook_waits.c.created_at > created_at,
+                            and_(
+                                playbook_waits.c.created_at == created_at,
+                                playbook_waits.c.wait_id > wait_id,
                             ),
                         )
-                        .order_by(playbook_waits.c.created_at, playbook_waits.c.wait_id)
-                        .limit(limit)
                     )
+                rows = (
+                    (
+                        await conn.execute(
+                            select(playbook_waits)
+                            .where(*filters)
+                            .order_by(playbook_waits.c.created_at, playbook_waits.c.wait_id)
+                            .limit(limit)
+                        )
+                    )
+                    .mappings()
+                    .fetchall()
                 )
-                .mappings()
-                .fetchall()
-            )
-            for row in rows:
-                if not matches(_row_to_wait(row), event):
-                    continue
-                result = await conn.execute(
-                    update(playbook_waits)
-                    .where(
-                        playbook_waits.c.wait_id == row["wait_id"],
-                        playbook_waits.c.state == "active",
+                if not rows:
+                    break
+                for row in rows:
+                    cursor = (row["created_at"], row["wait_id"])
+                    if not matches(_row_to_wait(row), event):
+                        continue
+                    result = await conn.execute(
+                        update(playbook_waits)
+                        .where(
+                            playbook_waits.c.wait_id == row["wait_id"],
+                            playbook_waits.c.state == "active",
+                        )
+                        .values(
+                            state="claimed",
+                            claimed_event_id=event.event_id,
+                            claimed_at=now,
+                        )
                     )
-                    .values(
-                        state="claimed",
-                        claimed_event_id=event.event_id,
-                        claimed_at=now,
-                    )
-                )
-                if result.rowcount != 1:
-                    continue
-                claims.append(_row_to_claim(row, event.event_id, now, expired=False))
+                    if result.rowcount != 1:
+                        continue
+                    claims.append(_row_to_claim(row, event.event_id, now, expired=False))
+                    if len(claims) == limit:
+                        break
         return claims
 
     async def expire_due(self, now: float, *, limit: int = 100) -> list[WaitClaim]:
