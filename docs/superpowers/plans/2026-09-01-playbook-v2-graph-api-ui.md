@@ -1731,6 +1731,20 @@ T-32, T-36 to T-41, T-43, T-44) consumes one of those inputs. The
 updated in this commit to say which packages have landed. Re-run §3.2 once
 Packages 1, 2 and 4 are on `main`.
 
+### 16.4 Re-run on 2026-09-02 at `d8086cb9` (task solid-harbor.46.1, third attempt)
+
+§3.2 was re-run a third time after PR #182 merged (an import-cycle fix; no
+playbook files). Every row of the §16.3 table is unchanged: checks 1-4 report
+the same modules present and absent, `playbook_pending_events` is still
+`ABSENT`, and a `git cat-file -e` sweep of all 280 `origin/*` refs finds no
+branch carrying `definition.py`, `explanation.py`, `contracts/registry.py`,
+`engine.py`, `receipts.py` or `playbook_run_queries.py`. No open PR touches
+them either. Nothing was built; the task was closed as blocked rather than
+re-queued a fourth time, because the queue has no dependency edge from this
+task to the Package 1, 2 and 4 tasks and each attempt re-derives the same
+result. The next attempt should be scheduled only after those three packages
+merge, and should start at §3.2.
+
 ---
 
 ## 17. Open items for the next child plans
