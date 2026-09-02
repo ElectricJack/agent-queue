@@ -364,3 +364,99 @@ async def test_close_persists_structured_completion_story(handler, db):
     assert completion.pr_url == "https://github.com/example/repo/pull/17"
     assert completion.summary == "Added durable completion records."
     assert completion.notes == "Ready for reviewer."
+
+
+@pytest.mark.asyncio
+async def test_close_accepts_declared_file_deliverables_and_records_their_evaluation(handler, db):
+    """A passing close preserves positive deliverable evidence for review."""
+    await db.create_project(Project(id="p", name="P"))
+    created = await handler.execute(
+        "create_task",
+        {
+            "project_id": "p",
+            "title": "t",
+            "deliverables": [{"id": "model", "kind": "file", "target": "src/models.py"}],
+        },
+    )
+    tid = created["created"]
+    assert (await db.get_task(tid)).deliverables == [
+        {"id": "model", "kind": "file", "target": "src/models.py"}
+    ]
+    await db.transition_task(tid, TaskStatus.IN_PROGRESS, context="test")
+
+    result = await handler.execute("task_close", {"task_id": tid, "outcome": "pass"})
+
+    assert result["success"] is True
+    completion = await db.get_task_completion(tid)
+    assert completion is not None
+    assert completion.deliverables == [
+        {
+            "id": "model",
+            "kind": "file",
+            "target": "src/models.py",
+            "met": True,
+            "reason": "",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_close_rejects_unmet_deliverable_without_an_explicit_reason(handler, db):
+    """A worker cannot silently pass a task with a declared missing file."""
+    await db.create_project(Project(id="p", name="P"))
+    created = await handler.execute(
+        "create_task",
+        {
+            "project_id": "p",
+            "title": "t",
+            "deliverables": [{"id": "missing", "kind": "file", "target": "does-not-exist.py"}],
+        },
+    )
+    tid = created["created"]
+    await db.transition_task(tid, TaskStatus.IN_PROGRESS, context="test")
+
+    result = await handler.execute("task_close", {"task_id": tid, "outcome": "pass"})
+
+    assert result["success"] is False
+    assert result["code"] == "deliverables.unmet"
+    assert "missing" in result["error"]
+    assert (await db.get_task(tid)).status == TaskStatus.IN_PROGRESS
+    assert await db.get_task_completion(tid) is None
+
+
+@pytest.mark.asyncio
+async def test_close_records_an_explicit_reason_for_an_unmet_deliverable(handler, db):
+    """A deliberate scope exception is allowed but cannot be hidden from review."""
+    await db.create_project(Project(id="p", name="P"))
+    created = await handler.execute(
+        "create_task",
+        {
+            "project_id": "p",
+            "title": "t",
+            "deliverables": [{"id": "missing", "kind": "file", "target": "does-not-exist.py"}],
+        },
+    )
+    tid = created["created"]
+    await db.transition_task(tid, TaskStatus.IN_PROGRESS, context="test")
+
+    result = await handler.execute(
+        "task_close",
+        {
+            "task_id": tid,
+            "outcome": "pass",
+            "deliverable_unmet": ["missing: explicitly deferred to the follow-up task"],
+        },
+    )
+
+    assert result["success"] is True
+    completion = await db.get_task_completion(tid)
+    assert completion is not None
+    assert completion.deliverables == [
+        {
+            "id": "missing",
+            "kind": "file",
+            "target": "does-not-exist.py",
+            "met": False,
+            "reason": "explicitly deferred to the follow-up task",
+        }
+    ]

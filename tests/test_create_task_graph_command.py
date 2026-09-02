@@ -207,6 +207,26 @@ class TestParentValidation:
 
 
 class TestGraphSource:
+    async def test_inline_graph_preserves_node_deliverables(self, setup):
+        handler, db, _vault = setup
+        graph = {
+            "version": 1,
+            "parent": {"title": "Epic"},
+            "nodes": [{
+                "key": "worker",
+                "title": "Worker",
+                "deliverables": [
+                    {"id": "module", "kind": "file", "target": "src/new_module.py"}
+                ],
+            }],
+        }
+        result = await handler._cmd_create_task_graph({"project_id": "p1", "graph": graph})
+
+        assert "error" not in result
+        assert (await db.get_task(result["task_ids"][0])).deliverables == [
+            {"id": "module", "kind": "file", "target": "src/new_module.py"}
+        ]
+
     async def test_inline_graph_creates_everything(self, setup):
         handler, db, vault = setup
         doc = _graph_doc()

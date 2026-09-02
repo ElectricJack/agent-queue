@@ -87,6 +87,43 @@ def _normalize_label_list(raw) -> list[str]:
     return out
 
 
+_DELIVERABLE_KINDS = frozenset({"file", "test", "command", "flag", "registration"})
+
+
+def normalize_deliverables(raw) -> tuple[list[dict[str, str]], str | None]:
+    """Validate a plan-derived implementation contract.
+
+    IDs make explicit close waivers unambiguous, while the deliberately small
+    ``id``/``kind``/``target`` shape works for direct, batch, and graph task
+    creation without coupling those surfaces to each other.
+    """
+    if raw is None:
+        return [], None
+    if not isinstance(raw, list):
+        return [], "deliverables must be a list"
+    result: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for index, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            return [], f"deliverables[{index}] must be an object"
+        item_id = str(entry.get("id") or "").strip()
+        kind = str(entry.get("kind") or "").strip().lower()
+        target = str(entry.get("target") or "").strip()
+        if not item_id:
+            return [], f"deliverables[{index}].id is required"
+        if item_id in seen:
+            return [], f"duplicate deliverable id '{item_id}'"
+        if kind not in _DELIVERABLE_KINDS:
+            return [], (
+                f"deliverables[{index}].kind must be one of {sorted(_DELIVERABLE_KINDS)}"
+            )
+        if not target:
+            return [], f"deliverables[{index}].target is required"
+        seen.add(item_id)
+        result.append({"id": item_id, "kind": kind, "target": target})
+    return result, None
+
+
 def _check_capability_escalation(parent, child) -> str:
     """Return an explanation if ``child`` exceeds ``parent``'s capabilities.
 
@@ -1148,6 +1185,9 @@ class TaskCommandsMixin:
         project_id = args.get("project_id") or self._active_project_id
         if not project_id:
             return {"error": "project_id is required (no active project set)"}
+        deliverables, deliverables_error = normalize_deliverables(args.get("deliverables"))
+        if deliverables_error:
+            return {"error": deliverables_error}
         # ``task_id`` is generated *after* parent_id validation below so
         # hierarchical child ids ({parent}.{n}) can be wired.  Placeholder
         # here keeps the downstream code readable.
@@ -1461,6 +1501,7 @@ class TaskCommandsMixin:
             profile_id=profile_id,
             preferred_workspace_id=preferred_workspace_id,
             attachments=attachments,
+            deliverables=deliverables,
             skip_verification=skip_verification,
             workflow_id=workflow_id,
             affinity_agent_id=affinity_agent_id,
@@ -1930,6 +1971,7 @@ class TaskCommandsMixin:
             "branch_name": task.branch_name,
             "integration_mode": task.integration_mode,
             "attachments": task.attachments,
+            "deliverables": task.deliverables,
             # Persisted graph blockedness (work-graph design §4).  Capacity
             # reasons (no agent, workspace busy, budget) are NOT in here —
             # those belong to `task explain`.

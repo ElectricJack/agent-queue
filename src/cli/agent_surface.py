@@ -277,6 +277,12 @@ def task_claim(ctx: click.Context, task_id, claim_next, wait) -> None:
 @click.option("--verification", default=None, help="How the work was verified.")
 @click.option("--test", "tests", multiple=True, help="Test command run; repeatable.")
 @click.option("--command", "commands", multiple=True, help="Other command run; repeatable.")
+@click.option(
+    "--deliverable-unmet",
+    "deliverable_unmet",
+    multiple=True,
+    help="Explicit exception as 'deliverable-id: reason'; repeatable.",
+)
 @click.option("--abandon-children", is_flag=True, help="Abandon open child tasks.")
 @click.option(
     "--claim-next",
@@ -303,6 +309,7 @@ def task_close(
     verification,
     tests,
     commands,
+    deliverable_unmet,
     abandon_children,
     claim_next,
     wait,
@@ -339,6 +346,8 @@ def task_close(
         args["tests"] = list(tests)
     if commands:
         args["commands"] = list(commands)
+    if deliverable_unmet:
+        args["deliverable_unmet"] = list(deliverable_unmet)
     if abandon_children:
         args["abandon_children"] = True
     if claim_next:

@@ -25,6 +25,7 @@ class TaskCloseRequest:
         verification (None | str | Unset): How the completed work was verified (optional)
         tests (list[Any] | None | Unset): Test commands run while completing the task (optional)
         commands (list[Any] | None | Unset): Other commands run while completing the task (optional)
+        deliverable_unmet (list[Any] | None | Unset): Explicit exception entries formatted 'deliverable-id: reason'.
         summary (None | str | Unset): Summary of what happened, for the reviewer/dashboard/vault note. Required for
             tasks whose profile has needs_workspace: true (Dv2 Phase 2 §7 close contract).
         abandon_children (bool | Unset):  Default: False.
@@ -46,6 +47,7 @@ class TaskCloseRequest:
     verification: None | str | Unset = UNSET
     tests: list[Any] | None | Unset = UNSET
     commands: list[Any] | None | Unset = UNSET
+    deliverable_unmet: list[Any] | None | Unset = UNSET
     summary: None | str | Unset = UNSET
     abandon_children: bool | Unset = False
     claim_epoch: int | None | Unset = UNSET
@@ -112,6 +114,15 @@ class TaskCloseRequest:
         else:
             commands = self.commands
 
+        deliverable_unmet: list[Any] | None | Unset
+        if isinstance(self.deliverable_unmet, Unset):
+            deliverable_unmet = UNSET
+        elif isinstance(self.deliverable_unmet, list):
+            deliverable_unmet = self.deliverable_unmet
+
+        else:
+            deliverable_unmet = self.deliverable_unmet
+
         summary: None | str | Unset
         if isinstance(self.summary, Unset):
             summary = UNSET
@@ -162,6 +173,8 @@ class TaskCloseRequest:
             field_dict["tests"] = tests
         if commands is not UNSET:
             field_dict["commands"] = commands
+        if deliverable_unmet is not UNSET:
+            field_dict["deliverable_unmet"] = deliverable_unmet
         if summary is not UNSET:
             field_dict["summary"] = summary
         if abandon_children is not UNSET:
@@ -270,6 +283,23 @@ class TaskCloseRequest:
 
         commands = _parse_commands(d.pop("commands", UNSET))
 
+        def _parse_deliverable_unmet(data: object) -> list[Any] | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, list):
+                    raise TypeError()
+                deliverable_unmet_type_0 = cast(list[Any], data)
+
+                return deliverable_unmet_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(list[Any] | None | Unset, data)
+
+        deliverable_unmet = _parse_deliverable_unmet(d.pop("deliverable_unmet", UNSET))
+
         def _parse_summary(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -319,6 +349,7 @@ class TaskCloseRequest:
             verification=verification,
             tests=tests,
             commands=commands,
+            deliverable_unmet=deliverable_unmet,
             summary=summary,
             abandon_children=abandon_children,
             claim_epoch=claim_epoch,

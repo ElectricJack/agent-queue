@@ -462,6 +462,7 @@ class TestStaticSections:
         body = {s.key: s.body for s in doc.sections}["completion_protocol"]
         assert "aq task close task-1" in body
         assert "aq session drain-ack" in body
+        assert "--deliverable-unmet 'id: reason'" in body
 
     @pytest.mark.parametrize("lifecycle", [None, "pool"])
     async def test_completion_protocol_renders_emergent_work_guidance(

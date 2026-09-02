@@ -125,7 +125,7 @@ async def build_project_role_section(
 # ---------------------------------------------------------------------------
 
 
-def build_task_section(task: Any) -> PrimeSection:
+def build_task_section(task: Any, *, review_deliverables: str = "") -> PrimeSection:
     """Task id/title/status/description (design §5.2 #3).
 
     No dedicated acceptance-criteria query layer exists yet (``task_criteria``
@@ -146,7 +146,43 @@ def build_task_section(task: Any) -> PrimeSection:
     if task.description:
         lines.append("")
         lines.append(task.description.strip())
+    deliverables = getattr(task, "deliverables", [])
+    if deliverables:
+        lines.extend(["", "## Deliverables", "Re-read the plan section and reconcile every item before closing:"])
+        lines.extend(
+            f"- [{item['kind']}] `{item['id']}` — `{item['target']}`" for item in deliverables
+        )
+    if review_deliverables:
+        lines.extend(["", review_deliverables])
     return PrimeSection(key="task", title=SECTION_TITLES["task"], body="\n".join(lines).strip())
+
+
+async def build_review_deliverable_summary(db: Any, task: Any) -> str:
+    """Expose known child gaps before a pipeline reviewer starts reading code."""
+    from src.review_keys import reviewed_task_id
+
+    reviewed_id = reviewed_task_id(getattr(task, "dedup_key", None))
+    if reviewed_id is None:
+        return ""
+    children = await db.get_subtasks(reviewed_id)
+    if not children:
+        return ""
+    lines = ["## Package deliverable status"]
+    for child in children:
+        completion = await db.get_task_completion(child.id)
+        evaluated = completion.deliverables if completion else []
+        unmet = [item for item in evaluated if not item.get("met")]
+        if not evaluated:
+            state = "no recorded deliverable evaluation"
+        elif not unmet:
+            state = "all declared deliverables met"
+        else:
+            details = "; ".join(
+                f"{item['id']}: {item.get('reason') or 'unmet without reason'}" for item in unmet
+            )
+            state = f"{len(unmet)} unmet — {details}"
+        lines.append(f"- `{child.id}` {child.title}: {state}")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------

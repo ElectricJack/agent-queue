@@ -10,6 +10,7 @@ from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.get_task_response_children_type_0 import GetTaskResponseChildrenType0
+    from ..models.get_task_response_deliverables_item import GetTaskResponseDeliverablesItem
     from ..models.get_task_response_parent_type_0 import GetTaskResponseParentType0
     from ..models.task_completion_detail import TaskCompletionDetail
     from ..models.task_ref import TaskRef
@@ -43,6 +44,7 @@ class GetTaskResponse:
         skip_verification (bool | Unset):  Default: False.
         pr_url (None | str | Unset):
         attachments (list[str] | Unset):
+        deliverables (list[GetTaskResponseDeliverablesItem] | Unset):
         depends_on (list[TaskRef] | Unset):
         blocks (list[TaskRef] | Unset):
         subtasks (list[TaskRef] | Unset):
@@ -75,6 +77,7 @@ class GetTaskResponse:
     skip_verification: bool | Unset = False
     pr_url: None | str | Unset = UNSET
     attachments: list[str] | Unset = UNSET
+    deliverables: list[GetTaskResponseDeliverablesItem] | Unset = UNSET
     depends_on: list[TaskRef] | Unset = UNSET
     blocks: list[TaskRef] | Unset = UNSET
     subtasks: list[TaskRef] | Unset = UNSET
@@ -170,6 +173,13 @@ class GetTaskResponse:
         attachments: list[str] | Unset = UNSET
         if not isinstance(self.attachments, Unset):
             attachments = self.attachments
+
+        deliverables: list[dict[str, Any]] | Unset = UNSET
+        if not isinstance(self.deliverables, Unset):
+            deliverables = []
+            for deliverables_item_data in self.deliverables:
+                deliverables_item = deliverables_item_data.to_dict()
+                deliverables.append(deliverables_item)
 
         depends_on: list[dict[str, Any]] | Unset = UNSET
         if not isinstance(self.depends_on, Unset):
@@ -271,6 +281,8 @@ class GetTaskResponse:
             field_dict["pr_url"] = pr_url
         if attachments is not UNSET:
             field_dict["attachments"] = attachments
+        if deliverables is not UNSET:
+            field_dict["deliverables"] = deliverables
         if depends_on is not UNSET:
             field_dict["depends_on"] = depends_on
         if blocks is not UNSET:
@@ -295,6 +307,7 @@ class GetTaskResponse:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.get_task_response_children_type_0 import GetTaskResponseChildrenType0
+        from ..models.get_task_response_deliverables_item import GetTaskResponseDeliverablesItem
         from ..models.get_task_response_parent_type_0 import GetTaskResponseParentType0
         from ..models.task_completion_detail import TaskCompletionDetail
         from ..models.task_ref import TaskRef
@@ -404,6 +417,15 @@ class GetTaskResponse:
         pr_url = _parse_pr_url(d.pop("pr_url", UNSET))
 
         attachments = cast(list[str], d.pop("attachments", UNSET))
+
+        _deliverables = d.pop("deliverables", UNSET)
+        deliverables: list[GetTaskResponseDeliverablesItem] | Unset = UNSET
+        if _deliverables is not UNSET:
+            deliverables = []
+            for deliverables_item_data in _deliverables:
+                deliverables_item = GetTaskResponseDeliverablesItem.from_dict(deliverables_item_data)
+
+                deliverables.append(deliverables_item)
 
         _depends_on = d.pop("depends_on", UNSET)
         depends_on: list[TaskRef] | Unset = UNSET
@@ -518,6 +540,7 @@ class GetTaskResponse:
             skip_verification=skip_verification,
             pr_url=pr_url,
             attachments=attachments,
+            deliverables=deliverables,
             depends_on=depends_on,
             blocks=blocks,
             subtasks=subtasks,

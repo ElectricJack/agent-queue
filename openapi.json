@@ -16257,6 +16257,19 @@
             "title": "Attachments",
             "description": "List of absolute file paths to images or files that the agent should have access to when working on this task. These are typically paths to Discord attachment images that were downloaded locally. The agent will be told to read these files using the Read tool."
           },
+          "deliverables": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deliverables",
+            "description": "Plan-derived implementation contract checked before a passing close."
+          },
           "skip_verification": {
             "type": "boolean",
             "title": "Skip Verification",
@@ -21929,6 +21942,17 @@
             },
             "type": "array",
             "title": "Attachments",
+            "default": []
+          },
+          "deliverables": {
+            "items": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Deliverables",
             "default": []
           },
           "depends_on": {
@@ -36527,6 +36551,19 @@
             "title": "Commands",
             "description": "Other commands run while completing the task (optional)"
           },
+          "deliverable_unmet": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deliverable Unmet",
+            "description": "Explicit exception entries formatted 'deliverable-id: reason'."
+          },
           "summary": {
             "anyOf": [
               {
@@ -36835,6 +36872,15 @@
             "title": "Notes",
             "default": ""
           },
+          "deliverables": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Deliverables",
+            "default": []
+          },
           "completed_at": {
             "type": "number",
             "title": "Completed At",
@@ -37087,6 +37133,17 @@
             },
             "type": "array",
             "title": "Attachments",
+            "default": []
+          },
+          "deliverables": {
+            "items": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Deliverables",
             "default": []
           },
           "depends_on": {
@@ -37992,6 +38049,17 @@
             "title": "Attachments",
             "default": []
           },
+          "deliverables": {
+            "items": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Deliverables",
+            "default": []
+          },
           "depends_on": {
             "items": {
               "$ref": "#/components/schemas/TaskRef"
@@ -38297,6 +38365,17 @@
             },
             "type": "array",
             "title": "Attachments",
+            "default": []
+          },
+          "deliverables": {
+            "items": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Deliverables",
             "default": []
           },
           "depends_on": {

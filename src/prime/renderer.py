@@ -115,7 +115,10 @@ class PrimeRenderer:
             await _sections.build_project_role_section(
                 self.config, effective_profile_id, task.project_id
             ),
-            _sections.build_task_section(task),
+            _sections.build_task_section(
+                task,
+                review_deliverables=await _sections.build_review_deliverable_summary(self.db, task),
+            ),
             await _sections.build_task_context_section(self.db, self.config, task),
             await _sections.build_workspaces_section(self.db, task, effective_work_dir),
             await _sections.build_messages_section(

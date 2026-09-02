@@ -70,6 +70,58 @@ class TestPrimeCLI:
         assert "## Task" in result.output
         assert mock.calls == [("prime", {"task_id": "task-1"})]
 
+
+class TestTaskCloseCLI:
+    def test_forwards_repeatable_deliverable_unmet_reasons(self, runner):
+        from src.cli.app import cli
+
+        mock = _mock_client({"task_close": {"success": True, "task_id": "task-1"}})
+        with (
+            patch("src.cli.agent_surface._get_client", return_value=mock),
+            patch("src.cli.agent_surface.resolve_claim_epoch", return_value=None),
+        ):
+            result = runner.invoke(
+                cli,
+                [
+                    "task", "close", "task-1", "--outcome", "pass",
+                    "--deliverable-unmet", "docs: deferred with approval",
+                    "--deliverable-unmet", "flag: not required by this package",
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        assert mock.calls == [
+            (
+                "task_close",
+                {
+                    "task_id": "task-1",
+                    "outcome": "pass",
+                    "deliverable_unmet": [
+                        "docs: deferred with approval", "flag: not required by this package"
+                    ],
+                },
+            )
+        ]
+
+
+class TestTaskCreateCLI:
+    def test_forwards_json_deliverable_declarations(self, runner):
+        from src.cli.app import cli
+
+        mock = _mock_client({"create_task": {"created": "task-1", "title": "Task"}})
+        with patch("src.cli.tasks._get_client", return_value=mock):
+            result = runner.invoke(
+                cli,
+                [
+                    "task", "create", "--project", "p1", "--title", "Task", "--description", "body",
+                    "--deliverable", '{"id":"module","kind":"file","target":"src/module.py"}',
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        assert mock.calls[0][0] == "create_task"
+        assert mock.calls[0][1]["deliverables"] == [
+            {"id": "module", "kind": "file", "target": "src/module.py"}
+        ]
+
     def test_task_id_falls_back_to_env(self, runner, monkeypatch):
         from src.cli.app import cli
 
