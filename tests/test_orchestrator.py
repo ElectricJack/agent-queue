@@ -358,7 +358,6 @@ class TestOrchestratorLifecycle:
                 project_id="p-1",
                 title="Test",
                 description="Do it",
-                intelligence_class="fast-low",
                 status=TaskStatus.DEFINED,
             )
         )
@@ -380,7 +379,6 @@ class TestOrchestratorLifecycle:
             Task(
                 id="t-1",
                 project_id="p-1",
-                intelligence_class="fast-low",
                 title="First",
                 description="Do first",
                 status=TaskStatus.DEFINED,
@@ -390,7 +388,6 @@ class TestOrchestratorLifecycle:
             Task(
                 id="t-2",
                 project_id="p-1",
-                intelligence_class="fast-low",
                 title="Second",
                 description="Do second",
                 status=TaskStatus.DEFINED,
@@ -558,7 +555,6 @@ class TestAgentReconcilerWiring:
                 project_id="p-1",
                 title="Test reconciler dispatch",
                 description="Should auto-dispatch via the reconciler.",
-                intelligence_class="fast-low",
                 status=TaskStatus.READY,
             )
         )
