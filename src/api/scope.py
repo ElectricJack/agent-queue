@@ -453,7 +453,13 @@ async def check_request_scope(
             args.update(ordinary_args)
             return None
         reviewed_branch = await reviewed_branch_for_final_reviewer(db, scope)
-        if reviewed_branch is not None:
+        if reviewed_branch is None:
+            # ``task_show``/``get_task`` are also triage capabilities.  A
+            # triage session will not resolve a final-review branch, but it
+            # must still reach the triage carve-out below.
+            if command not in _TRIAGE_COMMANDS:
+                return error
+        else:
             worker_ids, pr_url = reviewed_branch
             if args.get("project_id") not in (None, scope.project_id):
                 return "out of scope: project_id mismatch"
@@ -470,11 +476,6 @@ async def check_request_scope(
             args["project_id"] = scope.project_id
             args["session_id"] = scope.session_id
             return None
-        # Not a final reviewer.  ``task_show``/``get_task`` are also triage
-        # capabilities, so fall through rather than pre-empting that carve-out,
-        # exactly as the reviewer block above does.
-        if command not in _TRIAGE_COMMANDS:
-            return error
 
     if scope.kind != "session" or scope.elevated or command not in _TRIAGE_COMMANDS:
         return check_command_scope(command, args, scope)

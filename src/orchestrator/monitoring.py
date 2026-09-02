@@ -113,35 +113,38 @@ class MonitoringMixin:
     async def _recover_orphaned_pause(self, task) -> None:
         """Return a task wedged in PAUSED with no operator hold to READY.
 
-        ``resume_task`` is the only writer that can move it: the manual-pause
+        The resume path is the only writer that can move it: the manual-pause
         fence rejects ``transition_task`` for exactly this state.  With no
         ``manual_pause`` snapshot to restore, it resumes to READY and clears
         the stale assignment — which is what the interrupted pause would have
         produced had it completed.
 
-        The status and the metadata were read in two separate transactions,
-        so re-read before acting: an operator hold committing between them
-        looks exactly like a wedge from here, and resuming their hold would
-        be the worst possible misfire.
+        The scan read the status and the snapshot in two separate
+        transactions, so an operator hold committing between them looks
+        exactly like a wedge from here — and a fresh hold is precisely what
+        an unconditional ``resume_task`` would tear down.  So the write is
+        ``recover_orphaned_pause``, which re-checks the status, the timer and
+        the snapshot under the task-row lock in the same transaction as the
+        transition and declines when any of them changed.
         """
-        current = await self.db.get_task(task.id)
-        if current is None or current.status != TaskStatus.PAUSED:
-            return
-        if current.resume_after is not None:
-            return
-        if await self.db.get_task_meta(task.id, "manual_pause") is not None:
-            return
-        logger.warning(
-            "Task %s was PAUSED with no resume timer and no operator hold — "
-            "resuming it; nothing else would have scheduled it again",
-            task.id,
-        )
         try:
-            await self.db.resume_task(task.id)
+            recovered = await self.db.recover_orphaned_pause(task.id)
         except Exception:
             logger.warning(
                 "Could not recover orphaned pause on task %s", task.id, exc_info=True
             )
+            return
+        if recovered is None:
+            logger.debug(
+                "Task %s left PAUSED: a hold or a resume timer landed after the scan",
+                task.id,
+            )
+            return
+        logger.warning(
+            "Task %s was PAUSED with no resume timer and no operator hold — "
+            "resumed it; nothing else would have scheduled it again",
+            task.id,
+        )
 
     async def _check_defined_tasks(self) -> None:
         """Promote DEFINED/BLOCKED tasks to READY when the graph allows it.

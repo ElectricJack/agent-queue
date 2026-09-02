@@ -36,21 +36,25 @@ vault watcher; no restart, no release.
     {
       "name": "trust-folder",
       "pattern": "Do you trust the (files|contents) (in|of) this",
+      "is_regex": true,
       "keys": ["Enter"]
     },
     {
       "name": "theme-select",
       "pattern": "Select Theme|Choose a theme",
+      "is_regex": true,
       "keys": ["Enter"]
     },
     {
       "name": "auth-select",
       "pattern": "How would you like to authenticate|Select Auth Method",
+      "is_regex": true,
       "keys": ["Enter"]
     },
     {
       "name": "login-required",
       "pattern": "Please sign in|authentication required|not authenticated",
+      "is_regex": true,
       "keys": [],
       "quarantine": true
     }

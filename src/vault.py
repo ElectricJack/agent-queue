@@ -1586,7 +1586,7 @@ def ensure_default_intelligence_classes(data_dir: str) -> dict:
 
 
 def ensure_default_harnesses(data_dir: str) -> dict:
-    """Install bundled harness files into ``vault/harnesses/`` if absent.
+    """Install bundled harness files into ``vault/harnesses/``; refresh stale copies.
 
     A harness is one CLI coding agent described as markdown
     (``command``, prompt delivery, resume style, readiness prompt, startup
@@ -1594,43 +1594,24 @@ def ensure_default_harnesses(data_dir: str) -> dict:
     ``claude.md`` means a fresh install can run the session runtime without
     the operator authoring anything.
 
-    **Idempotent**: an existing file is never overwritten.  The vault copy
-    is the source of truth once it exists; edits survive upgrades, and a
-    user who wants the shipped version back deletes their copy.
+    **Idempotent, edit-preserving**: a vault copy that is byte-identical
+    to the current shipped file is left alone; one that matches an *older*
+    shipped version (per ``src/sessions/harness_manifest.py``) is refreshed
+    in place so shipped fixes reach existing installs; anything else is an
+    operator edit — never overwritten, logged at WARNING, and visible in
+    ``aq doctor --check harness.drift``.  ``aq vault reset-harness <name>``
+    restores the shipped file on request.
 
     Args:
         data_dir: The root data directory (e.g. ``~/.agent-queue``).
 
     Returns:
-        Dict with ``created`` and ``skipped`` filename lists.
+        Dict with ``created``, ``refreshed``, ``skipped`` (left untouched:
+        current or edited) and ``edited`` filename lists.
     """
-    defaults_dir = os.path.join(os.path.dirname(__file__), "sessions", "default_harnesses")
-    harness_dir = os.path.join(data_dir, "vault", "harnesses")
-    os.makedirs(harness_dir, exist_ok=True)
+    from src.sessions.harness_manifest import sync_vault_harnesses
 
-    result: dict = {"created": [], "skipped": []}
-    if not os.path.isdir(defaults_dir):
-        logger.debug("No default harnesses directory found at %s", defaults_dir)
-        return result
-
-    for filename in sorted(os.listdir(defaults_dir)):
-        if not filename.endswith(".md"):
-            continue
-        dst_path = os.path.join(harness_dir, filename)
-        if os.path.exists(dst_path):
-            result["skipped"].append(filename)
-            continue
-        shutil.copy2(os.path.join(defaults_dir, filename), dst_path)
-        result["created"].append(filename)
-
-    if result["created"]:
-        logger.info(
-            "Installed %d default harness(es) to %s: %s",
-            len(result["created"]),
-            harness_dir,
-            ", ".join(result["created"]),
-        )
-    return result
+    return sync_vault_harnesses(data_dir)
 
 
 def ensure_default_aq_skills(data_dir: str) -> dict:

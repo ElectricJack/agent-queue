@@ -880,7 +880,7 @@ def main() -> int:
     print(f"\n{passed}/{len(report.scenarios)} scenarios passed")
     if report.failed:
         print("failed: " + ", ".join(s.key for s in report.failed))
-        print("\nTriage: scripts/e2e-daemon.sh logs 200 | aq doctor | aq events")
+        print("\nTriage: scripts/e2e-daemon.sh logs 200 | aq doctor | aq system get-recent-events")
         return 1
     return 0
 

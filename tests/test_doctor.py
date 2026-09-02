@@ -355,6 +355,7 @@ class TestBuiltinCatalog:
             "db.migrations",
             "vault.parse",
             "harness.binaries",
+            "harness.drift",
             "db.wal_size",
             "logs.llm_size",
             "tasks.stuck",
@@ -366,7 +367,7 @@ class TestBuiltinCatalog:
     def test_fixable_set_matches_design(self):
         """Only the enumerated checks may declare a fix (design §5.4)."""
         fixable = {c.id for c in builtin_checks() if c.fix is not None}
-        assert fixable == {"db.wal_size", "logs.llm_size"}
+        assert fixable == {"db.wal_size", "logs.llm_size", "harness.drift"}
 
     async def test_all_builtins_survive_a_bare_context(self, ctx):
         """No built-in may crash when the DB / handler are absent."""
@@ -543,6 +544,101 @@ class TestVaultParseCheck:
         )
         assert result.severity is Severity.ERROR
         assert result.data["files"]
+
+
+class TestHarnessDriftCheck:
+    """``harness.drift`` — vault copies vs the shipped defaults."""
+
+    @pytest.fixture
+    def fake_manifest(self, tmp_path, monkeypatch):
+        """Point the manifest at a fake shipped dir at version 2 (v1 known)."""
+        import hashlib
+
+        from src.sessions import harness_manifest as hm
+
+        defaults = tmp_path / "shipped"
+        defaults.mkdir()
+        v1 = '---\nid: fake\n---\n\n## Config\n\n```json\n{"command": "fake", "v": 1}\n```\n'
+        v2 = '---\nid: fake\n---\n\n## Config\n\n```json\n{"command": "fake", "v": 2}\n```\n'
+        (defaults / "fake.md").write_text(v2, encoding="utf-8")
+        monkeypatch.setattr(hm, "shipped_harness_dir", lambda: str(defaults))
+        monkeypatch.setattr(
+            hm,
+            "SHIPPED_HARNESS_HASHES",
+            {
+                "fake.md": frozenset(
+                    {hashlib.sha256(v1.encode()).hexdigest(), hashlib.sha256(v2.encode()).hexdigest()}
+                )
+            },
+        )
+        data_dir = tmp_path / "data"
+        vault_copy = data_dir / "vault" / "harnesses" / "fake.md"
+        vault_copy.parent.mkdir(parents=True)
+        ctx = DoctorContext(config=AppConfig(data_dir=str(data_dir)), db=None, handler=None)
+        return {"ctx": ctx, "copy": vault_copy, "v1": v1, "v2": v2}
+
+    async def test_unseeded_vault_is_info_and_fixable(self, ctx):
+        result = await _run_single("harness.drift", ctx)
+        assert result.severity is Severity.INFO
+        assert result.fixable is True
+        assert set(result.data["missing"]) >= {"claude.md", "codex.md", "gemini.md"}
+
+    async def test_freshly_seeded_vault_is_ok(self, tmp_path):
+        from src.vault import ensure_default_harnesses
+
+        ensure_default_harnesses(str(tmp_path))
+        config = AppConfig(data_dir=str(tmp_path))
+        result = await _run_single(
+            "harness.drift", DoctorContext(config=config, db=None, handler=None)
+        )
+        assert result.severity is Severity.OK, result.detail
+        assert result.data["stale"] == [] and result.data["edited"] == []
+
+    async def test_stale_copy_is_warn_and_fix_refreshes_it(self, fake_manifest):
+        fake_manifest["copy"].write_text(fake_manifest["v1"], encoding="utf-8")
+        ctx = fake_manifest["ctx"]
+
+        result = await _run_single("harness.drift", ctx)
+        assert result.severity is Severity.WARN
+        assert result.fixable is True
+        assert result.data["stale"] == ["fake.md"]
+        assert "aq doctor --fix" in result.detail
+
+        fixed = await _get_check("harness.drift").fix(ctx)
+        assert fixed.severity is Severity.OK
+        assert fixed.data["refreshed"] == ["fake.md"]
+        assert fake_manifest["copy"].read_text(encoding="utf-8") == fake_manifest["v2"]
+
+        again = await _run_single("harness.drift", ctx)
+        assert again.severity is Severity.OK
+
+    async def test_edited_copy_is_info_and_fix_leaves_it(self, fake_manifest):
+        custom = '---\nid: fake\n---\n\n## Config\n\n```json\n{"command": "my-fake"}\n```\n'
+        fake_manifest["copy"].write_text(custom, encoding="utf-8")
+        ctx = fake_manifest["ctx"]
+
+        result = await _run_single("harness.drift", ctx)
+        assert result.severity is Severity.INFO
+        assert result.fixable is False
+        assert result.data["edited"] == ["fake.md"]
+        assert "aq vault reset-harness" in result.detail
+
+        fixed = await _get_check("harness.drift").fix(ctx)
+        assert fixed.data["edited"] == ["fake.md"]
+        assert fake_manifest["copy"].read_text(encoding="utf-8") == custom
+
+    async def test_edited_copy_with_parse_warning_is_warn(self, fake_manifest):
+        # An unknown Config key is the parser's cheapest warning.
+        custom = (
+            '---\nid: fake\n---\n\n## Config\n\n```json\n'
+            '{"command": "my-fake", "not_a_key": 1}\n```\n'
+        )
+        fake_manifest["copy"].write_text(custom, encoding="utf-8")
+        result = await _run_single("harness.drift", fake_manifest["ctx"])
+        assert result.severity is Severity.WARN
+        assert "not_a_key" in result.detail
+        assert "aq vault reset-harness fake" in result.detail
+        assert result.data["edited_issues"]["fake.md"]
 
 
 class TestHarnessBinariesCheck:

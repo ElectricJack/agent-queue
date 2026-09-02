@@ -151,9 +151,10 @@ supervisor token can reach it.
 
 **S1 — pool sizing.** Three READY tasks routed to the `worker` pool profile.
 Within a few 5s cascades `aq pool status` shows exactly two live sessions —
-`max_active`, not "one per task" — and `aq events --event-type pool.scaled`
-carries the audit row for the scale-up. *Regression it catches: a sizer that
-ignores its bounds, or one that never fires at all.*
+`max_active`, not "one per task" — and
+`aq system get-recent-events --event-type pool.scaled` carries the audit row
+for the scale-up. *Regression it catches: a sizer that ignores its bounds, or
+one that never fires at all.*
 
 **S2 — the claim loop.** The whole worker lifecycle through one session's own
 token: `task claim --next` returns `claimed` with a `claim_epoch`;
@@ -216,7 +217,7 @@ what they were waiting for and what they last saw, so start there. Then:
 ```bash
 scripts/e2e-daemon.sh logs 200                      # the daemon's own account
 AQ_API_URL=http://127.0.0.1:8099 aq doctor           # what the system thinks of itself
-AQ_API_URL=http://127.0.0.1:8099 aq events --limit 40
+AQ_API_URL=http://127.0.0.1:8099 aq system get-recent-events --limit 40
 AQ_API_URL=http://127.0.0.1:8099 aq pool status
 AQ_API_URL=http://127.0.0.1:8099 aq session list
 ```

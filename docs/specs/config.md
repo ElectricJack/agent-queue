@@ -432,6 +432,10 @@ with the flag off, and `aq doctor` reports the same condition as
 `pools.disabled` (WARN, report-only — flipping the flag is an operator
 decision, not a repair).
 
+See `docs/guides/worker-pools.md` for the operational guide — turning a
+profile into a pool, setting bounds, reading quarantine, the `pools.*` doctor
+checks, and rolling back to `lifecycle: task`.
+
 ### 4.11a `resources` Section
 
 Maps to `ResourcesConfig` / `ResourceCgroupConfig` (`src/config.py`). The YAML
