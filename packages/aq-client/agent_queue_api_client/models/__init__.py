@@ -205,10 +205,18 @@ from .explain_reason import ExplainReason
 from .explain_task_request import ExplainTaskRequest
 from .explain_task_response import ExplainTaskResponse
 from .explain_task_response_422 import ExplainTaskResponse422
+from .explanation_effect import ExplanationEffect
+from .explanation_input import ExplanationInput
+from .explanation_loop import ExplanationLoop
+from .explanation_outcome import ExplanationOutcome
+from .explanation_outcome_classification import ExplanationOutcomeClassification
+from .explanation_result_binding import ExplanationResultBinding
 from .explanation_row_dto import ExplanationRowDTO
 from .explanation_row_dto_source import ExplanationRowDTOSource
+from .explanation_value import ExplanationValue
 from .explanation_value_dto import ExplanationValueDTO
 from .explanation_value_dto_kind import ExplanationValueDTOKind
+from .explanation_value_kind import ExplanationValueKind
 from .export_profile_request import ExportProfileRequest
 from .export_profile_response import ExportProfileResponse
 from .export_profile_response_422 import ExportProfileResponse422
@@ -530,6 +538,7 @@ from .node_advanced_dto_result_schema_type_0 import NodeAdvancedDTOResultSchemaT
 from .node_advanced_dto_typed_step import NodeAdvancedDTOTypedStep
 from .node_badge_dto import NodeBadgeDTO
 from .node_badge_dto_kind import NodeBadgeDTOKind
+from .node_explanation import NodeExplanation
 from .node_overlay_dto import NodeOverlayDTO
 from .node_overlay_dto_state import NodeOverlayDTOState
 from .note_summary import NoteSummary
@@ -1222,10 +1231,18 @@ __all__ = (
     "ExplainTaskRequest",
     "ExplainTaskResponse",
     "ExplainTaskResponse422",
+    "ExplanationEffect",
+    "ExplanationInput",
+    "ExplanationLoop",
+    "ExplanationOutcome",
+    "ExplanationOutcomeClassification",
+    "ExplanationResultBinding",
     "ExplanationRowDTO",
     "ExplanationRowDTOSource",
+    "ExplanationValue",
     "ExplanationValueDTO",
     "ExplanationValueDTOKind",
+    "ExplanationValueKind",
     "ExportProfileRequest",
     "ExportProfileResponse",
     "ExportProfileResponse422",
@@ -1541,6 +1558,7 @@ __all__ = (
     "NodeAdvancedDTOTypedStep",
     "NodeBadgeDTO",
     "NodeBadgeDTOKind",
+    "NodeExplanation",
     "NodeOverlayDTO",
     "NodeOverlayDTOState",
     "NoteSummary",

@@ -862,6 +862,8 @@ class PlaybooksConfig:
     """
 
     enabled: bool = False
+    #: Add contract-derived intent to V1 graph-view nodes.  Removed in Package 5.
+    contract_intent: bool = True
     v2_storage_enabled: bool = False
     v2_max_artifact_bytes: int = 1_048_576
     v2_max_result_bytes: int = 262_144

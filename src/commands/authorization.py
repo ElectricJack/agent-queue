@@ -113,6 +113,12 @@ def resolve_namespace(name: str, resolver: CommandResolver) -> Namespace:
     return classify_capability(name, plugin_command_names=resolver.plugin_command_names())
 
 
+def required_capability(name: str) -> str:
+    """Return the contract-declared capability, retaining legacy behavior."""
+    from src.commands.contracts import CONTRACTS
+    return CONTRACTS.required_capability(name) or name
+
+
 def command_allowed(
     name: str, principal: ExecutionPrincipal, *, resolver: CommandResolver
 ) -> bool:
@@ -126,7 +132,7 @@ def command_allowed(
     """
     if not principal.enforced:
         return True
-    return principal.policy.allows(resolve_namespace(name, resolver), name)
+    return principal.policy.allows(resolve_namespace(name, resolver), required_capability(name))
 
 
 def authorize_command(
@@ -164,7 +170,7 @@ def authorize_command(
         return AuthzDecision(allowed=True, namespace=namespace, reason="trusted-principal")
     if mode == MODE_OFF:
         return AuthzDecision(allowed=True, namespace=namespace, reason="enforcement-off")
-    if principal.policy.allows(namespace, name):
+    if principal.policy.allows(namespace, required_capability(name)):
         return AuthzDecision(allowed=True, namespace=namespace)
 
     if mode == MODE_AUDIT and (principal.policy.derived_from_legacy or principal.unresolved):
@@ -216,5 +222,6 @@ __all__ = [
     "denial_result",
     "filter_tool_definitions",
     "normalize_mode",
+    "required_capability",
     "resolve_namespace",
 ]

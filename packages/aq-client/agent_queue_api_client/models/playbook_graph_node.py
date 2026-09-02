@@ -10,6 +10,7 @@ from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.compiled_playbook_node import CompiledPlaybookNode
+    from ..models.node_explanation import NodeExplanation
     from ..models.playbook_graph_node_colors import PlaybookGraphNodeColors
     from ..models.playbook_graph_position import PlaybookGraphPosition
 
@@ -40,6 +41,7 @@ class PlaybookGraphNode:
         timeout_seconds (int | None | Unset):
         on_timeout (None | str | Unset):
         out_degree (int | Unset):  Default: 0.
+        explanation (NodeExplanation | None | Unset):
     """
 
     id: str
@@ -56,9 +58,12 @@ class PlaybookGraphNode:
     timeout_seconds: int | None | Unset = UNSET
     on_timeout: None | str | Unset = UNSET
     out_degree: int | Unset = 0
+    explanation: NodeExplanation | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.node_explanation import NodeExplanation
+
         id = self.id
 
         type_ = self.type_
@@ -101,6 +106,14 @@ class PlaybookGraphNode:
 
         out_degree = self.out_degree
 
+        explanation: dict[str, Any] | None | Unset
+        if isinstance(self.explanation, Unset):
+            explanation = UNSET
+        elif isinstance(self.explanation, NodeExplanation):
+            explanation = self.explanation.to_dict()
+        else:
+            explanation = self.explanation
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -131,12 +144,15 @@ class PlaybookGraphNode:
             field_dict["on_timeout"] = on_timeout
         if out_degree is not UNSET:
             field_dict["out_degree"] = out_degree
+        if explanation is not UNSET:
+            field_dict["explanation"] = explanation
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.compiled_playbook_node import CompiledPlaybookNode
+        from ..models.node_explanation import NodeExplanation
         from ..models.playbook_graph_node_colors import PlaybookGraphNodeColors
         from ..models.playbook_graph_position import PlaybookGraphPosition
 
@@ -195,6 +211,23 @@ class PlaybookGraphNode:
 
         out_degree = d.pop("out_degree", UNSET)
 
+        def _parse_explanation(data: object) -> NodeExplanation | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                explanation_type_0 = NodeExplanation.from_dict(data)
+
+                return explanation_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(NodeExplanation | None | Unset, data)
+
+        explanation = _parse_explanation(d.pop("explanation", UNSET))
+
         playbook_graph_node = cls(
             id=id,
             type_=type_,
@@ -210,6 +243,7 @@ class PlaybookGraphNode:
             timeout_seconds=timeout_seconds,
             on_timeout=on_timeout,
             out_degree=out_degree,
+            explanation=explanation,
         )
 
         playbook_graph_node.additional_properties = d

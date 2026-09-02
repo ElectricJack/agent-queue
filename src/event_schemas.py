@@ -45,6 +45,18 @@ class EventSchema(TypedDict):
     required: list[str]
     optional: list[str]
     types: NotRequired[dict[str, type | tuple[type, ...]]]
+    fields: NotRequired[dict[str, "EventFieldSpec"]]
+
+
+class EventFieldSpec(TypedDict):
+    """Descriptive field metadata used by contracted playbook intent."""
+
+    type: str
+    description: str
+    sensitive: NotRequired[bool]
+    hydrated: NotRequired[bool]
+    fields: NotRequired[dict[str, "EventFieldSpec"]]
+    item: NotRequired["EventFieldSpec"]
 
 
 # Meta-fields injected by infrastructure (e.g. ``_plugin`` added by
@@ -98,6 +110,27 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
         # ``src/review_keys.py``).  The pipeline dispatch path also re-derives
         # the dedup-key signal from the hydrated row for older emitters.
         "optional": ["agent_id", "agent_type", "no_code", "review_task"],
+        "fields": {
+            "task_id": {"type": "string", "description": "the completed task"},
+            "project_id": {"type": "string", "description": "the project the task belongs to"},
+            "title": {"type": "string", "description": "the task title"},
+            "agent_id": {"type": "string", "description": "the agent that completed the task"},
+            "agent_type": {"type": "string", "description": "the profile id of that agent"},
+            "no_code": {"type": "boolean", "description": "whether the task produced code"},
+            "review_task": {
+                "type": "boolean",
+                "description": "whether the completed task is itself a review task",
+            },
+            "task": {
+                "type": "object",
+                "description": "the completed task row",
+                "hydrated": True,
+                "fields": {
+                    "branch_name": {"type": "string", "description": "task branch"},
+                    "pr_url": {"type": "string", "description": "task pull request"},
+                },
+            },
+        },
     },
     "task.failed": {
         "required": ["task_id", "project_id", "title", "status", "context"],
@@ -160,6 +193,10 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
         "optional": ["seq"],
     },
 }
+
+CONTRACTED_EVENT_TYPES: frozenset[str] = frozenset({
+    "task.completed", "spec.approved", "proposal.ready", "gate.resolved"
+})
 
 # ---------------------------------------------------------------------------
 # Work-graph events  (docs/specs/design/work-graph.md §10.2)
@@ -249,6 +286,15 @@ _WORK_GRAPH_SCHEMAS: dict[str, EventSchema] = {
     "gate.resolved": {
         "required": ["gate_id", "project_id", "resolved_by"],
         "optional": ["resolution", "unblocked_task_ids", "gate_type", "await_id"],
+        "fields": {
+            "gate_id": {"type": "string", "description": "the resolved gate"},
+            "project_id": {"type": "string", "description": "the gate project"},
+            "resolved_by": {"type": "string", "description": "the resolving principal"},
+            "resolution": {"type": "string", "description": "the gate resolution"},
+            "unblocked_task_ids": {"type": "array", "description": "the unblocked tasks"},
+            "gate_type": {"type": "string", "description": "the gate type"},
+            "await_id": {"type": "string", "description": "the await identifier"},
+        },
     },
     "gate.expired": {
         "required": ["gate_id", "project_id"],
@@ -830,10 +876,18 @@ _SPEC_SCHEMAS: dict[str, EventSchema] = {
     "spec.approved": {
         "required": ["project_id", "spec_path"],
         "optional": [],
+        "fields": {
+            "project_id": {"type": "string", "description": "the specification project"},
+            "spec_path": {"type": "string", "description": "the approved specification path"},
+        },
     },
     "proposal.ready": {
         "required": ["project_id", "proposal_id"],
         "optional": [],
+        "fields": {
+            "project_id": {"type": "string", "description": "the proposal project"},
+            "proposal_id": {"type": "string", "description": "the ready proposal"},
+        },
     },
     "proposal.status_changed": {
         "required": ["project_id", "proposal_id", "status"],
@@ -1019,6 +1073,33 @@ def get_schema(event_type: str) -> EventSchema | None:
 def registered_event_types() -> list[str]:
     """Return a sorted list of all registered event type strings."""
     return sorted(EVENT_SCHEMAS)
+
+
+def resolve_event_path(event_type: str, path: str) -> EventFieldSpec | None:
+    """Resolve a dotted path in descriptive event fields without raising."""
+    schema = EVENT_SCHEMAS.get(event_type)
+    fields = schema.get("fields") if schema else None
+    current: EventFieldSpec | None = None
+    for segment in path.split("."):
+        if not fields or segment not in fields:
+            return None
+        current = fields[segment]
+        fields = current.get("fields")
+    return current
+
+
+def event_field_is_sensitive(event_type: str, path: str) -> bool:
+    """Whether a path or any field that contains it is marked sensitive."""
+    schema = EVENT_SCHEMAS.get(event_type)
+    fields = schema.get("fields") if schema else None
+    for segment in path.split("."):
+        if not fields or segment not in fields:
+            return False
+        field = fields[segment]
+        if field.get("sensitive", False):
+            return True
+        fields = field.get("fields")
+    return False
 
 
 def validate_event(

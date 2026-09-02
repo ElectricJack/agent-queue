@@ -1269,6 +1269,7 @@ class PlaybookCommandsMixin:
             playbook,
             direction=direction,
             show_prompts=show_prompts,
+            contract_intent=self.config.playbooks.contract_intent,
             active_runs=active_runs,
             run_overlay=run_overlay,
             all_runs=all_runs if include_history else None,
