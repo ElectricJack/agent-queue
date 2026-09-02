@@ -34,6 +34,7 @@ from src.database.queries.dependency_queries import DependencyQueryMixin
 from src.database.queries.event_queries import EventQueryMixin
 from src.database.queries.gate_queries import GateQueriesMixin
 from src.database.queries.hierarchy_queries import HierarchyQueryMixin
+from src.database.queries.layout_queries import LayoutQueryMixin
 from src.database.queries.merge_slot_queries import MergeSlotQueriesMixin
 from src.database.queries.message_queries import MessageQueriesMixin
 from src.database.queries.metrics_queries import MetricsQueryMixin
@@ -52,6 +53,7 @@ from src.database.queries.token_queries import TokenQueryMixin
 from src.database.queries.transaction_queries import TransactionQueryMixin
 from src.database.queries.playbook_queries import PlaybookQueryMixin
 from src.database.queries.playbook_artifact_queries import PlaybookArtifactQueryMixin
+from src.database.queries.playbook_run_queries import PlaybookRunQueryMixin
 from src.database.queries.plugin_queries import PluginQueryMixin
 from src.database.queries.workflow_queries import WorkflowQueryMixin
 from src.database.queries.workspace_kinds_queries import WorkspaceKindQueryMixin
@@ -62,6 +64,7 @@ logger = logging.getLogger(__name__)
 
 class PostgreSQLDatabaseAdapter(
     HierarchyQueryMixin,
+    LayoutQueryMixin,
     AssignmentRouteQueryMixin,
     ClaimQueryMixin,
     ProjectQueryMixin,
@@ -92,6 +95,7 @@ class PostgreSQLDatabaseAdapter(
     PluginQueryMixin,
     PlaybookQueryMixin,
     PlaybookArtifactQueryMixin,
+    PlaybookRunQueryMixin,
     WorkflowQueryMixin,
     ApiSessionTokenQueriesMixin,
     TransactionQueryMixin,

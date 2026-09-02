@@ -115,6 +115,7 @@ from src.orchestrator.context import ContextMixin
 from src.orchestrator.events import EventsMixin
 from src.orchestrator.sync_workflow import SyncWorkflowMixin
 from src.orchestrator.pools import PoolsMixin
+from src.orchestrator.layout_step import LayoutStepMixin
 from src.orchestrator.triage import TriageMixin
 
 from src.playbooks.conditions import eval_pipeline_when as _eval_pipeline_when
@@ -189,6 +190,7 @@ class Orchestrator(
     EventsMixin,
     SyncWorkflowMixin,
     PoolsMixin,
+    LayoutStepMixin,
 ):
     """Coordinates the full task lifecycle across multiple projects and agents.
 
@@ -299,6 +301,10 @@ class Orchestrator(
             retention_days=config.llm_logging.retention_days,
         )
         self._last_log_cleanup: float = 0.0
+        # Playbook V2 retention sweep (durable-state child plan §12.2) —
+        # at most once per playbooks.v2_retention_sweep_interval_seconds,
+        # and a no-op entirely while playbooks.v2_storage_enabled is false.
+        self._last_playbook_retention_sweep: float = 0.0
         self._last_worktree_reaper: float = 0.0
         self._last_auto_archive: float = 0.0
         self._last_memory_compact: float = 0.0  # TODO: remove once v2 compaction is wired
@@ -2779,6 +2785,13 @@ class Orchestrator(
             # 10. Auto-archive stale terminal tasks (~once per hour).
             await self._auto_archive_tasks()
 
+            # Task graph layout: consume durable dirty marks, run one job, reconcile.
+            # Layout is a projection — a failure here must never abort the cycle.
+            try:
+                await self._run_layout_step()
+            except Exception as e:
+                logger.warning("Layout step failed: %s", e)
+
             # 11. V1 memory compaction removed (roadmap 8.6).
             # Memory lifecycle is now managed by MemoryPlugin.
 
@@ -2786,6 +2799,12 @@ class Orchestrator(
             #     Sweeps paused runs and handles expired timeouts — either
             #     transitioning to a timeout node or marking as timed_out.
             await self._check_paused_playbook_timeouts()
+
+            # 13. Playbook V2 retention sweep (durable-state child plan §12.2).
+            #     Collects aged-out pending events, receipts, terminal runs,
+            #     unreferenced artifact rows/files and stale *.tmp-* leftovers.
+            #     Its own try/except: a sweep failure must never abort a cycle.
+            await self._sweep_playbook_v2_retention()
 
             # ── Phase 4: Framework-overhaul substrate steps ─────────────────
             # Wave 0 landed these as flag-gated no-ops so the Wave 2 lanes

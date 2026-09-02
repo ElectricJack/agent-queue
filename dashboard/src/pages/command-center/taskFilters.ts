@@ -2,6 +2,7 @@ export interface TaskFilters {
   query: string;
   status: string;
   showCompleted: boolean;
+  focus: string;
 }
 
 // These are the engine's states; legacy terminal spellings remain readable.
@@ -16,12 +17,13 @@ export function readTaskFilters(params: URLSearchParams): TaskFilters {
     query: params.get("q") ?? "",
     status: (params.get("status") ?? "").toUpperCase(),
     showCompleted: params.get("completed") === "1",
+    focus: params.get("focus") ?? "",
   };
 }
 
 export function writeTaskFilters(params: URLSearchParams, filters: TaskFilters): URLSearchParams {
   const next = new URLSearchParams(params);
-  for (const [key, value] of [["q", filters.query], ["status", filters.status], ["completed", filters.showCompleted ? "1" : ""]] as const) {
+  for (const [key, value] of [["q", filters.query], ["status", filters.status], ["completed", filters.showCompleted ? "1" : ""], ["focus", filters.focus]] as const) {
     if (value) next.set(key, value);
     else next.delete(key);
   }

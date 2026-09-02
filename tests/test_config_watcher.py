@@ -16,6 +16,7 @@ from src.config import (
     SchedulingConfig,
     ArchiveConfig,
     DiscordConfig,
+    GraphLayoutConfig,
     diff_configs,
     load_config,
 )
@@ -64,6 +65,14 @@ class TestDiffConfigs:
         b.discord = DiscordConfig(bot_token="new-token")
         result = diff_configs(a, b)
         assert result == {"scheduling", "discord"}
+
+    def test_graph_layout_change_detected(self, tmp_path):
+        a = AppConfig(data_dir=str(tmp_path / "data"))
+        b = AppConfig(data_dir=str(tmp_path / "data"))
+        b.graph_layout = GraphLayoutConfig(enabled=True)
+        result = diff_configs(a, b)
+        assert "graph_layout" in result
+        assert "graph_layout" in HOT_RELOADABLE_SECTIONS
 
     def test_scalar_field_change(self, tmp_path):
         a = AppConfig(data_dir=str(tmp_path / "data"))

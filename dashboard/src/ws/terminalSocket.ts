@@ -86,7 +86,8 @@ export function connectTerminal({ sessionId, cols, rows, write, onState }: {
 
   onState({ status: "connecting" });
   try {
-    // The legacy VITE_WS_URL is set by the checked-in .env for notifications.
+    // The notification stream defaults to the page's own origin (VITE_WS_URL is
+    // opt-in and unset by default).
     // Terminals must use the same-origin Vite proxy unless explicitly configured;
     // a separate endpoint also requires api_auth.trusted_dashboard_origins.
     const base = import.meta.env.VITE_TERMINAL_WS_URL || window.location.origin;

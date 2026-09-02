@@ -135,6 +135,10 @@ class ProjectQueryMixin:
             )
             # hooks and hook_runs tables removed (playbooks spec §13 Phase 3)
             await conn.execute(delete(token_ledger).where(token_ledger.c.project_id == project_id))
+            # Layout state holds FKs on both ``tasks`` and ``projects``, so
+            # it goes before either is deleted; the dirty/job queues are
+            # project-scoped bookkeeping that would otherwise be orphaned.
+            await self.delete_layout_rows_for_project(project_id, conn=conn)
             await conn.execute(delete(tasks).where(tasks.c.project_id == project_id))
             # Delete after active parents so an in-flight append cannot
             # commit between child cleanup and the parent deletion.

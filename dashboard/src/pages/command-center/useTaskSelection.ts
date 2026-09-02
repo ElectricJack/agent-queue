@@ -1,7 +1,6 @@
 import { useCallback } from "react";
 import { useShellPaneStore } from "../../panes/store";
-
-type SelectableTask = { id: string; playbook_run_id?: string | null };
+import type { SelectableTask } from "./types";
 
 /** Selection follows the detail pane, including its close button and Escape. */
 export function useTaskSelection() {

@@ -210,6 +210,92 @@ task_dependencies = Table(
     ),
 )
 
+# ── Task graph layout (spatial-layout design §4.10) ─────────────────────────
+LAYOUT_VARIANTS = ("all", "active")
+LAYOUT_KINDS = ("card", "container", "stub")
+
+task_layouts = Table(
+    "task_layouts",
+    metadata,
+    Column("project_id", Text, ForeignKey("projects.id"), nullable=False, primary_key=True),
+    Column("variant", Text, nullable=False, primary_key=True),
+    Column("task_id", Text, ForeignKey("tasks.id"), nullable=False, primary_key=True),
+    Column("container_id", Text, nullable=True),
+    Column("path", Text, nullable=False),
+    Column("depth", Integer, nullable=False),
+    Column("rank", Integer, nullable=False),
+    Column("order_key", Text, nullable=False),
+    Column("w", Float, nullable=False),
+    Column("h", Float, nullable=False),
+    Column("rel_x", Float, nullable=False),
+    Column("rel_y", Float, nullable=False),
+    Column("abs_x", Float, nullable=False),
+    Column("abs_y", Float, nullable=False),
+    Column("kind", Text, nullable=False),
+    Column("agg_children", Integer, nullable=False, server_default="0"),
+    Column("agg_descendants", Integer, nullable=False, server_default="0"),
+    Column("agg_completed", Integer, nullable=False, server_default="0"),
+    Column("agg_running", Integer, nullable=False, server_default="0"),
+    Column("agg_blocked", Integer, nullable=False, server_default="0"),
+    Column("agg_active", Integer, nullable=False, server_default="0"),
+    CheckConstraint("variant IN ('all', 'active')", name="ck_task_layouts_variant"),
+    CheckConstraint("kind IN ('card', 'container', 'stub')", name="ck_task_layouts_kind"),
+    Index("idx_task_layouts_path", "project_id", "variant", "path"),
+    Index("idx_task_layouts_depth", "project_id", "variant", "depth"),
+    Index("idx_task_layouts_container", "project_id", "variant", "container_id"),
+)
+
+task_layout_cells = Table(
+    "task_layout_cells",
+    metadata,
+    Column("project_id", Text, nullable=False, primary_key=True),
+    Column("variant", Text, nullable=False, primary_key=True),
+    Column("cell_x", Integer, nullable=False, primary_key=True),
+    Column("cell_y", Integer, nullable=False, primary_key=True),
+    Column("task_id", Text, nullable=False, primary_key=True),
+    Index("idx_task_layout_cells_cell", "project_id", "variant", "cell_x", "cell_y"),
+    Index("idx_task_layout_cells_task", "project_id", "variant", "task_id"),
+)
+
+project_layout_meta = Table(
+    "project_layout_meta",
+    metadata,
+    Column("project_id", Text, ForeignKey("projects.id"), nullable=False, primary_key=True),
+    Column("variant", Text, nullable=False, primary_key=True),
+    Column("layout_version", Integer, nullable=False, server_default="0"),
+    Column("extent_w", Float, nullable=False, server_default="0"),
+    Column("extent_h", Float, nullable=False, server_default="0"),
+    Column("node_count", Integer, nullable=False, server_default="0"),
+    Column("updated_at", Float, nullable=False),
+    Column("reconciled_at", Float, nullable=True),
+)
+
+layout_dirty = Table(
+    "layout_dirty",
+    metadata,
+    Column("seq", Integer, primary_key=True, autoincrement=True),
+    Column("project_id", Text, nullable=False),
+    Column("task_id", Text, nullable=False),
+    Column("reason", Text, nullable=False),
+    Column("created_at", Float, nullable=False),
+    Index("idx_layout_dirty_project", "project_id", "seq"),
+)
+
+layout_jobs = Table(
+    "layout_jobs",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, nullable=False),
+    Column("variant", Text, nullable=False),
+    Column("kind", Text, nullable=False),  # 'tidy' | 'backfill'
+    Column("status", Text, nullable=False),  # queued | running | done | failed
+    Column("requested_at", Float, nullable=False),
+    Column("started_at", Float, nullable=True),
+    Column("finished_at", Float, nullable=True),
+    Column("error", Text, nullable=True),
+    Index("idx_layout_jobs_project_status", "project_id", "status"),
+)
+
 task_context = Table(
     "task_context",
     metadata,
@@ -1030,6 +1116,185 @@ playbook_activations = Table(
         name="uq_playbook_activations_scope",
     ),
     Index("idx_playbook_activations_health", "health"),
+)
+
+playbook_v2_runs = Table(
+    "playbook_v2_runs",
+    metadata,
+    Column("run_id", Text, primary_key=True),
+    Column("playbook_id", Text, nullable=False),
+    Column(
+        "artifact_sha256",
+        Text,
+        ForeignKey("playbook_artifacts.artifact_sha256", ondelete="RESTRICT"),
+        nullable=False,
+    ),
+    Column("rule_id", Text, nullable=False),
+    Column("lifecycle", Text, nullable=False, server_default="running"),
+    Column("mode", Text, nullable=False, server_default="live"),
+    Column("current_step_id", Text, nullable=True),
+    Column("snapshot_version", Integer, nullable=False, server_default="0"),
+    Column("snapshot", Text, nullable=False, server_default="{}"),
+    Column("snapshot_bytes", Integer, nullable=False, server_default="0"),
+    Column("event_type", Text, nullable=False, server_default=""),
+    Column("event_id", Text, nullable=True),
+    Column("dispatch_id", Text, nullable=True),
+    Column("parent_run_id", Text, nullable=True),
+    Column("parent_step_id", Text, nullable=True),
+    Column("deadline_at", Float, nullable=True),
+    Column("cancel_requested_at", Float, nullable=True),
+    Column("cancel_requested_by", Text, nullable=True),
+    Column("cancel_reason", Text, nullable=True),
+    Column("summary", Text, nullable=False, server_default=""),
+    Column("error", Text, nullable=True),
+    Column("error_code", Text, nullable=True),
+    Column("started_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    Column("completed_at", Float, nullable=True),
+    CheckConstraint(
+        "lifecycle IN ('running', 'paused', 'cancelling', 'completed', "
+        "'failed', 'timed_out', 'cancelled')",
+        name="ck_playbook_v2_runs_lifecycle",
+    ),
+    CheckConstraint(
+        "mode IN ('live', 'dry_run', 'shadow')", name="ck_playbook_v2_runs_mode"
+    ),
+    Index(
+        "uq_playbook_v2_runs_dispatch_rule",
+        "dispatch_id", "rule_id",
+        unique=True,
+        sqlite_where=text("dispatch_id IS NOT NULL"),
+        postgresql_where=text("dispatch_id IS NOT NULL"),
+    ),
+    Index("idx_playbook_v2_runs_playbook", "playbook_id", "started_at"),
+    Index("idx_playbook_v2_runs_lifecycle", "lifecycle"),
+    Index("idx_playbook_v2_runs_artifact", "artifact_sha256"),
+)
+
+playbook_step_receipts = Table(
+    "playbook_step_receipts",
+    metadata,
+    Column("receipt_id", Text, primary_key=True),
+    Column(
+        "run_id", Text,
+        ForeignKey("playbook_v2_runs.run_id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("artifact_sha256", Text, nullable=False),
+    Column("rule_id", Text, nullable=False),
+    Column("step_id", Text, nullable=False),
+    Column("step_kind", Text, nullable=False),
+    Column("iteration", Integer, nullable=False, server_default="-1"),
+    Column("attempt", Integer, nullable=False, server_default="1"),
+    Column("idempotency_key", Text, nullable=False),
+    Column("snapshot_version", Integer, nullable=False, server_default="0"),
+    Column("contract_fingerprint", Text, nullable=False, server_default=""),
+    Column("principal", Text, nullable=False, server_default="{}"),
+    Column("inputs", Text, nullable=False, server_default="{}"),
+    Column("result", Text, nullable=False, server_default="{}"),
+    Column("outcome", Text, nullable=False),
+    Column("selected_transition", Text, nullable=True),
+    Column("error", Text, nullable=True),
+    Column("error_code", Text, nullable=True),
+    Column("tokens_in", Integer, nullable=False, server_default="0"),
+    Column("tokens_out", Integer, nullable=False, server_default="0"),
+    Column("cost_usd", Float, nullable=True),
+    Column("wait_id", Text, nullable=True),
+    Column("timed_out", Boolean, nullable=False, server_default=false()),
+    Column("cancelled_at", Float, nullable=True),
+    Column("started_at", Float, nullable=False),
+    Column("completed_at", Float, nullable=True),
+    Column("duration_ms", Integer, nullable=False, server_default="0"),
+    CheckConstraint(
+        "outcome IN ('success', 'failure', 'skipped', 'timeout', 'cancelled', "
+        "'operator_decision_required')",
+        name="ck_playbook_step_receipts_outcome",
+    ),
+    UniqueConstraint(
+        "run_id", "step_id", "iteration", "attempt",
+        name="uq_playbook_step_receipts_attempt",
+    ),
+    Index("idx_playbook_step_receipts_run", "run_id", "started_at"),
+    Index("idx_playbook_step_receipts_key", "idempotency_key"),
+)
+
+playbook_waits = Table(
+    "playbook_waits",
+    metadata,
+    Column("wait_id", Text, primary_key=True),
+    Column(
+        "run_id", Text,
+        ForeignKey("playbook_v2_runs.run_id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("step_id", Text, nullable=False),
+    Column("iteration", Integer, nullable=False, server_default="-1"),
+    Column("kind", Text, nullable=False),
+    Column("event_type", Text, nullable=False, server_default=""),
+    Column("correlation_key", Text, nullable=False, server_default=""),
+    Column("match", Text, nullable=False, server_default="{}"),
+    Column("deadline_at", Float, nullable=True),
+    Column("snapshot_version", Integer, nullable=False),
+    Column("state", Text, nullable=False, server_default="active"),
+    Column("claimed_event_id", Text, nullable=True),
+    Column("claimed_at", Float, nullable=True),
+    Column("created_at", Float, nullable=False),
+    CheckConstraint(
+        "kind IN ('event', 'timer', 'human', 'agent_task')",
+        name="ck_playbook_waits_kind",
+    ),
+    CheckConstraint(
+        "state IN ('active', 'claimed', 'expired', 'cleared')",
+        name="ck_playbook_waits_state",
+    ),
+    Index(
+        "uq_playbook_waits_active_step",
+        "run_id", "step_id", "iteration",
+        unique=True,
+        sqlite_where=text("state = 'active'"),
+        postgresql_where=text("state = 'active'"),
+    ),
+    Index("idx_playbook_waits_match", "state", "event_type"),
+    Index("idx_playbook_waits_deadline", "state", "deadline_at"),
+)
+
+playbook_pending_events = Table(
+    "playbook_pending_events",
+    metadata,
+    Column("pending_event_id", Text, primary_key=True),
+    Column("playbook_id", Text, nullable=False),
+    Column("scope", Text, nullable=False, server_default="system"),
+    Column("scope_identifier", Text, nullable=False, server_default=""),
+    Column("event_type", Text, nullable=False),
+    Column("event", Text, nullable=False, server_default="{}"),
+    Column("event_id", Text, nullable=True),
+    Column("dedup_key", Text, nullable=False, server_default=""),
+    Column("reason", Text, nullable=False),
+    Column("attempts", Integer, nullable=False, server_default="0"),
+    Column("last_error", Text, nullable=True),
+    Column("received_at", Float, nullable=False),
+    Column("expires_at", Float, nullable=False),
+    Column("resolved_at", Float, nullable=True),
+    Column("resolved_by", Text, nullable=True),
+    Column("resolution", Text, nullable=True),
+    CheckConstraint(
+        "reason IN ('stale_contract', 'invalid_artifact', 'disabled', "
+        "'unavailable', 'question_required')",
+        name="ck_playbook_pending_events_reason",
+    ),
+    CheckConstraint(
+        "resolution IS NULL OR resolution IN ('dispatched', 'discarded', 'expired')",
+        name="ck_playbook_pending_events_resolution",
+    ),
+    Index(
+        "uq_playbook_pending_events_dedup",
+        "playbook_id", "dedup_key",
+        unique=True,
+        sqlite_where=text("resolved_at IS NULL AND dedup_key <> ''"),
+        postgresql_where=text("resolved_at IS NULL AND dedup_key <> ''"),
+    ),
+    Index("idx_playbook_pending_events_playbook", "playbook_id", "received_at"),
+    Index("idx_playbook_pending_events_expiry", "expires_at"),
 )
 
 task_assignment_routes = Table(

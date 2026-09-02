@@ -47,3 +47,19 @@ class ProjectGraphResponse(BaseModel):
     edges: list[GraphEdge] = []
     gates: list[GraphGate] = []
     agents: list[GraphAgent] = []
+
+
+class GraphLayoutResponse(BaseModel):
+    """Response for ``graph_layout_rebuild`` / ``graph_tidy`` (spatial-layout design §5.6, §10)."""
+
+    success: bool
+    project_id: str | None = None
+    versions: dict[str, int] | None = None
+    jobs: list[dict] | None = None
+    error: str | None = None
+
+
+RESPONSE_MODELS: dict[str, type[BaseModel]] = {
+    "graph_layout_rebuild": GraphLayoutResponse,
+    "graph_tidy": GraphLayoutResponse,
+}

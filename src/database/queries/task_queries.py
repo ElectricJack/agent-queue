@@ -238,6 +238,7 @@ class TaskQueryMixin:
                 updated_at=now,
             )
         )
+        await self.mark_layout_dirty(task.project_id, [task.id], "task.created", conn=conn)
 
     async def get_task(self, task_id: str) -> Task | None:
         """Fetch a single task by ID."""
@@ -358,6 +359,13 @@ class TaskQueryMixin:
         not just ``status``: ``update_task(primary, max_retries=10)`` turns a
         terminal failure back into a transient one and must re-block the
         contingency waiting on it.
+
+        A raw ``status=`` here also bypasses the layout ``status.finished`` /
+        ``status.reopened`` dirty mark that ``_apply_transition`` writes when
+        a task crosses the finished boundary.  No production caller crosses
+        that boundary through this method today (the same invariant test that
+        guards raw status writes covers it), but a new one would leave the
+        layout stale until the next full pass.
         """
         values = self._coerce_task_values(kwargs)
         values["updated_at"] = time.time()
@@ -896,6 +904,34 @@ class TaskQueryMixin:
                 # claim fence).  Nothing was written, so there is nothing to
                 # project or announce.
                 return result
+
+            # Layout only cares about crossing the finished boundary (a
+            # finished task leaves the ``active`` variant and restyles in
+            # ``all``); every other move leaves the graph's shape alone.
+            # Marked here, in the write's own transaction, so the mark can
+            # never outlive a rolled-back status change.
+            from src.task_graph.layout.constants import FINISHED_STATUSES
+
+            was_finished = current_status.value in FINISHED_STATUSES
+            now_finished = new_status.value in FINISHED_STATUSES
+            if was_finished != now_finished:
+                layout_project_id = (
+                    result.row["project_id"]
+                    if result.row is not None
+                    else (
+                        await conn.execute(
+                            select(tasks.c.project_id).where(tasks.c.id == task_id)
+                        )
+                    ).scalar_one_or_none()
+                )
+                if layout_project_id is not None:
+                    await self.mark_layout_dirty(
+                        layout_project_id,
+                        [task_id],
+                        "status.finished" if now_finished else "status.reopened",
+                        conn=conn,
+                    )
+
             if not stable:
                 result.flipped = await self.recompute_blocked({task_id}, conn=conn)
 
@@ -1136,6 +1172,21 @@ class TaskQueryMixin:
         affected -= set(ids)
         if parent:
             affected.add(parent)
+        # Mark before the rows go: after the DELETEs there is no project id
+        # left to attribute the marks to.  ``_delete_one`` drops each task's
+        # layout rows (an FK holder on ``tasks``) inside this transaction, so
+        # the layout driver can no longer discover the vanished task's former
+        # container from a stored row — mark the surviving PARENTS too, or the
+        # former container never re-flows and its ancestors' aggregates go
+        # stale.
+        project_id = (
+            await conn.execute(select(tasks.c.project_id).where(tasks.c.id == task_id))
+        ).scalar_one_or_none()
+        if project_id is not None:
+            await self.mark_layout_dirty(
+                project_id, [*ids, *await self._layout_parent_ids(ids, conn=conn)],
+                "task.deleted", conn=conn,
+            )
         for tid in reversed(ids):  # deepest first (subtree_ids is shallow→deep)
             await self._delete_one(tid, conn=conn)
         flipped = await self.recompute_blocked(affected, conn=conn) if affected else set()
@@ -1209,6 +1260,11 @@ class TaskQueryMixin:
         await conn.execute(delete(task_metadata).where(task_metadata.c.task_id == task_id))
         await conn.execute(delete(task_labels).where(task_labels.c.task_id == task_id))
         await conn.execute(delete(task_tools).where(task_tools.c.task_id == task_id))
+        # Layout rows reference ``tasks.id`` with a plain FK, so they must go
+        # before the task row — on both the delete and the archive path
+        # (``_archive_one`` reuses this cleanup).  The layout driver re-lays
+        # what remains from the dirty mark its caller wrote.
+        await self.delete_layout_rows_for_tasks([task_id], conn=conn)
 
         # Gates: drop this task's waiter rows, then expire any gate that
         # is left with nothing waiting on it.  Collect the candidates
