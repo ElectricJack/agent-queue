@@ -2283,7 +2283,7 @@ class GitManager:
                     "--json",
                     "url,state",
                     "--jq",
-                    '.[] | select(.state == "OPEN" or .state == "MERGED") | .url',
+                    'first(.[] | select(.state == "OPEN" or .state == "MERGED") | .url) // empty',
                 ],
                 cwd=checkout_path,
                 timeout=self._GIT_TIMEOUT,
@@ -2292,8 +2292,12 @@ class GitManager:
             return None
         if result.returncode != 0:
             return None
-        url = (result.stdout or "").strip()
-        return url if url else None
+        # ``--jq`` is deliberately single-valued, but retain this boundary
+        # guard so an older gh implementation or a mocked command cannot
+        # store a newline-delimited list in a task's ``pr_url``.
+        return next(
+            (line.strip() for line in (result.stdout or "").splitlines() if line.strip()), None
+        )
 
     async def _open_pr_url_by_head_commit(
         self,

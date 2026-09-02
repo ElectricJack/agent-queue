@@ -36,6 +36,7 @@ from src.database.queries.gate_queries import GateQueriesMixin
 from src.database.queries.hierarchy_queries import HierarchyQueryMixin
 from src.database.queries.merge_slot_queries import MergeSlotQueriesMixin
 from src.database.queries.message_queries import MessageQueriesMixin
+from src.database.queries.metrics_queries import MetricsQueryMixin
 from src.database.queries.profile_queries import ProfileQueryMixin
 from src.database.queries.project_queries import ProjectQueryMixin
 from src.database.queries.repo_queries import RepoQueryMixin
@@ -86,6 +87,7 @@ class SQLiteDatabaseAdapter(
     ChatQueryMixin,
     MergeSlotQueriesMixin,
     MessageQueriesMixin,
+    MetricsQueryMixin,
     PluginQueryMixin,
     PlaybookQueryMixin,
     WorkflowQueryMixin,

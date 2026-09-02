@@ -15,7 +15,9 @@ is what every other boolean column in the tree uses.
 
 from __future__ import annotations
 
+import asyncio
 import ast
+import os
 import tempfile
 from pathlib import Path
 
@@ -78,12 +80,46 @@ def test_sqlite_backfills_existing_sessions_as_not_provisioned():
             ).scalar()
         assert not got
 
+        command.downgrade(cfg, PRIOR_REVISION)
+        with engine.connect() as conn:
+            columns = {row[1] for row in conn.execute(sa.text("PRAGMA table_info(sessions)"))}
+        assert "hooks_provisioned" not in columns
+
+
+@pytest.mark.skipif(not os.environ.get("POSTGRES_TEST_DSN"), reason="POSTGRES_TEST_DSN not set")
+def test_postgres_upgrade_and_downgrade_use_a_boolean_default():
+    """Run this revision's real DDL against PostgreSQL, not just offline SQL."""
+    import asyncpg
+
+    from tests.pg_dsn import create_scratch_database
+
+    dsn = asyncio.run(create_scratch_database("session_hooks_migration"))
+    cfg = _alembic_config(dsn)
+
+    command.upgrade(cfg, PRIOR_REVISION)
+    command.upgrade(cfg, HOOKS_REVISION)
+
+    async def column_default() -> str | None:
+        conn = await asyncpg.connect(dsn.replace("postgresql+asyncpg://", "postgresql://"))
+        try:
+            return await conn.fetchval(
+                "SELECT column_default FROM information_schema.columns "
+                "WHERE table_name = 'sessions' AND column_name = 'hooks_provisioned'"
+            )
+        finally:
+            await conn.close()
+
+    assert asyncio.run(column_default()) == "false"
+
+    command.downgrade(cfg, PRIOR_REVISION)
+    assert asyncio.run(column_default()) is None
+
 
 def _numeric_boolean_defaults(path: Path) -> list[str]:
-    """Return ``file:line`` for Boolean Columns with numeric defaults.
+    """Return ``file:line`` for every Boolean Column with a numeric server_default.
 
-    Supports migration declarations (``sa.Column(..., sa.Boolean(), ...)``)
-    and metadata declarations (``Column(..., Boolean, ...)``).
+    Handles both the migration spelling (``sa.Column(..., sa.Boolean(), ...)``)
+    and the ``tables.py`` spelling (``Column(..., Boolean, ...)``).
     """
 
     def _is_named(node: ast.expr, name: str) -> bool:
@@ -134,7 +170,12 @@ def test_no_migration_gives_a_boolean_column_a_numeric_default():
 
 
 def test_tables_metadata_has_no_numeric_boolean_defaults():
-    """Autogenerate uses ``tables.py`` defaults when producing migration DDL."""
+    """``tables.py`` is what autogenerate diffs against.
+
+    A numeric default there re-introduces the bug into the *next* generated
+    migration even after the current one is fixed, so the metadata must carry
+    the same ``false()``/``true()`` the migrations emit.
+    """
     offenders = _numeric_boolean_defaults(Path("src/database/tables.py"))
 
     assert offenders == [], (

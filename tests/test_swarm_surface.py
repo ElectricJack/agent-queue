@@ -111,6 +111,8 @@ def test_pool_lifecycle_command_is_part_of_the_generated_surface():
 def test_read_claim_epoch_prefers_file(tmp_path, monkeypatch):
     from src.cli.agent_surface import read_claim_epoch
 
+    monkeypatch.delenv("AQ_TASK_ID", raising=False)
+    monkeypatch.delenv("AQ_SESSION_ID", raising=False)
     monkeypatch.setenv("AQ_CLAIM_EPOCH", "9")
     assert read_claim_epoch(str(tmp_path)) == 9
     (tmp_path / ".aq").mkdir()
@@ -136,6 +138,8 @@ def test_cli_close_sends_claim_epoch(tmp_path, monkeypatch):
             return {"success": True}
 
     monkeypatch.setattr(agent_surface, "_get_client", lambda *a, **k: FakeClient())
+    monkeypatch.delenv("AQ_TASK_ID", raising=False)
+    monkeypatch.delenv("AQ_SESSION_ID", raising=False)
     (tmp_path / ".aq").mkdir()
     (tmp_path / ".aq" / "claim.json").write_text(json.dumps({"task_id": "t1", "claim_epoch": 4}))
     monkeypatch.chdir(tmp_path)
@@ -151,12 +155,29 @@ def test_read_claim_epoch_walks_up_from_a_subdirectory(tmp_path, monkeypatch):
     """M5: a worker that ``cd``ed into a subdirectory still resolves its epoch."""
     from src.cli.agent_surface import read_claim_epoch
 
+    monkeypatch.delenv("AQ_TASK_ID", raising=False)
+    monkeypatch.delenv("AQ_SESSION_ID", raising=False)
     monkeypatch.delenv("AQ_CLAIM_EPOCH", raising=False)
     (tmp_path / ".aq").mkdir()
     (tmp_path / ".aq" / "claim.json").write_text(json.dumps({"task_id": "t", "claim_epoch": 7}))
     deep = tmp_path / "src" / "pkg" / "sub"
     deep.mkdir(parents=True)
     assert read_claim_epoch(str(deep)) == 7
+
+
+def test_read_claim_epoch_ignores_another_session_claim_file(tmp_path, monkeypatch):
+    """A reused slot must fall back to the calling worker's environment epoch."""
+    from src.cli.agent_surface import read_claim_epoch
+
+    monkeypatch.setenv("AQ_TASK_ID", "active-task")
+    monkeypatch.setenv("AQ_SESSION_ID", "active-session")
+    monkeypatch.setenv("AQ_CLAIM_EPOCH", "2")
+    (tmp_path / ".aq").mkdir()
+    (tmp_path / ".aq" / "claim.json").write_text(json.dumps({
+        "task_id": "reassigned-task", "session_id": "new-session", "claim_epoch": 1,
+    }))
+
+    assert read_claim_epoch(str(tmp_path)) == 2
 
 
 def test_read_claim_epoch_returns_none_outside_a_workspace(tmp_path, monkeypatch):

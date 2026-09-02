@@ -263,6 +263,7 @@ class TestAbandonChildren:
         assert res["success"] is False
         assert res["code"] == "hierarchy.manually_paused_descendants"
         assert res["manually_paused_descendants"] == ["c"]
+        assert "aq task resume --task-id <id>" in res["error"]
         assert (await db.get_task("c")).status == TaskStatus.PAUSED
         assert (await db.get_task("sibling")).status == TaskStatus.READY
         assert (await db.get_task("p")).status == TaskStatus.IN_PROGRESS

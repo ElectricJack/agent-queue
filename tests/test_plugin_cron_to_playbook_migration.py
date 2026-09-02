@@ -42,9 +42,9 @@ from src.vault import ensure_default_playbooks
 
 _SRC_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "src")
 # vibecop-weekly-scan.md is no longer auto-installed; it lives with the
-# other example playbooks under src/prompts/example_playbooks/ so users
-# can opt in by copying it into their vault.
-_PLAYBOOKS_DIR = os.path.join(_SRC_DIR, "prompts", "example_playbooks")
+# other documentation samples under docs/example_playbooks/ so users can
+# opt in by copying them into their vault.
+_PLAYBOOKS_DIR = os.path.join(os.path.dirname(_SRC_DIR), "docs", "example_playbooks")
 _PLUGINS_DIR = os.path.join(_SRC_DIR, "plugins", "internal")
 
 
@@ -290,14 +290,14 @@ class TestVaultInstallation:
     """Verify ensure_default_playbooks produces the minimal default set.
 
     Note: vibecop-weekly-scan.md is no longer an auto-installed default.
-    It lives under ``src/prompts/example_playbooks/`` and users opt in by
+    It lives under ``docs/example_playbooks/`` and users opt in by
     copying it into their vault manually.
     """
 
     def test_all_default_playbooks_installed(self, tmp_path):
         """Only the minimal default playbook set is auto-installed.
 
-        Everything else now lives under ``src/prompts/example_playbooks/``
+        Everything else now lives under ``docs/example_playbooks/``
         as opt-in reference material.
         """
         result = ensure_default_playbooks(str(tmp_path))

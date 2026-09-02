@@ -42,10 +42,11 @@ For each planning task you:
 }
 ```
 
-## Tools
+## Capabilities
+
 ```json
 {
-  "allowed": [
+  "harness_tools": [
     "Bash",
     "Read",
     "Write",
@@ -58,6 +59,30 @@ For each planning task you:
     "WebSearch",
     "WebFetch",
     "NotebookEdit"
+  ],
+  "aq_commands": [
+    "create_task",
+    "formula_list",
+    "formula_show",
+    "get_schema",
+    "message_inbox",
+    "message_reply",
+    "message_send",
+    "prime",
+    "session_drain_ack",
+    "task_children",
+    "task_close",
+    "task_comment",
+    "task_comments",
+    "task_handoff",
+    "task_heartbeat",
+    "task_progress",
+    "task_set",
+    "task_show"
+  ],
+  "plugin_tools": [
+    "memory_save",
+    "memory_search"
   ]
 }
 ```

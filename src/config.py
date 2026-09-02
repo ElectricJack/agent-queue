@@ -679,6 +679,12 @@ class AgentProfileConfig:
     model: str = ""
     permission_mode: str = ""
     allowed_tools: list[str] = field(default_factory=list)
+    # Normalized capability namespaces (Playbook V2 Package 0 §3.1).
+    # ``None`` means "not authored — run the legacy ``allowed_tools``
+    # adapter"; ``[]`` means "explicitly none".
+    harness_tools: list[str] | None = None
+    aq_commands: list[str] | None = None
+    plugin_tools: list[str] | None = None
     # New shape: ``list[str]`` of MCP registry names.  Legacy YAML profiles
     # may still carry a ``dict[str, dict]`` of inline configs; the
     # inline-mcp-servers migration extracts these to the vault registry
@@ -713,6 +719,20 @@ class AgentProfileConfig:
                     f"{sorted(m for m in valid_permission_modes if m)}, got '{self.permission_mode}'",
                 )
             )
+        # Wildcard capabilities are prohibited in every shape a profile can
+        # take (Playbook V2 Package 0 §3.2) — YAML included, not just the
+        # vault markdown.
+        for field_name in ("allowed_tools", "harness_tools", "aq_commands", "plugin_tools"):
+            for name in getattr(self, field_name, None) or []:
+                if isinstance(name, str) and any(ch in name for ch in ("*", "?")):
+                    errors.append(
+                        ConfigError(
+                            "agent_profiles",
+                            field_name,
+                            f"profile '{self.id}': {name!r} contains a wildcard; "
+                            "wildcard capabilities are prohibited",
+                        )
+                    )
         return errors
 
 
@@ -1085,6 +1105,10 @@ class PricingConfig:
         return errors
 
 
+#: Valid values for ``security.capability_enforcement``.
+CAPABILITY_ENFORCEMENT_MODES: frozenset[str] = frozenset({"off", "audit", "enforce"})
+
+
 @dataclass
 class SecurityConfig:
     """Env scrubbing and operational-health thresholds.
@@ -1096,6 +1120,21 @@ class SecurityConfig:
 
     env_scrub_enabled: bool = True  # kill switch, default on
     env_allowlist: list[str] = field(default_factory=list)  # names or globs
+    #: Dispatch-time capability enforcement (Playbook V2 Package 0 §3.6).
+    #:
+    #: ``off``      — never deny.
+    #: ``audit``    — deny an explicitly authored ``## Capabilities`` policy;
+    #:                allow a *legacy-adapted* one with a
+    #:                ``capability_denied_shadow`` warning.  Default, so
+    #:                flipping deny-by-default on does not strand a running
+    #:                fleet mid-migration.
+    #: ``enforce``  — deny either.
+    #:
+    #: An operator who wrote the block asked for it, which is why only the
+    #: adapted shape gets a grace mode.  Flipped to ``enforce`` by **Package
+    #: 6**; the flag and its ``off``/``audit`` modes are removed in
+    #: **Package 7**.
+    capability_enforcement: str = "audit"
     wal_warn_mb: int = 64  # doctor db.wal_size threshold
     llm_log_warn_mb: int = 512  # doctor logs.llm_size threshold
 
@@ -1114,6 +1153,16 @@ class SecurityConfig:
             errors.append(ConfigError("security", "wal_warn_mb", "must be > 0"))
         if self.llm_log_warn_mb <= 0:
             errors.append(ConfigError("security", "llm_log_warn_mb", "must be > 0"))
+        if self.capability_enforcement not in CAPABILITY_ENFORCEMENT_MODES:
+            errors.append(
+                ConfigError(
+                    "security",
+                    "capability_enforcement",
+                    "must be one of "
+                    f"{sorted(CAPABILITY_ENFORCEMENT_MODES)}, got "
+                    f"{self.capability_enforcement!r}",
+                )
+            )
         return errors
 
 
@@ -1413,7 +1462,7 @@ class ResourcesConfig:
     #: Slot poll interval while waiting, in seconds.
     test_poll_interval: float = 2.0
     #: ``-m`` expression ``aq test`` applies when the caller passed none.
-    test_deselect_markers: str = "not tmux and not integration and not perf"
+    test_deselect_markers: str = "not perf and not migration and not slow and not tmux and not integration"
     #: doctor ``resources.load`` warns when the 5-minute load average
     #: exceeds ``cores * load_warn_ratio``.
     load_warn_ratio: float = 1.0
@@ -1495,6 +1544,61 @@ class SwarmConfig:
 
 
 @dataclass
+class MetricsConfig:
+    """Fleet metrics sampler and time series (dashboard Metrics tab).
+
+    The two intervals exist because the series have very different costs.
+    ``interval_seconds`` drives the cheap tier — two grouped counts, the
+    load average and ``/proc/meminfo`` — and is what the dashboard's live
+    cadence follows.  ``slow_interval_seconds`` drives everything that
+    range-scans an append-only table (the token ledger, the sub-agent event
+    fold); those values are carried forward between slow ticks so the
+    per-second sample is still complete.
+
+    Retention is per resolution tier, and each tier is pruned against its
+    own horizon.  Defaults keep 1 hour of per-second detail, 30 days of
+    minutes, and a year of hours.
+    """
+
+    enabled: bool = True
+    interval_seconds: float = 1.0
+    slow_interval_seconds: float = 5.0
+    #: Seconds of per-second samples buffered before one batched commit.  A
+    #: commit is an fsync; batching turns a per-second fsync into one per
+    #: window.  The live chart is fed by the WebSocket tick, not by this
+    #: write, so the only thing at risk is the newest few seconds of stored
+    #: history if the daemon is killed.
+    flush_interval_seconds: float = 5.0
+    rollup_interval_seconds: float = 60.0
+    retain_seconds_1s: int = 3600
+    retain_seconds_1m: int = 30 * 86400
+    retain_seconds_1h: int = 365 * 86400
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        for key in (
+            "interval_seconds",
+            "slow_interval_seconds",
+            "flush_interval_seconds",
+            "rollup_interval_seconds",
+        ):
+            if getattr(self, key) <= 0:
+                errors.append(ConfigError("metrics", key, "must be > 0"))
+        if self.slow_interval_seconds < self.interval_seconds:
+            errors.append(
+                ConfigError(
+                    "metrics",
+                    "slow_interval_seconds",
+                    "must be >= interval_seconds",
+                )
+            )
+        for key in ("retain_seconds_1s", "retain_seconds_1m", "retain_seconds_1h"):
+            if getattr(self, key) < 0:
+                errors.append(ConfigError("metrics", key, "must be >= 0"))
+        return errors
+
+
+@dataclass
 class AppConfig:
     """Top-level application configuration aggregating all subsystem configs.
 
@@ -1553,6 +1657,7 @@ class AppConfig:
     integration: IntegrationConfig = field(default_factory=IntegrationConfig)
     swarm: SwarmConfig = field(default_factory=SwarmConfig)
     resources: ResourcesConfig = field(default_factory=ResourcesConfig)
+    metrics: MetricsConfig = field(default_factory=MetricsConfig)
     agent_profiles: list[AgentProfileConfig] = field(default_factory=list)
     global_token_budget_daily: int | None = None
     max_daily_playbook_tokens: int | None = None
@@ -1727,6 +1832,7 @@ class AppConfig:
         errors.extend(self.integration.validate())
         errors.extend(self.swarm.validate())
         errors.extend(self.resources.validate())
+        errors.extend(self.metrics.validate())
         # Sessions are the only execution path (the runtime subsystem was
         # removed), so a disabled session runtime is a daemon that accepts
         # work and never starts any of it.  Warn, don't reject: the mode is
@@ -1860,6 +1966,7 @@ HOT_RELOADABLE_SECTIONS = {
     "integration",
     "swarm",
     "resources",
+    "metrics",
     "pricing",
     "surface",
 }
@@ -1925,6 +2032,7 @@ _SECTION_FIELDS = {
     "work_graph",
     "swarm",
     "resources",
+    "metrics",
     "agent_profiles",
     "global_token_budget_daily",
     "max_daily_playbook_tokens",
@@ -2517,6 +2625,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             env_allowlist=sec.get("env_allowlist", []),
             wal_warn_mb=int(sec.get("wal_warn_mb", 64)),
             llm_log_warn_mb=int(sec.get("llm_log_warn_mb", 512)),
+            capability_enforcement=str(sec.get("capability_enforcement", "audit")),
         )
 
     if "pricing" in raw:
@@ -2636,6 +2745,19 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             cgroups=cgroups,
         )
 
+    if "metrics" in raw and isinstance(raw["metrics"], dict):
+        met = raw["metrics"]
+        config.metrics = MetricsConfig(
+            enabled=bool(met.get("enabled", True)),
+            interval_seconds=float(met.get("interval_seconds", 1.0)),
+            slow_interval_seconds=float(met.get("slow_interval_seconds", 5.0)),
+            flush_interval_seconds=float(met.get("flush_interval_seconds", 5.0)),
+            rollup_interval_seconds=float(met.get("rollup_interval_seconds", 60.0)),
+            retain_seconds_1s=int(met.get("retain_seconds_1s", 3600)),
+            retain_seconds_1m=int(met.get("retain_seconds_1m", 30 * 86400)),
+            retain_seconds_1h=int(met.get("retain_seconds_1h", 365 * 86400)),
+        )
+
     if "agent_profiles" in raw:
         profiles = []
         for pid, pdata in raw["agent_profiles"].items():
@@ -2650,6 +2772,9 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
                     model=str(raw_profile_model) if raw_profile_model else "",
                     permission_mode=pdata.get("permission_mode", ""),
                     allowed_tools=pdata.get("allowed_tools", []),
+                    harness_tools=pdata.get("harness_tools"),
+                    aq_commands=pdata.get("aq_commands"),
+                    plugin_tools=pdata.get("plugin_tools"),
                     mcp_servers=pdata.get("mcp_servers", {}),
                     system_prompt_suffix=pdata.get("system_prompt_suffix", ""),
                     install=pdata.get("install", {}),

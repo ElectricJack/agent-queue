@@ -29,3 +29,22 @@ if (!("ResizeObserver" in globalThis)) {
   (globalThis as unknown as { ResizeObserver: typeof NoopResizeObserver }).ResizeObserver =
     NoopResizeObserver;
 }
+
+// jsdom doesn't implement matchMedia. uPlot reads it at import time to pick
+// a device pixel ratio, so without this any test that transitively imports a
+// chart fails before it runs a single assertion.
+if (typeof window.matchMedia !== "function") {
+  Object.defineProperty(window, "matchMedia", {
+    writable: true,
+    value: (query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    }),
+  });
+}

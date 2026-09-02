@@ -27,11 +27,32 @@ VALID_COMPILED = {
 }
 
 
+#: Package 0 §3.8: ``playbook_install`` refuses an artifact with no source of
+#: authority, so every install test needs the matching vault ``.md``.
+SOURCE_MD = """---
+id: demo
+triggers: [task.completed]
+scope: system
+---
+
+# Demo
+"""
+
+
+def _write_source(handler, playbook_id: str = "demo", rel_dir: str = "system/playbooks") -> None:
+    d = _vault_dir(handler) / rel_dir
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{playbook_id}.md").write_text(
+        SOURCE_MD.replace("id: demo", f"id: {playbook_id}"), encoding="utf-8"
+    )
+
+
 class _StubPlaybookManager:
     """Minimal stand-in for PlaybookManager — records install_compiled calls."""
 
-    def __init__(self) -> None:
+    def __init__(self, handler=None) -> None:
         self._active: dict = {}
+        self._handler = handler
 
     async def install_compiled(self, compiled) -> None:
         self._active[compiled.id] = compiled
@@ -39,9 +60,22 @@ class _StubPlaybookManager:
     def get_playbook(self, pid: str):
         return self._active.get(pid)
 
+    def find_source_for_id(self, playbook_id: str, vault_root=None):
+        from src.playbooks.manager import PlaybookManager
+
+        return PlaybookManager.find_source_for_id(self, playbook_id, vault_root)
+
+    def iter_playbook_sources(self, vault_root=None):
+        from src.playbooks.manager import PlaybookManager
+
+        return PlaybookManager.iter_playbook_sources(self, vault_root)
+
+    def _vault_root(self, vault_root=None):
+        return vault_root or str(_vault_dir(self._handler))
+
 
 def _attach_stub_manager(handler) -> _StubPlaybookManager:
-    pm = _StubPlaybookManager()
+    pm = _StubPlaybookManager(handler)
     handler.orchestrator.playbook_manager = pm
     return pm
 
@@ -95,6 +129,7 @@ async def test_validate_missing_frontmatter_field(command_handler_factory):
 async def test_install_round_trips(command_handler_factory):
     handler = await command_handler_factory()
     pm = _attach_stub_manager(handler)
+    _write_source(handler)
     p = _vault_dir(handler) / "demo.json"
     p.write_text(json.dumps(VALID_COMPILED))
     r = await handler.execute(
@@ -255,11 +290,12 @@ async def test_install_reports_structured_error_when_manager_install_fails(
     command's structured-error convention, not a success."""
     handler = await command_handler_factory()
 
-    class _FailingManager:
+    class _FailingManager(_StubPlaybookManager):
         async def install_compiled(self, compiled) -> None:
             raise RuntimeError("store save failed for playbook 'demo': disk full")
 
-    handler.orchestrator.playbook_manager = _FailingManager()
+    handler.orchestrator.playbook_manager = _FailingManager(handler)
+    _write_source(handler)
     p = _vault_dir(handler) / "demo.json"
     p.write_text(json.dumps(VALID_COMPILED))
 

@@ -987,3 +987,27 @@ async def test_pause_cleanup_cascade_backs_off_then_stops_retrying(env, tmp_path
     await env.orch._resume_paused_tasks()
     assert len(calls) == 3
     assert (await env.db.get_task("t")).status == TaskStatus.PAUSED
+
+
+async def test_backoff_resume_clears_needs_attention(env):
+    """A backoff resume puts the task back in flight, so the flag must go.
+
+    The session reconciler pauses an exit-without-close with
+    ``needs_attention=session_exited_open`` (PR #49).  Every other writer of
+    that key pairs it with BLOCKED, where the supervisor's retry decision
+    deletes it before the task returns to READY.  The automatic resume has
+    to do the same: a stale flag makes ``aq task explain`` report a session
+    exit on a task that is running fine, excludes the task from BLOCKED
+    re-promotion if a dependency later flips it, and turns any later
+    BLOCKED into a false ``session_exited_open`` recovery incident.
+    """
+    import time as _time
+
+    await env.db.set_task_meta("t", "needs_attention", "session_exited_open")
+    await env.db.transition_task(
+        "t", TaskStatus.PAUSED, force=True, resume_after=_time.time() - 1,
+        assigned_agent_id=None,
+    )
+    await env.orch._resume_paused_tasks()
+    assert (await env.db.get_task("t")).status == TaskStatus.READY
+    assert await env.db.get_task_meta("t", "needs_attention") is None

@@ -74,6 +74,9 @@ def test_triage_profile_parseable():
     assert result.frontmatter.id == "triage"
     assert result.config.get("harness") == "claude"
     assert result.config.get("needs_workspace") is False
-    # task_route must be in the allowed tools list
-    allowed = result.tools.get("allowed", [])
-    assert "task_route" in allowed, f"task_route not in allowed tools: {allowed}"
+    # task_route must be in the profile's AQ command namespace.  Playbook V2
+    # Package 0 (T-10) replaced the flat ``## Tools`` ``allowed`` list with
+    # the three-namespace ``## Capabilities`` block on every shipped profile;
+    # routing verbs are AQ commands, not harness tools.
+    aq_commands = (result.capabilities or {}).get("aq_commands", [])
+    assert "task_route" in aq_commands, f"task_route not in aq_commands: {aq_commands}"

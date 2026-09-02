@@ -44,7 +44,24 @@ class RequestScope:
     #: supervisor sessions), :func:`check_command_scope` allows any
     #: command instead of restricting to :data:`AGENT_COMMAND_SET`.
     #: ``project_id`` is still enforced when set.
+    #:
+    #: Elevation is **not** a capability bypass: it answers "which project
+    #: may this token touch", while the capability policy answers "which
+    #: commands may this profile run".
     elevated: bool = False
+    #: Server-derived identity (Playbook V2 Package 0 §3.7).  Populated by
+    #: :class:`~src.api.middleware.TokenAuthMiddleware` *after*
+    #: ``store.validate()`` returns, from the live ``sessions`` row — never
+    #: minted into the token and never client-supplied.
+    #:
+    #: Deriving rather than persisting is deliberate: a token minted at
+    #: launch would pin a ``profile_id`` that goes stale the moment an
+    #: operator edits or re-syncs the profile, and stale-*wide* is the
+    #: dangerous direction.  It also means Package 0 needs no
+    #: ``api_session_tokens`` migration, which is what keeps its rollback
+    #: boundary free of a database downgrade.
+    profile_id: str | None = None
+    policy_fingerprint: str | None = None
 
 
 LOCAL_SCOPE = RequestScope(kind="local")
