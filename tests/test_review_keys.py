@@ -78,3 +78,22 @@ def test_flag_review_task_event_only_narrows(dedup_key, expected):
     flagged = {"task_id": "abc", "review_task": True}
     flag_review_task_event(flagged, dedup_key)
     assert flagged["review_task"] is True
+
+
+@pytest.mark.parametrize(
+    ("dedup_key", "expected"),
+    [
+        ("review:task:abc", "abc"),
+        ("review:task:sound-horizon-77.18.2", "sound-horizon-77.18.2"),
+        ("review:task:", None),
+        ("branch-review:aq/x", None),
+        ("spec-ingest:x", None),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_reviewed_task_id(dedup_key, expected):
+    """``reviewed_task_id`` inverts ``review_task_dedup_key``; anything else is ``None``."""
+    from src.review_keys import reviewed_task_id
+
+    assert reviewed_task_id(dedup_key) == expected

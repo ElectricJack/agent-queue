@@ -13,7 +13,17 @@ places need the same strings and must not drift from it:
   ``read_only`` setting, which an operator can (and did) turn off; the dedup
   key is the pipeline's own mark on the row and survives any profile edit;
 * the pipeline dispatch path (``Orchestrator._on_playbook_trigger``) sets the
-  same flag again from the hydrated task row via :func:`flag_review_task_event`.
+  same flag again from the hydrated task row via :func:`flag_review_task_event`;
+* ``ensure_task`` (``src/commands/task_commands.py``) refuses to create a
+  ``review:task:<X>`` row when X itself carries either key, via
+  :func:`reviewed_task_id` + :func:`is_pipeline_review_task`.  The three
+  guards above all live on the ``task.completed`` event and the rules' ``when``
+  clauses, and none of them reaches a daemon still running older code or an
+  operator-edited vault copy of the pipeline whose rules lack the guards
+  (``ensure_default_playbooks`` never refreshes a copy it does not recognise):
+  ``Review: Review: ...`` chains ten deep reached the live queue that way
+  (task solid-harbor-68).  The command that writes the row is the one place
+  every version of the pipeline must pass through.
   The rules guard with ``truthy: false``, which passes on a *missing* key, so
   an emitter that never sets it — a daemon still running code older than the
   flag, container settlement, a hand-written event — used to fire the review
@@ -47,6 +57,17 @@ def review_task_dedup_key(task_id: str) -> str:
 def branch_review_dedup_key(branch_name: str) -> str:
     """The dedup key ``per-branch-final-review`` uses for *branch_name*."""
     return f"{BRANCH_REVIEW_DEDUP_PREFIX}{branch_name}"
+
+
+def reviewed_task_id(dedup_key: str | None) -> str | None:
+    """The task a ``review:task:<id>`` key reviews, or ``None`` for any other key.
+
+    Inverse of :func:`review_task_dedup_key`.  ``branch-review:`` keys name a
+    branch, not a task, so they yield ``None`` too.
+    """
+    if not dedup_key or not dedup_key.startswith(REVIEW_TASK_DEDUP_PREFIX):
+        return None
+    return dedup_key[len(REVIEW_TASK_DEDUP_PREFIX):] or None
 
 
 def is_pipeline_review_task(dedup_key: str | None) -> bool:
