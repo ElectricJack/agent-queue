@@ -37,7 +37,8 @@ class Reason(TypedDict):
     ``blocked_dependency``, ``blocked_gate``, ``no_idle_agent``,
     ``no_compatible_agent``,
     ``workspace_locked``, ``budget_exhausted``, ``rate_limited``,
-    ``held``, ``project_paused``.  ``detail`` is a human string.
+    ``held``, ``project_paused``, ``needs_attention``,
+    ``paused_backoff``, ``paused_manually``.  ``detail`` is a human string.
     ``ref`` names the specific entity (task id, gate id, workspace id,
     provider id) when one applies, else ``None``.
     """

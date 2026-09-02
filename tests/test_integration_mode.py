@@ -316,3 +316,76 @@ class TestResolveIntegrationMode:
         )
         await orch.db.create_task(task)
         assert await orch._effective_integration_mode(task) == "pull_request"
+
+
+class TestVerificationRetryKeepsTheSessionAlive:
+    """Regression cover for the close/verification loop killing its own worker.
+
+    Timeline that produced this (noble-pinnacle, agent-queue.log 2026-09-02):
+    ``01:35:40 git verification failed (1 fixable issues): No open PR found``
+    → ``01:35:41 reopened for verification (attempt 1/2)`` (task set READY)
+    → ``01:35:46 Session ... is live but task ... is READY — draining``.
+
+    The close path asked the worker to push and open the PR, and five
+    seconds later the session reconciler's orphan rule ("live session, task
+    not IN_PROGRESS") killed that same worker.  Since the PR-mode cutover
+    that fired for every task whose first close lacked a PR.
+
+    The fix is that a close issued *by a live session* keeps the task
+    IN_PROGRESS under its claim and hands the fixable issues back through
+    the ``task_close`` response instead of reopening.
+    """
+
+    async def _pr_missing_ctx(self, orch, task_id, branch):
+        task = _pr_task(task_id, branch_name=branch)
+        await orch.db.create_task(task)
+        await orch.db.transition_task(task.id, TaskStatus.IN_PROGRESS)
+        orch.git.aget_current_branch = AsyncMock(return_value=branch)
+        orch.git.afind_open_pr = AsyncMock(return_value=None)
+        ws = await orch.db.get_workspace("ws-1")
+        return task, _ctx(orch, task, ws.workspace_path)
+
+    async def test_live_session_keeps_the_task_in_progress(self, orch):
+        task, ctx = await self._pr_missing_ctx(orch, "t-pr-live", "feature-live")
+        ctx.close_session_live = True
+
+        assert await orch._phase_verify(ctx) == PhaseResult.STOP
+        assert ctx.verification_retry_in_session is True
+        assert ctx.verification_reopened is False
+        assert any("No open PR" in msg for msg in ctx.verification_issues)
+        assert "close" in ctx.verification_feedback
+
+        row = await orch.db.get_task(task.id)
+        # The whole point: the reconciler's orphan rule only drains a live
+        # session whose task left IN_PROGRESS/ASSIGNED.
+        assert row.status is TaskStatus.IN_PROGRESS
+        assert "Git Verification Feedback" in row.description
+
+    async def test_without_a_live_session_it_still_reopens_to_ready(self, orch):
+        """A local/elevated close has no agent to hand the issues to."""
+        task, ctx = await self._pr_missing_ctx(orch, "t-pr-nolive", "feature-nolive")
+        ctx.close_session_live = False
+
+        assert await orch._phase_verify(ctx) == PhaseResult.STOP
+        assert ctx.verification_reopened is True
+        assert ctx.verification_retry_in_session is False
+        assert (await orch.db.get_task(task.id)).status is TaskStatus.READY
+
+    async def test_in_session_retries_are_bounded_by_the_same_budget(self, orch):
+        """Exhausting the budget still ends in the terminal (blocking) branch."""
+        task, ctx = await self._pr_missing_ctx(orch, "t-pr-spent", "feature-spent")
+        for _ in range(orch.config.auto_task.max_verification_retries):
+            await orch.db.add_task_context(
+                task.id,
+                type="verification_feedback",
+                label="Git Verification Feedback",
+                content="previous attempt",
+            )
+        ctx.close_session_live = True
+
+        assert await orch._phase_verify(ctx) == PhaseResult.STOP
+        assert ctx.verification_retry_in_session is False
+        assert ctx.verification_reopened is False
+        # Left IN_PROGRESS for the caller to block — _phase_verify itself
+        # never transitions on the exhausted leg.
+        assert (await orch.db.get_task(task.id)).status is TaskStatus.IN_PROGRESS
