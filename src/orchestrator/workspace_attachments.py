@@ -106,15 +106,26 @@ async def acquire_for_task(
     *,
     worktrees_enabled: bool = False,
     worktree_slot_cap: int | None = None,
-    read_only: bool = False,
     preferred_workspaces: dict[str, str] | None = None,
 ) -> WorkspaceAttachmentSet:
     """Acquire all required workspaces for a task.
 
     See spec §6.2.  All-or-nothing semantics: if any required lockable kind
     has no available instance, every lock acquired so far is released and
-    :class:`AcquisitionFailed` is raised.  Read-only and auto-attached kinds
-    skip locking but still appear in the resulting attachment set.
+    :class:`AcquisitionFailed` is raised.  Non-lockable and auto-attached
+    kinds skip locking but still appear in the resulting attachment set.
+
+    There is no read-only acquisition path.  ``profile.read_only`` used to
+    attach a lockable kind's *first* workspace without taking a lock, on the
+    theory that a reviewer must never own the repo.  What that actually did
+    was hand every read-only agent the kind's **base** row — the one
+    ``first_workspace_of_kind`` returns, which under worktree mode is the
+    registry root and is frequently a human's own checkout (a ``LINK``
+    workspace).  The DB lock was skipped but ``_prepare_workspace_locked``
+    still wrote ``.agent-queue-lock`` there, so read-only agents serialized
+    on the base's sentinel *and* ran their tools inside it.  Read-only means
+    "no write intent", not "no isolation": a read-only task now acquires a
+    disposable slot exactly like any other task.
 
     Lock mode resolution: ``task.workspace_mode`` wins over
     ``kind.default_lock_mode`` for *all* lockable kinds when set.  This
@@ -161,7 +172,7 @@ async def acquire_for_task(
             if kind is None:
                 raise AcquisitionFailed(req.kind_id)
 
-            if kind.lockable and not read_only:
+            if kind.lockable:
                 effective_mode = task_mode_override or kind.default_lock_mode
                 ws = await db.acquire_one_unlocked(
                     project_id=task.project_id,
@@ -179,21 +190,6 @@ async def acquire_for_task(
                         else None
                     ),
                     worktree_slot_cap=worktree_slot_cap,
-                )
-                if ws is None:
-                    raise AcquisitionFailed(req.kind_id)
-            elif kind.lockable and read_only:
-                # T3 reviewer follow-up: a ``read_only`` profile must NEVER
-                # hold a write lock on a mutable kind — that lock is the
-                # only mechanism preventing concurrent writers from being
-                # invisibly overwritten.  Attach the workspace WITHOUT
-                # acquiring a lock so the reviewer can read (git_log /
-                # git_diff / git_show) without silently owning the repo.
-                # The reviewer profile's declared tool list has no write
-                # tools, so no mutation can actually occur; this guard is
-                # the belt-and-braces defense at the acquisition layer.
-                ws = await db.first_workspace_of_kind(
-                    project_id=task.project_id, kind_id=kind.id
                 )
                 if ws is None:
                     raise AcquisitionFailed(req.kind_id)

@@ -249,7 +249,7 @@ def task_creation_wizard(
     console.print()
     console.print("[bold green]✅ Task configuration complete![/]")
 
-    return {
+    result = {
         "project_id": project_id,
         "title": title,
         "description": description,
@@ -258,3 +258,4 @@ def task_creation_wizard(
     }
     if integration_mode != "inherit":
         result["integration_mode"] = integration_mode
+    return result

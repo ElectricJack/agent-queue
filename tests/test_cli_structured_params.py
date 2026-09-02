@@ -19,6 +19,7 @@ from click.testing import CliRunner
 
 from src.cli.auto_commands import (
     EXPLICIT_NULL,
+    NullableParam,
     StructuredParam,
     _make_auto_command,
     _schema_to_click_type,
@@ -73,9 +74,38 @@ class TestUnionSchemas:
         """Not a bare ``None`` — the callback would drop that as "not given"."""
         assert convert(self.UNION, "null") is EXPLICIT_NULL
 
-    def test_a_union_without_structure_is_a_plain_scalar_type(self):
-        assert _schema_to_click_type({"type": ["string", "null"]}) is str
-        assert _schema_to_click_type({"type": ["integer", "null"]}) is int
+    def test_a_union_without_structure_is_a_nullable_scalar_type(self):
+        """It still converts scalars — but `null` is now sayable."""
+        for schema, text, expected in (
+            ({"type": ["string", "null"]}, "hello", "hello"),
+            ({"type": ["integer", "null"]}, "7", 7),
+            ({"type": ["number", "null"]}, "1.5", 1.5),
+        ):
+            param = _schema_to_click_type(schema)
+            assert isinstance(param, NullableParam)
+            assert param.convert(text, None, None) == expected
+            assert param.convert("null", None, None) is EXPLICIT_NULL
+
+    def test_a_nullable_scalar_still_rejects_junk(self):
+        param = _schema_to_click_type({"type": ["integer", "null"]})
+        with pytest.raises(click.UsageError):
+            param.convert("nope", None, None)
+
+    def test_null_is_case_and_whitespace_insensitive(self):
+        param = _schema_to_click_type({"type": ["integer", "null"]})
+        assert param.convert(" NULL ", None, None) is EXPLICIT_NULL
+
+    def test_a_nullable_enum_keeps_its_choices_and_gains_null(self):
+        """`edit_task.task_type` — enum members plus an explicit ``None``."""
+        param = _schema_to_click_type(
+            {"type": ["string", "null"], "enum": ["feature", "bugfix", None]}
+        )
+        assert isinstance(param, NullableParam)
+        assert list(param.inner.choices) == ["feature", "bugfix", "null"]
+        assert param.convert("BUGFIX", None, None) == "bugfix"
+        assert param.convert("null", None, None) is EXPLICIT_NULL
+        with pytest.raises(click.UsageError):
+            param.convert("nonsense", None, None)
 
 
 class TestUnaffectedSchemas:
@@ -88,6 +118,11 @@ class TestUnaffectedSchemas:
     def test_enum_still_wins(self):
         param = _schema_to_click_type({"type": "string", "enum": ["a", "b"]})
         assert isinstance(param, click.Choice)
+
+    def test_a_non_nullable_string_still_accepts_the_word_null(self):
+        """Nothing that legitimately takes "null" as text may regress."""
+        param = _schema_to_click_type({"type": "string"})
+        assert param is str
 
     def test_already_structured_values_pass_through(self):
         assert StructuredParam("object").convert({"a": 1}, None, None) == {"a": 1}
@@ -150,3 +185,73 @@ class TestArgsReachingTheServer:
     def test_an_object_arrives_parsed(self):
         args = _invoke("--section", "swarm", "--data", '{"enabled": true}')
         assert args["data"] == {"enabled": True}
+
+
+POOL_SCALE_TOOL = {
+    "name": "pool_scale",
+    "description": "Set a pool's min/max bounds.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "project_id": {"type": "string", "description": "Project ID."},
+            "profile_id": {"type": "string", "description": "Pool profile ID."},
+            "min": {"type": ["integer", "null"], "description": "New min_active."},
+            "max": {
+                "type": ["integer", "null"],
+                "description": "New max_active; null removes the profile limit.",
+            },
+        },
+        "required": ["project_id", "profile_id"],
+    },
+}
+
+
+def _invoke_tool(tool: dict, cli_name: str, *argv: str) -> dict:
+    """Run a generated command, returning the args it sent to the daemon."""
+    from rich.console import Console
+
+    command = _make_auto_command(tool["name"], cli_name, tool, Console())
+    client = AsyncMock()
+    client.execute = AsyncMock(return_value={"success": True})
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("src.cli.app._get_client", return_value=client):
+        result = CliRunner().invoke(command, list(argv), obj={})
+    assert result.exit_code == 0, result.output
+    client.execute.assert_awaited_once()
+    return client.execute.await_args.args[1]
+
+
+class TestNullableScalarOptionsReachTheServer:
+    """`aq pool scale --max null` is the documented way to clear a cap."""
+
+    def test_max_null_sends_the_key_with_a_none_value(self):
+        args = _invoke_tool(
+            POOL_SCALE_TOOL, "scale", "--project-id", "p", "--profile-id", "worker", "--max", "null"
+        )
+        assert args == {"project_id": "p", "profile_id": "worker", "max": None}
+        assert "max" in args  # key presence is what `_cmd_pool_scale` branches on
+
+    def test_an_omitted_max_leaves_the_key_absent(self):
+        args = _invoke_tool(
+            POOL_SCALE_TOOL, "scale", "--project-id", "p", "--profile-id", "worker", "--min", "1"
+        )
+        assert args == {"project_id": "p", "profile_id": "worker", "min": 1}
+        assert "max" not in args
+
+    def test_a_numeric_max_still_arrives_as_an_int(self):
+        args = _invoke_tool(
+            POOL_SCALE_TOOL, "scale", "--project-id", "p", "--profile-id", "worker", "--max", "4"
+        )
+        assert args["max"] == 4
+
+    def test_a_non_integer_max_is_still_rejected(self):
+        from rich.console import Console
+
+        command = _make_auto_command("pool_scale", "scale", POOL_SCALE_TOOL, Console())
+        result = CliRunner().invoke(
+            command, ["--project-id", "p", "--profile-id", "w", "--max", "lots"], obj={}
+        )
+        assert result.exit_code != 0
+        assert "not a valid integer" in result.output
