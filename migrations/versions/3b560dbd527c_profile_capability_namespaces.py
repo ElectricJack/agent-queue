@@ -26,7 +26,7 @@ That is autogenerate noise against the pre-existing schema, not a change
 this package makes, and it was removed.
 
 Revision ID: 3b560dbd527c
-Revises: 33bdb059ceff
+Revises: d7f4c1a9b2e8
 Create Date: 2026-09-01 12:17:46.475954
 
 """
@@ -38,7 +38,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "3b560dbd527c"
-down_revision: Union[str, Sequence[str], None] = "33bdb059ceff"
+down_revision: Union[str, Sequence[str], None] = "d7f4c1a9b2e8"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
