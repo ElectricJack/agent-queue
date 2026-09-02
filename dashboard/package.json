@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "prebuild": "npm -w @aq/ts-client run generate",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "lint": "eslint .",
