@@ -571,6 +571,7 @@ Agent session rows (session-runtime). One row per launched harness session.
 | `sleep_reason` | TEXT | nullable | Why the session is idle/asleep |
 | `ended_at` | REAL | nullable | Observed end time; unknown for legacy sessions |
 | `end_reason` | TEXT | nullable | Specific exit, stop, quarantine or sleep reason |
+| `hooks_provisioned` | BOOLEAN | NOT NULL DEFAULT 0 | Whether this launch wired the harness's subagent hooks; written once from the SessionSpec, never re-derived |
 
 ### Table: `task_session_attempts`
 
@@ -633,6 +634,7 @@ Indexes cover (`session_id`, `event`) for the per-session fold and (`occurred_at
 for time-ordered listing. The fold clamps at zero: a `stop` whose `start` never
 arrived is still stored, because losing a Start must not make a session look like
 it is running a child forever.
+The SQLite-to-PostgreSQL copy inventory includes this table.
 
 ### Table: `messages`
 

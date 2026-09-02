@@ -777,18 +777,57 @@ class WorktreeSlotManager:
         if exists:
             await self.git._arun_unlocked(["switch", branch], cwd=str(slot_dir))
             if not resume:
-                # Retry: re-point the branch at the fresh start point.  A
-                # continuation deliberately keeps its accumulated commits.
+                # Retry: re-point the branch at the fresh start point — or at
+                # what the last attempt published, if that is further along.
+                # A continuation deliberately keeps its accumulated commits.
+                reset_ref = await self._retry_reset_ref(slot_dir, branch, start_ref)
                 try:
                     await self.git._arun_unlocked(
-                        ["reset", "--hard", start_ref], cwd=str(slot_dir)
+                        ["reset", "--hard", reset_ref], cwd=str(slot_dir)
                     )
                 except GitError as e:
-                    logger.warning("Could not re-base %s onto %s: %s", branch, start_ref, e)
+                    logger.warning("Could not re-base %s onto %s: %s", branch, reset_ref, e)
             return
         await self.git._arun_unlocked(
             ["switch", "-c", branch, start_ref], cwd=str(slot_dir)
         )
+
+    async def _retry_reset_ref(
+        self,
+        slot_dir: Path,
+        branch: str,
+        start_ref: str,
+    ) -> str:
+        """Where a retried branch should be re-pointed.
+
+        Design §3.2 starts a retry from the fresh start point, which is right
+        while the previous attempt's commits were only ever local.  Once they
+        are on ``origin/<branch>`` — very often with a PR open on them —
+        discarding them locally unpublishes nothing: the retrying agent finds
+        an empty branch with none of its own work, and its next push is a
+        non-fast-forward.  So keep the published tip whenever the start point
+        does not already contain it (i.e. it has not been merged), and fall
+        back to the start point in every other case, including when there is
+        no remote branch at all.
+        """
+        remote_ref = f"origin/{branch}"
+        if not await self._ref_exists(str(slot_dir), remote_ref):
+            return start_ref
+        try:
+            await self.git._arun_unlocked(
+                ["merge-base", "--is-ancestor", remote_ref, start_ref],
+                cwd=str(slot_dir),
+            )
+        except GitError:
+            # Not an ancestor: the push carries commits the start point lacks.
+            logger.info(
+                "Retry of %s resumes from published %s (not contained in %s)",
+                branch,
+                remote_ref,
+                start_ref,
+            )
+            return remote_ref
+        return start_ref
 
     async def _run_setup(self, slot_dir: Path, commands: list[str] | None) -> None:
         """Run the kind's ``worktree_setup`` commands inside the slot.

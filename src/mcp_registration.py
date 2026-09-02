@@ -54,6 +54,9 @@ DEFAULT_EXCLUDED_COMMANDS = {
     "update_and_restart",
     "run_command",  # dangerous for external MCP clients
     "load_tools",  # supervisor-internal meta-tool, not for MCP agents
+    # Harness hook receiver; it is an authenticated agent-session API path,
+    # not an interactive MCP tool.
+    "subagent_event",
     # Mints a bearer token for an arbitrary session — a credential minter is
     # never something an MCP client should reach, even a trusted one.  It
     # stays available on the CLI/HTTP surface (``aq session token``), which

@@ -606,3 +606,29 @@ async def test_broken_project_override_does_not_block_other_projects(coordinator
     assert await db.get_task_assignment_route("broken-task") is None
     _detail, reason = await coordinator.explain(await db.get_task("broken-task"))
     assert reason["code"] == "assignment_playbook_unavailable"
+
+
+async def test_paused_playbook_subsystem_waits_visibly_instead_of_crashing(coordinator_system):
+    """``playbooks.enabled=false`` leaves ``owner.playbook_manager`` None
+    (feature-pause branch in src/orchestrator/core.py), which is the default
+    config.  Routing is then unavailable: every unrouted task must simply
+    wait with a reportable reason, exactly like a missing playbook.  Before
+    the fix this raised AttributeError past the ``AssignmentPlaybookError``
+    guards -- a traceback per 5s cycle and a crashing ``aq task explain``.
+    """
+    coordinator, _services, db = coordinator_system
+    coordinator.owner.playbook_manager = None
+    await db.create_task(Task(
+        id="unrouted",
+        project_id="p",
+        title="Needs a class",
+        description="No explicit intelligence class",
+        status=TaskStatus.READY,
+    ))
+
+    assert await coordinator.reconcile() == {}
+    assert await db.get_task_assignment_route("unrouted") is None
+
+    _detail, reason = await coordinator.explain(await db.get_task("unrouted"))
+    assert reason["code"] == "assignment_playbook_unavailable"
+    assert "playbook subsystem is disabled" in reason["detail"]
