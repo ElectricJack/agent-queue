@@ -20,25 +20,28 @@ def test_allowed_filters_and_orders_and_strips_navigation():
     assert [t["name"] for t in s.node_tools(["b", "reply_to_user", "a"])] == ["b", "a"]
 
 
-def test_none_uses_all_tools():
+def test_none_is_no_tools():
+    """Playbook V2 Package 0 §5.4: "missing" no longer means "everything".
+
+    An undeclared policy used to hand a node the registry's full catalogue.
+    That is the same default-open shape as an empty capability set meaning
+    "all", which the spec forbids — a playbook that needs tools names them.
+    """
     s = _svc([T("a"), T("b"), T("load_tools")], [])
-    assert [t["name"] for t in s.node_tools(None)] == ["a", "b"]
+    assert s.node_tools(None) == []
 
 
-def test_none_with_real_registry_includes_categorised_tools():
-    """Unscoped playbook nodes (allowed=None) get the full registry catalogue,
-    not just the core set — profile_id: is the sandboxing mechanism, not this."""
+def test_none_with_real_registry_grants_nothing():
     services = PlaybookServices.for_tests(LLMClient.with_provider(FakeProvider()))
     services.tool_registry = ToolRegistry()
-    names = {t["name"] for t in services.node_tools(None)}
-    assert "list_projects" in names
-    assert "render_prompt" in names
-    assert "load_tools" not in names
+    assert services.node_tools(None) == []
 
 
-def test_unknown_allowed_raises():
-    with pytest.raises(ValueError, match="Unknown tool names"):
-        _svc([T("a")], []).node_tools(["zzz"])
+def test_unknown_allowed_is_filtered_not_raised():
+    """A policy is an allowlist: a name the registry does not know is simply
+    not granted.  Raising turned a narrowing intent into a run-time failure."""
+    assert _svc([T("a")], []).node_tools(["zzz"]) == []
+    assert [t["name"] for t in _svc([T("a")], []).node_tools(["a", "zzz"])] == ["a"]
 
 
 def test_empty_allowed_is_no_tools():

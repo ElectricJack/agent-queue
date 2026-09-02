@@ -110,6 +110,22 @@ TriggerCallback = Callable[[CompiledPlaybook, dict[str, Any]], Any]
 logger = logging.getLogger(__name__)
 
 
+class AmbiguousPlaybookSource(Exception):
+    """More than one vault ``.md`` declares the same playbook ``id``.
+
+    There is then no single source of authority for the install, so the
+    install is refused rather than resolved by an arbitrary rule.
+    """
+
+    def __init__(self, playbook_id: str, rel_paths: list[str]) -> None:
+        self.playbook_id = playbook_id
+        self.rel_paths = sorted(rel_paths)
+        super().__init__(
+            f"ambiguous source of authority: {len(self.rel_paths)} files under the "
+            f"vault declare id '{playbook_id}': {', '.join(self.rel_paths)}"
+        )
+
+
 class PlaybookManager:
     """Manages compiled playbook versions with error-safe updates.
 
@@ -1280,6 +1296,67 @@ class PlaybookManager:
             self._refresh_subscriptions()
         return loaded
 
+    # -- source-of-authority resolution (Playbook V2 Package 0 §3.8) --------
+
+    def _vault_root(self, vault_root: str | None = None) -> str | None:
+        if vault_root:
+            return vault_root
+        return getattr(self._config, "vault_root", None)
+
+    def iter_playbook_sources(self, vault_root: str | None = None):
+        """Yield ``(abs_path, rel_path, markdown, frontmatter)`` per vault source.
+
+        One ``os.walk`` + ``fnmatch(PLAYBOOK_PATTERNS)`` + ``_parse_frontmatter``
+        scan, shared by :meth:`reconcile_compilations` and
+        :meth:`find_source_for_id` so "which .md is the authority for this id"
+        has exactly one answer.  Unreadable files are skipped silently here;
+        ``reconcile_compilations`` re-reads and reports them.
+        """
+        import fnmatch
+
+        from src.playbooks.handler import PLAYBOOK_PATTERNS
+
+        root = self._vault_root(vault_root)
+        if not root or not os.path.isdir(root):
+            return
+
+        for dirpath, _dirnames, filenames in os.walk(root):
+            for filename in sorted(filenames):
+                if not filename.endswith(".md"):
+                    continue
+                abs_path = os.path.join(dirpath, filename)
+                rel_path = os.path.relpath(abs_path, root).replace("\\", "/")
+                if not any(fnmatch.fnmatch(rel_path, pattern) for pattern in PLAYBOOK_PATTERNS):
+                    continue
+                try:
+                    with open(abs_path, encoding="utf-8") as f:
+                        markdown = f.read()
+                except Exception:
+                    continue
+                frontmatter, _ = PlaybookCompiler._parse_frontmatter(markdown)
+                yield abs_path, rel_path, markdown, frontmatter
+
+    def find_source_for_id(
+        self, playbook_id: str, vault_root: str | None = None
+    ) -> tuple[str, str] | None:
+        """Locate the vault ``.md`` whose frontmatter declares *playbook_id*.
+
+        Returns ``(abs_path, rel_path)``, or ``None`` when no source declares
+        the id.  Raises :class:`AmbiguousPlaybookSource` when more than one
+        does — two files claiming one id means there is no single source of
+        authority, and guessing would be the vulnerability this exists to
+        close.
+        """
+        matches: list[tuple[str, str]] = []
+        for abs_path, rel_path, _markdown, frontmatter in self.iter_playbook_sources(vault_root):
+            if str(frontmatter.get("id", "")).strip() == playbook_id:
+                matches.append((abs_path, rel_path))
+        if not matches:
+            return None
+        if len(matches) > 1:
+            raise AmbiguousPlaybookSource(playbook_id, [rel for _abs, rel in matches])
+        return matches[0]
+
     async def reconcile_compilations(
         self,
         vault_root: str,
@@ -1310,81 +1387,60 @@ class PlaybookManager:
             ``skipped`` (ids already active), and ``errors``
             (``[(source_path, [msgs])]``).
         """
-        from src.playbooks.handler import PLAYBOOK_PATTERNS
-        import fnmatch
-
         result: dict = {"compiled": [], "skipped": [], "errors": []}
 
         if not os.path.isdir(vault_root):
             return result
 
-        # Walk every .md file under vault_root and match against the
-        # playbook path patterns.  Using os.walk plus fnmatch keeps this
-        # dependency-free — no need to pull the VaultWatcher in here.
-        for dirpath, _dirnames, filenames in os.walk(vault_root):
-            for filename in filenames:
-                if not filename.endswith(".md"):
-                    continue
-                abs_path = os.path.join(dirpath, filename)
-                rel_path = os.path.relpath(abs_path, vault_root).replace("\\", "/")
+        # The vault scan lives in ``iter_playbook_sources`` so that this loop
+        # and ``find_source_for_id`` agree on which files are playbook sources.
+        for abs_path, rel_path, markdown, frontmatter in self.iter_playbook_sources(vault_root):
+            playbook_id = str(frontmatter.get("id", "")).strip()
+            if not playbook_id:
+                result["errors"].append((rel_path, ["missing or empty frontmatter `id`"]))
+                continue
 
-                if not any(fnmatch.fnmatch(rel_path, pattern) for pattern in PLAYBOOK_PATTERNS):
-                    continue
+            from src.playbooks.handler import derive_playbook_scope
 
-                try:
-                    with open(abs_path, encoding="utf-8") as f:
-                        markdown = f.read()
-                except Exception as exc:
-                    result["errors"].append((rel_path, [f"read failed: {exc}"]))
-                    continue
+            _, scope_identifier = derive_playbook_scope(rel_path)
 
-                frontmatter, _ = PlaybookCompiler._parse_frontmatter(markdown)
-                playbook_id = frontmatter.get("id", "").strip()
-                if not playbook_id:
-                    result["errors"].append((rel_path, ["missing or empty frontmatter `id`"]))
-                    continue
-
-                from src.playbooks.handler import derive_playbook_scope
-
-                _, scope_identifier = derive_playbook_scope(rel_path)
-
-                if playbook_id in self._active:
-                    # Heal lost scope_identifier for already-loaded playbooks.
-                    # load_from_disk() can't know the vault path, so project
-                    # identifiers get dropped unless we re-derive here.
-                    if (
-                        scope_identifier is not None
-                        and self._scope_identifiers.get(playbook_id) != scope_identifier
-                    ):
-                        self._scope_identifiers[playbook_id] = scope_identifier
-                        logger.info(
-                            "Reconcile: healed scope_identifier for %r (%s)",
-                            playbook_id,
-                            scope_identifier,
-                        )
-                        self._persist_compiled(self._active[playbook_id])
-                    result["skipped"].append(playbook_id)
-                    continue
-
-                logger.info(
-                    "Reconcile: compiling uncompiled playbook %r (%s)",
-                    playbook_id,
-                    rel_path,
-                )
-                try:
-                    compile_result = await self.compile_playbook(
-                        markdown,
-                        source_path=abs_path,
-                        rel_path=rel_path,
-                        scope_identifier=scope_identifier,
+            if playbook_id in self._active:
+                # Heal lost scope_identifier for already-loaded playbooks.
+                # load_from_disk() can't know the vault path, so project
+                # identifiers get dropped unless we re-derive here.
+                if (
+                    scope_identifier is not None
+                    and self._scope_identifiers.get(playbook_id) != scope_identifier
+                ):
+                    self._scope_identifiers[playbook_id] = scope_identifier
+                    logger.info(
+                        "Reconcile: healed scope_identifier for %r (%s)",
+                        playbook_id,
+                        scope_identifier,
                     )
-                    if compile_result.success:
-                        result["compiled"].append(playbook_id)
-                    else:
-                        result["errors"].append((rel_path, list(compile_result.errors)))
-                except Exception as exc:
-                    logger.warning("Reconcile: compilation failed for %s", rel_path, exc_info=True)
-                    result["errors"].append((rel_path, [str(exc)]))
+                    self._persist_compiled(self._active[playbook_id])
+                result["skipped"].append(playbook_id)
+                continue
+
+            logger.info(
+                "Reconcile: compiling uncompiled playbook %r (%s)",
+                playbook_id,
+                rel_path,
+            )
+            try:
+                compile_result = await self.compile_playbook(
+                    markdown,
+                    source_path=abs_path,
+                    rel_path=rel_path,
+                    scope_identifier=scope_identifier,
+                )
+                if compile_result.success:
+                    result["compiled"].append(playbook_id)
+                else:
+                    result["errors"].append((rel_path, list(compile_result.errors)))
+            except Exception as exc:
+                logger.warning("Reconcile: compilation failed for %s", rel_path, exc_info=True)
+                result["errors"].append((rel_path, [str(exc)]))
 
         if result["compiled"]:
             logger.info(
@@ -1502,6 +1558,34 @@ class PlaybookManager:
         # Compile through the deterministic dispatcher. Pipelines and the
         # fixed assignment-routing graph are the only in-process kinds.
         result = _compile(markdown, existing_version=existing_version)
+
+        if result.success and result.playbook is not None and rel_path:
+            # Package 0 §3.8: converge both compile routes on one authority
+            # implementation.  The deterministic pipeline compiler already
+            # reads frontmatter, but only ``rel_path`` can settle ``scope``
+            # (a file under projects/acme/ cannot declare ``scope: system``)
+            # and only the active registry can settle ``enabled``.
+            from src.playbooks.compiler import apply_source_authority
+
+            existing_active = self._active.get(result.playbook.id)
+            merged, diagnostics = apply_source_authority(
+                result.playbook.to_dict(),
+                frontmatter=frontmatter,
+                rel_path=rel_path,
+                source_hash=result.playbook.source_hash,
+                version=result.playbook.version,
+                existing_enabled=(
+                    existing_active.enabled if existing_active is not None else None
+                ),
+            )
+            if diagnostics:
+                logger.warning(
+                    "playbook %s: %d field(s) taken back by source authority: %s",
+                    result.playbook.id,
+                    len(diagnostics),
+                    ", ".join(sorted(d.field for d in diagnostics)),
+                )
+            result.playbook = CompiledPlaybook.from_dict(merged)
 
         if result.success and result.playbook is not None:
             # Success — update active version, trigger map, and persist

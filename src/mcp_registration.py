@@ -217,6 +217,17 @@ def register_command_tools(
 
     Commands in the *excluded* set are skipped in both passes.
 
+    **Capability filtering is not applied here** (Playbook V2 Package 0
+    §4.3).  Registration happens once at daemon start, with no request and
+    therefore no ``ExecutionPrincipal`` to filter against — the tool table is
+    process-wide, not per-caller.  Parity is preserved where it is
+    observable: every handler registered here delegates to
+    ``CommandHandler.execute``, which applies the capability gate before
+    dispatch, and the per-caller discovery surfaces that *do* have a
+    principal (``load_tools`` and ``/api/tools``) filter with the same
+    ``command_allowed`` predicate.  A tool published here but denied to a
+    given caller therefore fails closed at execution rather than running.
+
     Args:
         mcp_server: The FastMCP instance to register tools on.
         excluded: Set of command names to skip. Defaults to

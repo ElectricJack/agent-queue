@@ -590,6 +590,14 @@ agent_profiles = Table(
     Column("model", Text, nullable=False, server_default="''"),
     Column("permission_mode", Text, nullable=False, server_default="''"),
     Column("allowed_tools", Text, nullable=False, server_default="'[]'"),
+    # Normalized capability namespaces (Playbook V2 Package 0 §3.1), stored
+    # as JSON arrays of text like ``allowed_tools`` above.  NULL is
+    # meaningful: it is the signal that the legacy ``allowed_tools`` adapter
+    # should run.  Backfilling would erase the distinction between "authored
+    # as none" ('[]') and "not authored" (NULL).
+    Column("harness_tools", Text, nullable=True),
+    Column("aq_commands", Text, nullable=True),
+    Column("plugin_tools", Text, nullable=True),
     Column("mcp_servers", Text, nullable=False, server_default="'{}'"),
     Column("system_prompt_suffix", Text, nullable=False, server_default="''"),
     Column("install", Text, nullable=False, server_default="'{}'"),

@@ -72,6 +72,63 @@ def _vault_bounded(self, path_arg: str) -> tuple[Path | None, str | None]:
     return resolved, None
 
 
+async def _resolve_source_authority(self, pm, playbook_id: str, data: dict):
+    """Merge the vault source's authority into a submitted compiled artifact.
+
+    Returns ``(merged_dict, diagnostics, error_dict_or_None)``.  The error is
+    already in the command's structured-error shape.
+    """
+    from src.playbooks.compiler import PlaybookCompiler, apply_source_authority
+    from src.playbooks.manager import AmbiguousPlaybookSource
+
+    vault_root = getattr(self.config, "vault_root", None)
+    try:
+        found = pm.find_source_for_id(playbook_id, vault_root)
+    except AmbiguousPlaybookSource as exc:
+        logger.error("playbook_install_ambiguous_source id=%s paths=%s", playbook_id, exc.rel_paths)
+        return {}, [], {"node": None, "field": "playbook_id", "message": str(exc)}
+
+    if found is None:
+        logger.error(
+            "playbook_install_no_source id=%s vault_root=%s", playbook_id, vault_root
+        )
+        return (
+            {},
+            [],
+            {
+                "node": None,
+                "field": "playbook_id",
+                "message": (
+                    "no source of authority: no .md under the vault declares "
+                    f"id '{playbook_id}'"
+                ),
+            },
+        )
+
+    abs_path, rel_path = found
+    try:
+        markdown = Path(abs_path).read_text(encoding="utf-8")
+    except OSError as exc:
+        return {}, [], {"node": None, "field": "playbook_id", "message": f"source unreadable: {exc}"}
+
+    frontmatter, _ = PlaybookCompiler._parse_frontmatter(markdown)
+    source_hash = PlaybookCompiler._compute_source_hash(markdown)
+
+    existing = pm.get_playbook(playbook_id)
+    existing_enabled = existing.enabled if existing is not None else None
+    version = (existing.version if existing is not None else 0) + 1
+
+    merged, diagnostics = apply_source_authority(
+        data,
+        frontmatter=frontmatter,
+        rel_path=rel_path,
+        source_hash=source_hash,
+        version=version,
+        existing_enabled=existing_enabled,
+    )
+    return merged, diagnostics, None
+
+
 class PlaybookValidateInstallMixin:
     """Mixin adding ``playbook_validate`` and ``playbook_install`` commands."""
 
@@ -242,6 +299,32 @@ class PlaybookValidateInstallMixin:
                     }
                 ],
             }
+
+        # --- Source authority (Playbook V2 Package 0 §3.8) ------------------
+        # The artifact is model output derived from untrusted prose, so it
+        # owns ``nodes``/``rules`` and nothing else.  Everything the runtime
+        # trusts — scope, triggers, profile_id, enabled, budgets — comes from
+        # the operator's vault file, the vault path, or the server.  Without a
+        # source there is no authority, so the install is refused.
+        merged, diagnostics, source_error = await _resolve_source_authority(
+            self, pm, playbook_id, data
+        )
+        if source_error is not None:
+            return {"success": False, "errors": [source_error]}
+
+        try:
+            pb = CompiledPlaybook.from_dict(merged)
+        except Exception as exc:
+            return {
+                "success": False,
+                "errors": [
+                    {"node": None, "field": None, "message": f"schema-shape error: {exc}"}
+                ],
+            }
+        errs = pb.validate()
+        if errs:
+            return {"success": False, "errors": _structure_errors(errs)}
+
         try:
             await pm.install_compiled(pb)
         except Exception as exc:
@@ -253,4 +336,15 @@ class PlaybookValidateInstallMixin:
                 "success": False,
                 "errors": [{"node": None, "field": None, "message": f"install failed: {exc}"}],
             }
-        return {"success": True}
+        return {
+            "success": True,
+            "warnings": [
+                {
+                    "field": d.field,
+                    "authored": d.authored,
+                    "proposed": d.proposed,
+                    "message": d.message,
+                }
+                for d in diagnostics
+            ],
+        }
