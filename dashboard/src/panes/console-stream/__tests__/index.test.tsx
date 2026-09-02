@@ -131,6 +131,10 @@ describe("ConsoleStreamPane", () => {
 
     await waitFor(() => expect(screen.getByText("green")).toBeInTheDocument());
 
+    // The shortcut callback closes over the scrollback. Wait for the effect
+    // that republishes it after the line state update before invoking it.
+    await waitFor(() => expect(props.setShortcuts).toHaveBeenCalledTimes(2));
+
     const copyBinding = lastShortcuts(props.setShortcuts).find((s) => s.key === "c");
     copyBinding?.onFire();
 
