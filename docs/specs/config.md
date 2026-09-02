@@ -346,8 +346,8 @@ re-adopts across restarts. These keys tune that reconciliation loop.
 
 | YAML key | Type | Default | Description |
 |---|---|---|---|
-| `enabled` | `bool` | `False` | Master switch. `false` means the legacy runtimes are the only execution path and every session module stays dormant. |
-| `provider` | `str` | `"subprocess"` | `tmux` \| `subprocess` \| `fake`. Validated against that set, **and** — when `enabled` — against what `default_session_registry()` can actually build on this host, so a name the registry lacks is a config error at load rather than a failed launch per task. `tmux` is registered only on hosts where its module imports; it defaults to `subprocess` while `TmuxProvider` is deferred. |
+| `enabled` | `bool` | `True` | Master switch. `false` means this daemon dispatches no tasks; it is retained for API/Discord-only operation and routing tests. |
+| `provider` | `str` | `"subprocess"` | `tmux` \| `subprocess` \| `fake`. Validated against that set, **and** — when `enabled` — against what `default_session_registry()` can actually build on this host, so a name the registry lacks is a config error at load rather than a failed launch per task. `tmux` is registered only on hosts where its module imports; `subprocess` is the portable default. |
 | `tmux_socket` | `str` | `"aq"` | `tmux -L` socket name — one server per daemon, so two daemons on one host cannot see each other's sessions. |
 | `lease_ttl_seconds` | `int` | `480` | No transcript activity and no `aq task heartbeat` for this long marks a task **stalled** (not dead) and starts the ladder. `0` disables the ladder. |
 | `stall_max_nudges` | `int` | `3` | Nudges before the ladder escalates to interrupt + restart-with-resume. |
@@ -504,7 +504,7 @@ This section replaces the retired per-task `requires_approval` boolean
 
 ### 5.2 Section Presence vs. Absence
 
-Each config section is optional. If a section key is absent from the YAML, the corresponding `AppConfig` field retains its default-constructed value. There is no merging of partial YAML sections with defaults at the YAML level; instead, each field within a section uses `dict.get(key, default)` to supply defaults field-by-field, so a partial section (e.g., `scheduling` with only `rolling_window_hours` specified) correctly defaults the omitted fields.
+Each config section is optional. If a section key is absent from the YAML, the corresponding `AppConfig` field retains its default-constructed value. For substrate sections, the loader passes only explicitly supplied fields to the dataclass, so a partial section (for example, `sessions` with only `lease_ttl_seconds`) receives exactly the same defaults as no section at all.
 
 ### 5.3 Unrecognized Keys
 
