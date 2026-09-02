@@ -48,6 +48,7 @@ from src.commands.helpers import (
     _format_task_tree,
     format_dependency_list,
 )
+from src.review_keys import REVIEW_PROFILE_IDS, is_review_completion, reviewed_task_id
 from src.task_summary import write_task_summary
 
 logger = logging.getLogger(__name__)
@@ -2616,7 +2617,7 @@ class TaskCommandsMixin:
         except Exception:
             candidates = []
         terminal = {"COMPLETED", "FAILED", "BLOCKED"}
-        review_profile_ids = {"reviewer", "final-reviewer"}
+        review_profile_ids = REVIEW_PROFILE_IDS
         # The review that is *doing* the rejecting is the one review here that
         # is not stale: it just produced this verdict, and the reviewer profile
         # is documented to call ``task_close(success)`` on it next.  Cancelling
@@ -3491,6 +3492,35 @@ class TaskCommandsMixin:
                 if task is not None:
                     await self._emit_task_graph_change("task.updated", task)
             return result
+
+        # A review of a pipeline review is never work: refuse ``review:task:<X>``
+        # when X itself carries a ``review:task:`` / ``branch-review:`` key.
+        # The event-level guards (``no_code``, ``review_task`` at close and at
+        # dispatch) do not reach a daemon running older code or a vault copy
+        # of the pipeline whose rules predate them, and that is how
+        # ``Review: Review: Review: ...`` chains ten deep reached the live
+        # queue (task solid-harbor-68).  Every version of the review rules
+        # routes ``on_failure`` to its terminal node, so a refusal ends the
+        # run cleanly.  A reviewed id with no row is left alone: this only
+        # narrows on a row the pipeline itself stamped.
+        reviewed_id = reviewed_task_id(str(dedup_key))
+        if reviewed_id is not None:
+            reviewed = await self.db.get_task(reviewed_id)
+            if reviewed is not None and is_review_completion(
+                reviewed.dedup_key, reviewed.profile_id
+            ):
+                logger.info(
+                    "ensure_task: refusing review of pipeline review task %s (dedup_key=%s)",
+                    reviewed_id,
+                    reviewed.dedup_key,
+                )
+                return {
+                    "success": False,
+                    "error": (
+                        f"task '{reviewed_id}' is itself a pipeline review "
+                        f"({reviewed.dedup_key}); reviews are not reviewed"
+                    ),
+                }
 
         existing = await self.db.find_task_by_dedup_key(str(project_id), str(dedup_key))
         if existing is not None:

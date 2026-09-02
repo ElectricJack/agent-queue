@@ -19,7 +19,7 @@ import pytest
 from src.commands.handler import CommandHandler
 from src.config import AppConfig, DiscordConfig
 from src.database import Database
-from src.models import AgentProfile, Project
+from src.models import AgentProfile, Project, Task
 from src.orchestrator import Orchestrator
 from src.orchestrator.core import _eval_pipeline_when
 
@@ -502,3 +502,144 @@ async def test_per_task_review_skips_a_review_task_when_the_emitter_omits_the_fl
     assert [t.id for t in reviews_after] == [review.id], (
         f"review of the review spawned: {[(t.id, t.title) for t in reviews_after]}"
     )
+
+
+# A per-task-review rule with *no* guards at all — the shape an operator's
+# hand-edited vault copy can have (``ensure_default_playbooks`` never refreshes
+# a vault copy it does not recognise), and what a daemon running code older
+# than the ``review_task`` flag effectively evaluates.
+_UNGUARDED_REVIEW_PIPELINE = """---
+id: default-pipeline
+kind: pipeline
+role: default-pipeline
+scope: system
+triggers:
+  - task.completed
+---
+```json
+{
+  "rules": [
+    {
+      "id": "per-task-review",
+      "on": "task.completed",
+      "when": {"all": [{"field": "event.task.branch_name", "truthy": true}]},
+      "entry": "create-review",
+      "nodes": {
+        "create-review": {
+          "command": "ensure_task",
+          "args": {
+            "project_id": "{{event.project_id}}",
+            "dedup_key": "review:task:{{event.task_id}}",
+            "title": "Review: {{event.title}}",
+            "description": "Reviewing task: {{event.task_id}}",
+            "profile_id": "reviewer"
+          },
+          "output": {"as": "review"},
+          "on_success": "link-discovered-from",
+          "on_failure": "done"
+        },
+        "link-discovered-from": {
+          "command": "add_dependency",
+          "args": {
+            "task_id": "{{outputs.review.task_id}}",
+            "depends_on": "{{event.task_id}}",
+            "dep_type": "discovered-from"
+          },
+          "on_success": "done",
+          "on_failure": "done"
+        },
+        "done": {"terminal": true}
+      }
+    }
+  ]
+}
+```
+"""
+
+
+async def test_unguarded_review_rule_still_cannot_review_a_review(command_handler_factory):
+    """The creation-point guard holds even when the rules and the event do not.
+
+    Three earlier fixes all lived on the ``task.completed`` event and the
+    rules' ``when`` guards, and ``Review: Review: ...`` chains still reached
+    ten deep on the live queue (task solid-harbor-68) because the running
+    daemon and its vault copy of the pipeline predated them.  ``ensure_task``
+    itself now refuses ``review:task:<X>`` when X is a pipeline review, so a
+    pipeline with no guards at all bottoms out after one review.
+    """
+    from src.playbooks.pipeline_compiler import compile_pipeline
+    from tests.conftest import PipelineEngine
+
+    h = await command_handler_factory()
+    db = h.db
+    compiled = compile_pipeline(_UNGUARDED_REVIEW_PIPELINE)
+    assert compiled.success, compiled.errors
+    engine = PipelineEngine(compiled.playbook, h, db=db)
+
+    await db.create_project(Project(id="p", name="P"))
+    await db.upsert_profile(AgentProfile(id="worker", name="Worker"))
+    await db.upsert_profile(AgentProfile(id="reviewer", name="Reviewer"))
+
+    t1 = (await h.execute("create_task", {"project_id": "p", "title": "T1", "profile_id": "worker"}))["created"]
+    await db.update_task(t1, branch_name="feature/t1")
+    await engine.dispatch("task.completed", {"task_id": t1, "project_id": "p", "title": "T1"})
+    reviews = [t for t in await db.list_tasks(project_id="p") if t.profile_id == "reviewer"]
+    assert len(reviews) == 1
+    review = reviews[0]
+
+    # The review finishes on its own slot branch; nothing flags the event and
+    # the rule has no guard — the old chain's exact trigger.
+    await db.update_task(review.id, branch_name=f"aq/{review.id}")
+    await engine.dispatch(
+        "task.completed", {"task_id": review.id, "project_id": "p", "title": review.title}
+    )
+    reviews_after = [t for t in await db.list_tasks(project_id="p") if t.profile_id == "reviewer"]
+    assert [t.id for t in reviews_after] == [review.id], (
+        f"review of the review spawned: {[(t.id, t.title) for t in reviews_after]}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# The ``review_task`` flag is emitter-independent (task prime-quest-67)
+# ---------------------------------------------------------------------------
+
+
+async def test_emit_task_completed_derives_review_task_from_the_dedup_key(
+    command_handler_factory,
+):
+    """Every ``task.completed`` derives ``review_task`` at the emit choke point."""
+    h = await command_handler_factory()
+    o = h.orchestrator
+
+    review = Task(
+        id="r1", project_id="p", title="Review: T1", description="", dedup_key="review:task:t1"
+    )
+    await o._emit_task_event("task.completed", review)
+    assert o.bus.emit.await_args.args[1]["review_task"] is True
+
+    o.bus.emit.reset_mock()
+    work = Task(id="t1", project_id="p", title="T1", description="", dedup_key=None)
+    await o._emit_task_event("task.completed", work)
+    assert o.bus.emit.await_args.args[1]["review_task"] is False
+
+
+async def test_emit_task_event_lets_the_caller_override_review_task(command_handler_factory):
+    """An explicit kwarg still wins; derivation supplies only the default."""
+    h = await command_handler_factory()
+    o = h.orchestrator
+
+    work = Task(id="t1", project_id="p", title="T1", description="", dedup_key=None)
+    await o._emit_task_event("task.completed", work, review_task=True)
+    assert o.bus.emit.await_args.args[1]["review_task"] is True
+
+
+async def test_emit_only_task_completed_carries_review_task(command_handler_factory):
+    """Other task events retain their registered payload shapes."""
+    h = await command_handler_factory()
+    o = h.orchestrator
+
+    review = Task(
+        id="r1", project_id="p", title="Review: T1", description="", dedup_key="review:task:t1"
+    )
+    await o._emit_task_event("task.ready", review, reason="graph")
+    assert "review_task" not in o.bus.emit.await_args.args[1]

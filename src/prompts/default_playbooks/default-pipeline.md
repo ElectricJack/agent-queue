@@ -64,17 +64,37 @@ the review.
 Both review rules also require `event.review_task` to be falsy. `no_code` is
 only as reliable as the reviewer profile's `read_only` flag: a project that
 gives its reviewers Write/Edit tools (`read_only: false`) disarms it and the
-recursion returns. `review_task` is structural instead — the close path sets it
-when the finishing task carries the dedup key this pipeline stamps on every
-review it creates (`review:task:<task_id>` or `branch-review:<branch_name>`,
-see `src/review_keys.py`), so a review is recognised as a review whatever its
-profile says. The dispatch path (`Orchestrator._on_playbook_trigger`) derives
-the same flag again from the hydrated task row, because `truthy: false` passes
-on a *missing* key: an emitter that never sets it — a daemon still running code
-older than the flag, container settlement, a hand-written event — used to fire
-the review anyway, and `Review: Review: Review: ...` chains six deep reached
-the live queue (task prime-cascade-64). A custom pipeline that keys its review
-tasks differently must either keep these prefixes or add its own guard.
+recursion returns. `review_task` is structural instead, and the close path sets
+it from either of two signals a profile edit cannot reach (`src/review_keys.py`
+owns both):
+
+- the **dedup key** this pipeline stamps on every review it creates —
+  `review:task:<task_id>` or `branch-review:<branch_name>`;
+- the **reviewer role** — a `reviewer` or `final-reviewer` `profile_id`.
+
+The second exists because the first only marks rows the *shipped* pipeline
+created: a project that routes reviews through its own pipeline keys them
+however it likes, and with a non-read-only reviewer that left every guard blind
+and the `Review: Review: ...` chain grew again (task solid-beacon-50). A custom
+pipeline that both keys its review tasks differently *and* runs them under its
+own profile ids must add its own guard.
+
+The common event emitter derives both signals from the task row for every
+`task.completed`, so container settlement and future emitters cannot forget
+them (tasks prime-quest-67 and crisp-summit-88). The dispatch path
+(`Orchestrator._on_playbook_trigger`) derives it again from the hydrated task
+row, because `truthy: false` passes on a *missing* key: an older daemon or a
+hand-written event used to fire the review anyway (task prime-cascade-64).
+
+Neither event flag reaches a daemon still running code older than the flag, nor
+a vault copy of this file whose rules an operator edited (`ensure_default_playbooks`
+never refreshes a copy it does not recognise); both were true at once on the
+live box and the chains grew ten deep anyway (task solid-harbor-68). The last
+line of defence is therefore in the command every version of these rules must
+call: `ensure_task` refuses a `review:task:<X>` key when X itself carries a
+`review:task:` or `branch-review:` key, and the refusal follows the node's
+`on_failure` edge to `done`. Rules and event flags stop a review early; the
+command guarantees it.
 
 The `ensure_task` nodes below pin `profile_id` but no `intelligence_class`, so
 the assignment-routing playbook chooses the class for the tasks they create. A

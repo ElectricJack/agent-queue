@@ -13,6 +13,7 @@ from src.notifications.events import (
     TextNotifyEvent,
 )
 from src.models import Task, TaskStatus
+from src.review_keys import is_review_completion
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +28,23 @@ class EventsMixin:
             "project_id": task.project_id,
             "title": getattr(task, "title", ""),
         }
+        # The default pipeline's review rules stand down on
+        # ``event.review_task`` (default-pipeline.md), and an *absent* key
+        # reads falsy under ``truthy: false`` — so an emitter that forgets it
+        # re-arms the recursion rather than failing loudly.  It was passed by
+        # hand from the session close path only; container settlement
+        # (``_on_containers_settled``) emits the same event without it.  The
+        # flag is a property of the task row, not of the call site, so derive
+        # it here where every emitter goes through.  Task prime-quest-67: six
+        # nested ``Review: Review: ...`` tasks reached the live queue.
+        #
+        # Scoped to ``task.completed``: that is the only type whose schema
+        # registers the key (``src/event_schemas.py``), and the only type the
+        # review rules trigger on.
+        if event_type == "task.completed":
+            payload["review_task"] = is_review_completion(
+                getattr(task, "dedup_key", None), getattr(task, "profile_id", None)
+            )
         payload.update(extra)
         await self.bus.emit(event_type, payload)
 
