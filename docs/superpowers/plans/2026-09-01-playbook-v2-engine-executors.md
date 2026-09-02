@@ -1,6 +1,6 @@
 # Playbook V2 — Package 4: unified engine and typed executors
 
-> **For agentic workers:** REQUIRED SUB-SKILL: use `superpowers:subagent-driven-development`. §5 is a task list with red/green boundaries; §3 is a **frozen interface contract** that the three specialist executor tasks (T-COMMAND, T-LLM, T-AGENT) share. Do not renegotiate §3 inside a task — amend it in a dedicated commit that updates every dependent task in the same change.
+> **For agentic workers:** REQUIRED SUB-SKILL: use `superpowers:subagent-driven-development`. §5 is a task list with red/green boundaries; §3 is a **frozen interface contract** that the three specialist executor tasks (T-2 command, T-13/T-14 LLM, T-8 agent task) share. Do not renegotiate §3 inside a task — amend it in a dedicated commit that updates every dependent task in the same change.
 
 **Package:** 4 of 7 — *Unified engine and typed executors*
 **Roadmap:** `docs/superpowers/plans/2026-09-01-playbook-v2-implementation-roadmap.md` §5 "Package 4"
@@ -161,7 +161,7 @@ Amend §2.3 and every affected §3/§5 reference in the same commit, message `do
 
 ## 3. Locked interfaces — the parallelism contract
 
-Roadmap §7: *"Package 4 executors may be developed independently after `Executor`, `CommandResult`, `RunRepository`, and receipt types are fixed."* This section **is** that fixing. T-COMMAND (§5.3), T-LLM (§5.5) and T-AGENT (§5.6) may run fully in parallel once §3 is checked in, because everything they share is here and nothing here is negotiable inside those tasks.
+Roadmap §7: *"Package 4 executors may be developed independently after `Executor`, `CommandResult`, `RunRepository`, and receipt types are fixed."* This section **is** that fixing. **T-2** (command), **T-13/T-14** (LLM) and **T-8** (agent task) may run fully in parallel once §3 is checked in, because everything they share is here and nothing here is negotiable inside those tasks.
 
 Changing anything in §3 after T-1 lands requires: a dedicated commit, an update to every dependent task in §5, and a re-run of `aq test tests/test_v2_engine.py tests/test_command_executor.py tests/test_llm_executor.py tests/test_agent_task_executor.py -q`.
 
@@ -546,11 +546,11 @@ A step is not required to map every reserved outcome, but Package 2 requires it 
 
 | Task | Owns | Must not touch |
 |---|---|---|
-| **T-COMMAND** (§5.3) | `src/playbooks/executors/command.py`, `tests/test_command_executor.py` | `base.py`, `engine.py`, any other executor |
-| **T-LLM** (§5.5) | `src/playbooks/executors/llm.py`, `tests/test_llm_executor.py`, and the usage channel (§4.11) in `src/llm/` | `base.py`, `engine.py`, `command.py`, `agent_task.py` |
-| **T-AGENT** (§5.6) | `src/playbooks/executors/agent_task.py`, `tests/test_agent_task_executor.py` | `base.py`, `engine.py`, `command.py`, `llm.py` |
+| **T-2** | `src/playbooks/executors/command.py`, `tests/test_command_executor.py` | `base.py`, `engine.py`, any other executor |
+| **T-13 + T-14** | `src/playbooks/executors/llm.py`, `tests/test_llm_executor.py`, and the usage channel (§4.11) in `src/llm/` | `base.py`, `engine.py`, `command.py`, `agent_task.py` |
+| **T-8** | `src/playbooks/executors/agent_task.py`, `tests/test_agent_task_executor.py` | `base.py`, `engine.py`, `command.py`, `llm.py` |
 
-`base.py`, `engine.py`, `decision.py`, `wait.py`, `foreach.py`, `terminal.py` and `__init__.py` are all landed by T-1/T-5/T-6 **before** the three parallel tasks start. Each parallel task adds exactly one executor module, one test module, and one line to the `EXECUTORS` table. A merge conflict is therefore confined to that one table line, by construction.
+`base.py`, `engine.py`, `decision.py`, `wait.py`, `foreach.py`, `terminal.py` and `__init__.py` are all landed by T-1, T-5, T-6 and T-7 **before** the three parallel tasks start. Each parallel task adds exactly one executor module, one test module, and one line to the `EXECUTORS` table. A merge conflict is therefore confined to that one table line, by construction.
 
 ---
 
@@ -791,3 +791,326 @@ Both are pure and mode-independent (§3.1.2).
 `DecisionExecutor` evaluates each `case.when` in declared order with the Package 2 condition evaluator over `ctx.scope`, and returns `GOTO case.goto` for the first true case, else `GOTO default`. It makes no LLM call — there is no code path from `decision.py` to `ctx.services.llm`, and T-5 asserts it by patching `services.llm` with an object that raises on attribute access. A condition that raises (a type error the compiler could not see) → `input_resolution_failed`.
 
 `TerminalExecutor` returns `control=TERMINATE, terminal_outcome=step.outcome`, plus `value=resolve_value(step.result)` when the terminal declares a typed result. The engine maps the terminal outcome onto the run lifecycle: `completed` → `completed`, `failed` → `failed`, `cancelled` → `cancelled`, `timed_out` → `timed_out`.
+
+---
+
+## 5. Task and commit sequence
+
+### 5.0 Map to the roadmap's commit sequence
+
+The roadmap names six commits. This plan uses **eight**, and both additions are recorded here rather than absorbed silently:
+
+| Roadmap commit | This plan |
+|---|---|
+| — | **C0** `docs: reconcile package 4 plan against the live tree` (§2.4) — **added**, because this plan was written before Packages 1–3 landed |
+| 1. `feat: execute command decision and terminal v2 steps` | **C1** — T-1 … T-5 |
+| 2. `feat: execute durable waits and foreach loops` | **C2** — T-6, T-7, **and T-9 (cancellation)**. Cancellation lands here rather than later because the `paused → cancelled` edge is a wait-state concern and the wait tests need the `cancelling` lifecycle to exist |
+| 3. `feat: execute budgeted llm steps` | **C3** — T-13 (usage channel), T-14 (`LlmExecutor`) |
+| 4. `feat: execute narrowed agent task steps` | **C4** — T-8 |
+| 5. `feat: add bounded dry run and side effect free shadow mode` | **C5** — T-11, T-12 |
+| 6. `test: prove restart and idempotency boundaries` | **C6** — T-10, T-15 |
+| — | **C7** `feat: route v2 playbook entry points behind a flag` — T-16, T-17. **Added**, because the roadmap's Modify list names six call sites but no commit that touches them. Without C7 the engine is unreachable and Package 6 cannot run its shadow-parity harness |
+
+**Parallelism.** C1 must land first — it defines `base.py` and `engine.py`. After C1, **C3 (T-13+T-14), C4 (T-8) and C2 (T-6/T-7/T-9) are fully independent** and may be three concurrent branches: each adds one executor module, one test module, and one row of the `EXECUTORS` table (§3.7). C5 requires all of C2–C4 (it forks across every step kind). C6 requires C5. C7 requires C6.
+
+**Test command for every task:** `aq test <files> -q`, never bare `pytest` past one file (CLAUDE.md). Run the file you are iterating on with `-x`; run the package sweep (§12.2) once, at the end.
+
+---
+
+### 5.1 C1 — `feat: execute command decision and terminal v2 steps`
+
+#### T-1 — the engine walks a graph and starts one run per rule
+
+*Red:* `tests/test_v2_engine.py` (new).
+
+- `test_two_matching_rules_produce_two_runs` — dispatch `task.completed` (§6.2 event 1) against the §6.1 artifact, which has two rules; assert `len(result.run_ids) == 2`, ids distinct, `dispatch_id` shared. **Fails with `ModuleNotFoundError: src.playbooks.engine`.**
+- `test_sibling_failure_does_not_fail_the_other_run` — the scripted handler raises for `ensure_task` only; assert the `sweep-on-spec-created` run still reaches `sweep-done`.
+- `test_same_event_id_dispatched_twice_creates_no_new_runs`.
+- `test_unknown_step_type_raises_rather_than_terminating` — an artifact with `"type": "frobnicate"` raises `UnknownStepType`; it does not end the walk (§2.2 item 3's failure mode).
+- `test_business_outcome_without_an_edge_is_a_contract_violation` — a `CommandStep` whose contract declares `conflict` but whose `transitions` omits both `conflict` and `runtime_error`; assert the run fails with `contract_violation` and **not** `completed`. This is the direct replacement for `pipeline_runner.py:151-158`.
+
+*Green:* `src/playbooks/engine.py` with `PlaybookEngine.__init__`, `dispatch_event`, `run_rule`, `_advance_one_step` (§3.4 steps 1–11), `_hydrate_event` (lifted from `core.py:850-866`), `DispatchResult`, `RunOutcome`, `ResumeCause`, `WaitScheduler` stub; `src/playbooks/executors/__init__.py` with `EXECUTORS`/`executor_for`; `src/playbooks/executors/base.py` per §3.1.
+
+*Verify:* `aq test tests/test_v2_engine.py -q`
+
+#### T-2 — `CommandExecutor` (parallel-safe; owns `command.py` only)
+
+*Red:* `tests/test_command_executor.py` (new). Parameterised over the six §3.2 checks:
+
+- `test_bare_dict_result_is_a_contract_violation`
+- `test_undeclared_outcome_is_a_contract_violation` — an adapter returning `outcome="weird"`.
+- `test_result_of_the_wrong_model_is_a_contract_violation`
+- `test_two_failure_outcomes_take_different_edges` — a contract with `not_found` and `conflict`, both `OutcomeClass.FAILURE`, routed to different steps; assert the receipts' `selected_transition` differ. **This is the assertion that would pass trivially against `pipeline_runner.py:145` only by accident, and fails outright the moment anyone reintroduces classification-based routing.**
+- `test_empty_dict_result_is_not_treated_as_success` — the exact `pipeline_runner.py:145` bug, expressed as a `CommandResult` whose `value` is an empty result model with outcome `not_found`; assert the failure edge is taken.
+- `test_result_over_256_kib_is_state_limit_exceeded` — a result model carrying a 300 KiB string; assert `state_limit_exceeded`, an error receipt, and **no binding written**.
+- `test_keyed_command_receives_the_attempt_key` / `test_unkeyed_command_receives_no_extra_argument`.
+- `test_runtime_arguments_are_revalidated_at_the_boundary` — a resolved value of the wrong type for the args model; assert `input_resolution_failed`, and that `registration.invoke` was never awaited.
+- `test_uncontracted_command_cannot_execute` — `contract_violation`, adapter not called.
+
+*Green:* `src/playbooks/executors/command.py` with `LiveCommandExecutor`, `PreviewCommandExecutor`, `ShadowCommandExecutor`, `_consume`.
+
+*Verify:* `aq test tests/test_command_executor.py -q`
+
+#### T-3 — one commit per attempt
+
+*Red:* in `tests/test_v2_engine.py`.
+
+- `test_exactly_one_commit_per_attempt` — a counting `RunRepository` double; run the fixture to completion and assert `double.commit_calls == len(double.receipts)` and that every receipt has a distinct `(step_id, iteration_index, attempt)`.
+- `test_no_durable_write_happens_before_the_boundary` — the repository double raises on `commit_boundary`; assert the scripted command **was** called (the effect is real) but no snapshot row advanced and no bus event was emitted. Proves the §3.4 step-11 ordering.
+- `test_version_conflict_fails_the_run_and_receipts_it` — the double raises `SnapshotVersionConflict` once; assert the run ends `failed` with outcome `interrupted` and one error receipt, and that `commit_boundary` was **not** retried.
+
+*Green:* the `commit_boundary` call site in `_advance_one_step`, plus `SnapshotVersionConflict` handling.
+
+#### T-4 — receipts are complete and default-deny
+
+*Red:* `tests/test_v2_receipts.py` (new).
+
+- `test_receipt_carries_every_mandatory_field` — parameterised over §3.3.3's mandatory rows; asserts each is non-`None` for a completed command step.
+- `test_receipt_never_contains_an_unprojected_field` — for every receipt in a full fixture run, `set(receipt.inputs) <= set(contract.execution.receipt_projection)`.
+- `test_empty_receipt_projection_projects_nothing` — a contract with `receipt_projection=()`; assert `receipt.result == {}` even though the command returned a populated model.
+- `test_sensitive_field_is_hashed_not_masked_and_unallowed_is_dropped`.
+- `test_artifact_sha256_on_every_receipt_matches_the_pinned_ref`.
+
+*Green:* `project_for_receipt` in `base.py` and the receipt build in `_advance_one_step`.
+
+#### T-5 — decision and terminal
+
+*Red:* in `tests/test_v2_engine.py`.
+
+- `test_decision_takes_the_first_true_case` and `test_decision_falls_through_to_default`.
+- `test_decision_makes_no_llm_call` — `ctx.services.llm` replaced by an object whose `__getattr__` raises; the step still resolves.
+- `test_decision_goto_outside_declared_targets_is_a_contract_violation` — a hand-built `ExecutorResult` with a foreign `goto_step_id` (§3.1.3).
+- `test_command_executor_cannot_goto` — a `GOTO` from a command step is `contract_violation`, because `CommandStep.declared_targets()` is empty.
+- `test_terminal_outcome_maps_onto_the_run_lifecycle` — parameterised over `completed`/`failed`/`cancelled`/`timed_out`.
+
+*Green:* `decision.py`, `terminal.py`, and the shared-instance registration in `__init__.py`.
+
+*Commit C1 verify:*
+```bash
+aq test tests/test_v2_engine.py tests/test_command_executor.py tests/test_v2_receipts.py -q
+ruff check src/playbooks/engine.py src/playbooks/executors tests/test_v2_engine.py \
+           tests/test_command_executor.py tests/test_v2_receipts.py
+```
+
+---
+
+### 5.2 C2 — `feat: execute durable waits and foreach loops`
+
+#### T-6 — the wait race is closed in one transaction
+
+*Red:* `tests/test_v2_waits.py` (new). The three orderings, each ending with **exactly one** resume receipt:
+
+- `test_event_before_registration_resumes_immediately` — write the matching event to the pending-event inbox first, then reach the wait; assert `register` returns `matched_immediately` and the run never enters `paused`.
+- `test_event_during_registration_resumes_exactly_once` — a `WaitRepository` double whose `register` awaits a barrier that the test releases only after injecting the event; assert one resume and one receipt.
+- `test_event_after_registration_resumes_exactly_once`.
+- `test_wait_deadline_and_run_deadline_the_earlier_wins` — parameterised both ways; assert `receipt.deadline_fired` is `"wait"` and `"run"` respectively.
+- `test_wait_does_not_create_a_timer_service_entry` — a `TimerService` double that raises on any add; the wait is registered and the double is untouched.
+
+*Green:* `src/playbooks/executors/wait.py` (`LiveWaitExecutor`, `ReportingWaitExecutor`) and `WaitScheduler` in `engine.py`.
+
+#### T-7 — loops are scoped and resumable
+
+*Red:* `tests/test_v2_foreach.py` (new).
+
+- `test_loop_item_lives_in_its_own_namespace` — a step inside the body binds `save_result_as: "task"` while the item binding is also `task`; assert `scope.loop["task"]` and `scope.bindings["task"]` are both readable and distinct. Against the live `pipeline_runner` shape this is impossible; the assertion is the point.
+- `test_loop_item_is_not_visible_after_the_loop` — a `ResultRef` to the item on the continuation path is `input_resolution_failed`.
+- `test_failure_policy_halt_continue_collect` — three parameterisations over §4.7's table, asserting the aggregate shape.
+- `test_frame_is_committed_on_both_sides_of_the_body` — count boundaries for a 3-item loop: `1 (enter) + 3 × (1 body + 1 return) = 7`.
+- `test_empty_collection_goes_straight_to_continuation`.
+- `test_non_list_collection_is_input_resolution_failed`.
+- `test_aggregate_over_256_kib_is_state_limit_exceeded`.
+
+*Green:* `src/playbooks/executors/foreach.py` and the loop-frame fields in the snapshot build.
+
+#### T-9 — cancellation is real
+
+*Red:* `tests/test_v2_cancellation.py` (new).
+
+- `test_cancel_a_paused_run_is_immediate` — one boundary, wait deregistered, status `cancelled`.
+- `test_cancel_during_a_live_command_does_not_get_overwritten` — a scripted command that blocks on a barrier; call `cancel`; release; assert the final status is `cancelled` and **not** overwritten to `running`/`completed`. This is the regression test for `playbook_commands.py:511-519`'s own docstring.
+- `test_in_flight_executor_gets_one_cancel_signal` — a `Cancellable` double; assert `request_cancel` awaited exactly once.
+- `test_grace_expiry_still_reaches_cancelled` — the double never acknowledges; assert `cancelled` after `cancellation_grace_seconds` with `receipt.cancellation == "grace_expired"`.
+- `test_cancel_a_terminal_run_is_refused` — same message shape as `playbook_commands.py:544`.
+- `tests/test_playbook_state_machine.py` gains `test_cancelling_transitions` for the two new edges.
+
+*Green:* `cancelling` in `src/playbooks/state_machine.py`, `PlaybookEngine.cancel`, `Cancellable` wiring, `playbook_status_to_task_status` mapping.
+
+*Commit C2 verify:*
+```bash
+aq test tests/test_v2_waits.py tests/test_v2_foreach.py tests/test_v2_cancellation.py \
+        tests/test_playbook_state_machine.py -q
+ruff check src/playbooks/executors src/playbooks/engine.py src/playbooks/state_machine.py src/playbooks/run_task.py
+```
+
+---
+
+### 5.3 C3 — `feat: execute budgeted llm steps`
+
+#### T-13 — the provider usage channel (§4.11)
+
+*Red:* `tests/test_llm_usage.py` (new).
+
+- `test_anthropic_adapter_reports_usage` — a stubbed SDK response with `usage.input_tokens=1200`, `usage.output_tokens=300`; assert `ChatResponse.usage == TokenUsage(1200, 300, reported=True)`. **Fails today:** `anthropic.py:147` constructs `ChatResponse(content=content)` and `ChatResponse` has no `usage` field, so this is an `AttributeError` before it is an assertion failure.
+- `test_openai_adapter_reports_usage`, `test_google_adapter_reports_usage_when_present`, `test_google_adapter_reports_none_when_absent`.
+- `test_run_tools_sums_usage_across_turns` — three turns; assert the summed `TokenUsage` and `reported=True`.
+- `test_usage_addition_is_reported_only_when_both_are` — `TokenUsage(reported=True) + TokenUsage(reported=False)` has `reported is False`.
+- `test_fake_provider_can_report_and_not_report`.
+
+*Green:* `TokenUsage` in `src/llm/types.py`; `usage` on `ChatResponse`, `LLMResponse`, `LLMRunResult`; population in all three adapters; the `usage=` argument on `FakeProvider.add_response`; the re-export from `src/playbooks/executors/base.py`.
+
+Every change is additive with a default of `None`, so `tests/llm/` and every existing `FakeProvider` caller stay green. Confirm with `aq test tests/llm -q` and `aq test tests/test_playbook_runner.py -q` in the same commit.
+
+#### T-14 — `LlmExecutor` (parallel-safe; owns `llm.py` only)
+
+*Red:* `tests/test_llm_executor.py` (new).
+
+- `test_step_with_total_token_budget_refuses_an_unreporting_provider` — assert outcome `budget_exceeded` **and** `FakeProvider.calls == []`. Zero calls is the assertion that matters: a fail-closed rule that still makes the call is not fail-closed.
+- `test_step_without_total_token_budget_runs_on_an_unreporting_provider` — runs; `receipt.usage.reported is False`.
+- `test_receipt_usage_is_provider_reported_not_estimated` — the receipt's numbers equal the provider's and differ from `len(prompt)//4`.
+- `test_structured_output_drives_the_edge_not_the_model` — the model returns `{"risk": "high"}` plus a paragraph of prose asking to go elsewhere; assert the `high` edge is taken. The prose is deliberately adversarial: it is the compact form of the `runner_transitions.py` behaviour being removed.
+- `test_invalid_output_retries_then_gives_up` — two malformed responses with `max_schema_retries=1`; assert `invalid_output` and exactly two provider calls.
+- `test_max_calls_and_max_output_tokens_breach_is_budget_exceeded` (two parameterisations).
+- `test_tool_calls_are_authorized_at_dispatch_not_by_the_published_schema` — publish a narrowed tool list, then have the fake model call a tool **outside** it; assert the call is denied by `authorize_command` and the step outcome is `unauthorized`. §7.3.
+- `test_completed_tool_turn_is_a_durable_boundary` — two turns; assert two `tool_turn` receipts.
+- `test_interrupted_provider_call_is_not_replayed` — a snapshot with a started-but-uncompleted LLM attempt; assert `operator_decision_required`, and that the provider was not called.
+- `test_profile_not_a_subset_of_the_principal_is_unauthorized`.
+
+*Green:* `src/playbooks/executors/llm.py` (`LiveLlmExecutor`, `SymbolicLlmExecutor`).
+
+*Commit C3 verify:*
+```bash
+aq test tests/test_llm_usage.py tests/test_llm_executor.py -q
+aq test tests/llm tests/test_playbook_runner.py -q      # no regression in the V1 LLM path
+ruff check src/llm src/playbooks/executors/llm.py tests/test_llm_usage.py tests/test_llm_executor.py
+```
+
+---
+
+### 5.4 C4 — `feat: execute narrowed agent task steps`
+
+#### T-8 — `AgentTaskExecutor` (parallel-safe; owns `agent_task.py` only)
+
+*Red:* `tests/test_agent_task_executor.py` (new).
+
+- `test_child_policy_is_the_three_way_intersection` — parent grants `{a,b,c}`, child profile `{b,c,d}`, step narrowing `{c,d}`; assert the child principal's `aq_commands` is exactly `{c}` and `provenance` ends with `agent_task:<step_id>`.
+- `test_child_cannot_widen_in_any_namespace` — parameterised over `harness_tools`, `aq_commands`, `plugin_tools`; a child profile broader than the parent yields the intersection, never the union.
+- `test_ai_parent_requires_the_child_profile_to_be_a_subset` — `unauthorized`, and `create_task` never called.
+- `test_child_task_id_is_persisted_before_the_run_is_paused` — a repository double that records ordering; assert `child_task_id` is present in the committed snapshot *and* the receipt before `lifecycle == "paused"` is observable.
+- `test_duplicate_child_completion_is_a_noop` — deliver `ChildTaskCompleted` twice; assert one resume receipt and one transition.
+- `test_wait_for_completion_false_advances_on_dispatched`.
+- `test_child_timeout_takes_the_timed_out_edge`.
+- `test_cancel_child_defaults_to_false` — cancelling the parent leaves the child task's status untouched; the opt-in case cancels it.
+- `test_cancellation_grants_no_new_authority` — the cancel path's `cancel_task` call carries the **narrowed** child principal, not the parent's.
+
+*Green:* `src/playbooks/executors/agent_task.py` (`LiveAgentTaskExecutor`, `SymbolicAgentTaskExecutor`) and the `ChildTaskCompleted` branch of `PlaybookEngine.resume`.
+
+*Commit C4 verify:*
+```bash
+aq test tests/test_agent_task_executor.py tests/test_v2_engine.py -q
+ruff check src/playbooks/executors/agent_task.py tests/test_agent_task_executor.py
+```
+
+---
+
+### 5.5 C5 — `feat: add bounded dry run and side effect free shadow mode`
+
+#### T-11 — bounded dry-run on the real graph
+
+*Red:* `tests/test_v2_dry_run.py` (new).
+
+- `test_live_and_dry_run_select_the_same_edges` — the parity assertion of §4.10; ordered `(step_id, outcome, target)` triples must be equal.
+- `test_deterministic_executors_are_identical_across_modes` — object identity for `decision`, `foreach`, `terminal` (§3.1.2).
+- `test_path_limit_truncates_without_reporting_completed` — an artifact with a 6-way decision inside a loop, `max_paths=4`; assert `truncated is True` and no path is `completed`.
+- `test_visit_limit_truncates` — `max_step_visits=10` over a 40-item loop.
+- `test_command_without_preview_is_unresolved_and_downstream_refs_stay_symbolic`.
+- `test_llm_forks_across_declared_outcomes` — the fixture's `classify-risk` has 7 declared edges; assert 7 child paths.
+- `test_wait_is_reported_not_persisted` — the `WaitRepository` double raises on `register`; the dry-run completes.
+- `test_invoke_ai_true_still_previews_commands` — the command adapter double raises on `invoke`; the dry-run with `invoke_ai=True` completes.
+- `test_dry_run_writes_nothing` — `RunRepository`/`WaitRepository` doubles raise on every method.
+
+#### T-12 — shadow mode has zero side effects, structurally and behaviourally
+
+*Red:* `tests/test_v2_shadow.py` (new).
+
+- `test_every_shadow_executor_declares_no_side_effects` — `all(e.no_side_effects for e in EXECUTORS[SHADOW].values())`, asserted on the **class attribute**, so it holds without running anything.
+- `test_shadow_makes_no_command_ai_task_gate_or_bus_call` — doubles for `CommandHandler.execute`, `LLMClient.complete`, `create_task`, `gate_create` and `EventBus.emit` that each raise `AssertionError`; a full shadow dispatch over the §6.2 corpus still produces a complete `DispatchResult`.
+- `test_shadow_does_not_call_a_preview_adapter_either` — the distinguishing case against dry-run (§4.3): a preview double that raises; shadow completes.
+- `test_shadow_records_rules_selected_and_commands` — the two fields Package 6's parity harness reads; assert names, order and canonicalised args.
+- `test_shadow_and_live_select_the_same_rules_for_the_corpus` — over §6.2, `shadow.rules_selected == live.rules_selected` for every event.
+
+*Green:* `PreviewCommandExecutor`/`ShadowCommandExecutor` split, `SymbolicLlmExecutor`, `SymbolicAgentTaskExecutor`, `ReportingWaitExecutor`, `InMemoryRunRecorder`, `DryRunTree`, and the `EXECUTORS` table for all three modes.
+
+*Commit C5 verify:*
+```bash
+aq test tests/test_v2_dry_run.py tests/test_v2_shadow.py -q
+ruff check src/playbooks/executors src/playbooks/engine.py tests/test_v2_dry_run.py tests/test_v2_shadow.py
+```
+
+---
+
+### 5.6 C6 — `test: prove restart and idempotency boundaries`
+
+#### T-10 — ambiguous interruption stops rather than guessing
+
+*Red:* `tests/test_v2_restart_resume.py` (new), part 1.
+
+- `test_retry_safe_command_replays_with_the_same_attempt_key` — assert the replay carries `<run>:<step>:1`, not `:2`, and that two receipts exist (`interrupted` then the replay).
+- `test_non_retry_safe_command_pauses_for_an_operator` — `operator_decision_required`, no binding, no transition, and the adapter not called a second time.
+- `test_each_operator_resolution_is_receipted` — parameterised over `accept`/`retry`/`fail`/`cancel`.
+- `test_a_playbook_principal_cannot_resolve_its_own_run` — `unauthorized` (§7.5).
+
+#### T-15 — restart at all five boundaries
+
+*Red:* `tests/test_v2_restart_resume.py`, part 2. Parameterised over **command, LLM, agent-task, wait, loop**: build the snapshot as a crash would leave it, construct a *fresh* `PlaybookEngine` against the same repository, resume, and assert (a) no duplicate acknowledged attempt, (b) bindings intact, (c) the run reaches its terminal.
+
+- `test_restart_mid_loop_resumes_the_same_iteration` — §4.7.
+- `test_restart_before_the_wait_boundary_re_registers_the_wait_once`.
+- `test_restart_after_child_task_creation_does_not_create_a_second_child`.
+- `test_receipts_identify_every_traversed_node_edge_iteration_and_artifact` — walks the full receipt set and asserts it reconstructs the executed path exactly, which is what Package 5's overlay depends on.
+
+Two of these need a **real process boundary**, not a fresh object: `test_restart_mid_loop_...` and `test_restart_after_child_task_creation_...` run the engine in a `multiprocessing` child against a shared SQLite file, `SIGKILL` it at a scripted boundary, and resume in the parent. They carry `@pytest.mark.integration` because `aq test` deselects `integration` by default; §12.2's package sweep passes `-m integration` explicitly for this file. The other parameterisations use a fresh in-process engine and stay in the default selection.
+
+*Green:* the restart branch of `PlaybookEngine.resume`, `OperatorResolution` handling, and `PlaybookEngine.resume`'s interrupted-attempt detection.
+
+*Commit C6 verify:*
+```bash
+aq test tests/test_v2_restart_resume.py -q
+aq test tests/test_v2_restart_resume.py -m integration -q
+ruff check src/playbooks/engine.py tests/test_v2_restart_resume.py
+```
+
+---
+
+### 5.7 C7 — `feat: route v2 playbook entry points behind a flag`
+
+#### T-16 — six sites, one selector, V1 untouched when the flag is off
+
+*Red:* `tests/test_v2_entry_points.py` (new).
+
+- `test_every_site_reaches_the_engine_when_the_flag_is_on` — parameterised over §4.1's six rows; patch `PlaybookRunner` and `PipelineRunner` with mocks that raise on call, set `playbooks.v2_engine=True`, drive the site, assert the engine was called.
+- `test_every_site_uses_v1_when_the_flag_is_off` — the mirror; assert the engine double was **not** called. This is the rollback-boundary test: Package 4 must be disable-able without converting stored V1 runs.
+- `test_resume_sites_branch_on_the_run_not_the_flag` — a paused row with a V2 artifact hash resumes through the engine even with the flag off, and a row without one resumes through V1 even with it on. Package 7 §3.4 depends on this shape existing; landing it here means Package 7's switch is a config change, not a redesign.
+- `test_workflow_stage_resume_is_wired` — site 5, the roadmap omission (§2.1).
+
+*Green:* `v2_engine_enabled(config)` in `src/playbooks/services.py`, the four config fields (§9), and the preamble at each of the six sites.
+
+#### T-17 — assignment routing keeps its caches and gains artifact identity
+
+*Red:* `tests/test_assignment_routing_v2.py` (new).
+
+- `test_cache_key_includes_the_artifact_hash` — two activations of different artifacts for the same tasks/options produce different `_batch_key` values. **Fails today:** `_batch_key` (`assignment_routing.py:389`) hashes only project, playbook, tasks and options hash.
+- `test_a_cache_hit_creates_no_run_and_no_receipts` — second call with an unchanged catalog; assert zero new runs and zero new receipts.
+- `test_unavailable_activation_returns_a_typed_result_not_an_exception` — assert `_note_failure` was called with the existing backoff and no traceback escaped.
+- `test_routing_run_creates_no_projection_task` — the `project_task=False` path.
+- `test_existing_coordinator_behaviour_is_unchanged` — re-runs `tests/test_assignment_routing_coordinator.py`'s cases with the flag on and asserts identical decisions.
+
+*Green:* the `_route_batch` swap (§4.12), the `_batch_key` payload addition, and `run_rule(..., project_task=False)`.
+
+*Commit C7 verify:*
+```bash
+aq test tests/test_v2_entry_points.py tests/test_assignment_routing_v2.py -q
+aq test tests/test_assignment_routing_coordinator.py tests/test_playbook_commands.py \
+        tests/test_playbook_resume_handler.py tests/test_dry_run_playbook.py \
+        tests/test_cancel_playbook_run.py -q
+ruff check src/orchestrator src/commands/playbook_commands.py src/playbooks src/workflow_stage_resume_handler.py
+```
