@@ -2624,6 +2624,14 @@ _ALL_TOOL_DEFINITIONS = [
                     "type": "string",
                     "description": "New system prompt suffix (optional)",
                 },
+                "default_class": {
+                    "type": "string",
+                    "description": "New default intelligence class id (optional)",
+                },
+                "install": {
+                    "type": "object",
+                    "description": "New install manifest (optional)",
+                },
             },
             "required": ["profile_id"],
         },
@@ -4012,6 +4020,7 @@ _ALL_TOOL_DEFINITIONS = [
                 "mcp_servers": {"type": "array", "items": {"type": "string"}},
                 "system_prompt_suffix": {"type": "string"},
                 "install": {"type": "object"},
+                "default_class": {"type": "string"},
             },
             "required": ["project_id", "agent_type"],
         },

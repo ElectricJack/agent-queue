@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
+if TYPE_CHECKING:
+    from ..models.edit_profile_request_install_type_0 import EditProfileRequestInstallType0
 T = TypeVar("T", bound="EditProfileRequest")
 
 
@@ -24,6 +26,8 @@ class EditProfileRequest:
         mcp_servers (list[Any] | None | Unset): New MCP server names from the registry (optional). A legacy name ->
             config mapping is reduced to its keys.
         system_prompt_suffix (None | str | Unset): New system prompt suffix (optional)
+        default_class (None | str | Unset): New default intelligence class id (optional)
+        install (EditProfileRequestInstallType0 | None | Unset): New install manifest (optional)
     """
 
     profile_id: str
@@ -34,9 +38,12 @@ class EditProfileRequest:
     allowed_tools: list[Any] | None | Unset = UNSET
     mcp_servers: list[Any] | None | Unset = UNSET
     system_prompt_suffix: None | str | Unset = UNSET
+    default_class: None | str | Unset = UNSET
+    install: EditProfileRequestInstallType0 | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.edit_profile_request_install_type_0 import EditProfileRequestInstallType0
         profile_id = self.profile_id
 
         name: None | str | Unset
@@ -87,6 +94,20 @@ class EditProfileRequest:
         else:
             system_prompt_suffix = self.system_prompt_suffix
 
+        default_class: None | str | Unset
+        if isinstance(self.default_class, Unset):
+            default_class = UNSET
+        else:
+            default_class = self.default_class
+
+        install: dict[str, Any] | None | Unset
+        if isinstance(self.install, Unset):
+            install = UNSET
+        elif isinstance(self.install, EditProfileRequestInstallType0):
+            install = self.install.to_dict()
+        else:
+            install = self.install
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -108,11 +129,16 @@ class EditProfileRequest:
             field_dict["mcp_servers"] = mcp_servers
         if system_prompt_suffix is not UNSET:
             field_dict["system_prompt_suffix"] = system_prompt_suffix
+        if default_class is not UNSET:
+            field_dict["default_class"] = default_class
+        if install is not UNSET:
+            field_dict["install"] = install
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.edit_profile_request_install_type_0 import EditProfileRequestInstallType0
         d = dict(src_dict)
         profile_id = d.pop("profile_id")
 
@@ -195,6 +221,32 @@ class EditProfileRequest:
 
         system_prompt_suffix = _parse_system_prompt_suffix(d.pop("system_prompt_suffix", UNSET))
 
+        def _parse_default_class(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        default_class = _parse_default_class(d.pop("default_class", UNSET))
+
+        def _parse_install(data: object) -> EditProfileRequestInstallType0 | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                install_type_0 = EditProfileRequestInstallType0.from_dict(data)
+
+                return install_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(EditProfileRequestInstallType0 | None | Unset, data)
+
+        install = _parse_install(d.pop("install", UNSET))
+
         edit_profile_request = cls(
             profile_id=profile_id,
             name=name,
@@ -204,6 +256,8 @@ class EditProfileRequest:
             allowed_tools=allowed_tools,
             mcp_servers=mcp_servers,
             system_prompt_suffix=system_prompt_suffix,
+            default_class=default_class,
+            install=install,
         )
 
         edit_profile_request.additional_properties = d

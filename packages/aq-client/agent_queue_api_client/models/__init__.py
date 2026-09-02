@@ -174,6 +174,7 @@ from .edit_mcp_server_request_headers_type_0 import EditMcpServerRequestHeadersT
 from .edit_mcp_server_response import EditMcpServerResponse
 from .edit_mcp_server_response_422 import EditMcpServerResponse422
 from .edit_profile_request import EditProfileRequest
+from .edit_profile_request_install_type_0 import EditProfileRequestInstallType0
 from .edit_profile_response import EditProfileResponse
 from .edit_profile_response_422 import EditProfileResponse422
 from .edit_project_profile_request import EditProjectProfileRequest
@@ -1198,6 +1199,7 @@ __all__ = (
     "EditMcpServerResponse",
     "EditMcpServerResponse422",
     "EditProfileRequest",
+    "EditProfileRequestInstallType0",
     "EditProfileResponse",
     "EditProfileResponse422",
     "EditProjectProfileRequest",

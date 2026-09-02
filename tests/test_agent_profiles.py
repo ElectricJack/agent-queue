@@ -1398,3 +1398,43 @@ class TestProfileMcpServersShape:
         assert result.get("updated") == "mcp-shape-supervisor"
         profile = await handler.db.get_profile("mcp-shape-supervisor")
         assert profile.mcp_servers == ["playwright"]
+
+    async def test_edit_profile_writes_default_class(self, handler):
+        await handler.execute("create_profile", {"id": "coder", "name": "Coder"})
+        async with await self._client(handler) as client:
+            resp = await client.post(
+                "/api/agent/edit-profile",
+                json={"profile_id": "coder", "default_class": "standard-medium"},
+            )
+        assert resp.status_code == 200, resp.text
+        profile = await handler.db.get_profile("coder")
+        assert profile.default_class == "standard-medium"
+
+    async def test_edit_profile_writes_install(self, handler):
+        await handler.execute("create_profile", {"id": "coder", "name": "Coder"})
+        async with await self._client(handler) as client:
+            resp = await client.post(
+                "/api/agent/edit-profile",
+                json={"profile_id": "coder", "install": {"npm": ["eslint-mcp"]}},
+            )
+        assert resp.status_code == 200, resp.text
+        profile = await handler.db.get_profile("coder")
+        assert profile.install == {"npm": ["eslint-mcp"]}
+
+    async def test_edit_project_profile_writes_default_class(self, handler):
+        await handler.execute("create_profile", {"id": "coder", "name": "Coder"})
+        await handler.execute(
+            "create_project_profile", {"project_id": "proj", "agent_type": "coder"}
+        )
+        async with await self._client(handler) as client:
+            resp = await client.post(
+                "/api/agent/edit-project-profile",
+                json={
+                    "project_id": "proj",
+                    "agent_type": "coder",
+                    "default_class": "deep-high",
+                },
+            )
+        assert resp.status_code == 200, resp.text
+        profile = await handler.db.get_profile("project:proj:coder")
+        assert profile.default_class == "deep-high"

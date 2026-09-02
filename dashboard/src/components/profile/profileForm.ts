@@ -25,13 +25,8 @@ export function profileToForm(p: ProfileDetail | null | undefined): ProfileFormS
   };
 }
 
-// `default_class` is accepted by _cmd_edit_profile but is not declared on
-// either generated request model, so the API layer drops it before the
-// command runs (filed as calm-apex-29).  Spelling it out as an intersection
-// keeps the payload honest about what the drawer sends instead of hiding it
-// behind an `as unknown as` cast.
-export type ProfileEditPayload = EditProfileRequest & { default_class: string };
-export type ProjectProfileEditPayload = EditProjectProfileRequest & { default_class: string };
+export type ProfileEditPayload = EditProfileRequest;
+export type ProjectProfileEditPayload = EditProjectProfileRequest;
 
 /** Body the system (global) profile drawer sends to `edit_profile`. */
 export function profileEditPayload(
