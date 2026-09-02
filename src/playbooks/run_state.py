@@ -73,6 +73,34 @@ class SnapshotVersionConflict(PlaybookStorageError):
         self.actual = actual
 
 
+class RunIdentityMismatch(PlaybookStorageError, ValueError):
+    """A boundary disagreed with the identity its run is pinned to.
+
+    ``playbook_id``, ``artifact_sha256`` and ``rule_id`` are fixed when the
+    run is created and a historical overlay renders *that* artifact (design
+    spec: "A run reads its graph from its pinned artifact hash").  A snapshot
+    that keeps the version but swaps any of them would silently rewrite which
+    graph a finished run ran, and a receipt naming another artifact, rule or
+    snapshot version would do the same to the receipt history, so the
+    boundary refuses both and writes nothing.
+
+    ``ValueError`` stays in the bases because ``commit_boundary`` has raised
+    one for a receipt from another run since §4.4 landed.
+    """
+
+    code = "run_identity_mismatch"
+
+    def __init__(self, run_id: str, field: str, expected: object, actual: object) -> None:
+        super().__init__(
+            f"boundary for run {run_id} carries {field}={actual!r}, "
+            f"but the run is pinned to {expected!r}"
+        )
+        self.run_id = run_id
+        self.field = field
+        self.expected = expected
+        self.actual = actual
+
+
 class DuplicateAttempt(PlaybookStorageError):
     """The database rejected a replay of an already-recorded attempt."""
 
@@ -162,6 +190,28 @@ class WaitVersionMismatch(PlaybookStorageError):
         self.run_id = run_id
         self.expected = expected
         self.actual = actual
+
+
+class WaitOwnershipViolation(PlaybookStorageError):
+    """A boundary touched a wait that belongs to another run.
+
+    ``commit_boundary`` applies its ``WaitChangeSet`` on the run's own locked
+    connection.  A registration or an explicit ``clear_wait_ids`` naming a
+    different run would therefore mutate that run's suspension under this
+    run's CAS — outside the other run's fence entirely — so the boundary
+    rejects it and rolls back.
+    """
+
+    code = "wait_ownership_violation"
+
+    def __init__(self, run_id: str, wait_id: str, owner_run_id: str | None) -> None:
+        super().__init__(
+            f"wait {wait_id} belongs to run {owner_run_id!r}, "
+            f"not to boundary run {run_id}"
+        )
+        self.run_id = run_id
+        self.wait_id = wait_id
+        self.owner_run_id = owner_run_id
 
 
 class PendingEventQuotaExceeded(PlaybookStorageError):

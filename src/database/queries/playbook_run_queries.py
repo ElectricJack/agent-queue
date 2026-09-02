@@ -48,10 +48,12 @@ from src.playbooks.run_state import (
     IllegalLifecycleTransition,
     PendingEventIntegrityError,
     PendingEventQuotaExceeded,
+    RunIdentityMismatch,
     RunLifecycle,
     RunSnapshot,
     SnapshotVersionConflict,
     StateLimits,
+    WaitOwnershipViolation,
     WaitVersionMismatch,
     check_result_size,
     deserialize_snapshot,
@@ -318,16 +320,24 @@ class PlaybookRunQueryMixin:
         value it was loaded with; that value is the CAS expectation and the
         returned object is the one callers must keep.
         """
-        if receipt.run_id != snapshot.run_id:
-            raise ValueError(
-                f"receipt belongs to run {receipt.run_id}, not {snapshot.run_id}"
-            )
         limits = self.playbook_state_limits()
         # Before the transaction, so an oversized payload never reaches the
         # database and a limit breach costs nothing to roll back.
         check_result_size(snapshot.run_id, receipt.step_id, dict(receipt.result), limits=limits)
         expected = snapshot.version
         advanced = replace(snapshot, version=expected + 1)
+        # The receipt is the durable record of *which* graph and rule ran, so
+        # it has to name the same ones the snapshot does and the version this
+        # boundary is writing.  Checked before the transaction opens: a
+        # drifting receipt never reaches the insert.
+        for field, want, got in (
+            ("receipt.run_id", snapshot.run_id, receipt.run_id),
+            ("receipt.artifact_sha256", snapshot.artifact_sha256, receipt.artifact_sha256),
+            ("receipt.rule_id", snapshot.rule_id, receipt.rule_id),
+            ("receipt.snapshot_version", advanced.version, receipt.snapshot_version),
+        ):
+            if want != got:
+                raise RunIdentityMismatch(snapshot.run_id, field, want, got)
         payload = serialize_snapshot(advanced, limits=limits)
 
         async with self.immediate() as conn:
@@ -335,7 +345,11 @@ class PlaybookRunQueryMixin:
                 (
                     await conn.execute(
                         select(
-                            playbook_v2_runs.c.lifecycle, playbook_v2_runs.c.snapshot_version
+                            playbook_v2_runs.c.lifecycle,
+                            playbook_v2_runs.c.snapshot_version,
+                            playbook_v2_runs.c.playbook_id,
+                            playbook_v2_runs.c.artifact_sha256,
+                            playbook_v2_runs.c.rule_id,
                         ).where(playbook_v2_runs.c.run_id == snapshot.run_id)
                     )
                 )
@@ -344,6 +358,17 @@ class PlaybookRunQueryMixin:
             )
             if current is None:
                 raise SnapshotVersionConflict(snapshot.run_id, expected, None)
+            # The CAS fences *when* a run advances; it says nothing about
+            # what it advances into.  Without this, a same-version snapshot
+            # could repoint a live run at another playbook's artifact and the
+            # run's history would render against a graph it never ran.
+            for field, want, got in (
+                ("playbook_id", current["playbook_id"], snapshot.playbook_id),
+                ("artifact_sha256", current["artifact_sha256"], snapshot.artifact_sha256),
+                ("rule_id", current["rule_id"], snapshot.rule_id),
+            ):
+                if want != got:
+                    raise RunIdentityMismatch(snapshot.run_id, field, want, got)
             validate_transition(
                 snapshot.run_id, RunLifecycle(current["lifecycle"]), advanced.lifecycle
             )
@@ -378,16 +403,42 @@ class PlaybookRunQueryMixin:
         Order is ``clear_run_waits`` → ``clear_wait_ids`` → ``register``, so a
         step that finishes one wait and opens another in the same boundary
         cannot trip ``uq_playbook_waits_active_step``.
+
+        Every change is also scoped to ``run_id``: this connection holds only
+        this run's CAS, so a change set naming another run's wait would move
+        that run's suspension outside its own fence.
         """
         if wait_changes.is_empty:
             return
+        # Up front, before any write: an ownership breach is a caller bug, not
+        # a race, and it costs nothing to refuse it before the first UPDATE.
+        for wait in wait_changes.register:
+            if wait.run_id != run_id:
+                raise WaitOwnershipViolation(run_id, wait.wait_id, wait.run_id)
+        wait_ids = list(wait_changes.clear_wait_ids)
+        if wait_ids:
+            foreign = (
+                (
+                    await conn.execute(
+                        select(playbook_waits.c.wait_id, playbook_waits.c.run_id).where(
+                            playbook_waits.c.wait_id.in_(wait_ids),
+                            playbook_waits.c.run_id != run_id,
+                        )
+                    )
+                )
+                .mappings()
+                .fetchone()
+            )
+            if foreign is not None:
+                raise WaitOwnershipViolation(run_id, foreign["wait_id"], foreign["run_id"])
         if wait_changes.clear_run_waits:
             await self.clear_for_run(run_id, conn=conn)
-        if wait_changes.clear_wait_ids:
+        if wait_ids:
             await conn.execute(
                 update(playbook_waits)
                 .where(
-                    playbook_waits.c.wait_id.in_(list(wait_changes.clear_wait_ids)),
+                    playbook_waits.c.wait_id.in_(wait_ids),
+                    playbook_waits.c.run_id == run_id,
                     playbook_waits.c.state == "active",
                 )
                 .values(state="cleared")

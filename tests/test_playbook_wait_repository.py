@@ -33,6 +33,7 @@ from src.playbooks.run_state import (
     RunLifecycle,
     RunSnapshot,
     SnapshotVersionConflict,
+    WaitOwnershipViolation,
     WaitVersionMismatch,
 )
 from src.playbooks.waits import WaitChangeSet, WaitSpec, matches
@@ -386,6 +387,56 @@ async def test_a_failed_cas_writes_no_wait(db):
             WaitChangeSet(register=(make_wait(),)),
         )
     assert await count_rows(db, playbook_waits) == 0
+
+
+async def test_a_boundary_cannot_register_a_wait_for_another_run(db):
+    """A change set is scoped to the run whose CAS this boundary holds.
+
+    Otherwise run-a's boundary opens a suspension on run-b while run-b stays
+    at its own version — a wait outside the fence that is supposed to guard
+    it, which a resume of run-b would then trip over.
+    """
+    run_a = await db.create_run(make_snapshot())
+    await db.create_run(make_snapshot(run_id="run-b"))
+
+    with pytest.raises(WaitOwnershipViolation) as caught:
+        await db.commit_boundary(
+            replace(run_a, lifecycle=RunLifecycle.PAUSED),
+            make_receipt(run_a),
+            WaitChangeSet(register=(make_wait(wait_id="wait-b", run_id="run-b"),)),
+        )
+
+    assert caught.value.code == "wait_ownership_violation"
+    assert caught.value.wait_id == "wait-b"
+    assert caught.value.owner_run_id == "run-b"
+    assert await count_rows(db, playbook_waits) == 0
+    assert (await db.load_run("run-1")).version == run_a.version
+    assert await db.list_receipts("run-1") == []
+    assert (await db.load_run("run-b")).version == 0
+
+
+async def test_a_boundary_cannot_clear_another_runs_wait_by_id(db):
+    """``clear_wait_ids`` is constrained to waits the boundary run owns."""
+    run_a = await db.create_run(make_snapshot())
+    run_b = await db.create_run(make_snapshot(run_id="run-b"))
+    await db.commit_boundary(
+        replace(run_b, lifecycle=RunLifecycle.PAUSED),
+        make_receipt(run_b, receipt_id="receipt-b"),
+        WaitChangeSet(register=(make_wait(wait_id="wait-b", run_id="run-b"),)),
+    )
+
+    with pytest.raises(WaitOwnershipViolation) as caught:
+        await db.commit_boundary(
+            replace(run_a, current_step_id="a"),
+            make_receipt(run_a),
+            WaitChangeSet(clear_wait_ids=("wait-b",)),
+        )
+
+    assert caught.value.wait_id == "wait-b"
+    assert caught.value.owner_run_id == "run-b"
+    assert [w.wait_id for w in await db.list_active("run-b")] == ["wait-b"]
+    assert (await db.load_run("run-1")).version == run_a.version
+    assert await db.list_receipts("run-1") == []
 
 
 async def test_one_boundary_clears_a_wait_and_opens_the_next(db):

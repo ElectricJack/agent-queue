@@ -312,6 +312,7 @@ class RunRepository(Protocol):
 - Returns the snapshot with `version` incremented. **Callers must use the returned object**; the argument is not mutated (`RunSnapshot` is frozen).
 - Raises `SnapshotVersionConflict(run_id, expected, actual)` when the CAS matches zero rows. The whole block rolls back — no receipt, no wait change.
 - Raises `DuplicateAttempt(run_id, step_id, iteration, attempt)` when the receipt insert violates `uq_playbook_step_receipts_attempt`. This is the idempotency fence: a replayed attempt after an ambiguous interruption is rejected by the database, not by an in-memory guard.
+- Raises `RunIdentityMismatch(run_id, field, expected, actual)` when the boundary disagrees with the identity the run is pinned to: the receipt's `run_id`/`artifact_sha256`/`rule_id` must equal the snapshot's and its `snapshot_version` must be the version this boundary writes (checked before the transaction opens), and the snapshot's `playbook_id`/`artifact_sha256`/`rule_id` must equal the persisted row's (checked inside it, so the whole block rolls back). The CAS fences *when* a run advances, not what into; without this a same-version snapshot could repoint a live run at another playbook's artifact and its receipts could name an artifact and version it never ran.
 - Raises `StateLimitExceeded(run_id, step_id, kind, size, limit)` **before** opening the transaction when the serialized snapshot exceeds `playbooks.v2_max_snapshot_bytes` or the receipt's bound result exceeded `playbooks.v2_max_result_bytes`.
 - Never emits an event, never touches the bus, never logs the snapshot body.
 
@@ -345,6 +346,7 @@ class WaitRepository(Protocol):
 - `claim_for_event` is one `immediate()` block: select active waits whose `event_type` matches and whose `match` predicate is satisfied, then CAS each with `UPDATE playbook_waits SET state='claimed', claimed_event_id=:eid, claimed_at=:now WHERE wait_id=:wid AND state='active'`. Only rows whose update affected one row are returned. Two concurrent dispatches of the same event therefore produce exactly one claim per wait.
 - `expire_due` is the same CAS with `state='expired'` for `deadline_at <= now`.
 - `clear_for_run` sets `state='cleared'` for every active wait of a run (used when a run terminates or a step advances past its wait).
+- A `WaitChangeSet` applied by `commit_boundary` is scoped to the boundary's own run: every `register` entry's `run_id` must be that run and `clear_wait_ids` only clears waits it owns, both refused with `WaitOwnershipViolation(run_id, wait_id, owner_run_id)`. The connection holds one run's CAS, so a cross-run change would move another run's suspension outside the fence that guards it.
 
 **The race the design spec names — "an event cannot be lost between registration and suspension" — is closed by construction:** there is no interval in which a run is suspended and its wait is not visible, because both are one transaction. The complementary direction (a wait visible while the run still shows `running`) is harmless: a claim only records `claimed_event_id`; resuming is Package 4's job and re-reads the snapshot under its own CAS.
 
@@ -1212,7 +1214,7 @@ Threats explicitly **out of scope** here: encryption at rest (the whole database
 
 ## 14. Observability and operator failure behavior
 
-- **Every error type is named and typed** — `ArtifactTooLarge`, `ArtifactHashCollision`, `ArtifactVerificationFailed`, `SnapshotVersionConflict`, `DuplicateAttempt`, `StateLimitExceeded`, `IllegalLifecycleTransition`, `WaitVersionMismatch`, `PendingEventQuotaExceeded` — all subclasses of `PlaybookStorageError` in `src/playbooks/run_state.py`, so a caller can catch the family and an operator sees a code, not a traceback string.
+- **Every error type is named and typed** — `ArtifactTooLarge`, `ArtifactHashCollision`, `ArtifactVerificationFailed`, `SnapshotVersionConflict`, `DuplicateAttempt`, `StateLimitExceeded`, `IllegalLifecycleTransition`, `RunIdentityMismatch`, `WaitVersionMismatch`, `WaitOwnershipViolation`, `PendingEventQuotaExceeded` — all subclasses of `PlaybookStorageError` in `src/playbooks/run_state.py`, so a caller can catch the family and an operator sees a code, not a traceback string.
 - **`error_code` is a column**, on both `playbook_v2_runs` and `playbook_step_receipts`, holding the exception's `code` (`snake_case` of the class name). "Why did this run fail?" is a query, not a log grep.
 - **Logging:** one `logger.info` per activation change (playbook id, scope, old hash → new hash, health, actor), one `logger.warning` per verification failure or quota refusal, one `logger.info` per sweep with the returned counts. **No snapshot bodies, no bindings, no event payloads are ever logged** — that is the same leak the receipt redaction exists to prevent.
 - **No bus events from this package.** Run lifecycle events belong to the engine (Package 4); emitting them from the repository would double-emit once the engine lands.

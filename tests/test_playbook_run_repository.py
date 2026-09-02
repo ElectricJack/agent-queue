@@ -24,6 +24,7 @@ from src.playbooks.run_state import (
     IllegalLifecycleTransition,
     LoopFrame,
     RunBudget,
+    RunIdentityMismatch,
     RunLifecycle,
     RunRepository,
     RunSnapshot,
@@ -371,6 +372,64 @@ async def test_commit_boundary_refuses_a_receipt_from_another_run(db):
     other = make_snapshot(run_id="run-other")
     with pytest.raises(ValueError, match="run-other"):
         await db.commit_boundary(snapshot, make_receipt(other))
+
+
+async def test_commit_boundary_refuses_a_snapshot_that_repoints_the_run(db):
+    """A same-version snapshot may not swap the identity the run is pinned to.
+
+    The CAS fences *when* a run advances, not what into: without this check a
+    boundary could move run-1 from its pinned artifact onto another one and
+    the run's history would render against a graph it never ran.  The other
+    artifact is seeded, so only the pin check can be what rejects this.
+    """
+    other_artifact = "sha256:" + "9d" * 32
+    await seed_artifact(db, other_artifact)
+    snapshot = await db.create_run(make_snapshot())
+
+    for field, drift in (
+        ("playbook_id", {"playbook_id": "other-playbook"}),
+        ("artifact_sha256", {"artifact_sha256": other_artifact}),
+        ("rule_id", {"rule_id": "wrong"}),
+    ):
+        drifted = replace(snapshot, current_step_id="a", **drift)
+        with pytest.raises(RunIdentityMismatch) as caught:
+            await db.commit_boundary(drifted, make_receipt(drifted))
+        assert caught.value.code == "run_identity_mismatch"
+        assert caught.value.field == field
+        assert caught.value.run_id == "run-1"
+
+    # No partial write from any of the three attempts.
+    assert await db.load_run("run-1") == snapshot
+    assert await db.list_receipts("run-1") == []
+
+
+async def test_commit_boundary_refuses_a_receipt_from_another_artifact_or_version(db):
+    """Receipt history is per exact artifact, rule and boundary version."""
+    snapshot = await db.create_run(make_snapshot())
+
+    for field, drift in (
+        ("receipt.artifact_sha256", {"artifact_sha256": "sha256:" + "ff" * 32}),
+        ("receipt.rule_id", {"rule_id": "wrong"}),
+        ("receipt.snapshot_version", {"snapshot_version": 999}),
+    ):
+        with pytest.raises(RunIdentityMismatch) as caught:
+            await db.commit_boundary(
+                replace(snapshot, current_step_id="a"), make_receipt(snapshot, **drift)
+            )
+        assert caught.value.field == field
+
+    assert await db.load_run("run-1") == snapshot
+    assert await db.list_receipts("run-1") == []
+
+
+async def test_a_receipt_from_another_run_is_a_run_identity_mismatch(db):
+    """The historical ``ValueError`` is now typed, and still a ``ValueError``."""
+    snapshot = await db.create_run(make_snapshot())
+    other = make_snapshot(run_id="run-other")
+    with pytest.raises(RunIdentityMismatch) as caught:
+        await db.commit_boundary(snapshot, make_receipt(other))
+    assert caught.value.field == "receipt.run_id"
+    assert isinstance(caught.value, ValueError)
 
 
 # -- B-6: attempt idempotency ----------------------------------------------
