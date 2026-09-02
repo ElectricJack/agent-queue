@@ -58,6 +58,25 @@ HANDCRAFTED_COVERAGE = {
     "message_list",
     "message_status",
     "agent_message",
+    # sessions.py — `aq session <verb>` takes SESSION_ID positionally and
+    # defaults it from $AQ_SESSION_ID; auto-generation would mount a second,
+    # flag-shaped spelling of each under `aq system session-*`.
+    # ``session_input`` is deliberately absent: it has no hand-crafted
+    # equivalent, so `aq system session-input` is its only CLI spelling.
+    "session_attach",
+    "session_drain_ack",
+    "session_kill",
+    "session_list",
+    "session_logs",
+    "session_nudge",
+    "session_peek",
+    "session_show",
+    "session_sleep",
+    "session_token",
+    "session_wake",
+    # agent_surface.py — `aq prime` also wraps the document in a harness hook
+    # envelope, which the generated `aq system prime` cannot do.
+    "prime",
     # questions.py — exact question identity and the authenticated daemon scope.
     "question_list",
     "question_answer",

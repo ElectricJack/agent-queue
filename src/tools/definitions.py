@@ -273,6 +273,364 @@ _CLI_CATEGORY_OVERRIDES: dict[str, str] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Fallback input schemas for commands deliberately absent from
+# ``_ALL_TOOL_DEFINITIONS``
+# ---------------------------------------------------------------------------
+#
+# These commands have a ``CommandHandler._cmd_*`` method but no entry above.
+# ``src.mcp_registration._discover_all_commands`` synthesises a tool dict for
+# them so they still reach MCP, the CLI and the HTTP API — but the synthesised
+# schema is ``{"type": "object", "properties": {}}``, which means *no
+# arguments at all*.  On the API that made the generated request model drop
+# every client field (``POST /api/task/explain {"task_id": "x"}`` ->
+# ``{"error": "task_id is required"}``); on the CLI it produced commands whose
+# only option was ``--help`` (``aq task explain``, ``aq task gate-show``, ...),
+# so there was no way to name the task or gate to act on.
+#
+# Keeping the schemas here rather than in ``_ALL_TOOL_DEFINITIONS`` preserves
+# LLM tool exposure: ``ToolRegistry`` is built from the master list, so these
+# commands stay out of ``load_tools("task")`` / ``load_tools("system")``, which
+# they historically were.  Every *transport* surface, however, resolves its
+# schema through ``_discover_all_commands`` and therefore sees the real
+# properties.
+#
+# A command that needs arguments and appears in neither table is a bug, not a
+# no-argument command — ``_discover_all_commands`` logs a warning naming it.
+_FALLBACK_INPUT_SCHEMAS: dict[str, dict] = {
+    # -- explain + ready frontier (work-graph WG-4) ------------------------
+    "explain_task": {
+        "type": "object",
+        "properties": {
+            "task_id": {"type": "string", "description": "Task id to explain"},
+        },
+        "required": ["task_id"],
+    },
+    # ``project_ready`` used to live here too.  It now carries a real entry in
+    # ``_ALL_TOOL_DEFINITIONS`` (so the auto-generated CLI exposes
+    # ``aq project ready --profile-id X --brief``), which makes a fallback
+    # redundant: a typed definition wins on every surface.
+    # -- gate operator surface (work-graph WG-3) ---------------------------
+    "gate_create": {
+        "type": "object",
+        "properties": {
+            "project_id": {"type": "string", "description": "Project id that owns the gate"},
+            # Mirrors ``src.database.tables.GATE_TYPES``, which the gates table
+            # enforces with a CHECK constraint.  Spelled out rather than
+            # imported: this module is pure data with no database imports.
+            "gate_type": {
+                "type": "string",
+                "enum": ["human", "timer", "pr-merged", "ci-run", "event", "task", "routing"],
+                "description": "Gate kind. 'routing' gates resolve only via task_route.",
+            },
+            "title": {"type": "string", "description": "Human-readable gate title"},
+            "question": {
+                "type": "string",
+                "description": "Optional prompt shown to the resolver",
+            },
+            "await_id": {
+                "type": "string",
+                "description": "Optional external id the gate is waiting on",
+            },
+            "timeout_at": {
+                "type": "number",
+                "description": "Optional epoch after which the gate is considered expired",
+            },
+            "waiter_task_ids": {
+                "type": "array",
+                "description": "Task ids that should be blocked by this gate",
+                "items": {"type": "string"},
+            },
+        },
+        "required": ["project_id", "gate_type", "title"],
+    },
+    "gate_list": {
+        "type": "object",
+        "properties": {
+            "project_id": {"type": "string", "description": "Filter by project"},
+            "status": {
+                "type": "string",
+                "enum": ["open", "resolved", "expired"],
+                "description": "Filter by gate status",
+            },
+            "gate_type": {
+                "type": "string",
+                "enum": ["human", "timer", "pr-merged", "ci-run", "event", "task", "routing"],
+                "description": "Filter by gate kind",
+            },
+        },
+    },
+    "gate_show": {
+        "type": "object",
+        "properties": {
+            "gate_id": {"type": "string", "description": "Gate id to fetch"},
+        },
+        "required": ["gate_id"],
+    },
+    "gate_resolve": {
+        "type": "object",
+        "properties": {
+            "gate_id": {"type": "string", "description": "Gate id to resolve"},
+            "resolved_by": {
+                "type": "string",
+                "description": "Identity of the resolver (user id or session)",
+            },
+            "resolution": {
+                "type": "string",
+                "description": "Optional free-text explanation stored with the resolve event",
+            },
+        },
+        "required": ["gate_id", "resolved_by"],
+    },
+    # -- session operator surface (session-runtime spec §3, §5) ------------
+    "session_list": {
+        "type": "object",
+        "properties": {
+            "state": {
+                "type": "string",
+                "description": "Filter by session state (starting|running|draining|...)",
+            },
+            "lifecycle": {
+                "type": "string",
+                "description": "Filter by lifecycle (task|named)",
+            },
+            "project_id": {
+                "type": "string",
+                "description": "Filter by project (falls back to the active project)",
+            },
+            "live_only": {
+                "type": "boolean",
+                "description": "Only include sessions that are not stopped/quarantined",
+                "default": False,
+            },
+        },
+    },
+    "session_show": {
+        "type": "object",
+        "properties": {
+            "session_id": {"type": "string", "description": "Session id (uuid4 hex)"},
+            "id": {"type": "string", "description": "Alias for session_id"},
+            "name": {"type": "string", "description": "Session name (provider name)"},
+            "task_id": {"type": "string", "description": "Resolve session from this task id"},
+        },
+    },
+    "session_peek": {
+        "type": "object",
+        "properties": {
+            "session_id": {"type": "string", "description": "Session id (uuid4 hex)"},
+            "id": {"type": "string", "description": "Alias for session_id"},
+            "name": {"type": "string", "description": "Session name"},
+            "task_id": {"type": "string", "description": "Resolve session from this task id"},
+            "lines": {
+                "type": "integer",
+                "description": "Number of tail lines to return (default 60)",
+            },
+            "n": {"type": "integer", "description": "Alias for lines"},
+        },
+    },
+    "session_attach": {
+        "type": "object",
+        "properties": {
+            "session_id": {"type": "string", "description": "Session id (uuid4 hex)"},
+            "id": {"type": "string", "description": "Alias for session_id"},
+            "name": {"type": "string", "description": "Session name"},
+            "task_id": {"type": "string", "description": "Resolve session from this task id"},
+        },
+    },
+    "session_nudge": {
+        "type": "object",
+        "properties": {
+            "session_id": {"type": "string", "description": "Session id (uuid4 hex)"},
+            "id": {"type": "string", "description": "Alias for session_id"},
+            "name": {"type": "string", "description": "Session name"},
+            "task_id": {"type": "string", "description": "Resolve session from this task id"},
+            "text": {"type": "string", "description": "Text to inject and submit"},
+            "message": {"type": "string", "description": "Alias for text"},
+        },
+    },
+    "session_logs": {
+        "type": "object",
+        "properties": {
+            "attempt_id": {
+                "type": "string",
+                "description": "Read only this task execution attempt",
+            },
+            "session_id": {"type": "string", "description": "Session id (uuid4 hex)"},
+            "id": {"type": "string", "description": "Alias for session_id"},
+            "name": {"type": "string", "description": "Session name"},
+            "task_id": {"type": "string", "description": "Resolve session from this task id"},
+            "limit": {
+                "type": "integer",
+                "description": "Max transcript entries to return (default 100)",
+            },
+            "lines": {"type": "integer", "description": "Alias for limit"},
+            "n": {"type": "integer", "description": "Alias for limit"},
+        },
+    },
+    "session_sleep": {
+        "type": "object",
+        "properties": {
+            "session_id": {"type": "string", "description": "Session id (uuid4 hex)"},
+            "id": {"type": "string", "description": "Alias for session_id"},
+            "name": {"type": "string", "description": "Session name"},
+            "task_id": {"type": "string", "description": "Resolve session from this task id"},
+        },
+    },
+    "session_wake": {
+        "type": "object",
+        "properties": {
+            "session_id": {"type": "string", "description": "Session id (uuid4 hex)"},
+            "id": {"type": "string", "description": "Alias for session_id"},
+            "name": {"type": "string", "description": "Session name"},
+            "task_id": {"type": "string", "description": "Resolve session from this task id"},
+        },
+    },
+    "session_token": {
+        "type": "object",
+        "properties": {
+            "session_id": {"type": "string", "description": "Session id (uuid4 hex)"},
+            "id": {"type": "string", "description": "Alias for session_id"},
+            "name": {"type": "string", "description": "Session name"},
+            "task_id": {"type": "string", "description": "Resolve session from this task id"},
+        },
+    },
+    "session_kill": {
+        "type": "object",
+        "properties": {
+            "session_id": {"type": "string", "description": "Session id (uuid4 hex)"},
+            "id": {"type": "string", "description": "Alias for session_id"},
+            "name": {"type": "string", "description": "Session name"},
+            "task_id": {"type": "string", "description": "Resolve session from this task id"},
+            "grace": {
+                "type": "number",
+                "description": "Seconds to wait between signal and force-kill (default 2.0)",
+            },
+        },
+    },
+    "session_drain_ack": {
+        "type": "object",
+        "properties": {
+            "session_id": {"type": "string", "description": "Session id (uuid4 hex)"},
+            "id": {"type": "string", "description": "Alias for session_id"},
+            "name": {"type": "string", "description": "Session name"},
+            "task_id": {"type": "string", "description": "Resolve session from this task id"},
+        },
+    },
+    # -- workflow coordination (agent-coordination spec) -------------------
+    "create_workflow": {
+        "type": "object",
+        "properties": {
+            "workflow_id": {"type": "string", "description": "Unique identifier for the workflow"},
+            "playbook_id": {"type": "string", "description": "Source coordination playbook id"},
+            "playbook_run_id": {
+                "type": "string",
+                "description": "The PlaybookRun driving this workflow",
+            },
+            "project_id": {"type": "string", "description": "Project this workflow operates in"},
+            "current_stage": {"type": "string", "description": "Optional initial stage name"},
+        },
+        "required": ["workflow_id", "playbook_id", "playbook_run_id", "project_id"],
+    },
+    "get_workflow": {
+        "type": "object",
+        "properties": {
+            "workflow_id": {"type": "string", "description": "The workflow to retrieve"},
+        },
+        "required": ["workflow_id"],
+    },
+    "list_workflows": {
+        "type": "object",
+        "properties": {
+            "project_id": {"type": "string", "description": "Filter to one project"},
+            "playbook_id": {"type": "string", "description": "Filter to one source playbook"},
+            "status": {"type": "string", "description": "Filter by workflow status"},
+            "limit": {"type": "integer", "description": "Max results (default 50)", "default": 50},
+        },
+    },
+    "advance_workflow_stage": {
+        "type": "object",
+        "properties": {
+            "workflow_id": {"type": "string", "description": "The workflow to advance"},
+            "stage_name": {"type": "string", "description": "Name of the new stage"},
+            "task_ids": {
+                "type": "array",
+                "description": "Optional task ids belonging to the new stage",
+                "items": {"type": "string"},
+            },
+        },
+        "required": ["workflow_id", "stage_name"],
+    },
+    "workflow_pipeline_view": {
+        "type": "object",
+        "properties": {
+            "workflow_id": {"type": "string", "description": "The workflow to visualize"},
+            "direction": {
+                "type": "string",
+                "enum": ["LR", "TD"],
+                "description": "Layout direction — left-right or top-down (default LR)",
+                "default": "LR",
+            },
+            "include_task_details": {
+                "type": "boolean",
+                "description": "Include individual task cards (default true)",
+                "default": True,
+            },
+            "include_affinity": {
+                "type": "boolean",
+                "description": "Include the agent-affinity overlay (default true)",
+                "default": True,
+            },
+        },
+        "required": ["workflow_id"],
+    },
+    # -- one-shot maintenance ---------------------------------------------
+    "migrate_profiles": {
+        "type": "object",
+        "properties": {
+            "dry_run": {
+                "type": "boolean",
+                "description": "Preview what would be migrated without writing",
+                "default": False,
+            },
+            "verify": {
+                "type": "boolean",
+                "description": "Verify round-trip fidelity after writing (default true)",
+                "default": True,
+            },
+            "force": {
+                "type": "boolean",
+                "description": "Overwrite existing vault files",
+                "default": False,
+            },
+        },
+    },
+    "vault_rebuild_index": {
+        "type": "object",
+        "properties": {
+            "with_summaries": {
+                "type": "boolean",
+                "description": (
+                    "Generate an LLM summary for each hub (requires config.llm)"
+                ),
+                "default": False,
+            },
+        },
+    },
+    # -- aq-surface prime rendering ----------------------------------------
+    "prime": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": "Task to prime for (defaults to the caller's token scope)",
+            },
+            "session_id": {"type": "string", "description": "Session id, when known"},
+            "work_dir": {"type": "string", "description": "Work-dir override"},
+        },
+    },
+}
+
+
 _ALL_TOOL_DEFINITIONS = [
     {
         "name": "list_projects",
