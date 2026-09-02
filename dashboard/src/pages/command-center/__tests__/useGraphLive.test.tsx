@@ -6,6 +6,7 @@ import type { ProjectGraphResponse } from "@aq/ts-client";
 import { useGraphLive } from "../useGraphLive";
 import { projectGraphKey, useProjectGraphs } from "../../../api/graph";
 import { registerLayoutRefetch } from "../layout-v2/liveRegistry";
+import { layoutExtentKey } from "../../../api/graphLayout";
 
 const transport = vi.hoisted(() => {
   class Socket {
@@ -200,5 +201,20 @@ describe("shared task workspace live snapshots", () => {
     expect(refetch).toHaveBeenCalledTimes(2);
     unregister();
     unregisterOther();
+  });
+
+  it("invalidates both extent variants so the task count is not a minute stale", async () => {
+    const { client } = setup();
+    client.setQueryData(layoutExtentKey("p1", "active"), { layout_version: 1, node_count: 13 });
+    client.setQueryData(layoutExtentKey("p1", "all"), { layout_version: 1, node_count: 15 });
+    client.setQueryData(layoutExtentKey("p2", "active"), { layout_version: 1, node_count: 2 });
+    vi.useFakeTimers();
+    act(() => socket().receive({ _event_type: "task.updated", project_id: "p1", task_id: "child" }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(600); });
+    const stale = (pid: string, variant: "active" | "all") =>
+      client.getQueryState(layoutExtentKey(pid, variant))?.isInvalidated;
+    expect(stale("p1", "active")).toBe(true);
+    expect(stale("p1", "all")).toBe(true);
+    expect(stale("p2", "active")).toBe(false);
   });
 });

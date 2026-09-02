@@ -90,6 +90,9 @@ export async function fetchList(
 export const layoutExtentKey = (pid: string, variant: Variant) =>
   ["layoutExtent", pid, variant] as const;
 
+/** Both variants of one project's extent — live updates invalidate the pair. */
+export const layoutExtentPrefix = (pid: string) => ["layoutExtent", pid] as const;
+
 async function fetchExtent(
   projectId: string,
   variant: Variant,
