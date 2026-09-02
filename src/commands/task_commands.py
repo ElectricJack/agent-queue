@@ -1888,6 +1888,7 @@ class TaskCommandsMixin:
             # did not exist.  The row has always carried it.
             "branch_name": task.branch_name,
             "integration_mode": task.integration_mode,
+            "attachments": task.attachments,
             # Persisted graph blockedness (work-graph design §4).  Capacity
             # reasons (no agent, workspace busy, budget) are NOT in here —
             # those belong to `task explain`.
