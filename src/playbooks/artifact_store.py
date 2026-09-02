@@ -82,9 +82,14 @@ class ArtifactStore:
         *,
         source_digest: str,
         contract_fingerprint: str,
+        profile_fingerprint: str,
         compiler_build: str,
         version: int = 0,
     ) -> ArtifactRef:
+        # The profile fingerprint is caller-owned row metadata rather than
+        # artifact identity.  Accept it here as part of the locked compile-to-
+        # store handoff; PlaybookArtifactQueryMixin persists it separately.
+        _ = profile_fingerprint
         data = self.canonical_bytes(definition)
         if len(data) > self._max_artifact_bytes:
             raise ArtifactTooLarge(f"artifact is {len(data)} bytes; limit is {self._max_artifact_bytes}")

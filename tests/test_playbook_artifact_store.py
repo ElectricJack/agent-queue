@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 
 import pytest
 
@@ -21,6 +22,35 @@ def _definition():
     return PlaybookDefinition.model_validate(twin())
 
 
+def test_put_accepts_the_locked_profile_fingerprint_keyword(tmp_path):
+    """The Package 3 store keeps its exact locked keyword-only interface."""
+    from src.playbooks.artifact_store import ArtifactStore
+
+    store = ArtifactStore(str(tmp_path))
+    ref = store.put(
+        _definition(),
+        source_digest="sha256:" + "a" * 64,
+        contract_fingerprint="sha256:" + "b" * 64,
+        profile_fingerprint="profile-opaque",
+        compiler_build="test-build",
+    )
+
+    parameters = inspect.signature(ArtifactStore.put).parameters
+    assert list(parameters) == [
+        "self",
+        "definition",
+        "source_digest",
+        "contract_fingerprint",
+        "profile_fingerprint",
+        "compiler_build",
+        "version",
+    ]
+    profile = parameters["profile_fingerprint"]
+    assert profile.kind is inspect.Parameter.KEYWORD_ONLY
+    assert profile.default is inspect.Parameter.empty
+    assert ref.playbook_id == _definition().id
+
+
 def test_put_writes_hash_named_canonical_bytes_and_is_idempotent(tmp_path):
     from src.playbooks.artifact_store import ArtifactStore
 
@@ -30,6 +60,7 @@ def test_put_writes_hash_named_canonical_bytes_and_is_idempotent(tmp_path):
         definition,
         source_digest="sha256:" + "a" * 64,
         contract_fingerprint="sha256:" + "b" * 64,
+        profile_fingerprint="profile-opaque",
         compiler_build="test-build",
     )
 
@@ -40,6 +71,7 @@ def test_put_writes_hash_named_canonical_bytes_and_is_idempotent(tmp_path):
         definition,
         source_digest="sha256:" + "a" * 64,
         contract_fingerprint="sha256:" + "b" * 64,
+        profile_fingerprint="profile-opaque",
         compiler_build="test-build",
     ) == ref
 
@@ -52,6 +84,7 @@ def test_load_verifies_hash_before_parsing_and_rejects_invalid_identifiers(tmp_p
         _definition(),
         source_digest="sha256:" + "a" * 64,
         contract_fingerprint="sha256:" + "b" * 64,
+        profile_fingerprint="profile-opaque",
         compiler_build="test-build",
     )
     assert store.load(ref.artifact_sha256) == _definition()
@@ -329,6 +362,7 @@ def test_put_refreshes_the_mtime_of_a_file_it_adopts(tmp_path):
     kwargs = {
         "source_digest": "sha256:" + "a" * 64,
         "contract_fingerprint": "sha256:" + "b" * 64,
+        "profile_fingerprint": "profile-opaque",
         "compiler_build": "test-build",
     }
     ref = store.put(definition, **kwargs)
