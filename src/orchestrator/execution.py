@@ -373,9 +373,7 @@ class ExecutionMixin:
         session_routed = self._is_session_routed(profile)
 
         if not session_routed:
-            raise RuntimeError(
-                f"Task {task.id} has no session harness; legacy runtime dispatch was removed"
-            )
+            raise RuntimeError(f"Task {task.id} {self._why_not_session_routed(profile)}")
 
         # Prepare workspace (repo checkout/worktree/init)
         try:
@@ -550,6 +548,31 @@ class ExecutionMixin:
         if getattr(profile, "lifecycle", "task") == "pool":
             return False
         return bool(getattr(profile, "harness", "") or "")
+
+    def _why_not_session_routed(self, profile) -> str:
+        """The reason ``_is_session_routed`` said no, phrased for an operator.
+
+        Both conditions used to collapse into "legacy runtime dispatch was
+        removed", which named a subsystem that no longer exists instead of
+        the knob the reader has to turn.  The distinction matters: the flag
+        is box-wide and the harness is per profile.
+        """
+        if not self.config.sessions.enabled:
+            return (
+                "cannot be dispatched: sessions.enabled is false, and a session is "
+                "the only execution path"
+            )
+        if profile is None:
+            return "has no agent profile, so no session harness could be selected"
+        if getattr(profile, "lifecycle", "task") == "pool":
+            return (
+                f"resolved to pool profile '{profile.id}', which is never push-launched; "
+                "pool sessions claim their own work"
+            )
+        return (
+            f"has no session harness: profile '{profile.id}' sets no `harness:` "
+            "(claude | codex | gemini)"
+        )
 
     async def _validated_resume_key(
         self, harness_name: str, work_dir: str, task_id: str, resume_key: str

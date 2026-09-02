@@ -929,11 +929,35 @@ class TestEndToEndOnFakeProvider:
     async def test_disabled_sessions_fail_instead_of_using_a_runtime(
         self, db, real_orch, config, tmp_path
     ):
+        """The failure has to name the flag, not the subsystem that is gone.
+
+        "legacy runtime dispatch was removed" told an operator what used to
+        exist; it did not tell them which of the two routing conditions they
+        had actually failed.
+        """
         await self._setup(db, tmp_path, ready=True)
         config.sessions.enabled = False
 
-        with pytest.raises(RuntimeError, match="legacy runtime dispatch was removed"):
+        with pytest.raises(RuntimeError, match="sessions.enabled is false"):
             await real_orch._execute_task(AssignAction("a1", "t1", "p1"))
+
+    async def test_the_routing_failure_names_the_condition_that_failed(
+        self, real_orch, config
+    ):
+        """Each way of failing ``_is_session_routed`` gets its own sentence."""
+        config.sessions.enabled = False
+        assert "sessions.enabled is false" in real_orch._why_not_session_routed(
+            AgentProfile(id="x", name="x", harness="claude")
+        )
+
+        config.sessions.enabled = True
+        assert "no session harness" in real_orch._why_not_session_routed(
+            AgentProfile(id="x", name="x")
+        )
+        assert "no agent profile" in real_orch._why_not_session_routed(None)
+        assert "never push-launched" in real_orch._why_not_session_routed(
+            AgentProfile(id="p", name="p", harness="claude", lifecycle="pool")
+        )
 
     async def test_full_lifecycle(
         self, db, real_orch, real_handler, provider, tmp_path, config, monkeypatch
