@@ -16,10 +16,13 @@ wall-clock guessing — so both glyphs are covered deterministically.
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+import src.sessions as sessions_pkg
+from src.sessions.harness_parser import parse_harness_markdown
 from src.sessions.provider import DialogRule, SessionHandle, SessionSpec
 from src.sessions.tmux import TmuxProvider
 
@@ -47,17 +50,24 @@ CODEX_TRUST = """\
   2. No, exit
 """
 
-CLAUDE_RULE = DialogRule(
-    name="trust-folder",
-    pattern="Do you trust the files in this folder|Is this a project you created or one you trust",
-    keys=("Enter",),
-    is_regex=True,
-)
-CODEX_RULE = DialogRule(
-    name="trust-directory",
-    pattern="Do you trust the contents of this directory",
-    keys=("Enter",),
-)
+
+def _shipped_rule(harness_id: str, name: str) -> DialogRule:
+    """The rule the daemon actually ships, not a hand-built stand-in.
+
+    A stand-in with ``is_regex=True`` proved the poll answers a trust screen
+    while the shipped Claude rule — an alternation *without* the flag —
+    could never match one.  Driving the fake pane with the shipped rules
+    keeps this file honest about what runs in production.
+    """
+    path = Path(sessions_pkg.__file__).parent / "default_harnesses" / f"{harness_id}.md"
+    parsed = parse_harness_markdown(path.read_text(encoding="utf-8"), fallback_id=harness_id)
+    assert parsed.is_valid, parsed.errors
+    (rule,) = [r for r in parsed.harness.dialogs if r.name == name]
+    return rule
+
+
+CLAUDE_RULE = _shipped_rule("claude", "trust-folder")
+CODEX_RULE = _shipped_rule("codex", "trust-directory")
 
 #: Both harnesses, addressed by the two things that differ: the glyph the
 #: readiness poll looks for and the trust screen that starts with it.
