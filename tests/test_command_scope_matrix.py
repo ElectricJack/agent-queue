@@ -35,7 +35,10 @@ _ID_KEYS = ("task_id", "project_id", "session_id")
 
 #: In-set commands with no entry in the tool-definition registry.  Asserted as
 #: an exact equality so the exemption cannot quietly grow.
-_NO_DEFINITION = {"prime", "session_drain_ack"}
+#: ``subagent_event`` is the harness-hook receiver behind ``aq subagent event``
+#: (``src/api/scope.py``): a CLI/hook-only command like ``prime``, so it is
+#: left to auto-discovery rather than given an LLM-facing schema.
+_NO_DEFINITION = {"prime", "session_drain_ack", "subagent_event"}
 
 #: ``message_inbox`` addresses a mailbox by ``to_kind``/``to_id``, so it has
 #: no ID-triple property in its schema — the plan's floor listed it, but the
@@ -153,12 +156,19 @@ def test_commands_outside_the_agent_set_are_refused_outright(command):
     assert args == {}
 
 
+#: The only commands a projectless (manually opened) worker terminal may run:
+#: ``prime`` / ``get_schema`` carry no project data, and ``subagent_event``
+#: writes one telemetry row keyed by the caller's own ``session_id`` (see the
+#: comment in ``check_command_scope``).
+_PROJECTLESS_ALLOWED = {"prime", "get_schema", "subagent_event"}
+
+
 def test_a_worker_terminal_without_a_project_may_only_prime_and_read_the_schema():
     scope = RequestScope(kind="session", session_id="s1", task_id=None, project_id=None)
 
-    for command in ("prime", "get_schema"):
+    for command in sorted(_PROJECTLESS_ALLOWED):
         assert check_command_scope(command, {}, scope) is None
-    for command in sorted(AGENT_COMMAND_SET - {"prime", "get_schema"}):
+    for command in sorted(AGENT_COMMAND_SET - _PROJECTLESS_ALLOWED):
         assert (
             check_command_scope(command, {}, scope)
             == "out of scope: this interactive agent has no assigned project"

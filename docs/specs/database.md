@@ -571,6 +571,7 @@ Agent session rows (session-runtime). One row per launched harness session.
 | `sleep_reason` | TEXT | nullable | Why the session is idle/asleep |
 | `ended_at` | REAL | nullable | Observed end time; unknown for legacy sessions |
 | `end_reason` | TEXT | nullable | Specific exit, stop, quarantine or sleep reason |
+| `hooks_provisioned` | BOOLEAN | NOT NULL DEFAULT 0 | Whether this launch wired the harness's subagent hooks; written once from the SessionSpec, never re-derived |
 
 ### Table: `task_session_attempts`
 
@@ -605,6 +606,26 @@ its conversation or workspace. This is a read boundary, not a stored exit time.
 The task history API filters by the resolved task's project and creation time; older
 audit associations stay stored and remain addressable by attempt ID.
 The SQLite-to-PostgreSQL copy inventory includes this audit table.
+
+### Table: `subagent_events`
+
+Authoritative native sub-agent lifecycle, delivered by the harness's own `SubagentStart` / `SubagentStop` hooks (`aq subagent event --hook-json`, command `subagent_event`). Append-only: an event is a fact about a moment, and the derived "how many are running" is a fold over the facts (`max(0, starts - stops)` per session) rather than a mutable counter that a duplicate delivery or a lost Stop could corrupt. `id` is a deterministic digest of (`session_id`, `event`, `subagent_id`) so a re-delivered hook collapses onto the row it already wrote. Provenance is soft text, like `task_session_attempts`: events outlive the session row's deletion and stay readable as history.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Digest of (`session_id`, `event`, `subagent_id`) |
+| `session_id` | TEXT | NOT NULL | Logical reference; taken from the bearer token's scope |
+| `harness` | TEXT | NOT NULL | Harness that fired the hook |
+| `project_id` | TEXT | nullable | Attribution snapshot |
+| `task_id` | TEXT | nullable | Attribution snapshot |
+| `subagent_id` | TEXT | NOT NULL | The harness's own id for the child agent, sent on Start and Stop |
+| `agent_type` | TEXT | nullable | Child agent type as reported by the harness |
+| `turn_id` | TEXT | nullable | Parent turn the child was spawned in |
+| `event` | TEXT | NOT NULL CHECK IN ('start','stop') | The two halves of one child's lifetime |
+| `occurred_at` | FLOAT | NOT NULL | Daemon clock at receipt |
+
+Indexes: `idx_subagent_events_session` (`session_id`, `event`), `idx_subagent_events_occurred` (`occurred_at`).
+The SQLite-to-PostgreSQL copy inventory includes this table.
 
 ### Table: `messages`
 

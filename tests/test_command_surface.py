@@ -76,6 +76,12 @@ KNOWN_AUTO_REGISTERED: frozenset[str] = frozenset(
         "gate_list",
         "gate_resolve",
         "gate_show",
+        # Harness-hook receiver behind ``aq subagent event --hook-json``
+        # (src/commands/surface_commands.py).  Called by the harness's own
+        # SubagentStart/SubagentStop hooks with the session's bearer token,
+        # never by the LLM, so it is left to auto-discovery rather than
+        # given an LLM-facing schema — mirrors tests/test_mcp_server.py.
+        "subagent_event",
     }
 )
 
