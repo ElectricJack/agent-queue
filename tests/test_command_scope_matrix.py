@@ -35,10 +35,7 @@ _ID_KEYS = ("task_id", "project_id", "session_id")
 
 #: In-set commands with no entry in the tool-definition registry.  Asserted as
 #: an exact equality so the exemption cannot quietly grow.
-#: ``subagent_event`` is the harness-hook receiver behind ``aq subagent event``
-#: (``src/api/scope.py``): a CLI/hook-only command like ``prime``, so it is
-#: left to auto-discovery rather than given an LLM-facing schema.
-_NO_DEFINITION = {"prime", "session_drain_ack", "subagent_event"}
+_NO_DEFINITION = {"prime", "session_drain_ack"}
 
 #: ``message_inbox`` addresses a mailbox by ``to_kind``/``to_id``, so it has
 #: no ID-triple property in its schema — the plan's floor listed it, but the
