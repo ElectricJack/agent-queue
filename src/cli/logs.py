@@ -386,14 +386,8 @@ def _follow(
 
 @cli.command("logs")
 @click.option("-n", "--lines", default=50, help="Number of recent lines to show.")
-@click.option("-f", "--follow", "follow", flag_value=True, default=True)
-@click.option(
-    "-F",
-    "--no-follow",
-    "follow",
-    flag_value=False,
-    help="Follow log output (default: on).",
-)
+@click.option("-f", "--follow", is_flag=True, default=True, help="Follow log output (default: on).")
+@click.option("-F", "--no-follow", "no_follow", is_flag=True, default=False)
 @click.option("--level", default=None, help="Minimum log level (DEBUG, INFO, WARNING, ERROR).")
 @click.option("--task-id", default=None, help="Filter by task ID.")
 @click.option("--project-id", default=None, help="Filter by project ID.")
@@ -441,6 +435,7 @@ def _follow(
 def logs_cmd(
     lines: int,
     follow: bool,
+    no_follow: bool,
     level: str | None,
     task_id: str | None,
     project_id: str | None,
@@ -473,6 +468,9 @@ def logs_cmd(
       aq logs --run-id bb8e481e-7df        # single playbook run
       aq logs --since 5m --json | jq .     # last 5min as JSON
     """
+    if no_follow:
+        follow = False
+
     filepath = log_file or _default_log_path()
 
     if as_json:
