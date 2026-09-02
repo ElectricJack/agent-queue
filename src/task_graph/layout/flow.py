@@ -58,7 +58,7 @@ def flow_container(
             and chain_end is not None
             and _chain_overflows(chain, sizes, target)
         ):
-            y, chain_width, chain_lines = _flow_serpentine_chain(chain, sizes, target, res.positions, y)
+            y, chain_width, _ = _flow_serpentine_chain(chain, sizes, target, res.positions, y)
             max_w = max(max_w, chain_width)
             # Each original rank still has one logical line.  This keeps the
             # cost model keyed by rank while letting the visual flow fold.
