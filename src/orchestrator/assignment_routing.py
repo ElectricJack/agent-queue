@@ -651,9 +651,20 @@ class AssignmentRoutingCoordinator:
                     if effective is not None:
                         resolved[task.id] = effective
                         self._task_retry.pop(task.id, None)
-                        if effective.source == "explicit":
-                            await self._resolve_routing_gates(task.id, run_id=None)
-                        elif row is not None and row.task_updated_at != task.updated_at:
+                        if task.is_blocked:
+                            await self._resolve_routing_gates(
+                                task.id,
+                                run_id=(
+                                    row.playbook_run_id
+                                    if effective.source == "playbook" and row is not None
+                                    else None
+                                ),
+                            )
+                        if (
+                            effective.source == "playbook"
+                            and row is not None
+                            and row.task_updated_at != task.updated_at
+                        ):
                             drifted[task.id] = row
                     else:
                         task_options = task_assignment_options(task, options, profiles)

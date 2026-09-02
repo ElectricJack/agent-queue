@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+from dataclasses import dataclass, field
 
 from src.git.manager import GitError, GitManager
 from src.models import (
@@ -27,6 +28,56 @@ def _is_branch_busy_error(exc: Exception) -> bool:
     """True when a git failure is "that branch lives in another worktree"."""
     text = str(exc).lower()
     return any(m in text for m in _BRANCH_BUSY_MARKERS)
+
+
+@dataclass(frozen=True)
+class SlotGrowth:
+    """What one lazy slot-pool growth attempt actually did.
+
+    The ensure path used to answer a single question — "is the pool still
+    below its cap?" — computed *before* growth ran.  That conflated three
+    outcomes a caller must tell apart (the starvation bug this type exists
+    to fix):
+
+    * a slot was **created** for this dispatch, so the dispatch should get
+      it and an acquisition failure means it lost a race, not that the pool
+      is ramping;
+    * growth was needed and **stalled** — ``ensure_slots`` raised or created
+      nothing — so nothing is coming and the quiet "warming up" wait would
+      never clear;
+    * the pool is genuinely mid-ramp (``warming``) or already **at cap**
+      with everything busy, which are different waits with different
+      operator meanings.
+
+    Fields:
+
+    * ``created`` — ``{kind_id: workspace_id}`` for slots created by *this*
+      call.  Passed to acquisition as a preference so the dispatch that paid
+      for the growth is the one that takes it.
+    * ``warming`` — some worktree-mode kind is still below its cap.
+    * ``stalled`` — growth was attempted for some kind and produced no row.
+    * ``worktree`` — at least one worktree-mode kind with a base was
+      considered, i.e. slot semantics apply to this task at all.
+    """
+
+    created: dict[str, str] = field(default_factory=dict)
+    warming: bool = False
+    stalled: bool = False
+    worktree: bool = False
+
+    @property
+    def grew(self) -> bool:
+        """True when this call created at least one slot."""
+        return bool(self.created)
+
+    def merged(self, other: SlotGrowth) -> SlotGrowth:
+        """Combine two per-kind results into one per-task result."""
+        return SlotGrowth(
+            created={**self.created, **other.created},
+            warming=self.warming or other.warming,
+            stalled=self.stalled or other.stalled,
+            worktree=self.worktree or other.worktree,
+        )
 
 
 class WorkspaceMixin:
@@ -86,10 +137,14 @@ class WorkspaceMixin:
         git-provisioning sequence on the project-repo attachment.
 
         Steps:
-        1. Under worktree mode, lazily ensure the project's slots exist
-           (worktree-execution §3.1) so acquisition has something to take,
-           then compute the branch-affinity hint (§3.4) that steers a retry
-           back to the slot still holding its branch.
+        1. Under worktree mode, compute the branch-affinity hint (§3.4) that
+           steers a retry back to the slot still holding its branch, then
+           lazily grow the pool (worktree-execution §3.1) so acquisition has
+           something to take.  Growth is deliberately *last*: every await
+           between creating a slot and acquiring it is a window in which
+           another dispatch takes the row this one paid for, which is how a
+           high-priority task ends up repeatedly funding growth it never
+           benefits from.
         2. Call ``acquire_for_task`` to obtain a :class:`WorkspaceAttachmentSet`.
            For tasks with no explicit ``requires_kinds``, this synthesizes a
            ``project-repo`` requirement preserving today's behavior.
@@ -129,17 +184,6 @@ class WorkspaceMixin:
             )
 
         worktrees_enabled = self._worktrees_enabled()
-        pool_warming = False
-        slot_affinity: dict[str, str] = {}
-        if worktrees_enabled:
-            # Slots are created lazily, on demand, when acquisition would
-            # otherwise find fewer free slots than the cap allows
-            # (worktree-execution §3.1 / §6.3).
-            pool_warming = await self._ensure_worktree_slots_for_task(task, project)
-            # ...and once they exist, prefer the one that already has this
-            # task's branch checked out, so a retry cannot collide with its
-            # own predecessor slot (§3.4).
-            slot_affinity = await self._slot_branch_affinity(task, project)
 
         self._workspace_wait_reasons.pop(task.id, None)
         # ``profile.read_only`` deliberately plays no part in acquisition.
@@ -150,6 +194,27 @@ class WorkspaceMixin:
         # ordinary disposable slot like everything else.  The declarative
         # half of the guarantee (no write tools in the profile's tool list)
         # is unchanged.
+
+        growth = SlotGrowth()
+        slot_affinity: dict[str, str] = {}
+        if worktrees_enabled:
+            # Prefer the slot that already has this task's branch checked
+            # out, so a retry cannot collide with its own predecessor slot
+            # (§3.4).  Computed *before* growth: a slot that does not exist
+            # yet cannot be holding our branch, and every await between
+            # growth and acquisition is a window in which a concurrently
+            # dispatching task can take the row we just paid for.
+            slot_affinity = await self._slot_branch_affinity(task, project)
+            # Slots are created lazily, on demand, when acquisition would
+            # otherwise find fewer free slots than the cap allows
+            # (worktree-execution §3.1 / §6.3).  This is deliberately the
+            # last await before ``acquire_for_task``.
+            growth = await self._ensure_worktree_slots_for_task(task, project)
+
+        # Branch affinity wins per kind — it is a correctness hint (a slot
+        # holding our branch is the only one ``git switch`` will accept),
+        # whereas the freshly grown slot is a fairness hint.
+        preferred = {**growth.created, **slot_affinity}
         try:
             attachment_set = await acquire_for_task(
                 self.db,
@@ -159,15 +224,12 @@ class WorkspaceMixin:
                 worktree_slot_cap=(
                     self._project_slot_cap(project) if worktrees_enabled else None
                 ),
-                preferred_workspaces=slot_affinity or None,
+                preferred_workspaces=preferred or None,
             )
         except AcquisitionFailed:
-            if pool_warming:
-                # The slot pool has not reached the cap yet: growth is one
-                # slot per dispatch, so a cold cap-N project needs N-1 more
-                # rounds.  That is an expected ramp, not a misconfiguration —
-                # the operator has nothing to fix and no workspace to add.
-                self._workspace_wait_reasons[task.id] = "slot_warming"
+            reason = self._slot_wait_reason(growth)
+            if reason:
+                self._workspace_wait_reasons[task.id] = reason
             return None
 
         # Stash the attachment set so Phase 7 (runtime integration) can
@@ -418,7 +480,40 @@ class WorkspaceMixin:
             return 1
         return max(1, getattr(project, "max_concurrent_agents", 1) or 1)
 
-    async def _ensure_worktree_slots(self, project, kind_id: str) -> bool:
+    @staticmethod
+    def _slot_wait_reason(growth: SlotGrowth) -> str | None:
+        """The wait reason for an acquisition failure under worktree mode.
+
+        Four distinct waits, all of which used to collapse into the single
+        quiet ``slot_warming`` pause (or into the loud, and under worktree
+        mode simply wrong, "use /add-workspace" notice):
+
+        * ``slot_lost_race`` — a slot *was* created for this dispatch and a
+          concurrently dispatching task took it first.  Nothing is ramping
+          and nothing is broken; the task just needs to be back in the READY
+          pool fast, so priority — not backoff order — decides the next
+          winner.
+        * ``slot_stalled`` — growth was needed and produced nothing.  The
+          "warming up" wait would never clear; this has to be visible.
+        * ``slot_warming`` — the pool is genuinely mid-ramp and some other
+          dispatch is provisioning.
+        * ``slots_full`` — the pool is at cap with every slot busy.  Honest
+          contention, and not something ``/add-workspace`` can fix.
+
+        ``None`` means "not a slot wait" — the legacy clone path, whose
+        behavior is deliberately unchanged.
+        """
+        if growth.grew:
+            return "slot_lost_race"
+        if growth.stalled:
+            return "slot_stalled"
+        if growth.warming:
+            return "slot_warming"
+        if growth.worktree:
+            return "slots_full"
+        return None
+
+    async def _ensure_worktree_slots(self, project, kind_id: str) -> SlotGrowth:
         """Lazily grow the slot pool for one worktree-mode kind.
 
         Single-kind body of :meth:`_ensure_worktree_slots_for_task`'s loop,
@@ -428,15 +523,17 @@ class WorkspaceMixin:
         it needs.  See that method's docstring for the growth policy (design
         §3.1: one slot per dispatch, never fatal).
 
-        Returns True when the kind is still below its cap after growth —
-        i.e. a subsequent acquisition failure means "the pool is still
-        warming up" rather than a genuine shortage.
+        Returns a :class:`SlotGrowth` describing what happened, so the caller
+        can (a) prefer the slot it just paid for and (b) tell a healthy ramp
+        apart from a stalled one and from a genuinely full pool.  It used to
+        return a single ``warming`` bool computed *before* growth ran, which
+        made all three indistinguishable — see :class:`SlotGrowth`.
         """
         cap = self._project_slot_cap(project)
 
         kind = await self.db.resolve_workspace_kind(project.id, kind_id)
         if kind is None or not kind.is_git_repo or kind.mode != KIND_MODE_WORKTREE:
-            return False
+            return SlotGrowth()
 
         base = await self.db.find_worktree_base(project.id, kind.id)
         if base is None:
@@ -447,7 +544,7 @@ class WorkspaceMixin:
                 kind.id,
                 project.id,
             )
-            return False
+            return SlotGrowth()
 
         slots = await self.db.list_slots_for_base(base.id)
         self._register_slot_bases(slots, base.workspace_path)
@@ -456,8 +553,10 @@ class WorkspaceMixin:
         free = [s for s in in_cap if s.locked_by_agent_id is None]
         warming = len(in_cap) < cap
         if free or len(in_cap) >= cap:
-            return warming  # something is acquirable, or we are already at cap
+            # Something is acquirable, or we are already at cap: no growth.
+            return SlotGrowth(warming=warming, worktree=True)
 
+        known = {s.id for s in slots}
         try:
             grown = await self._worktree_slots().ensure_slots(
                 project, base, kind, min(cap, len(in_cap) + 1)
@@ -470,9 +569,27 @@ class WorkspaceMixin:
                 project.id,
                 e,
             )
-        return warming
+            return SlotGrowth(warming=warming, stalled=True, worktree=True)
 
-    async def _ensure_worktree_slots_for_task(self, task: Task, project) -> bool:
+        fresh = [s for s in grown if s.id not in known and (s.slot_index or 0) < cap]
+        if not fresh:
+            # ``ensure_slots`` swallows per-slot git failures and returns what
+            # exists (see its docstring).  Nothing new means nothing is coming:
+            # the "warming up" wait would never clear on its own, so say so
+            # rather than pausing quietly forever.
+            logger.warning(
+                "Worktree slot growth produced no new slot for kind %s in %s "
+                "(%d/%d slots, none free) — the pool is not ramping",
+                kind.id,
+                project.id,
+                len(in_cap),
+                cap,
+            )
+            return SlotGrowth(warming=warming, stalled=True, worktree=True)
+
+        return SlotGrowth(created={kind.id: fresh[0].id}, warming=warming, worktree=True)
+
+    async def _ensure_worktree_slots_for_task(self, task: Task, project) -> SlotGrowth:
         """Lazily grow the slot pool for every worktree-mode kind the task needs.
 
         Design §3.1: slots are created on demand, up to the project's agent
@@ -484,22 +601,21 @@ class WorkspaceMixin:
         Failures here are never fatal: acquisition simply finds nothing free
         and the task takes the existing no-workspace PAUSED backoff.
 
-        Returns True when some worktree-mode kind is still below its cap —
-        i.e. a subsequent acquisition failure means "the pool is still
-        warming up", an expected ramp the operator cannot and need not fix,
-        rather than a genuine shortage.
+        Returns the merged :class:`SlotGrowth` across the task's kinds.  The
+        caller feeds ``created`` back into acquisition as a preference so the
+        dispatch that paid for a slot is the one that takes it, and uses the
+        remaining flags to pick a wait reason.
         """
         from src.orchestrator.workspace_attachments import effective_requirements
 
-        warming = False
+        growth = SlotGrowth()
         seen: set[str] = set()
         for req in await effective_requirements(self.db, task):
             if req.kind_id in seen:
                 continue
             seen.add(req.kind_id)
-            if await self._ensure_worktree_slots(project, req.kind_id):
-                warming = True
-        return warming
+            growth = growth.merged(await self._ensure_worktree_slots(project, req.kind_id))
+        return growth
 
     async def _resume_branch_for(self, task: Task) -> str | None:
         """The branch a task *resumes* rather than creates, if any.

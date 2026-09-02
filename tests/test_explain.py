@@ -123,6 +123,24 @@ class TestExplainCommand:
         assert "awaiting_intelligence_route" in res["reason_codes"]
         assert res["assignment_route"] is None
 
+    async def test_precise_route_failure_suppresses_generic_scheduler_reason(
+        self, handler, db
+    ):
+        await mktask(db, "unavailable", status=TaskStatus.READY)
+        handler.orchestrator.playbook_manager = None
+        state = make_state(
+            projects=[Project(id=PROJECT_ID, name="Explain")],
+            project_available_workspaces={PROJECT_ID: 1},
+        )
+        state.assignment_routes = {}
+        handler.orchestrator._last_scheduler_state = state
+        handler.orchestrator._last_scheduler_workspace_counts = {PROJECT_ID: 1}
+        handler.orchestrator._last_scheduler_idle_by_project = {PROJECT_ID: 1}
+
+        res = await handler._cmd_explain_task({"task_id": "unavailable"})
+
+        assert res["reason_codes"] == ["assignment_playbook_unavailable"]
+
     async def test_explicit_class_is_exposed_as_effective_assignment_route(
         self, handler, db
     ):

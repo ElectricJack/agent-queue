@@ -143,6 +143,7 @@ Or connect via MCP from Claude Code, Cursor, or any MCP-compatible client for pr
 - [[guides/agent-tools|Agent Tools]] — Tool reference for AI agents
 - [[guides/platform-development|Platform Development]] — Adding new agent backends
 - [[guides/e2e-swarm|Swarm E2E Testing]] — Running a real daemon, on real PostgreSQL, through the whole claim protocol
+- [[guides/worker-pools|Worker Pools]] — Operating `lifecycle: pool` profiles: bounds, quarantine, doctor checks, cutover and rollback
 - `dashboard/CLAUDE.md` (in-repo) — Typed `@aq/ts-client` workflow for the React dashboard
 
 **Specifications:**

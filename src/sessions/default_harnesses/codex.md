@@ -43,6 +43,7 @@ vault watcher; no restart, no release.
     {
       "name": "login-required",
       "pattern": "Sign in with ChatGPT|codex login|log out and sign in again",
+      "is_regex": true,
       "keys": [],
       "quarantine": true
     }

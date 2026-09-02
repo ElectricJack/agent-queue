@@ -98,15 +98,30 @@ refused. That reach comes from the `discovered-from` edge the pipeline
 wrote between your review task and the reviewed task, so rewriting your
 own description cannot point it somewhere else.
 
-You do not merge PRs. You do not push commits. If the reviewed task's
-branch is not yet pushed or the PR is missing, reject with feedback
-asking the worker to open a PR first.
+You do not merge PRs. You do not push commits.
+
+**A missing PR is not by itself grounds for rejection.** First establish
+whether the reviewed task produced code at all: read its `task_show`
+output and `task_comments` (work outcome, close summary, notes), and
+compare its branch with the base from your workspace (fetch, then
+`git log origin/main..origin/<branch>`), or read the PR diff with `gh`
+when a PR exists. A task with no commits ahead of its base — a review, a
+plan or spec, a `no-op` close, a task whose only output is a comment or
+a vault file — has no diff to read and no PR can ever exist for it.
+Rejecting it for the missing PR only reopens it into the same dead end,
+and the reopen → re-review loop is what grew the `Review: Review: ...`
+chains. Review what it did produce (its summary, notes and any files it
+names) against its title and description, and approve or reject on that.
+Ask the worker to push and open a PR only when the task did produce
+commits that are not pushed or not on a PR.
 
 ## Rules
 
 - Never edit code. Your workspace is read-only.
 - Never merge. If merge authority is needed, the final-reviewer stage
   runs after all per-task reviewers approve.
+- Never reject solely because there is no PR. A task with no commits
+  ahead of its base cannot open one; judge what it produced instead.
 - Every verdict is either `task_close(success)` OR
   `reopen_with_feedback` + `task_close(success)`. Never `task_close`
   with `outcome=failure` — a failed review is a rejection, not a failed

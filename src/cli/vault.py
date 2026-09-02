@@ -232,3 +232,83 @@ def vault_migrate(
 
     if s["total_errors"] > 0:
         raise SystemExit(1)
+
+
+@vault.command("reset-harness")
+@click.argument("names", nargs=-1)
+@click.option(
+    "--all", "reset_all", is_flag=True, default=False, help="Reset every shipped harness."
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Report how each vault copy relates to the shipped file; write nothing.",
+)
+@click.option(
+    "--data-dir",
+    default=None,
+    help="Data directory (default: from config or ~/.agent-queue).",
+)
+def vault_reset_harness(
+    names: tuple[str, ...], reset_all: bool, dry_run: bool, data_dir: str | None
+) -> None:
+    """Restore vault/harnesses/<NAME>.md from the shipped default.
+
+    Startup seeding refreshes a vault copy only when it is byte-identical to
+    a version aq once shipped; a copy an operator edited is left alone so the
+    edit survives upgrades.  This command is the explicit way to discard that
+    edit and get the shipped file back (the running daemon's vault watcher
+    picks the change up without a restart).  ``--dry-run`` lists each shipped
+    harness as ``current``, ``stale``, ``edited`` or ``missing``.
+    """
+    from src.sessions.harness_manifest import (
+        audit_vault_harnesses,
+        list_shipped_harnesses,
+        restore_shipped_harness,
+    )
+
+    resolved_dir = _resolve_data_dir(data_dir)
+    shipped = [f.removesuffix(".md") for f in list_shipped_harnesses()]
+
+    if dry_run:
+        report = audit_vault_harnesses(resolved_dir)
+        table = Table(title=f"Shipped harnesses vs {resolved_dir}/vault/harnesses")
+        table.add_column("Harness", style="bold")
+        table.add_column("Status")
+        style = {"current": "green", "stale": "yellow", "edited": "cyan", "missing": "dim"}
+        for filename, info in report.items():
+            status = info["status"]
+            table.add_row(filename.removesuffix(".md"), f"[{style[status]}]{status}[/]")
+        console.print(table)
+        return
+
+    targets = list(shipped) if reset_all else list(names)
+    if not targets:
+        console.print(
+            "[bold red]Error:[/] name at least one harness or pass --all "
+            f"(shipped: {', '.join(shipped) or 'none'})"
+        )
+        raise SystemExit(1)
+
+    failed = False
+    for name in targets:
+        try:
+            out = restore_shipped_harness(resolved_dir, name)
+        except FileNotFoundError:
+            console.print(
+                f"[bold red]Error:[/] no shipped harness named {name!r} "
+                f"(shipped: {', '.join(shipped) or 'none'})"
+            )
+            failed = True
+            continue
+        previous = out["previous_status"]
+        if previous == "current":
+            console.print(f"  {out['name']}: already matches the shipped file")
+        else:
+            console.print(
+                f"  [green]{out['name']}[/]: restored shipped file (was {previous}) "
+                f"→ {out['vault_path']}"
+            )
+    if failed:
+        raise SystemExit(1)

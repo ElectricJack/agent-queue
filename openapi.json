@@ -2270,6 +2270,100 @@
         }
       }
     },
+    "/api/agent/profile-drift": {
+      "post": {
+        "tags": [
+          "agent"
+        ],
+        "summary": "Report which vault system profiles have drifted from the defaults shipped in src/profiles/defaults/. Startup seeding never overwrites an existing vault profile.md, so an old copy keeps old semantics: a stale read_only re-arms the require-a-PR close gate. Reports divergence on the semantic Config fields (read_only, harness, lifecycle, needs_workspace) and missing/renamed sections. Read-only \u2014 repair with profile_reseed.",
+        "description": "Report which vault system profiles have drifted from the defaults shipped in src/profiles/defaults/. Startup seeding never overwrites an existing vault profile.md, so an old copy keeps old semantics: a stale read_only re-arms the require-a-PR close gate. Reports divergence on the semantic Config fields (read_only, harness, lifecycle, needs_workspace) and missing/renamed sections. Read-only \u2014 repair with profile_reseed.",
+        "operationId": "profile_drift",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfileDriftRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileDriftResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/agent/profile-reseed": {
+      "post": {
+        "tags": [
+          "agent"
+        ],
+        "summary": "Overwrite one vault system profile with the version shipped in src/profiles/defaults/, keeping a .bak-<epoch> copy of the old file. The explicit repair for profile_drift findings \u2014 startup seeding is write-if-absent and will never do this for you.",
+        "description": "Overwrite one vault system profile with the version shipped in src/profiles/defaults/, keeping a .bak-<epoch> copy of the old file. The explicit repair for profile_drift findings \u2014 startup seeding is write-if-absent and will never do this for you.",
+        "operationId": "profile_reseed",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfileReseedRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileReseedResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/agent/show-effective-profile": {
       "post": {
         "tags": [
@@ -29111,6 +29205,26 @@
         "title": "ProfileAuditRow",
         "description": "One profile's capability policy, as ``profile_audit`` reports it."
       },
+      "ProfileConfigDivergence": {
+        "properties": {
+          "field": {
+            "type": "string",
+            "title": "Field"
+          },
+          "shipped": {
+            "title": "Shipped"
+          },
+          "vault": {
+            "title": "Vault"
+          }
+        },
+        "type": "object",
+        "required": [
+          "field"
+        ],
+        "title": "ProfileConfigDivergence",
+        "description": "One ``## Config`` field whose vault value differs from the shipped one."
+      },
       "ProfileDetail": {
         "properties": {
           "id": {
@@ -29186,6 +29300,204 @@
           "name"
         ],
         "title": "ProfileDetail"
+      },
+      "ProfileDriftRequest": {
+        "properties": {
+          "profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Id",
+            "description": "Only report this system profile"
+          },
+          "drifted_only": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Drifted Only",
+            "description": "Only report profiles that diverge"
+          }
+        },
+        "type": "object",
+        "title": "ProfileDriftRequest"
+      },
+      "ProfileDriftResponse": {
+        "properties": {
+          "profiles": {
+            "items": {
+              "$ref": "#/components/schemas/ProfileDriftRow"
+            },
+            "type": "array",
+            "title": "Profiles",
+            "default": []
+          },
+          "checked": {
+            "type": "integer",
+            "title": "Checked",
+            "default": 0
+          },
+          "drifted_count": {
+            "type": "integer",
+            "title": "Drifted Count",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "ProfileDriftResponse"
+      },
+      "ProfileDriftRow": {
+        "properties": {
+          "profile_id": {
+            "type": "string",
+            "title": "Profile Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "ok"
+          },
+          "config": {
+            "items": {
+              "$ref": "#/components/schemas/ProfileConfigDivergence"
+            },
+            "type": "array",
+            "title": "Config",
+            "default": []
+          },
+          "missing_sections": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Missing Sections",
+            "default": []
+          },
+          "extra_sections": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Extra Sections",
+            "default": []
+          },
+          "errors": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Errors",
+            "default": []
+          },
+          "summary": {
+            "type": "string",
+            "title": "Summary",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "profile_id"
+        ],
+        "title": "ProfileDriftRow",
+        "description": "One system profile's vault copy compared against the shipped default."
+      },
+      "ProfileReseedRequest": {
+        "properties": {
+          "profile_id": {
+            "type": "string",
+            "title": "Profile Id",
+            "description": "System profile ID to reseed"
+          },
+          "backup": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Backup",
+            "description": "Keep a .bak-<epoch> copy of the replaced file (default true)"
+          }
+        },
+        "type": "object",
+        "required": [
+          "profile_id"
+        ],
+        "title": "ProfileReseedRequest"
+      },
+      "ProfileReseedResponse": {
+        "properties": {
+          "profile_id": {
+            "type": "string",
+            "title": "Profile Id"
+          },
+          "path": {
+            "type": "string",
+            "title": "Path",
+            "default": ""
+          },
+          "backup_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Backup Path"
+          },
+          "created": {
+            "type": "boolean",
+            "title": "Created",
+            "default": false
+          },
+          "warnings": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warnings"
+          },
+          "sync_errors": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sync Errors"
+          }
+        },
+        "type": "object",
+        "required": [
+          "profile_id"
+        ],
+        "title": "ProfileReseedResponse"
       },
       "ProfileSubagentRollup": {
         "properties": {

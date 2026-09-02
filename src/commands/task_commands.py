@@ -3223,6 +3223,7 @@ class TaskCommandsMixin:
         # as scheduling and pool claims, so this cannot disagree with actual
         # eligibility after an edit or option-catalog change.
         assignment_route = None
+        route_reason = None
         coordinator = getattr(self.orchestrator, "assignment_routing", None)
         if coordinator is not None:
             try:
@@ -3252,7 +3253,7 @@ class TaskCommandsMixin:
             # The coordinator above already answered the route question with
             # the richer story (playbook running, retrying, misconfigured);
             # the scheduler snapshot only knows that no route was in it.
-            if any(reason["code"] == "awaiting_intelligence_route" for reason in reasons):
+            if route_reason is not None:
                 capacity = [
                     reason
                     for reason in capacity
