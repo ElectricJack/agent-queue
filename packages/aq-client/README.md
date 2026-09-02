@@ -47,7 +47,7 @@ By default, when you're calling an HTTPS API it will attempt to verify that SSL 
 
 ```python
 client = AuthenticatedClient(
-    base_url="https://internal_api.example.com", 
+    base_url="https://internal_api.example.com",
     token="SuperSecretToken",
     verify_ssl="/path/to/certificate_bundle.pem",
 )
@@ -59,7 +59,7 @@ You can also disable certificate validation altogether, but beware that **this i
 client = AuthenticatedClient(
     base_url="https://internal_api.example.com",
     token="SuperSecretToken",
-    verify_ssl=False
+    verify_ssl=False,
 )
 ```
 
@@ -81,12 +81,15 @@ There are more settings on the generated `Client` class which let you control mo
 ```python
 from agent_queue_api_client import Client
 
+
 def log_request(request):
     print(f"Request event hook: {request.method} {request.url} - Waiting for response")
+
 
 def log_response(response):
     request = response.request
     print(f"Response event hook: {request.method} {request.url} - Status {response.status_code}")
+
 
 client = Client(
     base_url="https://api.example.com",

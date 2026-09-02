@@ -25,6 +25,7 @@ __all__ = [
     "ListRequest",
     "ListResponse",
     "LocateHit",
+    "LocateRequest",
     "LocateResponse",
     "NodeResponse",
     "StubOverflow",
@@ -59,6 +60,22 @@ class ListRequest(BaseModel):
     status: str = ""
     cursor: str | None = None
     limit: int = 50
+
+
+class LocateRequest(BaseModel):
+    """Where the matches for a filter are, in the geometry the canvas draws.
+
+    Carries ``expanded`` for the same reason ``tiles`` and ``list`` are POSTs:
+    collapsing a container reflows everything after it, so a match's position
+    depends on the viewer's expanded set and cannot be answered from the
+    persisted layout alone.
+    """
+
+    variant: str = "active"
+    expanded: list[str] = []
+    q: str = ""
+    status: str = ""
+    limit: int = 200
 
 
 class LayoutJob(BaseModel):

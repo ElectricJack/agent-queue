@@ -14,6 +14,13 @@ export interface LayoutStore {
   cells: Map<CellKey, Set<string>>;
   loaded: Set<CellKey>;
   /**
+   * Nodes carried over from the previous expanded set, still drawn at their
+   * old positions until this generation re-delivers them. They are what the
+   * reflow animates FROM: emptying the store on a toggle would unmount every
+   * card and the move would be a jump-cut instead.
+   */
+  carried: Set<string>;
+  /**
    * The response covered the whole graph (a `root` request ignores the rect
    * server-side), so no cell can be missing and nothing may be evicted.
    */
@@ -22,8 +29,35 @@ export interface LayoutStore {
 
 export const emptyStore = (): LayoutStore => ({
   version: null, nodes: new Map(), edges: new Map(), stubs: new Map(), edgeCells: new Map(),
-  workers: [], gates: [], stubOverflow: new Map(), cells: new Map(), loaded: new Set(), whole: false,
+  workers: [], gates: [], stubOverflow: new Map(), cells: new Map(), loaded: new Set(),
+  carried: new Set(), whole: false,
 });
+
+/**
+ * Start a fresh generation (a new expanded set, filter or variant) while
+ * keeping the drawn nodes on screen. Cell bookkeeping is cleared, so every
+ * visible cell is refetched; the retained nodes are marked `carried` and are
+ * dropped by `dropCarried` once the new generation has fully landed.
+ */
+export function retainForReflow(store: LayoutStore): LayoutStore {
+  return {
+    ...emptyStore(),
+    nodes: new Map(store.nodes),
+    edges: new Map(store.edges),
+    stubs: new Map(store.stubs),
+    workers: store.workers,
+    gates: store.gates,
+    stubOverflow: new Map(store.stubOverflow),
+    carried: new Set(store.nodes.keys()),
+  };
+}
+
+/** Drop the carried nodes this generation never re-delivered. */
+export function dropCarried(store: LayoutStore): LayoutStore {
+  if (store.carried.size === 0) return store;
+  const nodes = new Map([...store.nodes].filter(([id]) => !store.carried.has(id)));
+  return pruneAnnotations({ ...store, nodes, carried: new Set() }, [], []);
+}
 
 const edgeKey = (e: LayoutEdge) => `${e.from}|${e.to}|${e.dep_type}`;
 
@@ -46,11 +80,13 @@ export function mergeTiles(store: LayoutStore, cells: CellKey[], res: TilesRespo
     stubOverflow: new Map(base.stubOverflow),
     cells: new Map([...base.cells].map(([k, v]) => [k, new Set(v)])),
     loaded: new Set(base.loaded),
+    carried: new Set(base.carried),
     whole: base.whole,
   };
   for (const c of cells) { next.loaded.add(c); if (!next.cells.has(c)) next.cells.set(c, new Set()); }
   for (const n of res.nodes ?? []) {
     next.nodes.set(n.id, n);
+    next.carried.delete(n.id);
     for (const c of cells) if (intersectsCell(n, c)) next.cells.get(c)!.add(n.id);
   }
   for (const s of res.stubs ?? []) next.stubs.set(s.id, s);
@@ -90,7 +126,13 @@ export function missingCells(store: LayoutStore, wanted: CellKey[]): CellKey[] {
   return wanted.filter((c) => !store.loaded.has(c));
 }
 
-export const nodeCount = (store: LayoutStore) => store.nodes.size;
+/**
+ * How many nodes THIS generation has drawn. Nodes carried over from the
+ * previous expanded set do not count: they are leftovers on their way out,
+ * and counting them could trip the client's node budget mid-toggle and step
+ * the level of detail down for a population that never existed.
+ */
+export const nodeCount = (store: LayoutStore) => store.nodes.size - store.carried.size;
 
 export function evictFar(store: LayoutStore, keep: CellKey[], maxDistance = 3): LayoutStore {
   const near = (c: CellKey) => keep.some((k) => cellDistance(c, k) <= maxDistance);
@@ -99,7 +141,9 @@ export function evictFar(store: LayoutStore, keep: CellKey[], maxDistance = 3): 
   for (const [c, ids] of store.cells) if (near(c)) { cells.set(c, ids); loaded.add(c); }
   const referenced = new Set<string>();
   for (const ids of cells.values()) for (const id of ids) referenced.add(id);
-  const nodes = new Map([...store.nodes].filter(([id]) => referenced.has(id)));
+  // A carried node belongs to no cell of this generation yet; evicting it
+  // would undo the retention the reflow animation depends on.
+  const nodes = new Map([...store.nodes].filter(([id]) => referenced.has(id) || store.carried.has(id)));
   const edges = new Map<string, LayoutEdge>();
   const edgeCells = new Map<string, Set<CellKey>>();
   for (const [k, e] of store.edges) {

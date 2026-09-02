@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import GraphCanvas from "../GraphCanvas";
 import type { TaskNodeData, PlaybookNodeData } from "../types";
 import { edge, graph, task } from "./fixtures";
+import { setExpandedTaskIds } from "../useGraphHierarchy";
 
 interface FlowProps {
   nodes: Node<TaskNodeData | PlaybookNodeData>[];
@@ -50,6 +51,8 @@ vi.mock("../AgentAvatarLayer", () => ({ default: () => null }));
 beforeEach(() => {
   flow.current = null;
   localStorage.clear();
+  // The expanded set is one live store, not per-component state.
+  setExpandedTaskIds(new Set());
 });
 afterEach(cleanup);
 

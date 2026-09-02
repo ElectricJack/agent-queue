@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { projectHierarchy, retainTaskOrder } from "./hierarchy";
 import type { GraphViewProps } from "./types";
 
@@ -37,19 +37,41 @@ function persistExpandedTaskIds(ids: ReadonlySet<string>) {
  *  `autoExpanded` and reverted when the filter clears. It never writes to the
  *  persisted set. The expanded-task set is shared by both canvases through
  *  one storage key. */
+// One live set, not one per consumer: the canvas toggles it and the toolbar
+// has to send the SAME set to `locate`, or a jump would be computed against a
+// layout nobody is looking at. Storage alone only synchronised them on mount.
+let expandedIds: ReadonlySet<string> = readExpandedTaskIds();
+const expandedListeners = new Set<() => void>();
+
+/** Replace the expanded set outright (persisted, and broadcast to every consumer). */
+export function setExpandedTaskIds(next: ReadonlySet<string>) {
+  expandedIds = next;
+  persistExpandedTaskIds(next);
+  for (const listener of [...expandedListeners]) listener();
+}
+
+function toggleExpandedId(id: string) {
+  const next = new Set(expandedIds);
+  if (!next.delete(id)) next.add(id);
+  setExpandedTaskIds(next);
+}
+
+function sameExpandedIds(left: ReadonlySet<string>, right: ReadonlySet<string>) {
+  return left.size === right.size && [...left].every((id) => right.has(id));
+}
+
 export function useExpandedTaskIds() {
-  const [expandedTaskIds, setExpandedTaskIds] = useState<ReadonlySet<string>>(readExpandedTaskIds);
+  const persistedIds = readExpandedTaskIds();
+  if (!sameExpandedIds(expandedIds, persistedIds)) expandedIds = persistedIds;
 
-  useEffect(() => persistExpandedTaskIds(expandedTaskIds), [expandedTaskIds]);
-
-  const toggleExpanded = useCallback((id: string) => {
-    setExpandedTaskIds((previous) => {
-      const next = new Set(previous);
-      if (!next.delete(id)) next.add(id);
-      return next;
-    });
-  }, []);
-
+  const expandedTaskIds = useSyncExternalStore(
+    (listener) => {
+      expandedListeners.add(listener);
+      return () => expandedListeners.delete(listener);
+    },
+    () => expandedIds,
+  );
+  const toggleExpanded = useCallback((id: string) => toggleExpandedId(id), []);
   return { expandedTaskIds, toggleExpanded };
 }
 
