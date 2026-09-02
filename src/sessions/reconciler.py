@@ -480,6 +480,7 @@ class SessionReconciler:
                         now=now,
                         result="prepare_failed",
                         needs_attention="prepare_timeout",
+                        prepare_backoff=True,
                     )
                 else:
                     await self.db.update_session(s.id, claim_phase=None, claim_phase_at=None)
