@@ -64,6 +64,7 @@ CONFIG_KNOWN_KEYS = frozenset(
         "default_class",
         "needs_workspace",
         "read_only",
+        "allow_base_checkout",
         "min_active",
         "max_active",
         "max_claims_per_session",
@@ -546,6 +547,13 @@ def _validate_config(config: dict) -> list[str]:
         v = config["read_only"]
         if not isinstance(v, bool):
             errors.append(f"Config 'read_only' must be a boolean, got {type(v).__name__}")
+
+    if "allow_base_checkout" in config:
+        v = config["allow_base_checkout"]
+        if not isinstance(v, bool):
+            errors.append(
+                f"Config 'allow_base_checkout' must be a boolean, got {type(v).__name__}"
+            )
 
     errors.extend(_validate_session_config(config))
 
@@ -1058,6 +1066,8 @@ def parsed_profile_to_agent_profile(parsed: ParsedProfile) -> dict:
         result["needs_workspace"] = bool(parsed.config["needs_workspace"])
     if "read_only" in parsed.config:
         result["read_only"] = bool(parsed.config["read_only"])
+    if "allow_base_checkout" in parsed.config:
+        result["allow_base_checkout"] = bool(parsed.config["allow_base_checkout"])
 
     # Config → named-session fields (supervisor-agent §7).  Pass-through
     # storage; validated above, interpreted by the session runtime.

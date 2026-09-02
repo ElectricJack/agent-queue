@@ -14,6 +14,7 @@ from collections.abc import Sequence
 from sqlalchemy import and_, literal, or_, select
 from sqlalchemy.exc import IntegrityError
 
+from src.agents.routing import resolve_profile
 from src.assignment_routing import (
     AssignmentPlaybookError,
     EffectiveAssignmentRoute,
@@ -140,6 +141,64 @@ def _profile_slug(profile_id: str) -> str:
     return profile_id.rsplit(":", 1)[-1]
 
 
+def _effective_profiles(project_id: str, profiles):
+    """Return system profiles with this project's overrides applied."""
+
+    scoped = {
+        _profile_slug(profile.id): profile
+        for profile in profiles
+        if profile.id.startswith(f"project:{project_id}:")
+    }
+    effective = []
+    for profile in profiles:
+        if profile.id.startswith("project:"):
+            if profile.id.startswith(f"project:{project_id}:"):
+                effective.append(profile)
+            continue
+        if profile.id not in scoped:
+            effective.append(profile)
+    return effective
+
+
+def task_assignment_options(
+    task: Task,
+    options: Sequence[AssignmentOption],
+    profiles,
+) -> tuple[AssignmentOption, ...]:
+    """Narrow a pinned task's catalog to its profile's fixed class.
+
+    A task without a pinned profile, or a profile without ``default_class``,
+    keeps the ordinary project-wide catalog.  Profile resolution mirrors the
+    scheduler, including project-scoped overrides.
+    """
+
+    if not task.profile_id:
+        return tuple(options)
+    profile = resolve_profile(
+        {profile.id: profile for profile in profiles}, task.profile_id, task.project_id
+    )
+    fixed_class = (getattr(profile, "default_class", "") or "").strip()
+    if not fixed_class:
+        return tuple(options)
+    return tuple(option for option in options if option.intelligence_class == fixed_class)
+
+
+def _catalog_hash(
+    project_id: str,
+    options: Sequence[AssignmentOption],
+    profiles,
+) -> str:
+    """Hash options plus every effective profile's fixed-class constraint."""
+
+    return options_hash(
+        options,
+        profile_defaults=(
+            (profile.id, (profile.default_class or "").strip())
+            for profile in _effective_profiles(project_id, profiles)
+        ),
+    )
+
+
 def build_assignment_options(
     project_id: str,
     profiles,
@@ -149,20 +208,7 @@ def build_assignment_options(
 ) -> tuple[AssignmentOption, ...]:
     """Build the normalized ordinary-worker class/provider catalog."""
 
-    scoped = {
-        _profile_slug(profile.id): profile
-        for profile in profiles
-        if profile.id.startswith(f"project:{project_id}:")
-    }
-    effective_profiles = []
-    for profile in profiles:
-        if profile.id.startswith("project:"):
-            if profile.id.startswith(f"project:{project_id}:"):
-                effective_profiles.append(profile)
-            continue
-        if profile.id in scoped:
-            continue
-        effective_profiles.append(profile)
+    effective_profiles = _effective_profiles(project_id, profiles)
 
     enabled_agents = [
         agent for agent in agents
@@ -250,20 +296,27 @@ class AssignmentRoutingCoordinator:
     def diagnostics(self) -> dict[str, tuple[int, float, str]]:
         return dict(self._retry)
 
-    async def _options(self, project_id: str) -> tuple[AssignmentOption, ...]:
+    async def _catalog(self, project_id: str):
         classes = getattr(
             getattr(self.owner, "session_spec_builder", None),
             "_intelligence_classes",
             {},
         ) or {}
+        profiles = await self.db.list_profiles()
         options = build_assignment_options(
             project_id,
-            await self.db.list_profiles(),
+            profiles,
             await self.db.list_agents(),
             getattr(self.owner, "harness_registry", None),
             classes,
         )
-        self._catalog_hashes[project_id] = options_hash(options)
+        self._catalog_hashes[project_id] = _catalog_hash(project_id, options, profiles)
+        return options, profiles
+
+    async def _options(self, project_id: str) -> tuple[AssignmentOption, ...]:
+        """Return the project-wide catalog for callers that do not route a task."""
+
+        options, _profiles = await self._catalog(project_id)
         return options
 
     def cached_options_hash(self, project_id: str) -> str | None:
@@ -378,10 +431,9 @@ class AssignmentRoutingCoordinator:
             self._task_retry[task.id] = (retry_at, error)
         logger.warning("assignment routing batch %s failed: %s", batch_key, error)
 
-    async def _route_batch(self, project, tasks, options):
+    async def _route_batch(self, project, tasks, options, catalog_hash):
         manager = self.owner.playbook_manager
         playbook = select_assignment_playbook(manager, project)
-        catalog_hash = options_hash(options)
         batch_key = self._batch_key(project, playbook, tasks, catalog_hash)
         retry = self._retry.get(batch_key)
         if retry and retry[1] > time.time():
@@ -401,7 +453,8 @@ class AssignmentRoutingCoordinator:
                     for task in tasks
                 ],
                 "options": [assignment_option_payload(option) for option in options],
-                "options_hash": catalog_hash,
+                "options_hash": options_hash(options),
+                "catalog_hash": catalog_hash,
             }
             runner = PlaybookRunner(
                 graph=playbook.to_dict(),
@@ -444,24 +497,29 @@ class AssignmentRoutingCoordinator:
                 )
             self._note_failure(batch_key, str(exc), tasks)
             return {}
-        committed = await self._commit(project, playbook, tasks, options, decisions, run_id)
+        committed = await self._commit(
+            project, playbook, tasks, options, catalog_hash, decisions, run_id
+        )
         if committed:
             self._retry.pop(batch_key, None)
             for task_id in committed:
                 self._task_retry.pop(task_id, None)
         return committed
 
-    async def _commit(self, project, playbook, original_tasks, options, decisions, run_id):
+    async def _commit(
+        self, project, playbook, original_tasks, options, catalog_hash, decisions, run_id
+    ):
         current_project = await self.db.get_project(project.id)
         if current_project is None:
             return {}
         current_playbook = select_assignment_playbook(self.owner.playbook_manager, current_project)
         if current_playbook.id != playbook.id or current_playbook.version != playbook.version:
             return {}
-        current_options = await self._options(project.id)
-        current_hash = options_hash(current_options)
-        if current_hash != options_hash(options):
+        current_options, current_profiles = await self._catalog(project.id)
+        current_hash = _catalog_hash(project.id, current_options, current_profiles)
+        if current_hash != catalog_hash:
             return {}
+        batch_options_hash = options_hash(options)
         saved: list[TaskAssignmentRoute] = []
         async with self.db.immediate() as conn:
             rows = (
@@ -493,6 +551,9 @@ class AssignmentRoutingCoordinator:
                     or task.status not in _ACTIVE_ROUTE_STATUSES
                     or (task.intelligence_class or "").strip()
                     or assignment_input_hash(task) != decision.input_hash
+                    or options_hash(
+                        task_assignment_options(task, current_options, current_profiles)
+                    ) != batch_options_hash
                 ):
                     continue
                 saved.append(TaskAssignmentRoute(
@@ -575,15 +636,15 @@ class AssignmentRoutingCoordinator:
                         exc,
                     )
                     continue
-                options = await self._options(project_id)
+                options, profiles = await self._catalog(project_id)
                 tasks = sorted(by_project[project_id], key=lambda task: (task.priority, task.id))
-                pending: list[Task] = []
                 saved_rows = {
                     row.task_id: row
                     for row in await self.db.list_task_assignment_routes([task.id for task in tasks])
                 }
-                catalog_hash = options_hash(options)
+                catalog_hash = _catalog_hash(project_id, options, profiles)
                 drifted: dict[str, TaskAssignmentRoute] = {}
+                pending_by_options: dict[str, tuple[tuple[AssignmentOption, ...], list[Task]]] = {}
                 for task in tasks:
                     row = saved_rows.get(task.id)
                     effective = resolve_effective_route(task, row, catalog_hash)
@@ -595,16 +656,24 @@ class AssignmentRoutingCoordinator:
                         elif row is not None and row.task_updated_at != task.updated_at:
                             drifted[task.id] = row
                     else:
-                        pending.append(task)
+                        task_options = task_assignment_options(task, options, profiles)
+                        if task_options:
+                            key = options_hash(task_options)
+                            _batch_options, batch_tasks = pending_by_options.setdefault(
+                                key, (task_options, [])
+                            )
+                            batch_tasks.append(task)
                 await self._restamp_route_revisions(drifted)
-                if not pending or not options:
-                    continue
-                for start in range(0, len(pending), self.batch_size):
-                    resolved.update(
-                        await self._route_batch(
-                            project, pending[start:start + self.batch_size], options
+                for batch_options, pending in pending_by_options.values():
+                    for start in range(0, len(pending), self.batch_size):
+                        resolved.update(
+                            await self._route_batch(
+                                project,
+                                pending[start:start + self.batch_size],
+                                batch_options,
+                                catalog_hash,
+                            )
                         )
-                    )
         return resolved
 
     async def routes_for(self, tasks: Sequence[Task]) -> dict[str, EffectiveAssignmentRoute]:
@@ -617,7 +686,8 @@ class AssignmentRoutingCoordinator:
             for row in await self.db.list_task_assignment_routes([task.id for task in tasks])
         }
         for project_id, project_tasks in by_project.items():
-            catalog_hash = options_hash(await self._options(project_id))
+            options, profiles = await self._catalog(project_id)
+            catalog_hash = _catalog_hash(project_id, options, profiles)
             for task in project_tasks:
                 route = resolve_effective_route(task, saved.get(task.id), catalog_hash)
                 if route is not None:
@@ -627,8 +697,8 @@ class AssignmentRoutingCoordinator:
     async def explain(self, task: Task) -> tuple[dict | None, dict | None]:
         """Return route audit detail and one actionable routing reason."""
 
-        options = await self._options(task.project_id)
-        catalog_hash = options_hash(options)
+        options, profiles = await self._catalog(task.project_id)
+        catalog_hash = _catalog_hash(task.project_id, options, profiles)
         saved = await self.db.get_task_assignment_route(task.id)
         effective = resolve_effective_route(task, saved, catalog_hash)
         detail = None
@@ -688,7 +758,7 @@ class AssignmentRoutingCoordinator:
             if project is None:
                 raise AssignmentPlaybookError(f"project '{task.project_id}' is missing")
             select_assignment_playbook(self.owner.playbook_manager, project)
-            if not options:
+            if not task_assignment_options(task, options, profiles):
                 raise AssignmentPlaybookError(
                     "no compatible intelligence class/provider options are configured"
                 )

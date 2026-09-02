@@ -1927,6 +1927,7 @@ class TaskCommandsMixin:
             # did not exist.  The row has always carried it.
             "branch_name": task.branch_name,
             "integration_mode": task.integration_mode,
+            "attachments": task.attachments,
             # Persisted graph blockedness (work-graph design §4).  Capacity
             # reasons (no agent, workspace busy, budget) are NOT in here —
             # those belong to `task explain`.
@@ -2615,10 +2616,21 @@ class TaskCommandsMixin:
             candidates = []
         terminal = {"COMPLETED", "FAILED", "BLOCKED"}
         review_profile_ids = {"reviewer", "final-reviewer"}
+        # The review that is *doing* the rejecting is the one review here that
+        # is not stale: it just produced this verdict, and the reviewer profile
+        # is documented to call ``task_close(success)`` on it next.  Cancelling
+        # it out from under its own live session is what made the documented
+        # reject path unusable even once scope allowed the call.
+        caller_scope = self._current_scope or {}
+        caller_task_id = (
+            caller_scope.get("task_id") if caller_scope.get("kind") == "session" else None
+        )
         cancelled_reviews: list[str] = []
         for cand in candidates:
             status_val = getattr(cand.status, "value", cand.status)
             if status_val in terminal:
+                continue
+            if caller_task_id and cand.id == caller_task_id:
                 continue
             if cand.profile_id not in review_profile_ids:
                 # Defense-in-depth: only cascade-cancel review producers.
@@ -3423,6 +3435,10 @@ class TaskCommandsMixin:
         Returns ``{success, task_id, created}``. Non-terminal existing tasks
         with the same key are returned as-is; terminal tasks (COMPLETED,
         FAILED) are ignored so the key can be reused.
+
+        ``profile_id`` and ``intelligence_class`` are create-time routing
+        intent only: an existing task is returned untouched, so re-running the
+        node never re-routes work that is already in flight.
         """
         project_id = args.get("project_id") or self._active_project_id
         if not project_id:
@@ -3434,13 +3450,29 @@ class TaskCommandsMixin:
         if not title:
             return {"success": False, "error": "title is required"}
 
+        # Explicit route intent (routing design §2): a task's class comes from
+        # explicit intent or a fresh assignment-playbook decision, never from a
+        # profile default.  Pinning ``profile_id`` alone is therefore *not* a
+        # route, so an ensuring pipeline that knows the class it wants must be
+        # able to say so; dropping this argument left every ensured task
+        # waiting on the router and, until it decided, refused at launch with
+        # "awaiting intelligence route".
+        intelligence_class = args.get("intelligence_class") or None
+
         if args.get("profile_id") == "triage" and dedup_key == "triage-open":
             from src.database.queries.triage_queries import ensure_triage_task
 
+            if intelligence_class:
+                class_error = self._validate_routing_class(
+                    intelligence_class, await self.db.get_profile("triage")
+                )
+                if class_error:
+                    return {"success": False, "error": class_error}
             result = await ensure_triage_task(
                 self.db, str(project_id), title=str(title),
                 description=str(args.get("description") or ""),
                 priority=args.get("priority", 1),
+                intelligence_class=intelligence_class,
             )
             if result.get("created") or result.get("restarted"):
                 task = await self.db.get_task(result["task_id"])
@@ -3487,6 +3519,11 @@ class TaskCommandsMixin:
         # the default pipeline pins 'triage' on the triage task).
         if args.get("profile_id"):
             create_args["profile_id"] = args["profile_id"]
+        # Validated by ``_cmd_create_task`` against the pinned profile, so an
+        # unknown class or one with no model mapping fails the node loudly
+        # instead of silently producing an unroutable task.
+        if intelligence_class:
+            create_args["intelligence_class"] = intelligence_class
         result = await self._cmd_create_task(create_args)
         if "error" in result:
             return {"success": False, "error": result["error"]}

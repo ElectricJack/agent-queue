@@ -26,6 +26,9 @@ from .archive_task_response_422 import ArchiveTaskResponse422
 from .ask_human_request import AskHumanRequest
 from .ask_human_response_422 import AskHumanResponse422
 from .assignment_route_detail import AssignmentRouteDetail
+from .body_upload_attachment_api_tasks_task_id_attachments_post import (
+    BodyUploadAttachmentApiTasksTaskIdAttachmentsPost,
+)
 from .cancel_playbook_run_request import CancelPlaybookRunRequest
 from .cancel_playbook_run_response import CancelPlaybookRunResponse
 from .cancel_playbook_run_response_422 import CancelPlaybookRunResponse422
@@ -575,8 +578,8 @@ from .probe_mcp_server_response_422 import ProbeMcpServerResponse422
 from .probed_tool_model import ProbedToolModel
 from .probed_tool_model_input_schema import ProbedToolModelInputSchema
 from .profile_audit_request import ProfileAuditRequest
-from .profile_audit_response_422 import ProfileAuditResponse422
 from .profile_audit_response import ProfileAuditResponse
+from .profile_audit_response_422 import ProfileAuditResponse422
 from .profile_audit_row import ProfileAuditRow
 from .profile_detail import ProfileDetail
 from .profile_detail_install import ProfileDetailInstall
@@ -773,6 +776,10 @@ from .subagent_rollup import SubagentRollup
 from .tail_api_streams_stream_id_tail_get_response_tail_api_streams_stream_id_tail_get import (
     TailApiStreamsStreamIdTailGetResponseTailApiStreamsStreamIdTailGet,
 )
+from .task_attachment_delete_response import TaskAttachmentDeleteResponse
+from .task_attachment_detail import TaskAttachmentDetail
+from .task_attachment_response import TaskAttachmentResponse
+from .task_attachments_response import TaskAttachmentsResponse
 from .task_batch_ack_response import TaskBatchAckResponse
 from .task_batch_commit_request import TaskBatchCommitRequest
 from .task_batch_commit_response import TaskBatchCommitResponse
@@ -903,6 +910,7 @@ __all__ = (
     "ArchiveTaskResponse422",
     "AskHumanRequest",
     "AskHumanResponse422",
+    "BodyUploadAttachmentApiTasksTaskIdAttachmentsPost",
     "AssignmentRouteDetail",
     "CancelPlaybookRunRequest",
     "CancelPlaybookRunResponse",
@@ -1641,6 +1649,10 @@ __all__ = (
     "StuckTasksThresholds",
     "SubagentRollup",
     "TailApiStreamsStreamIdTailGetResponseTailApiStreamsStreamIdTailGet",
+    "TaskAttachmentDeleteResponse",
+    "TaskAttachmentDetail",
+    "TaskAttachmentResponse",
+    "TaskAttachmentsResponse",
     "TaskBatchAckResponse",
     "TaskBatchCommitRequest",
     "TaskBatchCommitResponse",

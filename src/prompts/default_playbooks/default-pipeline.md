@@ -38,6 +38,15 @@ Ships five rules:
 - **Proposal commit** (`gate.resolved`, filtered to `gate_type: human`) —
   once the gate is resolved, calls `task_batch_commit` for the awaited
   proposal so the approved batch is written into the task graph.
+
+The `ensure_task` nodes below pin `profile_id` but no `intelligence_class`, so
+the assignment-routing playbook chooses the class for the tasks they create. A
+pinned profile is a compatibility constraint, not a route: until that decision
+lands the task is held back with `awaiting_intelligence_route`. A project whose
+reviewer profiles have a fixed class can skip that wait by adding
+`"intelligence_class": "<class id>"` beside `profile_id` in its own copy of
+this pipeline — it must match the profile's `default_class`, or no worker will
+be compatible with the task.
 ```json
 {
   "rules": [

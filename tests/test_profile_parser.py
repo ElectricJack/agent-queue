@@ -1450,7 +1450,8 @@ class TestValidateConfig:
 
     def test_config_known_keys(self):
         """CONFIG_KNOWN_KEYS contains the spec-defined fields, including
-        ``read_only`` (profile may not write to its workspace),
+        ``read_only`` (profile declares no write intent),
+        ``allow_base_checkout`` (opt-in to running in a base checkout),
         the named-session fields from
         docs/specs/implementation/supervisor-agent.md §7, and the
         pool-only sizing fields (``min_active``, ``max_active``,
@@ -1477,6 +1478,7 @@ class TestValidateConfig:
             "default_class",
             "needs_workspace",
             "read_only",
+            "allow_base_checkout",
             "min_active",
             "max_active",
             "max_claims_per_session",
