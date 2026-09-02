@@ -413,8 +413,15 @@ async def test_first_pool_claim_survives_launch_completion(orch, db, monkeypatch
         await original(row, **kwargs)
         visible_states.append((await db.get_agent(row.agent_id)).state)
         async with db.immediate() as conn:
-            await db.record_holder(conn, session_id=row.id, task_id="pooled",
-                                   agent_id=row.agent_id, work_dir=row.work_dir, now=time.time())
+            await db.record_holder(
+                conn,
+                session_id=row.id,
+                task_id="pooled",
+                claim_epoch=0,
+                agent_id=row.agent_id,
+                work_dir=row.work_dir,
+                now=time.time(),
+            )
 
     monkeypatch.setattr(db, "create_session", claim_immediately_after_insert)
     await orch._reconcile_pools()

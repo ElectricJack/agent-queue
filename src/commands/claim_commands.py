@@ -485,6 +485,7 @@ class ClaimCommandsMixin:
                         conn,
                         session_id=session.id,
                         task_id=tid,
+                        claim_epoch=task.claim_epoch,
                         agent_id=row.agent_id,
                         work_dir=row.work_dir,
                         now=now,
