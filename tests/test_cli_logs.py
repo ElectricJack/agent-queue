@@ -304,3 +304,35 @@ def test_cli_context_includes_surrounding_lines(log_file: Path):
     # Far-away lines excluded
     assert "startup" not in result.output
     assert "idle" not in result.output
+
+
+def test_logs_command_survives_direct_daemon_import():
+    """``src.cli.daemon`` must not register its own ``logs`` command.
+
+    ``app.py`` imports ``daemon`` before ``logs`` so the full command normally
+    wins, but a test that imports ``src.cli.daemon`` directly (``tests/
+    test_cli_daemon.py``) enters ``app.py`` through the circular
+    ``from .app import cli``; the daemon module then finishes importing
+    *after* ``logs.py`` and a second ``@cli.command("logs")`` there silently
+    replaces the real one, which is how CI lost ``aq logs -F``. Check in a
+    fresh interpreter so this file's own import order cannot mask it.
+    """
+    import subprocess
+    import sys
+
+    code = (
+        "import src.cli.daemon\n"
+        "from src.cli.app import cli\n"
+        "cmd = cli.commands['logs']\n"
+        "assert cmd.callback.__module__ == 'src.cli.logs', cmd.callback.__module__\n"
+        "assert any('-F' in o.opts for o in cmd.params), [o.opts for o in cmd.params]\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        cwd=Path(__file__).resolve().parent.parent,
+        timeout=120,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr

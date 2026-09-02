@@ -52,6 +52,14 @@ Each slot is a `workspaces` row (`kind_id='project-repo'` or another git kind, `
 
 The base workspace is the project's normal clone with the default branch checked out — the existing `workspaces` row for the project. Under worktree mode it is used **only** for `fetch`, branch queries, `git worktree add/prune/remove`, and merge-slot integration; it is excluded from agent acquisition (rows with `slot_index IS NULL` whose kind resolves to `mode: worktree` are never handed to agents). The per-base-repo `asyncio.Lock` git mutex (`Orchestrator._git_mutex`) stays and serializes every git operation that touches the base or the shared `.git/worktrees/` registry.
 
+**As landed (2026-09-01), enforced rather than assumed.** "Never handed to agents" was a property of the acquisition path, not a check, and one path broke it: `acquire_for_task(read_only=True)` attached a lockable kind's *first* workspace without a lock, which is exactly the base row. Read-only agents therefore ran their full tool surface in the base — routinely a `LINK` row pointing at a developer's own checkout — and, because the caller still wrote `.agent-queue-lock` there, serialized on the base's sentinel while their slots sat free. Three changes close it:
+
+- **No read-only acquisition path.** `profile.read_only` is a declarative statement of write intent (no write tools in the profile's tool list) and no longer touches acquisition. A read-only task takes a disposable slot like any other task.
+- **A launch guard.** `src/orchestrator/base_workspace.py` refuses any session whose `work_dir` resolves to a base, on both the task-launch (`_launch_session_for_task_locked`) and pool-launch paths, unless its profile sets `allow_base_checkout: true`. A base is identified structurally — a non-slot row that at least one slot names as its base — so the guard is inert on installs with `worktrees.enabled: false`, where no slots and therefore no bases exist.
+- **A doctor check.** `workspaces.base_sessions` (error) reports any live session sitting in a base, covering launches the guard never saw.
+
+`pr_merge` also stopped borrowing the base: `gh pr merge` resolves owner/repo/number from a full PR URL, so it runs in the daemon's data dir instead of a checkout.
+
 ### 2.4 Hidden and ignored: `.git/info/exclude`
 
 `.aq/` is ignored via an idempotent marker block appended to `<base>/.git/info/exclude` — no commit, so this works for repos we don't own and never dirties the tree:
