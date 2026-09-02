@@ -14,6 +14,7 @@ from src.models import AgentProfile, Project, Task, TaskStatus
 from src.orchestrator.assignment_routing import (
     AssignmentRoutingCoordinator,
     AssignmentRoutingValidationError,
+    task_assignment_options,
     validate_assignment_response,
 )
 from src.playbooks.manager import PlaybookManager
@@ -100,6 +101,65 @@ def test_validator_rejects_extra_or_unsupported_decisions():
     payload = {"decisions": [_decision(task), _decision(task)]}
     with pytest.raises(AssignmentRoutingValidationError, match="duplicate"):
         validate_assignment_response(json.dumps(payload), [task], options)
+
+
+@pytest.mark.asyncio
+async def test_pinned_profile_is_offered_and_validated_only_at_its_fixed_class(
+    coordinator_system,
+):
+    coordinator, services, db = coordinator_system
+    await db.create_profile(AgentProfile(
+        id="worker-standard",
+        name="Standard worker",
+        harness="claude",
+        lifecycle="task",
+        default_class="standard-low",
+    ))
+    await db.create_profile(AgentProfile(
+        id="reviewer",
+        name="Reviewer",
+        harness="claude",
+        lifecycle="task",
+        default_class="standard-low",
+    ))
+    coordinator.owner.session_spec_builder._intelligence_classes["standard-low"] = (
+        IntelligenceClass(
+            id="standard-low",
+            name="Standard low",
+            description="Review work",
+            mapping={"anthropic": {"model": "claude-sonnet"}},
+        )
+    )
+    await db.create_task(Task(
+        id="review",
+        project_id="p",
+        title="Review the change",
+        description="Check the submitted implementation.",
+        profile_id="reviewer",
+        status=TaskStatus.READY,
+    ))
+    task = await db.get_task("review")
+    options, profiles = await coordinator._catalog("p")
+    constrained = task_assignment_options(task, options, profiles)
+    assert [option.intelligence_class for option in constrained] == ["standard-low"]
+
+    invalid = {"decisions": [_decision(task, "fast-low")]}
+    with pytest.raises(AssignmentRoutingValidationError, match="unsupported intelligence_class"):
+        validate_assignment_response(json.dumps(invalid), [task], constrained)
+
+    services.llm.run_tools.return_value = LLMRunResult(
+        text=json.dumps({"decisions": [_decision(task, "standard-low")]}),
+        transcript=[],
+        turns=1,
+        stopped_by="done",
+    )
+    routes = await coordinator.reconcile()
+
+    event = json.loads((await db.list_playbook_runs())[0].trigger_event)
+    assert [option["intelligence_class"] for option in event["options"]] == ["standard-low"]
+    assert routes["review"].intelligence_class == "standard-low"
+    saved = await db.get_task_assignment_route("review")
+    assert saved.options_hash == coordinator.cached_options_hash("p")
 
 
 @pytest.mark.asyncio
