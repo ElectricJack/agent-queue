@@ -29,8 +29,8 @@ def select_assignment_playbook(manager, project):
         # exactly like a missing or disabled playbook.  Never an AttributeError
         # -- callers guard on AssignmentPlaybookError, not on that.
         raise AssignmentPlaybookError(
-            f"assignment playbook '{playbook_id}' is unavailable: "
-            "the playbook subsystem is disabled (playbooks.enabled=false)"
+            "assignment playbook manager is unavailable: the playbook subsystem "
+            f"is disabled (playbooks.enabled=false); effective playbook '{playbook_id}'"
         )
     playbook = manager.get_playbook(playbook_id)
     if playbook is None:
