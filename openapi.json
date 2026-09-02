@@ -11092,8 +11092,8 @@
         "tags": [
           "task"
         ],
-        "summary": "Edit a task's properties: project_id, title, description, priority, task_type, status, max_retries, verification_type, profile_id, integration_mode, skip_verification, intelligence_class, affinity_agent_id, affinity_reason, or workspace_mode. Use this to move a task to a different project, rename tasks, change priority, override status (admin), assign a profile, adjust retry/verification settings, or set coordination parameters.",
-        "description": "Edit a task's properties: project_id, title, description, priority, task_type, status, max_retries, verification_type, profile_id, integration_mode, skip_verification, intelligence_class, affinity_agent_id, affinity_reason, or workspace_mode. Use this to move a task to a different project, rename tasks, change priority, override status (admin), assign a profile, adjust retry/verification settings, or set coordination parameters.",
+        "summary": "Edit a task's properties: project_id, title, description, priority, task_type, status, max_retries, verification_type, profile_id, integration_mode, skip_verification, intelligence_class, affinity_agent_id, affinity_reason, workspace_mode, needs_attention, or clear_needs_attention. Use this to move a task to a different project, rename tasks, change priority, override status (admin), assign a profile, adjust retry/verification settings, or set coordination parameters.",
+        "description": "Edit a task's properties: project_id, title, description, priority, task_type, status, max_retries, verification_type, profile_id, integration_mode, skip_verification, intelligence_class, affinity_agent_id, affinity_reason, workspace_mode, needs_attention, or clear_needs_attention. Use this to move a task to a different project, rename tasks, change priority, override status (admin), assign a profile, adjust retry/verification settings, or set coordination parameters.",
         "operationId": "edit_task",
         "requestBody": {
           "content": {
@@ -19044,6 +19044,30 @@
             ],
             "title": "Workspace Mode",
             "description": "Workspace lock mode. Set to null to clear (optional). 'branch-isolated' is DEPRECATED and behaves as 'exclusive' \u2014 see create_task."
+          },
+          "needs_attention": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Needs Attention",
+            "description": "Set the operator attention code (optional)"
+          },
+          "clear_needs_attention": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Clear Needs Attention",
+            "description": "Clear the operator attention code (optional)"
           }
         },
         "type": "object",

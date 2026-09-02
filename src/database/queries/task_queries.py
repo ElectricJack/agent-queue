@@ -597,6 +597,12 @@ class TaskQueryMixin:
             conn, task_id, prior, context="manual_resume", force=True,
             _manual_pause_control=True, resume_after=None, assigned_agent_id=None,
         )
+        # Resuming is an operator decision that the paused incident has been
+        # addressed.  Do this in the same transaction as the status write so
+        # no observer can see a resumed task with stale attention.
+        await conn.execute(delete(task_metadata).where(
+            task_metadata.c.task_id == task_id, task_metadata.c.key == "needs_attention"
+        ))
         await conn.execute(delete(task_metadata).where(
             task_metadata.c.task_id == task_id, task_metadata.c.key == "manual_pause"
         ))
@@ -951,6 +957,18 @@ class TaskQueryMixin:
                             task_metadata.c.task_id == task_id,
                             task_metadata.c.key == TERMINAL_BLOCKED_META_KEY,
                         )
+                    )
+                )
+
+            # A task in flight or terminally completed has resolved the
+            # previous operational incident.  Centralising this covers both
+            # push and pull execution paths, including callers outside the
+            # pool claim protocol.
+            if new_status in (TaskStatus.IN_PROGRESS, TaskStatus.COMPLETED):
+                await conn.execute(
+                    delete(task_metadata).where(
+                        task_metadata.c.task_id == task_id,
+                        task_metadata.c.key == "needs_attention",
                     )
                 )
 

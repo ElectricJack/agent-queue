@@ -184,6 +184,28 @@ async def test_stale_epoch_cannot_activate_a_reclaimed_task(db):
     assert activated is not None and activated.claim_phase == "active"
 
 
+async def test_successful_reclaim_clears_prepare_failure_attention(db):
+    await mktask(db, "t1", profile_id="worker")
+    sid = await pool_session(db)
+    kind, task = await claim_once(db, sid)
+    assert kind == "claimed"
+    await db.release_claim(
+        sid,
+        task_status=TaskStatus.READY,
+        context="slot_reset_failed",
+        now=NOW,
+        result="prepare_failed",
+        needs_attention="slot_reset_failed",
+    )
+    kind, task = await claim_once(db, sid)
+    assert kind == "claimed"
+    # A transition into flight clears the stale value for every claim
+    # lifecycle; activation also protects a value that races in afterward.
+    await db.set_task_meta("t1", "needs_attention", "slot_reset_failed")
+    assert await db.activate_claim(sid, "t1", epoch=task.claim_epoch, now=NOW) is not None
+    assert await db.get_task_meta("t1", "needs_attention") is None
+
+
 async def test_two_sessions_race_one_task_and_leave_one_complete_holder_graph(db):
     """Exactly one racer claims, and its holder graph is complete.
 

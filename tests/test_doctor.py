@@ -81,6 +81,7 @@ class TestRegistry:
         from src.doctor.pool_checks import pool_checks
         from src.doctor.profile_checks import profile_checks
         from src.doctor.resource_checks import resource_checks
+        from src.doctor.task_checks import task_checks
         from src.doctor.workspace_checks import workspace_checks
 
         reg = default_registry()
@@ -88,6 +89,7 @@ class TestRegistry:
             {c.id for c in builtin_checks()}
             | {c.id for c in hierarchy_checks()}
             | {c.id for c in pool_checks()}
+            | {c.id for c in task_checks()}
             | {c.id for c in formula_checks()}
             | {c.id for c in resource_checks()}
             | {c.id for c in integration_checks()}
