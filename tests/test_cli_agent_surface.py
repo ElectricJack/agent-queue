@@ -280,7 +280,17 @@ class TestHandoffCLI:
 
 
 # ---------------------------------------------------------------------------
-# aq inbox --inject (S1 stub — always exits 0, prints nothing)
+# aq inbox --inject — hook safety with no resolvable recipient.
+#
+# This module no longer defines ``inbox``: its Phase S1 no-op stub collided
+# with the real ``aq inbox`` in ``src/cli/messages.py`` on the shared click
+# root group, so which one an interpreter got depended on import order (see
+# tests/test_cli_module_entry.py). These tests always ran against the
+# surviving ``messages.py`` command — ``app.py`` imports this module first,
+# so ``messages.py`` won — and they still pin the property the stub existed
+# for: a stale hook file calling ``aq inbox --inject`` from a session with
+# no ``AQ_SESSION_ID``/``AQ_TASK_ID`` exits 0, prints nothing, and never
+# reaches the daemon.
 # ---------------------------------------------------------------------------
 
 
@@ -300,10 +310,10 @@ class TestInboxCLI:
         assert result.output == ""
 
     def test_never_touches_the_daemon(self, runner):
-        """The stub must not construct a CLIClient at all."""
+        """With no recipient to resolve, the hook path builds no CLIClient."""
         from src.cli.app import cli
 
-        with patch("src.cli.agent_surface._get_client") as get_client:
+        with patch("src.cli.messages._get_client") as get_client:
             result = runner.invoke(cli, ["inbox", "--inject"])
         assert result.exit_code == 0
         get_client.assert_not_called()
