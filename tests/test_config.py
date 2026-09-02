@@ -172,3 +172,40 @@ def test_psycopg3_dsn_is_accepted():
     from src.config import DatabaseConfig
 
     assert DatabaseConfig(url="postgresql+psycopg://u:p@h/db").validate() == []
+
+
+def test_graph_layout_config_defaults_and_parse(tmp_path):
+    from src.config import load_config
+
+    p = tmp_path / "c.yaml"
+    p.write_text(yaml.dump({
+        "discord": {"bot_token": "t", "guild_id": "1"},
+        "database_path": str(tmp_path / "test.db"),
+        "dashboard": {"graph_layout": {"enabled": True, "incremental_debounce_ms": 250}},
+    }))
+    cfg = load_config(str(p))
+    assert cfg.graph_layout.enabled is True
+    assert cfg.graph_layout.incremental_debounce_ms == 250
+    assert cfg.graph_layout.reconcile_interval_seconds == 900
+
+
+def test_graph_layout_config_defaults_when_absent(tmp_path):
+    from src.config import load_config
+
+    p = tmp_path / "c.yaml"
+    p.write_text(yaml.dump({
+        "discord": {"bot_token": "t", "guild_id": "1"},
+        "database_path": str(tmp_path / "test.db"),
+    }))
+    cfg = load_config(str(p))
+    assert cfg.graph_layout.enabled is False
+    assert cfg.graph_layout.reconcile_interval_seconds == 900
+    assert cfg.graph_layout.incremental_debounce_ms == 500
+    assert cfg.graph_layout.tidy_job_budget_seconds == 60
+
+
+def test_graph_layout_config_validate_rejects_negative():
+    from src.config import GraphLayoutConfig
+
+    errors = GraphLayoutConfig(reconcile_interval_seconds=-1).validate()
+    assert [e.field for e in errors] == ["reconcile_interval_seconds"]

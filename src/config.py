@@ -1340,6 +1340,23 @@ class SwarmConfig:
 
 
 @dataclass
+class GraphLayoutConfig:
+    """Server-side task graph layout (spatial-layout design §8). YAML: ``dashboard.graph_layout``."""
+
+    enabled: bool = False
+    reconcile_interval_seconds: int = 900
+    incremental_debounce_ms: int = 500
+    tidy_job_budget_seconds: int = 60
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        for key in ("reconcile_interval_seconds", "incremental_debounce_ms", "tidy_job_budget_seconds"):
+            if getattr(self, key) < 0:
+                errors.append(ConfigError("dashboard.graph_layout", key, "must be >= 0"))
+        return errors
+
+
+@dataclass
 class AppConfig:
     """Top-level application configuration aggregating all subsystem configs.
 
@@ -1397,6 +1414,7 @@ class AppConfig:
     work_graph: WorkGraphConfig = field(default_factory=WorkGraphConfig)
     integration: IntegrationConfig = field(default_factory=IntegrationConfig)
     swarm: SwarmConfig = field(default_factory=SwarmConfig)
+    graph_layout: GraphLayoutConfig = field(default_factory=GraphLayoutConfig)
     agent_profiles: list[AgentProfileConfig] = field(default_factory=list)
     global_token_budget_daily: int | None = None
     max_daily_playbook_tokens: int | None = None
@@ -1570,6 +1588,7 @@ class AppConfig:
         errors.extend(self.work_graph.validate())
         errors.extend(self.integration.validate())
         errors.extend(self.swarm.validate())
+        errors.extend(self.graph_layout.validate())
         # ``supervisor_agent.enabled`` needs the message queue and named
         # sessions to exist (supervisor-agent spec §10).
         if self.supervisor_agent.enabled and not (self.messages.enabled and self.sessions.enabled):
@@ -2430,6 +2449,14 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             prepare_timeout=int(sw.get("prepare_timeout", 120)),
             max_filings_per_task=int(sw.get("max_filings_per_task", 20)),
         )
+
+    gl = (raw.get("dashboard") or {}).get("graph_layout") or {}
+    config.graph_layout = GraphLayoutConfig(
+        enabled=bool(gl.get("enabled", False)),
+        reconcile_interval_seconds=int(gl.get("reconcile_interval_seconds", 900)),
+        incremental_debounce_ms=int(gl.get("incremental_debounce_ms", 500)),
+        tidy_job_budget_seconds=int(gl.get("tidy_job_budget_seconds", 60)),
+    )
 
     if "agent_profiles" in raw:
         profiles = []
