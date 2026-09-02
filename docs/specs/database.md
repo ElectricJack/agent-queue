@@ -606,6 +606,27 @@ The task history API filters by the resolved task's project and creation time; o
 audit associations stay stored and remain addressable by attempt ID.
 The SQLite-to-PostgreSQL copy inventory includes this audit table.
 
+### Table: `subagent_events`
+
+Immutable native sub-agent lifecycle telemetry. Harness `SubagentStart` and
+`SubagentStop` hooks record events through `aq subagent event`; duplicate deliveries
+share a deterministic ID so the active-child count can be derived safely from the
+append-only history.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Deterministic digest of session, event and child id |
+| `session_id` | TEXT | NOT NULL | Logical parent session reference; retained after session deletion |
+| `harness` | TEXT | NOT NULL | Harness that emitted the event |
+| `project_id`, `task_id` | TEXT | nullable | Attribution snapshots |
+| `subagent_id` | TEXT | NOT NULL | Harness-provided child-agent identifier |
+| `agent_type`, `turn_id` | TEXT | nullable | Optional harness provenance |
+| `event` | TEXT | NOT NULL CHECK start/stop | Lifecycle half recorded by the hook |
+| `occurred_at` | REAL | NOT NULL | Daemon receipt timestamp |
+
+Indexes cover (`session_id`, `event`) for per-session folding and `occurred_at` for
+chronological reads. The SQLite-to-PostgreSQL copy inventory includes this table.
+
 ### Table: `messages`
 
 Inter-agent message queue (supervisor/agent messaging).

@@ -153,12 +153,13 @@ def test_commands_outside_the_agent_set_are_refused_outright(command):
     assert args == {}
 
 
-def test_a_worker_terminal_without_a_project_may_only_prime_and_read_the_schema():
+def test_a_worker_terminal_without_a_project_may_prime_read_schema_or_report_subagents():
     scope = RequestScope(kind="session", session_id="s1", task_id=None, project_id=None)
 
-    for command in ("prime", "get_schema"):
+    allowed = {"prime", "get_schema", "subagent_event"}
+    for command in allowed:
         assert check_command_scope(command, {}, scope) is None
-    for command in sorted(AGENT_COMMAND_SET - {"prime", "get_schema"}):
+    for command in sorted(AGENT_COMMAND_SET - allowed):
         assert (
             check_command_scope(command, {}, scope)
             == "out of scope: this interactive agent has no assigned project"

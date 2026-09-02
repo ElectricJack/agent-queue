@@ -57,6 +57,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "install_profile": "agent",
     "export_profile": "agent",
     "import_profile": "agent",
+    "subagent_event": "agent",
     # agent profiles (project-scoped CRUD wrappers)
     "create_project_profile": "agent",
     "edit_project_profile": "agent",
@@ -3813,6 +3814,44 @@ _ALL_TOOL_DEFINITIONS = [
                     ),
                 },
             },
+        },
+    },
+    {
+        "name": "subagent_event",
+        "description": (
+            "Record a native sub-agent start or stop event for the calling session. "
+            "Harness hooks use this to report their own child-agent lifecycle; the "
+            "session identity comes from the bearer token when present."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "event": {
+                    "type": "string",
+                    "enum": ["start", "stop"],
+                    "description": "Native lifecycle event reported by the harness hook.",
+                },
+                "subagent_id": {
+                    "type": "string",
+                    "description": "Harness-provided identifier for the child agent.",
+                },
+                "agent_type": {
+                    "type": "string",
+                    "description": "Optional harness sub-agent type.",
+                },
+                "turn_id": {
+                    "type": "string",
+                    "description": "Optional harness turn identifier.",
+                },
+                "session_id": {
+                    "type": "string",
+                    "description": (
+                        "Session to attribute the event to for local replay only; a bearer "
+                        "token always supplies its own session identity."
+                    ),
+                },
+            },
+            "required": ["event", "subagent_id"],
         },
     },
     {

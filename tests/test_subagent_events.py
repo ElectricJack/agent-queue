@@ -261,3 +261,10 @@ def test_a_projectless_interactive_terminal_may_still_report_its_children():
     assert check_command_scope("subagent_event", {}, scope) is None
     # ...but it still cannot reach the rest of the surface.
     assert check_command_scope("task_close", {}, scope) is not None
+
+
+def test_hook_receiver_is_not_auto_generated_as_an_agent_command():
+    """The hook-only CLI path must remain ``aq subagent event``."""
+    from src.cli.auto_commands import HANDCRAFTED_COVERAGE
+
+    assert "subagent_event" in HANDCRAFTED_COVERAGE

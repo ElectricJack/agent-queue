@@ -687,7 +687,7 @@ sessions = Table(
     # launched with, and today's harness file may have been edited since.
     # This is what lets ``subagent_counts`` say "complete" instead of
     # "unknown" -- and say "unknown" honestly for the sessions that lack it.
-    Column("hooks_provisioned", Boolean, nullable=False, server_default=text("0")),
+    Column("hooks_provisioned", Boolean, nullable=False, server_default=text("false")),
     Index("idx_sessions_agent", "agent_id", "state"),
     Index("idx_sessions_task_id", "task_id"),
     Index("idx_sessions_state", "state"),
