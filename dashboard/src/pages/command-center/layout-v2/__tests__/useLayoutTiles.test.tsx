@@ -57,6 +57,25 @@ describe("useLayoutTiles", () => {
     act(() => result.current.refetchVisible());
     await waitFor(() => expect(result.current.store.nodes.has("z")).toBe(true));
   });
+  it("re-fetches cells dropped by a layout_version bump", async () => {
+    fetchTiles.mockResolvedValueOnce(ok([node("a", 1, 1)], 1));
+    const { result, rerender } = renderHook(({ rect }) => useLayoutTiles("p1", params, rect),
+      { initialProps: { rect: { x0: 0, y0: 0, x1: 4, y1: 4 } } });
+    await waitFor(() => expect(result.current.store.nodes.has("a")).toBe(true));
+    // Response 2 covers only the newly-revealed cells but carries a new
+    // layout_version, so mergeTiles throws away everything already loaded.
+    fetchTiles.mockResolvedValueOnce(ok([node("b", 20, 1)], 2));
+    fetchTiles.mockResolvedValueOnce(ok([node("a", 1, 1)], 2));
+    rerender({ rect: { x0: 0, y0: 0, x1: 20, y1: 4 } });
+    await waitFor(() => expect(fetchTiles).toHaveBeenCalledTimes(3));
+    expect(fetchTiles.mock.calls[1]![1]).toEqual({ x0: 16, y0: -8, x1: 32, y1: 16 });
+    expect(fetchTiles.mock.calls[2]![1]).toEqual({ x0: -8, y0: -8, x1: 16, y1: 16 });
+    await waitFor(() => {
+      expect(result.current.store.nodes.has("a")).toBe(true);
+      expect(result.current.store.nodes.has("b")).toBe(true);
+    });
+    expect(result.current.store.version).toBe(2);
+  });
   it("reports pending on 202", async () => {
     fetchTiles.mockResolvedValue({ pending: true });
     const { result } = renderHook(() => useLayoutTiles("p1", params, { x0: 0, y0: 0, x1: 4, y1: 4 }));

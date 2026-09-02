@@ -69,6 +69,11 @@ export function useLayoutTiles(
       setStore(merged);
       const depth = paramsRef.current.maxDepth ?? null;
       if (nodeCount(merged) > NODE_BUDGET && (depth === null || depth > 0)) onBudget.current?.();
+      // A response carrying a new layout_version makes mergeTiles drop every
+      // previously-loaded cell and re-add only this request's, so cells still
+      // inside the viewport can come back unloaded. Ask for another pass
+      // rather than waiting for the next pan to notice.
+      if (missingCells(merged, wantedRef.current).length > 0) dirty.current = true;
     } catch (e) {
       if (!ac.signal.aborted) setError(e as Error);
     } finally {
@@ -115,6 +120,7 @@ export function useLayoutTiles(
     storeRef.current = { ...s, loaded, cells, nodes };
     inflight.current?.abort();
     inflight.current = null;
+    dirty.current = false;
     void load();
   }, [load]);
 
