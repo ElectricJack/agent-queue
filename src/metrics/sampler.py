@@ -105,12 +105,11 @@ def read_machine() -> dict[str, float | None]:
                 "MemAvailable:": "mem_available_mb",
             }
             for line in handle:
-                key = line.split(None, 1)[0]
-                field = wanted.get(key)
-                if field is None:
-                    continue
                 parts = line.split()
-                if len(parts) >= 2:
+                if len(parts) < 2:
+                    continue
+                field = wanted.get(parts[0])
+                if field is not None:
                     # /proc/meminfo reports kB.
                     out[field] = round(int(parts[1]) / 1024.0, 1)
     except (OSError, ValueError):

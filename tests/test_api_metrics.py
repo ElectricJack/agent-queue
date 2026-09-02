@@ -168,6 +168,38 @@ def test_metrics_frames_are_forwarded_to_websocket_clients():
     assert METRIC_TICK_EVENT.startswith(_FORWARDED_PREFIXES)
 
 
+async def test_a_sampler_tick_reaches_a_local_client_and_not_a_scoped_worker():
+    """End to end over the bus: sampler emit -> fan-out -> client queue."""
+    import asyncio
+
+    from src.api.websocket import WebSocketManager
+    from src.event_bus import EventBus
+
+    bus = EventBus(env="dev")
+    manager = WebSocketManager(bus)
+    manager._clients["dashboard"] = asyncio.Queue()
+    manager._client_scope["dashboard"] = LOCAL_SCOPE
+    manager._clients["worker"] = asyncio.Queue()
+    manager._client_scope["worker"] = RequestScope(
+        kind="session", session_id="s1", project_id="p1"
+    )
+    manager.start()
+    try:
+        await bus.emit(
+            METRIC_TICK_EVENT,
+            {"ts": BASE, "agents": {"total": 4}, "machine": {"load1": 3.25}},
+        )
+    finally:
+        manager.shutdown()
+
+    frame = manager._clients["dashboard"].get_nowait()
+    assert frame["_event_type"] == METRIC_TICK_EVENT
+    assert frame["agents"]["total"] == 4
+    assert frame["machine"]["load1"] == 3.25
+    # A fleet-wide sample names every session and profile on the box.
+    assert manager._clients["worker"].empty()
+
+
 def test_only_local_and_elevated_scopes_see_a_fleet_wide_sample():
     assert _metrics_event_allowed(LOCAL_SCOPE) is True
     elevated = RequestScope(

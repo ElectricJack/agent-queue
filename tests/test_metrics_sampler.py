@@ -505,6 +505,36 @@ async def test_bus_only_events_become_per_hour_rates(db):
     assert sample["stall"]["nudges_per_hour"] == 0
 
 
+async def test_start_runs_the_loop_and_stop_leaves_the_series_on_disk(db):
+    """The lifecycle ``src/main.py`` actually calls, end to end."""
+    import asyncio
+
+    bus = EventBus(validate_events=True)
+    seen: list[dict] = []
+    bus.subscribe(METRIC_TICK_EVENT, lambda data: seen.append(data))
+    sampler = make_sampler(
+        db,
+        bus=bus,
+        clock=time.time,
+        interval_seconds=0.01,
+        flush_interval_seconds=0.01,
+    )
+
+    await sampler.start()
+    try:
+        for _ in range(200):
+            if len(seen) >= 3:
+                break
+            await asyncio.sleep(0.01)
+    finally:
+        await sampler.stop()
+
+    assert len(seen) >= 3
+    assert await db.read_metrics_samples("1s", 0, time.time() + 60)
+    # The durable counter ran, so a restart would report one.
+    assert sampler._daemon_starts == 1
+
+
 async def test_disabled_sampler_starts_nothing(db):
     sampler = make_sampler(db, enabled=False)
     await sampler.start()
