@@ -25,6 +25,8 @@ from src.models import (
     Workspace,
 )
 from src.orchestrator import Orchestrator
+from src.sessions import SessionProviderRegistry
+from src.sessions.reconciler import SessionReconciler
 
 PROJECT_ID = "proj"
 NOW = time.time()
@@ -149,6 +151,70 @@ def emitted(handler):
 
 
 class TestClaim:
+    async def test_close_release_race_keeps_live_pool_worker_available(
+        self, handler, db, config, tmp_path, monkeypatch
+    ):
+        """A terminal task is a normal intermediate state before pool release.
+
+        Hold the close path immediately before its ``release_claim`` and run
+        the orphan sweep in that window.  The sweep must release only the
+        task hold; terminating the worker would bypass normal pool
+        scale-down grace and an explicit drain acknowledgement.
+        """
+        await mktask(db, "t1", profile_id="worker")
+        sid, _ = await pool_session(db, tmp_path)
+        h = scoped(handler, sid)
+        claim = await h._cmd_task_claim({"next": True})
+
+        release_started = asyncio.Event()
+        allow_close_release = asyncio.Event()
+        real_release_claim = db.release_claim
+        release_calls = 0
+
+        async def gate_close_release(*args, **kwargs):
+            nonlocal release_calls
+            release_calls += 1
+            if release_calls == 1:
+                release_started.set()
+                await allow_close_release.wait()
+            return await real_release_claim(*args, **kwargs)
+
+        monkeypatch.setattr(db, "release_claim", gate_close_release)
+        close = asyncio.create_task(
+            h._cmd_task_close(
+                {
+                    "task_id": "t1",
+                    "outcome": "pass",
+                    "summary": "done",
+                    "claim_epoch": claim["claim_epoch"],
+                }
+            )
+        )
+        try:
+            await asyncio.wait_for(release_started.wait(), timeout=5)
+            assert (await db.get_task("t1")).status == TaskStatus.COMPLETED
+
+            reconciler = SessionReconciler(
+                db,
+                config,
+                SessionProviderRegistry({}),
+                bus=handler.orchestrator.bus,
+                orchestrator=handler.orchestrator,
+                epoch="test",
+            )
+            await reconciler._step_orphans(await db.list_sessions(live_only=True), time.time())
+
+            session = await db.get_session(sid)
+            assert (session.state, session.desired_state, session.task_id) == (
+                "running",
+                "running",
+                None,
+            )
+            assert (await db.get_agent("agent-1")).state == AgentState.IDLE
+        finally:
+            allow_close_release.set()
+            await close
+
     async def test_claim_next_returns_task_epoch_and_writes_file(self, handler, db, tmp_path):
         handler.orchestrator.bus.emit = AsyncMock()
         await mktask(db, "t1", profile_id="worker")
