@@ -12,9 +12,22 @@ from src.task_graph.layout.view import (
 
 
 def row(tid, path, depth, kind="card", children=0, rank=0, key="U", x=0.0, y=0.0):
-    return LayoutRow(task_id=tid, container_id=ancestors_of(path)[-1] if depth else None,
-                     path=path, depth=depth, rank=rank, order_key=key, w=1, h=1,
-                     rel_x=x, rel_y=y, abs_x=x, abs_y=y, kind=kind, agg_children=children)
+    return LayoutRow(
+        task_id=tid,
+        container_id=ancestors_of(path)[-1] if depth else None,
+        path=path,
+        depth=depth,
+        rank=rank,
+        order_key=key,
+        w=1,
+        h=1,
+        rel_x=x,
+        rel_y=y,
+        abs_x=x,
+        abs_y=y,
+        kind=kind,
+        agg_children=children,
+    )
 
 
 ROWS = {
@@ -74,15 +87,19 @@ def test_depth_first_order_uses_ordinals():
 
 
 def test_owner_map_longest_prefix():
-    rows = {"t": row("t", "/e/p/t/", 2), "p": row("p", "/e/p/", 1, "container", 1)}
-    assert owner_map(rows, {"e": "/e/", "p": "/e/p/"}) == {"t": "p", "p": "p"}
+    paths = {"t": "/e/p/t/", "p": "/e/p/"}
+    assert owner_map(paths, {"e": "/e/", "p": "/e/p/"}) == {"t": "p", "p": "p"}
 
 
 def test_remap_dedupes_and_drops_hierarchy_edges():
     visible = {"e": "collapsed", "z": "card"}
     owner = {"t1": "e", "t2": "e"}
-    edges = [("z", "t1", "blocks", None), ("z", "t2", "blocks", None),
-             ("t1", "e", "parent-child", None), ("t1", "t2", "blocks", None)]
+    edges = [
+        ("z", "t1", "blocks", None),
+        ("z", "t2", "blocks", None),
+        ("t1", "e", "parent-child", None),
+        ("t1", "t2", "blocks", None),
+    ]
     wire, orphans = remap_edges(edges, visible, owner)
     assert wire == [{"from": "z", "to": "e", "dep_type": "blocks", "description": None, "count": 2}]
     assert orphans == set()

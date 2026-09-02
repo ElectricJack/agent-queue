@@ -27,11 +27,13 @@ def client_factory(db):
         app = FastAPI()
         app.include_router(build_graph_layout_router(db=db))
         return AsyncClient(transport=ASGITransport(app=app), base_url="http://t")
+
     return _make
 
 
 async def seed(db):
     """epic e{c0,c1,pkg{g0,g1}}, root card z blocked by c0, hub with 10 dependents."""
+
     async def mk(tid, parent=None, status=TaskStatus.DEFINED):
         await db.create_task(
             Task(id=tid, project_id="p1", title=f"Title {tid}", description="", status=status)
@@ -39,17 +41,25 @@ async def seed(db):
         if parent:
             async with db._engine.begin() as conn:
                 await db.set_parent(tid, parent, conn=conn)
-    await mk("e"); await mk("c0", "e"); await mk("c1", "e", TaskStatus.COMPLETED)
-    await mk("pkg", "e"); await mk("g0", "pkg"); await mk("g1", "pkg")
-    await mk("z"); await db.add_dependency("z", "c0")
+
+    await mk("e")
+    await mk("c0", "e")
+    await mk("c1", "e", TaskStatus.COMPLETED)
+    await mk("pkg", "e")
+    await mk("g0", "pkg")
+    await mk("g1", "pkg")
+    await mk("z")
+    await db.add_dependency("z", "c0")
     await mk("hub")
     for i in range(10):
-        await mk(f"d{i}"); await db.add_dependency(f"d{i}", "hub")
+        await mk(f"d{i}")
+        await db.add_dependency(f"d{i}", "hub")
     await db.create_agent(
         Agent(id="a1", name="bot", profile_id="p", state=AgentState.BUSY, current_task_id="g0")
     )
     drv = LayoutDriver(db)
-    await drv.full_layout("p1", "all"); await drv.full_layout("p1", "active")
+    await drv.full_layout("p1", "all")
+    await drv.full_layout("p1", "active")
 
 
 ALL = {"variant": "all", "rect": {"x0": -1, "y0": -1, "x1": 60, "y1": 60}, "expanded": []}
@@ -79,9 +89,9 @@ async def test_tiles_default_collapsed(db, client_factory):
     assert e["agg_children"] == 3 and e["agg_descendants"] == 5 and e["agg_completed"] == 1
     assert e["title"] == "Title e"
     # z blocks-on c0 remaps to e, arrow drawn e -> z on the wire as from=z,to=e
-    assert {
-        "from": "z", "to": "e", "dep_type": "blocks", "description": None, "count": 1
-    } in body["edges"]
+    assert {"from": "z", "to": "e", "dep_type": "blocks", "description": None, "count": 1} in body[
+        "edges"
+    ]
     assert body["workers"] == [
         {"agent_id": "a1", "name": "bot", "docked_at": "e", "in_collapsed": True}
     ]
@@ -102,9 +112,18 @@ async def test_tiles_expanded_and_rect_culling(db, client_factory):
         )
         assert r2.json()["nodes"] == []
         # a rect covering only e's box still returns e (box intersection, not origin)
-        r3 = await ac.post("/api/projects/p1/graph/tiles", json={**ALL, "rect": {
-            "x0": e["x"] + e["w"] - 0.5, "y0": e["y"] + e["h"] - 0.5,
-            "x1": e["x"] + e["w"] + 1, "y1": e["y"] + e["h"] + 1}})
+        r3 = await ac.post(
+            "/api/projects/p1/graph/tiles",
+            json={
+                **ALL,
+                "rect": {
+                    "x0": e["x"] + e["w"] - 0.5,
+                    "y0": e["y"] + e["h"] - 0.5,
+                    "x1": e["x"] + e["w"] + 1,
+                    "y1": e["y"] + e["h"] + 1,
+                },
+            },
+        )
         assert "e" in {n["id"] for n in r3.json()["nodes"]}
 
 
@@ -155,7 +174,10 @@ async def test_tiles_validation(db, client_factory):
             json={**ALL, "expanded": [str(i) for i in range(2001)]},
         )
     assert {
-        bad_rect.status_code, too_big.status_code, bad_variant.status_code, too_many.status_code
+        bad_rect.status_code,
+        too_big.status_code,
+        bad_variant.status_code,
+        too_many.status_code,
     } == {400}
 
 
@@ -205,9 +227,15 @@ async def test_tiles_no_worker_docks_at_a_culled_container(db, client_factory):
 async def test_tiles_root_focus_forces_all_and_expands_root(db, client_factory):
     await seed(db)
     async with client_factory() as ac:
-        r = await ac.post("/api/projects/p1/graph/tiles", json={
-            "variant": "active", "rect": {"x0": 0, "y0": 0, "x1": 1, "y1": 1},
-            "expanded": [], "root": "e"})
+        r = await ac.post(
+            "/api/projects/p1/graph/tiles",
+            json={
+                "variant": "active",
+                "rect": {"x0": 0, "y0": 0, "x1": 1, "y1": 1},
+                "expanded": [],
+                "root": "e",
+            },
+        )
     body = r.json()
     ids = {n["id"] for n in body["nodes"]}
     assert ids == {"e", "c0", "c1", "pkg"}  # c1 is COMPLETED but variant forced to all
@@ -282,7 +310,9 @@ async def test_list_paginates_in_layout_order(db, client_factory):
 
 async def test_list_validation_runs_before_any_backfill(db, client_factory):
     async with client_factory() as ac:
-        bad_limit = await ac.post("/api/projects/p1/graph/list", json={"variant": "all", "limit": 0})
+        bad_limit = await ac.post(
+            "/api/projects/p1/graph/list", json={"variant": "all", "limit": 0}
+        )
         bad_cursor = await ac.post(
             "/api/projects/p1/graph/list", json={"variant": "all", "cursor": "!!not-base64!!"}
         )
@@ -329,9 +359,7 @@ async def test_list_status_filter_is_case_insensitive(db, client_factory):
 async def test_list_never_loads_the_whole_project(db, client_factory, monkeypatch):
     """`list` pages over open containers only, never the whole variant."""
     for n in (1, 2, 3):
-        await db.create_task(
-            Task(id=f"e{n}", project_id="p1", title=f"Epic {n}", description="")
-        )
+        await db.create_task(Task(id=f"e{n}", project_id="p1", title=f"Epic {n}", description=""))
         for k in range(5):
             kid = f"e{n}c{k}"
             await db.create_task(

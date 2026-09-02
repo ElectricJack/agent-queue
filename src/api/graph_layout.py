@@ -226,10 +226,10 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
                     vis.collapsed_paths.pop(tid, None)
 
         # Edges: touching visible ids or anything inside a visible collapsed subtree.
-        hidden_rows = await db.load_rows_by_prefixes(
+        hidden_paths = await db.load_paths_by_prefixes(
             project_id, variant, list(collapsed_resolved.values())
         )
-        hidden_owner = owner_map(hidden_rows, collapsed_resolved)
+        hidden_owner = owner_map(hidden_paths, collapsed_resolved)
         touching = set(vis.visible) | set(hidden_owner)
         raw_edges = await db.load_edges_touching(touching)
         wire, _orphans = remap_edges(raw_edges, vis.visible, hidden_owner)
@@ -350,13 +350,13 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
         # direct children of every open container.  Under `max_depth=None,
         # root=None` that set IS the visible set, so a page costs
         # |expanded| + |matches| rather than a whole project (design §5.3).
-        all_rows = await db.load_rows_for_containers(
-            project_id, variant, [None, *req.expanded]
-        )
+        all_rows = await db.load_rows_for_containers(project_id, variant, [None, *req.expanded])
         matches: set[str] | None = None
         forced: set[str] = set()
         if req.q.strip() or status:
-            matches = await db.load_matching_ids(project_id, variant, q=req.q.strip(), status=status)
+            matches = await db.load_matching_ids(
+                project_id, variant, q=req.q.strip(), status=status
+            )
             match_rows = await db.load_rows_with_tasks(project_id, variant, sorted(matches))
             all_rows.update(match_rows)
             forced = forced_expansion_for(matches, {t: rt[0] for t, rt in match_rows.items()})

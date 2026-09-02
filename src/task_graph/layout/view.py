@@ -8,6 +8,7 @@ to clients.
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from src.task_graph.layout.model import LayoutRow
@@ -26,8 +27,12 @@ class Visible:
 
 
 def resolve_visible(
-    rows: dict[str, LayoutRow], *, expanded: set[str], max_depth: int | None,
-    root: str | None, forced_expanded: set[str],
+    rows: dict[str, LayoutRow],
+    *,
+    expanded: set[str],
+    max_depth: int | None,
+    root: str | None,
+    forced_expanded: set[str],
 ) -> Visible:
     """Resolve which rows are visible under the given viewport state.
 
@@ -53,7 +58,7 @@ def resolve_visible(
         anc = ancestors_of(r.path)
         if out.root_path:
             if root in anc:
-                anc = anc[anc.index(root) + 1:]
+                anc = anc[anc.index(root) + 1 :]
             elif tid == root:
                 anc = []
         ok = True
@@ -80,6 +85,7 @@ def depth_first_order(rows: dict[str, LayoutRow]) -> list[str]:
     def key(r: LayoutRow) -> tuple:
         parts = [p for p in r.path.split("/") if p]
         return tuple((rows[p].rank, rows[p].order_key) if p in rows else (0, "") for p in parts)
+
     return sorted(rows, key=lambda t: key(rows[t]))
 
 
@@ -87,13 +93,19 @@ DRAWN_TYPES = frozenset({"blocks", "waits-for", "conditional-blocks", "discovere
 
 
 def owner_map(
-    rows_in_collapsed: dict[str, LayoutRow], collapsed_paths: dict[str, str],
+    paths_in_collapsed: Mapping[str, str],
+    collapsed_paths: dict[str, str],
 ) -> dict[str, str]:
+    """Map each hidden task id to the collapsed container that owns it.
+
+    `paths_in_collapsed` is task_id -> path (not full `LayoutRow`s): the
+    caller only needs paths for this, and hidden subtrees can be large.
+    """
     by_len = sorted(collapsed_paths.items(), key=lambda kv: -len(kv[1]))
     out: dict[str, str] = {}
-    for tid, r in rows_in_collapsed.items():
+    for tid, path in paths_in_collapsed.items():
         for cid, p in by_len:
-            if r.path.startswith(p):
+            if path.startswith(p):
                 out[tid] = cid
                 break
     return out
@@ -188,7 +200,9 @@ def cap_stubs(
 
 
 def dock_workers(
-    agents: list[dict], visible: set[str], hidden_owner: dict[str, str],
+    agents: list[dict],
+    visible: set[str],
+    hidden_owner: dict[str, str],
 ) -> list[dict]:
     out = []
     for a in agents:

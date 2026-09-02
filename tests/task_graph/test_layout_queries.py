@@ -213,6 +213,7 @@ async def test_rows_in_cells_and_prefixes(db):
     assert set(await db.load_rows_in_cells("p1", "all", [(0, 0)])) == {"e", "c"}
     assert set(await db.load_rows_in_cells("p1", "all", [(5, 5)])) == {"far"}
     assert set(await db.load_rows_by_prefixes("p1", "all", ["/e/"])) == {"e", "c"}
+    assert await db.load_paths_by_prefixes("p1", "all", ["/e/"]) == {"e": "/e/", "c": "/e/c/"}
     with_tasks = await db.load_rows_with_tasks("p1", "all", ["c"])
     assert with_tasks["c"][1]["title"] == "C"
 

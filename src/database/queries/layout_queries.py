@@ -852,6 +852,33 @@ class LayoutQueryMixin:
             )
             return {m["task_id"]: self._row_from_mapping(m) for m in res.mappings()}
 
+    async def load_paths_by_prefixes(self, project_id, variant, prefixes) -> dict[str, str]:
+        """Light form of `load_rows_by_prefixes`: task_id -> path only.
+
+        Callers that only need to know which task owns which path (e.g.
+        `owner_map`) don't need the other dozen layout columns for what can
+        be ~1,000 hidden rows.
+        """
+        from sqlalchemy import or_
+        from src.database.tables import task_layouts
+
+        if not prefixes:
+            return {}
+        async with self._engine.begin() as conn:
+            res = await conn.execute(
+                select(task_layouts.c.task_id, task_layouts.c.path).where(
+                    task_layouts.c.project_id == project_id,
+                    task_layouts.c.variant == variant,
+                    or_(
+                        *[
+                            task_layouts.c.path.like(like_prefix(p), escape="\\")
+                            for p in prefixes
+                        ]
+                    ),
+                )
+            )
+            return {m["task_id"]: m["path"] for m in res.mappings()}
+
     async def load_edges_touching(self, task_ids):
         from sqlalchemy import or_
         from src.database.tables import task_dependencies as td
