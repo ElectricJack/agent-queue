@@ -79,9 +79,9 @@ and the `Review: Review: ...` chain grew again (task solid-beacon-50). A custom
 pipeline that both keys its review tasks differently *and* runs them under its
 own profile ids must add its own guard.
 
-The common event emitter derives the dedup-key signal from the task row for
-every `task.completed`, so container settlement and future emitters cannot
-forget it (task prime-quest-67). The dispatch path
+The common event emitter derives both signals from the task row for every
+`task.completed`, so container settlement and future emitters cannot forget
+them (tasks prime-quest-67 and crisp-summit-88). The dispatch path
 (`Orchestrator._on_playbook_trigger`) derives it again from the hydrated task
 row, because `truthy: false` passes on a *missing* key: an older daemon or a
 hand-written event used to fire the review anyway (task prime-cascade-64).

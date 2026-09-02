@@ -93,12 +93,10 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
         # commits ahead of its base when the completion pipeline asked).
         # The default pipeline's review rules skip such tasks; emitters that
         # omit it are treated as code-bearing.
-        # ``review_task``: set by the same path when the task is one the
-        # pipeline created as a review (``review:task:`` / ``branch-review:``
-        # dedup key, see ``src/review_keys.py``).  The review rules skip these
-        # too, independent of any profile flag.  Emitters may omit it: the
-        # pipeline dispatch path re-derives it from the hydrated task row, so
-        # a review is never reviewed whatever the emitter sent.
+        # ``review_task``: set by every emitter when either the task's dedup
+        # key or its reviewer profile identifies it as a review (see
+        # ``src/review_keys.py``).  The pipeline dispatch path also re-derives
+        # the dedup-key signal from the hydrated row for older emitters.
         "optional": ["agent_id", "agent_type", "no_code", "review_task"],
     },
     "task.failed": {

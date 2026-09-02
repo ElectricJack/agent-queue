@@ -13,7 +13,7 @@ from src.notifications.events import (
     TextNotifyEvent,
 )
 from src.models import Task, TaskStatus
-from src.review_keys import is_pipeline_review_task
+from src.review_keys import is_review_completion
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,9 @@ class EventsMixin:
         # registers the key (``src/event_schemas.py``), and the only type the
         # review rules trigger on.
         if event_type == "task.completed":
-            payload["review_task"] = is_pipeline_review_task(getattr(task, "dedup_key", None))
+            payload["review_task"] = is_review_completion(
+                getattr(task, "dedup_key", None), getattr(task, "profile_id", None)
+            )
         payload.update(extra)
         await self.bus.emit(event_type, payload)
 

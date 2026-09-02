@@ -569,3 +569,66 @@ async def test_branch_with_commits_close_is_still_reviewed(
     await engine.dispatch("task.completed", completed[0], event_id="with-commits")
 
     assert await _review_rows(h, task_id), "per-task-review no longer fires"
+
+
+@pytest.mark.asyncio
+async def test_keyless_review_close_is_flagged_by_its_profile(
+    orchestrator_factory, pipeline_engine_factory
+):
+    """A review created outside ``ensure_task`` is recognised by profile id."""
+    orch = await orchestrator_factory()
+    h = orch.command_handler
+    await _seed(h)
+    await h.db.upsert_profile(AgentProfile(id="reviewer", name="Reviewer", read_only=False))
+    await h.db.upsert_profile(AgentProfile(id="final-reviewer", name="Final", read_only=False))
+    engine = pipeline_engine_factory(handler=h)
+
+    review_id = (
+        await h.execute(
+            "create_task",
+            {"project_id": "p", "title": "Review: Do work", "profile_id": "reviewer"},
+        )
+    )["created"]
+    await h.db.update_task(
+        review_id, branch_name=f"aq/{review_id}", pr_url="https://github.com/o/r/pull/9"
+    )
+
+    await _close_pass(h, review_id)
+
+    completed = _emitted(orch.bus, "task.completed")
+    assert len(completed) == 1
+    assert completed[0]["no_code"] is False, "read_only=false profile: old guard is inert"
+    assert completed[0]["review_task"] is True
+
+    await engine.dispatch("task.completed", completed[0], event_id="keyless-review-closed")
+    assert await _review_rows(h, review_id) == [], "spawned a review of the review"
+
+
+@pytest.mark.asyncio
+async def test_container_settlement_flags_a_settled_review(orchestrator_factory):
+    """The common completion emitter recognises settled reviews by profile."""
+    orch = await orchestrator_factory()
+    h = orch.command_handler
+    await _seed(h)
+    await h.db.upsert_profile(AgentProfile(id="reviewer", name="Reviewer", read_only=False))
+    orch._emit_text_notify = AsyncMock()
+    orch._check_workflow_stage_completion = AsyncMock()
+
+    review_id = (
+        await h.execute(
+            "create_task",
+            {"project_id": "p", "title": "Review: Do work", "profile_id": "reviewer"},
+        )
+    )["created"]
+    worker_id = (
+        await h.execute(
+            "create_task", {"project_id": "p", "title": "Do work", "profile_id": "worker"}
+        )
+    )["created"]
+
+    await orch._on_containers_settled([review_id, worker_id])
+
+    completed = _emitted(orch.bus, "task.completed")
+    by_task = {payload["task_id"]: payload for payload in completed}
+    assert by_task[review_id]["review_task"] is True
+    assert by_task[worker_id]["review_task"] is False

@@ -48,7 +48,7 @@ from src.commands.helpers import (
     _format_task_tree,
     format_dependency_list,
 )
-from src.review_keys import is_pipeline_review_task, reviewed_task_id
+from src.review_keys import REVIEW_PROFILE_IDS, is_review_completion, reviewed_task_id
 from src.task_summary import write_task_summary
 
 logger = logging.getLogger(__name__)
@@ -2617,7 +2617,7 @@ class TaskCommandsMixin:
         except Exception:
             candidates = []
         terminal = {"COMPLETED", "FAILED", "BLOCKED"}
-        review_profile_ids = {"reviewer", "final-reviewer"}
+        review_profile_ids = REVIEW_PROFILE_IDS
         # The review that is *doing* the rejecting is the one review here that
         # is not stale: it just produced this verdict, and the reviewer profile
         # is documented to call ``task_close(success)`` on it next.  Cancelling
@@ -3506,7 +3506,9 @@ class TaskCommandsMixin:
         reviewed_id = reviewed_task_id(str(dedup_key))
         if reviewed_id is not None:
             reviewed = await self.db.get_task(reviewed_id)
-            if reviewed is not None and is_pipeline_review_task(reviewed.dedup_key):
+            if reviewed is not None and is_review_completion(
+                reviewed.dedup_key, reviewed.profile_id
+            ):
                 logger.info(
                     "ensure_task: refusing review of pipeline review task %s (dedup_key=%s)",
                     reviewed_id,
@@ -3523,28 +3525,6 @@ class TaskCommandsMixin:
         existing = await self.db.find_task_by_dedup_key(str(project_id), str(dedup_key))
         if existing is not None:
             return {"success": True, "task_id": existing.id, "created": False}
-
-        # Structural bound on review nesting (task prime-quest-67).  The
-        # default pipeline already refuses to review a review via
-        # ``event.review_task`` in its ``when`` clause, but that guard lives in
-        # a vault playbook an operator can edit and depends on the emitter
-        # setting the flag; when both slipped, ``Review: Review: ...`` chains
-        # ran six deep, one agent slot and one LLM session per layer, with no
-        # code under review past the first.  Reviewing a review is never
-        # legitimate, so refuse it here regardless of which pipeline asked:
-        # the chain stops at depth 1 whatever the playbooks say.
-        reviewed_id = reviewed_task_id(str(dedup_key))
-        if reviewed_id is not None:
-            reviewed = await self.db.get_task(reviewed_id)
-            if reviewed is not None and is_pipeline_review_task(reviewed.dedup_key):
-                return {
-                    "success": False,
-                    "error": (
-                        f"refusing to create a review of a review: task "
-                        f"{reviewed_id} is itself a review "
-                        f"(dedup_key '{reviewed.dedup_key}')"
-                    ),
-                }
 
         create_args = {
             "project_id": project_id,

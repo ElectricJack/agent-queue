@@ -40,9 +40,10 @@ _LEGACY_DEFAULT_PIPELINE_HASHES = frozenset(
         # guard: inert once the reviewer profiles are ``read_only: false``
         # (task sound-horizon-77.18.2).
         "9d00dee48cb3d031cf24ef6f7edac4b83ad71f5773baf2aede6f4701ffe226a3",
-        # Review rules with both guards, before the prose recorded dispatch's
-        # derived ``review_task`` and empty branches as ``no_code`` (tasks
-        # prime-cascade-64 and bright-forge-78). Rules unchanged; prose only.
+        # Review rules with both guards, before the prose recorded profile-id
+        # recognition, dispatch's derived ``review_task``, and empty branches
+        # as ``no_code`` (tasks crisp-summit-88, prime-cascade-64, and
+        # bright-forge-78). Rules unchanged; prose only.
         "561434cc02575456cc722c46ba5563ee46e9df564fa2062c841333034b97e553",
         # Both guards and the dispatch-derivation prose, before the prose
         # recorded the ``ensure_task`` creation-point refusal (task

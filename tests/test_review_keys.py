@@ -119,6 +119,15 @@ def test_shipped_review_profiles_exist_with_these_ids():
         )
 
 
+def test_default_pipeline_source_pins_the_review_profiles():
+    """The markdown is the source of truth for the profile ids too."""
+    from tests.conftest import DEFAULT_PIPELINE_PATH
+
+    src = DEFAULT_PIPELINE_PATH.read_text(encoding="utf-8")
+    for profile_id in REVIEW_PROFILE_IDS:
+        assert f'"profile_id": "{profile_id}"' in src
+
+
 @pytest.mark.parametrize(
     ("dedup_key", "expected"),
     [
