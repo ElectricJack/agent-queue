@@ -42,18 +42,27 @@ class ArtifactStore:
 
     @staticmethod
     def canonical_bytes(definition: PlaybookDefinitionT) -> bytes:
-        """Use Package 2's canonicalizer when available; retain its exact fallback."""
-        try:
-            from src.playbooks.definition import canonical_bytes
-        except ImportError:
-            if hasattr(definition, "model_dump"):
-                payload = definition.model_dump(mode="json", exclude_none=True)
+        """Use Package 2's canonicalizer for a real definition; keep the fallback.
+
+        Package 2 has now landed, so the import succeeds — but this store is also
+        driven with a plain mapping stand-in (its own suite, and any caller that
+        has already serialized). ``definition.canonical_bytes`` takes a
+        ``PlaybookDefinition``, so the delegation is conditional on actually
+        having one; the fallback emits byte-identical output either way.
+        """
+        if hasattr(definition, "model_dump"):
+            try:
+                from src.playbooks.definition import canonical_bytes
+            except ImportError:
+                pass
             else:
-                payload = definition
-            return json.dumps(
-                payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-            ).encode("utf-8")
-        return canonical_bytes(definition)
+                return canonical_bytes(definition)
+            payload = definition.model_dump(mode="json", exclude_none=True)
+        else:
+            payload = definition
+        return json.dumps(
+            payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8")
 
     @staticmethod
     def _sha(data: bytes) -> str:
