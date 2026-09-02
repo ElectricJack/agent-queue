@@ -67,6 +67,8 @@ async def orch(tmp_path):
     mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
     mock_git.afind_open_pr = AsyncMock(return_value="https://github.com/org/repo/pull/42")
     mock_git.ais_ancestor = AsyncMock(return_value=False)
+    # Default: the task branch carries work, so the PR gate applies.
+    mock_git.acount_commits_ahead = AsyncMock(return_value=1)
     mock_git._arun = AsyncMock(return_value="0")
     mock_git.acommit_all = AsyncMock(return_value=True)
     mock_git.apush_branch = AsyncMock(return_value=None)
@@ -518,3 +520,87 @@ class TestNoCodeTasksSkipThePrGate:
             True,
         )
         integrate.assert_awaited_once()
+
+
+class TestEmptyBranchSkipsThePrGate:
+    """Regression cover for prime-beacon: a task branch with zero commits.
+
+    A review-only task runs in a worktree pinned to its own ``aq/<id>``
+    branch, so ``current_branch != default_branch`` and the pr_mode leg of
+    ``_phase_verify`` demanded a PR — ``No open PR found for branch
+    aq/stark-grove`` — even though the agent committed nothing.  The only
+    ways out were pushing an empty PR or manually checking out main.
+
+    Nothing to push means nothing to PR: a clean tree on a branch with no
+    commits ahead of the default branch passes verification.  The check is
+    independent of the profile/work-outcome escape hatches in
+    :class:`TestNoCodeTasksSkipThePrGate` — it catches a *shipped* worker
+    that turned out to change nothing too.
+    """
+
+    async def _empty_branch_ctx(self, orch, task_id, branch, ahead=0):
+        task = _pr_task(task_id, branch_name=branch)
+        await orch.db.create_task(task)
+        await orch.db.transition_task(task.id, TaskStatus.IN_PROGRESS)
+        orch.git.aget_current_branch = AsyncMock(return_value=branch)
+        orch.git.afind_open_pr = AsyncMock(return_value=None)
+        orch.git.acount_commits_ahead = AsyncMock(return_value=ahead)
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = _ctx(orch, task, ws.workspace_path)
+        ctx.close_session_live = True
+        ctx.work_outcome = "shipped"
+        return task, ctx
+
+    async def test_clean_empty_branch_closes_without_a_pr(self, orch):
+        task, ctx = await self._empty_branch_ctx(orch, "t-empty", "aq/t-empty")
+
+        assert await orch._phase_verify(ctx) == PhaseResult.CONTINUE
+        assert ctx.verification_issues == []
+        assert ctx.verification_reopened is False
+        # The gate is skipped before the PR lookup — no gh call at all.
+        orch.git.afind_open_pr.assert_not_awaited()
+        assert (await orch.db.get_task(task.id)).status is TaskStatus.IN_PROGRESS
+
+    async def test_the_remote_default_is_asked_first(self, orch):
+        """A stale local default must not make an empty branch look busy."""
+        await self._empty_branch_ctx(orch, "t-empty-base", "aq/t-empty-base")
+        ctx = _ctx(orch, await orch.db.get_task("t-empty-base"), "/tmp")
+
+        assert await orch._abranch_has_no_commits(ctx.workspace_path, "aq/x", "main")
+        orch.git.acount_commits_ahead.assert_awaited_once_with(
+            ctx.workspace_path, "aq/x", "origin/main"
+        )
+
+    async def test_it_falls_back_to_the_local_default(self, orch):
+        """No ``origin/main`` ref (count unknown) → ask the local default."""
+        orch.git.acount_commits_ahead = AsyncMock(side_effect=[None, 0])
+
+        assert await orch._abranch_has_no_commits("/tmp", "aq/x", "main")
+        assert [c.args[2] for c in orch.git.acount_commits_ahead.await_args_list] == [
+            "origin/main",
+            "main",
+        ]
+
+    async def test_an_unanswerable_count_keeps_the_gate(self, orch):
+        """Both lookups failing means "unknown", not "empty"."""
+        orch.git.acount_commits_ahead = AsyncMock(return_value=None)
+
+        assert await orch._abranch_has_no_commits("/tmp", "aq/x", "main") is False
+
+    async def test_a_branch_with_commits_still_needs_a_pr(self, orch):
+        _task, ctx = await self._empty_branch_ctx(
+            orch, "t-ahead", "aq/t-ahead", ahead=2
+        )
+
+        assert await orch._phase_verify(ctx) == PhaseResult.STOP
+        assert any("No open PR" in msg for msg in ctx.verification_issues)
+
+    async def test_a_dirty_empty_branch_still_needs_a_pr(self, orch, monkeypatch):
+        """Uncommitted work is work — the agent has to commit and PR it."""
+        _task, ctx = await self._empty_branch_ctx(orch, "t-dirty-empty", "aq/t-dirty-empty")
+        orch.git.ahas_uncommitted_changes = AsyncMock(return_value=True)
+        # Auto-remediation cannot rescue it either.
+        monkeypatch.setattr(orch, "_auto_remediate_uncommitted", AsyncMock(return_value=True))
+
+        assert await orch._phase_verify(ctx) == PhaseResult.STOP
+        assert any("uncommitted" in msg.lower() for msg in ctx.verification_issues)

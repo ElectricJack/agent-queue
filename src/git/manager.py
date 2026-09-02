@@ -2367,6 +2367,30 @@ class GitManager:
         except GitError:
             return False
 
+    async def acount_commits_ahead(
+        self,
+        checkout_path: str,
+        branch: str,
+        base: str,
+    ) -> int | None:
+        """Return how many commits *branch* carries that *base* does not.
+
+        ``None`` means the question could not be answered (a missing ref, a
+        detached worktree, any git failure) — callers must treat that as
+        "unknown" rather than as zero.
+        """
+        try:
+            output = await self._arun(
+                ["rev-list", f"{_validate_rev(base)}..{_validate_rev(branch)}", "--count"],
+                cwd=checkout_path,
+            )
+        except GitError:
+            return None
+        try:
+            return int(output.strip())
+        except ValueError:
+            return None
+
     async def ahas_non_plan_changes(
         self,
         checkout_path: str,
