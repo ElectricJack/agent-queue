@@ -644,8 +644,11 @@ class SessionReconciler:
             note = {"RAPID_CRASH": "rapid_crash"}.get(verdict.verdict.name, "exited_holding_task")
             await self.db.set_task_meta(task.id, "needs_attention", note)
         if verdict.verdict is Verdict.RAPID_CRASH:
-            orch._pool_quarantine[(row.project_id, row.profile_id)] = (
-                now + self.sessions_config.restart_window_seconds
+            self._quarantine_pool_key(
+                orch,
+                row,
+                until=now + self.sessions_config.restart_window_seconds,
+                reason=f"rapid crash: {verdict.reason or 'session exited repeatedly'}",
             )
         elif verdict.verdict is Verdict.RATE_LIMIT:
             await self._apply_rate_limit_cooldown(row)
@@ -654,10 +657,31 @@ class SessionReconciler:
             # rate-limited, so a different worker should pick it straight
             # back up.  The window matches whatever ``_step_exits`` handed
             # ``classify_exit`` for this verdict.
-            orch._pool_quarantine[(row.project_id, row.profile_id)] = (
-                now + verdict.cooldown_seconds
+            self._quarantine_pool_key(
+                orch,
+                row,
+                until=now + verdict.cooldown_seconds,
+                reason=f"provider rate limit; retrying in {verdict.cooldown_seconds:.0f}s",
             )
         await orch._terminate_pool_session(row, reason=verdict.verdict.name.lower())
+
+    @staticmethod
+    def _quarantine_pool_key(orch, row, *, until: float, reason: str) -> None:
+        """Stop starting into this pool key until *until*, and say why.
+
+        ``PoolsMixin._quarantine_pool`` owns the launch-failure window and
+        always uses ``LAUNCH_BACKOFF``; an exit verdict carries its own
+        (restart-window / provider-cooldown) deadline, so it writes the same
+        two maps directly rather than borrowing that helper's fixed window.
+        ``aq pool status`` reads both.
+        """
+        key = (row.project_id, row.profile_id)
+        orch._pool_quarantine[key] = until
+        reasons = getattr(orch, "_pool_quarantine_reason", None)
+        if reasons is None:
+            reasons = orch._pool_quarantine_reason = {}
+        reasons[key] = reason
+        logger.warning("pool %s/%s quarantined: %s", row.project_id, row.profile_id, reason)
 
     async def _waiting_for_question(self, row, now):
         service = getattr(self.orchestrator, "agent_questions", None)
