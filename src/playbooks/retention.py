@@ -62,6 +62,7 @@ _DAY_SECONDS = 86400.0
 #: distinguish "zero" from "this build does not collect that".
 CATEGORIES = (
     "pending_events",
+    "pending_events_expired",
     "receipts",
     "runs",
     "artifact_rows",
@@ -88,7 +89,12 @@ class ArtifactRetentionSweeper:
     async def sweep(self, now: float | None = None) -> dict[str, int]:
         now = time.time() if now is None else now
         counts = dict.fromkeys(CATEGORIES, 0)
-        counts["pending_events"] = await self._db.purge_pending_events(now)
+        pending_events = await self._db.purge_pending_events(
+            now,
+            resolved_before=now - self._config.v2_pending_event_retention_days * _DAY_SECONDS,
+        )
+        counts["pending_events"] = pending_events.purged
+        counts["pending_events_expired"] = pending_events.expired
         # Runs and their receipts share ``v2_receipt_retention_days``: the
         # locked ten-field config block (§12.3) has no separate run horizon,
         # and giving receipts a longer life than the run they belong to would

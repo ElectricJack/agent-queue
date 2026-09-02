@@ -601,15 +601,29 @@ async def test_the_quota_is_per_playbook(db):
     assert await retain(db, playbook_id="other", dedup_key="other:1") is not None
 
 
-async def test_purge_pending_events_collects_resolved_and_expired(db):
+async def test_purge_pending_events_marks_expired_then_collects_after_retention(db):
     resolved = await retain(db, dedup_key="k1", event_id="e1")
     await db.resolve_pending_event(
         resolved, resolution="discarded", resolved_by="op", now=NOW + 1
     )
-    await retain(db, dedup_key="k2", event_id="e2", ttl_seconds=1)
+    expired = await retain(db, dedup_key="k2", event_id="e2", ttl_seconds=1)
     live = await retain(db, dedup_key="k3", event_id="e3", ttl_seconds=7 * DAY)
 
-    assert await db.purge_pending_events(NOW + HOUR) == 2
+    first = await db.purge_pending_events(NOW + HOUR, resolved_before=NOW)
+    assert first.expired == 1
+    assert first.purged == 0
+    retained = await db.list_pending_events(playbook_id="task-review", include_resolved=True)
+    assert {row["pending_event_id"] for row in retained} == {resolved, expired, live}
+    expired_row = next(row for row in retained if row["pending_event_id"] == expired)
+    assert expired_row["resolution"] == "expired"
+    assert expired_row["resolved_by"] == "retention_sweep"
+    assert expired_row["resolved_at"] == NOW + HOUR
+
+    second = await db.purge_pending_events(
+        NOW + HOUR + DAY + 1, resolved_before=NOW + HOUR + 1
+    )
+    assert second.expired == 0
+    assert second.purged == 2
     remaining = await db.list_pending_events(playbook_id="task-review", include_resolved=True)
     assert [row["pending_event_id"] for row in remaining] == [live]
 

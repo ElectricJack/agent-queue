@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+from types import SimpleNamespace
 
 import pytest
 
@@ -148,19 +149,22 @@ def test_load_verifies_hash_before_parsing_and_rejects_invalid_identifiers(tmp_p
 
 
 class _StubDb:
-    """The four retention queries, with recorded arguments and canned answers."""
+    """The retention queries, with recorded arguments and canned answers."""
 
-    def __init__(self, *, collected=(), pending=0, receipts=0, runs=0, referenced=()):
+    def __init__(
+        self, *, collected=(), pending=0, pending_expired=0, receipts=0, runs=0, referenced=()
+    ):
         self._collected = list(collected)
         self._pending = pending
+        self._pending_expired = pending_expired
         self._receipts = receipts
         self._runs = runs
         self._referenced = set(referenced)
         self.calls: dict[str, object] = {}
 
     async def purge_pending_events(self, now, **kwargs):
-        self.calls["purge_pending_events"] = now
-        return self._pending
+        self.calls["purge_pending_events"] = (now, kwargs)
+        return SimpleNamespace(expired=self._pending_expired, purged=self._pending)
 
     async def purge_receipts(self, before, **kwargs):
         self.calls["purge_receipts"] = before
@@ -233,20 +237,29 @@ async def test_sweep_returns_counts_per_category(tmp_path):
     db = _StubDb(
         collected=[(f"sha256:{digest}", str(doomed_file))],
         pending=3,
+        pending_expired=2,
         receipts=5,
         runs=2,
     )
     counts = await _sweeper(
-        tmp_path, db, v2_receipt_retention_days=30, v2_artifact_retention_days=60
+        tmp_path,
+        db,
+        v2_pending_event_retention_days=14,
+        v2_receipt_retention_days=30,
+        v2_artifact_retention_days=60,
     ).sweep(now)
 
     assert set(counts) == set(CATEGORIES)
     assert counts["pending_events"] == 3
+    assert counts["pending_events_expired"] == 2
     assert counts["receipts"] == 5
     assert counts["runs"] == 2
     assert counts["artifact_rows"] == 1
     assert counts["artifact_files"] == 1
     assert not doomed_file.exists()
+    pending_now, pending_kwargs = db.calls["purge_pending_events"]
+    assert pending_now == pytest.approx(now)
+    assert pending_kwargs["resolved_before"] == pytest.approx(now - 14 * 86400)
     assert db.calls["purge_receipts"] == pytest.approx(now - 30 * 86400)
     assert db.calls["purge_runs"] == pytest.approx(now - 30 * 86400)
     assert db.calls["collect_playbook_artifacts"] == (pytest.approx(now - 60 * 86400), 10)
