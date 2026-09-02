@@ -1766,6 +1766,32 @@ This session's scope cannot list the queue or read any other task, so the
 missing `blocks` edges to the Package 1, 2 and 4 tasks could not be added
 from here; a human was asked (via `aq message send`) to add them and reopen.
 
+### 16.6 Re-run on 2026-09-02 at `d8086cb9` (task solid-harbor.46.1, fifth attempt)
+
+`origin/main` still at `d8086cb9`; the four §3.2 checks and the `origin/*`
+sweep (285 refs) are unchanged from §16.5. PRs #191 and #194 (both Package 3
+rework) are still open; no open PR adds a Package 1, 2 or 4 file. Two new
+facts, recorded so the loop can be stopped rather than re-run:
+
+- **The blockers by task id.** The Package 1, 2 and 4 inputs this package
+  needs are owned by `solid-harbor.26` (P1 — contracts registry and
+  explanation service; PAUSED), `solid-harbor.30` (P2 — strict definition
+  model; DEFINED) and `solid-harbor.39` (P4 — engine, receipts, run
+  queries; DEFINED). The `playbook_pending_events` table of §9 belongs to
+  `solid-harbor.36` (PAUSED). `solid-harbor.46.1` needs `blocks` edges to
+  the first three; this session's scope cannot add them.
+- **Why `--failure-class hard` does not stop the re-runs.** The `events`
+  table shows a `task.ready` / `promoted` row 30–60 s after every hard
+  close (09:41:04, 09:48:04, 09:52:39, 09:56:46 UTC). A hard close sets
+  BLOCKED (`src/orchestrator/execution.py`, `session_close_hard_failure`),
+  and the projected promotion rule (`src/orchestrator/monitoring.py`,
+  `_projected_promotion_decisions`) re-promotes any BLOCKED task with
+  `is_blocked = 0` that carries at least one blocking edge. This task's
+  only edge is its `parent-child` edge to `solid-harbor.46`, which counts,
+  so the failure-BLOCKED carve-out of design §4.4 never applies to a child
+  of a container. Filed as its own task (see the task comment); not fixed
+  here because it is orchestrator scope, not Package 5.
+
 ---
 
 ## 17. Open items for the next child plans
