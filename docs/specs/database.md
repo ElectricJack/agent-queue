@@ -927,7 +927,10 @@ removed.  `snapshot` holds the whole durable run state as canonical JSON;
 the columns beside it are the indexed projection of that same state, so an
 operator query is an index scan rather than a JSON parse of every row.
 `snapshot_version` is the optimistic-concurrency token every durable advance
-compares and increments.
+compares and increments.  `playbook_id`, `artifact_sha256` and `rule_id` are
+pinned when the run is created: a boundary whose snapshot or receipt disagrees
+with them is refused with `run_identity_mismatch`, because a run that moved
+onto another artifact would render its history against a graph it never ran.
 
 | Column | Type | Constraints | Notes |
 |---|---|---|---|
