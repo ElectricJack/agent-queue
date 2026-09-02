@@ -728,6 +728,9 @@ agent_profiles = Table(
     Column("min_active", Integer, nullable=True),
     Column("max_active", Integer, nullable=True),
     Column("max_claims_per_session", Integer, nullable=True),
+    # Authored config for a thin project pool override.  The effective fields
+    # above stay materialized for scheduling/query paths that predate overlays.
+    Column("overlay_config", Text, nullable=True),
     Column("default_class", Text, nullable=False, server_default=""),
     Column("needs_workspace", Boolean, nullable=False, server_default=true()),
     # Declarative statement of write intent: a ``read_only`` profile lists
