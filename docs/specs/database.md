@@ -608,24 +608,32 @@ The SQLite-to-PostgreSQL copy inventory includes this audit table.
 
 ### Table: `subagent_events`
 
-Immutable native sub-agent lifecycle telemetry. Harness `SubagentStart` and
-`SubagentStop` hooks record events through `aq subagent event`; duplicate deliveries
-share a deterministic ID so the active-child count can be derived safely from the
-append-only history.
+Append-only native sub-agent telemetry. A harness `SubagentStart` / `SubagentStop`
+hook reports a fact about a moment; "how many children is this session running"
+is a fold over those facts (`src/database/queries/subagent_queries.py`), so a
+re-delivered hook or a lost `stop` cannot corrupt a counter permanently. The
+primary key is a digest of (`session_id`, `event`, `subagent_id`), which makes a
+duplicate delivery a no-op. References are logical IDs without foreign keys so the
+audit trail survives session, task and project deletion.
 
 | Column | Type | Constraints | Notes |
 |---|---|---|---|
-| `id` | TEXT | PRIMARY KEY | Deterministic digest of session, event and child id |
-| `session_id` | TEXT | NOT NULL | Logical parent session reference; retained after session deletion |
-| `harness` | TEXT | NOT NULL | Harness that emitted the event |
-| `project_id`, `task_id` | TEXT | nullable | Attribution snapshots |
-| `subagent_id` | TEXT | NOT NULL | Harness-provided child-agent identifier |
-| `agent_type`, `turn_id` | TEXT | nullable | Optional harness provenance |
-| `event` | TEXT | NOT NULL CHECK start/stop | Lifecycle half recorded by the hook |
-| `occurred_at` | REAL | NOT NULL | Daemon receipt timestamp |
+| `id` | TEXT | PRIMARY KEY | SHA-256 of (session_id, event, subagent_id) — idempotent insert |
+| `session_id` | TEXT | NOT NULL | Parent session that spawned the child; indexed with `event` |
+| `harness` | TEXT | NOT NULL | Harness that fired the hook (e.g. `claude`, `codex`) |
+| `project_id` | TEXT | nullable | Owning project, when the hook reports one |
+| `task_id` | TEXT | nullable | Task the parent session was running, when known |
+| `subagent_id` | TEXT | NOT NULL | Harness's own id for the child; sent on both halves, which is what makes the pairing exact |
+| `agent_type` | TEXT | nullable | Sub-agent type reported by the harness |
+| `turn_id` | TEXT | nullable | Parent turn the child was spawned from |
+| `event` | TEXT | NOT NULL | CHECK IN ('start', 'stop') — the two halves of one child's lifetime |
+| `occurred_at` | REAL | NOT NULL | Daemon clock at hook receipt; indexed |
 
-Indexes cover (`session_id`, `event`) for per-session folding and `occurred_at` for
-chronological reads. The SQLite-to-PostgreSQL copy inventory includes this table.
+Indexes cover (`session_id`, `event`) for the per-session fold and (`occurred_at`)
+for time-ordered listing. The fold clamps at zero: a `stop` whose `start` never
+arrived is still stored, because losing a Start must not make a session look like
+it is running a child forever.
+The SQLite-to-PostgreSQL copy inventory includes this table.
 
 ### Table: `messages`
 

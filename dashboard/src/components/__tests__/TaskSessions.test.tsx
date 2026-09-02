@@ -15,6 +15,9 @@ vi.mock("../../api/hooks", () => ({
   useProjectProfiles: () => ({ data: { agent_types: [] } }),
   useEditTask: () => ({}), useGates: () => ({ data: [] }),
   useResolveGate: () => ({}), useDeleteTask: () => ({}), useReopenWithFeedback: () => ({}),
+  useTaskAttachments: () => ({ data: { success: true, attachments: [] } }),
+  useUploadTaskAttachment: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useDeleteTaskAttachment: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 vi.mock("../TaskActions", () => ({ default: () => null }));
 vi.mock("../TaskComments", () => ({ default: () => null }));
