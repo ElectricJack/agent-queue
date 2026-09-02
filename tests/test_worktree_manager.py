@@ -792,3 +792,73 @@ def test_worktree_events_are_registered():
 
     for name in ("worktree.created", "worktree.reset", "worktree.reaped"):
         assert name in EVENT_SCHEMAS, f"{name} must be registered before it is emitted"
+
+
+# ─────────────────── §3.4 branch affinity: find the holder ───────────────
+
+
+class TestFindSlotHoldingBranch:
+    """A released slot stays on its last task's branch (§3.4), so the *next*
+    acquisition for that task must prefer that slot or collide with it.
+
+    ``git worktree list --porcelain`` is the source of truth here on purpose:
+    it is what git itself consults when it refuses the second checkout, so
+    the hint cannot disagree with the refusal it exists to avoid.
+    """
+
+    def _two_slots(self, mgr, base_ws, kind):
+        a = asyncio.run(mgr.create_slot(base_ws, kind, 0))
+        b = asyncio.run(mgr.create_slot(base_ws, kind, 1))
+        return a, b
+
+    def test_finds_the_slot_left_on_the_task_branch(self, mgr, base_ws, kind):
+        slot0, slot1 = self._two_slots(mgr, base_ws, kind)
+        asyncio.run(mgr.reset_slot_for_task(slot0, FakeTask(id="tsk-1")))
+        asyncio.run(mgr.restore_slot_after_task(slot0, task_id="tsk-1"))
+
+        holder = asyncio.run(
+            mgr.find_slot_holding_branch(base_ws, [slot0, slot1], task_branch_name("tsk-1"))
+        )
+        assert holder == slot0.id
+
+    def test_no_holder_for_a_branch_nobody_has(self, mgr, base_ws, kind):
+        slot0, slot1 = self._two_slots(mgr, base_ws, kind)
+        holder = asyncio.run(
+            mgr.find_slot_holding_branch(base_ws, [slot0, slot1], task_branch_name("tsk-9"))
+        )
+        assert holder is None
+
+    def test_the_base_holding_the_branch_is_not_a_slot_hint(self, mgr, base_ws, kind, base_repo):
+        """The base has the default branch checked out. It is never an agent
+        cwd (§2.3), so it must not be returned as an affinity hint."""
+        slot0, slot1 = self._two_slots(mgr, base_ws, kind)
+        default = _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=base_repo)
+        holder = asyncio.run(
+            mgr.find_slot_holding_branch(base_ws, [slot0, slot1], default)
+        )
+        assert holder is None
+
+    def test_a_freshly_created_detached_slot_holds_nothing(self, mgr, base_ws, kind):
+        """Slots are created ``--detach`` (§3.1): no branch is claimed until a
+        task lands, so an unused slot never wins the hint."""
+        slot0, _slot1 = self._two_slots(mgr, base_ws, kind)
+        entries = asyncio.run(mgr.git.aworktree_list(base_ws.workspace_path))
+        for e in entries:
+            if e["path"].endswith("slot-0"):
+                assert "branch" not in e
+
+    def test_empty_inputs_and_a_broken_base_are_just_no_preference(self, mgr, base_ws, kind):
+        slot0, _ = self._two_slots(mgr, base_ws, kind)
+        assert asyncio.run(mgr.find_slot_holding_branch(base_ws, [slot0], None)) is None
+        assert asyncio.run(mgr.find_slot_holding_branch(base_ws, [], "aq/x")) is None
+
+        broken = Workspace(
+            id="ws-gone",
+            project_id="p1",
+            workspace_path=str(Path(base_ws.workspace_path) / "does-not-exist"),
+            source_type=RepoSourceType.CLONE,
+            kind_id="project-repo",
+        )
+        # A base that cannot be queried means "no preference", not a failure:
+        # dispatch must never hinge on an optimization.
+        assert asyncio.run(mgr.find_slot_holding_branch(broken, [slot0], "aq/x")) is None

@@ -7,6 +7,8 @@ import pytest
 import sqlalchemy as sa
 from tests.test_migration_task_comments import upgrade
 
+pytestmark = pytest.mark.migration
+
 
 def test_comment_project_migration_preserves_ambiguous_history(tmp_path):
     engine = sa.create_engine(f"sqlite:///{tmp_path / 'comment-project.db'}")

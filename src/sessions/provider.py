@@ -183,6 +183,12 @@ class SessionSpec:
     files: tuple[tuple[str, str], ...] = ()
     #: Instance token echoed onto the handle; the kill fence compares it.
     instance_token: str = ""
+    #: True when this argv genuinely activates the harness's hook file --
+    #: written *and* pointed at (or trusted).  The daemon records it on the
+    #: session row so "we have authoritative subagent telemetry for this
+    #: session" is a launch fact, not a re-derivation from a harness file
+    #: that may have been edited since.
+    hooks_provisioned: bool = False
 
 
 @dataclass(frozen=True)

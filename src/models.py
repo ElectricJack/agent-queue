@@ -1347,6 +1347,21 @@ class PipelineContext:
     project: Project | None = None
     pr_url: str | None = None
     verification_reopened: bool = False
+    #: True when ``aq task close`` was issued by a *live* session that is
+    #: still sitting at its prompt.  Git verification uses it to hand the
+    #: fixable issues straight back to that agent instead of reopening the
+    #: task to READY -- which the session reconciler reads as "live session,
+    #: task not IN_PROGRESS" and drains, killing the very worker that was
+    #: asked to fix them.
+    close_session_live: bool = False
+    #: Set by ``_phase_verify`` when it chose the in-session retry: the task
+    #: stays IN_PROGRESS under its claim and the close is refused with
+    #: feedback.
+    verification_retry_in_session: bool = False
+    #: The fixable issues behind ``verification_retry_in_session``.
+    verification_issues: list[str] = field(default_factory=list)
+    #: Rendered feedback text handed back to the agent on an in-session retry.
+    verification_feedback: str = ""
 
 
 @dataclass(frozen=True)
@@ -1406,3 +1421,10 @@ class SessionRecord:
     llm_provider: str | None = None
     model: str | None = None
     intelligence_class: str | None = None
+
+    #: True when this launch actually wired the harness's subagent hooks
+    #: (``SubagentStart`` / ``SubagentStop`` -> ``aq subagent event``).
+    #: Recorded from the :class:`~src.sessions.provider.SessionSpec` at
+    #: insert, because it is a property of the argv this process was
+    #: started with, not of whatever the harness file says today.
+    hooks_provisioned: bool = False

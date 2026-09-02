@@ -56,6 +56,10 @@ META_STALL_NUDGES = "stall_nudges"
 META_STALL_LAST_ACTION = "stall_last_action_at"
 
 _LIVE_STATES = ("starting", "running", "draining")
+#: Public alias — other modules ask "is this session row live?" too
+#: (``_cmd_task_close`` decides whether verification feedback can be
+#: handed back in place rather than reopening the task).
+LIVE_SESSION_STATES = _LIVE_STATES
 
 
 @dataclass
@@ -596,18 +600,58 @@ class SessionReconciler:
             return
 
         # PRODUCTIVE_DEATH — the agent worked, then vanished without
-        # closing.  Never silently READY: a human (or the supervisor) has
-        # to look, because the work may be half-done in the worktree.
+        # closing.  Never silently READY: the work may be half-done in the
+        # worktree, so the exit is always recorded (``needs_attention``, an
+        # INFO transition line and a durable task comment) before anything
+        # else happens.
+        #
+        # BLOCKED is *not* the state for this.  BLOCKED means "a dependency
+        # or a gate is holding this task", it is what ``aq task explain``
+        # and the ready-frontier projection read that way, and it made a
+        # recoverable worker exit look like a graph problem with no logged
+        # reason at all.  A session that died with retry budget left is a
+        # transient operational failure: PAUSED with a cooldown, exactly
+        # like the rate-limit and rapid-crash legs, and the scheduler picks
+        # it back up.  Only once the retry budget is spent does it become
+        # BLOCKED — that is the leg the supervisor recovery incident
+        # (``queue_task_recovery_notifications``) is for.
         await self.db.update_session(row.id, state="stopped", desired_state="stopped",
                                      ended_at=now, end_reason="session_exited_open")
         if task is not None:
-            await self.db.set_task_meta(task.id, "needs_attention", "session_exited_open")
-            await self.db.transition_task(
+            retries = task.retry_count or 0
+            retriable = retries < (task.max_retries or 0)
+            backoff = float(self.sessions_config.restart_backoff_seconds)
+            logger.info(
+                "Task %s: session %s exited without close (%s) — %s (retry %d/%d)",
                 task.id,
-                TaskStatus.BLOCKED,
-                context="session_exited_without_close",
-                assigned_agent_id=None,
+                row.id,
+                verdict.reason,
+                (
+                    f"PAUSED for {backoff:.0f}s, session_exited_without_close"
+                    if retriable
+                    else "BLOCKED, retry budget exhausted"
+                ),
+                retries,
+                task.max_retries or 0,
             )
+            await self.db.set_task_meta(task.id, "needs_attention", "session_exited_open")
+            if retriable:
+                await self.db.transition_task(
+                    task.id,
+                    TaskStatus.PAUSED,
+                    context="session_exited_without_close",
+                    resume_after=now + backoff,
+                    retry_count=retries + 1,
+                    assigned_agent_id=None,
+                )
+            else:
+                await self.db.transition_task(
+                    task.id,
+                    TaskStatus.BLOCKED,
+                    context="session_exited_without_close_exhausted",
+                    assigned_agent_id=None,
+                )
+            await self._record_exit_incident(task, row, verdict, retriable, backoff)
             await self._carry_resume_key(row, task)
             await self._release_task(task, row, reason="session_exited_open")
             await self._emit(
@@ -615,7 +659,58 @@ class SessionReconciler:
                 task_id=task.id,
                 project_id=task.project_id,
                 title=task.title,
+                session_id=row.id,
                 reason=verdict.reason,
+            )
+            if retriable:
+                await self._emit(
+                    "task.restarted",
+                    task_id=task.id,
+                    project_id=task.project_id,
+                    title=task.title,
+                    session_id=row.id,
+                    attempt=retries + 1,
+                    reason="session_exited_without_close",
+                )
+
+    async def _record_exit_incident(
+        self,
+        task,
+        row: SessionRecord,
+        verdict: ExitVerdict,
+        retriable: bool,
+        backoff: float,
+    ) -> None:
+        """Leave a durable, readable record of an exit-without-close.
+
+        The events above are ephemeral and the log line is not visible to
+        the next worker.  A task comment is: ``aq task comments`` and the
+        prime document both surface it, so whoever picks the task up next
+        knows the previous attempt died mid-work rather than finding a
+        half-finished worktree with no explanation.  Best-effort — an
+        incident record must never break the reconciler tick.
+        """
+        disposition = (
+            f"PAUSED for {backoff:.0f}s, then retried automatically"
+            if retriable
+            else "BLOCKED — retry budget exhausted, operator review required"
+        )
+        try:
+            await self.db.add_task_comment(
+                task.id,
+                (
+                    f"Session {row.id} ({row.name}) exited without calling "
+                    f"`aq task close`: {verdict.reason}. "
+                    f"needs_attention=session_exited_open. Task {disposition}. "
+                    "Any work left in the worktree is still there; check the branch "
+                    "before redoing it."
+                ),
+                author_kind="supervisor",
+                author_id="session-reconciler",
+            )
+        except Exception:
+            logger.debug(
+                "could not record exit incident for %s", task.id, exc_info=True
             )
 
     async def _apply_rate_limit_cooldown(self, row: SessionRecord) -> None:
@@ -737,12 +832,22 @@ class SessionReconciler:
             delivered: bool | None = False
             if nudge_due:
                 minutes = int((now - last) // 60)
+                # A harness sitting at its idle prompt with an open claim
+                # looks exactly like a stalled one from out here, and it is
+                # the common case: the turn ended without ``aq task close``.
+                # So the nudge asks for the close explicitly — "close or
+                # continue" — rather than only "report status".  This is the
+                # rung that runs *before* any exit handling, which is the
+                # point: an idle prompt should be talked to, not reaped.
                 delivered = await self._try_nudge(
                     provider,
                     row,
-                    f"No progress for {minutes} min. Report status, finish the task, "
-                    "or report a blocker with "
-                    '`aq message send --to user --project "$AQ_PROJECT_ID" '
+                    f"No progress for {minutes} min on task {row.task_id}. "
+                    "Close or continue: if the work is done run "
+                    f"`aq task close {row.task_id} --outcome pass|fail --summary \"...\"` "
+                    "then `aq session drain-ack`; if it is not done, keep working and "
+                    f"run `aq task heartbeat {row.task_id}`; if you are blocked, say so "
+                    'with `aq message send --to user --project "$AQ_PROJECT_ID" '
                     '--body "Blocked: <question>"`.',
                 )
                 if delivered is None:
@@ -854,10 +959,10 @@ class SessionReconciler:
 
         Ordering matters for (a): ``_step_drain_ack`` runs earlier in the
         same tick, so an ack that has landed always wins and the agent gets
-        the graceful path.  Draining without one costs nothing — the task
-        is closed, and ``complete_session_task`` released the workspace and
-        the agent at close time — so there is nothing left for the session
-        to finish.
+        the graceful path.  A terminal task is also a normal, short-lived
+        state while a pool close moves from ``complete_session_task`` to
+        ``release_claim``.  That interleaving must release only the task
+        hold: pool sizing owns any later drain decision and its grace period.
         """
         # (a) live session, task closed or gone.
         for row in live:
@@ -879,16 +984,19 @@ class SessionReconciler:
             if still_open:
                 continue
             if row.lifecycle == "pool":
-                if self.orchestrator is None:
-                    logger.warning(
-                        "Pool session %s is orphaned but no orchestrator is wired "
-                        "— skipping", row.id,
-                    )
-                    continue
-                await self.orchestrator._terminate_pool_session(
-                    row,
-                    reason="orphaned",
+                # ``_cmd_task_close`` makes the task terminal before its
+                # subsequent ``release_claim`` clears ``sessions.task_id``.
+                # Releasing here is idempotent with that later close-path
+                # release, while terminating would incorrectly bypass pool
+                # scale-down grace and an explicit drain acknowledgement.
+                await self.db.release_claim(
+                    row.id,
                     task_status=task.status if task is not None else TaskStatus.READY,
+                    context="terminal_pool_release",
+                    now=now,
+                    expected_task_id=row.task_id,
+                    expected_claim_epoch=row.last_claim_epoch,
+                    drain_after_release=self.config.swarm.fresh_context_per_task,
                 )
                 continue
             provider = self._provider_for(row)

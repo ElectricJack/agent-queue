@@ -82,11 +82,12 @@ async def pool_api(tmp_path, monkeypatch):
         deps._require_session_token,
     )
     try:
-        async with AsyncClient(
-            transport=ASGITransport(app=create_app(orch, config)),
-            base_url="http://test",
-        ) as client:
-            yield client, Path(data_dir)
+        app = create_app(orch, config)
+        async with app.router.lifespan_context(app):
+            def client_factory() -> AsyncClient:
+                return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+
+            yield client_factory, Path(data_dir)
     finally:
         (
             deps._orchestrator,
@@ -100,47 +101,47 @@ async def pool_api(tmp_path, monkeypatch):
 
 async def test_pool_management_routes_round_trip_on_postgres(pool_api):
     """Lifecycle, bounds, and status use the same typed API over Postgres."""
-    client, data_dir = pool_api
+    client_factory, data_dir = pool_api
+    async with client_factory() as client:
+        lifecycle = await client.post(
+            "/api/pool/set-lifecycle",
+            json={"project_id": "pool-project", "profile_id": "worker", "lifecycle": "task"},
+        )
+        assert lifecycle.status_code == 200, lifecycle.text
+        assert lifecycle.json()["lifecycle"] == "task"
+        assert "\"lifecycle\": \"task\"" in (
+            data_dir / "vault" / "projects" / "pool-project" / "agent-types" / "worker" / "profile.md"
+        ).read_text(encoding="utf-8")
 
-    lifecycle = await client.post(
-        "/api/pool/set-lifecycle",
-        json={"project_id": "pool-project", "profile_id": "worker", "lifecycle": "task"},
-    )
-    assert lifecycle.status_code == 200, lifecycle.text
-    assert lifecycle.json()["lifecycle"] == "task"
-    assert "\"lifecycle\": \"task\"" in (
-        data_dir / "vault" / "projects" / "pool-project" / "agent-types" / "worker" / "profile.md"
-    ).read_text(encoding="utf-8")
+        enabled = await client.post(
+            "/api/pool/set-lifecycle",
+            json={"project_id": "pool-project", "profile_id": "worker", "lifecycle": "pool"},
+        )
+        assert enabled.status_code == 200, enabled.text
 
-    enabled = await client.post(
-        "/api/pool/set-lifecycle",
-        json={"project_id": "pool-project", "profile_id": "worker", "lifecycle": "pool"},
-    )
-    assert enabled.status_code == 200, enabled.text
+        scaled = await client.post(
+            "/api/pool/scale",
+            json={"project_id": "pool-project", "profile_id": "worker", "min": 0, "max": None},
+        )
+        assert scaled.status_code == 200, scaled.text
+        assert scaled.json()["project_cap"] == scaled.json()["effective_max_active"] == 2
 
-    scaled = await client.post(
-        "/api/pool/scale",
-        json={"project_id": "pool-project", "profile_id": "worker", "min": 0, "max": None},
-    )
-    assert scaled.status_code == 200, scaled.text
-    assert scaled.json()["project_cap"] == scaled.json()["effective_max_active"] == 2
-
-    status = await client.post("/api/pool/status", json={"project_id": "pool-project"})
-    assert status.status_code == 200, status.text
-    assert status.json()["pools"] == [
-        {
-            "project_id": "pool-project",
-            "profile_id": "worker",
-            "min_active": 0,
-            "max_active": None,
-            "desired": 0,
-            "running_idle": 0,
-            "running_busy": 0,
-            "starting": 0,
-            "draining": 0,
-            "ready": 0,
-            "quarantined_until": None,
-            "quarantined_reason": None,
-            "instances": [],
-        }
-    ]
+        status = await client.post("/api/pool/status", json={"project_id": "pool-project"})
+        assert status.status_code == 200, status.text
+        assert status.json()["pools"] == [
+            {
+                "project_id": "pool-project",
+                "profile_id": "worker",
+                "min_active": 0,
+                "max_active": None,
+                "desired": 0,
+                "running_idle": 0,
+                "running_busy": 0,
+                "starting": 0,
+                "draining": 0,
+                "ready": 0,
+                "quarantined_until": None,
+                "quarantined_reason": None,
+                "instances": [],
+            }
+        ]

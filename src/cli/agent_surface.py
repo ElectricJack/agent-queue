@@ -385,3 +385,97 @@ def task_heartbeat(ctx: click.Context, task_id, claim_epoch) -> None:
 
     result = _run(_heartbeat())
     emit(ctx, result)
+
+
+# ---------------------------------------------------------------------------
+# aq subagent event --hook-json — SubagentStart / SubagentStop receiver
+#
+# Wired into the harness hook files this daemon writes (``src/prime/
+# templates/hooks/{claude,codex}.json``).  It runs on the agent's own
+# critical path, once per child agent spawned and once per child finished,
+# so its two hard rules are: never block, and never fail.  Delivery errors
+# print nothing and exit 0 — a count we could not record must not stop a
+# sub-agent from starting.
+# ---------------------------------------------------------------------------
+
+
+@cli.group("subagent")
+def subagent() -> None:
+    """Native sub-agent telemetry reported by harness hooks."""
+
+
+@subagent.command("event")
+@click.option(
+    "--hook-json",
+    is_flag=True,
+    help="Read the harness's SubagentStart/SubagentStop payload as JSON on stdin.",
+    # Delivery failures are swallowed on this path by design, which makes a
+    # broken hook invisible.  ``AQ_SUBAGENT_HOOK_DEBUG=1`` prints the reason
+    # to stderr instead — the one lever between "silent by design" and
+    # "silently broken".
+)
+@click.option("--event", "event", default=None, help="'start' or 'stop' (without --hook-json).")
+@click.option("--subagent-id", "subagent_id", default=None, help="Harness id for the child agent.")
+@click.option("--agent-type", "agent_type", default=None, help="Harness sub-agent type (optional).")
+@click.option("--turn-id", "turn_id", default=None, help="Harness turn id (optional).")
+@click.pass_context
+def subagent_event(ctx, hook_json, event, subagent_id, agent_type, turn_id) -> None:
+    """Record one native sub-agent start/stop for this session."""
+    import sys
+
+    args: dict = {}
+    if hook_json:
+        from src.prime.hook_envelopes import parse_subagent_hook
+
+        try:
+            raw = sys.stdin.read()
+        except Exception:
+            return
+        parsed = parse_subagent_hook(raw)
+        if parsed is None or not parsed["subagent_id"]:
+            # Some other hook is pointed at this command, or the harness
+            # changed its payload.  Silence beats a stack trace in the
+            # agent's pane.
+            return
+        args = {
+            "event": parsed["event"],
+            "subagent_id": parsed["subagent_id"],
+        }
+        if parsed["agent_type"]:
+            args["agent_type"] = parsed["agent_type"]
+        if parsed["turn_id"]:
+            args["turn_id"] = parsed["turn_id"]
+    else:
+        if not event or not subagent_id:
+            raise click.UsageError("--event and --subagent-id are required without --hook-json")
+        args = {"event": event, "subagent_id": subagent_id}
+        if agent_type:
+            args["agent_type"] = agent_type
+        if turn_id:
+            args["turn_id"] = turn_id
+
+    # Only the untokened local path needs to name a session.  Under a bearer
+    # token the daemon reads the token's own scope, and sending ``AQ_SESSION_ID``
+    # as well turns any disagreement between the two into a hard
+    # "session_id mismatch" rejection instead of a recorded event.
+    if not os.environ.get("AQ_API_TOKEN"):
+        session_id = os.environ.get("AQ_SESSION_ID")
+        if session_id:
+            args["session_id"] = session_id
+    api_url = ctx.obj.get("api_url") if ctx.obj else None
+
+    async def _send():
+        async with _get_client(api_url) as client:
+            return await client.execute("subagent_event", args)
+
+    try:
+        result = _run(_send())
+    except Exception as exc:
+        # Daemon down, token expired, socket refused — all the same to a
+        # hook: the child still runs, the count is simply missed.
+        if os.environ.get("AQ_SUBAGENT_HOOK_DEBUG"):
+            click.echo(f"aq subagent event: {type(exc).__name__}: {exc}", err=True)
+        return
+    if hook_json:
+        return
+    emit(ctx, result)

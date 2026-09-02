@@ -581,17 +581,69 @@ class TestExitHandling:
         assert "session.quarantined" in bus.types()
         assert "task.quarantined" in bus.types()
 
-    async def test_productive_death_blocks_and_flags_never_silently_ready(
-        self, db, provider, reconciler, bus
+    async def test_productive_death_pauses_with_a_backoff_never_silently_ready(
+        self, db, provider, reconciler, bus, config, caplog
+    ):
+        """Exit-without-close is a transient operational failure, not BLOCKED.
+
+        BLOCKED means "a dependency or gate holds this"; a worker that died
+        mid-task with retry budget left is the retry ladder's business.  The
+        exit still has to be *loud*: needs_attention, an INFO line naming
+        the reason, and a durable comment.
+        """
+        await _task(db)
+        row = await _session(db, provider, started_at=NOW - 100_000)
+        provider.script_death(row.name)
+        with caplog.at_level("INFO", logger="src.sessions.reconciler"):
+            await reconciler.tick(now=NOW)
+        task = await db.get_task("t1")
+        assert task.status is TaskStatus.PAUSED
+        assert task.resume_after == NOW + config.sessions.restart_backoff_seconds
+        assert task.retry_count == 1
+        assert await db.get_task_meta("t1", "needs_attention") == "session_exited_open"
+        assert "task.needs_attention" in bus.types()
+        assert "task.restarted" in bus.types()
+        assert any(
+            "exited without close" in r.getMessage() for r in caplog.records
+        ), "the transition must be logged with its reason"
+
+    async def test_productive_death_records_a_durable_incident_comment(
+        self, db, provider, reconciler
     ):
         await _task(db)
+        row = await _session(db, provider, started_at=NOW - 100_000)
+        provider.script_death(row.name)
+        await reconciler.tick(now=NOW)
+        listed = await db.list_task_comments("t1")
+        bodies = [c["body"] for c in listed["comments"]]
+        assert any("exited without calling" in b for b in bodies), bodies
+        assert any("session_exited_open" in b for b in bodies), bodies
+
+    async def test_productive_death_blocks_once_the_retry_budget_is_spent(
+        self, db, provider, reconciler, bus
+    ):
+        """Only the terminal leg is BLOCKED — that is the supervisor's incident."""
+        await _task(db)
+        await db.update_task("t1", retry_count=3, max_retries=3)
         row = await _session(db, provider, started_at=NOW - 100_000)
         provider.script_death(row.name)
         await reconciler.tick(now=NOW)
         task = await db.get_task("t1")
         assert task.status is TaskStatus.BLOCKED
         assert await db.get_task_meta("t1", "needs_attention") == "session_exited_open"
-        assert "task.needs_attention" in bus.types()
+        assert "task.restarted" not in bus.types()
+
+    async def test_exit_without_close_is_explained_by_aq_task_explain(
+        self, db, provider, reconciler
+    ):
+        """``aq task explain`` must name the reason, not go silent."""
+        await _task(db)
+        row = await _session(db, provider, started_at=NOW - 100_000)
+        provider.script_death(row.name)
+        await reconciler.tick(now=NOW)
+        assert await db.get_task_meta("t1", "needs_attention") == "session_exited_open"
+        task = await db.get_task("t1")
+        assert task.status is TaskStatus.PAUSED and task.resume_after
 
     async def test_closed_task_with_a_dead_process_just_stops(self, db, provider, reconciler):
         await _task(db, status=TaskStatus.COMPLETED)
@@ -731,7 +783,7 @@ class TestPoolLifecycle:
         assert task.status not in (TaskStatus.PAUSED, TaskStatus.BLOCKED)
         assert pool_reconciler.test_orch.terminations == [(row.id, "rate_limit")]
 
-    async def test_orphaned_pool_closed_task_uses_pool_termination_not_generic_release(
+    async def test_terminal_pool_task_releases_hold_without_terminating_worker(
         self, db, provider, pool_reconciler, tmp_path
     ):
         row = await _claimed_pool_session(db, provider, tmp_path)
@@ -739,9 +791,11 @@ class TestPoolLifecycle:
 
         await pool_reconciler._step_orphans([row], NOW)
 
-        assert pool_reconciler.test_orch.terminations == [(row.id, "orphaned")]
+        assert pool_reconciler.test_orch.terminations == []
         assert pool_reconciler.test_orch.generic_releases == []
-        assert (await db.get_session(row.id)).state == "stopped"
+        session = await db.get_session(row.id)
+        assert (session.state, session.desired_state, session.task_id) == ("running", "stopped", None)
+        assert (await db.get_agent(row.agent_id)).current_task_id is None
         assert (await db.get_task("t1")).status is TaskStatus.COMPLETED
 
     async def test_mid_prepare_pool_is_excluded_from_stall_ladder(
@@ -1372,7 +1426,7 @@ class TestTerminalPathsReleaseResources:
         row = await _session(db, provider, started_at=NOW - 5000)
         provider.script_death(row.name)
         await releasing_reconciler.tick(now=NOW)
-        assert (await db.get_task("t1")).status is TaskStatus.BLOCKED
+        assert (await db.get_task("t1")).status is TaskStatus.PAUSED
         await self._assert_freed(db)
 
     async def test_quarantine_frees_the_agent_and_the_lock(

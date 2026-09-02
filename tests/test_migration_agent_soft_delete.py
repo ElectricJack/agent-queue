@@ -1,7 +1,10 @@
 """Soft deletion is additive and rollback preserves referenced history."""
 
+import pytest
 import sqlalchemy as sa
 from tests.test_migration_agent_flock import migrate
+
+pytestmark = pytest.mark.migration
 
 
 def test_soft_delete_migration_preserves_references_with_foreign_keys(tmp_path):

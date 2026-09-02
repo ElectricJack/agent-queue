@@ -159,33 +159,31 @@ describe("pool bounds validation", () => {
   });
 
   it("accepts a min of zero and an empty max on an already-unbounded pool", () => {
-    expect(validateBounds({ min: "0", max: "" }, pool({ max_active: null }))).toBeNull();
-    expect(validateBounds({ min: "2", max: "2" }, pool())).toBeNull();
+    expect(validateBounds({ min: "0", max: "" })).toBeNull();
+    expect(validateBounds({ min: "2", max: "2" })).toBeNull();
   });
 
   it("rejects a negative min", () => {
-    expect(validateBounds({ min: "-1", max: "4" }, pool())).toBe("Min must be 0 or more.");
+    expect(validateBounds({ min: "-1", max: "4" })).toBe("Min must be 0 or more.");
   });
 
   it("rejects a max below the min", () => {
-    expect(validateBounds({ min: "3", max: "2" }, pool())).toBe("Max must be greater than or equal to min.");
+    expect(validateBounds({ min: "3", max: "2" })).toBe("Max must be greater than or equal to min.");
   });
 
   it("rejects a max below one and non-numeric bounds", () => {
-    expect(validateBounds({ min: "0", max: "0" }, pool())).toBe("Max must be 1 or more.");
-    expect(validateBounds({ min: "", max: "4" }, pool())).toBe("Min must be a whole number of workers.");
-    expect(validateBounds({ min: "1", max: "lots" }, pool())).toMatch(/whole number/);
+    expect(validateBounds({ min: "0", max: "0" })).toBe("Max must be 1 or more.");
+    expect(validateBounds({ min: "", max: "4" })).toBe("Min must be a whole number of workers.");
+    expect(validateBounds({ min: "1", max: "lots" })).toMatch(/whole number/);
   });
 
-  it("refuses to clear a max that pool_scale cannot unset", () => {
-    // pool_scale treats an omitted max as "unchanged" and rejects max < 1, so
-    // there is no request that clears an existing bound.
-    expect(validateBounds({ min: "1", max: "" }, pool())).toMatch(/cannot be cleared/);
+  it("accepts an empty max as an unbounded pool", () => {
+    expect(validateBounds({ min: "1", max: "" })).toBeNull();
   });
 
-  it("omits an empty max from the request so the bound stays unset", () => {
+  it("sends an explicit null max so the API removes the profile limit", () => {
     expect(scaleRequest({ min: "2", max: "" }, pool({ max_active: null })))
-      .toEqual({ project_id: "agent-queue", profile_id: "worker-standard", min: 2 });
+      .toEqual({ project_id: "agent-queue", profile_id: "worker-standard", min: 2, max: null });
     expect(scaleRequest({ min: "2", max: "6" }, pool()))
       .toEqual({ project_id: "agent-queue", profile_id: "worker-standard", min: 2, max: 6 });
   });
@@ -280,6 +278,24 @@ describe("pool settings", () => {
     expect(await within(window).findByText("Max must be greater than or equal to min.")).toBeInTheDocument();
     expect(within(window).getByRole("button", { name: "Save pool bounds" })).toBeDisabled();
     expect(api.poolScale).not.toHaveBeenCalled();
+  });
+
+  it("clears a maximum bound through the typed API", async () => {
+    renderAgents("/");
+    fireEvent.click(await screen.findByRole("button", { name: "Open worker-standard pool" }, SLOW));
+    const window = await screen.findByRole("region", { name: "worker-standard pool agent window" }, SLOW);
+    fireEvent.click(within(window).getByRole("tab", { name: "Settings" }));
+
+    fireEvent.change(await within(window).findByLabelText("Maximum active workers", undefined, SLOW), {
+      target: { value: "" },
+    });
+    fireEvent.click(within(window).getByRole("button", { name: "Save pool bounds" }));
+
+    await waitFor(() => expect(api.poolScale).toHaveBeenCalledTimes(1), SLOW);
+    expect(api.poolScale.mock.calls[0]![0].body).toEqual({
+      project_id: "agent-queue", profile_id: "worker-standard", min: 1, max: null,
+    });
+    expect(await within(window).findByText("Pool bounds saved.")).toBeInTheDocument();
   });
 
   it("surfaces an in-band pool_scale refusal", async () => {
