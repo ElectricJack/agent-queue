@@ -67,6 +67,8 @@ async def orch(tmp_path):
     mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
     mock_git.afind_open_pr = AsyncMock(return_value="https://github.com/org/repo/pull/42")
     mock_git.ais_ancestor = AsyncMock(return_value=False)
+    # Default: the task branch carries work, so the require-a-PR gate applies.
+    mock_git.abranch_commit_count = AsyncMock(return_value=3)
     mock_git._arun = AsyncMock(return_value="0")
     mock_git.acommit_all = AsyncMock(return_value=True)
     mock_git.apush_branch = AsyncMock(return_value=None)
@@ -518,3 +520,91 @@ class TestNoCodeTasksSkipThePrGate:
             True,
         )
         integrate.assert_awaited_once()
+
+
+class TestEmptyBranchSkipsThePrGate:
+    """A task branch with no commits cannot have a pull request.
+
+    ``_phase_verify``'s PR-mode gate used to demand one from any task left
+    on its own branch.  Reviewer / gate sessions are told their workspace is
+    read-only, so ``aq/<id>`` sits exactly where it was cut from ``main``:
+    ``gh pr create`` would answer "No commits between main and aq/<id>", and
+    the close was refused twice, burned both verification retries, and
+    appended inapplicable git feedback to the task description (review task
+    wise-delta on PR #75).
+
+    The declarative no-code skip (``read_only`` profile, ``--work-outcome
+    no-op``) covers the *intent*; this covers the *fact*, so a stale profile
+    or a mislabelled work outcome cannot resurrect an impossible demand.
+    """
+
+    async def _empty_branch_ctx(self, orch, task_id, branch, **task_kw):
+        task = _pr_task(task_id, branch_name=branch, **task_kw)
+        await orch.db.create_task(task)
+        await orch.db.transition_task(task.id, TaskStatus.IN_PROGRESS)
+        orch.git.aget_current_branch = AsyncMock(return_value=branch)
+        orch.git.afind_open_pr = AsyncMock(return_value=None)
+        # The branch is empty, and the base ref cannot confirm it by
+        # ancestry (an unfetched origin/main answers the same way).
+        orch.git.ais_ancestor = AsyncMock(return_value=False)
+        orch.git.abranch_commit_count = AsyncMock(return_value=0)
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = _ctx(orch, task, ws.workspace_path)
+        ctx.close_session_live = True
+        return task, ctx
+
+    async def test_empty_branch_passes_verification(self, orch):
+        task, ctx = await self._empty_branch_ctx(orch, "t-empty", "aq/t-empty")
+        ctx.work_outcome = "shipped"
+
+        assert await orch._phase_verify(ctx) == PhaseResult.CONTINUE
+        assert ctx.verification_retry_in_session is False
+        assert ctx.verification_reopened is False
+        assert ctx.verification_issues == []
+        row = await orch.db.get_task(task.id)
+        assert "Git Verification Feedback" not in row.description
+
+    async def test_commit_count_is_measured_against_the_default_branch(self, orch):
+        _task, ctx = await self._empty_branch_ctx(orch, "t-empty-args", "aq/t-empty-args")
+
+        await orch._phase_verify(ctx)
+
+        orch.git.abranch_commit_count.assert_awaited_once_with(
+            ctx.workspace_path, "aq/t-empty-args", ctx.default_branch
+        )
+
+    async def test_branch_with_commits_still_needs_a_pr(self, orch):
+        _task, ctx = await self._empty_branch_ctx(orch, "t-work", "aq/t-work")
+        orch.git.abranch_commit_count = AsyncMock(return_value=2)
+        ctx.work_outcome = "shipped"
+
+        assert await orch._phase_verify(ctx) == PhaseResult.STOP
+        assert any("No open PR" in msg for msg in ctx.verification_issues)
+
+    async def test_unknown_commit_count_still_needs_a_pr(self, orch):
+        """``None`` means "could not tell" — it must not weaken the gate."""
+        _task, ctx = await self._empty_branch_ctx(orch, "t-unknown", "aq/t-unknown")
+        orch.git.abranch_commit_count = AsyncMock(return_value=None)
+
+        assert await orch._phase_verify(ctx) == PhaseResult.STOP
+        assert any("No open PR" in msg for msg in ctx.verification_issues)
+
+    async def test_open_pr_short_circuits_the_commit_count(self, orch):
+        """An existing PR is the answer; no extra git call is made."""
+        _task, ctx = await self._empty_branch_ctx(orch, "t-has-pr", "aq/t-has-pr")
+        orch.git.afind_open_pr = AsyncMock(return_value="https://github.com/org/repo/pull/7")
+
+        assert await orch._phase_verify(ctx) == PhaseResult.CONTINUE
+        assert ctx.pr_url == "https://github.com/org/repo/pull/7"
+        orch.git.abranch_commit_count.assert_not_awaited()
+
+    async def test_empty_branch_still_sweeps_uncommitted_changes(self, orch, monkeypatch):
+        """Waving the gate through must not leave a dirty slot behind."""
+        task, ctx = await self._empty_branch_ctx(orch, "t-empty-dirty", "aq/t-empty-dirty")
+        orch.git.ahas_uncommitted_changes = AsyncMock(return_value=True)
+        sweep = AsyncMock(return_value=False)
+        monkeypatch.setattr(orch, "_auto_remediate_uncommitted", sweep)
+
+        assert await orch._phase_verify(ctx) == PhaseResult.CONTINUE
+        sweep.assert_awaited()
+        assert sweep.await_args.args[1] == task.id

@@ -2367,6 +2367,44 @@ class GitManager:
         except GitError:
             return False
 
+    async def abranch_commit_count(
+        self,
+        checkout_path: str,
+        branch: str,
+        base_branch: str,
+    ) -> int | None:
+        """Commits on *branch* that *base_branch* does not already have.
+
+        ``0`` means the branch carries no work: nothing to push, nothing a
+        pull request could be opened for (``gh pr create`` refuses "No
+        commits between ..."), so a verification gate must not demand one.
+
+        The base is resolved as ``origin/<base_branch>`` first — a task
+        branch is cut from the pushed tip — and falls back to the local
+        ``<base_branch>`` for a checkout that has no remote-tracking ref.
+        Returns ``None`` when neither side resolves, which callers read as
+        "unknown", never as "empty".
+        """
+        try:
+            rev = _validate_rev(branch)
+            base = _validate_ref(base_branch, field="base_branch")
+        except GitError as e:
+            logger.debug("abranch_commit_count: %s", e)
+            return None
+        for base_rev in (f"origin/{base}", base):
+            try:
+                output = await self._arun(
+                    ["rev-list", "--count", f"{base_rev}..{rev}"],
+                    cwd=checkout_path,
+                )
+            except GitError:
+                continue
+            try:
+                return int(output.strip())
+            except ValueError:
+                return None
+        return None
+
     async def ahas_non_plan_changes(
         self,
         checkout_path: str,

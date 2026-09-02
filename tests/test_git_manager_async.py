@@ -202,6 +202,54 @@ class TestAsyncFindOpenPr:
         assert await mgr.ais_ancestor(clone, "feature-x", "main") is True
 
 
+class TestAsyncBranchCommitCount:
+    """``abranch_commit_count`` — how much work a task branch actually carries.
+
+    The require-a-PR verification gate uses it to tell "the agent forgot to
+    open a PR" apart from "there is nothing to open a PR for".
+    """
+
+    @pytest.mark.asyncio
+    async def test_empty_branch_counts_zero(self, mgr, clone):
+        await mgr.acreate_branch(clone, "aq/review-1")
+        assert await mgr.abranch_commit_count(clone, "aq/review-1", "main") == 0
+
+    @pytest.mark.asyncio
+    async def test_counts_commits_ahead_of_base(self, mgr, clone):
+        await mgr.acreate_branch(clone, "aq/work-1")
+        _commit_file(clone, "a.txt", "a", "one")
+        _commit_file(clone, "b.txt", "b", "two")
+        assert await mgr.abranch_commit_count(clone, "aq/work-1", "main") == 2
+
+    @pytest.mark.asyncio
+    async def test_prefers_the_remote_base_ref(self, mgr, clone):
+        """Local ``main`` may lag origin; the pushed base is the real one."""
+        await mgr.acreate_branch(clone, "aq/work-2")
+        _commit_file(clone, "c.txt", "c", "three")
+        _git(["push", "origin", "aq/work-2"], cwd=clone)
+        _git(["push", "origin", "aq/work-2:main"], cwd=clone)
+        _git(["fetch", "origin"], cwd=clone)
+        # origin/main now contains the branch tip; local main does not.
+        assert await mgr.abranch_commit_count(clone, "aq/work-2", "main") == 0
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_the_local_base_ref(self, mgr, clone):
+        """A checkout with no ``origin/<base>`` still gets an answer."""
+        await mgr.acreate_branch(clone, "aq/work-3")
+        _commit_file(clone, "d.txt", "d", "four")
+        _git(["update-ref", "-d", "refs/remotes/origin/main"], cwd=clone)
+        assert await mgr.abranch_commit_count(clone, "aq/work-3", "main") == 1
+
+    @pytest.mark.asyncio
+    async def test_unresolvable_base_returns_none(self, mgr, clone):
+        await mgr.acreate_branch(clone, "aq/work-4")
+        assert await mgr.abranch_commit_count(clone, "aq/work-4", "no-such-base") is None
+
+    @pytest.mark.asyncio
+    async def test_unresolvable_branch_returns_none(self, mgr, clone):
+        assert await mgr.abranch_commit_count(clone, "aq/never-created", "main") is None
+
+
 class TestAsyncGetStatus:
     @pytest.mark.asyncio
     async def test_returns_status(self, clone, mgr):

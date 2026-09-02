@@ -1032,6 +1032,8 @@ class TestPhaseVerifyNormalTask:
         mock_git.aget_current_branch = AsyncMock(return_value="main")
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
         mock_git.afind_open_pr = AsyncMock(return_value=None)
+        # Default: the task branch carries work, so the require-a-PR gate applies.
+        mock_git.abranch_commit_count = AsyncMock(return_value=3)
         mock_git._arun = AsyncMock(return_value="0")
         mock_git.acommit_all = AsyncMock(return_value=True)
         mock_git.apush_branch = AsyncMock(return_value=None)
@@ -1409,6 +1411,8 @@ class TestPhaseVerifyApprovalTask:
         mock_git.aget_current_branch = AsyncMock(return_value="feature-1")
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
         mock_git.afind_open_pr = AsyncMock(return_value="https://github.com/org/repo/pull/42")
+        # Default: the task branch carries work, so the require-a-PR gate applies.
+        mock_git.abranch_commit_count = AsyncMock(return_value=3)
         mock_git.ais_ancestor = AsyncMock(return_value=False)
         mock_git._arun = AsyncMock(return_value="0")
         mock_git.acommit_all = AsyncMock(return_value=True)
@@ -1626,6 +1630,8 @@ class TestPhaseVerifyIntermediateSubtask:
         mock_git.aget_current_branch = AsyncMock(return_value="task/t-parent/parent-plan")
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
         mock_git.afind_open_pr = AsyncMock(return_value=None)
+        # Default: the task branch carries work, so the require-a-PR gate applies.
+        mock_git.abranch_commit_count = AsyncMock(return_value=3)
         mock_git._arun = AsyncMock(return_value="0")
         mock_git.acommit_all = AsyncMock(return_value=True)
         mock_git.apush_branch = AsyncMock(return_value=None)
@@ -1908,6 +1914,8 @@ class TestCompletionPipelineVerify:
         mock_git.aget_current_branch = AsyncMock(return_value="main")
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
         mock_git.afind_open_pr = AsyncMock(return_value=None)
+        # Default: the task branch carries work, so the require-a-PR gate applies.
+        mock_git.abranch_commit_count = AsyncMock(return_value=3)
         mock_git._arun = AsyncMock(return_value="0")
         mock_git.ahas_non_plan_changes = AsyncMock(return_value=False)
         o.git = mock_git

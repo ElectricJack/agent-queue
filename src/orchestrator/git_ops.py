@@ -505,6 +505,9 @@ class GitOpsMixin:
         * **Final task / final subtask, direct mode** — expect: on default
           branch, no uncommitted, in sync with origin.
         * **No-change task** — on default branch with no diff → pass.
+        * **Empty task branch** — on the task branch but with no commits
+          over the default branch → pass; there is nothing a PR could
+          contain.
         """
         workspace = ctx.workspace_path
         task = ctx.task
@@ -833,6 +836,28 @@ class GitOpsMixin:
                     ):
                         logger.info(
                             "Task %s: branch '%s' is already integrated into '%s'",
+                            task.id,
+                            task.branch_name,
+                            default_branch,
+                        )
+                    elif (
+                        await self.git.abranch_commit_count(
+                            workspace, task.branch_name, default_branch
+                        )
+                        == 0
+                    ):
+                        # Nothing was committed on the branch, so there is
+                        # nothing a PR could contain — ``gh pr create``
+                        # answers "No commits between <base> and <head>".
+                        # Demanding one here refuses a legitimate close,
+                        # burns both verification retries and writes
+                        # inapplicable git feedback into the task
+                        # description (review task wise-delta, PR #75).
+                        # ``None`` (count unknown) deliberately falls
+                        # through to the gate.
+                        logger.info(
+                            "Task %s: branch '%s' has no commits over '%s' — "
+                            "no PR to require",
                             task.id,
                             task.branch_name,
                             default_branch,
