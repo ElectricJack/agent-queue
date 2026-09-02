@@ -151,7 +151,13 @@ async def claim_once(db, sid, *, cap=None, task_id=None):
             await db.release_claim_slot(conn, sid)
             return "claim_conflict", None
         await db.record_holder(
-            conn, session_id=sid, task_id=tid, agent_id=row.agent_id, work_dir=row.work_dir, now=NOW
+            conn,
+            session_id=sid,
+            task_id=tid,
+            claim_epoch=task.claim_epoch,
+            agent_id=row.agent_id,
+            work_dir=row.work_dir,
+            now=NOW,
         )
         return "claimed", task
 
@@ -488,6 +494,34 @@ class TestClaimTransaction:
                     expect_claim_epoch=1,
                 )
         assert (await db.get_task("t1")).status == TaskStatus.IN_PROGRESS
+
+    async def test_preparing_epoch_fences_stale_same_task_release(self, db):
+        await mktask(db, "t1", profile_id="worker")
+        sid = await pool_session(db)
+        kind, first = await claim_once(db, sid)
+        assert kind == "claimed" and first.claim_epoch == 1
+        await db.release_claim(sid, task_status=TaskStatus.READY, context="retry", now=NOW)
+        kind, successor = await claim_once(db, sid)
+        assert kind == "claimed" and successor.claim_epoch == 2
+
+        stale = await db.release_claim(
+            sid,
+            task_status=TaskStatus.COMPLETED,
+            context="stale_terminal_release",
+            now=NOW,
+            expected_task_id="t1",
+            expected_claim_epoch=1,
+        )
+
+        assert stale.released is False
+        session = await db.get_session(sid)
+        assert (session.task_id, session.claim_phase, session.last_claim_epoch) == (
+            "t1",
+            "preparing",
+            2,
+        )
+        task = await db.get_task("t1")
+        assert (task.status, task.claim_epoch) == (TaskStatus.IN_PROGRESS, 2)
 
     async def test_terminate_releases_everything(self, db):
         await mktask(db, "t1", profile_id="worker")

@@ -952,11 +952,20 @@ Scope is exactly what `src/playbooks/pipeline_compiler.py` already emits — no 
 | `"{{event.x.y}}"` (whole string) | `EventRef(path="x.y")` |
 | `"{{outputs.b.f}}"` (whole string) | `BindingRef(binding="b", path="f")` |
 | `"lit {{event.x}}"` (mixed) | `TemplateValue(parts=[LiteralValue, EventRef, …])` |
-| `["{{outputs.dep.id}}"]` | `ListValue(items=[LoopRef(binding="dep", path="id")])` |
+| `["{{outputs.dep.id}}"]` where `dep` is **not** an enclosing `for_each` binding | `ListValue(items=[BindingRef(binding="dep", path="id")])` |
+| `["{{outputs.dep.id}}"]` **inside** a node whose `for_each.as == "dep"` (the real `default-pipeline.md:106-112`, `:177-183`) | `ListValue(items=[LoopRef(binding="dep", path="id")])` |
 | node `output.as` | `save_result_as` |
 | node `for_each: {source, as}` | a `ForEachStep` wrapping the node as a one-step body: `collection` from `source`, `item_binding` from `as`, `failure_policy="collect"`, `body_entry` = the wrapped step, `continuation` = the node's `on_success` |
 | `on_success` / `on_failure` | `transitions: {"success": …, "failure": …, "runtime_error": <on_failure>}` |
 | `{"terminal": true}` | `TerminalStep(outcome="completed")` |
+
+**How `outputs.<name>` resolves, and why the list rows differ.** `outputs.` in V1 is one flat namespace: it holds both step results (`output.as`) and `for_each` item bindings (`for_each.as`). V2 splits them into two node kinds, so lowering is context-sensitive and the rule is mechanical:
+
+> Walk the enclosing `for_each` bindings of the node being lowered, innermost first. If `<name>` equals one of their `as` values, emit `LoopRef(binding=<name>, …)`. Otherwise emit `BindingRef(binding=<name>, …)` — the ordinary case, and the default.
+
+`LoopRef` is **only** ever correct for the item binding of an enclosing `ForEachStep`; §6.3's `loop_ref_outside_loop` rejects it anywhere else, so a lowering that reached for `LoopRef` on an ordinary step result would produce an artifact that cannot validate. `BindingRef` is then checked by §6.4's definite-assignment analysis against the step that carries `save_result_as: "<name>"`.
+
+The two `dep` rows above are the same V1 text lowering two ways for exactly this reason: in the live `default-pipeline.md` both occurrences of `{{outputs.dep.id}}` sit inside a node whose `for_each.as` is `"dep"` (`:106`, `:177`), so they lower to `LoopRef`; the identical string on a node with no enclosing loop lowers to `BindingRef`. `{{outputs.review.task_id}}` (`:90`, `:111`, `:162`) is the ordinary case and lowers to `BindingRef(binding="review", path="task_id")` — including at `:111`, which sits inside the `dep` loop, because `review` is not that loop's binding.
 
 Everything else — `prompt`, natural-language `transitions`, `wait_for_human`, `goto`, `llm_config` — is **not** lowered; it emits `requires_agent_proposal` (question). Rationale: those are exactly the constructs whose V2 form needs an author decision (which profile, which budget, which output schema), and guessing them is the thing the spec forbids.
 
@@ -1082,6 +1091,13 @@ The stub lookups are not a weakening: they are the same `ContractLookup`/`Profil
 ### 9.2 `default-pipeline.lowered.json`
 
 The `SemanticBody` produced by `lower_pipeline` from the **real** `src/prompts/default_playbooks/default-pipeline.md` (233 lines, five rules). Not hand-written: generated once by the lowering and checked in, so a change in lowering behavior shows up as a reviewable diff. It carries the two `unknown_event_field` diagnostics of §7.3 in a sibling `default-pipeline.lowered.diagnostics.json`.
+
+Two micro-sources sit beside it in `tests/fixtures/playbooks/v2/lowering/` to drive T-18a/T-18b without depending on the 233-line real file:
+
+- `output-ref-no-loop.pipeline.md` — one rule, two nodes: the first carries `"output": {"as": "dep"}`, the second (**no** `for_each`) carries `"args": {"waiter_task_ids": ["{{outputs.dep.id}}"]}`. Its checked-in `output-ref-no-loop.lowered.json` has `binding_ref`, and validating it yields zero diagnostics.
+- `output-ref-in-loop.pipeline.md` — the same second node with `"for_each": {"source": "outputs.downstream.tasks", "as": "dep"}` added. Its `output-ref-in-loop.lowered.json` has `loop_ref` for `dep` and `binding_ref` for the `review` reference on the same node.
+
+The pair is the regression guard for §7.2's resolution rule in both directions.
 
 ### 9.3 One fixture per rejection, in `tests/fixtures/playbooks/v2/invalid/`
 
@@ -1342,6 +1358,8 @@ Verify: `python scripts/generate-playbook-schema.py && python scripts/generate-p
 | # | Red | Green |
 |---|---|---|
 | T-18 | `TestPipelineLowering` — one test per row of §7.2's table, driven by `default-pipeline.lowered.json` | `src/playbooks/pipeline_lowering.py` |
+| T-18a | `TestPipelineLowering::test_non_loop_output_reference_lowers_to_binding_ref` — lowers a one-rule pipeline whose node has **no** `for_each` and whose `args` carry `{"waiter_task_ids": ["{{outputs.dep.id}}"]}`, asserting the value is `{"type":"list","items":[{"type":"binding_ref","binding":"dep","path":"id"}]}` (**not** `loop_ref`) and that `validate_definition` on the lowered artifact returns **no** `loop_ref_outside_loop` and no `binding_not_definitely_assigned` — the assigning node carries `output.as: "dep"`. Red before §7.2's resolution rule exists, because a table-driven lowering that hard-codes `loop_ref` for list-of-output-ref emits `loop_ref` and §6.3 then rejects the artifact | the enclosing-`for_each` walk in `lower_pipeline` |
+| T-18b | `TestPipelineLowering::test_loop_item_reference_lowers_to_loop_ref` — the same rule with `for_each: {"source": "outputs.downstream.tasks", "as": "dep"}` on the node asserts `loop_ref`, and `{{outputs.review.task_id}}` on that same node still asserts `binding_ref`. Guards the fix from over-correcting into "always `BindingRef`" | as above |
 | T-19 | `TestShadowCompile::test_default_pipeline_reports_the_undeclared_task_object` (§7.3) | `shadow_compile` |
 | T-20 | `test_shadow_compile_writes_nothing` — a read-only vault fixture; any write raises | — |
 | T-21 | `test_pathological_artifact_is_bounded` (§10.6) | the caps in §10.6 |

@@ -124,9 +124,6 @@ cli = [
     "agent-queue-api-client @ file:packages/aq-client",
 ]
 dev = [
-    # ToolIndex's fake-memsearch positive-control exercises cosine similarity
-    # directly, so CI needs NumPy even though memsearch itself is optional.
-    "numpy>=2.0",
     # CVE-2025-71176: pytest <9.0.3 uses predictable /tmp/pytest-of-{user}
     # directory names, allowing local DoS or possible privilege escalation.
     "pytest>=9.0.3",
@@ -158,7 +155,11 @@ where = ["."]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests", "packages"]
-addopts = "-n auto --dist loadfile --durations=10 -m \"not perf and not migration and not slow and not tmux and not integration\""
+# No xdist options (``-n``/``--dist``) here: ``aq test`` adds the box's worker
+# cap plus ``--dist loadfile`` and CI passes them explicitly, while
+# ``pytest -p no:xdist`` (the documented serial path) unloads those options
+# with the plugin and errors on any left in addopts.
+addopts = "--durations=10 -m \"not perf and not migration and not slow and not tmux and not integration\""
 markers = [
     "functional: tests that launch real Claude CLI (require auth + API key)",
     "functional_mcp: functional tests requiring npm/npx for MCP servers",

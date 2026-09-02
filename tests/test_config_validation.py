@@ -630,3 +630,51 @@ class TestSessionsEnabledDefault:
         )
         assert cfg.sessions.enabled is True
         assert [e for e in cfg.validate() if e.section == "sessions"] == []
+
+
+class TestSubstrateLoaderDefaults:
+    """Partial substrate sections retain their dataclass defaults."""
+
+    @staticmethod
+    def _load(tmp_path, **sections):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            yaml.dump(
+                {
+                    "discord": {"bot_token": "tok", "guild_id": "123"},
+                    "database_path": str(tmp_path / "test.db"),
+                    **sections,
+                }
+            )
+        )
+        return load_config(str(config_file))
+
+    def test_sessions_provider_uses_dataclass_default_when_omitted(self, tmp_path):
+        from src.config import SessionsConfig
+
+        cfg = self._load(tmp_path, sessions={"lease_ttl_seconds": 90})
+        assert cfg.sessions.provider == SessionsConfig().provider
+        assert cfg.sessions.lease_ttl_seconds == 90
+
+    def test_sessions_explicit_values_override_defaults(self, tmp_path):
+        cfg = self._load(
+            tmp_path,
+            sessions={"provider": "fake", "pane_stream_lines": 5},
+        )
+        assert cfg.sessions.provider == "fake"
+        assert cfg.sessions.pane_stream_lines == 5
+
+    def test_worktrees_enabled_uses_dataclass_default_when_omitted(self, tmp_path):
+        from src.config import WorktreesConfig
+
+        cfg = self._load(tmp_path, worktrees={"retain_failed_days": 3})
+        assert cfg.worktrees.enabled is WorktreesConfig().enabled
+        assert cfg.worktrees.retain_failed_days == 3
+
+    def test_worktrees_explicit_values_override_defaults(self, tmp_path):
+        cfg = self._load(
+            tmp_path,
+            worktrees={"enabled": False, "salvage_max_bytes": 1234},
+        )
+        assert cfg.worktrees.enabled is False
+        assert cfg.worktrees.salvage_max_bytes == 1234

@@ -115,6 +115,8 @@ async def test_session_close_emits_task_completed(orchestrator_factory):
     assert payload["task_id"] == task_id
     assert payload["project_id"] == "p"
     assert payload["title"] == "Do work"
+    # A worker that shipped code is exactly what the review rules exist for.
+    assert payload["no_code"] is False
 
 
 @pytest.mark.asyncio
@@ -276,3 +278,88 @@ async def test_close_drives_the_review_chain(orchestrator_factory, pipeline_engi
     assert [t for t in tasks if t.profile_id == "final-reviewer"], (
         "per-branch-final-review did not fire on the close path's own event"
     )
+
+
+async def _close_pass(h: CommandHandler, task_id: str, **extra) -> None:
+    await h.db.transition_task(task_id, TaskStatus.IN_PROGRESS, context="test")
+    result = await h.execute(
+        "task_close", {"task_id": task_id, "outcome": "pass", "summary": "done", **extra}
+    )
+    assert result.get("success"), result
+
+
+async def _review_rows(h: CommandHandler, reviewed_id: str) -> list:
+    tasks = await h.db.list_tasks(project_id="p")
+    return [t for t in tasks if t.dedup_key == f"review:task:{reviewed_id}"]
+
+
+@pytest.mark.asyncio
+async def test_read_only_close_does_not_review_the_review(
+    orchestrator_factory, pipeline_engine_factory
+):
+    """A finished reviewer task must not spawn a review of itself.
+
+    Reviewer tasks run on a slot checked out on their own ``aq/<id>`` branch,
+    so ``event.task.branch_name`` is truthy for them exactly as it is for a
+    worker.  Before the ``no_code`` guard, every reviewer close therefore
+    matched ``per-task-review`` and spawned "Review: Review: ..." — three
+    levels deep on the live queue within two hours of the emit landing.
+    """
+    orch = await orchestrator_factory()
+    h = orch.command_handler
+    await _seed(h)
+    await h.db.upsert_profile(AgentProfile(id="reviewer", name="Reviewer", read_only=True))
+    await h.db.upsert_profile(AgentProfile(id="final-reviewer", name="Final"))
+    engine = pipeline_engine_factory(handler=h)
+
+    review_id = (
+        await h.execute(
+            "create_task",
+            {"project_id": "p", "title": "Review: Do work", "profile_id": "reviewer"},
+        )
+    )["created"]
+    # What workspace acquisition stamps on every session task, reviewer or not.
+    await h.db.update_task(review_id, branch_name=f"aq/{review_id}")
+
+    await _close_pass(h, review_id)
+
+    completed = _emitted(orch.bus, "task.completed")
+    assert len(completed) == 1, "a reviewer's close is still a completion"
+    assert completed[0]["no_code"] is True
+
+    await engine.dispatch("task.completed", completed[0], event_id="review-closed")
+
+    assert await _review_rows(h, review_id) == [], "spawned a review of the review"
+    tasks = await h.db.list_tasks(project_id="p")
+    assert [t for t in tasks if t.profile_id == "final-reviewer"] == []
+
+
+@pytest.mark.asyncio
+async def test_no_op_close_is_flagged_no_code(orchestrator_factory, pipeline_engine_factory):
+    """``--work-outcome no-op`` is the agent's own word that nothing shipped.
+
+    Same verdict git verification uses to skip the PR gate — so the review
+    rules skip too, instead of sending a reviewer to look at an empty branch.
+    """
+    orch = await orchestrator_factory()
+    h = orch.command_handler
+    await _seed(h)
+    await h.db.upsert_profile(AgentProfile(id="reviewer", name="Reviewer", read_only=True))
+    engine = pipeline_engine_factory(handler=h)
+
+    task_id = (
+        await h.execute(
+            "create_task",
+            {"project_id": "p", "title": "Investigate", "profile_id": "worker"},
+        )
+    )["created"]
+    await h.db.update_task(task_id, branch_name=f"aq/{task_id}")
+
+    await _close_pass(h, task_id, work_outcome="no-op")
+
+    completed = _emitted(orch.bus, "task.completed")
+    assert len(completed) == 1
+    assert completed[0]["no_code"] is True
+
+    await engine.dispatch("task.completed", completed[0], event_id="no-op-closed")
+    assert await _review_rows(h, task_id) == []

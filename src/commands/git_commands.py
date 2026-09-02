@@ -66,9 +66,11 @@ class GitCommandsMixin:
         os.makedirs(cwd, exist_ok=True)
 
         result = await self.orchestrator.git.amerge_pr(cwd, pr_url, method=method)
-        return {
+        response = {
             "success": result["success"],
             "pr_url": pr_url,
             "sha": result.get("sha"),
-            "error": result.get("error"),
         }
+        if error := result.get("error"):
+            response["error"] = error
+        return response

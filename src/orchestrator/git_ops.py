@@ -505,9 +505,6 @@ class GitOpsMixin:
         * **Final task / final subtask, direct mode** — expect: on default
           branch, no uncommitted, in sync with origin.
         * **No-change task** — on default branch with no diff → pass.
-        * **Empty task branch** — on the task branch but with no commits
-          over the default branch → pass; there is nothing a PR could
-          contain.
         """
         workspace = ctx.workspace_path
         task = ctx.task
@@ -824,6 +821,20 @@ class GitOpsMixin:
             if current_branch == default_branch:
                 # No-change task — acceptable, skip PR checks
                 pass
+            elif not has_uncommitted and await self._abranch_has_no_commits(
+                workspace, current_branch, default_branch
+            ):
+                # Review-only task: the worktree is pinned to its own task
+                # branch but the agent produced no commits.  There is nothing
+                # to push and nothing to open a PR for — demanding one forces
+                # an empty PR or a manual checkout of the default branch.
+                logger.info(
+                    "Task %s: branch '%s' has no commits ahead of '%s' — "
+                    "skipping PR/push checks",
+                    task.id,
+                    current_branch,
+                    default_branch,
+                )
             else:
                 if has_remote:
                     pr_url = await self.git.afind_open_pr(workspace, task.branch_name)
@@ -836,28 +847,6 @@ class GitOpsMixin:
                     ):
                         logger.info(
                             "Task %s: branch '%s' is already integrated into '%s'",
-                            task.id,
-                            task.branch_name,
-                            default_branch,
-                        )
-                    elif (
-                        await self.git.abranch_commit_count(
-                            workspace, task.branch_name, default_branch
-                        )
-                        == 0
-                    ):
-                        # Nothing was committed on the branch, so there is
-                        # nothing a PR could contain — ``gh pr create``
-                        # answers "No commits between <base> and <head>".
-                        # Demanding one here refuses a legitimate close,
-                        # burns both verification retries and writes
-                        # inapplicable git feedback into the task
-                        # description (review task wise-delta, PR #75).
-                        # ``None`` (count unknown) deliberately falls
-                        # through to the gate.
-                        logger.info(
-                            "Task %s: branch '%s' has no commits over '%s' — "
-                            "no PR to require",
                             task.id,
                             task.branch_name,
                             default_branch,
@@ -1043,6 +1032,26 @@ class GitOpsMixin:
         reopened = await self._reopen_with_verification_feedback(task, fixable)
         ctx.verification_reopened = reopened
         return PhaseResult.STOP
+
+    async def _abranch_has_no_commits(
+        self,
+        workspace: str,
+        branch: str,
+        default_branch: str,
+    ) -> bool:
+        """True when `branch` carries no commits ahead of the default branch.
+
+        Asks against the remote default (`origin/<default>`) first so a stale
+        local default cannot make an empty branch look like it has work, and
+        falls back to the local default when there is no remote-tracking ref.
+        An unanswerable question (missing ref, git failure) returns False, so
+        the caller keeps its normal checks rather than skipping them blind.
+        """
+        for base in (f"origin/{default_branch}", default_branch):
+            count = await self.git.acount_commits_ahead(workspace, branch, base)
+            if count is not None:
+                return count == 0
+        return False
 
     async def _auto_remediate_uncommitted(
         self,

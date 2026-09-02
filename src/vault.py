@@ -27,11 +27,16 @@ import shutil
 logger = logging.getLogger(__name__)
 
 
-# The unmodified system default immediately before assignment routing moved to
-# its own LLM playbook. Only this known source is replaced during upgrade;
-# edited copies remain user-owned.
+# Unmodified shipped defaults that a later default supersedes. Only these known
+# sources are replaced during upgrade; edited copies remain user-owned.
 _LEGACY_DEFAULT_PIPELINE_HASHES = frozenset(
-    {"d9db24f3c3dcc02c377287ff386df463f23d6dbe53e2a1aafbe5001e7874e6ce"}
+    {
+        # Immediately before assignment routing moved to its own LLM playbook.
+        "d9db24f3c3dcc02c377287ff386df463f23d6dbe53e2a1aafbe5001e7874e6ce",
+        # Review rules without the ``event.no_code`` guard: a finished review
+        # task spawned a review of itself (fix/pr-46-review-recursion).
+        "008efc9350b3bd57ac37212f92dfebd59a2d8b65625a2ebb207b63162474b9cd",
+    }
 )
 
 

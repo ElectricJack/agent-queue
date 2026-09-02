@@ -1227,7 +1227,9 @@ contract is enforced by convention, not code. Add a lightweight registry:
 EVENT_SCHEMAS = {
     "task.completed": {
         "required": ["task_id", "project_id", "title"],
-        "optional": ["agent_id", "agent_type"],
+        # no_code: the close path's "left no commits behind" verdict
+        # (read_only profile / --work-outcome no-op); review rules skip it.
+        "optional": ["agent_id", "agent_type", "no_code"],
     },
     "git.commit": {
         "required": ["commit_hash", "branch", "changed_files", "project_id"],

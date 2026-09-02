@@ -1,5 +1,5 @@
 import type { CSSProperties } from "react";
-import type { PlaybookGraphNode } from "../../api/client";
+import type { ExplainedPlaybookGraphNode } from "./explanation";
 
 /** Fixed card geometry — the backend owns rank/order, the frontend owns pixels. */
 export const NODE_WIDTH = 240;
@@ -71,6 +71,6 @@ export const EDGE_KIND_LABELS: Record<string, string> = {
 };
 
 export interface PlaybookGraphNodeData extends Record<string, unknown> {
-  node: PlaybookGraphNode;
+  node: ExplainedPlaybookGraphNode;
   onSelect?: (nodeId: string) => void;
 }

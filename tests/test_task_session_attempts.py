@@ -76,7 +76,8 @@ async def test_pool_claim_release_and_reuse_are_atomic_and_keep_a(db):
     await db.create_session(session(task_id=None, lifecycle="pool"))
     async with db.immediate() as conn:
         await db.record_holder(
-            conn, session_id="s", task_id="t", agent_id="a", work_dir="/task-a", now=150.0
+            conn, session_id="s", task_id="t", claim_epoch=0,
+            agent_id="a", work_dir="/task-a", now=150.0
         )
     await db.record_task_session_outcome("t", "success", session_id="s")
     await db.release_claim(
@@ -84,7 +85,8 @@ async def test_pool_claim_release_and_reuse_are_atomic_and_keep_a(db):
     )
     async with db.immediate() as conn:
         await db.record_holder(
-            conn, session_id="s", task_id="other", agent_id="a", work_dir="/task-b", now=180.0
+            conn, session_id="s", task_id="other", claim_epoch=0,
+            agent_id="a", work_dir="/task-b", now=180.0
         )
     await db.update_session("s", session_key="conversation-two")
     (a,) = await db.list_task_session_attempts("t")
@@ -110,7 +112,8 @@ async def test_pool_holder_snapshots_history_in_one_database_statement(db):
     async with count_statements(db) as counted:
         async with db.immediate() as conn:
             await db.record_holder(
-                conn, session_id="s", task_id="t", agent_id="a", work_dir="/task-a", now=150.0
+                conn, session_id="s", task_id="t", claim_epoch=0,
+                agent_id="a", work_dir="/task-a", now=150.0
             )
 
     # BEGIN, holder's session/agent/workspace/metadata writes, one attempt

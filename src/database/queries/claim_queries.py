@@ -279,7 +279,16 @@ class ClaimQueryMixin:
             return await _run(conn)
 
     async def record_holder(
-        self, conn, *, session_id, task_id, agent_id, work_dir, now, agent_reserved=False
+        self,
+        conn,
+        *,
+        session_id,
+        task_id,
+        claim_epoch,
+        agent_id,
+        work_dir,
+        now,
+        agent_reserved=False,
     ) -> Workspace | None:
         """Write the holder rows; return the agent's workspace slot.
 
@@ -291,7 +300,12 @@ class ClaimQueryMixin:
         await conn.execute(
             update(sessions)
             .where(sessions.c.id == session_id)
-            .values(task_id=task_id, claim_phase="preparing", claim_phase_at=now)
+            .values(
+                task_id=task_id,
+                claim_phase="preparing",
+                claim_phase_at=now,
+                last_claim_epoch=claim_epoch,
+            )
         )
         slot = None
         if agent_id:

@@ -2367,43 +2367,29 @@ class GitManager:
         except GitError:
             return False
 
-    async def abranch_commit_count(
+    async def acount_commits_ahead(
         self,
         checkout_path: str,
         branch: str,
-        base_branch: str,
+        base: str,
     ) -> int | None:
-        """Commits on *branch* that *base_branch* does not already have.
+        """Return how many commits *branch* carries that *base* does not.
 
-        ``0`` means the branch carries no work: nothing to push, nothing a
-        pull request could be opened for (``gh pr create`` refuses "No
-        commits between ..."), so a verification gate must not demand one.
-
-        The base is resolved as ``origin/<base_branch>`` first — a task
-        branch is cut from the pushed tip — and falls back to the local
-        ``<base_branch>`` for a checkout that has no remote-tracking ref.
-        Returns ``None`` when neither side resolves, which callers read as
-        "unknown", never as "empty".
+        ``None`` means the question could not be answered (a missing ref, a
+        detached worktree, any git failure) — callers must treat that as
+        "unknown" rather than as zero.
         """
         try:
-            rev = _validate_rev(branch)
-            base = _validate_ref(base_branch, field="base_branch")
-        except GitError as e:
-            logger.debug("abranch_commit_count: %s", e)
+            output = await self._arun(
+                ["rev-list", f"{_validate_rev(base)}..{_validate_rev(branch)}", "--count"],
+                cwd=checkout_path,
+            )
+        except GitError:
             return None
-        for base_rev in (f"origin/{base}", base):
-            try:
-                output = await self._arun(
-                    ["rev-list", "--count", f"{base_rev}..{rev}"],
-                    cwd=checkout_path,
-                )
-            except GitError:
-                continue
-            try:
-                return int(output.strip())
-            except ValueError:
-                return None
-        return None
+        try:
+            return int(output.strip())
+        except ValueError:
+            return None
 
     async def ahas_non_plan_changes(
         self,
