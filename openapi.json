@@ -15501,15 +15501,15 @@
           "mcp_servers": {
             "anyOf": [
               {
-                "additionalProperties": true,
-                "type": "object"
+                "items": {},
+                "type": "array"
               },
               {
                 "type": "null"
               }
             ],
             "title": "Mcp Servers",
-            "description": "MCP server configurations (name -> {command, args})"
+            "description": "MCP server names from the registry (e.g. ['playwright']). A legacy name -> config mapping is reduced to its keys."
           },
           "system_prompt_suffix": {
             "anyOf": [
@@ -17689,15 +17689,15 @@
           "mcp_servers": {
             "anyOf": [
               {
-                "additionalProperties": true,
-                "type": "object"
+                "items": {},
+                "type": "array"
               },
               {
                 "type": "null"
               }
             ],
             "title": "Mcp Servers",
-            "description": "New MCP server configurations (optional)"
+            "description": "New MCP server names from the registry (optional). A legacy name -> config mapping is reduced to its keys."
           },
           "system_prompt_suffix": {
             "anyOf": [
