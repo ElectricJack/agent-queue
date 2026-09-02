@@ -23,6 +23,7 @@ from sqlalchemy import (
     Table,
     Text,
     UniqueConstraint,
+    false,
     text,
     true,
 )
@@ -411,6 +412,9 @@ token_ledger = Table(
     Column("input_tokens", Integer, nullable=True),
     Column("output_tokens", Integer, nullable=True),
     Column("timestamp", Float, nullable=False),
+    # The metrics sampler reads a trailing window off this append-only,
+    # unbounded table every few seconds to compute tokens/minute.
+    Index("idx_token_ledger_timestamp", "timestamp"),
 )
 
 events = Table(
@@ -472,6 +476,9 @@ task_completion_records = Table(
     Column("notes", Text, nullable=False, server_default="''"),
     Column("completed_at", Float, nullable=False),
     Index("idx_task_completion_records_task_time", "task_id", "completed_at"),
+    # Completions-per-hour scans by time alone; the composite above cannot
+    # serve it because ``task_id`` is the leading column.
+    Index("idx_task_completion_records_completed_at", "completed_at"),
 )
 
 system_config = Table(
@@ -589,6 +596,14 @@ agent_profiles = Table(
     Column("model", Text, nullable=False, server_default="''"),
     Column("permission_mode", Text, nullable=False, server_default="''"),
     Column("allowed_tools", Text, nullable=False, server_default="'[]'"),
+    # Normalized capability namespaces (Playbook V2 Package 0 §3.1), stored
+    # as JSON arrays of text like ``allowed_tools`` above.  NULL is
+    # meaningful: it is the signal that the legacy ``allowed_tools`` adapter
+    # should run.  Backfilling would erase the distinction between "authored
+    # as none" ('[]') and "not authored" (NULL).
+    Column("harness_tools", Text, nullable=True),
+    Column("aq_commands", Text, nullable=True),
+    Column("plugin_tools", Text, nullable=True),
     Column("mcp_servers", Text, nullable=False, server_default="'{}'"),
     Column("system_prompt_suffix", Text, nullable=False, server_default="''"),
     Column("install", Text, nullable=False, server_default="'{}'"),
@@ -626,7 +641,7 @@ agent_profiles = Table(
         "read_only",
         Boolean,
         nullable=False,
-        server_default=text("0"),
+        server_default=false(),
     ),
     # Opt-in for the base-checkout launch guard: without it a session whose
     # ``work_dir`` is a base workspace (the clone hosting the slot
@@ -635,7 +650,7 @@ agent_profiles = Table(
         "allow_base_checkout",
         Boolean,
         nullable=False,
-        server_default=text("0"),
+        server_default=false(),
     ),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
@@ -695,7 +710,7 @@ sessions = Table(
     # launched with, and today's harness file may have been edited since.
     # This is what lets ``subagent_counts`` say "complete" instead of
     # "unknown" -- and say "unknown" honestly for the sessions that lack it.
-    Column("hooks_provisioned", Boolean, nullable=False, server_default=text("0")),
+    Column("hooks_provisioned", Boolean, nullable=False, server_default=false()),
     Index("idx_sessions_agent", "agent_id", "state"),
     Index("idx_sessions_task_id", "task_id"),
     Index("idx_sessions_state", "state"),
@@ -788,7 +803,7 @@ api_session_tokens = Table(
     # per-project supervisor sessions so the supervisor can run every
     # ``aq`` command on behalf of the operator; task sessions and other
     # workers stay on the narrow AGENT_COMMAND_SET.
-    Column("elevated", Boolean, nullable=False, server_default=text("0")),
+    Column("elevated", Boolean, nullable=False, server_default=false()),
     Index("idx_api_session_tokens_session", "session_id"),
     Index("idx_api_session_tokens_expires", "expires_at"),
 )
@@ -1066,6 +1081,32 @@ subagent_events = Table(
     CheckConstraint("event IN ('start','stop')", name="ck_subagent_events_event"),
     Index("idx_subagent_events_session", "session_id", "event"),
     Index("idx_subagent_events_occurred", "occurred_at"),
+)
+
+# ---------------------------------------------------------------------------
+# Fleet metrics time series (dashboard Metrics tab).
+#
+# One row per (resolution, bucket).  ``payload`` is the JSON sample body
+# rather than a wide column set: the metric surface is dict-shaped (counts
+# per harness, per profile, per model) and still growing, and a schema
+# migration per new series would make the sampler expensive to extend.
+#
+# ``UNIQUE(resolution, bucket_ts)`` is what makes the writer idempotent —
+# a tick that fires twice for the same second, or a roll-up re-run after a
+# restart, updates the bucket it already wrote instead of duplicating it.
+# ---------------------------------------------------------------------------
+metrics_samples = Table(
+    "metrics_samples",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    # "1s" | "1m" | "1h" -- the retention tier as well as the step.
+    Column("resolution", Text, nullable=False),
+    # Sample time floored to the resolution, so buckets line up across
+    # restarts and two daemons cannot interleave half-seconds.
+    Column("bucket_ts", Float, nullable=False),
+    Column("payload", Text, nullable=False),
+    UniqueConstraint("resolution", "bucket_ts", name="uq_metrics_samples_bucket"),
+    Index("idx_metrics_samples_res_ts", "resolution", "bucket_ts"),
 )
 
 message_discord_receipts = Table(

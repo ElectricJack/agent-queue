@@ -212,6 +212,30 @@ class CheckProfileResponse(BaseModel):
     manifest: dict[str, Any] = {}
 
 
+class ProfileAuditRow(BaseModel):
+    """One profile's capability policy, as ``profile_audit`` reports it."""
+
+    id: str
+    #: ``explicit`` when the profile authored a ``## Capabilities`` block,
+    #: ``legacy`` when the policy was adapted from ``allowed_tools``.  The
+    #: legacy rows are the migration list for the enforcement flip.
+    source: str = "legacy"
+    harness_tools: list[str] = []
+    aq_commands: list[str] = []
+    plugin_tools: list[str] = []
+    #: ``sha256:<hex>`` over the canonical policy; ``None`` when the policy
+    #: could not be built (``error`` then says why).
+    fingerprint: str | None = None
+    error: str | None = None
+
+
+class ProfileAuditResponse(BaseModel):
+    profiles: list[ProfileAuditRow] = []
+    legacy_count: int = 0
+    #: The live ``security.capability_enforcement`` mode.
+    enforcement: str = "audit"
+
+
 class InstallProfileResponse(BaseModel):
     profile_id: str
     installed: list[str] = []
@@ -338,6 +362,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "delete_profile": DeleteProfileResponse,
     "list_available_tools": ListAvailableToolsResponse,
     "check_profile": CheckProfileResponse,
+    "profile_audit": ProfileAuditResponse,
     "install_profile": InstallProfileResponse,
     "export_profile": ExportProfileResponse,
     "import_profile": ImportProfileResponse,

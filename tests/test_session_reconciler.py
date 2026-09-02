@@ -636,6 +636,26 @@ class TestExitHandling:
         assert task.status is TaskStatus.BLOCKED
         assert await db.get_task_meta("t1", "needs_attention") == "session_exited_open"
         assert "task.restarted" not in bus.types()
+        # The terminal leg is a *failure*: task.failed is what the reflection
+        # playbook and the failure-notification path trigger on, so an exit
+        # that ends here has to raise it rather than going silent.
+        failed = bus.payload("task.failed")
+        assert failed is not None, bus.types()
+        assert failed["task_id"] == "t1"
+        assert failed["status"] == TaskStatus.BLOCKED.value
+        assert failed["context"] == "session_exited_without_close_exhausted"
+        assert "exited without close" in failed["error"]
+
+    async def test_productive_death_with_budget_left_does_not_emit_task_failed(
+        self, db, provider, reconciler, bus
+    ):
+        """A retriable exit is paused for a retry, not reported as failed."""
+        await _task(db)
+        row = await _session(db, provider, started_at=NOW - 100_000)
+        provider.script_death(row.name)
+        await reconciler.tick(now=NOW)
+        assert (await db.get_task("t1")).status is TaskStatus.PAUSED
+        assert "task.failed" not in bus.types()
 
     async def test_exit_without_close_is_explained_by_aq_task_explain(
         self, db, provider, reconciler

@@ -32,10 +32,12 @@ from dataclasses import dataclass, field
 
 import yaml
 
+from src.profiles.capabilities import NAMESPACES, WILDCARD_CHARS
+
 logger = logging.getLogger(__name__)
 
 # Sections whose JSON code blocks are parsed deterministically.
-STRUCTURED_SECTIONS = frozenset({"config", "tools", "mcp servers", "install"})
+STRUCTURED_SECTIONS = frozenset({"config", "tools", "capabilities", "mcp servers", "install"})
 
 # Sections whose text is captured as prompt content.
 PROMPT_SECTIONS = frozenset({"role", "rules", "reflection"})
@@ -160,6 +162,11 @@ class ParsedProfile:
     # Structured (JSON) sections
     config: dict = field(default_factory=dict)
     tools: dict = field(default_factory=dict)
+    # ``## Capabilities`` — the normalized three-namespace replacement for
+    # ``## Tools`` (Playbook V2 Package 0 §3.2).  ``None`` means the block
+    # was absent, which is what routes the profile through the legacy
+    # ``allowed_tools`` adapter; a present block must name all three keys.
+    capabilities: dict[str, list[str]] | None = None
     # Names of MCP servers this profile uses.  The vault-format ``## MCP
     # Servers`` block now holds a JSON list of registry names; older files
     # that still contain a dict-of-configs are accepted for backward
@@ -678,6 +685,60 @@ TOOLS_KNOWN_KEYS = frozenset({"allowed", "denied"})
 _AQ_PREFIX = "mcp__agent-queue__"
 
 
+#: Keys required in the ``## Capabilities`` block.  All three are required
+#: when the block is present: "you forgot" and "you meant none" must not
+#: look alike.
+CAPABILITY_KEYS = frozenset(NAMESPACES)
+
+
+def _validate_capabilities(caps: dict) -> list[str]:
+    """Validate the ``## Capabilities`` block (Playbook V2 Package 0 §3.2)."""
+    errors: list[str] = []
+    if not isinstance(caps, dict):
+        return [f"## Capabilities JSON must be an object, got {type(caps).__name__}"]
+
+    missing = sorted(CAPABILITY_KEYS - set(caps))
+    for key in missing:
+        errors.append(
+            f"Capabilities: '{key}' is required — an omitted namespace is an "
+            "error, not an implicit empty one"
+        )
+    for key in sorted(set(caps) - CAPABILITY_KEYS):
+        errors.append(
+            f"Capabilities: unknown key '{key}' (expected "
+            f"{', '.join(sorted(CAPABILITY_KEYS))})"
+        )
+
+    for key in sorted(CAPABILITY_KEYS & set(caps)):
+        value = caps[key]
+        if not isinstance(value, list):
+            errors.append(
+                f"Capabilities '{key}' must be an array, got {type(value).__name__}"
+            )
+            continue
+        for i, item in enumerate(value):
+            if not isinstance(item, str):
+                errors.append(
+                    f"Capabilities {key}[{i}] must be a string, got {type(item).__name__}"
+                )
+            elif not item.strip():
+                errors.append(f"Capabilities {key}[{i}] must not be empty")
+            elif any(ch in item for ch in WILDCARD_CHARS):
+                errors.append(
+                    f"Capabilities {key}[{i}] {item!r} contains a wildcard; "
+                    "wildcard capabilities are prohibited — list every name explicitly"
+                )
+
+    harness = caps.get("harness_tools")
+    aq = caps.get("aq_commands")
+    if isinstance(harness, list) and isinstance(aq, list) and not harness and aq:
+        errors.append(
+            "Capabilities: aq_commands are unreachable because harness_tools is "
+            "empty — a session needs Bash to run the aq CLI"
+        )
+    return errors
+
+
 def _validate_tools(
     tools: dict,
     known_tools: set[str] | None = None,
@@ -731,6 +792,14 @@ def _validate_tools(
                     errors.append(f"Tools allowed[{i}] must be a string, got {type(item).__name__}")
                 elif not item.strip():
                     errors.append(f"Tools allowed[{i}] must not be empty")
+                elif any(ch in item for ch in WILDCARD_CHARS):
+                    # Playbook V2 Package 0 §3.2: wildcard capabilities are
+                    # prohibited, and "*" used to mean "everything" here.
+                    errors.append(
+                        f"Tools allowed[{i}] {item!r} contains a wildcard; "
+                        "wildcard capabilities are prohibited — list every name "
+                        "explicitly, or migrate the file to a ## Capabilities block"
+                    )
                 else:
                     allowed_names.add(item)
 
@@ -746,6 +815,14 @@ def _validate_tools(
                     errors.append(f"Tools denied[{i}] must be a string, got {type(item).__name__}")
                 elif not item.strip():
                     errors.append(f"Tools denied[{i}] must not be empty")
+                elif any(ch in item for ch in WILDCARD_CHARS):
+                    # Playbook V2 Package 0 §3.2: wildcard capabilities are
+                    # prohibited, and "*" used to mean "everything" here.
+                    errors.append(
+                        f"Tools denied[{i}] {item!r} contains a wildcard; "
+                        "wildcard capabilities are prohibited — list every name "
+                        "explicitly, or migrate the file to a ## Capabilities block"
+                    )
                 else:
                     denied_names.add(item)
 
@@ -886,6 +963,13 @@ def parse_profile(
                 result.errors.append(
                     f"## Tools JSON must be an object, got {type(section.json_data).__name__}"
                 )
+        elif heading_lower == "capabilities" and section.json_data is not None:
+            cap_errors = _validate_capabilities(section.json_data)
+            result.errors.extend(cap_errors)
+            if not cap_errors:
+                result.capabilities = {
+                    ns: list(section.json_data[ns]) for ns in NAMESPACES
+                }
         elif heading_lower == "mcp servers" and section.json_data is not None:
             if isinstance(section.json_data, list):
                 # New format: list of registry names.
@@ -924,6 +1008,15 @@ def parse_profile(
             result.rules = section.text
         elif heading_lower == "reflection":
             result.reflection = section.text
+
+    # Rule 4 (§3.2): the two shapes must not coexist.  An operator migrates
+    # deliberately — silently preferring one would leave the other looking
+    # enforced when it is not.
+    if result.capabilities is not None and "tools" in result.sections:
+        result.errors.append(
+            "Profile declares both '## Capabilities' and '## Tools'; remove "
+            "'## Tools' — capabilities supersede it"
+        )
 
     return result
 
@@ -1005,6 +1098,15 @@ def parsed_profile_to_agent_profile(parsed: ParsedProfile) -> dict:
             t[len(_AQ_PREFIX) :] if isinstance(t, str) and t.startswith(_AQ_PREFIX) else t
             for t in parsed.tools["allowed"]
         ]
+
+    # Capabilities → the three normalized namespaces.  Present block wins
+    # outright: ``allowed_tools`` is not consulted once they are authored.
+    if parsed.capabilities is not None:
+        for ns in NAMESPACES:
+            result[ns] = [
+                t[len(_AQ_PREFIX) :] if t.startswith(_AQ_PREFIX) else t
+                for t in parsed.capabilities.get(ns, [])
+            ]
 
     # MCP Servers → mcp_servers (always list[str] of registry names).
     if parsed.mcp_servers:

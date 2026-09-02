@@ -41,7 +41,7 @@ CONFIG_PATH = os.path.expanduser("~/.agent-queue/config.yaml")
 #: Fallbacks when there is neither session env nor a readable config.
 _FALLBACK_SLOTS = 2
 _FALLBACK_WORKERS = 4
-_FALLBACK_MARKERS = "not tmux and not integration and not perf"
+_FALLBACK_MARKERS = "not perf and not migration and not slow and not tmux and not integration"
 
 
 def _load_resources():
@@ -211,7 +211,7 @@ def _render_status(snapshot: dict) -> None:
 @click.option(
     "--aq-all-markers",
     is_flag=True,
-    help="Do not add the default marker deselects (tmux/integration/perf).",
+    help="Do not add the default marker deselects (perf/migration/slow/tmux/integration).",
 )
 @click.option("--aq-dry-run", is_flag=True, help="Print the pytest command and exit.")
 @click.argument("pytest_args", nargs=-1, type=click.UNPROCESSED)

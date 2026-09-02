@@ -38,11 +38,11 @@ Do:
 }
 ```
 
-## Tools
+## Capabilities
 
 ```json
 {
-  "allowed": [
+  "harness_tools": [
     "Bash",
     "Read",
     "Write",
@@ -54,11 +54,29 @@ Do:
     "Skill",
     "WebSearch",
     "WebFetch",
-    "NotebookEdit",
-    "list_tasks",
+    "NotebookEdit"
+  ],
+  "aq_commands": [
     "get_downstream_tasks",
+    "get_schema",
+    "list_tasks",
+    "message_inbox",
+    "message_reply",
+    "message_send",
+    "prime",
+    "session_drain_ack",
     "task_batch_propose",
-    "task_close"
+    "task_close",
+    "task_comment",
+    "task_comments",
+    "task_handoff",
+    "task_heartbeat",
+    "task_set",
+    "task_show"
+  ],
+  "plugin_tools": [
+    "memory_save",
+    "memory_search"
   ]
 }
 ```

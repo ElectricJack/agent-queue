@@ -45,6 +45,7 @@ _FORWARDED_PREFIXES: tuple[str, ...] = (
     "session.",
     "task.",
     "pool.",
+    "metrics.",
 )
 
 
@@ -86,6 +87,22 @@ def _question_invalidation(data, scope):
     if "seq" in data:
         result["seq"] = data["seq"]
     return result
+
+
+def _metrics_event_allowed(scope) -> bool:
+    """Return whether *scope* may observe a fleet metrics tick.
+
+    A metrics sample is fleet-wide by construction — session names, profile
+    ids and machine load across every project — so there is no per-project
+    projection to hand a scoped worker.  Only the trusted local surface (the
+    dashboard) and an elevated session see it; everyone else simply never
+    receives the frame, which is also what keeps a 1 Hz tick off twenty
+    worker connections that would never render it.
+    """
+    kind = getattr(scope, "kind", None)
+    if kind == "local":
+        return True
+    return kind == "session" and bool(getattr(scope, "elevated", False))
 
 
 def _pool_event_allowed(data, scope) -> bool:
@@ -151,6 +168,10 @@ class WebSocketManager:
 
         for ws, queue in list(self._clients.items()):
             event = data
+            if event_type.startswith("metrics.") and not _metrics_event_allowed(
+                self._client_scope.get(ws)
+            ):
+                continue
             if event_type.startswith("pool.") and not _pool_event_allowed(
                 data, self._client_scope.get(ws)
             ):
@@ -270,6 +291,10 @@ class WebSocketManager:
                             "payload": row.get("payload"),
                             "timestamp": row.get("timestamp"),
                         }
+                        if event_type.startswith(
+                            "metrics."
+                        ) and not _metrics_event_allowed(scope):
+                            continue
                         if event_type.startswith("pool.") and not _pool_event_allowed(frame, scope):
                             continue
                         if event_type in _QUESTION_EVENTS:

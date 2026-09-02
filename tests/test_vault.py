@@ -936,7 +936,7 @@ def test_ensure_default_playbooks_installs_all_defaults(tmp_path):
 
     `memory-consolidation.md` and the control-plane `default-pipeline.md`
     ship installed by default.  Other playbooks that used to auto-install
-    have been moved to ``src/prompts/example_playbooks/`` as opt-in
+    have been moved to ``docs/example_playbooks/`` as opt-in
     reference material.
     """
     result = ensure_default_playbooks(str(tmp_path))
@@ -1182,8 +1182,12 @@ def test_supervisor_profile_has_all_sections():
     """The supervisor profile includes the documented sections.
 
     Per supervisor-agent spec §4 the shipped supervisor is a named
-    session with Role, Config, Tools, and Rules blocks — no MCP Servers
-    or Install blocks (session-runtime owns transport concerns).
+    session with Role, Config, capabilities, and Rules blocks — no MCP
+    Servers or Install blocks (session-runtime owns transport concerns).
+
+    Playbook V2 Package 0 (T-10) replaced the flat ``## Tools`` block with
+    the three-namespace ``## Capabilities`` block on every shipped profile,
+    and the parser rejects a file carrying both.
     """
     from src.profiles.parser import parse_profile
 
@@ -1192,7 +1196,8 @@ def test_supervisor_profile_has_all_sections():
 
     # Structured sections
     assert "config" in result.sections
-    assert "tools" in result.sections
+    assert "capabilities" in result.sections
+    assert "tools" not in result.sections
 
     # Prompt sections
     assert "role" in result.sections
@@ -1234,17 +1239,28 @@ def test_supervisor_profile_ships_tools_allowlist():
     """The supervisor profile ships an explicit allow-list of `aq` verbs.
 
     Per supervisor-agent spec §4 the shipped supervisor carries a tight
-    ``allowed`` list — task queries, mutation verbs it needs for graph
-    steering, gate handling, and the messaging surface — with an empty
-    ``denied`` list.
+    list — task queries, mutation verbs it needs for graph steering, gate
+    handling, and the messaging surface.
+
+    Playbook V2 Package 0 §4.2 is why this still has to be *written down*
+    rather than implied by elevation: ``RequestScope.elevated`` answers
+    "which project may this token touch", capability answers "which
+    commands may this profile run", and the supervisor does not get the
+    second for free.  The list now lives in ``aq_commands`` rather than a
+    flat ``allowed``, and no namespace may contain a wildcard.
     """
+    from src.profiles.capabilities import WILDCARD_CHARS
     from src.profiles.parser import parse_profile
 
     result = parse_profile(SUPERVISOR_PROFILE)
-    assert "tools" in result.sections
-    assert isinstance(result.tools.get("allowed"), list)
-    assert result.tools["allowed"], "supervisor allowed-tools list must not be empty"
-    assert result.tools.get("denied") == []
+    assert "capabilities" in result.sections
+    caps = result.capabilities
+    assert caps is not None
+    assert caps["aq_commands"], "supervisor aq_commands list must not be empty"
+    assert "Bash" in caps["harness_tools"], "a session reaches aq through Bash"
+    for namespace, names in caps.items():
+        for name in names:
+            assert not any(ch in name for ch in WILDCARD_CHARS), (namespace, name)
 
 
 def test_supervisor_profile_role_mentions_supervisor_duties():
