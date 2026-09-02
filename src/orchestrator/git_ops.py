@@ -1367,6 +1367,23 @@ class GitOpsMixin:
             await self._effective_integration_mode(task) == INTEGRATION_MODE_PULL_REQUEST
         )
 
+        # Review-only tasks leave their branch exactly where they found it.
+        # There is nothing to rebase, nothing to push and nothing to merge,
+        # so taking the merge slot would only serialise the project's other
+        # integrations behind a no-op and force-push an empty branch to the
+        # remote.  Verification already accepts such a branch without a PR
+        # (``_abranch_has_no_commits`` in ``_phase_verify``); integration
+        # agrees with it.
+        if await self._abranch_has_no_commits(workspace, branch, default_branch):
+            logger.info(
+                "Task %s: branch '%s' has no commits ahead of '%s' — "
+                "skipping integration",
+                task.id,
+                branch,
+                default_branch,
+            )
+            return PhaseResult.CONTINUE
+
         ttl = float(self.config.worktrees.merge_slot_ttl_seconds)
         acquired = await acquire_merge_slot(self.db, task.project_id, task.id, ttl)
         if not acquired:
