@@ -98,6 +98,12 @@ class _StubOrchestrator:
         self.closed_calls: list[dict] = []
         self._task_attachments = {}
         self._task_added_messages = {}
+        # Orchestrator state ``_execute_task``'s no-workspace leg reads and
+        # writes: why the acquisition failed, and (for the four waits a
+        # freed worktree slot resolves) the parked-task set the cascade
+        # cuts short.
+        self._workspace_wait_reasons = {}
+        self._slot_starved_pauses = {}
         # ``_execute_task`` guards on this: with sessions enabled and no
         # runtimes registry it must still run, because a session-routed
         # task never constructs a runtime.
@@ -1294,7 +1300,6 @@ class TestEndToEndOnFakeProvider:
         from unittest.mock import AsyncMock
         await self._setup(db, tmp_path, ready=True)
         monkeypatch.setattr(real_orch, "_prepare_workspace", AsyncMock(return_value=None))
-        real_orch._workspace_wait_reasons = {}
         await real_orch._execute_task(AssignAction(task_id="t1", agent_id="a1", project_id="p1"))
         task = await db.get_task("t1")
         agent = await db.get_agent("a1")

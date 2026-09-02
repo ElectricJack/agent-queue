@@ -163,9 +163,7 @@ async def _check_db_migrations(ctx: DoctorContext) -> CheckResult:
     return CheckResult(
         id="db.migrations",
         severity=Severity.ERROR,
-        detail=(
-            f"schema at {current or 'unstamped'}, head is {head} — run: alembic upgrade head"
-        ),
+        detail=(f"schema at {current or 'unstamped'}, head is {head} — run: alembic upgrade head"),
         data={"head": head, "current": current},
     )
 
@@ -193,9 +191,7 @@ async def _check_db_wal_size(ctx: DoctorContext) -> CheckResult:
         )
     wal = f"{path}-wal"
     if not os.path.exists(wal):
-        return CheckResult(
-            id="db.wal_size", severity=Severity.OK, detail="no WAL file present"
-        )
+        return CheckResult(id="db.wal_size", severity=Severity.OK, detail="no WAL file present")
     size_mb = os.path.getsize(wal) / _MB
     threshold = ctx.config.security.wal_warn_mb
     data = {"path": wal, "size_mb": round(size_mb, 1), "threshold_mb": threshold}
@@ -314,6 +310,139 @@ async def _check_vault_parse(ctx: DoctorContext) -> CheckResult:
 
 
 # ---------------------------------------------------------------------------
+# harness.drift
+# ---------------------------------------------------------------------------
+
+
+def _harness_parse_issues(path: str) -> list[str]:
+    """Parser errors + warnings for one vault harness copy (empty when clean)."""
+    from src.sessions.harness_parser import parse_harness_markdown
+
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except OSError as exc:
+        return [f"read failed: {exc}"]
+    parsed = parse_harness_markdown(text, fallback_id=Path(path).stem)
+    return [*parsed.errors, *parsed.warnings]
+
+
+def _names(files: list[str]) -> str:
+    return ", ".join(f.removesuffix(".md") for f in files)
+
+
+def _audit_harness_drift(data_dir: str) -> dict:
+    from src.sessions.harness_manifest import audit_vault_harnesses
+
+    report = audit_vault_harnesses(data_dir)
+    by_status: dict[str, list[str]] = {"current": [], "stale": [], "edited": [], "missing": []}
+    for filename, info in report.items():
+        by_status[info["status"]].append(filename)
+    issues = {
+        filename: _harness_parse_issues(report[filename]["vault_path"])
+        for filename in by_status["edited"]
+    }
+    return {
+        "files": {f: info["status"] for f, info in report.items()},
+        "vault_dir": os.path.join(data_dir, "vault", "harnesses"),
+        **by_status,
+        "edited_issues": {f: iss for f, iss in issues.items() if iss},
+    }
+
+
+async def _check_harness_drift(ctx: DoctorContext) -> CheckResult:
+    """Compare ``vault/harnesses/*.md`` against the shipped defaults.
+
+    Seeding refreshes a copy that matches an *older* shipped version, so a
+    ``stale`` result only shows up when the daemon has not restarted since
+    the upgrade — ``--fix`` runs the same refresh.  An ``edited`` copy is
+    an operator's and is never touched; it is reported so a shipped fix
+    that cannot reach it is at least visible, and at WARN when the edited
+    copy parses with errors or warnings (an inert dialog rule, say).
+    """
+    data = await asyncio.to_thread(_audit_harness_drift, ctx.config.data_dir)
+    if not data["files"]:
+        return CheckResult(
+            id="harness.drift", severity=Severity.INFO, detail="no shipped harnesses found"
+        )
+    stale, edited, missing = data["stale"], data["edited"], data["missing"]
+    fixable = bool(stale or missing)
+
+    if stale:
+        return CheckResult(
+            id="harness.drift",
+            severity=Severity.WARN,
+            detail=(
+                f"{len(stale)} vault harness copy(ies) match an older shipped version and "
+                f"miss shipped fixes: {_names(stale)} — `aq doctor --fix` refreshes them"
+            ),
+            fixable=fixable,
+            data=data,
+        )
+    if data["edited_issues"]:
+        first, issues = next(iter(data["edited_issues"].items()))
+        return CheckResult(
+            id="harness.drift",
+            severity=Severity.WARN,
+            detail=(
+                f"{len(data['edited_issues'])} operator-edited harness copy(ies) parse with "
+                f"problems: {first}: {issues[0]} — edit the file or restore the shipped "
+                f"version with `aq vault reset-harness {first.removesuffix('.md')}`"
+            ),
+            fixable=fixable,
+            data=data,
+        )
+    if edited:
+        return CheckResult(
+            id="harness.drift",
+            severity=Severity.INFO,
+            detail=(
+                f"{len(edited)} operator-edited harness copy(ies) left alone: {_names(edited)} "
+                "— shipped fixes will not reach them; `aq vault reset-harness <name>` "
+                "restores the shipped file"
+            ),
+            fixable=fixable,
+            data=data,
+        )
+    if missing:
+        return CheckResult(
+            id="harness.drift",
+            severity=Severity.INFO,
+            detail=(
+                f"{len(missing)} shipped harness(es) not seeded into {data['vault_dir']} yet: "
+                f"{_names(missing)} — daemon startup or `aq doctor --fix` seeds them"
+            ),
+            fixable=True,
+            data=data,
+        )
+    return CheckResult(
+        id="harness.drift",
+        severity=Severity.OK,
+        detail=f"{len(data['current'])} vault harness copy(ies) match the shipped files",
+        data=data,
+    )
+
+
+async def _fix_harness_drift(ctx: DoctorContext) -> CheckResult:
+    """Seed missing copies and refresh stale ones.  Never touches an edited copy."""
+    from src.sessions.harness_manifest import sync_vault_harnesses
+
+    result = await asyncio.to_thread(sync_vault_harnesses, ctx.config.data_dir)
+    parts = []
+    if result["created"]:
+        parts.append(f"created {', '.join(result['created'])}")
+    if result["refreshed"]:
+        parts.append(f"refreshed {', '.join(result['refreshed'])}")
+    if result["edited"]:
+        parts.append(f"left edited copies alone: {', '.join(result['edited'])}")
+    return CheckResult(
+        id="harness.drift",
+        severity=Severity.OK,
+        detail="; ".join(parts) or "nothing to do",
+        data=result,
+    )
+
+
+# ---------------------------------------------------------------------------
 # harness.binaries
 # ---------------------------------------------------------------------------
 
@@ -381,9 +510,7 @@ async def _check_harness_binaries(ctx: DoctorContext) -> CheckResult:
     # The three shipped session harnesses, plus ``gh`` for PR creation.
     optional = ["gh", "claude", "codex", "gemini"]
     # ``tmux`` is deliberately absent — session-runtime contributes tmux.server.
-    results = await asyncio.gather(
-        *(_probe_binary(n) for n in required + optional)
-    )
+    results = await asyncio.gather(*(_probe_binary(n) for n in required + optional))
     found = {name: (ok, detail) for name, ok, detail in results}
     missing_required = [n for n in required if not found[n][0]]
     missing_optional = [n for n in optional if not found[n][0]]
@@ -442,9 +569,7 @@ async def _check_logs_llm_size(ctx: DoctorContext) -> CheckResult:
     """Warn on an oversized ``logs/llm/`` tree or date dirs past retention."""
     base = _llm_log_dir(ctx)
     if not os.path.isdir(base):
-        return CheckResult(
-            id="logs.llm_size", severity=Severity.OK, detail="no LLM log directory"
-        )
+        return CheckResult(id="logs.llm_size", severity=Severity.OK, detail="no LLM log directory")
     retention = ctx.config.llm_logging.retention_days
     size_mb, stale = await asyncio.to_thread(_walk_llm_logs, base, retention)
     threshold = ctx.config.security.llm_log_warn_mb
@@ -518,9 +643,7 @@ async def _check_tasks_stuck(ctx: DoctorContext) -> CheckResult:
         }
     )
     if "error" in result:
-        return CheckResult(
-            id="tasks.stuck", severity=Severity.ERROR, detail=str(result["error"])
-        )
+        return CheckResult(id="tasks.stuck", severity=Severity.ERROR, detail=str(result["error"]))
     stuck = result.get("stuck", [])
     if stuck:
         return CheckResult(
@@ -546,12 +669,8 @@ async def _check_pauses_active(ctx: DoctorContext) -> CheckResult:
         "orchestrator_scheduling": bool(getattr(orchestrator, "_paused", False)),
     }
     active = [name for name, is_paused in paused.items() if is_paused]
-    detail = (
-        f"paused: {', '.join(sorted(active))}" if active else "no subsystems paused"
-    )
-    return CheckResult(
-        id="pauses.active", severity=Severity.INFO, detail=detail, data=paused
-    )
+    detail = f"paused: {', '.join(sorted(active))}" if active else "no subsystems paused"
+    return CheckResult(id="pauses.active", severity=Severity.INFO, detail=detail, data=paused)
 
 
 # ---------------------------------------------------------------------------
@@ -615,8 +734,7 @@ async def _check_events_registry(ctx: DoctorContext) -> CheckResult:
         id="events.registry",
         severity=Severity.OK,
         detail=(
-            f"{len(emitted)} observed event type(s), all registered "
-            f"({len(registered)} schemas)"
+            f"{len(emitted)} observed event type(s), all registered ({len(registered)} schemas)"
         ),
         data={"registered_count": len(registered), "observed_count": len(emitted)},
     )
@@ -679,11 +797,10 @@ def builtin_checks() -> list[DoctorCheck]:
         DoctorCheck(id="config.parse", run=_check_config_parse),
         DoctorCheck(id="db.connect", run=_check_db_connect),
         DoctorCheck(id="db.migrations", run=_check_db_migrations),
-        DoctorCheck(
-            id="db.wal_size", run=_check_db_wal_size, fix=_fix_db_wal_size
-        ),
+        DoctorCheck(id="db.wal_size", run=_check_db_wal_size, fix=_fix_db_wal_size),
         DoctorCheck(id="vault.parse", run=_check_vault_parse, timeout_s=15.0),
         DoctorCheck(id="harness.binaries", run=_check_harness_binaries, timeout_s=15.0),
+        DoctorCheck(id="harness.drift", run=_check_harness_drift, fix=_fix_harness_drift),
         DoctorCheck(
             id="logs.llm_size", run=_check_logs_llm_size, fix=_fix_logs_llm_size, timeout_s=15.0
         ),

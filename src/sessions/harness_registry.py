@@ -198,7 +198,9 @@ def load_from_vault(registry: HarnessRegistry, vault_root: str) -> list[str]:
             logger.warning("Harness registry: skipping %s: %s", rel_path, parsed.errors)
             continue
         for warning in parsed.warnings:
-            logger.debug("Harness registry: %s: %s", rel_path, warning)
+            # Warnings are load-bearing: a dialog rule that can never
+            # match leaves a session stuck on its trust screen.
+            logger.warning("Harness registry: %s: %s", rel_path, warning)
         registry.upsert(parsed.harness)
 
     logger.info("Harness registry loaded: %d entries (%d errors)", len(registry), len(errors))

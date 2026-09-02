@@ -54,6 +54,8 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "list_available_tools": "agent",
     "check_profile": "agent",
     "profile_audit": "agent",
+    "profile_drift": "agent",
+    "profile_reseed": "agent",
     "agent_message": "agent",
     "install_profile": "agent",
     "export_profile": "agent",
@@ -2673,6 +2675,54 @@ _ALL_TOOL_DEFINITIONS = [
                     "description": "Only report profiles that still need migration",
                 },
             },
+        },
+    },
+    {
+        "name": "profile_drift",
+        "description": (
+            "Report which vault system profiles have drifted from the defaults "
+            "shipped in src/profiles/defaults/. Startup seeding never overwrites "
+            "an existing vault profile.md, so an old copy keeps old semantics: a "
+            "stale read_only re-arms the require-a-PR close gate. Reports "
+            "divergence on the semantic Config fields (read_only, harness, "
+            "lifecycle, needs_workspace) and missing/renamed sections. Read-only "
+            "— repair with profile_reseed."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "profile_id": {
+                    "type": "string",
+                    "description": "Only report this system profile",
+                },
+                "drifted_only": {
+                    "type": "boolean",
+                    "description": "Only report profiles that diverge",
+                },
+            },
+        },
+    },
+    {
+        "name": "profile_reseed",
+        "description": (
+            "Overwrite one vault system profile with the version shipped in "
+            "src/profiles/defaults/, keeping a .bak-<epoch> copy of the old file. "
+            "The explicit repair for profile_drift findings — startup seeding is "
+            "write-if-absent and will never do this for you."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "profile_id": {
+                    "type": "string",
+                    "description": "System profile ID to reseed",
+                },
+                "backup": {
+                    "type": "boolean",
+                    "description": "Keep a .bak-<epoch> copy of the replaced file (default true)",
+                },
+            },
+            "required": ["profile_id"],
         },
     },
     {

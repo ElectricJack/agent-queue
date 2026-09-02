@@ -47,9 +47,14 @@ class MonitoringMixin:
         crash or a partial write, and nothing else will ever look at it
         again.  Recover it here (this cascade runs every cycle, so a daemon
         restart picks it up too) rather than leaving it queued forever.
+
+        Tasks whose timer has *not* expired are handed to
+        :meth:`_resume_slot_starved_tasks`, which ends the one wait a timer
+        is the wrong instrument for: waiting on a worktree slot.
         """
         paused = await self.db.list_tasks(status=TaskStatus.PAUSED)
         now = time.time()
+        still_paused: list[Task] = []
         for task in paused:
             if task.resume_after is None:
                 snapshot = await self.db.get_task_meta(task.id, "manual_pause")
@@ -65,6 +70,7 @@ class MonitoringMixin:
                         self._pause_cleanup_retries().pop(task.id, None)
                 continue
             if task.resume_after and task.resume_after <= now:
+                self._slot_starved_pauses.pop(task.id, None)
                 await self.db.transition_task(
                     task.id,
                     TaskStatus.READY,
@@ -81,6 +87,69 @@ class MonitoringMixin:
                 # any later BLOCKED into a false recovery incident.  The
                 # supervisor's retry decision clears it the same way.
                 await self.db.delete_task_meta(task.id, "needs_attention")
+                continue
+            still_paused.append(task)
+
+        await self._resume_slot_starved_tasks(still_paused)
+
+    async def _resume_slot_starved_tasks(self, paused: list[Task]) -> None:
+        """Cut the backoff short for tasks waiting only on a worktree slot.
+
+        A task that fails to acquire a slot is PAUSED with a backoff timer,
+        which makes it invisible to the scheduler until the timer expires.
+        That is right for a wait nothing can shorten, and wrong for this one:
+        the scheduler orders READY tasks by ``(priority, id)``, so a task
+        sitting out the backoff loses every slot that frees during it to
+        whatever lower-priority task happens to be READY.  Observed live
+        (2026-09-02): a priority-3 merge sweep sat in that loop for ~40
+        minutes behind a steady inflow of priority-30 work, repeatedly paying
+        for slot growth and then losing the slot it provisioned.
+
+        So: as soon as the project has an acquirable slot again, every task
+        parked on that wait goes back to READY in the same cycle and priority
+        picks the winner.  The losers simply re-park — the same outcome the
+        expired backoff would have produced, minus the starvation.
+
+        Only slot waits qualify (``_SLOT_WAIT_REASONS``).  A branch-held or
+        clone-exhausted wait is *not* resolved by a free slot, and resuming
+        those early would turn their operator notices into per-cycle spam.
+        """
+        if not self._slot_starved_pauses:
+            return
+        candidates = [t for t in paused if t.id in self._slot_starved_pauses]
+        # Nothing else will clear an entry whose task has left PAUSED.
+        paused_ids = {t.id for t in paused}
+        for task_id in list(self._slot_starved_pauses):
+            if task_id not in paused_ids:
+                del self._slot_starved_pauses[task_id]
+        if not candidates:
+            return
+
+        free_by_project: dict[str, int] = {}
+        for task in candidates:
+            pid = task.project_id
+            if pid not in free_by_project:
+                project = await self.db.get_project(pid)
+                free_by_project[pid] = await self.db.count_free_slots(
+                    pid, worktree_slot_cap=self._project_slot_cap(project)
+                )
+            if free_by_project[pid] <= 0:
+                continue
+            del self._slot_starved_pauses[task.id]
+            logger.info(
+                "Task %s (priority %s) resumed early — a worktree slot came "
+                "free in project %s; priority decides the next dispatch",
+                task.id,
+                task.priority,
+                pid,
+            )
+            await self.db.transition_task(
+                task.id,
+                TaskStatus.READY,
+                context="resume_slot_free",
+                assigned_agent_id=None,
+                resume_after=None,
+            )
 
     def _pause_cleanup_retries(self) -> dict[str, int]:
         """Per-task count of consecutive failed pause-cleanup retries."""
@@ -113,35 +182,38 @@ class MonitoringMixin:
     async def _recover_orphaned_pause(self, task) -> None:
         """Return a task wedged in PAUSED with no operator hold to READY.
 
-        ``resume_task`` is the only writer that can move it: the manual-pause
+        The resume path is the only writer that can move it: the manual-pause
         fence rejects ``transition_task`` for exactly this state.  With no
         ``manual_pause`` snapshot to restore, it resumes to READY and clears
         the stale assignment — which is what the interrupted pause would have
         produced had it completed.
 
-        The status and the metadata were read in two separate transactions,
-        so re-read before acting: an operator hold committing between them
-        looks exactly like a wedge from here, and resuming their hold would
-        be the worst possible misfire.
+        The scan read the status and the snapshot in two separate
+        transactions, so an operator hold committing between them looks
+        exactly like a wedge from here — and a fresh hold is precisely what
+        an unconditional ``resume_task`` would tear down.  So the write is
+        ``recover_orphaned_pause``, which re-checks the status, the timer and
+        the snapshot under the task-row lock in the same transaction as the
+        transition and declines when any of them changed.
         """
-        current = await self.db.get_task(task.id)
-        if current is None or current.status != TaskStatus.PAUSED:
-            return
-        if current.resume_after is not None:
-            return
-        if await self.db.get_task_meta(task.id, "manual_pause") is not None:
-            return
-        logger.warning(
-            "Task %s was PAUSED with no resume timer and no operator hold — "
-            "resuming it; nothing else would have scheduled it again",
-            task.id,
-        )
         try:
-            await self.db.resume_task(task.id)
+            recovered = await self.db.recover_orphaned_pause(task.id)
         except Exception:
             logger.warning(
                 "Could not recover orphaned pause on task %s", task.id, exc_info=True
             )
+            return
+        if recovered is None:
+            logger.debug(
+                "Task %s left PAUSED: a hold or a resume timer landed after the scan",
+                task.id,
+            )
+            return
+        logger.warning(
+            "Task %s was PAUSED with no resume timer and no operator hold — "
+            "resumed it; nothing else would have scheduled it again",
+            task.id,
+        )
 
     async def _check_defined_tasks(self) -> None:
         """Promote DEFINED/BLOCKED tasks to READY when the graph allows it.

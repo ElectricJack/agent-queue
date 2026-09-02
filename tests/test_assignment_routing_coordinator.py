@@ -399,6 +399,60 @@ async def test_worker_filed_task_born_gated_is_routed_and_released(coordinator_s
 
 
 @pytest.mark.asyncio
+async def test_fresh_saved_route_retries_interrupted_routing_gate_resolution(
+    coordinator_system,
+):
+    """A crash after saving the route must not strand its routing gate."""
+    coordinator, services, db = coordinator_system
+    await db.create_task(Task(
+        id="filed",
+        project_id="p",
+        title="Follow-up",
+        description="Route once and recover gate resolution",
+        status=TaskStatus.DEFINED,
+    ))
+    gate_id, _ = await db.create_gate(
+        "p", "routing", "Route: Follow-up", waiter_task_ids=["filed"]
+    )
+    filed = await db.get_task("filed")
+    services.llm.run_tools.return_value = LLMRunResult(
+        text=json.dumps({"decisions": [_decision(filed)]}),
+        transcript=[],
+        turns=1,
+        stopped_by="done",
+    )
+
+    attempts = 0
+
+    async def interrupt_then_resolve(
+        pending_gate_id: str, *, resolved_by: str, resolution: str = ""
+    ):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("interrupted after route commit")
+        return await db.resolve_gate(
+            pending_gate_id,
+            resolved_by=resolved_by,
+            resolution=resolution,
+        )
+
+    coordinator.owner._resolve_gate_and_emit.side_effect = interrupt_then_resolve
+
+    with pytest.raises(RuntimeError, match="interrupted after route commit"):
+        await coordinator.reconcile()
+    assert await db.get_task_assignment_route("filed") is not None
+    assert (await db.get_gate(gate_id))["status"] == "open"
+
+    resolved = await coordinator.reconcile()
+
+    assert set(resolved) == {"filed"}
+    assert services.llm.run_tools.await_count == 1
+    assert (await db.get_gate(gate_id))["status"] == "resolved"
+    assert not (await db.get_task("filed")).is_blocked
+
+
+@pytest.mark.asyncio
 async def test_revision_bump_restamps_the_route_instead_of_rerouting(coordinator_system):
     """The claim query joins on ``task_updated_at``; keep it in step."""
     coordinator, services, db = coordinator_system
