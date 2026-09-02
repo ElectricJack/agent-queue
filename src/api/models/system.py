@@ -18,6 +18,7 @@ class GetStatusResponse(BaseModel):
     projects: int = 0
     tasks: TaskStatusSummary = TaskStatusSummary()
     orchestrator_paused: bool = False
+    graph_layout_enabled: bool = False
 
 
 class GetTokenUsageResponse(BaseModel):

@@ -1,4 +1,4 @@
-import { ChevronDownIcon, ChevronRightIcon, ExclamationTriangleIcon } from "@heroicons/react/24/outline";
+import { ChevronDownIcon, ChevronRightIcon, ExclamationTriangleIcon, MagnifyingGlassPlusIcon } from "@heroicons/react/24/outline";
 import { Handle, Position, type NodeProps, type Node } from "@xyflow/react";
 import { NODE_HEIGHT, NODE_WIDTH, type TaskNodeData } from "./types";
 import { isTaskBlocked } from "./hierarchy";
@@ -30,7 +30,7 @@ interface CardProps {
 /** The task action and expansion action are sibling buttons, so every part
  *  of the card remains clickable without nested interactive elements. */
 export function TaskCard({ data, selected = false, fluid = false }: CardProps) {
-  const { task, gates, hierarchy, onOpenTask, onToggleChildren } = data;
+  const { task, gates, hierarchy, onOpenTask, onToggleChildren, onFocus } = data;
   const blocked = isTaskBlocked(task);
   const tone = STATUS_TONE[task.status] ?? STATUS_TONE.DEFINED;
   const priority = task.priority ?? 100;
@@ -58,7 +58,7 @@ export function TaskCard({ data, selected = false, fluid = false }: CardProps) {
         onClick={(event) => {
           if (onOpenTask) {
             event.stopPropagation();
-            onOpenTask(task.id);
+            onOpenTask(task.id, task);
           }
         }}
       >
@@ -98,25 +98,37 @@ export function TaskCard({ data, selected = false, fluid = false }: CardProps) {
         )}
       </button>
       {hierarchy.childCount > 0 && (
-        <button
-          type="button"
-          aria-label={`${hierarchy.expanded ? "Collapse" : "Expand"} children of ${task.title}`}
-          aria-expanded={hierarchy.expanded}
-          disabled={cannotToggle}
-          title={toggleHelp}
-          className="nodrag nopan flex h-7 shrink-0 items-center gap-1 rounded-b-md border-t border-white/10 px-2 text-[10px] hover:bg-white/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-300 disabled:cursor-default disabled:opacity-60"
-          onClick={(event) => { event.stopPropagation(); onToggleChildren?.(task.id); }}
-          onKeyDown={(event) => { if (event.key !== "Escape") event.stopPropagation(); }}
-        >
-          {hierarchy.expanded ? <ChevronDownIcon aria-hidden className="h-3 w-3" /> : <ChevronRightIcon aria-hidden className="h-3 w-3" />}
-          <span className="rounded bg-white/10 px-1">
-            {hierarchy.expanded
-              ? `${hierarchy.childCount} ${hierarchy.childCount === 1 ? "child" : "children"}`
-              : `${hierarchy.descendantCount} hidden`}
-          </span>
-          {hierarchy.runningCount > 0 && <span className="ml-auto text-indigo-300">{hierarchy.runningCount} running</span>}
-          {hierarchy.blockedCount > 0 && <span className="ml-auto text-amber-300">{hierarchy.blockedCount} blocked</span>}
-        </button>
+        <div className="flex shrink-0 items-stretch rounded-b-md border-t border-white/10">
+          <button
+            type="button"
+            aria-label={`${hierarchy.expanded ? "Collapse" : "Expand"} children of ${task.title}`}
+            aria-expanded={hierarchy.expanded}
+            disabled={cannotToggle}
+            title={toggleHelp}
+            className="nodrag nopan flex h-7 flex-1 items-center gap-1 rounded-bl-md px-2 text-[10px] hover:bg-white/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-300 disabled:cursor-default disabled:opacity-60"
+            onClick={(event) => { event.stopPropagation(); onToggleChildren?.(task.id); }}
+            onKeyDown={(event) => { if (event.key !== "Escape") event.stopPropagation(); }}
+          >
+            {hierarchy.expanded ? <ChevronDownIcon aria-hidden className="h-3 w-3" /> : <ChevronRightIcon aria-hidden className="h-3 w-3" />}
+            <span className="rounded bg-white/10 px-1">
+              {hierarchy.expanded
+                ? `${hierarchy.childCount} ${hierarchy.childCount === 1 ? "child" : "children"}`
+                : `${hierarchy.descendantCount} hidden`}
+            </span>
+            {hierarchy.runningCount > 0 && <span className="ml-auto text-indigo-300">{hierarchy.runningCount} running</span>}
+            {hierarchy.blockedCount > 0 && <span className="ml-auto text-amber-300">{hierarchy.blockedCount} blocked</span>}
+          </button>
+          {onFocus && (
+            <button
+              type="button"
+              aria-label={`Focus on ${task.title}`}
+              className="nodrag nopan flex h-7 shrink-0 items-center rounded-br-md border-l border-white/10 px-2 hover:bg-white/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-300"
+              onClick={(event) => { event.stopPropagation(); onFocus(task.id); }}
+            >
+              <MagnifyingGlassPlusIcon aria-hidden className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </div>
       )}
     </div>
   );

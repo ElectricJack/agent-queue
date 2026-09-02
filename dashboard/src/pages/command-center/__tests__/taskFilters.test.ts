@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { matchesTask, readTaskFilters, writeTaskFilters } from "../taskFilters";
 
-const base = { query: "", status: "", showCompleted: false };
+const base = { query: "", status: "", showCompleted: false, focus: "" };
 
 describe("shared task filters", () => {
   it("searches words across title, ID, project, and agent without case sensitivity", () => {
@@ -21,14 +21,21 @@ describe("shared task filters", () => {
 
   it("round-trips filters while preserving unrelated deep-link parameters", () => {
     const params = new URLSearchParams("openDrawer=events&q=old");
-    const result = writeTaskFilters(params, { query: "new task", status: "READY", showCompleted: true });
-    expect(readTaskFilters(result)).toEqual({ query: "new task", status: "READY", showCompleted: true });
+    const result = writeTaskFilters(params, { query: "new task", status: "READY", showCompleted: true, focus: "" });
+    expect(readTaskFilters(result)).toEqual({ query: "new task", status: "READY", showCompleted: true, focus: "" });
     expect(result.get("openDrawer")).toBe("events");
     expect(params.get("q")).toBe("old");
     expect(writeTaskFilters(result, base).toString()).toBe("openDrawer=events");
   });
 
   it("retains unknown statuses from links rather than silently broadening a filter", () => {
-    expect(readTaskFilters(new URLSearchParams("status=custom&completed=1"))).toEqual({ query: "", status: "CUSTOM", showCompleted: true });
+    expect(readTaskFilters(new URLSearchParams("status=custom&completed=1"))).toEqual({ query: "", status: "CUSTOM", showCompleted: true, focus: "" });
+  });
+
+  it("round-trips the focus param", () => {
+    const p = writeTaskFilters(new URLSearchParams(), { query: "", status: "", showCompleted: false, focus: "e1" });
+    expect(p.get("focus")).toBe("e1");
+    expect(readTaskFilters(p).focus).toBe("e1");
+    expect(writeTaskFilters(p, { query: "", status: "", showCompleted: false, focus: "" }).has("focus")).toBe(false);
   });
 });

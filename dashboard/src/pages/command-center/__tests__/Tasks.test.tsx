@@ -6,7 +6,7 @@ import Tasks from "../Tasks";
 const mocks = vi.hoisted(() => ({
   open: vi.fn(), close: vi.fn(), edit: vi.fn(), stop: vi.fn(), list: vi.fn(),
   state: { kind: "closed" } as { kind: "closed" } | { kind: "open"; view: string; args: unknown; width: number },
-  filters: { query: "", status: "", showCompleted: false },
+  filters: { query: "", status: "", showCompleted: false, focus: "" },
   tasks: [
     { id: "first", title: "Fix checkout", project_id: "alpha", status: "IN_PROGRESS", priority: 25, assigned_agent: "Sol" },
     { id: "done", title: "Completed checkout", project_id: "alpha", status: "COMPLETED", priority: 100 },
@@ -36,7 +36,7 @@ vi.mock("../../../api/hooks", () => ({
   useApprovePlan: () => ({ mutate: vi.fn(), isPending: false, error: null }),
 }));
 afterEach(cleanup);
-beforeEach(() => { vi.clearAllMocks(); mocks.tasks[0]!.priority = 25; mocks.state = { kind: "closed" }; mocks.filters = { query: "", status: "", showCompleted: false }; });
+beforeEach(() => { vi.clearAllMocks(); mocks.tasks[0]!.priority = 25; mocks.state = { kind: "closed" }; mocks.filters = { query: "", status: "", showCompleted: false, focus: "" }; });
 
 describe("unified task table", () => {
   it("scopes the query and filters, and opens details from any ordinary row cell", async () => {
@@ -128,7 +128,7 @@ describe("unified task table", () => {
     const original = mocks.tasks;
     mocks.tasks = [...Array.from({ length: 205 }, (_, i) => ({ id: `active-${i}`, title: `Active ${i}`, project_id: "alpha", status: "READY", priority: 100 })),
       { id: "historical", title: "Historical task", project_id: "alpha", status: "COMPLETED", priority: 100 }];
-    mocks.filters = { query: "historical", status: "", showCompleted: true };
+    mocks.filters = { query: "historical", status: "", showCompleted: true, focus: "" };
     try {
       render(<Tasks />);
       expect(screen.getByText("Historical task")).toBeInTheDocument();

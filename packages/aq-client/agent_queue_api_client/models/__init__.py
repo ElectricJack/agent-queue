@@ -25,6 +25,7 @@ from .agent_waiting_question import AgentWaitingQuestion
 from .ai_budget_dto import AiBudgetDTO
 from .ai_node_detail_dto import AiNodeDetailDTO
 from .ai_node_detail_dto_output_schema_type_0 import AiNodeDetailDTOOutputSchemaType0
+from .ancestor_ref import AncestorRef
 from .append_note_request import AppendNoteRequest
 from .append_note_response import AppendNoteResponse
 from .append_note_response_422 import AppendNoteResponse422
@@ -219,6 +220,7 @@ from .explanation_value_kind import ExplanationValueKind
 from .export_profile_request import ExportProfileRequest
 from .export_profile_response import ExportProfileResponse
 from .export_profile_response_422 import ExportProfileResponse422
+from .extent_response import ExtentResponse
 from .field_change_dto import FieldChangeDTO
 from .file_entry import FileEntry
 from .file_inspection_record import FileInspectionRecord
@@ -401,12 +403,19 @@ from .graph_layout_dto import GraphLayoutDTO
 from .graph_layout_dto_cluster_bounds import GraphLayoutDTOClusterBounds
 from .graph_layout_dto_direction import GraphLayoutDTODirection
 from .graph_layout_dto_grid_positions import GraphLayoutDTOGridPositions
+from .graph_layout_rebuild_request import GraphLayoutRebuildRequest
+from .graph_layout_rebuild_response_422 import GraphLayoutRebuildResponse422
+from .graph_layout_response import GraphLayoutResponse
+from .graph_layout_response_jobs_type_0_item import GraphLayoutResponseJobsType0Item
+from .graph_layout_response_versions_type_0 import GraphLayoutResponseVersionsType0
 from .graph_legend_dto import GraphLegendDTO
 from .graph_legend_dto_edge_kinds import GraphLegendDTOEdgeKinds
 from .graph_legend_dto_step_kinds import GraphLegendDTOStepKinds
 from .graph_node_dto import GraphNodeDTO
 from .graph_node_dto_step_kind import GraphNodeDTOStepKind
 from .graph_task_node import GraphTaskNode
+from .graph_tidy_request import GraphTidyRequest
+from .graph_tidy_response_422 import GraphTidyResponse422
 from .grep_request import GrepRequest
 from .grep_response import GrepResponse
 from .grep_response_422 import GrepResponse422
@@ -428,6 +437,12 @@ from .install_profile_response import InstallProfileResponse
 from .install_profile_response_422 import InstallProfileResponse422
 from .intelligence_class_model import IntelligenceClassModel
 from .intelligence_class_model_mapping import IntelligenceClassModelMapping
+from .layout_edge import LayoutEdge
+from .layout_job import LayoutJob
+from .layout_node import LayoutNode
+from .layout_rect import LayoutRect
+from .layout_stub import LayoutStub
+from .layout_worker import LayoutWorker
 from .list_active_tasks_all_projects_request import ListActiveTasksAllProjectsRequest
 from .list_active_tasks_all_projects_response import ListActiveTasksAllProjectsResponse
 from .list_active_tasks_all_projects_response_422 import ListActiveTasksAllProjectsResponse422
@@ -489,6 +504,8 @@ from .list_prompts_request import ListPromptsRequest
 from .list_prompts_response import ListPromptsResponse
 from .list_prompts_response_422 import ListPromptsResponse422
 from .list_prompts_response_prompts_item import ListPromptsResponsePromptsItem
+from .list_request import ListRequest
+from .list_response import ListResponse
 from .list_sessions_response import ListSessionsResponse
 from .list_tasks_request import ListTasksRequest
 from .list_tasks_response import ListTasksResponse
@@ -498,6 +515,8 @@ from .list_workspace_kinds_response_422 import ListWorkspaceKindsResponse422
 from .list_workspaces_request import ListWorkspacesRequest
 from .list_workspaces_response import ListWorkspacesResponse
 from .list_workspaces_response_422 import ListWorkspacesResponse422
+from .locate_hit import LocateHit
+from .locate_response import LocateResponse
 from .log_entry import LogEntry
 from .loop_iteration_overlay_dto import LoopIterationOverlayDTO
 from .loop_node_detail_dto import LoopNodeDetailDTO
@@ -540,6 +559,7 @@ from .node_badge_dto_kind import NodeBadgeDTOKind
 from .node_explanation import NodeExplanation
 from .node_overlay_dto import NodeOverlayDTO
 from .node_overlay_dto_state import NodeOverlayDTOState
+from .node_response import NodeResponse
 from .note_summary import NoteSummary
 from .operator_decision_dto import OperatorDecisionDTO
 from .operator_decision_dto_options_item import OperatorDecisionDTOOptionsItem
@@ -892,6 +912,7 @@ from .stream_kill_response import StreamKillResponse
 from .stream_metadata import StreamMetadata
 from .stream_start_request import StreamStartRequest
 from .stream_start_response import StreamStartResponse
+from .stub_overflow import StubOverflow
 from .stub_scan_entry import StubScanEntry
 from .stub_scan_project import StubScanProject
 from .stub_scan_totals import StubScanTotals
@@ -983,6 +1004,10 @@ from .task_status_summary_by_status import TaskStatusSummaryByStatus
 from .task_status_summary_in_progress_item import TaskStatusSummaryInProgressItem
 from .task_status_summary_ready_to_work_item import TaskStatusSummaryReadyToWorkItem
 from .throughput_metrics import ThroughputMetrics
+from .tidy_request import TidyRequest
+from .tidy_response import TidyResponse
+from .tiles_request import TilesRequest
+from .tiles_response import TilesResponse
 from .token_audit_request import TokenAuditRequest
 from .token_audit_response import TokenAuditResponse
 from .token_audit_response_422 import TokenAuditResponse422
@@ -1050,6 +1075,7 @@ __all__ = (
     "AiBudgetDTO",
     "AiNodeDetailDTO",
     "AiNodeDetailDTOOutputSchemaType0",
+    "AncestorRef",
     "AppendNoteRequest",
     "AppendNoteResponse",
     "AppendNoteResponse422",
@@ -1244,6 +1270,7 @@ __all__ = (
     "ExportProfileRequest",
     "ExportProfileResponse",
     "ExportProfileResponse422",
+    "ExtentResponse",
     "FieldChangeDTO",
     "FileEntry",
     "FileInspectionRecord",
@@ -1422,12 +1449,19 @@ __all__ = (
     "GraphLayoutDTOClusterBounds",
     "GraphLayoutDTODirection",
     "GraphLayoutDTOGridPositions",
+    "GraphLayoutRebuildRequest",
+    "GraphLayoutRebuildResponse422",
+    "GraphLayoutResponse",
+    "GraphLayoutResponseJobsType0Item",
+    "GraphLayoutResponseVersionsType0",
     "GraphLegendDTO",
     "GraphLegendDTOEdgeKinds",
     "GraphLegendDTOStepKinds",
     "GraphNodeDTO",
     "GraphNodeDTOStepKind",
     "GraphTaskNode",
+    "GraphTidyRequest",
+    "GraphTidyResponse422",
     "GrepRequest",
     "GrepResponse",
     "GrepResponse422",
@@ -1449,6 +1483,12 @@ __all__ = (
     "InstallProfileResponse422",
     "IntelligenceClassModel",
     "IntelligenceClassModelMapping",
+    "LayoutEdge",
+    "LayoutJob",
+    "LayoutNode",
+    "LayoutRect",
+    "LayoutStub",
+    "LayoutWorker",
     "ListActiveTasksAllProjectsRequest",
     "ListActiveTasksAllProjectsResponse",
     "ListActiveTasksAllProjectsResponse422",
@@ -1508,6 +1548,8 @@ __all__ = (
     "ListPromptsResponse",
     "ListPromptsResponse422",
     "ListPromptsResponsePromptsItem",
+    "ListRequest",
+    "ListResponse",
     "ListSessionsResponse",
     "ListTasksRequest",
     "ListTasksResponse",
@@ -1517,6 +1559,8 @@ __all__ = (
     "ListWorkspacesRequest",
     "ListWorkspacesResponse",
     "ListWorkspacesResponse422",
+    "LocateHit",
+    "LocateResponse",
     "LogEntry",
     "LoopIterationOverlayDTO",
     "LoopNodeDetailDTO",
@@ -1559,6 +1603,7 @@ __all__ = (
     "NodeExplanation",
     "NodeOverlayDTO",
     "NodeOverlayDTOState",
+    "NodeResponse",
     "NoteSummary",
     "OperatorDecisionDTO",
     "OperatorDecisionDTOOptionsItem",
@@ -1909,6 +1954,7 @@ __all__ = (
     "StreamMetadata",
     "StreamStartRequest",
     "StreamStartResponse",
+    "StubOverflow",
     "StubScanEntry",
     "StubScanProject",
     "StubScanTotals",
@@ -1998,6 +2044,10 @@ __all__ = (
     "TaskStatusSummaryInProgressItem",
     "TaskStatusSummaryReadyToWorkItem",
     "ThroughputMetrics",
+    "TidyRequest",
+    "TidyResponse",
+    "TilesRequest",
+    "TilesResponse",
     "TokenAuditRequest",
     "TokenAuditResponse",
     "TokenAuditResponse422",

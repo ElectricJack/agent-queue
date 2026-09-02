@@ -652,6 +652,15 @@ Shipped behind `dashboard.graph_layout.enabled`, with these gaps recorded rather
 - Cross-project stub labels and their docking port are implemented and unit-tested but
   unreachable end to end, because the engine lays out one project at a time and stamps every
   stub with the requesting project's id.
+- The mobile list shows no gate badges: the `list` endpoint carries nodes only, and gates ride
+  on the `tiles` response, so `MobileLayoutList` renders every card with an empty gate array.
+- The status strip's total is the `node_count` of the published layout for the variant the
+  canvas is showing (`active` unless "Show completed" or a focus is on). It counts every laid-out
+  row of that variant — including tasks hidden inside collapsed containers — and it only moves
+  when a layout job publishes, so right after a create it still reports the previous version and
+  can even fall (a rebuild of `active` drops rows for tasks that finished since the last publish).
+  The strip reads the same variant the canvas fetches; the lag is the publish boundary, not the
+  wrong extent.
 - `POST /api/task/set-status` publishes no forwarded bus event, so a status change made through
   that route reaches the canvas only on the next event or the extent's 60 s poll. Task creation,
   deletion and the `notify.task_*` family do drive the live path.

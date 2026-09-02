@@ -55,6 +55,10 @@ class ProjectCommandsMixin:
                 "ready_to_work": ready,
             },
             "orchestrator_paused": self.orchestrator._paused,
+            "graph_layout_enabled": bool(
+                getattr(self.config, "graph_layout", None)
+                and self.config.graph_layout.enabled
+            ),
         }
 
     async def _cmd_list_projects(self, args: dict) -> dict:

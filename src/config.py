@@ -1644,6 +1644,30 @@ class MetricsConfig:
 
 
 @dataclass
+class GraphLayoutConfig:
+    """Server-side task graph layout (spatial-layout design §8).
+
+    YAML: ``dashboard.graph_layout`` (the spec's spelling) **or** a
+    top-level ``graph_layout:`` block. Both are read; the nested one wins.
+    The top-level spelling is what the config editor writes — it addresses
+    sections by ``AppConfig`` field name — so ``update_config("graph_layout",
+    ...)`` has to be honoured or it would silently no-op.
+    """
+
+    enabled: bool = False
+    reconcile_interval_seconds: int = 900
+    incremental_debounce_ms: int = 500
+    tidy_job_budget_seconds: int = 60
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        for key in ("reconcile_interval_seconds", "incremental_debounce_ms", "tidy_job_budget_seconds"):
+            if getattr(self, key) < 0:
+                errors.append(ConfigError("dashboard.graph_layout", key, "must be >= 0"))
+        return errors
+
+
+@dataclass
 class AppConfig:
     """Top-level application configuration aggregating all subsystem configs.
 
@@ -1703,6 +1727,7 @@ class AppConfig:
     swarm: SwarmConfig = field(default_factory=SwarmConfig)
     resources: ResourcesConfig = field(default_factory=ResourcesConfig)
     metrics: MetricsConfig = field(default_factory=MetricsConfig)
+    graph_layout: GraphLayoutConfig = field(default_factory=GraphLayoutConfig)
     agent_profiles: list[AgentProfileConfig] = field(default_factory=list)
     global_token_budget_daily: int | None = None
     max_daily_playbook_tokens: int | None = None
@@ -1878,6 +1903,7 @@ class AppConfig:
         errors.extend(self.swarm.validate())
         errors.extend(self.resources.validate())
         errors.extend(self.metrics.validate())
+        errors.extend(self.graph_layout.validate())
         # Sessions are the only execution path (the runtime subsystem was
         # removed), so a disabled session runtime is a daemon that accepts
         # work and never starts any of it.  Warn, don't reject: the mode is
@@ -2012,6 +2038,7 @@ HOT_RELOADABLE_SECTIONS = {
     "swarm",
     "resources",
     "metrics",
+    "graph_layout",
     "pricing",
     "surface",
 }
@@ -2078,6 +2105,7 @@ _SECTION_FIELDS = {
     "swarm",
     "resources",
     "metrics",
+    "graph_layout",
     "agent_profiles",
     "global_token_budget_daily",
     "max_daily_playbook_tokens",
@@ -2838,6 +2866,18 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             retain_seconds_1m=int(met.get("retain_seconds_1m", 30 * 86400)),
             retain_seconds_1h=int(met.get("retain_seconds_1h", 365 * 86400)),
         )
+
+    # Both spellings: the spec nests it under ``dashboard``, while
+    # ``config_editor``/``update_config`` write AppConfig field names as
+    # top-level keys. Reading only one of them would make runtime edits
+    # silently ineffective.
+    gl = (raw.get("dashboard") or {}).get("graph_layout") or raw.get("graph_layout") or {}
+    config.graph_layout = GraphLayoutConfig(
+        enabled=bool(gl.get("enabled", False)),
+        reconcile_interval_seconds=int(gl.get("reconcile_interval_seconds", 900)),
+        incremental_debounce_ms=int(gl.get("incremental_debounce_ms", 500)),
+        tidy_job_budget_seconds=int(gl.get("tidy_job_budget_seconds", 60)),
+    )
 
     if "agent_profiles" in raw:
         profiles = []

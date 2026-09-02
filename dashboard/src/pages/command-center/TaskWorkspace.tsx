@@ -13,6 +13,8 @@ interface TaskWorkspaceValue {
   isLoadingProjects: boolean;
   projectsError: Error | null;
   filters: TaskFilters;
+  focusId: string | null;
+  setFocus: (id: string | null) => void;
   setQuery: (query: string) => void;
   setStatus: (status: string) => void;
   setShowCompleted: (show: boolean) => void;
@@ -25,7 +27,9 @@ export function TaskWorkspaceProvider({ children }: { children: ReactNode }) {
   const { projectId } = useParams<{ projectId: string }>();
   const { data: projects = EMPTY_PROJECTS, isLoading: isLoadingProjects, error: projectsError } = useProjects();
   const [params, setParams] = useSearchParams();
-  const filters = useMemo(() => readTaskFilters(params), [params]);
+  const rawFilters = useMemo(() => readTaskFilters(params), [params]);
+  const focusId = rawFilters.focus || null;
+  const filters = useMemo(() => ({ ...rawFilters, showCompleted: rawFilters.showCompleted || !!focusId }), [rawFilters, focusId]);
   const projectIds = useMemo(() => projectId ? [projectId] : projects.map((p) => p.id), [projectId, projects]);
   useGraphLive(projectIds);
 
@@ -39,16 +43,23 @@ export function TaskWorkspaceProvider({ children }: { children: ReactNode }) {
   const setShowCompleted = useCallback((show: boolean) => {
     setParams((previous) => {
       const current = readTaskFilters(previous);
+      if (current.focus) return previous;
       return writeTaskFilters(previous, {
         ...current, showCompleted: show,
         status: !show && FINISHED_STATUSES.has(current.status) ? "" : current.status,
       });
     }, { replace: true });
   }, [setParams]);
-  const clearFilters = useCallback(() => update({ query: "", status: "", showCompleted: false }), [update]);
+  const setFocus = useCallback((id: string | null) => update({ focus: id ?? "" }), [update]);
+  const clearFilters = useCallback(() => {
+    setParams((previous) => {
+      const current = readTaskFilters(previous);
+      return writeTaskFilters(previous, { query: "", status: "", showCompleted: false, focus: current.focus });
+    }, { replace: true });
+  }, [setParams]);
   const value = useMemo(() => ({ projectId, projectIds, projects, isLoadingProjects, projectsError,
-    filters, setQuery, setStatus, setShowCompleted, clearFilters }),
-  [projectId, projectIds, projects, isLoadingProjects, projectsError, filters, setQuery, setStatus, setShowCompleted, clearFilters]);
+    filters, focusId, setFocus, setQuery, setStatus, setShowCompleted, clearFilters }),
+  [projectId, projectIds, projects, isLoadingProjects, projectsError, filters, focusId, setFocus, setQuery, setStatus, setShowCompleted, clearFilters]);
   return <TaskWorkspaceContext.Provider value={value}>{children}</TaskWorkspaceContext.Provider>;
 }
 

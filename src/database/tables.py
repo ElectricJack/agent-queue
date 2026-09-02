@@ -210,6 +210,92 @@ task_dependencies = Table(
     ),
 )
 
+# ── Task graph layout (spatial-layout design §4.10) ─────────────────────────
+LAYOUT_VARIANTS = ("all", "active")
+LAYOUT_KINDS = ("card", "container", "stub")
+
+task_layouts = Table(
+    "task_layouts",
+    metadata,
+    Column("project_id", Text, ForeignKey("projects.id"), nullable=False, primary_key=True),
+    Column("variant", Text, nullable=False, primary_key=True),
+    Column("task_id", Text, ForeignKey("tasks.id"), nullable=False, primary_key=True),
+    Column("container_id", Text, nullable=True),
+    Column("path", Text, nullable=False),
+    Column("depth", Integer, nullable=False),
+    Column("rank", Integer, nullable=False),
+    Column("order_key", Text, nullable=False),
+    Column("w", Float, nullable=False),
+    Column("h", Float, nullable=False),
+    Column("rel_x", Float, nullable=False),
+    Column("rel_y", Float, nullable=False),
+    Column("abs_x", Float, nullable=False),
+    Column("abs_y", Float, nullable=False),
+    Column("kind", Text, nullable=False),
+    Column("agg_children", Integer, nullable=False, server_default="0"),
+    Column("agg_descendants", Integer, nullable=False, server_default="0"),
+    Column("agg_completed", Integer, nullable=False, server_default="0"),
+    Column("agg_running", Integer, nullable=False, server_default="0"),
+    Column("agg_blocked", Integer, nullable=False, server_default="0"),
+    Column("agg_active", Integer, nullable=False, server_default="0"),
+    CheckConstraint("variant IN ('all', 'active')", name="ck_task_layouts_variant"),
+    CheckConstraint("kind IN ('card', 'container', 'stub')", name="ck_task_layouts_kind"),
+    Index("idx_task_layouts_path", "project_id", "variant", "path"),
+    Index("idx_task_layouts_depth", "project_id", "variant", "depth"),
+    Index("idx_task_layouts_container", "project_id", "variant", "container_id"),
+)
+
+task_layout_cells = Table(
+    "task_layout_cells",
+    metadata,
+    Column("project_id", Text, nullable=False, primary_key=True),
+    Column("variant", Text, nullable=False, primary_key=True),
+    Column("cell_x", Integer, nullable=False, primary_key=True),
+    Column("cell_y", Integer, nullable=False, primary_key=True),
+    Column("task_id", Text, nullable=False, primary_key=True),
+    Index("idx_task_layout_cells_cell", "project_id", "variant", "cell_x", "cell_y"),
+    Index("idx_task_layout_cells_task", "project_id", "variant", "task_id"),
+)
+
+project_layout_meta = Table(
+    "project_layout_meta",
+    metadata,
+    Column("project_id", Text, ForeignKey("projects.id"), nullable=False, primary_key=True),
+    Column("variant", Text, nullable=False, primary_key=True),
+    Column("layout_version", Integer, nullable=False, server_default="0"),
+    Column("extent_w", Float, nullable=False, server_default="0"),
+    Column("extent_h", Float, nullable=False, server_default="0"),
+    Column("node_count", Integer, nullable=False, server_default="0"),
+    Column("updated_at", Float, nullable=False),
+    Column("reconciled_at", Float, nullable=True),
+)
+
+layout_dirty = Table(
+    "layout_dirty",
+    metadata,
+    Column("seq", Integer, primary_key=True, autoincrement=True),
+    Column("project_id", Text, nullable=False),
+    Column("task_id", Text, nullable=False),
+    Column("reason", Text, nullable=False),
+    Column("created_at", Float, nullable=False),
+    Index("idx_layout_dirty_project", "project_id", "seq"),
+)
+
+layout_jobs = Table(
+    "layout_jobs",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, nullable=False),
+    Column("variant", Text, nullable=False),
+    Column("kind", Text, nullable=False),  # 'tidy' | 'backfill'
+    Column("status", Text, nullable=False),  # queued | running | done | failed
+    Column("requested_at", Float, nullable=False),
+    Column("started_at", Float, nullable=True),
+    Column("finished_at", Float, nullable=True),
+    Column("error", Text, nullable=True),
+    Index("idx_layout_jobs_project_status", "project_id", "status"),
+)
+
 task_context = Table(
     "task_context",
     metadata,
