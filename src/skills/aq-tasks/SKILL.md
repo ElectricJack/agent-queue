@@ -1,6 +1,6 @@
 ---
 name: aq-tasks
-description: Task lifecycle in the aq daemon — get / list / show / close / reopen / edit tasks, work with dependencies, results, and archives. Use whenever you need to inspect the queue, understand your assigned task, close work with a summary, or manage a task graph. Also covers `aq task explain` for "why isn't X running".
+description: Task lifecycle in the aq daemon — get / list / show / close / reopen / edit tasks, work with dependencies, results, and archives. Use whenever you need to inspect the queue, understand your assigned task, close work with a summary, or manage a task graph. Also covers the reads that answer "why isn't X running".
 allowed-tools:
   - Bash
 ---
@@ -18,9 +18,9 @@ Available to any caller, including a non-elevated worker or reviewer session:
 ```bash
 aq task show <task_id>              # full detail for one task
 aq task comments <task_id>          # durable comment history, newest first
-aq task children <id> [--recursive] [--status S] [--limit N] [--offset N]
+aq task children --task-id <id> [--recursive] [--status S] [--limit N] [--offset N]
                                     # direct or recursive children of a container
-aq task progress <id>               # computed group progress: counts, waves,
+aq task progress --task-id <id>     # computed group progress: counts, waves,
                                     # max parallelism — never stored, always
                                     # derived from the current graph
 ```
@@ -32,16 +32,20 @@ so do not build a workflow on them:
 ```bash
 aq task list                        # active tasks, current project scope
 aq task list --status IN_PROGRESS   # filter by status
-aq task list --json --brief         # scriptable projection
+aq --json --brief task list         # scriptable projection.  --json and
+                                    # --brief are group-level flags: they go
+                                    # before the subcommand, not after it.
 aq task get --task-id <task_id>     # single-row summary
-aq task explain --task-id <task_id> # "why isn't this running?" — blockers,
-                                    # gates, budget, cooldown, lease info.
-                                    # Quote the actual reason it returns,
-                                    # don't theorize.
 aq task deps --task-id <task_id>    # dependency graph for one task
-aq task tree <task_id>              # subtask tree, expanded
-aq task result <task_id>            # result payload from a completed task
+aq task get-tree --task-id <task_id>    # subtask tree, expanded
+aq task get-result --task-id <task_id>  # result payload from a completed task
 ```
+
+`aq task explain` — the daemon's "why isn't this running?" answer — has no
+usable CLI form right now: the generated command exposes no `--task-id`, so
+it cannot name a task (tracked by `bright-forge-33`). Read the blockers off
+`aq task show <id>` and `aq task deps --task-id <id>` instead, and quote what
+they say rather than theorizing.
 
 A worker or reviewer session reaches exactly one task — its own — plus,
 for a reviewer, the single task named by its review's `discovered-from`
@@ -150,13 +154,15 @@ whose `claim_epoch` no longer matches (task reassigned, claim expired) gets
 
 If a reviewer or human rejects the work, they call `reopen_with_feedback`
 on your task. That transitions it back to `READY` with feedback attached.
-When you pick it up, `aq task get <id>` shows the feedback in the
+When you pick it up, `aq task show <id>` shows the feedback in the
 description.
 
-If a task is `WAITING_INPUT`, respond with:
+`WAITING_INPUT` waits on a *human*, not on you — there is no worker-side
+command for it. The two answering surfaces are both operator ones:
 
 ```bash
-aq task input-response --task-id <id> --response "<the answer>"
+aq system provide-input --task-id <id> --input "<the answer>"
+aq question answer <question_id> --body "<the answer>"
 ```
 
 ## Creating tasks
@@ -168,9 +174,10 @@ routing gate, so triage — not the filer — dedupes and routes it. `--from-spe
 `--graph` and `create_task_graph` stay elevated/supervisor-only.
 
 ```bash
-# Ad-hoc task creation
+# Ad-hoc task creation.  --reason is required on a worker-filed task and is
+# stored on the discovered-from edge back to the task you hold.
 aq task create --project <pid> --title "..." --description "..." \
-  --profile worker-standard --priority 50
+  --profile worker-standard --priority 50 --reason "why this exists"
 
 # From a spec (preferred for multi-task graphs)
 aq task create --from-spec vault/projects/<pid>/specs/<slug>.md
@@ -180,6 +187,11 @@ aq task create --from-spec <path> --dry-run   # validate first, always
 aq task create --project <pid> --title "..." --description "..." \
   --profile worker-standard --parent <container_task_id>
 ```
+
+Always pass at least `--project` and `--title` from a worker session: with
+neither, `aq task create` drops into its interactive wizard, whose first step
+calls `list_projects` — a command a worker token refuses with
+`out of scope: list_projects`.
 
 ## Cooking a formula
 
@@ -207,9 +219,9 @@ and so on — an id never changes once assigned, and structural depth is
 capped at 3 (root = 1).
 
 ```bash
-aq task reparent <task_id> --parent <new_parent_id>   # move under another container
-aq task reparent <task_id> --root                     # detach to root (clears parent)
-aq task delete <task_id> --cascade                    # delete a container + its whole subtree
+aq task reparent --task-id <task_id> --parent-id <new_parent_id>  # move under another container
+aq task reparent --task-id <task_id> --root           # detach to root (clears parent)
+aq task delete --task-id <task_id> --cascade          # delete a container + its whole subtree
 aq task close <id> --abandon-children \
   --outcome pass|fail --summary "..."                 # close a container, abandoning
                                                         # any still-open descendants
@@ -246,8 +258,8 @@ Failures come back as `hierarchy.<code>`. The full list (also in `aq schema`'s
 ## Dependencies
 
 ```bash
-aq task dep add <task_id> --depends-on <upstream_id> --type blocks
-aq task dep remove <task_id> --depends-on <upstream_id>
+aq task add-dependency --task-id <task_id> --depends-on <upstream_id> --dep-type blocks
+aq task remove-dependency --task-id <task_id> --depends-on <upstream_id>
 ```
 
 Dependency types: `blocks`, `parent-child`, `waits-for`,
@@ -256,12 +268,15 @@ Dependency types: `blocks`, `parent-child`, `waits-for`,
 
 ## Archives
 
-Completed / failed tasks eventually archive. Query and restore:
+Completed / failed tasks eventually archive:
 
 ```bash
-aq task list-archived --project <pid>
-aq task restore <task_id>
+aq task list-archived --project-id <pid>   # what has been archived
+aq task archive --task-id <task_id>        # archive one COMPLETED/FAILED/BLOCKED task
 ```
+
+Archiving is one-way: there is no restore or unarchive command, and an
+archived id can never be recreated in a different project.
 
 ## Rules of thumb
 
