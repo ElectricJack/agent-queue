@@ -124,9 +124,6 @@ cli = [
     "agent-queue-api-client @ file:packages/aq-client",
 ]
 dev = [
-    # ToolIndex's fake-memsearch positive-control exercises cosine similarity
-    # directly, so CI needs NumPy even though memsearch itself is optional.
-    "numpy>=2.0",
     # CVE-2025-71176: pytest <9.0.3 uses predictable /tmp/pytest-of-{user}
     # directory names, allowing local DoS or possible privilege escalation.
     "pytest>=9.0.3",
