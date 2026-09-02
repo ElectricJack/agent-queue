@@ -82,9 +82,7 @@ def scoped_client_factory(db):
             request.state.scope = scope if scope is not None else LOCAL_SCOPE
             return await call_next(request)
 
-        app.include_router(
-            build_graph_layout_router(db=db, command_handler=command_handler)
-        )
+        app.include_router(build_graph_layout_router(db=db, command_handler=command_handler))
         return AsyncClient(transport=ASGITransport(app=app), base_url="http://t")
 
     return _make
@@ -100,9 +98,7 @@ class _RecordingHandler:
     async def execute(self, name, args):
         self.calls.append((name, dict(args)))
         variants = [args["variant"]] if args.get("variant") else ["all", "active"]
-        jobs = [
-            await self.db.enqueue_layout_job(args["project_id"], v, "tidy") for v in variants
-        ]
+        jobs = [await self.db.enqueue_layout_job(args["project_id"], v, "tidy") for v in variants]
         return {"success": True, "jobs": jobs}
 
 
@@ -703,3 +699,44 @@ async def test_tiles_focus_expanded_child_still_shows_grandchildren(db, client_f
             json={**ALL, "root": "e", "expanded": ["e", "pkg"]},
         )
     assert {n["id"] for n in r.json()["nodes"]} == {"e", "c0", "c1", "pkg", "g0", "g1"}
+
+
+async def test_tiles_focus_filter_still_reaches_deep_matches(db, client_factory):
+    """A filter under `root` must return the matches, not only the context.
+
+    Regression: once focus stopped loading the root's whole subtree, a match
+    deeper than the open containers had no candidate row, so the response
+    was all force-expanded ancestors and no result.
+    """
+    await seed(db)
+    async with client_factory() as ac:
+        r = await ac.post("/api/projects/p1/graph/tiles", json={**ALL, "root": "e", "q": "title g"})
+    assert r.status_code == 200
+    nodes = {n["id"]: n for n in r.json()["nodes"]}
+    assert set(nodes) == {"e", "pkg", "g0", "g1"}
+    # the ancestors are context; the matches are the result
+    assert nodes["e"]["context_only"] and nodes["pkg"]["context_only"]
+    assert not nodes["g0"]["context_only"] and not nodes["g1"]["context_only"]
+
+
+async def test_tiles_focus_status_filter_still_reaches_deep_matches(db, client_factory):
+    await seed(db)
+    async with client_factory() as ac:
+        r = await ac.post(
+            "/api/projects/p1/graph/tiles", json={**ALL, "root": "e", "status": "COMPLETED"}
+        )
+    assert r.status_code == 200
+    nodes = {n["id"]: n for n in r.json()["nodes"]}
+    assert set(nodes) == {"e", "c1"}
+    assert nodes["e"]["context_only"] and not nodes["c1"]["context_only"]
+
+
+async def test_tidy_checks_scope_before_project_existence(db, scoped_client_factory):
+    """403, not 404: refusing a caller must not tell it what exists."""
+    agent = RequestScope(kind="session", session_id="s1", project_id="p1", task_id="g0")
+    async with scoped_client_factory(scope=agent) as ac:
+        r = await ac.post("/api/projects/nope/graph/tidy", json={})
+    assert r.status_code == 403
+    # a permitted caller still gets the 404
+    async with scoped_client_factory() as ac:
+        assert (await ac.post("/api/projects/nope/graph/tidy", json={})).status_code == 404

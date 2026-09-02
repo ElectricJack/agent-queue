@@ -237,6 +237,23 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
                 cand.update(
                     await db.load_layout_rows(project_id, variant, list(forced - set(cand)))
                 )
+            if req.root is not None and forced:
+                # Under `root` the candidate set is the children of
+                # `[root, *expanded]`, which is exactly the visible set --
+                # but a filter force-opens the ancestors of matches that lie
+                # deeper than that, and those matches have to be candidates
+                # too or the response is all context and no result.  The
+                # children of the forced closure ARE those matches (`forced`
+                # is every match's ancestor chain), so one container-scoped
+                # read covers them without reopening the whole subtree.
+                cand.update(
+                    {
+                        t: rt[0]
+                        for t, rt in (
+                            await db.load_rows_for_containers(project_id, variant, sorted(forced))
+                        ).items()
+                    }
+                )
 
         # Focus mode shows the whole subtree at the client's expanded state:
         # ``max_depth`` is ignored under ``root``, the same way the rect cap is.
@@ -521,9 +538,6 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
         responses={403: {"description": "out of scope"}},
     )
     async def post_tidy(project_id: str, req: TidyRequest, request: Request = None):
-        await _project_or_404(project_id)
-        if req.variant is not None:
-            _variant(req.variant)
         args: dict = {
             "project_id": project_id,
             **({"variant": req.variant} if req.variant else {}),
@@ -532,12 +546,19 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
         # `graph_tidy` is not in AGENT_COMMAND_SET, so an ordinary agent
         # session is refused here; a local caller or an elevated supervisor
         # passes, with `project_id` enforced against the token's scope.
+        #
+        # FIRST, before the existence check: a caller who may not tidy this
+        # project may not learn whether it exists either, and a 404/403 split
+        # is exactly that oracle.
         scope: RequestScope = (
             getattr(request.state, "scope", LOCAL_SCOPE) if request is not None else LOCAL_SCOPE
         )
         scope_err = await check_request_scope("graph_tidy", args, scope, db=db)
         if scope_err is not None:
             return JSONResponse({"error": scope_err}, status_code=403)
+        await _project_or_404(project_id)
+        if req.variant is not None:
+            _variant(req.variant)
         if command_handler is not None:
             # Forwarded the way /api/execute does it, so `_cmd_graph_tidy`'s
             # own agent-session guard reads a real scope rather than None.
