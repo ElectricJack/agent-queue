@@ -856,7 +856,9 @@ async def test_read_path_reports_unavailable_when_the_artifact_file_is_gone(db, 
 
 
 @pytest.mark.asyncio
-async def test_read_path_and_doctors_report_a_mutated_artifact_sha_mismatch(db, tmp_path):
+async def test_read_path_command_and_doctors_report_a_mutated_artifact_sha_mismatch(
+    db, tmp_path
+):
     """Health must reject valid replacement bytes just as ArtifactStore.load does.
 
     The ``db`` fixture runs this regression against SQLite and PostgreSQL.  In
@@ -883,8 +885,13 @@ async def test_read_path_and_doctors_report_a_mutated_artifact_sha_mismatch(db, 
     assert [record.health for record in records] == [ActivationHealth.UNAVAILABLE]
     assert [reason.code for reason in records[0].reasons] == ["artifact_sha_mismatch"]
 
+    command = await _v2_handler(
+        db, (StubContracts(), StubProfiles(), None)
+    )._cmd_playbook_activation_health({})
     stale = await _check_activation_stale(_stale_ctx(db))
     integrity = await _check_artifact_integrity(_stale_ctx(db))
+    assert command["by_health"] == {"unavailable": 1}
+    assert command["activations"][0]["reasons"][0]["code"] == "artifact_sha_mismatch"
     assert stale.severity is Severity.WARN
     assert stale.data["stale"][0]["reasons"][0]["code"] == "artifact_sha_mismatch"
     assert integrity.severity is Severity.WARN
