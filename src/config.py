@@ -862,9 +862,40 @@ class PlaybooksConfig:
     """
 
     enabled: bool = False
+    v2_storage_enabled: bool = False
+    v2_max_artifact_bytes: int = 1_048_576
+    v2_max_result_bytes: int = 262_144
+    v2_max_snapshot_bytes: int = 4_194_304
+    v2_max_pending_events_per_playbook: int = 1000
+    v2_pending_event_retention_days: int = 7
+    v2_receipt_retention_days: int = 90
+    v2_artifact_retention_days: int = 90
+    v2_artifact_min_versions: int = 10
+    v2_retention_sweep_interval_seconds: int = 3600
 
     def validate(self) -> list[ConfigError]:
-        return []
+        errors: list[ConfigError] = []
+        for field_name in (
+            "v2_max_artifact_bytes",
+            "v2_max_result_bytes",
+            "v2_max_snapshot_bytes",
+            "v2_max_pending_events_per_playbook",
+            "v2_pending_event_retention_days",
+            "v2_receipt_retention_days",
+            "v2_artifact_retention_days",
+            "v2_retention_sweep_interval_seconds",
+        ):
+            if getattr(self, field_name) <= 0:
+                errors.append(ConfigError("playbooks", field_name, "must be > 0"))
+        if self.v2_max_result_bytes > self.v2_max_snapshot_bytes:
+            errors.append(
+                ConfigError(
+                    "playbooks", "v2_max_result_bytes", "must be <= v2_max_snapshot_bytes"
+                )
+            )
+        if self.v2_artifact_min_versions < 1:
+            errors.append(ConfigError("playbooks", "v2_artifact_min_versions", "must be >= 1"))
+        return errors
 
 
 @dataclass
@@ -2405,7 +2436,19 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         config.max_concurrent_playbook_runs = int(raw["max_concurrent_playbook_runs"])
     if "playbooks" in raw and isinstance(raw["playbooks"], dict):
         pb = raw["playbooks"]
-        config.playbooks = PlaybooksConfig(enabled=bool(pb.get("enabled", False)))
+        config.playbooks = PlaybooksConfig(
+            enabled=bool(pb.get("enabled", False)),
+            v2_storage_enabled=bool(pb.get("v2_storage_enabled", False)),
+            v2_max_artifact_bytes=int(pb.get("v2_max_artifact_bytes", 1_048_576)),
+            v2_max_result_bytes=int(pb.get("v2_max_result_bytes", 262_144)),
+            v2_max_snapshot_bytes=int(pb.get("v2_max_snapshot_bytes", 4_194_304)),
+            v2_max_pending_events_per_playbook=int(pb.get("v2_max_pending_events_per_playbook", 1000)),
+            v2_pending_event_retention_days=int(pb.get("v2_pending_event_retention_days", 7)),
+            v2_receipt_retention_days=int(pb.get("v2_receipt_retention_days", 90)),
+            v2_artifact_retention_days=int(pb.get("v2_artifact_retention_days", 90)),
+            v2_artifact_min_versions=int(pb.get("v2_artifact_min_versions", 10)),
+            v2_retention_sweep_interval_seconds=int(pb.get("v2_retention_sweep_interval_seconds", 3600)),
+        )
     if "messaging_platform" in raw:
         config.messaging_platform = raw["messaging_platform"]
 
