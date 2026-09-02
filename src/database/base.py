@@ -468,6 +468,9 @@ class DatabaseBackend(Protocol):
         now: float,
         result: str = "released",
         needs_attention: str | None = None,
+        expected_task_id: str | None = None,
+        expected_claim_epoch: int | None = None,
+        drain_after_release: bool = False,
         conn=None,
     ) -> "TransitionResult": ...
     async def terminate_pool_session(

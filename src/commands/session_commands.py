@@ -27,7 +27,7 @@ import logging
 import time
 import uuid
 
-from src.commands.claim_commands import remove_claim_file
+from src.commands.claim_commands import remove_claim_file, remove_claim_file_if_matches
 from src.database.queries.task_queries import StaleClaim
 from src.models import TaskCompletion, TaskStatus
 from src.sessions.provider import (
@@ -942,13 +942,11 @@ class SessionCommandsMixin:
                 task_status=TaskStatus(result["status"]),
                 context="session_close",
                 now=time.time(),
+                expected_task_id=task_id,
+                expected_claim_epoch=expect_claim_epoch,
+                drain_after_release=self.config.swarm.fresh_context_per_task,
             )
-            remove_claim_file(session.work_dir)
-            if self.config.swarm.fresh_context_per_task:
-                # Only after close/release: keep context for active work, human
-                # questions and retries. The reconciler stops this idle session
-                # before its global worker/workspace can serve another task.
-                await self.db.update_session(session.id, desired_state="stopped")
+            remove_claim_file_if_matches(session.work_dir, task_id, expect_claim_epoch)
         elif session is not None and session.lifecycle == "task" and session.work_dir:
             # Push launches join the claim fence too (execution.py) and
             # write the same claim file — clean it up on a task-session
