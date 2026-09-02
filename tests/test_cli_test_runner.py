@@ -17,6 +17,8 @@ from src.cli.test_runner import (
     _caps,
     _compose_pytest_argv,
     _has_flag,
+    _missing_paths,
+    _positional_args,
     _run_forwarding_signals,
     _xdist_disabled,
 )
@@ -125,6 +127,80 @@ class TestArgvComposition:
         args = ("tests/test_x.py::TestY::test_z", "-k", "not slow", "-x", "--lf")
         argv = _compose_pytest_argv(args, workers=4, markers="", apply_markers=False)
         assert argv[-len(args) :] == list(args)
+
+
+class TestMissingPathsAreRefused:
+    """A mistyped path must not read as a clean run.
+
+    Under xdist, ``pytest tests/test_real.py tests/test_typo.py`` collects
+    nothing and prints "no tests ran" — an agent reads that as green and
+    closes its task believing it verified its change.  This happened twice
+    in one session before the cause was spotted, so the check happens
+    before a slot is even taken.
+    """
+
+    def test_a_missing_file_is_reported(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_real.py").write_text("")
+        assert _missing_paths(("tests/test_real.py",)) == []
+        assert _missing_paths(
+            ("tests/test_real.py", "tests/test_typo.py")
+        ) == ["tests/test_typo.py"]
+
+    def test_a_node_id_suffix_is_stripped_before_the_stat(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_real.py").write_text("")
+        assert _missing_paths(("tests/test_real.py::TestX::test_y",)) == []
+        assert _missing_paths(("tests/test_gone.py::TestX",)) == ["tests/test_gone.py::TestX"]
+
+    def test_a_directory_counts_as_present(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "tests").mkdir()
+        assert _missing_paths(("tests/",)) == []
+
+    def test_option_values_are_never_mistaken_for_paths(self, tmp_path, monkeypatch):
+        # `-k` takes an expression, not a path; stat'ing it would refuse a
+        # perfectly valid command line, which is how wrappers get worked
+        # around rather than fixed.
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "tests").mkdir()
+        args = ("tests/", "-k", "schema/setup", "-m", "perf", "--ignore", "tests/nope.py", "-x")
+        assert _missing_paths(args) == []
+
+    def test_non_path_shaped_arguments_are_left_alone(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        assert _missing_paths(("tests",)) == []
+
+    def test_positional_args_after_a_double_dash(self):
+        assert _positional_args(("-x", "--", "-k", "tests/a.py")) == ["-k", "tests/a.py"]
+
+    def test_the_command_refuses_before_taking_a_slot(self, runner, monkeypatch, tmp_path):
+        monkeypatch.setattr("src.cli.test_runner.CONFIG_PATH", str(tmp_path / "config.yaml"))
+
+        def _boom(*_a, **_kw):  # pragma: no cover - must not be reached
+            raise AssertionError("pytest was launched for a nonexistent path")
+
+        monkeypatch.setattr("src.cli.test_runner._run_forwarding_signals", _boom)
+        result = runner.invoke(cli, ["test", "tests/definitely_not_a_test_file.py"])
+        assert result.exit_code == 4
+        assert "no such test path" in result.output
+
+    def test_an_existing_path_still_runs(self, runner, monkeypatch, tmp_path):
+        monkeypatch.setattr("src.cli.test_runner.CONFIG_PATH", str(tmp_path / "config.yaml"))
+        monkeypatch.setattr("src.cli.test_runner._run_forwarding_signals", lambda _argv: 0)
+        result = runner.invoke(cli, ["test", "tests/test_cli_test_runner.py"])
+        assert result.exit_code == 0
+
+
+class TestEmptyCollectionIsNotASuccess:
+    def test_exit_code_five_is_explained(self, runner, monkeypatch, tmp_path):
+        monkeypatch.setattr("src.cli.test_runner.CONFIG_PATH", str(tmp_path / "config.yaml"))
+        monkeypatch.setattr("src.cli.test_runner._run_forwarding_signals", lambda _argv: 5)
+        result = runner.invoke(cli, ["test", "tests/test_cli_test_runner.py", "-k", "nothing"])
+        assert result.exit_code == 5
+        assert "no tests were collected" in result.output
 
 
 class TestCapResolution:

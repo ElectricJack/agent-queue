@@ -42,6 +42,13 @@ class PlaybookArtifactQueryMixin:
         size_bytes: int,
         validation: str = "{}",
     ) -> None:
+        """Insert immutable artifact identity or refresh its mutable storage metadata.
+
+        The content-addressed identity fields are retained once the artifact
+        exists.  The local path, byte size, validation result, and profile
+        fingerprint can change when the same canonical bytes are rediscovered
+        or revalidated, so those fields are refreshed on subsequent calls.
+        """
         values = {
             **ref.as_dict(),
             "scope": scope,
@@ -53,13 +60,17 @@ class PlaybookArtifactQueryMixin:
             "created_at": time.time(),
         }
         async with self.immediate() as conn:
-            existing = await conn.execute(
-                select(playbook_artifacts.c.artifact_sha256).where(
-                    playbook_artifacts.c.artifact_sha256 == ref.artifact_sha256
+            insert_fn = pg_insert if conn.dialect.name == "postgresql" else sqlite_insert
+            statement = insert_fn(playbook_artifacts).values(**values)
+            await conn.execute(
+                statement.on_conflict_do_update(
+                    index_elements=[playbook_artifacts.c.artifact_sha256],
+                    set_={
+                        field: getattr(statement.excluded, field)
+                        for field in ("profile_fingerprint", "path", "size_bytes", "validation")
+                    },
                 )
             )
-            if existing.scalar_one_or_none() is None:
-                await conn.execute(insert(playbook_artifacts).values(**values))
 
     async def get_playbook_artifact(self, artifact_sha256: str) -> ArtifactRef | None:
         async with self._engine.begin() as conn:

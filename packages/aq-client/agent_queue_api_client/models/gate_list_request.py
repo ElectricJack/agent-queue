@@ -16,7 +16,7 @@ class GateListRequest:
     """
     Attributes:
         project_id (None | str | Unset): Filter by project
-        status (None | str | Unset): Filter by status (open|resolved|expired)
+        status (None | str | Unset): Filter by gate status
         gate_type (None | str | Unset): Filter by gate kind
     """
 

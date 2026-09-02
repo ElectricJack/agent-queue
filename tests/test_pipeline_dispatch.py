@@ -131,6 +131,15 @@ async def _emit_completed_and_wait(orch, task_id: str, event_id: str):
     pytest.fail(f"pipeline run for event {event_id} did not finish")
 
 
+async def _emit_completed_slim(orch, task_id: str, event_id: str) -> None:
+    """Emit the slim ``task.completed`` an older daemon or a hand-written
+    event sends: no ``no_code``, no ``review_task``."""
+    await orch.bus.emit(
+        "task.completed",
+        {"task_id": task_id, "project_id": "p", "title": task_id, "event_id": event_id},
+    )
+
+
 async def _tasks_by_profile(db, profile_id: str) -> list[Task]:
     return [t for t in await db.list_tasks(project_id="p") if t.profile_id == profile_id]
 
@@ -208,5 +217,72 @@ async def test_real_dispatch_is_idempotent_per_event_id(dispatch_env):
         runs_after = await orch.db.list_playbook_runs(playbook_id=PLAYBOOK_ID)
         assert len(runs_after) == len(runs_before)
         assert len(await _tasks_by_profile(orch.db, "reviewer")) == 1
+    finally:
+        await orch.db.close()
+
+
+@pytest.mark.asyncio
+async def test_real_dispatch_never_reviews_a_pipeline_review_task(dispatch_env):
+    """A finished review must not spawn a review of itself, whatever the emitter sent.
+
+    The close path sets ``review_task`` on ``task.completed``, but an emitter
+    that predates that flag (a daemon still running older code, a hand-written
+    event, container settlement) omits it, and the rules' ``truthy: false``
+    guard passes on a missing key — that is how ``Review: Review: Review: ...``
+    chains six deep reached the live queue (task prime-cascade-64).  The
+    dispatch path therefore derives the flag from the task row's own dedup
+    key: a ``review:task:`` / ``branch-review:`` row *is* a review.
+    """
+    orch, handler = await dispatch_env()
+    try:
+        await _seed(handler)
+
+        # A per-task review the pipeline created earlier, finishing on its own
+        # slot branch — exactly the row that used to be reviewed again.
+        await orch.db.create_task(
+            Task(
+                id="rv-1",
+                project_id="p",
+                title="Review: t-orig",
+                description="",
+                status=TaskStatus.COMPLETED,
+                profile_id="reviewer",
+                dedup_key="review:task:t-orig",
+                branch_name="aq/rv-1",
+                pr_url="https://github.com/o/r/pull/9",
+            )
+        )
+        # Slim payload: neither ``review_task`` nor ``no_code`` present.  The
+        # bus awaits the trigger, and dispatch writes the run row before the
+        # graph walk starts, so once ``emit`` returns a run row exists exactly
+        # when some rule fired.
+        await _emit_completed_slim(orch, "rv-1", "evt-rv-1")
+        assert await orch.db.get_playbook_run_by_event(PLAYBOOK_ID, "evt-rv-1") is None, (
+            "a task.completed rule fired for a pipeline-created review task"
+        )
+        reviews = await _tasks_by_profile(orch.db, "reviewer")
+        assert [t.id for t in reviews] == ["rv-1"], (
+            f"a review of the review was spawned: {[(t.id, t.title) for t in reviews]}"
+        )
+        assert await _tasks_by_profile(orch.db, "final-reviewer") == []
+
+        # Same for the branch-level final review row.
+        await orch.db.create_task(
+            Task(
+                id="fr-1",
+                project_id="p",
+                title="Final review: feat/x",
+                description="",
+                status=TaskStatus.COMPLETED,
+                profile_id="final-reviewer",
+                dedup_key="branch-review:feat/x",
+                branch_name="aq/fr-1",
+                pr_url="https://github.com/o/r/pull/10",
+            )
+        )
+        await _emit_completed_slim(orch, "fr-1", "evt-fr-1")
+        assert await orch.db.get_playbook_run_by_event(PLAYBOOK_ID, "evt-fr-1") is None
+        assert [t.id for t in await _tasks_by_profile(orch.db, "reviewer")] == ["rv-1"]
+        assert [t.id for t in await _tasks_by_profile(orch.db, "final-reviewer")] == ["fr-1"]
     finally:
         await orch.db.close()

@@ -20,7 +20,6 @@ def test_put_writes_hash_named_canonical_bytes_and_is_idempotent(tmp_path):
         definition,
         source_digest="sha256:" + "a" * 64,
         contract_fingerprint="sha256:" + "b" * 64,
-        profile_fingerprint="sha256:" + "c" * 64,
         compiler_build="test-build",
     )
 
@@ -31,7 +30,6 @@ def test_put_writes_hash_named_canonical_bytes_and_is_idempotent(tmp_path):
         definition,
         source_digest="sha256:" + "a" * 64,
         contract_fingerprint="sha256:" + "b" * 64,
-        profile_fingerprint="sha256:" + "c" * 64,
         compiler_build="test-build",
     ) == ref
 
@@ -44,7 +42,6 @@ def test_load_verifies_hash_before_parsing_and_rejects_invalid_identifiers(tmp_p
         _definition(),
         source_digest="sha256:" + "a" * 64,
         contract_fingerprint="sha256:" + "b" * 64,
-        profile_fingerprint="sha256:" + "c" * 64,
         compiler_build="test-build",
     )
     assert store.load(ref.artifact_sha256) == _definition()

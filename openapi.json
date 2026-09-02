@@ -19484,7 +19484,7 @@
           "gate_type": {
             "type": "string",
             "title": "Gate Type",
-            "description": "Gate kind, e.g. 'review'"
+            "description": "Gate kind. 'routing' gates resolve only via task_route."
           },
           "title": {
             "type": "string",
@@ -19600,7 +19600,7 @@
               }
             ],
             "title": "Status",
-            "description": "Filter by status (open|resolved|expired)"
+            "description": "Filter by gate status"
           },
           "gate_type": {
             "anyOf": [

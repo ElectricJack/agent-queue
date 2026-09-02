@@ -16,8 +16,6 @@ from tests.pg_dsn import ensure_worker_postgres_dsn
 #: SQLite does not have.  The Postgres arm is what pins that; it skips when
 #: ``POSTGRES_TEST_DSN`` is unset (the common local-dev case).
 POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
-
-
 @pytest.fixture(params=["sqlite", "postgres"])
 async def db(request, tmp_path):
     if request.param == "postgres":
@@ -120,7 +118,6 @@ async def test_reactivating_the_same_scope_updates_the_row_in_place(db):
     first, second = _artifact("a"), _artifact("d")
     await _store(db, first)
     await _store(db, second)
-
     await db.set_playbook_activation(
         playbook_id="task-review",
         scope="system",
@@ -203,3 +200,40 @@ async def test_distinct_scopes_get_their_own_activation_rows(db):
     rows = await _activations(db)
     assert [row["scope_identifier"] for row in rows] == ["", "proj-a", "proj-b"]
     assert len({row["activation_id"] for row in rows}) == 3
+
+
+@pytest.mark.asyncio
+async def test_artifact_upsert_refreshes_mutable_metadata(db):
+    """A re-stored hash retains its identity while refreshing mutable metadata."""
+    from src.database.tables import playbook_artifacts
+
+    artifact = _artifact()
+    await db.upsert_playbook_artifact(
+        artifact,
+        scope="system",
+        profile_fingerprint="profile-old",
+        path="/artifacts/old.json",
+        size_bytes=123,
+        validation='{"status":"old"}',
+    )
+    await db.upsert_playbook_artifact(
+        artifact,
+        scope="system",
+        profile_fingerprint="profile-new",
+        path="/artifacts/new.json",
+        size_bytes=456,
+        validation='{"status":"new"}',
+    )
+
+    async with db._engine.connect() as conn:
+        row = (
+            await conn.execute(
+                select(playbook_artifacts).where(
+                    playbook_artifacts.c.artifact_sha256 == artifact.artifact_sha256
+                )
+            )
+        ).mappings().one()
+    assert row["profile_fingerprint"] == "profile-new"
+    assert row["path"] == "/artifacts/new.json"
+    assert row["size_bytes"] == 456
+    assert row["validation"] == '{"status":"new"}'
