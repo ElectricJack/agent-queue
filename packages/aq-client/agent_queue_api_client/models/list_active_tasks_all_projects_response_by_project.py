@@ -17,6 +17,8 @@ T = TypeVar("T", bound="ListActiveTasksAllProjectsResponseByProject")
 
 @_attrs_define
 class ListActiveTasksAllProjectsResponseByProject:
+    """ """
+
     additional_properties: dict[str, list[ListActiveTasksAllProjectsResponseByProjectAdditionalPropertyItem]] = (
         _attrs_field(init=False, factory=dict)
     )
@@ -35,7 +37,7 @@ class ListActiveTasksAllProjectsResponseByProject:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.list_active_tasks_all_projects_response_by_project_additional_property_item import (
-            ListActiveTasksAllProjectsResponseByProjectAdditionalPropertyItem,  # noqa: PLC0415
+            ListActiveTasksAllProjectsResponseByProjectAdditionalPropertyItem,
         )
 
         d = dict(src_dict)

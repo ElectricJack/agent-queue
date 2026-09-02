@@ -54,7 +54,7 @@ class ProbedToolModel:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.probed_tool_model_input_schema import ProbedToolModelInputSchema  # noqa: PLC0415
+        from ..models.probed_tool_model_input_schema import ProbedToolModelInputSchema
 
         d = dict(src_dict)
         name = d.pop("name")

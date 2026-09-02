@@ -29,7 +29,7 @@ class PlaybookGraphTrigger:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.playbook_graph_trigger_filter_type_0 import PlaybookGraphTriggerFilterType0  # noqa: PLC0415
+        from ..models.playbook_graph_trigger_filter_type_0 import PlaybookGraphTriggerFilterType0
 
         event_type = self.event_type
 
@@ -55,7 +55,7 @@ class PlaybookGraphTrigger:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.playbook_graph_trigger_filter_type_0 import PlaybookGraphTriggerFilterType0  # noqa: PLC0415
+        from ..models.playbook_graph_trigger_filter_type_0 import PlaybookGraphTriggerFilterType0
 
         d = dict(src_dict)
         event_type = d.pop("event_type")

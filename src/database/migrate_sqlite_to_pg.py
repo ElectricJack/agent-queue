@@ -46,6 +46,7 @@ from src.database.tables import (
     task_comments,
     task_completion_records,
     task_criteria,
+    task_assignment_routes,
     task_dependencies,
     task_gates,
     task_labels,
@@ -106,6 +107,8 @@ _ORDERED_TABLES = [
     # FK → projects, repos, agents, agent_profiles, workflows
     # (preferred_workspace_id and parent_task_id deferred)
     tasks,
+    # FK → projects, playbook_runs, tasks
+    task_assignment_routes,
     # FK → projects, agents, tasks
     workspaces,
     # FK → tasks

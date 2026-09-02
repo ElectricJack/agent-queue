@@ -136,9 +136,9 @@ class PlaybookGraphNode:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.compiled_playbook_node import CompiledPlaybookNode  # noqa: PLC0415
-        from ..models.playbook_graph_node_colors import PlaybookGraphNodeColors  # noqa: PLC0415
-        from ..models.playbook_graph_position import PlaybookGraphPosition  # noqa: PLC0415
+        from ..models.compiled_playbook_node import CompiledPlaybookNode
+        from ..models.playbook_graph_node_colors import PlaybookGraphNodeColors
+        from ..models.playbook_graph_position import PlaybookGraphPosition
 
         d = dict(src_dict)
         id = d.pop("id")

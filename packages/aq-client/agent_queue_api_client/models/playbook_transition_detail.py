@@ -31,7 +31,7 @@ class PlaybookTransitionDetail:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.playbook_transition_detail_when_type_1 import PlaybookTransitionDetailWhenType1  # noqa: PLC0415
+        from ..models.playbook_transition_detail_when_type_1 import PlaybookTransitionDetailWhenType1
 
         goto = self.goto
 
@@ -65,7 +65,7 @@ class PlaybookTransitionDetail:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.playbook_transition_detail_when_type_1 import PlaybookTransitionDetailWhenType1  # noqa: PLC0415
+        from ..models.playbook_transition_detail_when_type_1 import PlaybookTransitionDetailWhenType1
 
         d = dict(src_dict)
         goto = d.pop("goto")

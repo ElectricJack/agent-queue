@@ -386,10 +386,12 @@ def _follow(
 
 @cli.command("logs")
 @click.option("-n", "--lines", default=50, help="Number of recent lines to show.")
+@click.option("-f", "--follow", "follow", flag_value=True, default=True)
 @click.option(
-    "-f/-F",
-    "--follow/--no-follow",
-    default=True,
+    "-F",
+    "--no-follow",
+    "follow",
+    flag_value=False,
     help="Follow log output (default: on).",
 )
 @click.option("--level", default=None, help="Minimum log level (DEBUG, INFO, WARNING, ERROR).")

@@ -40,6 +40,8 @@ from src.models import (
 from src.intelligence_classes import IntelligenceClass
 from tests.perf.test_hierarchy_statements import count_statements, seed_scale
 
+pytestmark = pytest.mark.perf
+
 PROJECT_ID = "proj"
 NOW = time.time()
 

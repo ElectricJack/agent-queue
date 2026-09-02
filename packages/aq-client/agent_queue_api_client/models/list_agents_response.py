@@ -36,7 +36,7 @@ class ListAgentsResponse:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.subagent_rollup import SubagentRollup  # noqa: PLC0415
+        from ..models.subagent_rollup import SubagentRollup
 
         agents: list[dict[str, Any]] | Unset = UNSET
         if not isinstance(self.agents, Unset):
@@ -86,9 +86,9 @@ class ListAgentsResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.agent_summary import AgentSummary  # noqa: PLC0415
-        from ..models.profile_subagent_rollup import ProfileSubagentRollup  # noqa: PLC0415
-        from ..models.subagent_rollup import SubagentRollup  # noqa: PLC0415
+        from ..models.agent_summary import AgentSummary
+        from ..models.profile_subagent_rollup import ProfileSubagentRollup
+        from ..models.subagent_rollup import SubagentRollup
 
         d = dict(src_dict)
         _agents = d.pop("agents", UNSET)

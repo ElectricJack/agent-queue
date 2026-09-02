@@ -99,7 +99,12 @@ async def test_execute_blocks_pool_session_reading_foreign_task_and_worker_filin
     # Filing with the project omitted is pinned to p1 and starts DEFINED.
     filed = await handler.execute(
         "create_task",
-        {"title": "discovered work", "description": "found it", "_scope": scope},
+        {
+            "title": "discovered work",
+            "description": "found it",
+            "reason": "the active task exposed this follow-up",
+            "_scope": scope,
+        },
     )
     assert filed.get("error") is None, filed
     filed_id = filed.get("task_id") or filed.get("created") or filed.get("id")

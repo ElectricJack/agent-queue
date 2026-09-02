@@ -853,6 +853,34 @@ _SWARM_SCHEMAS: dict[str, EventSchema] = {
         "required": ["project_id", "profile_id", "kind", "count"],
         "optional": [],
     },
+    # -- worker pool operator/dashboard updates -----------------------------
+    "pool.session_started": {
+        "required": ["project_id", "profile_id", "session_id", "name", "state"],
+        "optional": [],
+    },
+    "pool.session_claimed": {
+        "required": ["project_id", "profile_id", "session_id", "name", "task_id", "task_title"],
+        "optional": [],
+    },
+    "pool.session_drained": {
+        "required": ["project_id", "profile_id", "session_id", "name", "reason"],
+        "optional": [],
+    },
+    "pool.session_quarantined": {
+        "required": ["project_id", "profile_id", "session_id", "name", "reason"],
+        "optional": [],
+    },
+    "pool.bounds_changed": {
+        "required": [
+            "project_id", "profile_id", "min_active", "max_active", "project_cap",
+            "effective_max_active",
+        ],
+        "optional": [],
+    },
+    "pool.lifecycle_changed": {
+        "required": ["project_id", "profile_id", "lifecycle"],
+        "optional": [],
+    },
 }
 
 # ---------------------------------------------------------------------------

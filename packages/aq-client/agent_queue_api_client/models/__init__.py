@@ -6,6 +6,10 @@ from .add_dependency_response_422 import AddDependencyResponse422
 from .add_workspace_request import AddWorkspaceRequest
 from .add_workspace_response import AddWorkspaceResponse
 from .add_workspace_response_422 import AddWorkspaceResponse422
+from .agent_message_request import AgentMessageRequest
+from .agent_message_response import AgentMessageResponse
+from .agent_message_response_422 import AgentMessageResponse422
+from .agent_message_response_recipients_item import AgentMessageResponseRecipientsItem
 from .agent_question_detail import AgentQuestionDetail
 from .agent_settings import AgentSettings
 from .agent_summary import AgentSummary
@@ -21,6 +25,7 @@ from .archive_task_response import ArchiveTaskResponse
 from .archive_task_response_422 import ArchiveTaskResponse422
 from .ask_human_request import AskHumanRequest
 from .ask_human_response_422 import AskHumanResponse422
+from .assignment_route_detail import AssignmentRouteDetail
 from .cancel_playbook_run_request import CancelPlaybookRunRequest
 from .cancel_playbook_run_response import CancelPlaybookRunResponse
 from .cancel_playbook_run_response_422 import CancelPlaybookRunResponse422
@@ -462,6 +467,9 @@ from .message_reply_response import MessageReplyResponse
 from .message_reply_response_422 import MessageReplyResponse422
 from .message_send_request import MessageSendRequest
 from .message_send_request_pane_open_type_0 import MessageSendRequestPaneOpenType0
+from .message_status_request import MessageStatusRequest
+from .message_status_response import MessageStatusResponse
+from .message_status_response_422 import MessageStatusResponse422
 from .note_summary import NoteSummary
 from .orchestrator_control_request import OrchestratorControlRequest
 from .orchestrator_control_response import OrchestratorControlResponse
@@ -544,9 +552,13 @@ from .plugin_summary import PluginSummary
 from .plugin_update_request import PluginUpdateRequest
 from .plugin_update_response import PluginUpdateResponse
 from .plugin_update_response_422 import PluginUpdateResponse422
+from .pool_instance_status import PoolInstanceStatus
 from .pool_scale_request import PoolScaleRequest
 from .pool_scale_response import PoolScaleResponse
 from .pool_scale_response_422 import PoolScaleResponse422
+from .pool_set_lifecycle_request import PoolSetLifecycleRequest
+from .pool_set_lifecycle_response import PoolSetLifecycleResponse
+from .pool_set_lifecycle_response_422 import PoolSetLifecycleResponse422
 from .pool_status_request import PoolStatusRequest
 from .pool_status_response import PoolStatusResponse
 from .pool_status_response_422 import PoolStatusResponse422
@@ -868,6 +880,10 @@ __all__ = (
     "AddWorkspaceRequest",
     "AddWorkspaceResponse",
     "AddWorkspaceResponse422",
+    "AgentMessageRequest",
+    "AgentMessageResponse",
+    "AgentMessageResponse422",
+    "AgentMessageResponseRecipientsItem",
     "AgentQuestionDetail",
     "AgentSettings",
     "AgentSummary",
@@ -883,6 +899,7 @@ __all__ = (
     "ArchiveTaskResponse422",
     "AskHumanRequest",
     "AskHumanResponse422",
+    "AssignmentRouteDetail",
     "CancelPlaybookRunRequest",
     "CancelPlaybookRunResponse",
     "CancelPlaybookRunResponse422",
@@ -1318,6 +1335,9 @@ __all__ = (
     "MessageReplyResponse422",
     "MessageSendRequest",
     "MessageSendRequestPaneOpenType0",
+    "MessageStatusRequest",
+    "MessageStatusResponse",
+    "MessageStatusResponse422",
     "NoteSummary",
     "OrchestratorControlRequest",
     "OrchestratorControlResponse",
@@ -1400,9 +1420,13 @@ __all__ = (
     "PluginUpdateRequest",
     "PluginUpdateResponse",
     "PluginUpdateResponse422",
+    "PoolInstanceStatus",
     "PoolScaleRequest",
     "PoolScaleResponse",
     "PoolScaleResponse422",
+    "PoolSetLifecycleRequest",
+    "PoolSetLifecycleResponse",
+    "PoolSetLifecycleResponse422",
     "PoolStatusRequest",
     "PoolStatusResponse",
     "PoolStatusResponse422",

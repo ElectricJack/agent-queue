@@ -70,6 +70,7 @@ class SurfaceCommandsMixin:
                     "open_children",
                     "open_descendants",
                     "live_descendants",
+                    "manually_paused_descendants",
                     "cycle_check_skipped",
                 ],
                 # Swarm work model — claims and pools (§10, §11).

@@ -7,9 +7,14 @@ running Alembic migrations on startup.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
+from functools import lru_cache
 from pathlib import Path
+import shutil
+import sqlite3
+import tempfile
 
 from sqlalchemy import event, inspect, text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
@@ -20,6 +25,139 @@ logger = logging.getLogger(__name__)
 # Resolve alembic.ini relative to the project root (two levels up from this file)
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 _ALEMBIC_INI = _PROJECT_ROOT / "alembic.ini"
+_SCHEMA_CACHE_DIRNAME = "aq-schema-cache"
+
+
+def _sqlite_database_path(engine: AsyncEngine) -> Path | None:
+    """Return the file path for a SQLite engine, excluding in-memory URLs."""
+    if engine.dialect.name != "sqlite":
+        return None
+    database = engine.url.database
+    if not database or database == ":memory:" or "mode=memory" in database:
+        return None
+    return Path(database).resolve()
+
+
+def _schema_cache_is_enabled(database_path: Path) -> bool:
+    """Return whether a SQLite database may use the disposable schema cache."""
+    configured = os.environ.get("AQ_SCHEMA_CACHE")
+    if configured == "0":
+        return False
+    if configured == "1":
+        return True
+    try:
+        database_path.relative_to(Path(tempfile.gettempdir()).resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def _alembic_head_revisions() -> tuple[str, ...]:
+    """Read Alembic's current heads for cache validation and cache keys."""
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    return tuple(sorted(ScriptDirectory.from_config(Config(str(_ALEMBIC_INI))).get_heads()))
+
+
+@lru_cache(maxsize=1)
+def _schema_cache_key() -> tuple[str, tuple[str, ...]]:
+    """Hash schema inputs so a changed migration never reuses an old template."""
+    digest = hashlib.sha256()
+    schema_inputs = [
+        _PROJECT_ROOT / "src" / "database" / "tables.py",
+        *sorted((_PROJECT_ROOT / "migrations" / "versions").glob("*.py")),
+    ]
+    for source in schema_inputs:
+        digest.update(str(source.relative_to(_PROJECT_ROOT)).encode())
+        digest.update(b"\0")
+        with source.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    heads = _alembic_head_revisions()
+    return f"{'-'.join(heads)}-{digest.hexdigest()}", heads
+
+
+def _cached_template_is_valid(template: Path, expected_heads: tuple[str, ...]) -> bool:
+    """Reject missing, corrupt, or incorrectly stamped cache templates."""
+    try:
+        if template.stat().st_size == 0:
+            return False
+        with sqlite3.connect(str(template)) as connection:
+            if connection.execute("PRAGMA quick_check").fetchone() != ("ok",):
+                return False
+            rows = connection.execute("SELECT version_num FROM alembic_version").fetchall()
+    except (OSError, sqlite3.Error):
+        return False
+    return {row[0] for row in rows} == set(expected_heads)
+
+
+def _copy_sqlite_database(source: Path, destination: Path) -> None:
+    """Copy a checkpointed SQLite template without its transient WAL files."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists():
+        destination.unlink()
+    shutil.copyfile(source, destination)
+
+
+async def _build_schema_template(template: Path) -> bool:
+    """Build a fully migrated SQLite template without consulting the cache."""
+    temporary = template.with_suffix(f".{os.getpid()}.building.db")
+    temporary.unlink(missing_ok=True)
+    template_engine = create_sqlite_engine(str(temporary))
+    try:
+        await _run_schema_setup_without_cache(template_engine)
+    except Exception:
+        logger.warning("Could not build SQLite schema cache template", exc_info=True)
+        return False
+    finally:
+        await template_engine.dispose()
+
+    try:
+        with sqlite3.connect(str(temporary)) as connection:
+            connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        os.replace(temporary, template)
+    except (OSError, sqlite3.Error):
+        logger.warning("Could not store SQLite schema cache template", exc_info=True)
+        temporary.unlink(missing_ok=True)
+        return False
+    return True
+
+
+async def _restore_schema_from_cache(database_path: Path) -> bool:
+    """Copy a valid migrated template into a new SQLite database when safe."""
+    if database_path.exists() and database_path.stat().st_size > 0:
+        return False
+
+    cache_directory = Path(tempfile.gettempdir()) / _SCHEMA_CACHE_DIRNAME
+    try:
+        cache_directory.mkdir(parents=True, exist_ok=True)
+        key, heads = _schema_cache_key()
+        template = cache_directory / f"{key}.db"
+        lock_path = cache_directory / f"{key}.lock"
+        with lock_path.open("a+") as lock:
+            try:
+                import fcntl
+
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            except ImportError:
+                pass
+            try:
+                if not _cached_template_is_valid(template, heads):
+                    template.unlink(missing_ok=True)
+                    if not await _build_schema_template(template):
+                        return False
+                _copy_sqlite_database(template, database_path)
+                return True
+            finally:
+                try:
+                    fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+                except (ImportError, UnboundLocalError):
+                    pass
+    except (OSError, sqlite3.Error):
+        logger.warning("Could not restore SQLite schema cache", exc_info=True)
+        database_path.unlink(missing_ok=True)
+        return False
 
 
 def create_postgres_engine(dsn: str, pool_min: int = 2, pool_max: int = 10) -> AsyncEngine:
@@ -167,7 +305,11 @@ def _stamp_alembic_baseline(sync_connection) -> None:
 async def run_schema_setup(engine: AsyncEngine) -> None:
     """Create/migrate the database schema using Alembic.
 
-    For new databases, this runs all migrations from scratch.
+    Fresh temporary SQLite databases use a copied, fully migrated template
+    when possible. Other databases always follow the normal Alembic path.
+
+    For new databases without a cache template, this runs all migrations from
+    scratch.
     For existing pre-Alembic databases (have tables but no
     ``alembic_version``), it stamps them at the baseline revision
     and then runs any newer migrations to bring the schema up to date.
@@ -181,6 +323,16 @@ async def run_schema_setup(engine: AsyncEngine) -> None:
     is a no-op inside an already-open transaction), leaving that second
     connection unable to see the earlier revision's work.
     """
+    database_path = _sqlite_database_path(engine)
+    if database_path and _schema_cache_is_enabled(database_path):
+        if await _restore_schema_from_cache(database_path):
+            return
+
+    await _run_schema_setup_without_cache(engine)
+
+
+async def _run_schema_setup_without_cache(engine: AsyncEngine) -> None:
+    """Run the existing direct Alembic path, bypassing the SQLite cache."""
     async with engine.connect() as conn:
         # Check if this is a pre-Alembic database (has tables but no alembic_version)
         def _check_and_migrate(sync_conn):

@@ -35,6 +35,7 @@ if os.name != "posix":  # pragma: no cover
 
 from src.commands.handler import CommandHandler
 from src.config import AppConfig
+from src.intelligence_classes import IntelligenceClass
 from src.models import (
     KIND_MODE_WORKTREE,
     SYSTEM_KIND_SCOPE,
@@ -156,6 +157,14 @@ async def orch(tmp_path: Path):
 
     o = Orchestrator(config, runtimes=_NullRuntimeFactory())
     await o.initialize()
+    o.session_spec_builder._intelligence_classes = {
+        "standard-medium": IntelligenceClass(
+            "standard-medium",
+            "Standard",
+            "",
+            {"stub": {"model": "stub-model"}, "": {"model": "stub-model"}},
+        )
+    }
 
     harness_dir = Path(o.config.vault_root) / "harnesses"
     harness_dir.mkdir(parents=True, exist_ok=True)
@@ -209,7 +218,14 @@ async def _seed(o: Orchestrator, base_repo: Path) -> None:
     )
     await o.db.create_agent(Agent(id="a1", name="agent-1", profile_id="stub-profile"))
     await o.db.create_task(
-        Task(id="t1", project_id="p1", title="C2", description="d", profile_id="stub-profile")
+        Task(
+            id="t1",
+            project_id="p1",
+            title="C2",
+            description="d",
+            profile_id="stub-profile",
+            intelligence_class="standard-medium",
+        )
     )
     await o.db.transition_task("t1", TaskStatus.READY)
 

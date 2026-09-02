@@ -43,7 +43,7 @@ class ListProjectsResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.project_summary import ProjectSummary  # noqa: PLC0415
+        from ..models.project_summary import ProjectSummary
 
         d = dict(src_dict)
         _projects = d.pop("projects", UNSET)

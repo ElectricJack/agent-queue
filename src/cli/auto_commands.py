@@ -55,6 +55,8 @@ HANDCRAFTED_COVERAGE = {
     "message_reply",
     "message_inbox",
     "message_list",
+    "message_status",
+    "agent_message",
     # questions.py — exact question identity and the authenticated daemon scope.
     "question_list",
     "question_answer",

@@ -633,6 +633,48 @@ _CANONICAL_PAYLOADS["pool.scaled"] = {
     "kind": "start",
     "count": 1,
 }
+_CANONICAL_PAYLOADS["pool.session_started"] = {
+    "project_id": "proj-1",
+    "profile_id": "worker",
+    "session_id": "sess-1",
+    "name": "p-worker--proj-1--deadbeef",
+    "state": "running",
+}
+_CANONICAL_PAYLOADS["pool.session_claimed"] = {
+    "project_id": "proj-1",
+    "profile_id": "worker",
+    "session_id": "sess-1",
+    "name": "p-worker--proj-1--deadbeef",
+    "task_id": "t-1",
+    "task_title": "Implement feature X",
+}
+_CANONICAL_PAYLOADS["pool.session_drained"] = {
+    "project_id": "proj-1",
+    "profile_id": "worker",
+    "session_id": "sess-1",
+    "name": "p-worker--proj-1--deadbeef",
+    "reason": "scaled",
+}
+_CANONICAL_PAYLOADS["pool.session_quarantined"] = {
+    "project_id": "proj-1",
+    "profile_id": "worker",
+    "session_id": "sess-1",
+    "name": "p-worker--proj-1--deadbeef",
+    "reason": "rapid_crash",
+}
+_CANONICAL_PAYLOADS["pool.bounds_changed"] = {
+    "project_id": "proj-1",
+    "profile_id": "worker",
+    "min_active": 0,
+    "max_active": None,
+    "project_cap": 2,
+    "effective_max_active": 2,
+}
+_CANONICAL_PAYLOADS["pool.lifecycle_changed"] = {
+    "project_id": "proj-1",
+    "profile_id": "worker",
+    "lifecycle": "pool",
+}
 _CANONICAL_PAYLOADS["formula.cooked"] = {
     "container_id": "t-1",
     "project_id": "proj-1",

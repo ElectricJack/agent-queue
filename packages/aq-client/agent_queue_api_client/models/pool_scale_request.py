@@ -18,7 +18,7 @@ class PoolScaleRequest:
         project_id (str): Project ID.
         profile_id (str): Pool profile (agent-type) ID.
         min_ (int | None | Unset): New min_active bound (optional).
-        max_ (int | None | Unset): New max_active bound (optional).
+        max_ (int | None | Unset): New max_active bound; null removes the profile limit.
         now (bool | None | Unset): Immediately terminate idle sessions above the new max, oldest first.
     """
 

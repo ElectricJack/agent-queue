@@ -1,15 +1,62 @@
 import { useEffect, useRef } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
+import { POOL_PREFIX, poolAddress } from "./pools";
 
 export const MAX_AGENT_VIEWS = 4;
+
+/**
+ * A selected view is either one fixed worker or one worker pool. A pool key
+ * carries an optional pinned instance after "@" so a tiled layout — and a
+ * shared link — survives a reload:
+ *
+ *     agent=agent-7f1c
+ *     agent=pool:agent-queue:worker-standard@p-worker-standard--agent-queue--9f2a
+ */
+export type AgentSelection =
+  | { key: string; kind: "agent"; agentId: string }
+  | { key: string; kind: "pool"; projectId: string; profileId: string; instanceId: string | null };
+
+export function poolSelectionKey(projectId: string, profileId: string, instanceId?: string | null) {
+  return poolAddress(projectId, profileId) + (instanceId ? "@" + instanceId : "");
+}
+
+/** The view a key addresses, with any pinned instance stripped. */
+export function selectionAddress(key: string): string {
+  const at = key.indexOf("@");
+  return at === -1 ? key : key.slice(0, at);
+}
+
+export function parseAgentSelection(key: string): AgentSelection {
+  if (!key.startsWith(POOL_PREFIX)) return { key, kind: "agent", agentId: key };
+  const at = key.indexOf("@");
+  const address = at === -1 ? key : key.slice(0, at);
+  const instanceId = at === -1 ? null : key.slice(at + 1) || null;
+  const rest = address.slice(POOL_PREFIX.length);
+  const colon = rest.indexOf(":");
+  return {
+    key,
+    kind: "pool",
+    projectId: colon === -1 ? rest : rest.slice(0, colon),
+    profileId: colon === -1 ? "" : rest.slice(colon + 1),
+    instanceId,
+  };
+}
 
 /** Ordered, shareable selection. Unknown IDs remain closable in the workspace. */
 export function useAgentSelection() {
   const location = useLocation();
   const navigate = useNavigate();
   const params = new URLSearchParams(location.search);
+  // Dedupe by address, not by key: the same pool pinned to two instances is
+  // still one view, and the last pin wins over an earlier bare key.
+  const seen = new Set<string>();
   const selectedIds = location.pathname === "/agents"
-    ? [...new Set(params.getAll("agent").filter(Boolean))].slice(0, MAX_AGENT_VIEWS)
+    ? params.getAll("agent").filter(Boolean).filter((id) => {
+      const address = selectionAddress(id);
+      if (seen.has(address)) return false;
+      seen.add(address);
+      return true;
+    }).slice(0, MAX_AGENT_VIEWS)
     : [];
   const latest = useRef({ selectedIds, mounted: true });
   latest.current.selectedIds = selectedIds;
@@ -33,7 +80,7 @@ export function useAgentSelection() {
 
   const select = (id: string, additive = false): boolean => {
     if (additive) {
-      if (selectedIds.includes(id)) return true;
+      if (selectedIds.some((selected) => selectionAddress(selected) === selectionAddress(id))) return true;
       if (selectedIds.length >= MAX_AGENT_VIEWS) return false;
       navigateTo([...selectedIds, id]);
     } else {
@@ -44,14 +91,29 @@ export function useAgentSelection() {
 
   return {
     selectedIds,
+    selections: selectedIds.map(parseAgentSelection),
     select,
+    /**
+     * Re-pin one open pool view to another live instance. The view keeps its
+     * tile position, so the surrounding layout does not reflow.
+     */
+    setInstance: (key: string, instanceId: string | null) => {
+      const address = selectionAddress(key);
+      const selection = parseAgentSelection(key);
+      if (selection.kind !== "pool") return;
+      navigateTo(latest.current.selectedIds.map((selected) => selectionAddress(selected) === address
+        ? poolSelectionKey(selection.projectId, selection.profileId, instanceId)
+        : selected));
+    },
     /** The Add-agent form is URL state so the left rail can open it from any page. */
     adding,
     setAdding: (next: boolean) => navigateTo(selectedIds, false, next),
     close: (id: string) => {
       // A deletion may finish after selection changes or the workspace unmounts.
-      if (!latest.current.mounted || !latest.current.selectedIds.includes(id)) return;
-      navigateTo(latest.current.selectedIds.filter((selected) => selected !== id));
+      const address = selectionAddress(id);
+      if (!latest.current.mounted) return;
+      if (!latest.current.selectedIds.some((selected) => selectionAddress(selected) === address)) return;
+      navigateTo(latest.current.selectedIds.filter((selected) => selectionAddress(selected) !== address));
     },
     resetToken: location.state?.agentSelection === "replace" ? location.key : null,
     locationKey: location.key,

@@ -15,6 +15,8 @@ T = TypeVar("T", bound="PlaybookGraphLayoutGridPositions")
 
 @_attrs_define
 class PlaybookGraphLayoutGridPositions:
+    """ """
+
     additional_properties: dict[str, PlaybookGraphPosition] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -27,7 +29,7 @@ class PlaybookGraphLayoutGridPositions:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.playbook_graph_position import PlaybookGraphPosition  # noqa: PLC0415
+        from ..models.playbook_graph_position import PlaybookGraphPosition
 
         d = dict(src_dict)
         playbook_graph_layout_grid_positions = cls()

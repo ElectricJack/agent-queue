@@ -177,6 +177,30 @@ class TestPrimeCLI:
         assert "not found" in payload["hookSpecificOutput"]["additionalContext"]
 
 
+class TestAgentMessageCLI:
+    def test_uses_positional_target_and_body(self, runner):
+        from src.cli.app import cli
+
+        mock = _mock_client({"agent_message": {"message_id": "msg-1", "state": "queued"}})
+        with patch("src.cli.agent_messages._get_client", return_value=mock):
+            result = runner.invoke(cli, ["agent", "message", "task-1", "stop the suite"])
+        assert result.exit_code == 0, result.output
+        assert mock.calls == [
+            ("agent_message", {"target": "task-1", "body": "stop the suite", "all_running": False})
+        ]
+
+    def test_broadcast_accepts_body_without_a_target(self, runner):
+        from src.cli.app import cli
+
+        mock = _mock_client({"agent_message": {"count": 2, "recipients": []}})
+        with patch("src.cli.agent_messages._get_client", return_value=mock):
+            result = runner.invoke(cli, ["agent", "message", "--all-running", "stop the suite"])
+        assert result.exit_code == 0, result.output
+        assert mock.calls == [
+            ("agent_message", {"body": "stop the suite", "all_running": True})
+        ]
+
+
 # ---------------------------------------------------------------------------
 # aq handoff
 # ---------------------------------------------------------------------------

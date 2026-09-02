@@ -1,7 +1,7 @@
-from enum import StrEnum
+from enum import Enum
 
 
-class PlaybookGraphEdgeEdgeType(StrEnum):
+class PlaybookGraphEdgeEdgeType(str, Enum):
     CONDITION = "condition"
     FAILURE = "failure"
     GOTO = "goto"

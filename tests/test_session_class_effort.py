@@ -38,7 +38,7 @@ def build(harness, *, level="medium", lifecycle="task", task_class=None,
         return builder.build_named_spec(project_id=None, **kwargs)
     if lifecycle == "pool":
         return builder.build_pool_spec(project=SimpleNamespace(id="p1", name="Project"),
-                                       agent_id="a1", **kwargs)
+                                       agent_id="a1", session_name="p-worker--p1--test", **kwargs)
     return builder.build_task_spec(task=SimpleNamespace(id="t1", project_id="p1",
                                                        intelligence_class=task_class), **kwargs)
 

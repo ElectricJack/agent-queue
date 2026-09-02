@@ -132,6 +132,14 @@ The receiver never blocks the session: `aq subagent event` exits 0 even
 when the daemon is unreachable, because a missed count must not stop a
 sub-agent from starting.
 
+**The trust screen is painted late, and its rows start with `❯`.** The
+highlighted row of the trust dialog is `❯ No, exit` — the readiness poll's
+own prefix — so readiness is only believed on a capture where *no* rule in
+this table matches, and the last dismissal pass holds its "quiet" verdict
+open for `sessions.dialog_settle_seconds` (default 1.5 s) before startup
+finishes. Without both, a pool session was recorded running while its pane
+still sat on the trust screen (task smart-orbit.7).
+
 **No Stop hook.** Completion is explicit — `aq task close …` then
 `aq session drain-ack`. A Stop hook would re-introduce exit-as-success,
 which is the failure this whole runtime exists to remove.

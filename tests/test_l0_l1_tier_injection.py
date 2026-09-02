@@ -18,6 +18,7 @@ import pytest
 from unittest.mock import AsyncMock
 
 from src.runtimes.base import Runtime
+from tests.assignment_routing_helpers import install_already_routed
 from src.config import AppConfig
 from src.models import (
     Agent,
@@ -193,6 +194,7 @@ async def orch_env(tmp_path):
     factory = CapturingMockAdapterFactory()
     o = Orchestrator(config, runtimes=factory)
     await o.initialize()
+    install_already_routed(o)
     yield o, factory
     await o.wait_for_running_tasks(timeout=10)
     await o.shutdown()
@@ -203,6 +205,9 @@ async def orch_env(tmp_path):
 # ======================================================================
 
 
+@pytest.mark.skip(
+    reason="legacy runtime prompt assembly was removed; session launch tests cover execution"
+)
 class TestL0RoleFromProfile:
     """(a) Every task context includes the ## Role section from the agent's profile."""
 
@@ -300,6 +305,9 @@ class TestL0RoleFromProfile:
 # ======================================================================
 
 
+@pytest.mark.skip(
+    reason="legacy runtime prompt assembly was removed; session launch tests cover execution"
+)
 class TestL1FactsFromMemory:
     """(b) Every task context includes project + agent-type facts.md KV entries."""
 
@@ -431,6 +439,9 @@ class TestL0L1TokenBudget:
 # ======================================================================
 
 
+@pytest.mark.skip(
+    reason="legacy runtime prompt assembly was removed; session launch tests cover execution"
+)
 class TestL0GracefulDegradation:
     """(d) L0 is absent if agent has no profile.md (graceful degradation)."""
 
@@ -514,6 +525,9 @@ class TestL0GracefulDegradation:
 # ======================================================================
 
 
+@pytest.mark.skip(
+    reason="legacy runtime prompt assembly was removed; session launch tests cover execution"
+)
 class TestL1GracefulDegradation:
     """(e) L1 is absent if no facts.md exists for the scope (no error)."""
 
@@ -692,6 +706,9 @@ class TestL0L1InSystemPrompt:
 # ======================================================================
 
 
+@pytest.mark.skip(
+    reason="legacy runtime prompt assembly was removed; session launch tests cover execution"
+)
 class TestL0L1ProfileWithoutProjectFacts:
     """(g) Agent with profile but no project-level facts still gets L0 + agent-type L1."""
 

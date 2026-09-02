@@ -61,10 +61,10 @@ class CompiledPlaybookNode:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.compiled_playbook_node_action_type_0 import CompiledPlaybookNodeActionType0  # noqa: PLC0415
-        from ..models.compiled_playbook_node_for_each_type_0 import CompiledPlaybookNodeForEachType0  # noqa: PLC0415
-        from ..models.compiled_playbook_node_output_type_0 import CompiledPlaybookNodeOutputType0  # noqa: PLC0415
-        from ..models.playbook_node_llm_config import PlaybookNodeLlmConfig  # noqa: PLC0415
+        from ..models.compiled_playbook_node_action_type_0 import CompiledPlaybookNodeActionType0
+        from ..models.compiled_playbook_node_for_each_type_0 import CompiledPlaybookNodeForEachType0
+        from ..models.compiled_playbook_node_output_type_0 import CompiledPlaybookNodeOutputType0
+        from ..models.playbook_node_llm_config import PlaybookNodeLlmConfig
 
         prompt: None | str | Unset
         if isinstance(self.prompt, Unset):
@@ -202,11 +202,11 @@ class CompiledPlaybookNode:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.compiled_playbook_node_action_type_0 import CompiledPlaybookNodeActionType0  # noqa: PLC0415
-        from ..models.compiled_playbook_node_for_each_type_0 import CompiledPlaybookNodeForEachType0  # noqa: PLC0415
-        from ..models.compiled_playbook_node_output_type_0 import CompiledPlaybookNodeOutputType0  # noqa: PLC0415
-        from ..models.playbook_node_llm_config import PlaybookNodeLlmConfig  # noqa: PLC0415
-        from ..models.playbook_transition_detail import PlaybookTransitionDetail  # noqa: PLC0415
+        from ..models.compiled_playbook_node_action_type_0 import CompiledPlaybookNodeActionType0
+        from ..models.compiled_playbook_node_for_each_type_0 import CompiledPlaybookNodeForEachType0
+        from ..models.compiled_playbook_node_output_type_0 import CompiledPlaybookNodeOutputType0
+        from ..models.playbook_node_llm_config import PlaybookNodeLlmConfig
+        from ..models.playbook_transition_detail import PlaybookTransitionDetail
 
         d = dict(src_dict)
 

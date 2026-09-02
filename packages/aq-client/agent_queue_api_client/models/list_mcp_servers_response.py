@@ -49,7 +49,7 @@ class ListMcpServersResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.mcp_server_summary import McpServerSummary  # noqa: PLC0415
+        from ..models.mcp_server_summary import McpServerSummary
 
         d = dict(src_dict)
         _servers = d.pop("servers", UNSET)

@@ -487,3 +487,26 @@ class MessageCommandsMixin:
             "count": len(rows),
             "messages": [message_to_dict(m) for m in rows],
         }
+
+    async def _cmd_message_status(self, args: dict) -> dict:
+        """Return the durable delivery state of one message."""
+        disabled = self._messages_disabled_error()
+        if disabled:
+            return disabled
+        message_id = (args.get("message_id") or "").strip()
+        if not message_id:
+            return {"error": "message_id is required"}
+        message = await self.db.get_message(message_id)
+        if message is None:
+            return {"error": f"Message '{message_id}' not found"}
+        state = "acknowledged" if message.read_at is not None else (
+            "delivered" if message.delivered_at is not None else "queued"
+        )
+        return {
+            "message_id": message.id,
+            "state": state,
+            "via": message.via,
+            "delivered_at": message.delivered_at,
+            "acknowledged_at": message.read_at,
+            "message": message_to_dict(message),
+        }

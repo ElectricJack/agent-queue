@@ -285,6 +285,11 @@ check (ids per design §5.2):
   implemented here**: [[session-runtime]] and [[worktree-execution]] register them
   at startup via `DoctorRegistry.register()`. Doctor ships the ids reserved and
   reports `info: "check not registered (subsystem not enabled)"` when absent.
+  `worktrees.orphans` **has landed** in `src/doctor/worktree_checks.py`, registered
+  from `src/main.py` only when `worktrees.enabled` — with slots off, the reserved
+  placeholder is the honest answer. It declares no `fix`: `git worktree prune`
+  — the only repair the contract allows it — drops registrations for worktrees
+  that are already gone, not a live slot's checkout.
 - `db.wal_size` — stat `<db>.url + "-wal"` (SQLite only; INFO on PostgreSQL);
   fix = `PRAGMA wal_checkpoint(TRUNCATE)` through the engine.
 - `logs.llm_size` — walk `logs/llm/` (base dir from `LLMLogger`); warn over

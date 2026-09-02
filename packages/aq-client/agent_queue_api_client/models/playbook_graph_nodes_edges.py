@@ -55,8 +55,8 @@ class PlaybookGraphNodesEdges:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.playbook_graph_edge import PlaybookGraphEdge  # noqa: PLC0415
-        from ..models.playbook_graph_node import PlaybookGraphNode  # noqa: PLC0415
+        from ..models.playbook_graph_edge import PlaybookGraphEdge
+        from ..models.playbook_graph_node import PlaybookGraphNode
 
         d = dict(src_dict)
         _nodes = d.pop("nodes", UNSET)

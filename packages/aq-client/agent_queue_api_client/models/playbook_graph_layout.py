@@ -46,7 +46,7 @@ class PlaybookGraphLayout:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.playbook_graph_layout_grid_positions import PlaybookGraphLayoutGridPositions  # noqa: PLC0415
+        from ..models.playbook_graph_layout_grid_positions import PlaybookGraphLayoutGridPositions
 
         d = dict(src_dict)
         direction = d.pop("direction", UNSET)

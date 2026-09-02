@@ -986,6 +986,53 @@
         }
       }
     },
+    "/api/agent/message": {
+      "post": {
+        "tags": [
+          "agent"
+        ],
+        "summary": "Send durable supervisor guidance to a live worker. A target may be a task id, agent id/name, or session id; all_running broadcasts to every live worker.",
+        "description": "Send durable supervisor guidance to a live worker. A target may be a task id, agent id/name, or session id; all_running broadcasts to every live worker.",
+        "operationId": "agent_message",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentMessageRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentMessageResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/agent/check-profile": {
       "post": {
         "tags": [
@@ -4274,6 +4321,53 @@
         }
       }
     },
+    "/api/message/status": {
+      "post": {
+        "tags": [
+          "message"
+        ],
+        "summary": "Report whether a queued message is queued, delivered, or acknowledged.",
+        "description": "Report whether a queued message is queued, delivered, or acknowledged.",
+        "operationId": "message_status",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MessageStatusRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageStatusResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/message/question-answer": {
       "post": {
         "tags": [
@@ -6159,8 +6253,8 @@
         "tags": [
           "pool"
         ],
-        "summary": "Set a pool profile's min/max active-session bounds. Validates min >= 0, max >= 1, min <= max. With `now: true`, also terminates idle sessions above the new max, oldest first. Backs `aq pool scale`.",
-        "description": "Set a pool profile's min/max active-session bounds. Validates min >= 0, max >= 1, min <= max. With `now: true`, also terminates idle sessions above the new max, oldest first. Backs `aq pool scale`.",
+        "summary": "Set a pool profile's min/max active-session bounds. Validates min >= 0 and max >= min; max may be null for no profile limit. With `now: true`, also terminates idle sessions above the new max, oldest first. Backs `aq pool scale`.",
+        "description": "Set a pool profile's min/max active-session bounds. Validates min >= 0 and max >= min; max may be null for no profile limit. With `now: true`, also terminates idle sessions above the new max, oldest first. Backs `aq pool scale`.",
         "operationId": "pool_scale",
         "requestBody": {
           "content": {
@@ -6179,6 +6273,53 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PoolScaleResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/pool/set-lifecycle": {
+      "post": {
+        "tags": [
+          "pool"
+        ],
+        "summary": "Set one project's profile lifecycle to task or pool. Refuses pool when swarm.enabled is false. Backs `aq pool set-lifecycle`.",
+        "description": "Set one project's profile lifecycle to task or pool. Refuses pool when swarm.enabled is false. Backs `aq pool set-lifecycle`.",
+        "operationId": "pool_set_lifecycle",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PoolSetLifecycleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PoolSetLifecycleResponse"
                 }
               }
             }
@@ -6394,8 +6535,8 @@
         "tags": [
           "project"
         ],
-        "summary": "Edit a project's properties: name, credit_weight, max_concurrent_agents, budget_limit, discord_channel_id, default_profile_id, or repo_default_branch. Use this to rename projects, adjust scheduling weight, set token budgets, link Discord channels, set a default agent profile, or change the default git branch.",
-        "description": "Edit a project's properties: name, credit_weight, max_concurrent_agents, budget_limit, discord_channel_id, default_profile_id, or repo_default_branch. Use this to rename projects, adjust scheduling weight, set token budgets, link Discord channels, set a default agent profile, or change the default git branch.",
+        "summary": "Edit a project's properties: name, credit_weight, max_concurrent_agents, budget_limit, discord_channel_id, default_profile_id, assignment_playbook_id, or repo_default_branch. Use this to rename projects, adjust scheduling weight, set token budgets, link Discord channels, set a default agent profile, or change the default git branch.",
+        "description": "Edit a project's properties: name, credit_weight, max_concurrent_agents, budget_limit, discord_channel_id, default_profile_id, assignment_playbook_id, or repo_default_branch. Use this to rename projects, adjust scheduling weight, set token budgets, link Discord channels, set a default agent profile, or change the default git branch.",
         "operationId": "edit_project",
         "requestBody": {
           "content": {
@@ -11725,6 +11866,101 @@
         ],
         "title": "AddWorkspaceResponse"
       },
+      "AgentMessageRequest": {
+        "properties": {
+          "target": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target",
+            "description": "Task, agent, or session id"
+          },
+          "body": {
+            "type": "string",
+            "title": "Body",
+            "description": "Message body"
+          },
+          "all_running": {
+            "type": "boolean",
+            "title": "All Running",
+            "description": "",
+            "default": false
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile",
+            "description": "Optional profile filter for broadcast"
+          },
+          "wait": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wait",
+            "description": "Wait up to 60 seconds for delivery"
+          }
+        },
+        "type": "object",
+        "required": [
+          "body"
+        ],
+        "title": "AgentMessageRequest"
+      },
+      "AgentMessageResponse": {
+        "properties": {
+          "message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message Id"
+          },
+          "count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Count"
+          },
+          "recipients": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Recipients",
+            "default": []
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "title": "AgentMessageResponse",
+        "description": "Durable supervisor message queued for one or more live workers."
+      },
       "AgentQuestionDetail": {
         "properties": {
           "id": {
@@ -12426,6 +12662,84 @@
           "question"
         ],
         "title": "AskHumanRequest"
+      },
+      "AssignmentRouteDetail": {
+        "properties": {
+          "source": {
+            "type": "string",
+            "title": "Source"
+          },
+          "intelligence_class": {
+            "type": "string",
+            "title": "Intelligence Class"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "playbook_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Playbook Id"
+          },
+          "playbook_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Playbook Version"
+          },
+          "playbook_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Playbook Run Id"
+          },
+          "freshness": {
+            "type": "string",
+            "title": "Freshness"
+          }
+        },
+        "type": "object",
+        "required": [
+          "source",
+          "intelligence_class",
+          "freshness"
+        ],
+        "title": "AssignmentRouteDetail"
       },
       "CancelPlaybookRunRequest": {
         "properties": {
@@ -16233,6 +16547,18 @@
             "title": "Default Profile Id",
             "description": "Default agent profile ID for tasks in this project (optional, null to clear)"
           },
+          "assignment_playbook_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignment Playbook Id",
+            "description": "Project-scoped assignment-routing playbook ID (optional, null to use the system default)"
+          },
           "repo_default_branch": {
             "anyOf": [
               {
@@ -16837,6 +17163,24 @@
             "type": "array",
             "title": "Reasons",
             "default": []
+          },
+          "reason_codes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Reason Codes",
+            "default": []
+          },
+          "assignment_route": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AssignmentRouteDetail"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -18993,6 +19337,17 @@
               }
             ],
             "title": "Default Profile Id"
+          },
+          "assignment_playbook_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignment Playbook Id"
           }
         },
         "type": "object",
@@ -23134,6 +23489,75 @@
         "title": "MessageSendRequest",
         "description": "Body of POST /api/messages/send for non-session recipients."
       },
+      "MessageStatusRequest": {
+        "properties": {
+          "message_id": {
+            "type": "string",
+            "title": "Message Id",
+            "description": "Message id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "message_id"
+        ],
+        "title": "MessageStatusRequest"
+      },
+      "MessageStatusResponse": {
+        "properties": {
+          "message_id": {
+            "type": "string",
+            "title": "Message Id"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "via": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Via"
+          },
+          "delivered_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivered At"
+          },
+          "acknowledged_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Acknowledged At"
+          },
+          "message": {
+            "$ref": "#/components/schemas/MessageModel"
+          }
+        },
+        "type": "object",
+        "required": [
+          "message_id",
+          "state",
+          "message"
+        ],
+        "title": "MessageStatusResponse"
+      },
       "NoteSummary": {
         "properties": {
           "name": {
@@ -24615,6 +25039,79 @@
         ],
         "title": "PluginUpdateResponse"
       },
+      "PoolInstanceStatus": {
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "task_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Title"
+          },
+          "idle_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idle Seconds"
+          },
+          "started_at": {
+            "type": "number",
+            "title": "Started At"
+          },
+          "quarantine_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quarantine Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id",
+          "name",
+          "state",
+          "started_at"
+        ],
+        "title": "PoolInstanceStatus",
+        "description": "One active or quarantined session belonging to a worker pool."
+      },
       "PoolScaleRequest": {
         "properties": {
           "project_id": {
@@ -24649,7 +25146,7 @@
               }
             ],
             "title": "Max",
-            "description": "New max_active bound (optional)."
+            "description": "New max_active bound; null removes the profile limit."
           },
           "now": {
             "anyOf": [
@@ -24721,6 +25218,28 @@
             ],
             "title": "Max Active"
           },
+          "project_cap": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Cap"
+          },
+          "effective_max_active": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective Max Active"
+          },
           "terminated": {
             "items": {
               "type": "string"
@@ -24746,6 +25265,89 @@
           "success"
         ],
         "title": "PoolScaleResponse"
+      },
+      "PoolSetLifecycleRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": "Project ID."
+          },
+          "profile_id": {
+            "type": "string",
+            "title": "Profile Id",
+            "description": "Profile (agent-type) ID."
+          },
+          "lifecycle": {
+            "type": "string",
+            "title": "Lifecycle",
+            "description": "Whether work launches per task or is claimed by a pool."
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "profile_id",
+          "lifecycle"
+        ],
+        "title": "PoolSetLifecycleRequest"
+      },
+      "PoolSetLifecycleResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Id"
+          },
+          "lifecycle": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lifecycle"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "PoolSetLifecycleResponse"
       },
       "PoolStatusRequest": {
         "properties": {
@@ -24843,6 +25445,25 @@
               }
             ],
             "title": "Quarantined Until"
+          },
+          "quarantined_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quarantined Reason"
+          },
+          "instances": {
+            "items": {
+              "$ref": "#/components/schemas/PoolInstanceStatus"
+            },
+            "type": "array",
+            "title": "Instances",
+            "default": []
           }
         },
         "type": "object",
@@ -25402,6 +26023,17 @@
               }
             ],
             "title": "Discord Channel Id"
+          },
+          "assignment_playbook_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignment Playbook Id"
           }
         },
         "type": "object",

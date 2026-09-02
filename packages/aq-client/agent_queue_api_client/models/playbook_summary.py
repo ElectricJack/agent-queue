@@ -54,7 +54,7 @@ class PlaybookSummary:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.playbook_last_run import PlaybookLastRun  # noqa: PLC0415
+        from ..models.playbook_last_run import PlaybookLastRun
 
         id = self.id
 
@@ -157,7 +157,7 @@ class PlaybookSummary:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.playbook_last_run import PlaybookLastRun  # noqa: PLC0415
+        from ..models.playbook_last_run import PlaybookLastRun
 
         d = dict(src_dict)
         id = d.pop("id")

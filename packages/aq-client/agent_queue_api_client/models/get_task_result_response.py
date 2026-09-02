@@ -11,6 +11,8 @@ T = TypeVar("T", bound="GetTaskResultResponse")
 
 @_attrs_define
 class GetTaskResultResponse:
+    """ """
+
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:

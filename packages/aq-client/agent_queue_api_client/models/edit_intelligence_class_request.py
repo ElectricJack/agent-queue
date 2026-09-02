@@ -65,9 +65,7 @@ class EditIntelligenceClassRequest:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.edit_intelligence_class_request_mapping import (
-            EditIntelligenceClassRequestMapping,  # noqa: PLC0415
-        )
+        from ..models.edit_intelligence_class_request_mapping import EditIntelligenceClassRequestMapping
 
         d = dict(src_dict)
         class_id = d.pop("class_id")

@@ -671,19 +671,26 @@ async def test_disabling_new_work_does_not_reject_current_workers_answer(env):
 
 
 async def test_question_observation_failure_preserves_native_activity_and_stream(env, monkeypatch):
+    from datetime import datetime, timezone
     import json
     from pathlib import Path
     from src.sessions.transcripts.watcher import TranscriptWatcher
 
     base = Path(env.row.work_dir) / "home"
-    path = base / ".codex/sessions/2026/08/30/rollout-question-failure.jsonl"
+    launch_day = datetime.fromtimestamp(env.row.started_at, timezone.utc).strftime("%Y/%m/%d")
+    path = base / ".codex/sessions" / launch_day / "rollout-question-failure.jsonl"
     path.parent.mkdir(parents=True)
     stamp = time.time()
+    launch_stamp = env.row.started_at + 1
     path.write_text(
         "\n".join(
             json.dumps(item)
             for item in [
-                {"type": "session_meta", "payload": {"cwd": env.row.work_dir}},
+                {
+                    "type": "session_meta",
+                    "timestamp": launch_stamp,
+                    "payload": {"cwd": env.row.work_dir},
+                },
                 {
                     "type": "event_msg",
                     "timestamp": stamp,

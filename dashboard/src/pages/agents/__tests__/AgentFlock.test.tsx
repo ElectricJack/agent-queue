@@ -14,6 +14,7 @@ const api = vi.hoisted(() => ({
   listAgents: vi.fn(), listProjects: vi.fn(), listProfiles: vi.fn(),
   getAgent: vi.fn(), editAgent: vi.fn(), createAgent: vi.fn(), deleteAgent: vi.fn(), listIntelligenceClasses: vi.fn(),
   sessionInput: vi.fn(), startAgentTerminal: vi.fn(),
+  poolStatus: vi.fn(), poolScale: vi.fn(), sessionList: vi.fn(),
 }));
 vi.mock("../../../api/client", () => api);
 function agent(id: string, name: string): FlockAgent {
@@ -107,6 +108,9 @@ beforeEach(() => {
   api.listProjects.mockResolvedValue({ data: { projects: [] } });
   api.listIntelligenceClasses.mockResolvedValue({ data: { classes: [{ id: "standard-high", name: "Standard high" }, { id: "deep-high", name: "Deep high" }] } });
   api.listProfiles.mockResolvedValue({ data: { profiles: [{ id: "implementer", name: "Implementer" }, { id: "supervisor", name: "Supervisor" }] } });
+  // No pools configured: every agent in this file is a fixed push worker.
+  api.poolStatus.mockResolvedValue({ data: { success: true, pools: [] } });
+  api.sessionList.mockResolvedValue({ data: { success: true, sessions: [], count: 0 } });
 });
 
 afterEach(() => {
