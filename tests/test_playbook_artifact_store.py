@@ -75,11 +75,12 @@ def test_load_verifies_hash_before_parsing_and_rejects_invalid_identifiers(tmp_p
 class _StubDb:
     """The four retention queries, with recorded arguments and canned answers."""
 
-    def __init__(self, *, collected=(), pending=0, receipts=0, runs=0):
+    def __init__(self, *, collected=(), pending=0, receipts=0, runs=0, referenced=()):
         self._collected = list(collected)
         self._pending = pending
         self._receipts = receipts
         self._runs = runs
+        self._referenced = set(referenced)
         self.calls: dict[str, object] = {}
 
     async def purge_pending_events(self, now, **kwargs):
@@ -103,6 +104,11 @@ class _StubDb:
 
     async def get_playbook_artifact_path(self, sha):  # pragma: no cover - no rows above
         return None
+
+    async def filter_referenced_artifact_shas(self, shas):
+        asked = list(shas)
+        self.calls["filter_referenced_artifact_shas"] = asked
+        return {sha for sha in asked if sha in self._referenced}
 
 
 def _sweeper(tmp_path, db, **config_overrides):
@@ -199,3 +205,136 @@ async def test_sweep_survives_a_missing_artifacts_directory(tmp_path):
 
     counts = await _sweeper(tmp_path, _StubDb()).sweep(time.time())
     assert counts["temp_files"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Orphan artifact files: the recovery half of the row-then-file ordering.
+# ---------------------------------------------------------------------------
+
+
+async def test_sweep_removes_an_aged_hash_named_file_no_row_references(tmp_path):
+    """The file a crashed sweep left behind is found from the directory side.
+
+    ``_unlink_artifacts`` can only ever see the rows the *current* sweep
+    deleted, so a file orphaned by an earlier process is invisible to it; this
+    is the step that makes §12.1's "the next sweep removes it" true.
+    """
+    import os
+    import time
+
+    from src.playbooks.retention import ORPHAN_FILE_TTL_SECONDS
+
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    now = time.time()
+    orphan = artifacts / f"{'a' * 64}.json"
+    orphan.write_text("{}")
+    aged = now - ORPHAN_FILE_TTL_SECONDS - 1
+    os.utime(orphan, (aged, aged))
+
+    db = _StubDb()
+    counts = await _sweeper(tmp_path, db).sweep(now)
+
+    assert counts["orphan_files"] == 1
+    assert not orphan.exists()
+    assert db.calls["filter_referenced_artifact_shas"] == [f"sha256:{'a' * 64}"]
+
+
+async def test_sweep_keeps_an_orphan_file_younger_than_the_ttl(tmp_path):
+    """``put`` writes bytes before its caller writes the row, so age is the guard."""
+    import time
+
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    fresh = artifacts / f"{'b' * 64}.json"
+    fresh.write_text("{}")
+
+    db = _StubDb()
+    counts = await _sweeper(tmp_path, db).sweep(time.time())
+
+    assert counts["orphan_files"] == 0
+    assert fresh.exists()
+    assert "filter_referenced_artifact_shas" not in db.calls
+
+
+async def test_sweep_keeps_an_aged_file_something_still_references(tmp_path):
+    """A hash any of the three tables still names survives regardless of age."""
+    import os
+    import time
+
+    from src.playbooks.retention import ORPHAN_FILE_TTL_SECONDS
+
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    now = time.time()
+    kept = artifacts / f"{'c' * 64}.json"
+    doomed = artifacts / f"{'d' * 64}.json"
+    for path in (kept, doomed):
+        path.write_text("{}")
+        aged = now - ORPHAN_FILE_TTL_SECONDS - 1
+        os.utime(path, (aged, aged))
+
+    db = _StubDb(referenced={f"sha256:{'c' * 64}"})
+    counts = await _sweeper(tmp_path, db).sweep(now)
+
+    assert counts["orphan_files"] == 1
+    assert kept.exists()
+    assert not doomed.exists()
+
+
+async def test_sweep_never_touches_a_file_this_store_did_not_name(tmp_path):
+    """Only a bare 64-hex stem is a candidate; nothing else is even asked about."""
+    import os
+    import time
+
+    from src.playbooks.retention import ORPHAN_FILE_TTL_SECONDS
+
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    now = time.time()
+    aged = now - ORPHAN_FILE_TTL_SECONDS - 1
+    strangers = [
+        artifacts / "index.json",
+        artifacts / f"{'e' * 63}.json",
+        artifacts / f"{'F' * 64}.json",
+        artifacts / f"{'a' * 64}.txt",
+    ]
+    for path in strangers:
+        path.write_text("{}")
+        os.utime(path, (aged, aged))
+
+    db = _StubDb()
+    counts = await _sweeper(tmp_path, db).sweep(now)
+
+    assert counts["orphan_files"] == 0
+    assert all(path.exists() for path in strangers)
+    assert "filter_referenced_artifact_shas" not in db.calls
+
+
+def test_put_refreshes_the_mtime_of_a_file_it_adopts(tmp_path):
+    """Adopting existing bytes must mark the file live for the orphan sweep.
+
+    Content addressing means a re-``put`` of identical bytes does not rewrite
+    the file, so without this the file would keep the mtime of its first write
+    and the retention sweep could age it out between the adoption and the
+    caller's row write.
+    """
+    import os
+    import time
+
+    from src.playbooks.artifact_store import ArtifactStore
+
+    store = ArtifactStore(str(tmp_path))
+    definition = _definition()
+    kwargs = {
+        "source_digest": "sha256:" + "a" * 64,
+        "contract_fingerprint": "sha256:" + "b" * 64,
+        "compiler_build": "test-build",
+    }
+    ref = store.put(definition, **kwargs)
+    path = tmp_path / "artifacts" / f"{ref.digest}.json"
+    long_ago = time.time() - 10 * 86400
+    os.utime(path, (long_ago, long_ago))
+
+    assert store.put(definition, **kwargs) == ref
+    assert path.stat().st_mtime > long_ago

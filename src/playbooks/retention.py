@@ -13,12 +13,20 @@ Within the artifact step the row is deleted before its file — a crash between
 them leaves an unreferenced file that the next sweep removes, whereas the
 reverse order would leave a row pointing at a missing file and read as
 ``unavailable`` health on a playbook that was fine (§12.1).
+
+"the next sweep removes it" is :meth:`~ArtifactRetentionSweeper._sweep_orphan_files`,
+and it is a separate step from :meth:`~ArtifactRetentionSweeper._unlink_artifacts`
+on purpose: that one only knows the rows *this* sweep deleted, so on its own it
+can never see a file left behind by a previous process.  Orphan discovery is
+the other direction — start from the directory, ask the database which of those
+hashes anything still names, and remove only the rest.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -33,6 +41,20 @@ logger = logging.getLogger(__name__)
 #: the directory.
 TEMP_FILE_TTL_SECONDS = 3600.0
 
+#: How long a hash-named ``*.json`` artifact file with no row anywhere in V2
+#: storage is allowed to survive (§12.1).  The same hour the temp files get,
+#: and for the same reason: ``ArtifactStore.put`` writes the file before its
+#: caller records the row, so a file younger than this may simply be a write
+#: whose row has not landed yet.  ``put`` also refreshes the mtime of a file it
+#: adopts, which is what keeps the window meaningful for content already on
+#: disk.
+ORPHAN_FILE_TTL_SECONDS = 3600.0
+
+#: An artifact file's stem is exactly the bare digest ``ArtifactStore.path_for``
+#: writes.  Anything else under ``artifacts/`` was put there by something that
+#: is not this store, and the sweep leaves it alone rather than guessing.
+_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
+
 _DAY_SECONDS = 86400.0
 
 #: The categories every sweep reports, even when it collected nothing — a
@@ -44,6 +66,7 @@ CATEGORIES = (
     "runs",
     "artifact_rows",
     "artifact_files",
+    "orphan_files",
     "temp_files",
     "health_downgraded",
 )
@@ -79,6 +102,7 @@ class ArtifactRetentionSweeper:
         )
         counts["artifact_rows"] = len(collected)
         counts["artifact_files"] = self._unlink_artifacts(collected)
+        counts["orphan_files"] = await self._sweep_orphan_files(now)
         counts["temp_files"] = self._sweep_temp_files(now)
         counts["health_downgraded"] = await self._downgrade_missing_artifacts()
         logger.info("Playbook V2 retention sweep: %s", counts)
@@ -110,6 +134,65 @@ class ArtifactRetentionSweeper:
             except OSError as exc:  # pragma: no cover - permissions/filesystem
                 logger.warning("Could not unlink artifact %s at %s: %s", sha, path, exc)
                 continue
+            removed += 1
+        return removed
+
+    async def _sweep_orphan_files(self, now: float) -> int:
+        """Remove aged hash-named files that nothing in the database names.
+
+        This is the recovery half of the row-then-file ordering (§12.1): a
+        crash between :meth:`collect_playbook_artifacts` deleting a row and
+        :meth:`_unlink_artifacts` unlinking its file leaves a file no row
+        points at, and nothing else would ever collect it — ``_unlink_artifacts``
+        is given only the rows the *current* sweep deleted, and
+        ``_sweep_temp_files`` only matches ``*.json.tmp-*``.
+
+        Three guards make it safe to delete a file the database did not name:
+
+        * the stem must be a bare 64-hex digest, so a file this store did not
+          write is never a candidate;
+        * the file must be older than :data:`ORPHAN_FILE_TTL_SECONDS`, because
+          ``ArtifactStore.put`` writes bytes before its caller writes the row;
+        * the directory is listed **before** the database is asked, so a row
+          inserted during the sweep is seen and protects its file.  The
+          opposite order could read "no row", then have the row appear, then
+          unlink the file underneath it.
+
+        The reference query spans artifacts, activations and runs rather than
+        the artifact table alone, so a hash still named by an activation or a
+        retained run survives even if its artifact row is missing.
+        """
+        candidates: list[Path] = []
+        try:
+            entries = list(self._artifacts_dir.glob("*.json"))
+        except OSError:  # pragma: no cover - unreadable directory
+            return 0
+        for entry in entries:
+            if not _DIGEST_RE.fullmatch(entry.stem):
+                continue
+            try:
+                if now - entry.stat().st_mtime < ORPHAN_FILE_TTL_SECONDS:
+                    continue
+            except OSError:
+                continue
+            candidates.append(entry)
+        if not candidates:
+            return 0
+        referenced = await self._db.filter_referenced_artifact_shas(
+            [f"sha256:{entry.stem}" for entry in candidates]
+        )
+        removed = 0
+        for entry in candidates:
+            if f"sha256:{entry.stem}" in referenced:
+                continue
+            try:
+                entry.unlink()
+            except FileNotFoundError:
+                continue
+            except OSError as exc:  # pragma: no cover - permissions/filesystem
+                logger.warning("Could not remove orphaned artifact file %s: %s", entry, exc)
+                continue
+            logger.info("Removed orphaned artifact file %s (no row references it)", entry)
             removed += 1
         return removed
 

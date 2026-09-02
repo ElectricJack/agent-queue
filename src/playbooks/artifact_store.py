@@ -94,6 +94,17 @@ class ArtifactStore:
         if path.exists():
             if path.read_bytes() != data:
                 raise ArtifactHashCollision(f"{sha} already names different bytes at {path}")
+            # Content-addressed storage means an identical artifact is adopted
+            # rather than rewritten, which would otherwise leave this file with
+            # the mtime of whenever it was first written.  The retention sweep
+            # decides orphan candidacy by age (``ORPHAN_FILE_TTL_SECONDS``), so
+            # a file being adopted right now must look recent: without this,
+            # a put that reuses an old file could race the sweep between the
+            # adoption here and the caller's row write.
+            try:
+                os.utime(path)
+            except OSError:  # pragma: no cover - permissions/filesystem
+                pass
         else:
             tmp = self._root / f"{sha[7:]}.json.tmp-{os.getpid()}-{uuid4().hex}"
             try:
