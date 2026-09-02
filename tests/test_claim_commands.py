@@ -151,6 +151,57 @@ def emitted(handler):
 
 
 class TestClaim:
+    async def test_reconciler_release_honors_fresh_context_drain(self, handler, db, config, tmp_path, monkeypatch):
+        """A reconciler-won close release keeps fresh-context drain semantics."""
+        await mktask(db, "t1", profile_id="worker")
+        sid, work_dir = await pool_session(db, tmp_path)
+        h = scoped(handler, sid)
+        claim = await h._cmd_task_claim({"next": True})
+        assert (work_dir / ".aq" / "claim.json").exists()
+
+        release_started = asyncio.Event()
+        allow_close_release = asyncio.Event()
+        real_release_claim = db.release_claim
+        release_calls = 0
+
+        async def gate_close_release(*args, **kwargs):
+            nonlocal release_calls
+            release_calls += 1
+            if release_calls == 1:
+                release_started.set()
+                await allow_close_release.wait()
+            return await real_release_claim(*args, **kwargs)
+
+        monkeypatch.setattr(db, "release_claim", gate_close_release)
+        close = asyncio.create_task(
+            h._cmd_task_close(
+                {
+                    "task_id": "t1",
+                    "outcome": "pass",
+                    "summary": "done",
+                    "claim_epoch": claim["claim_epoch"],
+                }
+            )
+        )
+        try:
+            await asyncio.wait_for(release_started.wait(), timeout=5)
+            reconciler = SessionReconciler(
+                db,
+                config,
+                SessionProviderRegistry({}),
+                bus=handler.orchestrator.bus,
+                orchestrator=handler.orchestrator,
+                epoch="test",
+            )
+            await reconciler._step_orphans(await db.list_sessions(live_only=True), time.time())
+            session = await db.get_session(sid)
+            assert (session.desired_state, session.task_id) == ("stopped", None)
+        finally:
+            allow_close_release.set()
+            await close
+
+        assert not (work_dir / ".aq" / "claim.json").exists()
+
     async def test_close_release_race_keeps_live_pool_worker_available(
         self, handler, db, config, tmp_path, monkeypatch
     ):

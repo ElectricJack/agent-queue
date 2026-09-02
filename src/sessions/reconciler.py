@@ -891,6 +891,7 @@ class SessionReconciler:
                     now=now,
                     expected_task_id=row.task_id,
                     expected_claim_epoch=row.last_claim_epoch,
+                    drain_after_release=self.config.swarm.fresh_context_per_task,
                 )
                 continue
             provider = self._provider_for(row)

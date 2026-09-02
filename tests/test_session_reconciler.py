@@ -742,7 +742,7 @@ class TestPoolLifecycle:
         assert pool_reconciler.test_orch.terminations == []
         assert pool_reconciler.test_orch.generic_releases == []
         session = await db.get_session(row.id)
-        assert (session.state, session.desired_state, session.task_id) == ("running", "running", None)
+        assert (session.state, session.desired_state, session.task_id) == ("running", "stopped", None)
         assert (await db.get_agent(row.agent_id)).current_task_id is None
         assert (await db.get_task("t1")).status is TaskStatus.COMPLETED
 

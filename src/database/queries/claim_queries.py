@@ -368,6 +368,7 @@ class ClaimQueryMixin:
         needs_attention,
         expected_task_id=None,
         expected_claim_epoch=None,
+        drain_after_release=False,
         end_reason=None,
     ) -> TransitionResult:
         row = (
@@ -431,16 +432,19 @@ class ClaimQueryMixin:
                 .where(agents.c.id == agent_id)
                 .values(state=AgentState.IDLE.value, current_task_id=None)
             )
+        session_values = dict(
+            task_id=None,
+            claim_phase=None,
+            claim_phase_at=None,
+            last_claim_epoch=epoch,
+            last_claim_result=result,
+        )
+        if drain_after_release:
+            session_values["desired_state"] = "stopped"
         await conn.execute(
             update(sessions)
             .where(sessions.c.id == session_id)
-            .values(
-                task_id=None,
-                claim_phase=None,
-                claim_phase_at=None,
-                last_claim_epoch=epoch,
-                last_claim_result=result,
-            )
+            .values(**session_values)
         )
         out.released = True
         return out
@@ -461,6 +465,7 @@ class ClaimQueryMixin:
         needs_attention=None,
         expected_task_id=None,
         expected_claim_epoch=None,
+        drain_after_release=False,
         conn=None,
     ) -> TransitionResult:
         kwargs = dict(
@@ -471,6 +476,7 @@ class ClaimQueryMixin:
             needs_attention=needs_attention,
             expected_task_id=expected_task_id,
             expected_claim_epoch=expected_claim_epoch,
+            drain_after_release=drain_after_release,
         )
         if conn is not None:
             return await self._release_claim_on(conn, session_id, **kwargs)

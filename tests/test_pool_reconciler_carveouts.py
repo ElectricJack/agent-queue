@@ -298,7 +298,7 @@ class TestOrphans:
         session = await db.get_session(sid)
         assert (session.state, session.desired_state, session.task_id) == (
             "running",
-            "running",
+            "stopped",
             None,
         )
         assert (await db.get_agent("agent-1")).state == AgentState.IDLE
