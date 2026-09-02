@@ -363,3 +363,124 @@ async def test_no_op_close_is_flagged_no_code(orchestrator_factory, pipeline_eng
 
     await engine.dispatch("task.completed", completed[0], event_id="no-op-closed")
     assert await _review_rows(h, task_id) == []
+
+
+@pytest.mark.asyncio
+async def test_review_task_close_is_never_reviewed_even_if_profile_writes(
+    orchestrator_factory, pipeline_engine_factory
+):
+    """The recursion guard must not depend on the reviewer profile's flags.
+
+    ``no_code`` comes from ``profile.read_only``; an operator who hands the
+    reviewer Write/Edit tools (``read_only: false``) silently disarmed it and
+    the queue filled with "Review: Review: ..." again (task
+    sound-horizon-77.18.2).  A task the pipeline itself created as a review —
+    recognisable by its ``review:task:`` / ``branch-review:`` dedup key — is
+    flagged ``review_task`` on ``task.completed`` regardless of profile, and
+    both review rules stand down on it.
+    """
+    orch = await orchestrator_factory()
+    h = orch.command_handler
+    await _seed(h)
+    await h.db.upsert_profile(AgentProfile(id="reviewer", name="Reviewer", read_only=False))
+    await h.db.upsert_profile(AgentProfile(id="final-reviewer", name="Final", read_only=False))
+    engine = pipeline_engine_factory(handler=h)
+
+    reviewed_id = (
+        await h.execute(
+            "create_task",
+            {"project_id": "p", "title": "Do work", "profile_id": "worker"},
+        )
+    )["created"]
+    # Exactly the row ``per-task-review`` writes for the reviewed task.
+    review_id = (
+        await h.execute(
+            "ensure_task",
+            {
+                "project_id": "p",
+                "dedup_key": f"review:task:{reviewed_id}",
+                "title": "Review: Do work",
+                "profile_id": "reviewer",
+            },
+        )
+    )["task_id"]
+    await h.db.update_task(review_id, branch_name=f"aq/{review_id}")
+
+    await _close_pass(h, review_id)
+
+    completed = _emitted(orch.bus, "task.completed")
+    assert len(completed) == 1
+    assert completed[0]["no_code"] is False, "read_only=false profile: the old guard is inert"
+    assert completed[0]["review_task"] is True
+
+    await engine.dispatch("task.completed", completed[0], event_id="review-closed")
+
+    assert await _review_rows(h, review_id) == [], "spawned a review of the review"
+    tasks = await h.db.list_tasks(project_id="p")
+    assert [t for t in tasks if t.profile_id == "final-reviewer"] == []
+
+
+@pytest.mark.asyncio
+async def test_final_review_close_is_never_reviewed_even_if_profile_writes(
+    orchestrator_factory, pipeline_engine_factory
+):
+    """Same guard for the branch's final review (``branch-review:<branch>``)."""
+    orch = await orchestrator_factory()
+    h = orch.command_handler
+    await _seed(h)
+    await h.db.upsert_profile(AgentProfile(id="reviewer", name="Reviewer", read_only=False))
+    await h.db.upsert_profile(AgentProfile(id="final-reviewer", name="Final", read_only=False))
+    engine = pipeline_engine_factory(handler=h)
+
+    final_id = (
+        await h.execute(
+            "ensure_task",
+            {
+                "project_id": "p",
+                "dedup_key": "branch-review:aq/do-work",
+                "title": "Final review: aq/do-work",
+                "profile_id": "final-reviewer",
+            },
+        )
+    )["task_id"]
+    await h.db.update_task(
+        final_id, branch_name=f"aq/{final_id}", pr_url="https://github.com/o/r/pull/7"
+    )
+
+    await _close_pass(h, final_id)
+
+    completed = _emitted(orch.bus, "task.completed")
+    assert len(completed) == 1
+    assert completed[0]["review_task"] is True
+
+    await engine.dispatch("task.completed", completed[0], event_id="final-closed")
+
+    assert await _review_rows(h, final_id) == []
+    tasks = await h.db.list_tasks(project_id="p")
+    assert [t for t in tasks if t.dedup_key == f"branch-review:aq/{final_id}"] == []
+
+
+@pytest.mark.asyncio
+async def test_worker_close_is_not_flagged_review_task(orchestrator_factory):
+    """An ordinary worker task, dedup-keyed or not, is still reviewed."""
+    orch = await orchestrator_factory()
+    h = orch.command_handler
+    await _seed(h)
+
+    keyed = (
+        await h.execute(
+            "ensure_task",
+            {
+                "project_id": "p",
+                "dedup_key": "spec-ingest:docs/specs/x.md",
+                "title": "Ingest",
+                "profile_id": "worker",
+            },
+        )
+    )["task_id"]
+    await h.db.update_task(keyed, branch_name=f"aq/{keyed}")
+    await _close_pass(h, keyed)
+
+    completed = _emitted(orch.bus, "task.completed")
+    assert len(completed) == 1
+    assert completed[0]["review_task"] is False
