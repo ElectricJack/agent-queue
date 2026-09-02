@@ -117,6 +117,40 @@ class TestAbandonChildren:
         assert res["sessions"] == [{"session_id": "s1", "task_id": "c"}]
         assert (await db.get_task("c")).status == TaskStatus.READY
 
+    async def test_container_closes_while_its_own_worker_session_is_live(self, handler, db):
+        """A task-scoped worker closes its own container.
+
+        The worker's session necessarily holds the root task while it runs,
+        and ``abandon_subtree`` never touches the root — so the live guard
+        must ignore it and abandon the paused child anyway.
+        """
+        await container_with_open_child(db)
+        now = time.time()
+        await db.create_session(
+            SessionRecord(
+                id="root-s",
+                task_id="p",
+                project_id=PROJECT_ID,
+                profile_id="worker",
+                harness="claude",
+                provider="fake",
+                name="s-p",
+                lifecycle="task",
+                state="running",
+                work_dir="/tmp",
+                epoch="e",
+                instance_token="t",
+                started_at=now,
+                last_activity=now,
+            )
+        )
+        res = await handler._cmd_task_close(
+            {"task_id": "p", "outcome": "pass", "summary": "x", "abandon_children": True}
+        )
+        assert res["success"] is True
+        assert res["abandoned"] == ["c"]
+        assert (await db.get_task("c")).status == TaskStatus.COMPLETED
+
     async def test_summary_refusal_precedes_abandon(self, handler, db):
         """A refused close (missing summary) must never abandon anything —
         the summary check runs before the container-close block (review

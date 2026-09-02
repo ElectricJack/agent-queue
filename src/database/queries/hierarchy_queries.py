@@ -653,14 +653,27 @@ class HierarchyQueryMixin:
         async with self._engine.begin() as c:
             return [r[0] for r in (await c.execute(stmt)).fetchall()]
 
-    async def live_descendant_sessions(self, task_id: str, *, conn) -> list[tuple[str, str]]:
+    async def live_descendant_sessions(
+        self, task_id: str, *, conn, include_root: bool = True
+    ) -> list[tuple[str, str]]:
         """Live sessions holding any task in *task_id*'s subtree.
 
         Lock order is sessions-before-tasks to match the claim path (spec §7):
         on Postgres the rows are taken ``FOR UPDATE`` so a session cannot
         start holding a descendant between this check and the abandonment.
+
+        ``include_root=False`` drops *task_id* itself from the checked set,
+        matching what ``abandon_subtree`` actually touches. A task-scoped
+        worker closing its own container is necessarily holding a live
+        session on the root, so the abandon guard would otherwise always
+        refuse. Callers that go on to remove the root itself (cascade
+        delete, archive) keep the default and stay protected.
         """
         ids = await self.subtree_ids(task_id, conn=conn)
+        if not include_root:
+            ids = [i for i in ids if i != task_id]
+        if not ids:
+            return []
         stmt = select(sessions.c.id, sessions.c.task_id).where(
             and_(sessions.c.task_id.in_(ids), sessions.c.state.in_(LIVE_SESSION_STATES))
         )

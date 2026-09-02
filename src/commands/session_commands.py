@@ -768,7 +768,12 @@ class SessionCommandsMixin:
             live: list = []
             abandon_result = None
             async with self.db.immediate() as conn:
-                live = await self.db.live_descendant_sessions(task_id, conn=conn)
+                # ``include_root=False``: this worker's own session holds the
+                # container being closed, and ``abandon_subtree`` never touches
+                # the root — only descendants must be free of live sessions.
+                live = await self.db.live_descendant_sessions(
+                    task_id, conn=conn, include_root=False
+                )
                 if not live:
                     abandon_result = await self.db.abandon_subtree(task_id, conn=conn)
             if live:
