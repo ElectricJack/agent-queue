@@ -1462,7 +1462,7 @@ class ResourcesConfig:
     #: Slot poll interval while waiting, in seconds.
     test_poll_interval: float = 2.0
     #: ``-m`` expression ``aq test`` applies when the caller passed none.
-    test_deselect_markers: str = "not tmux and not integration and not perf"
+    test_deselect_markers: str = "not perf and not migration and not slow and not tmux and not integration"
     #: doctor ``resources.load`` warns when the 5-minute load average
     #: exceeds ``cores * load_warn_ratio``.
     load_warn_ratio: float = 1.0
