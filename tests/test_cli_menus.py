@@ -9,7 +9,7 @@ from src.cli import menus
 
 def test_task_creation_wizard_reprompts_required_values_and_preserves_defaults(monkeypatch):
     """Removing required-field validation or defaults would change the creation payload."""
-    responses = iter(["project-1", "A task", "Description", None, "feature", "no"])
+    responses = iter(["project-1", "A task", "Description", None, "feature", "direct"])
     monkeypatch.setattr(menus, "prompt_input", lambda *args, **kwargs: next(responses))
     monkeypatch.setattr(menus, "prompt_choice", lambda *args, **kwargs: next(responses))
 
@@ -21,6 +21,7 @@ def test_task_creation_wizard_reprompts_required_values_and_preserves_defaults(m
         "description": "Description",
         "priority": 100,
         "task_type": "feature",
+        "integration_mode": "direct",
     }
 
 
