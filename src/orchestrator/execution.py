@@ -11,7 +11,11 @@ from src.database.queries.hierarchy_queries import HierarchyError
 from src.logging_config import CorrelationContext
 from src.discord.notifications import format_task_started
 from src.notifications.builder import build_agent_summary, build_task_detail
+from src.api.models.agent import AgentSummary
 from src.notifications.events import (
+    TaskBlockedEvent,
+    TaskCompletedEvent,
+    TaskFailedEvent,
     TaskStartedEvent,
     TaskThreadOpenEvent,
 )
@@ -1115,6 +1119,41 @@ class ExecutionMixin:
                     task.id,
                     exc_info=True,
                 )
+        # The ``notify.*`` transports (Discord today) lost their task-outcome
+        # feed when the legacy execution tail was deleted: that tail was the
+        # only emitter of ``notify.task_completed`` / ``notify.task_failed`` /
+        # ``notify.task_blocked``, so ``DiscordNotificationHandler`` kept the
+        # subscriptions but never heard from any of them again.  Session close
+        # is now the only place an ordinary task reaches a terminal state, so
+        # the pairing is restored here with the tail's own mapping: retryable
+        # failure -> task_failed, retries spent -> task_blocked.  Best-effort,
+        # like the emits above — a transport error must not undo a committed
+        # transition.
+        notify_error = output.error_message or ""
+        if verification_reopened and ctx.verification_feedback:
+            notify_error = ctx.verification_feedback
+        elif not notify_error and outcome == "pass" and not completed_ok:
+            notify_error = "completion pipeline did not finish"
+        try:
+            await self._emit_close_notify(
+                task,
+                agent,
+                outcome=outcome,
+                new_status=new_status,
+                context=context,
+                error_detail=notify_error,
+                retry_count=new_retry if new_retry is not None else (task.retry_count or 0),
+                summary=output.summary or "",
+                files_changed=list(output.files_changed or []),
+                tokens_used=output.tokens_used or 0,
+            )
+        except Exception:
+            logger.warning(
+                "Task %s: outcome notification failed (state is %s)",
+                task.id,
+                new_status.value,
+                exc_info=True,
+            )
         await self._emit_task_event(
             "task.closed",
             task,
@@ -1140,6 +1179,92 @@ class ExecutionMixin:
             "pipeline_ok": completed_ok,
             "retry_count": new_retry,
         }
+
+    async def _emit_close_notify(
+        self,
+        task,
+        agent,
+        *,
+        outcome: str,
+        new_status: TaskStatus,
+        context: str,
+        error_detail: str = "",
+        retry_count: int = 0,
+        summary: str = "",
+        files_changed: list[str] | None = None,
+        tokens_used: int = 0,
+    ) -> None:
+        """Announce a session-closed task's outcome on the ``notify.*`` bus.
+
+        One event per close, chosen from the status the task actually landed
+        in rather than from what the agent claimed:
+
+        * ``COMPLETED``               -> ``notify.task_completed``
+        * ``BLOCKED`` via max retries -> ``notify.task_blocked``
+        * any other failing leg       -> ``notify.task_failed``
+
+        A close that did not settle the task — Invariant 6 held a container
+        open, say — announces nothing: there is no outcome to report yet.
+        """
+        # ``task`` is the pre-transition row the close started from, so its
+        # status and retry count are one step behind what was just committed.
+        detail = build_task_detail(task)
+        detail.status = new_status.value
+        detail.retry_count = retry_count
+        agent_summary = (
+            build_agent_summary(agent)
+            if agent is not None
+            else AgentSummary(
+                id=task.assigned_agent_id or "",
+                name=task.assigned_agent_id or "unknown",
+                profile_id=task.profile_id or "",
+            )
+        )
+
+        if new_status == TaskStatus.COMPLETED:
+            await self._emit_notify(
+                "notify.task_completed",
+                TaskCompletedEvent(
+                    task=detail,
+                    agent=agent_summary,
+                    summary=summary,
+                    files_changed=files_changed or [],
+                    tokens_used=tokens_used,
+                    project_id=task.project_id,
+                ),
+            )
+            return
+
+        if new_status == TaskStatus.BLOCKED and context == "max_retries":
+            await self._emit_notify(
+                "notify.task_blocked",
+                TaskBlockedEvent(
+                    task=detail,
+                    last_error=error_detail,
+                    project_id=task.project_id,
+                ),
+            )
+            return
+
+        if new_status not in (TaskStatus.BLOCKED, TaskStatus.READY):
+            # The transition was refused (open children) — the task is still
+            # where it was, so there is no outcome to announce.
+            return
+        if outcome == "pass" and new_status == TaskStatus.READY and not error_detail:
+            # A plain verification reopen with nothing to say.
+            return
+
+        await self._emit_notify(
+            "notify.task_failed",
+            TaskFailedEvent(
+                task=detail,
+                agent=agent_summary,
+                error_detail=error_detail,
+                retry_count=retry_count,
+                max_retries=task.max_retries or 0,
+                project_id=task.project_id,
+            ),
+        )
 
     async def release_session_task_resources(
         self,
