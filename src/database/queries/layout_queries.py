@@ -11,6 +11,15 @@ from sqlalchemy import delete, func, insert, select, update
 from src.database.tables import layout_dirty, layout_jobs, project_layout_meta
 
 
+def _chunks(seq: list, size: int = 900) -> list[list]:
+    """Split *seq* into consecutive slices of at most *size* items.
+
+    Keeps ``IN (...)`` lists under SQLite's older bound-parameter cap
+    (~32k; current builds allow far more) with headroom to spare.
+    """
+    return [seq[i : i + size] for i in range(0, len(seq), size)]
+
+
 def like_prefix(prefix: str) -> str:
     """A LIKE pattern matching everything under ``prefix``.
 
@@ -649,3 +658,179 @@ class LayoutQueryMixin:
             if consumed_seq is not None:
                 await self.clear_layout_dirty(project_id, consumed_seq, conn=conn)
         return version
+
+    # ── bulk view queries ──────────────────────────────────────────────
+    # `playbook_run_id` is not a real `tasks` column — like
+    # `src/api/graph.py`'s GraphTaskNode construction, it is derived from
+    # `dedup_key` (the "playbook-run:<id>" convention) in
+    # `_task_dict_from_mapping` below, so `dedup_key` is fetched in its
+    # place and swapped out before the row reaches callers.
+    _TASK_FIELDS = (
+        "id",
+        "title",
+        "status",
+        "priority",
+        "is_blocked",
+        "profile_id",
+        "intelligence_class",
+        "assigned_agent_id",
+        "branch_name",
+        "pr_url",
+        "dedup_key",
+    )
+
+    @classmethod
+    def _task_dict_from_mapping(cls, m):
+        task = {f: m[f] for f in cls._TASK_FIELDS if f != "dedup_key"}
+        task["is_blocked"] = bool(task["is_blocked"])
+        dedup_key = m["dedup_key"]
+        task["playbook_run_id"] = (
+            dedup_key.removeprefix("playbook-run:")
+            if dedup_key and dedup_key.startswith("playbook-run:")
+            else None
+        )
+        return task
+
+    async def load_rows_in_cells(self, project_id, variant, cells_wanted):
+        from sqlalchemy import and_, or_
+        from src.database.tables import task_layout_cells as cells, task_layouts
+
+        if not cells_wanted:
+            return {}
+        cond = or_(*[and_(cells.c.cell_x == cx, cells.c.cell_y == cy) for cx, cy in cells_wanted])
+        async with self._engine.begin() as conn:
+            ids = [
+                r[0]
+                for r in (
+                    await conn.execute(
+                        select(cells.c.task_id)
+                        .distinct()
+                        .where(
+                            cells.c.project_id == project_id,
+                            cells.c.variant == variant,
+                            cond,
+                        )
+                    )
+                ).fetchall()
+            ]
+            if not ids:
+                return {}
+            out: dict = {}
+            for chunk in _chunks(ids):
+                res = await conn.execute(
+                    select(task_layouts).where(
+                        task_layouts.c.project_id == project_id,
+                        task_layouts.c.variant == variant,
+                        task_layouts.c.task_id.in_(chunk),
+                    )
+                )
+                out.update({m["task_id"]: self._row_from_mapping(m) for m in res.mappings()})
+            return out
+
+    async def load_rows_with_tasks(self, project_id, variant, task_ids):
+        from src.database.tables import task_layouts, tasks
+
+        ids = list(task_ids)
+        if not ids:
+            return {}
+        cols = [getattr(tasks.c, f) for f in self._TASK_FIELDS]
+        async with self._engine.begin() as conn:
+            out: dict = {}
+            for chunk in _chunks(ids):
+                res = await conn.execute(
+                    select(task_layouts, *cols)
+                    .select_from(task_layouts.join(tasks, tasks.c.id == task_layouts.c.task_id))
+                    .where(
+                        task_layouts.c.project_id == project_id,
+                        task_layouts.c.variant == variant,
+                        task_layouts.c.task_id.in_(chunk),
+                    )
+                )
+                for m in res.mappings():
+                    out[m["task_id"]] = (self._row_from_mapping(m), self._task_dict_from_mapping(m))
+            return out
+
+    async def load_all_rows_with_tasks(self, project_id, variant):
+        from src.database.tables import task_layouts, tasks
+
+        cols = [getattr(tasks.c, f) for f in self._TASK_FIELDS]
+        async with self._engine.begin() as conn:
+            res = await conn.execute(
+                select(task_layouts, *cols)
+                .select_from(task_layouts.join(tasks, tasks.c.id == task_layouts.c.task_id))
+                .where(
+                    task_layouts.c.project_id == project_id, task_layouts.c.variant == variant
+                )
+            )
+            out = {}
+            for m in res.mappings():
+                out[m["task_id"]] = (self._row_from_mapping(m), self._task_dict_from_mapping(m))
+            return out
+
+    async def load_rows_by_prefixes(self, project_id, variant, prefixes):
+        from sqlalchemy import or_
+        from src.database.tables import task_layouts
+
+        if not prefixes:
+            return {}
+        async with self._engine.begin() as conn:
+            res = await conn.execute(
+                select(task_layouts).where(
+                    task_layouts.c.project_id == project_id,
+                    task_layouts.c.variant == variant,
+                    or_(
+                        *[
+                            task_layouts.c.path.like(like_prefix(p), escape="\\")
+                            for p in prefixes
+                        ]
+                    ),
+                )
+            )
+            return {m["task_id"]: self._row_from_mapping(m) for m in res.mappings()}
+
+    async def load_edges_touching(self, task_ids):
+        from sqlalchemy import or_
+        from src.database.tables import task_dependencies as td
+
+        ids = list(task_ids)
+        if not ids:
+            return []
+        # Chunking splits `ids` across separate IN-lists, so an edge whose
+        # two endpoints land in different chunks would otherwise be
+        # selected twice (once per chunk it matches) -- dedupe via a dict
+        # keyed by the row itself before sorting back into the documented
+        # (task_id, depends_on, dep_type) order.
+        seen: dict = {}
+        async with self._engine.begin() as conn:
+            for chunk in _chunks(ids):
+                res = await conn.execute(
+                    select(
+                        td.c.task_id, td.c.depends_on_task_id, td.c.dep_type, td.c.description
+                    ).where(or_(td.c.task_id.in_(chunk), td.c.depends_on_task_id.in_(chunk)))
+                )
+                for r in res.fetchall():
+                    seen[tuple(r)] = None
+        return sorted(seen, key=lambda r: (r[0], r[1], r[2]))
+
+    async def load_matching_ids(self, project_id, variant, *, q, status):
+        from sqlalchemy import func, or_
+        from src.database.tables import task_layouts, tasks
+
+        conds = [task_layouts.c.project_id == project_id, task_layouts.c.variant == variant]
+        if q:
+            needle = f"%{q.lower()}%"
+            conds.append(
+                or_(
+                    func.lower(tasks.c.title).like(needle),
+                    func.lower(tasks.c.id).like(needle),
+                )
+            )
+        if status:
+            conds.append(tasks.c.status == status)
+        async with self._engine.begin() as conn:
+            res = await conn.execute(
+                select(task_layouts.c.task_id)
+                .select_from(task_layouts.join(tasks, tasks.c.id == task_layouts.c.task_id))
+                .where(*conds)
+            )
+            return {r[0] for r in res.fetchall()}

@@ -202,3 +202,29 @@ async def test_trim_layout_dirty_discards_everything(db):
         await db.mark_layout_dirty("p1", ["a", "b", "c"], "task.created", conn=conn)
     assert await db.trim_layout_dirty() == 3
     assert await db.dirty_layout_projects() == []
+
+
+async def test_rows_in_cells_and_prefixes(db):
+    for t in ("e", "c", "far"):
+        await db.create_task(Task(id=t, project_id="p1", title=t.upper(), description=""))
+    ws = WriteSet(upserts=[row("e", 0, 0, "/e/", kind="container", w=3, h=3),
+                           row("c", 0.5, 0.5, "/e/c/", "e", 1), row("far", 40, 40, "/far/")])
+    await db.publish_layout("p1", "all", ws, consumed_seq=None, extent=(41, 41))
+    assert set(await db.load_rows_in_cells("p1", "all", [(0, 0)])) == {"e", "c"}
+    assert set(await db.load_rows_in_cells("p1", "all", [(5, 5)])) == {"far"}
+    assert set(await db.load_rows_by_prefixes("p1", "all", ["/e/"])) == {"e", "c"}
+    with_tasks = await db.load_rows_with_tasks("p1", "all", ["c"])
+    assert with_tasks["c"][1]["title"] == "C"
+
+
+async def test_edges_touching_and_matching(db):
+    for t in ("a", "b", "c"):
+        await db.create_task(Task(id=t, project_id="p1", title=f"Task {t}", description=""))
+    await db.add_dependency("b", "a", description="why")
+    await db.add_dependency("c", "b")
+    edges = await db.load_edges_touching(["a"])
+    assert edges == [("b", "a", "blocks", "why")]
+    ws = WriteSet(upserts=[row(t, i, 0, f"/{t}/") for i, t in enumerate("abc")])
+    await db.publish_layout("p1", "all", ws, consumed_seq=None, extent=(3, 1))
+    assert await db.load_matching_ids("p1", "all", q="task b", status="") == {"b"}
+    assert await db.load_matching_ids("p1", "all", q="", status="DEFINED") == {"a", "b", "c"}
