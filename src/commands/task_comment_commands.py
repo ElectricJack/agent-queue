@@ -27,7 +27,48 @@ class TaskCommentCommandsMixin:
                 return {"error": "out of scope: task_id mismatch"}
         return None
 
+    async def _reviewer_grant(self, task) -> str | None:
+        """Author id when the caller is the live reviewer *of* ``task``, else None.
+
+        A reviewer's whole job is a verdict on another task, so it reads and
+        annotates a task it deliberately does not own — the claim fence below
+        refuses that by construction, and ``_task_findings_scope_error``'s
+        ``task_id`` pin refuses it earlier still.  Authority comes from the
+        same verified review assignment the API scope check uses, so "is a
+        reviewer of this task" has exactly one definition in the codebase.
+        """
+        from src.api.auth import RequestScope
+        from src.api.scope import reviewed_task_for_reviewer
+
+        scope = self._current_scope or {}
+        if scope.get("kind") != "session" or scope.get("elevated"):
+            return None
+        session_id = scope.get("session_id")
+        if not session_id:
+            return None
+        request_scope = RequestScope(
+            kind="session",
+            session_id=session_id,
+            task_id=scope.get("task_id"),
+            project_id=scope.get("project_id"),
+        )
+        if await reviewed_task_for_reviewer(self.db, request_scope) != task.id:
+            return None
+        session = await self.db.get_session(session_id)
+        return (session.agent_id if session is not None else None) or session_id
+
     async def _task_findings_write_fence(self, task, args) -> tuple[dict | None, dict | None]:
+        fence, error = await self._owner_write_fence(task, args)
+        if error is None:
+            return fence, None
+        reviewer_author = await self._reviewer_grant(task)
+        if reviewer_author is None:
+            return None, error
+        # No claim fence: the reviewer holds its own review task, never this
+        # one.  Project pinning still applies via ``_write_predicates``.
+        return {"project_id": task.project_id, "agent_id": reviewer_author}, None
+
+    async def _owner_write_fence(self, task, args) -> tuple[dict | None, dict | None]:
         error = self._task_findings_scope_error(task)
         if error:
             return None, error
@@ -139,7 +180,7 @@ class TaskCommentCommandsMixin:
                 return {"error": f"Task '{task_id}' not found"}
             task = SimpleNamespace(id=task_id, project_id=archived["project_id"])
         error = self._task_findings_scope_error(task)
-        if error:
+        if error and await self._reviewer_grant(task) is None:
             return error
         return await self.db.list_task_comments(
             task_id, limit=limit, offset=offset, project_id=task.project_id

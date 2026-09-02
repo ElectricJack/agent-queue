@@ -2234,7 +2234,12 @@ class GitManager:
         checkout_path: str,
         branch_name: str,
     ) -> str | None:
-        """Return the URL of an open PR for *branch_name*, or None."""
+        """Return an open or merged PR URL for *branch_name*, or ``None``.
+
+        A merged pull request is evidence that the branch's work has already
+        shipped, so completion verification must accept it just like an open
+        PR.  A closed-but-unmerged PR deliberately remains a failure.
+        """
         try:
             result = await self._arun_subprocess(
                 [
@@ -2244,11 +2249,11 @@ class GitManager:
                     "--head",
                     branch_name,
                     "--state",
-                    "open",
+                    "all",
                     "--json",
-                    "url",
+                    "url,state",
                     "--jq",
-                    ".[0].url",
+                    '.[] | select(.state == "OPEN" or .state == "MERGED") | .url',
                 ],
                 cwd=checkout_path,
                 timeout=self._GIT_TIMEOUT,
@@ -2257,6 +2262,22 @@ class GitManager:
             return url if url else None
         except Exception:
             return None
+
+    async def ais_ancestor(
+        self,
+        checkout_path: str,
+        ancestor: str,
+        descendant: str,
+    ) -> bool:
+        """Return whether *ancestor* is reachable from *descendant*."""
+        try:
+            await self._arun(
+                ["merge-base", "--is-ancestor", _validate_ref(ancestor), _validate_rev(descendant)],
+                cwd=checkout_path,
+            )
+            return True
+        except GitError:
+            return False
 
     async def ahas_non_plan_changes(
         self,

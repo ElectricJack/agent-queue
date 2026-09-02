@@ -8,8 +8,9 @@ happens.
 
 from __future__ import annotations
 
-from src.api.auth import RequestScope
+import re
 
+from src.api.auth import RequestScope
 
 AGENT_COMMAND_SET: frozenset[str] = frozenset(
     {
@@ -146,6 +147,91 @@ _TRIAGE_COMMANDS = frozenset({
 
 _PLAYBOOK_COMPILER_COMMANDS = frozenset({"playbook_validate", "playbook_install"})
 
+# A reviewer task's whole job is a verdict on *another* task: read it, and
+# either approve (close its own review task) or reject.  Rejection is
+# ``reopen_with_feedback`` on the reviewed task, which is neither in
+# AGENT_COMMAND_SET nor addressable under the token's own ``task_id`` pin.
+# These are capabilities of a saved, actively assigned reviewer session, and
+# they reach exactly one task: the one this review was spawned for.
+_REVIEWER_COMMANDS = frozenset({
+    "reopen_with_feedback", "task_show", "get_task", "task_comment", "task_comments",
+})
+
+#: The reviewed task id as the default pipeline writes it into the review
+#: task's description ("Reviewing task: <id>").  Only ever used to *narrow*
+#: an already-authoritative set of ``discovered-from`` edges — a session can
+#: rewrite its own description via ``task_set``, so the description alone
+#: must never grant reach.
+_REVIEWING_TASK_RE = re.compile(r"^[ \t]*Reviewing task:[ \t]*(\S+)[ \t]*$", re.MULTILINE)
+
+
+async def reviewed_task_for_reviewer(db, scope: RequestScope) -> str | None:
+    """Return the one task a live reviewer session may act on, else ``None``.
+
+    Shaped like :func:`_has_live_triage_assignment`, but it resolves a target
+    instead of a boolean: the grant is scoped to the reviewed task rather than
+    to the project's whole queue.  The reviewed task is taken from the review
+    task's ``discovered-from`` edges (written by the ``per-task-review``
+    pipeline rule alongside the review task itself); the description's
+    "Reviewing task:" line only disambiguates among those edges.
+    """
+    from src.models import AgentState, TaskStatus
+
+    if db is None or not scope.session_id or not scope.project_id:
+        return None
+    session = await db.get_session(scope.session_id)
+    reviewer_profiles = {"reviewer", f"project:{scope.project_id}:reviewer"}
+    if (
+        session is None
+        or session.project_id != scope.project_id
+        or session.profile_id not in reviewer_profiles
+        or session.lifecycle not in {"task", "pool"}
+        or session.state not in {"starting", "running"}
+        or session.desired_state != "running"
+        or not session.task_id
+        or not session.agent_id
+        or (scope.task_id is not None and scope.task_id != session.task_id)
+    ):
+        return None
+    review = await db.get_task(session.task_id)
+    if (
+        review is None
+        or review.project_id != scope.project_id
+        or review.profile_id not in reviewer_profiles
+        or review.status != TaskStatus.IN_PROGRESS
+        or review.assigned_agent_id != session.agent_id
+        or (
+            session.last_claim_epoch is not None
+            and session.last_claim_epoch != review.claim_epoch
+        )
+    ):
+        return None
+    agent = await db.get_agent(session.agent_id)
+    if not (
+        agent is not None
+        and agent.enabled
+        and agent.deleted_at is None
+        and agent.state == AgentState.BUSY
+        and agent.current_task_id == review.id
+    ):
+        return None
+
+    edges = await db.get_typed_dependencies(review.id)
+    targets = {dep_id for dep_id, dep_type in edges if dep_type == "discovered-from"}
+    if not targets:
+        return None
+    named = _REVIEWING_TASK_RE.search(review.description or "")
+    if named and named.group(1) in targets:
+        targets = {named.group(1)}
+    if len(targets) != 1:
+        return None
+    reviewed_id = next(iter(targets))
+    reviewed = await db.get_task(reviewed_id)
+    if reviewed is None or reviewed.project_id != scope.project_id:
+        return None
+    return reviewed_id
+
+
 
 async def _has_live_playbook_compiler_assignment(db, scope: RequestScope) -> bool:
     """Grant compiler mutations only to the exact active compiler claim."""
@@ -251,6 +337,31 @@ async def check_request_scope(
             elif value != expected:
                 return f"out of scope: {key} mismatch"
         return None
+
+    if scope.kind == "session" and not scope.elevated and command in _REVIEWER_COMMANDS:
+        # Ordinary scope first: a reviewer reading or commenting on its *own*
+        # review task needs no carve-out, and must not lose the normal
+        # injection of task/project/session ids.
+        ordinary_args = dict(args)
+        error = check_command_scope(command, ordinary_args, scope)
+        if error is None:
+            args.update(ordinary_args)
+            return None
+        reviewed_id = await reviewed_task_for_reviewer(db, scope)
+        if reviewed_id is not None:
+            if args.get("task_id") != reviewed_id:
+                return "out of scope: a reviewer may only act on the task it is reviewing"
+            if args.get("project_id") not in (None, scope.project_id):
+                return "out of scope: project_id mismatch"
+            if args.get("session_id") not in (None, scope.session_id):
+                return "out of scope: session_id mismatch"
+            args["project_id"] = scope.project_id
+            args["session_id"] = scope.session_id
+            return None
+        # Not a reviewer.  ``task_show``/``get_task`` are also triage
+        # capabilities, so fall through rather than pre-empting that carve-out.
+        if command not in _TRIAGE_COMMANDS:
+            return error
 
     if scope.kind != "session" or scope.elevated or command not in _TRIAGE_COMMANDS:
         return check_command_scope(command, args, scope)

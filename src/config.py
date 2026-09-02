@@ -849,17 +849,26 @@ class PlaybooksConfig:
 
 @dataclass
 class SessionsConfig:
-    """Long-lived agent session runtime.
+    """Long-lived agent session runtime — see
+    docs/specs/implementation/session-runtime.md §5.
 
-    Substrate placeholder — see docs/specs/implementation/session-runtime.md §5.
-    ``enabled: false`` means the legacy runtimes are the only execution path.
+    Not a substrate placeholder any more: since the runtime subsystem was
+    removed, a session (a harness CLI wrapped by the configured provider) is
+    the *only* way a task ever runs.  ``enabled: false`` therefore means
+    "this daemon dispatches nothing" — ``ExecutionMixin._is_session_routed``
+    returns False for every profile, ``_execute_task`` raises, and layer 2
+    of the execution wrapper puts the task back to READY, so the sole
+    outward symptom is a queue that never moves.  It stays expressible — an
+    API/Discord-only daemon, and the tests that assert the routing fork —
+    but ``AppConfig.validate()`` warns about it at load rather than letting
+    it show up once per task as a swallowed traceback.
     """
 
-    enabled: bool = False
+    enabled: bool = True
     #: ``subprocess`` -- not because tmux is unimplemented (it is not), but
     #: because the default has to be a provider
     #: ``default_session_registry`` can actually build on any host: with
-    #: ``tmux`` here, flipping ``enabled: true`` on a stock install made
+    #: ``tmux`` here, a stock install made
     #: ``providers.create("tmux")`` raise on every launch, which pauses the
     #: task for 60 s *and posts a Discord notification* -- per task, every
     #: 60 s, forever.  ``validate()`` also refuses a provider this host
@@ -1718,6 +1727,22 @@ class AppConfig:
         errors.extend(self.integration.validate())
         errors.extend(self.swarm.validate())
         errors.extend(self.resources.validate())
+        # Sessions are the only execution path (the runtime subsystem was
+        # removed), so a disabled session runtime is a daemon that accepts
+        # work and never starts any of it.  Warn, don't reject: the mode is
+        # still legitimate for an API/Discord-only daemon and for the test
+        # suite, but it must not be something an operator discovers by
+        # watching tasks sit in READY forever.
+        if not self.sessions.enabled:
+            errors.append(
+                ConfigError(
+                    "sessions",
+                    "enabled",
+                    "sessions are the only execution path; with this off the "
+                    "daemon can dispatch no task at all and work stays READY",
+                    severity="warning",
+                )
+            )
         # ``supervisor_agent.enabled`` needs the message queue and named
         # sessions to exist (supervisor-agent spec §10).
         if self.supervisor_agent.enabled and not (self.messages.enabled and self.sessions.enabled):
@@ -2456,7 +2481,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
     if "sessions" in raw and isinstance(raw["sessions"], dict):
         se = raw["sessions"]
         config.sessions = SessionsConfig(
-            enabled=bool(se.get("enabled", False)),
+            enabled=bool(se.get("enabled", True)),
             provider=se.get("provider", "tmux"),
             tmux_socket=se.get("tmux_socket", "aq"),
             lease_ttl_seconds=int(se.get("lease_ttl_seconds", 480)),

@@ -32,6 +32,30 @@ class TaskCompletionDetail(BaseModel):
     completed_at: float = 0.0
 
 
+class TaskAttachmentDetail(BaseModel):
+    id: str
+    name: str
+    path: str
+    url: str
+    content_type: str
+    size: int
+
+
+class TaskAttachmentResponse(BaseModel):
+    success: bool = True
+    attachment: TaskAttachmentDetail
+
+
+class TaskAttachmentsResponse(BaseModel):
+    success: bool = True
+    attachments: list[TaskAttachmentDetail] = []
+
+
+class TaskAttachmentDeleteResponse(BaseModel):
+    success: bool = True
+    removed: str
+
+
 class TaskDetail(BaseModel):
     id: str
     project_id: str
@@ -54,6 +78,7 @@ class TaskDetail(BaseModel):
     intelligence_class: str | None = None
     skip_verification: bool = False
     pr_url: str | None = None
+    attachments: list[str] = []
     depends_on: list[TaskRef] = []
     blocks: list[TaskRef] = []
     subtasks: list[TaskRef] = []

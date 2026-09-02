@@ -563,3 +563,70 @@ def test_pane_stream_rejects_non_positive():
     cfg = SessionsConfig(pane_stream_max_sessions=0)
     fields = {e.field for e in cfg.validate()}
     assert "pane_stream_max_sessions" in fields
+
+
+class TestSessionsEnabledDefault:
+    """Sessions are the *only* execution path since the runtime subsystem was removed.
+
+    ``sessions.enabled: false`` used to mean "the legacy runtimes dispatch
+    tasks instead".  There are no legacy runtimes: with the flag off
+    ``ExecutionMixin._is_session_routed`` returns False, ``_execute_task``
+    raises ``RuntimeError`` and layer 2 resets the task to READY — so the
+    only symptom of a disabled daemon is a queue that never moves.  The
+    default therefore has to be on, and turning it off has to say so out
+    loud at load time rather than once per task in a swallowed traceback.
+    """
+
+    def test_default_is_enabled(self):
+        from src.config import SessionsConfig
+
+        assert SessionsConfig().enabled is True
+
+    def test_a_partial_yaml_section_does_not_disable_dispatch(self, tmp_path):
+        """Omitting ``enabled`` from a ``sessions:`` block must not turn it off."""
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            yaml.dump(
+                {
+                    "data_dir": str(tmp_path / "data"),
+                    "database_path": str(tmp_path / "test.db"),
+                    "discord": {"bot_token": "tok", "guild_id": "123"},
+                    "sessions": {"lease_ttl_seconds": 90},
+                }
+            )
+        )
+        cfg = load_config(str(config_file))
+        assert cfg.sessions.enabled is True
+        assert cfg.sessions.lease_ttl_seconds == 90
+
+    def test_disabling_sessions_warns_that_nothing_can_be_dispatched(self, tmp_path):
+        cfg = AppConfig(
+            data_dir=str(tmp_path / "data"),
+            database_path=str(tmp_path / "test.db"),
+            discord=DiscordConfig(bot_token="tok", guild_id="123"),
+        )
+        cfg.sessions.enabled = False
+        errors = cfg.validate()
+        flagged = [e for e in errors if e.section == "sessions" and e.field == "enabled"]
+        assert flagged, errors
+        assert flagged[0].severity == "warning"
+        assert "dispatch" in flagged[0].message
+
+    def test_disabling_sessions_is_not_fatal(self, tmp_path):
+        """It stays an expressible mode — an API/Discord-only daemon, and the suite."""
+        cfg = AppConfig(
+            data_dir=str(tmp_path / "data"),
+            database_path=str(tmp_path / "test.db"),
+            discord=DiscordConfig(bot_token="tok", guild_id="123"),
+        )
+        cfg.sessions.enabled = False
+        assert [e for e in cfg.validate() if e.severity == "error"] == []
+
+    def test_enabled_sessions_are_not_flagged(self, tmp_path):
+        cfg = AppConfig(
+            data_dir=str(tmp_path / "data"),
+            database_path=str(tmp_path / "test.db"),
+            discord=DiscordConfig(bot_token="tok", guild_id="123"),
+        )
+        assert cfg.sessions.enabled is True
+        assert [e for e in cfg.validate() if e.section == "sessions"] == []
