@@ -313,6 +313,30 @@ class _IncrementalBatch:
         self.dirty_tasks: set[str] = set()
 
     # ── row access ──────────────────────────────────────────────────────
+    async def _preload_db_rows(self) -> None:
+        """Prime ``_db_cache`` with one bulk query instead of per-id ones.
+
+        Every dirty task id and its (pre-move) parent almost always needs a
+        ``_db_row`` lookup somewhere in this batch (``_seed_queue``,
+        ``_frame_row``, ``_current_size``, ``_needs_relay``) — fetching them
+        one id at a time was the dominant cost of a small batch (each
+        ``load_layout_rows`` call opens its own transaction). ``_db_row``
+        still falls back to a single-id fetch for any id not covered here
+        (e.g. a container discovered later via resize propagation).
+        """
+        ids: set[str] = set()
+        for tid, _ in self.marks:
+            ids.add(tid)
+            parent = self.parent_of.get(tid)
+            if parent is not None:
+                ids.add(parent)
+        ids -= set(self._db_cache)
+        if not ids:
+            return
+        rows = await self.db.load_layout_rows(self.project_id, self.variant, list(ids))
+        for tid in ids:
+            self._db_cache[tid] = rows.get(tid)
+
     async def _db_row(self, tid: str) -> LayoutRow | None:
         if tid not in self._db_cache:
             rows = await self.db.load_layout_rows(self.project_id, self.variant, [tid])
@@ -381,8 +405,19 @@ class _IncrementalBatch:
                 if row is not None:
                     dirty.add(row.container_id)
             if reason.startswith("parent.changed:"):
-                old = reason.split(":", 1)[1]
-                dirty.add(None if old in ("", "-") else old)
+                # Dirty the container the task's STORED row actually sits
+                # under in this variant, not the reason string's old-parent
+                # id: when that old parent is absent from this variant, the
+                # row has already collapsed to a present ancestor, and the
+                # reason string doesn't know that. A task with no stored row
+                # here yet (created and reparented in the same un-drained
+                # batch, never laid out under its transient parent=None) has
+                # nothing to clean up — skip it entirely. A genuinely
+                # root-level creation still dirties root via the
+                # ``dirty.add(self.parent_of[tid])`` branch above.
+                row = await self._db_row(tid)
+                if row is not None:
+                    dirty.add(row.container_id)
         # a dirty container that is not present in this variant collapses to
         # its nearest present ancestor
         collapsed: set[str | None] = set()
@@ -563,6 +598,7 @@ class _IncrementalBatch:
 
     # ── publish ─────────────────────────────────────────────────────────
     async def run(self, consumed_seq: int | None) -> int:
+        await self._preload_db_rows()
         await self._seed_queue()
         await self._drain()
         # Dirty tasks that vanished from this variant go, with their subtree.

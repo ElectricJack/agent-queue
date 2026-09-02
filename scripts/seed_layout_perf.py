@@ -38,10 +38,17 @@ async def seed_project(db, project_id: str, *, epics: int = 100, per_epic: int =
 
 
 if __name__ == "__main__":
-    from src.database import Database
 
     async def main():
-        db = Database(sys.argv[1])
+        dsn = sys.argv[1]
+        if dsn.startswith("postgresql"):
+            from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
+
+            db = PostgreSQLDatabaseAdapter(dsn)
+        else:
+            from src.database import Database
+
+            db = Database(dsn)
         await db.initialize()
         await seed_project(db, sys.argv[2] if len(sys.argv) > 2 else "perf")
         await db.close()

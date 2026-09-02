@@ -382,3 +382,40 @@ async def test_full_layout_purges_rows_left_by_a_different_project(db):
     assert "x" not in rows
     for k in ("e", *kids):
         assert k in rows
+
+
+async def test_reparenting_freshly_created_task_does_not_relay_root(db, monkeypatch):
+    """A task created then reparented under an epic in one un-drained batch
+    (``parent.changed:-``) must not force a full root re-lay: the task never
+    had a stored layout row at root (nothing to clean up there), so root's
+    other siblings shouldn't be touched. Regression test for the ``_seed_queue``
+    fix that stopped trusting the dirty-mark reason string's old-parent id."""
+    from src.task_graph.layout import driver as driver_mod
+
+    await seed_epic(db, n=3)
+    await db.create_task(Task(id="z", project_id="p1", title="z", description=""))
+    drv = LayoutDriver(db)
+    await drv.full_layout("p1", "all")
+    await drv.full_layout("p1", "active")
+    # full_layout doesn't consume dirty marks — drain the ones left behind
+    # by seed_epic's task creations before installing the spy, so only the
+    # e-new create+reparent below is observed.
+    await drv.process_dirty("p1", min_age_seconds=0)
+
+    calls: list[str | None] = []
+    orig = driver_mod.layout_container
+
+    def spy(scope, *, mode, seed):
+        calls.append(scope.container_id)
+        return orig(scope, mode=mode, seed=seed)
+
+    monkeypatch.setattr(driver_mod, "layout_container", spy)
+
+    await db.create_task(Task(id="e-new", project_id="p1", title="new", description=""))
+    async with db._engine.begin() as conn:
+        await db.set_parent("e-new", "e", conn=conn)
+
+    versions = await drv.process_dirty("p1", min_age_seconds=0)
+    assert versions["all"] is not None
+    assert None not in calls, f"root was re-laid unnecessarily: {calls}"
+    assert "e" in calls

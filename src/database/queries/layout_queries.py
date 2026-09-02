@@ -384,18 +384,12 @@ class LayoutQueryMixin:
                     cells.c.project_id == project_id, cells.c.variant == variant,
                     cells.c.task_id.in_(write_set.deletes)))
 
-            # upserts — one INSERT ... ON CONFLICT statement executed with a
-            # list of parameter dicts (SQLAlchemy's "insertmanyvalues" path)
-            # rather than either a per-row round trip or a literal N-row
-            # ``.values([...])`` clause: an incremental batch touching dozens
-            # (or hundreds, on a root reflow) of rows was paying one network
-            # round trip per row before, and compiling a fresh N-row VALUES
-            # clause from scratch (dominated by
-            # ``crud.py:_extend_values_for_multiparams``) costs as much CPU
-            # as the round trips it replaces. Executing a single-row-shaped,
-            # cacheable statement with a params list lets the dialect batch
-            # and paginate rows itself, so recompilation cost is paid once
-            # regardless of row count.
+            # upserts — one INSERT ... ON CONFLICT statement executed via
+            # ``conn.execute(stmt, rows_vals)`` (a plain DBAPI executemany,
+            # not the INSERT...RETURNING "insertmanyvalues" path) instead of
+            # a per-row round trip: an incremental batch touching dozens (or
+            # hundreds, on a root reflow) of rows was paying one round trip
+            # AND one from-scratch N-row VALUES compilation per publish.
             touched: list[tuple[str, float, float, float, float]] = []
             if write_set.upserts:
                 rows_vals = [
