@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import asyncio
 import ast
-import os
 import tempfile
 from pathlib import Path
 
@@ -27,8 +26,11 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine
 
+from tests.pg_dsn import ensure_worker_postgres_dsn
+
 HOOKS_REVISION = "33bdb059ceff"
 PRIOR_REVISION = "009793fbb800"
+POSTGRES_DSN = ensure_worker_postgres_dsn()
 
 pytestmark = pytest.mark.migration
 
@@ -86,7 +88,7 @@ def test_sqlite_backfills_existing_sessions_as_not_provisioned():
         assert "hooks_provisioned" not in columns
 
 
-@pytest.mark.skipif(not os.environ.get("POSTGRES_TEST_DSN"), reason="POSTGRES_TEST_DSN not set")
+@pytest.mark.skipif(not POSTGRES_DSN, reason="POSTGRES_TEST_DSN not set")
 async def test_postgres_upgrade_and_downgrade_use_a_boolean_default():
     """Run this revision's real DDL against PostgreSQL, not just offline SQL."""
     import asyncpg
