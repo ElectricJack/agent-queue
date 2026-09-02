@@ -1,8 +1,7 @@
 """Tests for L0 + L1 tier injection — Roadmap 3.3.7.
 
 Verifies that L0 Identity (~50 tokens) and L1 Critical Facts (~200 tokens)
-are correctly computed by the orchestrator and injected into the adapter's
-system prompt at the correct tier positions.
+reach the agent at the correct tier positions.
 
 Test cases from docs/specs/design/roadmap.md §3.3.7:
   (a) Task context includes Role from profile (L0)
@@ -12,28 +11,60 @@ Test cases from docs/specs/design/roadmap.md §3.3.7:
   (e) L1 absent if no facts.md (no error)
   (f) L0+L1 in system prompt section (not user message)
   (g) Agent with profile but no project still gets L0 + agent-type L1
+
+**Where the tiers live now.**  The orchestrator used to compute ``l0_role``
+and ``l1_facts`` onto a :class:`~src.models.TaskContext` and hand it to a
+runtime adapter.  That path was deleted with the runtime subsystem: every
+agent runs as a session, the launch carries only the bootstrap prompt
+(``src/sessions/spec.py::BOOTSTRAP_PROMPT``), and the agent fetches its full
+startup document with ``aq prime``.  The tiers are therefore sections of the
+prime document (``src/prime/sections.py``, design §5.2):
+
+* L0 — ``build_role_section``: the ``## Role`` (+ ``## Rules``) body of
+  ``vault/agent-types/<profile_id>/profile.md``.  ``AgentProfile.system_prompt_suffix``
+  is no longer read on this path.
+* L1 — ``build_l1_facts_section``: an always-present slot that renders empty
+  while ``memory.enabled`` is False (docs/specs/design/feature-pauses.md).
+
+The (a)/(d)/(e)/(g) cases below drive the real dispatch path with the
+``fake`` session provider (``tests/session_dispatch_helpers.py``) and assert
+on the prime document rendered for the launched task, so a regression in
+either dispatch or prime wiring fails them.  Pure renderer coverage lives in
+``tests/test_prime_renderer.py``.
+
+**Cases that no longer have an implementation to test.**  Nothing in
+``src/`` calls ``MemoryService.load_l1_facts`` any more, so the following
+former tests are removed rather than ported — there is no L1-from-memory
+behaviour on the session path to assert:
+
+* ``TestL1FactsFromMemory::test_l1_facts_populated_from_memory_service``
+* ``TestL1FactsFromMemory::test_l1_facts_called_with_project_and_agent_type``
+* ``TestL0L1ProfileWithoutProjectFacts::test_memory_service_called_with_agent_type``
+* ``TestL0L1ProfileWithoutProjectFacts::test_agent_type_none_when_no_profile``
+
+What *does* exist — the L1 slot rendering empty while memory is paused — is
+pinned by ``tests/test_prime_renderer.py::TestMemoryPausedSlots``
+(``test_l1_and_l2_render_empty_while_memory_paused`` and
+``test_l1_and_l2_slots_still_present_as_section_vars``) and, end to end, by
+``TestL1GracefulDegradation`` below.  Re-wiring L1 content is a renderer
+change in ``build_l1_facts_section`` (see its docstring); the memory-service
+tests belong back here when that lands.
 """
 
-import pytest
 from unittest.mock import AsyncMock
 
-from src.runtimes.base import Runtime
-from tests.assignment_routing_helpers import install_already_routed
-from src.config import AppConfig
-from src.models import (
-    Agent,
-    AgentOutput,
-    AgentProfile,
-    AgentResult,
-    Project,
-    RepoSourceType,
-    Task,
-    TaskContext,
-    TaskStatus,
-    Workspace,
-)
-from src.orchestrator import Orchestrator
+import pytest
 
+from src.models import Task, TaskContext, TaskStatus
+from tests.session_dispatch_helpers import (
+    create_session_profile,
+    create_session_project,
+    drain_running_tasks,
+    fake_provider,
+    prime_bodies,
+    render_prime,
+    write_vault_profile,
+)
 
 # -- Realistic L0/L1 content for token budget tests ----------------------
 
@@ -98,106 +129,30 @@ def _build_prompt_from(task: TaskContext) -> str:
     return builder.build_task_prompt()
 
 
-class CapturingMockAdapter(Runtime):
-    """MockAdapter that captures the TaskContext passed to start()."""
-
-    def __init__(self):
-        self.captured_ctx: TaskContext | None = None
-
-    async def start(self, task: TaskContext) -> None:
-        self.captured_ctx = task
-
-    async def wait(self, on_message=None) -> AgentOutput:
-        return AgentOutput(result=AgentResult.COMPLETED, summary="Done", tokens_used=100)
-
-    async def stop(self) -> None:
-        pass
-
-    async def is_alive(self) -> bool:
-        return True
-
-
-class CapturingMockAdapterFactory:
-    """Factory that creates CapturingMockAdapters and records them."""
-
-    def __init__(self):
-        self.adapters: list[CapturingMockAdapter] = []
-
-    def create(self, agent_type: str, profile=None, llm_logger=None) -> Runtime:
-        adapter = CapturingMockAdapter()
-        self.adapters.append(adapter)
-        return adapter
-
-    @property
-    def last_ctx(self) -> TaskContext | None:
-        """Return the TaskContext captured by the most recently created adapter."""
-        if self.adapters:
-            return self.adapters[-1].captured_ctx
-        return None
-
-
-async def _setup_project_and_agent(
-    db,
-    project_id: str = "p-1",
-    profile: AgentProfile | None = None,
-):
-    """Create project, workspace, and agent. Optionally set a default profile.
-
-    Profile is created first to satisfy FK constraints.
-
-    ``profile=None`` means "no profile anywhere in play".  That now
-    requires clearing the profiles the orchestrator syncs from the vault
-    at startup: with any profile registered, AgentReconciler backfills
-    the project's NULL ``default_profile_id`` with a system default so
-    READY tasks stay dispatchable, and the task would execute *with* a
-    profile.  Tests here that assert the no-profile degradation path
-    need the table genuinely empty.
-    """
-    # Profile must exist before project references it
-    if profile:
-        await db.create_profile(profile)
-    else:
-        for existing in await db.list_profiles():
-            await db.delete_profile(existing.id)
-
-    project = Project(
-        id=project_id,
-        name="test-project",
-        default_profile_id=profile.id if profile else None,
-    )
-    await db.create_project(project)
-    await db.create_workspace(
-        Workspace(
-            id=f"ws-{project_id}",
-            project_id=project_id,
-            workspace_path="/tmp/test-l0l1-workspace",
-            source_type=RepoSourceType.LINK,
+async def _dispatch(orch, *, task_id: str = "t-1", profile_id: str | None = None) -> Task:
+    """Create a READY task, run one cycle, and wait for its launch to settle."""
+    await orch.db.create_task(
+        Task(
+            id=task_id,
+            project_id="p-1",
+            title="Tier injection",
+            description="Do something",
+            status=TaskStatus.READY,
+            profile_id=profile_id,
         )
     )
-    await db.create_agent(Agent(id="a-1", name="claude-1", profile_id="claude"))
+    await orch.run_one_cycle()
+    await drain_running_tasks(orch)
+    return await orch.db.get_task(task_id)
 
 
-# -- Fixtures -----------------------------------------------------------
-
-
-@pytest.fixture
-async def orch_env(tmp_path):
-    """Create orchestrator with capturing adapter factory."""
-    config = AppConfig(
-        data_dir=str(tmp_path / "data"),
-        database_path=str(tmp_path / "test.db"),
-        workspace_dir=str(tmp_path / "workspaces"),
-    )
-    # These prompt-tier tests use MockAdapter git and non-real paths, which
-    # the worktrees P6 default (True) tries to provision as slots.  Disable.
-    config.worktrees.enabled = False
-    factory = CapturingMockAdapterFactory()
-    o = Orchestrator(config, runtimes=factory)
-    await o.initialize()
-    install_already_routed(o)
-    yield o, factory
-    await o.wait_for_running_tasks(timeout=10)
-    await o.shutdown()
+async def _assert_launched(orch, task_id: str = "t-1") -> None:
+    """The task actually left READY as a session — prime is rendered *for a launch*."""
+    task = await orch.db.get_task(task_id)
+    assert task.status == TaskStatus.IN_PROGRESS, task.status
+    session = await orch.db.get_session_for_task(task_id)
+    assert session is not None and session.state == "running"
+    assert fake_provider(orch).starts, "provider.start() was never called"
 
 
 # ======================================================================
@@ -205,177 +160,62 @@ async def orch_env(tmp_path):
 # ======================================================================
 
 
-@pytest.mark.skip(
-    reason="legacy runtime prompt assembly was removed; session launch tests cover execution"
-)
 class TestL0RoleFromProfile:
-    """(a) Every task context includes the ## Role section from the agent's profile."""
+    """(a) The launched task's prime carries the ``## Role`` of its profile."""
 
-    async def test_l0_role_populated_from_profile_suffix(self, orch_env):
-        """Profile's system_prompt_suffix flows through to TaskContext.l0_role."""
-        orch, factory = orch_env
-
-        profile = AgentProfile(
-            id="coding",
-            name="Coding Agent",
-            system_prompt_suffix="You are a senior backend developer.",
-        )
-        await _setup_project_and_agent(orch.db, profile=profile)
-
-        await orch.db.create_task(
-            Task(
-                id="t-1",
-                project_id="p-1",
-                title="Test L0",
-                description="Do something",
-                status=TaskStatus.READY,
-            )
+    async def test_l0_role_from_task_profile_vault_file(self, session_orch):
+        """``vault/agent-types/<profile>/profile.md`` ``## Role`` is prime section 1."""
+        orch = session_orch
+        await create_session_project(orch)
+        await create_session_profile(orch, "coding")
+        write_vault_profile(
+            orch.config,
+            "coding",
+            "## Role\nYou are a senior backend developer.\n\n## Config\nharness: claude\n",
         )
 
-        await orch.run_one_cycle()
-        await orch.wait_for_running_tasks()
+        await _dispatch(orch, profile_id="coding")
+        await _assert_launched(orch)
 
-        ctx = factory.last_ctx
-        assert ctx is not None, "Adapter was never started — TaskContext not captured"
-        assert ctx.l0_role == "You are a senior backend developer."
+        bodies = prime_bodies(await render_prime(orch, "t-1"))
+        assert bodies["role"] == "You are a senior backend developer."
 
-    async def test_l0_role_stripped_of_whitespace(self, orch_env):
-        """Leading/trailing whitespace in system_prompt_suffix is stripped."""
-        orch, factory = orch_env
+    async def test_l0_role_stripped_of_whitespace(self, session_orch):
+        """Leading/trailing whitespace around the Role body is stripped."""
+        orch = session_orch
+        await create_session_project(orch)
+        await create_session_profile(orch, "qa")
+        write_vault_profile(orch.config, "qa", "## Role\n  \n  You are a QA specialist.  \n  \n")
 
-        profile = AgentProfile(
-            id="qa",
-            name="QA Agent",
-            system_prompt_suffix="  \n  You are a QA specialist.  \n  ",
-        )
-        await _setup_project_and_agent(orch.db, profile=profile)
+        await _dispatch(orch, profile_id="qa")
+        await _assert_launched(orch)
 
-        await orch.db.create_task(
-            Task(
-                id="t-1",
-                project_id="p-1",
-                title="Test L0 strip",
-                description="Do something",
-                status=TaskStatus.READY,
-            )
-        )
+        bodies = prime_bodies(await render_prime(orch, "t-1"))
+        assert bodies["role"] == "You are a QA specialist."
 
-        await orch.run_one_cycle()
-        await orch.wait_for_running_tasks()
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "task calm-stone: prime builds the role section from task.profile_id "
+            "only, so a task inheriting the project's default profile launches "
+            "with that profile on its session row but gets no L0 Role"
+        ),
+    )
+    async def test_l0_role_from_project_default_profile(self, session_orch):
+        """A task without its own profile_id still gets L0 from the project default."""
+        orch = session_orch
+        await create_session_project(orch, default_profile_id="coding")
+        write_vault_profile(orch.config, "coding", "## Role\nYou are a full-stack developer.\n")
 
-        ctx = factory.last_ctx
-        assert ctx is not None
-        assert ctx.l0_role == "You are a QA specialist."
+        await _dispatch(orch)
+        await _assert_launched(orch)
 
-    async def test_l0_role_from_task_level_profile(self, orch_env):
-        """Profile set via task.profile_id also provides L0 role."""
-        orch, factory = orch_env
-
-        profile = AgentProfile(
-            id="test-reviewer",
-            name="Code Reviewer",
-            system_prompt_suffix="You review PRs for correctness and style.",
-        )
-        # Project has no default profile; the task has one explicitly
-        await _setup_project_and_agent(orch.db, profile=profile)
-        # Override: remove default_profile_id from project
-        await orch.db.update_project("p-1", default_profile_id=None)
-
-        await orch.db.create_task(
-            Task(
-                id="t-1",
-                project_id="p-1",
-                title="Test task-level L0",
-                description="Review the code",
-                status=TaskStatus.READY,
-                profile_id="test-reviewer",  # task-level profile
-            )
-        )
-
-        await orch.run_one_cycle()
-        await orch.wait_for_running_tasks()
-
-        ctx = factory.last_ctx
-        assert ctx is not None
-        assert ctx.l0_role == "You review PRs for correctness and style."
-
-
-# ======================================================================
-# (b) Every task context includes project + agent-type facts (L1)
-# ======================================================================
-
-
-@pytest.mark.skip(
-    reason="legacy runtime prompt assembly was removed; session launch tests cover execution"
-)
-class TestL1FactsFromMemory:
-    """(b) Every task context includes project + agent-type facts.md KV entries."""
-
-    async def test_l1_facts_populated_from_memory_service(self, orch_env):
-        """Memory service's load_l1_facts() result flows to TaskContext.l1_facts."""
-        orch, factory = orch_env
-
-        mock_mem = AsyncMock()
-        mock_mem.load_l1_facts = AsyncMock(return_value=L1_FACTS_REALISTIC)
-        orch.plugin_registry.register_plugin_service("aq-memory", "memory", mock_mem)
-
-        profile = AgentProfile(
-            id="coding",
-            name="Coding Agent",
-            system_prompt_suffix="You are a coding agent.",
-        )
-        await _setup_project_and_agent(orch.db, profile=profile)
-
-        await orch.db.create_task(
-            Task(
-                id="t-1",
-                project_id="p-1",
-                title="Test L1",
-                description="Build it",
-                status=TaskStatus.READY,
-            )
-        )
-
-        await orch.run_one_cycle()
-        await orch.wait_for_running_tasks()
-
-        ctx = factory.last_ctx
-        assert ctx is not None
-        assert "Critical Facts" in ctx.l1_facts
-        assert "tech_stack: Python 3.12" in ctx.l1_facts
-
-    async def test_l1_facts_called_with_project_and_agent_type(self, orch_env):
-        """load_l1_facts receives correct project_id and agent_type."""
-        orch, factory = orch_env
-
-        mock_mem = AsyncMock()
-        mock_mem.load_l1_facts = AsyncMock(return_value="## Critical Facts\n- key: value")
-        orch.plugin_registry.register_plugin_service("aq-memory", "memory", mock_mem)
-
-        profile = AgentProfile(
-            id="web-developer",
-            name="Web Developer",
-            system_prompt_suffix="You build web apps.",
-        )
-        await _setup_project_and_agent(orch.db, profile=profile)
-
-        await orch.db.create_task(
-            Task(
-                id="t-1",
-                project_id="p-1",
-                title="Test L1 params",
-                description="Build it",
-                status=TaskStatus.READY,
-            )
-        )
-
-        await orch.run_one_cycle()
-        await orch.wait_for_running_tasks()
-
-        mock_mem.load_l1_facts.assert_called_once_with(
-            project_id="p-1",
-            agent_type="web-developer",
-        )
+        # Dispatch resolved the project default onto the session…
+        session = await orch.db.get_session_for_task("t-1")
+        assert session.profile_id == "coding"
+        # …so the agent that session runs must be told who it is.
+        bodies = prime_bodies(await render_prime(orch, "t-1"))
+        assert bodies["role"] == "You are a full-stack developer."
 
 
 # ======================================================================
@@ -435,89 +275,58 @@ class TestL0L1TokenBudget:
 
 
 # ======================================================================
-# (d) L0 absent if agent has no profile (graceful degradation)
+# (d) L0 absent if agent has no profile.md (graceful degradation)
 # ======================================================================
 
 
-@pytest.mark.skip(
-    reason="legacy runtime prompt assembly was removed; session launch tests cover execution"
-)
 class TestL0GracefulDegradation:
-    """(d) L0 is absent if agent has no profile.md (graceful degradation)."""
+    """(d) L0 is absent if the profile has no ``profile.md`` — and nothing breaks.
 
-    async def test_l0_empty_when_no_profile(self, orch_env):
-        """No profile → l0_role is empty string."""
-        orch, factory = orch_env
+    "No profile at all" is not a degradation case on the session path: a
+    task without a routable profile has no harness and is not launched
+    (``tests/test_agent_profiles.py::TestProfileEnforcement::
+    test_dispatch_with_no_profile_anywhere_launches_no_session``).  What
+    degrades gracefully is a routable profile with nothing to say.
+    """
 
-        # No profile configured at all
-        await _setup_project_and_agent(orch.db)
+    async def test_l0_empty_when_profile_has_no_vault_file(self, session_orch):
+        """Profile row exists, no ``profile.md`` in the vault → empty role section."""
+        orch = session_orch
+        await create_session_project(orch)
+        await create_session_profile(orch, "bare")
 
-        await orch.db.create_task(
-            Task(
-                id="t-1",
-                project_id="p-1",
-                title="No profile",
-                description="Do something",
-                status=TaskStatus.READY,
-            )
-        )
+        await _dispatch(orch, profile_id="bare")
+        await _assert_launched(orch)
 
-        await orch.run_one_cycle()
-        await orch.wait_for_running_tasks()
+        doc = await render_prime(orch, "t-1")
+        assert prime_bodies(doc)["role"] == ""
+        assert "## Role" not in doc.to_markdown()
 
-        ctx = factory.last_ctx
-        assert ctx is not None
-        assert ctx.l0_role == ""
+    async def test_l0_empty_when_profile_has_no_role_heading(self, session_orch):
+        """``profile.md`` exists but has only machine-only headings → empty role."""
+        orch = session_orch
+        await create_session_project(orch)
+        await create_session_profile(orch, "bare")
+        write_vault_profile(orch.config, "bare", "## Config\nharness: claude\n\n## Tools\n- Read\n")
 
-    async def test_l0_empty_when_profile_has_no_suffix(self, orch_env):
-        """Profile exists but system_prompt_suffix is empty → l0_role is empty."""
-        orch, factory = orch_env
+        await _dispatch(orch, profile_id="bare")
+        await _assert_launched(orch)
 
-        profile = AgentProfile(
-            id="bare",
-            name="Bare Profile",
-            system_prompt_suffix="",  # explicitly empty
-        )
-        await _setup_project_and_agent(orch.db, profile=profile)
+        assert prime_bodies(await render_prime(orch, "t-1"))["role"] == ""
 
-        await orch.db.create_task(
-            Task(
-                id="t-1",
-                project_id="p-1",
-                title="Empty suffix",
-                description="Do something",
-                status=TaskStatus.READY,
-            )
-        )
+    async def test_task_launches_without_l0(self, session_orch):
+        """The session starts and the task is IN_PROGRESS even with no L0 role."""
+        orch = session_orch
+        await create_session_project(orch)
+        await create_session_profile(orch, "bare")
 
-        await orch.run_one_cycle()
-        await orch.wait_for_running_tasks()
+        await _dispatch(orch, profile_id="bare")
 
-        ctx = factory.last_ctx
-        assert ctx is not None
-        assert ctx.l0_role == ""
-
-    async def test_task_completes_without_l0(self, orch_env):
-        """Task completes successfully even without L0 role."""
-        orch, factory = orch_env
-
-        await _setup_project_and_agent(orch.db)
-
-        await orch.db.create_task(
-            Task(
-                id="t-1",
-                project_id="p-1",
-                title="No L0 completion",
-                description="Work without role",
-                status=TaskStatus.READY,
-            )
-        )
-
-        await orch.run_one_cycle()
-        await orch.wait_for_running_tasks()
-
-        task = await orch.db.get_task("t-1")
-        assert task.status == TaskStatus.COMPLETED
+        await _assert_launched(orch)
+        # The rest of the document is intact.
+        bodies = prime_bodies(await render_prime(orch, "t-1"))
+        assert "Do something" in bodies["task"]
+        assert bodies["completion_protocol"]
 
 
 # ======================================================================
@@ -525,97 +334,51 @@ class TestL0GracefulDegradation:
 # ======================================================================
 
 
-@pytest.mark.skip(
-    reason="legacy runtime prompt assembly was removed; session launch tests cover execution"
-)
 class TestL1GracefulDegradation:
-    """(e) L1 is absent if no facts.md exists for the scope (no error)."""
+    """(e) The L1 slot is empty when there is nothing to fill it, without error."""
 
-    async def test_l1_empty_when_memory_returns_empty(self, orch_env):
-        """Memory service returns empty string → l1_facts is empty."""
-        orch, factory = orch_env
+    async def test_l1_empty_when_no_memory_service(self, session_orch):
+        """No memory plugin, memory paused → empty L1, task launched."""
+        orch = session_orch
+        assert orch.plugin_registry.get_service("memory") is None
+        assert orch.config.memory.enabled is False
+        await create_session_project(orch)
 
-        mock_mem = AsyncMock()
-        mock_mem.load_l1_facts = AsyncMock(return_value="")
-        orch.plugin_registry.register_plugin_service("aq-memory", "memory", mock_mem)
+        await _dispatch(orch)
+        await _assert_launched(orch)
 
-        await _setup_project_and_agent(orch.db)
+        doc = await render_prime(orch, "t-1")
+        assert prime_bodies(doc)["l1_facts"] == ""
+        assert "## Facts" not in doc.to_markdown()
 
-        await orch.db.create_task(
-            Task(
-                id="t-1",
-                project_id="p-1",
-                title="No facts",
-                description="Do something",
-                status=TaskStatus.READY,
-            )
-        )
+    async def test_l1_graceful_when_memory_service_would_raise(self, session_orch):
+        """A broken memory service cannot break the launch or the prime render.
 
-        await orch.run_one_cycle()
-        await orch.wait_for_running_tasks()
-
-        ctx = factory.last_ctx
-        assert ctx is not None
-        assert ctx.l1_facts == ""
-
-        task = await orch.db.get_task("t-1")
-        assert task.status == TaskStatus.COMPLETED
-
-    async def test_l1_empty_when_no_memory_service(self, orch_env):
-        """No memory service configured → l1_facts is empty, no error."""
-        orch, factory = orch_env
-
-        # Ensure no memory service is registered
-        orch.plugin_registry._clear_plugin_services("aq-memory")
-
-        await _setup_project_and_agent(orch.db)
-
-        await orch.db.create_task(
-            Task(
-                id="t-1",
-                project_id="p-1",
-                title="No mem service",
-                description="Do something",
-                status=TaskStatus.READY,
-            )
-        )
-
-        await orch.run_one_cycle()
-        await orch.wait_for_running_tasks()
-
-        ctx = factory.last_ctx
-        assert ctx is not None
-        assert ctx.l1_facts == ""
-
-    async def test_l1_graceful_on_memory_service_exception(self, orch_env):
-        """Memory service throws → l1_facts is empty, task still completes."""
-        orch, factory = orch_env
-
+        The session path does not consult the plugin service for L1 (prime's
+        slot is config-gated), so the failure mode the old test guarded —
+        ``load_l1_facts`` raising mid-dispatch — cannot reach the agent.
+        """
+        orch = session_orch
         mock_mem = AsyncMock()
         mock_mem.load_l1_facts = AsyncMock(side_effect=RuntimeError("memsearch unavailable"))
         orch.plugin_registry.register_plugin_service("aq-memory", "memory", mock_mem)
+        await create_session_project(orch)
 
-        await _setup_project_and_agent(orch.db)
+        await _dispatch(orch)
+        await _assert_launched(orch)
 
-        await orch.db.create_task(
-            Task(
-                id="t-1",
-                project_id="p-1",
-                title="Mem error",
-                description="Do something",
-                status=TaskStatus.READY,
-            )
-        )
+        assert prime_bodies(await render_prime(orch, "t-1"))["l1_facts"] == ""
+        mock_mem.load_l1_facts.assert_not_called()
 
-        await orch.run_one_cycle()
-        await orch.wait_for_running_tasks()
+    async def test_l1_slot_present_but_empty_in_section_vars(self, session_orch):
+        """The slot survives as a template variable so a memory comeback is a renderer change."""
+        orch = session_orch
+        await create_session_project(orch)
 
-        ctx = factory.last_ctx
-        assert ctx is not None
-        assert ctx.l1_facts == ""
+        await _dispatch(orch)
 
-        task = await orch.db.get_task("t-1")
-        assert task.status == TaskStatus.COMPLETED
+        variables = (await render_prime(orch, "t-1")).section_vars()
+        assert "l1_facts" in variables and variables["l1_facts"] == ""
 
 
 # ======================================================================
@@ -662,7 +425,7 @@ class TestL0L1InSystemPrompt:
         builder.set_l1_facts("## Critical Facts\n- stack: Python")
         builder.add_context("description", "## Task\nFix the bug.")
 
-        system_prompt, tools = builder.build()
+        system_prompt, _tools = builder.build()
 
         # L0 and L1 are in the system prompt string
         assert "You are a coding agent." in system_prompt
@@ -702,162 +465,44 @@ class TestL0L1InSystemPrompt:
 
 
 # ======================================================================
-# (g) Agent with profile but no project still gets L0 + agent-type L1
+# (g) Agent with profile but no project facts still gets L0 (+ the L1 slot)
 # ======================================================================
 
 
-@pytest.mark.skip(
-    reason="legacy runtime prompt assembly was removed; session launch tests cover execution"
-)
 class TestL0L1ProfileWithoutProjectFacts:
-    """(g) Agent with profile but no project-level facts still gets L0 + agent-type L1."""
+    """(g) A profile with no project-level facts still gets its L0, in tier order.
 
-    async def test_l0_from_profile_l1_from_agent_type_scope(self, orch_env):
-        """Profile provides L0; agent-type scope provides L1 (no project facts)."""
-        orch, factory = orch_env
+    The agent-type-scope L1 half of this case (``load_l1_facts(project_id=…,
+    agent_type=profile.id)``) has no implementation on the session path —
+    see the module docstring for the removed tests.
+    """
 
-        # Mock memory service returns only agent-type facts
-        # (simulating: project has no facts.md, agent-type does)
-        agent_type_facts = "## Critical Facts\n- default_model: claude-sonnet\n- code_style: PEP 8"
-        mock_mem = AsyncMock()
-        mock_mem.load_l1_facts = AsyncMock(return_value=agent_type_facts)
-        orch.plugin_registry.register_plugin_service("aq-memory", "memory", mock_mem)
+    async def test_l0_from_profile_with_empty_l1_slot(self, session_orch):
+        """Profile provides L0; the L1 slot is present and (while paused) empty."""
+        orch = session_orch
+        await create_session_project(orch)
+        await create_session_profile(orch, "coding")
+        write_vault_profile(orch.config, "coding", "## Role\nYou are a full-stack developer.\n")
 
-        profile = AgentProfile(
-            id="coding",
-            name="Coding Agent",
-            system_prompt_suffix="You are a full-stack developer.",
-        )
-        await _setup_project_and_agent(orch.db, profile=profile)
+        await _dispatch(orch, profile_id="coding")
+        await _assert_launched(orch)
 
-        await orch.db.create_task(
-            Task(
-                id="t-1",
-                project_id="p-1",
-                title="Profile+AgentType L1",
-                description="Do something",
-                status=TaskStatus.READY,
-            )
-        )
+        doc = await render_prime(orch, "t-1")
+        bodies = prime_bodies(doc)
+        assert bodies["role"] == "You are a full-stack developer."
+        assert "l1_facts" in bodies and bodies["l1_facts"] == ""
 
-        await orch.run_one_cycle()
-        await orch.wait_for_running_tasks()
+    async def test_l0_precedes_task_in_rendered_prime(self, session_orch):
+        """Tier order survives rendering: L0 identity comes before the task body."""
+        orch = session_orch
+        await create_session_project(orch)
+        await create_session_profile(orch, "coding")
+        write_vault_profile(orch.config, "coding", "## Role\nYou are a senior engineer.\n")
 
-        ctx = factory.last_ctx
-        assert ctx is not None
+        await _dispatch(orch, profile_id="coding")
+        await _assert_launched(orch)
 
-        # L0 from profile
-        assert ctx.l0_role == "You are a full-stack developer."
-
-        # L1 from agent-type scope
-        assert "Critical Facts" in ctx.l1_facts
-        assert "default_model: claude-sonnet" in ctx.l1_facts
-
-    async def test_memory_service_called_with_agent_type(self, orch_env):
-        """load_l1_facts is called with agent_type=profile.id."""
-        orch, factory = orch_env
-
-        mock_mem = AsyncMock()
-        mock_mem.load_l1_facts = AsyncMock(return_value="")
-        orch.plugin_registry.register_plugin_service("aq-memory", "memory", mock_mem)
-
-        profile = AgentProfile(
-            id="test-reviewer",
-            name="Code Reviewer",
-            system_prompt_suffix="You review code.",
-        )
-        await _setup_project_and_agent(orch.db, profile=profile)
-
-        await orch.db.create_task(
-            Task(
-                id="t-1",
-                project_id="p-1",
-                title="Check agent_type param",
-                description="Do something",
-                status=TaskStatus.READY,
-            )
-        )
-
-        await orch.run_one_cycle()
-        await orch.wait_for_running_tasks()
-
-        # Verify agent_type comes from profile.id
-        mock_mem.load_l1_facts.assert_called_once_with(
-            project_id="p-1",
-            agent_type="test-reviewer",
-        )
-
-    async def test_agent_type_none_when_no_profile(self, orch_env):
-        """Without a profile, agent_type=None is passed to load_l1_facts."""
-        orch, factory = orch_env
-
-        mock_mem = AsyncMock()
-        mock_mem.load_l1_facts = AsyncMock(return_value="")
-        orch.plugin_registry.register_plugin_service("aq-memory", "memory", mock_mem)
-
-        # No profile
-        await _setup_project_and_agent(orch.db)
-
-        await orch.db.create_task(
-            Task(
-                id="t-1",
-                project_id="p-1",
-                title="No profile agent_type",
-                description="Do something",
-                status=TaskStatus.READY,
-            )
-        )
-
-        await orch.run_one_cycle()
-        await orch.wait_for_running_tasks()
-
-        mock_mem.load_l1_facts.assert_called_once_with(
-            project_id="p-1",
-            agent_type=None,
-        )
-
-    async def test_both_l0_and_l1_in_final_prompt(self, orch_env):
-        """When both L0 and L1 are present, both appear in the adapter prompt."""
-        orch, factory = orch_env
-
-        facts = "## Critical Facts\n- key: value"
-        mock_mem = AsyncMock()
-        mock_mem.load_l1_facts = AsyncMock(return_value=facts)
-        # Execution path also calls load_l1_guidance and load_l2_context —
-        # return empty string so AsyncMock auto-attrs don't leak coroutines
-        # or MagicMocks into the assembled prompt.
-        mock_mem.load_l1_guidance = AsyncMock(return_value="")
-        mock_mem.load_l2_context = AsyncMock(return_value="")
-        orch.plugin_registry.register_plugin_service("aq-memory", "memory", mock_mem)
-
-        profile = AgentProfile(
-            id="coding",
-            name="Coding Agent",
-            system_prompt_suffix="You are a senior engineer.",
-        )
-        await _setup_project_and_agent(orch.db, profile=profile)
-
-        await orch.db.create_task(
-            Task(
-                id="t-1",
-                project_id="p-1",
-                title="Both L0 L1",
-                description="Do something",
-                status=TaskStatus.READY,
-            )
-        )
-
-        await orch.run_one_cycle()
-        await orch.wait_for_running_tasks()
-
-        ctx = factory.last_ctx
-        assert ctx is not None
-        assert ctx.l0_role == "You are a senior engineer."
-        assert ctx.l1_facts == facts
-
-        # Verify both survive prompt assembly
-        prompt = _build_prompt_from(ctx)
-
-        assert "You are a senior engineer." in prompt
-        assert "Critical Facts" in prompt
-        assert "key: value" in prompt
+        markdown = (await render_prime(orch, "t-1")).to_markdown()
+        role_pos = markdown.index("You are a senior engineer.")
+        task_pos = markdown.index("Do something")
+        assert role_pos < task_pos

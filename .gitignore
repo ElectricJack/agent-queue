@@ -27,6 +27,7 @@ plan.md
 node_modules/
 dashboard/dist/
 dashboard/.vite/
+*.tsbuildinfo
 packages/aq-ts-client/src/
 !packages/aq-ts-client/src/index.ts
 docs/.obsidian
@@ -44,3 +45,5 @@ docs/.obsidian
 .coverage.*
 coverage.json
 htmlcov/
+# TypeScript incremental build metadata
+*.tsbuildinfo

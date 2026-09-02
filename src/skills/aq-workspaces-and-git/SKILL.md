@@ -81,11 +81,16 @@ be pushed and reachable before you call `aq task close`.
 
 ## Reviewers and read-only workspaces
 
-If your profile has `read_only: true` (reviewer / final-reviewer), the
-daemon acquired your workspace without a write lock. Don't `git commit`
-or `git push` — even if it works, the worktree may be mid-checkout
-elsewhere. Stick to `git log --oneline`, `git show <sha>`,
-`git diff <base>..<branch>`.
+If your profile has `read_only: true` (reviewer / final-reviewer), you
+hold an ordinary slot worktree — it is yours for the task and nobody
+else is writing to it. `read_only` is a statement about *intent*, not
+about isolation: don't `git commit` or `git push`, because reviewing is
+not the job that produces commits. Stick to `git log --oneline`,
+`git show <sha>`, `git diff <base>..<branch>`.
+
+Your work_dir is never the project's base checkout — that clone exists
+for `fetch` and `git worktree` bookkeeping and is often a human's own
+working tree, so the daemon refuses to launch a session in it.
 
 ## Workspace admin commands
 

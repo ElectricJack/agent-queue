@@ -88,6 +88,11 @@ class PrimeRenderer:
         if sess is not None:
             session_name = getattr(sess, "name", None)
             session_lifecycle = getattr(sess, "lifecycle", None)
+        session_profile_id = (
+            getattr(sess, "profile_id", None)
+            if getattr(sess, "state", None) in live_states
+            else None
+        )
         session_work_dir = (
             getattr(sess, "work_dir", None)
             if getattr(sess, "state", None) in live_states
@@ -96,11 +101,15 @@ class PrimeRenderer:
         effective_work_dir = (
             work_dir or session_work_dir or await _sections.resolve_work_dir(self.db, task)
         )
+        effective_profile_id = session_profile_id or task.profile_id
+        if not effective_profile_id:
+            project = await self.db.get_project(task.project_id)
+            effective_profile_id = getattr(project, "default_profile_id", None)
 
         section_tuple = (
-            await _sections.build_role_section(self.config, task.profile_id),
+            await _sections.build_role_section(self.config, effective_profile_id),
             await _sections.build_project_role_section(
-                self.config, task.profile_id, task.project_id
+                self.config, effective_profile_id, task.project_id
             ),
             _sections.build_task_section(task),
             await _sections.build_task_context_section(self.db, self.config, task),
@@ -110,7 +119,7 @@ class PrimeRenderer:
                 task_id,
                 config=self.config,
                 mark_delivered=mark_messages_delivered,
-                profile_id=task.profile_id,
+                profile_id=effective_profile_id,
                 session_name=session_name,
             ),
             _sections.build_l1_facts_section(self.config),

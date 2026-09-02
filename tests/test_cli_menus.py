@@ -9,7 +9,7 @@ from src.cli import menus
 
 def test_task_creation_wizard_reprompts_required_values_and_preserves_defaults(monkeypatch):
     """Removing required-field validation or defaults would change the creation payload."""
-    responses = iter(["project-1", "A task", "Description", None, "feature", "no"])
+    responses = iter(["project-1", "A task", "Description", None, "feature", "inherit"])
     monkeypatch.setattr(menus, "prompt_input", lambda *args, **kwargs: next(responses))
     monkeypatch.setattr(menus, "prompt_choice", lambda *args, **kwargs: next(responses))
 
@@ -22,6 +22,29 @@ def test_task_creation_wizard_reprompts_required_values_and_preserves_defaults(m
         "priority": 100,
         "task_type": "feature",
     }
+
+
+def test_task_creation_wizard_includes_integration_mode_when_not_inherit(monkeypatch):
+    """The wizard asks for an integration policy; dropping it silently ignores the answer."""
+    for mode in ("pull_request", "direct"):
+        responses = iter(["project-1", "A task", "Description", None, "feature", mode])
+        monkeypatch.setattr(menus, "prompt_input", lambda *a, **k: next(responses))
+        monkeypatch.setattr(menus, "prompt_choice", lambda *a, **k: next(responses))
+
+        result = menus.task_creation_wizard(["project-1"])
+
+        assert result["integration_mode"] == mode
+
+
+def test_task_creation_wizard_omits_integration_mode_for_inherit(monkeypatch):
+    """`inherit` means defer to project/system policy, so no key should be sent."""
+    responses = iter(["project-1", "A task", "Description", None, "feature", "inherit"])
+    monkeypatch.setattr(menus, "prompt_input", lambda *a, **k: next(responses))
+    monkeypatch.setattr(menus, "prompt_choice", lambda *a, **k: next(responses))
+
+    result = menus.task_creation_wizard(["project-1"])
+
+    assert "integration_mode" not in result
 
 
 def test_select_and_confirm_return_value_on_choice_and_none_or_default_on_cancel(monkeypatch):

@@ -116,7 +116,13 @@ async def _preserve_close_report(conn, canonical) -> None:
 
 
 async def ensure_triage_task(
-    db, project_id: str, *, title: str, description: str, priority: int
+    db,
+    project_id: str,
+    *,
+    title: str,
+    description: str,
+    priority: int,
+    intelligence_class: str | None = None,
 ) -> dict:
     """Wake one canonical triage task for unseen open routing gates.
 
@@ -124,6 +130,10 @@ async def ensure_triage_task(
     rows. Historical duplicates are retained; any other open triage run
     prevents starting the canonical row concurrently. Manual stops, holds,
     claims and live sessions are never overridden.
+
+    ``intelligence_class`` is the caller's explicit route for the canonical
+    task and applies only when this call creates it; waking an existing row
+    leaves its route alone.
     """
     transition = None
     ready = []
@@ -237,6 +247,7 @@ async def ensure_triage_task(
                     status=TaskStatus.READY,
                     profile_id=TRIAGE_PROFILE,
                     dedup_key=TRIAGE_KEY,
+                    intelligence_class=intelligence_class,
                 ),
                 conn=conn,
             )

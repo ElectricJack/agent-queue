@@ -620,15 +620,23 @@ agent_profiles = Table(
     Column("max_claims_per_session", Integer, nullable=True),
     Column("default_class", Text, nullable=False, server_default="''"),
     Column("needs_workspace", Boolean, nullable=False, server_default=true()),
-    # T3 reviewer follow-up: when True, workspace acquisition refuses to
-    # take an exclusive lock on a mutable ``project-repo`` kind so a
-    # read-only profile cannot silently mutate a repo it was never meant
-    # to write to.
+    # Declarative statement of write intent: a ``read_only`` profile lists
+    # no write/edit/commit/push tools.  It no longer alters workspace
+    # acquisition — that path handed read-only agents the base checkout.
     Column(
         "read_only",
         Boolean,
         nullable=False,
         server_default=false(),
+    ),
+    # Opt-in for the base-checkout launch guard: without it a session whose
+    # ``work_dir`` is a base workspace (the clone hosting the slot
+    # worktrees, often a human's own tree) is refused.
+    Column(
+        "allow_base_checkout",
+        Boolean,
+        nullable=False,
+        server_default=text("0"),
     ),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),

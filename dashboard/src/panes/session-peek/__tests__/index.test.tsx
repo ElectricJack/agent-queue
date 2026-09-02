@@ -92,7 +92,11 @@ describe("SessionPeekPane component", () => {
 
   it("copy-scrollback writes the current screen to the clipboard", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      writable: true,
+      value: { writeText },
+    });
     const props = baseProps();
     render(<SessionPeekPane {...props} />);
     const actions = lastCallArg0(props.setToolbar);
@@ -189,7 +193,11 @@ describe("SessionPeekPane component", () => {
 
   it("c copies the current screen", () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      writable: true,
+      value: { writeText },
+    });
     const props = baseProps();
     render(<SessionPeekPane {...props} />);
     const bindings = lastCallArg0(props.setShortcuts);
