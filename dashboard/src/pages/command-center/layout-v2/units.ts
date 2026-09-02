@@ -29,6 +29,7 @@ export function cellsForRect(rect: Rect, pad = 1): CellKey[] {
 export const parseCell = (key: CellKey) => key.split(":").map(Number) as [number, number];
 
 export function cellRect(cells: CellKey[]): Rect {
+  if (cells.length === 0) return { x0: 0, y0: 0, x1: 0, y1: 0 };
   const xs = cells.map((c) => parseCell(c)[0]), ys = cells.map((c) => parseCell(c)[1]);
   return { x0: Math.min(...xs) * CELL, y0: Math.min(...ys) * CELL,
            x1: (Math.max(...xs) + 1) * CELL, y1: (Math.max(...ys) + 1) * CELL };

@@ -31,8 +31,10 @@ export function mergeTiles(store: LayoutStore, cells: CellKey[], res: TilesRespo
   const next: LayoutStore = {
     version: res.layout_version,
     nodes: new Map(base.nodes), edges: new Map(base.edges), stubs: new Map(base.stubs),
-    edgeCells: new Map(base.edgeCells), workers: res.workers ?? [], gates: res.gates ?? [],
-    cells: new Map(base.cells), loaded: new Set(base.loaded),
+    edgeCells: new Map([...base.edgeCells].map(([k, v]) => [k, new Set(v)])),
+    workers: res.workers ?? [], gates: res.gates ?? [],
+    cells: new Map([...base.cells].map(([k, v]) => [k, new Set(v)])),
+    loaded: new Set(base.loaded),
   };
   for (const c of cells) { next.loaded.add(c); if (!next.cells.has(c)) next.cells.set(c, new Set()); }
   for (const n of res.nodes ?? []) {
@@ -43,7 +45,7 @@ export function mergeTiles(store: LayoutStore, cells: CellKey[], res: TilesRespo
   for (const e of res.edges ?? []) {
     const k = edgeKey(e);
     next.edges.set(k, e);
-    const owners = next.edgeCells.get(k) ?? new Set<CellKey>();
+    const owners = new Set(next.edgeCells.get(k) ?? []);
     for (const c of cells) owners.add(c);
     next.edgeCells.set(k, owners);
   }

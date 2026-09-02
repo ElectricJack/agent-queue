@@ -39,4 +39,10 @@ describe("layoutStore", () => {
     expect(e.stubs.has("far")).toBe(true);
     expect(e.loaded.has("10:10")).toBe(false);
   });
+  it("does not mutate a previously returned store's cell sets on a later merge", () => {
+    const s1 = mergeTiles(emptyStore(), ["0:0"], res([node("a", 0, 0)]));
+    mergeTiles(s1, ["0:0"], res([node("a", 0, 0), node("b", 1, 0)]));
+    expect([...s1.cells.get("0:0")!]).toEqual(["a"]);
+    expect(s1.nodes.has("b")).toBe(false);
+  });
 });

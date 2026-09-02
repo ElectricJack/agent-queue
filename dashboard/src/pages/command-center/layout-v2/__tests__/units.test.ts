@@ -24,6 +24,9 @@ describe("units", () => {
     expect(cellRect(["0:0", "1:0"])).toEqual({ x0: 0, y0: 0, x1: 16, y1: 8 });
     expect(cellDistance("0:0", "3:-2")).toBe(3);
   });
+  it("cell rect of an empty list is zero-sized", () => {
+    expect(cellRect([])).toEqual({ x0: 0, y0: 0, x1: 0, y1: 0 });
+  });
   it("lod thresholds", () => {
     expect(maxDepthForZoom(0.2)).toBe(0);
     expect(maxDepthForZoom(0.5)).toBe(1);
