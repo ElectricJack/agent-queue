@@ -2,6 +2,7 @@ import { ChevronDownIcon, ChevronRightIcon, ExclamationTriangleIcon, MagnifyingG
 import { Handle, Position, type NodeProps, type Node } from "@xyflow/react";
 import { NODE_HEIGHT, NODE_WIDTH, type TaskNodeData } from "./types";
 import { isTaskBlocked } from "./hierarchy";
+import { FINISHED_STATUSES } from "./taskFilters";
 
 export type { TaskNodeData } from "./types";
 type TaskNodeType = Node<TaskNodeData, "task">;
@@ -106,7 +107,7 @@ export function TaskCard({ data, selected = false, fluid = false }: CardProps) {
             disabled={cannotToggle}
             title={toggleHelp}
             className="nodrag nopan flex h-7 flex-1 items-center gap-1 rounded-bl-md px-2 text-[10px] hover:bg-white/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-300 disabled:cursor-default disabled:opacity-60"
-            onClick={(event) => { event.stopPropagation(); onToggleChildren?.(task.id); }}
+            onClick={(event) => { event.stopPropagation(); onToggleChildren?.(task.id, FINISHED_STATUSES.has(task.status)); }}
             onKeyDown={(event) => { if (event.key !== "Escape") event.stopPropagation(); }}
           >
             {hierarchy.expanded ? <ChevronDownIcon aria-hidden className="h-3 w-3" /> : <ChevronRightIcon aria-hidden className="h-3 w-3" />}

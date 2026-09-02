@@ -123,6 +123,22 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
         """
         return (v or "").strip().upper()
 
+    async def _promote_for_expanded(project_id: str, variant: str, expanded) -> str:
+        """Answer from ``all`` when the client has expanded a finished container.
+
+        The ``active`` variant deliberately collapses a finished container
+        into a single stub row and lays out none of its children
+        (``driver._visible``), so there is nothing under it to return there.
+        A finished epic is still a real part of the graph: when the operator
+        expands one, serve the request from ``all``, which carries the whole
+        subtree.  Same escape hatch the ``root`` and finished-``status``
+        requests already take.
+        """
+        if variant == "all" or not expanded:
+            return variant
+        rows = await db.load_layout_rows(project_id, variant, list(expanded))
+        return "all" if any(r.kind == "stub" for r in rows.values()) else variant
+
     @router.get(
         "/api/projects/{project_id}/graph/extent",
         response_model=ExtentResponse,
@@ -173,6 +189,8 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
             raise HTTPException(status_code=400, detail=f"expanded exceeds {EXPANDED_CAP}")
         if req.root is not None or status in FINISHED_STATUSES:
             variant = "all"
+        else:
+            variant = await _promote_for_expanded(project_id, variant, req.expanded)
         meta = await _meta_or_pending(project_id, variant)
         if meta is None:
             return None
@@ -405,6 +423,8 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
                 raise HTTPException(status_code=400, detail="bad cursor") from None
             if offset < 0:
                 raise HTTPException(status_code=400, detail="bad cursor")
+        if status not in FINISHED_STATUSES:
+            variant = await _promote_for_expanded(project_id, variant, req.expanded)
         meta = await _meta_or_pending(project_id, variant)
         if meta is None:
             return JSONResponse(status_code=202, content={"status": "layout_pending"})

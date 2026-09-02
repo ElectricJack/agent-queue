@@ -17,8 +17,19 @@ describe("ContainerNode", () => {
     await userEvent.click(screen.getByRole("button", { name: "Collapse children of Epic" }));
     await userEvent.click(screen.getByRole("button", { name: "Open task Epic" }));
     expect(onFocus).toHaveBeenCalledWith("e");
-    expect(onToggleChildren).toHaveBeenCalledWith("e");
+    expect(onToggleChildren).toHaveBeenCalledWith("e", false);
     expect(onOpenTask).toHaveBeenCalledWith("e", { id: "e", playbook_run_id: undefined });
+  });
+
+  it("keeps a finished epic expandable and reports that it is finished", async () => {
+    // The `active` layout stubs a finished container, so the toggle has to
+    // tell the canvas that this subtree only exists in the `all` variant.
+    const onToggleChildren = vi.fn();
+    render(<ContainerNode id="e" data={{ node: { ...node, status: "COMPLETED" }, projectId: "p1", onToggleChildren }} /> as never);
+    const toggle = screen.getByRole("button", { name: "Collapse children of Epic" });
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    await userEvent.click(toggle);
+    expect(onToggleChildren).toHaveBeenCalledWith("e", true);
   });
 
   it("passes the container's own run id so a run task keeps its routing", async () => {

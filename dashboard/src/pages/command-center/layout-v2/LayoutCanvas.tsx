@@ -69,6 +69,13 @@ export interface LayoutCanvasProps extends Pick<GraphViewProps,
   setFocus: (id: string | null) => void;
   /** A located match the toolbar asked for; each request is a fresh object. */
   jumpTarget?: LocateHit | null;
+  /**
+   * Expansion state, owned by the caller so that the `variant` it derives
+   * from the same state cannot drift from the set sent with the tiles
+   * request. Omitted only by tests, which then get their own local copy.
+   */
+  expanded?: ReadonlySet<string>;
+  toggleExpanded?: (id: string, finished?: boolean) => void;
 }
 
 interface LayerElements {
@@ -155,7 +162,15 @@ function Inner(props: LayoutCanvasProps) {
     projectIds, projectNames, variant, filters, focusId, setFocus, jumpTarget, onTaskClick, onBackgroundClick,
     selectedTaskId, playbooks = NO_PLAYBOOKS, selectedPlaybookId, onPlaybookClick,
   } = props;
-  const { expandedTaskIds, toggleExpanded } = useExpandedTaskIds();
+  const own = useExpandedTaskIds();
+  const expandedTaskIds = props.expanded ?? own.expandedTaskIds;
+  const toggleExpanded = props.toggleExpanded ?? own.toggleExpanded;
+  // When the caller owns the expansion state it has already folded any open
+  // finished container into `variant`; the local fallback has to do it here.
+  const ownFinishedOpen = props.toggleExpanded ? 0 : own.expandedFinishedIds.size;
+  // A finished container is stubbed in `active` with no rows beneath it, so
+  // an open one can only be served from `all` (same escape hatch as focus).
+  const requestVariant: Variant = focusId || ownFinishedOpen > 0 ? "all" : variant;
   const { fitBounds, setCenter } = useReactFlow();
   const wrapRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
@@ -193,7 +208,7 @@ function Inner(props: LayoutCanvasProps) {
 
   const zoomDepth = maxDepthForZoom(viewport?.zoom ?? 1);
   const maxDepth = depthOverride === null ? zoomDepth : Math.min(depthOverride, zoomDepth ?? Infinity);
-  const paramsSignature = `${focusId ?? ""}|${variant}|${filters.query.trim()}|${filters.status}|${[...expandedTaskIds].sort().join(",")}`;
+  const paramsSignature = `${focusId ?? ""}|${requestVariant}|${filters.query.trim()}|${filters.status}|${[...expandedTaskIds].sort().join(",")}`;
   // A new query means a new node population: the previous budget cut no longer
   // describes it.
   useEffect(() => { setDepthOverride(null); }, [viewport?.zoom, paramsSignature]);
@@ -203,7 +218,7 @@ function Inner(props: LayoutCanvasProps) {
   );
 
   // Projects stack vertically: each starts below the previous project's extent.
-  const extents = useLayoutExtents(projectIds, focusId ? "all" : variant);
+  const extents = useLayoutExtents(projectIds, requestVariant);
   const heights = projectIds.map((_, i) => {
     const extent = extents[i];
     return extent && !("pending" in extent) ? extent.extent_h : 0;
@@ -243,13 +258,13 @@ function Inner(props: LayoutCanvasProps) {
   }, [pendingExtents]);
 
   const params = useMemo<TilesParams>(() => ({
-    variant: focusId ? "all" : variant,
+    variant: requestVariant,
     expanded: [...expandedTaskIds].sort(),
     root: focusId,
     maxDepth: maxDepth === null || maxDepth === Infinity ? null : maxDepth,
     q: filters.query.trim(),
     status: filters.status,
-  }), [variant, focusId, expandedTaskIds, maxDepth, filters.query, filters.status]);
+  }), [requestVariant, focusId, expandedTaskIds, maxDepth, filters.query, filters.status]);
 
   const selectedId = selectedPlaybookId
     ? `playbook:${selectedPlaybookId}`

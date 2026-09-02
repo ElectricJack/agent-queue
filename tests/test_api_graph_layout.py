@@ -740,3 +740,89 @@ async def test_tidy_checks_scope_before_project_existence(db, scoped_client_fact
     # a permitted caller still gets the 404
     async with scoped_client_factory() as ac:
         assert (await ac.post("/api/projects/nope/graph/tidy", json={})).status_code == 404
+
+
+async def seed_finished_epic(db):
+    """A COMPLETED epic ``done`` with two completed children, beside a live card."""
+
+    async def mk(tid, parent=None, status=TaskStatus.DEFINED):
+        await db.create_task(
+            Task(id=tid, project_id="p1", title=f"Title {tid}", description="", status=status)
+        )
+        if parent:
+            async with db._engine.begin() as conn:
+                await db.set_parent(tid, parent, conn=conn)
+
+    await mk("done")
+    await mk("dc0", "done")
+    await mk("dc1", "done")
+    await mk("live")
+    for tid in ("dc0", "dc1", "done"):
+        await db.transition_task(tid, TaskStatus.COMPLETED, force=True)
+    drv = LayoutDriver(db)
+    await drv.full_layout("p1", "all")
+    await drv.full_layout("p1", "active")
+
+
+ACTIVE_RECT = {"x0": -1, "y0": -1, "x1": 60, "y1": 60}
+
+
+async def test_tiles_expanding_a_finished_epic_yields_its_children(db, client_factory):
+    """A finished container is stubbed in ``active``; expanding it must still work.
+
+    The operator's expand is honoured by answering from the ``all`` variant,
+    which is the only one that carries the finished subtree's rows.
+    """
+    await seed_finished_epic(db)
+    async with client_factory() as ac:
+        collapsed = await ac.post(
+            "/api/projects/p1/graph/tiles",
+            json={"variant": "active", "rect": ACTIVE_RECT, "expanded": []},
+        )
+        expanded = await ac.post(
+            "/api/projects/p1/graph/tiles",
+            json={"variant": "active", "rect": ACTIVE_RECT, "expanded": ["done"]},
+        )
+    assert collapsed.status_code == 200 and expanded.status_code == 200
+    # Collapsed: the stub stands for the whole subtree, children are absent.
+    shut = {n["id"]: n for n in collapsed.json()["nodes"]}
+    assert "done" in shut and "dc0" not in shut and "dc1" not in shut
+    # Expanded: the container renders as a container and its children are tiles.
+    open_ = {n["id"]: n for n in expanded.json()["nodes"]}
+    assert open_["done"]["kind"] == "container"
+    assert open_["dc0"]["kind"] == "card" and open_["dc1"]["kind"] == "card"
+    assert open_["dc0"]["container_id"] == "done"
+
+
+async def test_tiles_expanding_a_live_container_stays_on_the_active_variant(db, client_factory):
+    """Only a stubbed (finished) container promotes the request to ``all``."""
+    await seed(db)
+    async with client_factory() as ac:
+        r = await ac.post(
+            "/api/projects/p1/graph/tiles",
+            json={"variant": "active", "rect": ACTIVE_RECT, "expanded": ["e"]},
+        )
+    assert r.status_code == 200
+    ids = {n["id"] for n in r.json()["nodes"]}
+    # `c1` is COMPLETED, so the active variant still hides it under an open `e`.
+    assert "c0" in ids and "c1" not in ids
+
+
+async def test_list_expanding_a_finished_epic_yields_its_children(db, client_factory):
+    """The mobile list follows the same rule as the canvas."""
+    await seed_finished_epic(db)
+    async with client_factory() as ac:
+        r = await ac.post(
+            "/api/projects/p1/graph/list",
+            json={
+                "variant": "active",
+                "expanded": ["done"],
+                "q": "",
+                "status": "",
+                "cursor": None,
+                "limit": 50,
+            },
+        )
+    assert r.status_code == 200
+    ids = {n["id"] for n in r.json()["nodes"]}
+    assert {"done", "dc0", "dc1"} <= ids

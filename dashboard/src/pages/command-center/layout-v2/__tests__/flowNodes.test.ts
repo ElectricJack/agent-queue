@@ -105,3 +105,21 @@ describe("toFlowElements", () => {
     expect(out.selectable).toBe(false);
   });
 });
+
+describe("a finished container stubbed by the active variant", () => {
+  it("keeps its child counts so the card still offers the expand toggle", () => {
+    const store = mergeTiles(emptyStore(), ["0:0"], {
+      nodes: [n("done", "stub", 0, 0, { status: "COMPLETED" })],
+      edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+    } as never);
+    const { nodes } = toFlowElements(store, ctx);
+    const data = nodes[0]!.data as {
+      task: { status: string };
+      hierarchy: { expanded: boolean; childCount: number; visibleChildCount: number };
+    };
+    expect(nodes[0]!.type).toBe("task");
+    expect(data.task.status).toBe("COMPLETED");
+    // `visibleChildCount === 0` is what disables the chevron in TaskNode.
+    expect(data.hierarchy).toMatchObject({ expanded: false, childCount: 2, visibleChildCount: 2 });
+  });
+});

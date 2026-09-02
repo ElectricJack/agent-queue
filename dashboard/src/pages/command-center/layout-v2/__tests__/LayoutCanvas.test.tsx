@@ -128,6 +128,30 @@ describe("LayoutCanvas", () => {
     expect((tiles.params as { expanded: string[] }).expanded).toEqual(["e"]);
   });
 
+  it("expanding a finished container asks for the variant that holds its children", async () => {
+    // A finished epic is a single stub row in `active` with nothing beneath
+    // it; the expand has to switch the request to `all` or it renders no
+    // children.  Collapsing it again returns to `active`.
+    tiles.store = mergeTiles(emptyStore(), ["0:0"], {
+      nodes: [n("done", "stub", 0, 0, { status: "COMPLETED" })],
+      edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+    } as unknown as TilesResponse);
+    render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+    // Re-read the handler between clicks: it closes over the expansion state.
+    const toggle = () => {
+      const node = flow.current!.nodes.find((candidate) => candidate.id === "done")!;
+      return (node.data as { onToggleChildren: (id: string, finished?: boolean) => void }).onToggleChildren;
+    };
+    const first = toggle();
+    act(() => first("done", true));
+    await screen.findByTestId("node-done");
+    expect(tiles.params).toMatchObject({ variant: "all", expanded: ["done"] });
+    const second = toggle();
+    act(() => second("done", true));
+    await screen.findByTestId("node-done");
+    expect(tiles.params).toMatchObject({ variant: "active", expanded: [] });
+  });
+
   it("does not claim an empty graph before the first tiles response", () => {
     tiles.store = emptyStore();
     tiles.loaded = false;

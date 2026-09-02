@@ -144,7 +144,10 @@ function LayoutGraph() {
     [selectTask],
   );
   const mobile = usePortraitMobile();
-  const variant = filters.showCompleted || focusId ? "all" : "active";
+  const { expandedTaskIds, expandedFinishedIds, toggleExpanded } = useExpandedTaskIds();
+  // An open finished container has no rows in `active` (it is a stub there),
+  // so keeping it expandable means serving the whole graph from `all`.
+  const variant = filters.showCompleted || focusId || expandedFinishedIds.size > 0 ? "all" : "active";
   const extents = useLayoutExtents(projectIds, variant);
   const nodeCount = extents.reduce(
     (total, extent) => total + (extent && !("pending" in extent) ? extent.node_count : 0), 0,
@@ -154,7 +157,6 @@ function LayoutGraph() {
     () => new Map(projects.map((project) => [project.id, project.name || project.id])),
     [projects],
   );
-  const { expandedTaskIds, toggleExpanded } = useExpandedTaskIds();
   const jumpTarget = useJumpTarget();
 
   return (
@@ -169,6 +171,7 @@ function LayoutGraph() {
             onTaskClick={selectTaskById} selectedTaskId={chrome.selectedTaskId} />
         : <LayoutCanvas projectIds={projectIds} projectNames={projectNames} variant={variant} filters={filters}
             focusId={focusId} setFocus={setFocus} jumpTarget={jumpTarget}
+            expanded={expandedTaskIds} toggleExpanded={toggleExpanded}
             selectedTaskId={chrome.selectedTaskId} onTaskClick={selectTaskById} onBackgroundClick={chrome.clearSelection}
             playbooks={chrome.playbooks} selectedPlaybookId={chrome.selectedPlaybookId}
             onPlaybookClick={chrome.openPlaybook} />}
