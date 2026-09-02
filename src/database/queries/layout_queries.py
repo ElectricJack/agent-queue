@@ -27,8 +27,15 @@ def like_prefix(prefix: str) -> str:
     ``_`` and the escape character itself are escaped. Always pair with
     ``.like(..., escape="\\")`` — SQLite and PostgreSQL both honour it.
     """
-    escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-    return escaped + "%"
+    return like_escape(prefix) + "%"
+
+
+def like_escape(needle: str) -> str:
+    """Escape LIKE metacharacters in a user-supplied literal.
+
+    Always pair with ``.like(..., escape="\\")``.
+    """
+    return needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 class LayoutQueryMixin:
@@ -832,11 +839,14 @@ class LayoutQueryMixin:
 
         conds = [task_layouts.c.project_id == project_id, task_layouts.c.variant == variant]
         if q:
-            needle = f"%{q.lower()}%"
+            # The needle is user text and may contain LIKE metacharacters
+            # ('%', '_', '\'), which must match literally rather than act as
+            # wildcards.
+            needle = f"%{like_escape(q.lower())}%"
             conds.append(
                 or_(
-                    func.lower(tasks.c.title).like(needle),
-                    func.lower(tasks.c.id).like(needle),
+                    func.lower(tasks.c.title).like(needle, escape="\\"),
+                    func.lower(tasks.c.id).like(needle, escape="\\"),
                 )
             )
         if status:

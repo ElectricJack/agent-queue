@@ -228,3 +228,13 @@ async def test_edges_touching_and_matching(db):
     await db.publish_layout("p1", "all", ws, consumed_seq=None, extent=(3, 1))
     assert await db.load_matching_ids("p1", "all", q="task b", status="") == {"b"}
     assert await db.load_matching_ids("p1", "all", q="", status="DEFINED") == {"a", "b", "c"}
+
+
+async def test_matching_ids_treats_like_metacharacters_literally(db):
+    await db.create_task(Task(id="pct", project_id="p1", title="Done 50% of it", description=""))
+    await db.create_task(Task(id="und", project_id="p1", title="Done 50x of it", description=""))
+    ws = WriteSet(upserts=[row("pct", 0, 0, "/pct/"), row("und", 1, 0, "/und/")])
+    await db.publish_layout("p1", "all", ws, consumed_seq=None, extent=(2, 1))
+    assert await db.load_matching_ids("p1", "all", q="50%", status="") == {"pct"}
+    assert await db.load_matching_ids("p1", "all", q="50x", status="") == {"und"}
+    assert await db.load_matching_ids("p1", "all", q="50_", status="") == set()

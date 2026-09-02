@@ -96,6 +96,13 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
             raise HTTPException(status_code=400, detail=f"variant must be one of {VARIANTS}")
         return v
 
+    def _status(v: str | None) -> str:
+        """Normalize a status filter.
+
+        Task statuses are stored upper-case; clients may send any case.
+        """
+        return (v or "").strip().upper()
+
     @router.get(
         "/api/projects/{project_id}/graph/extent",
         response_model=ExtentResponse,
@@ -107,9 +114,8 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
         meta = await _meta_or_pending(project_id, variant)
         if meta is None:
             return JSONResponse(status_code=202, content={"status": "layout_pending"})
-        job = None
-        for j in await db.list_layout_jobs(project_id, variant, statuses=("queued", "running")):
-            job = LayoutJob(**j)
+        jobs = await db.list_layout_jobs(project_id, variant, statuses=("queued", "running"))
+        job = LayoutJob(**jobs[0]) if jobs else None
         return ExtentResponse(
             layout_version=meta["layout_version"],
             extent_w=meta["extent_w"],
@@ -124,12 +130,10 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
         Returns ``None`` when the variant has no published layout yet (the
         caller answers 202 and a backfill job has been enqueued).
         """
+        # Every request check runs BEFORE ``_meta_or_pending``: a malformed
+        # request must answer 400 and must never enqueue a backfill job.
         variant = _variant(req.variant)
-        if req.root is not None or (req.status and req.status in FINISHED_STATUSES):
-            variant = "all"
-        meta = await _meta_or_pending(project_id, variant)
-        if meta is None:
-            return None
+        status = _status(req.status)
         rect = req.rect
         for v in (rect.x0, rect.y0, rect.x1, rect.y1):
             if not math.isfinite(v):
@@ -140,6 +144,11 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
             raise HTTPException(status_code=400, detail=f"rect larger than {RECT_CAP} units")
         if len(req.expanded) > EXPANDED_CAP:
             raise HTTPException(status_code=400, detail=f"expanded exceeds {EXPANDED_CAP}")
+        if req.root is not None or status in FINISHED_STATUSES:
+            variant = "all"
+        meta = await _meta_or_pending(project_id, variant)
+        if meta is None:
+            return None
 
         # Candidate rows: everything in the rect's cells (or the whole subtree in focus).
         if req.root is not None:
@@ -148,14 +157,13 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
                 raise HTTPException(status_code=404, detail=f"No layout node '{req.root}'")
             cand = await db.load_rows_by_prefixes(project_id, variant, [root_rows[req.root].path])
         else:
+            # Every row in the rect's cells, NOT only the rows that intersect
+            # the rect: the rect cull happens after visibility is resolved
+            # (below), so that a collapsed container just off-screen is still
+            # resolved as collapsed and can own the edges into its subtree.
             cand = await db.load_rows_in_cells(
                 project_id, variant, _cells_for_rect(rect.x0, rect.y0, rect.x1, rect.y1)
             )
-            cand = {
-                t: r
-                for t, r in cand.items()
-                if _intersects(r, rect.x0, rect.y0, rect.x1, rect.y1)
-            }
         # Ancestors of candidates are needed to decide visibility.
         anc_ids = {a for r in cand.values() for a in ancestors_of(r.path)} - set(cand)
         if anc_ids:
@@ -164,9 +172,9 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
         # Filtering: matches anywhere force their ancestors open; non-matches vanish.
         matches: set[str] | None = None
         forced: set[str] = set()
-        if req.q.strip() or req.status:
+        if req.q.strip() or status:
             matches = await db.load_matching_ids(
-                project_id, variant, q=req.q.strip(), status=req.status
+                project_id, variant, q=req.q.strip(), status=status
             )
             match_rows = await db.load_layout_rows(project_id, variant, list(matches))
             forced = forced_expansion_for(matches, match_rows)
@@ -184,6 +192,11 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
             root=req.root,
             forced_expanded=forced,
         )
+        # The collapsed set as RESOLVED, before any culling.  An edge into a
+        # collapsed subtree that the rect (or the filter) then removes must
+        # still remap onto its container -- which surfaces as a stub carrying
+        # the container's title -- instead of exposing the inner task.
+        collapsed_resolved = dict(vis.collapsed_paths)
         # rect membership again, now over resolved rows (ancestors may lie outside).
         if req.root is None:
             for tid in list(vis.visible):
@@ -204,13 +217,17 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
 
         # Edges: touching visible ids or anything inside a visible collapsed subtree.
         hidden_rows = await db.load_rows_by_prefixes(
-            project_id, variant, list(vis.collapsed_paths.values())
+            project_id, variant, list(collapsed_resolved.values())
         )
-        hidden_owner = owner_map(hidden_rows, vis.collapsed_paths)
+        hidden_owner = owner_map(hidden_rows, collapsed_resolved)
         touching = set(vis.visible) | set(hidden_owner)
         raw_edges = await db.load_edges_touching(touching)
-        wire, orphans = remap_edges(raw_edges, vis.visible, hidden_owner)
-        stub_rows = await db.load_layout_rows(project_id, variant, list(orphans))
+        wire, _orphans = remap_edges(raw_edges, vis.visible, hidden_owner)
+        # Stub candidates are every wire endpoint that is not visible: plain
+        # orphans, plus containers an edge was remapped onto that the rect or
+        # the filter then culled away.
+        far_ids = {x for e in wire for x in (e["from"], e["to"])} - set(vis.visible)
+        stub_rows = await db.load_layout_rows(project_id, variant, list(far_ids))
         kept, stubs, more = cap_stubs(wire, stub_rows, set(vis.visible))
         stub_titles = await db.load_rows_with_tasks(project_id, variant, [s["id"] for s in stubs])
         stubs_out = [
@@ -299,9 +316,9 @@ def _build_default_router() -> APIRouter:
             raise HTTPException(status_code=503, detail="orchestrator not ready")
         return build_graph_layout_router(db=orch.db, command_handler=orch.command_handler)
 
-    async def _call(path: str, **kwargs):
+    async def _call(path: str, method: str, **kwargs):
         for route in _inner().routes:
-            if getattr(route, "path", None) == path:
+            if getattr(route, "path", None) == path and method in getattr(route, "methods", ()):
                 return await route.endpoint(**kwargs)
         raise HTTPException(status_code=500, detail="graph layout router misconfigured")
 
@@ -312,7 +329,10 @@ def _build_default_router() -> APIRouter:
     )
     async def get_extent(project_id: str, variant: str = "active"):
         return await _call(
-            "/api/projects/{project_id}/graph/extent", project_id=project_id, variant=variant
+            "/api/projects/{project_id}/graph/extent",
+            "GET",
+            project_id=project_id,
+            variant=variant,
         )
 
     @router.post(
@@ -322,7 +342,7 @@ def _build_default_router() -> APIRouter:
     )
     async def post_tiles(project_id: str, req: TilesRequest):
         return await _call(
-            "/api/projects/{project_id}/graph/tiles", project_id=project_id, req=req
+            "/api/projects/{project_id}/graph/tiles", "POST", project_id=project_id, req=req
         )
 
     return router

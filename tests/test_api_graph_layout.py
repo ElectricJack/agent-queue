@@ -157,3 +157,111 @@ async def test_tiles_validation(db, client_factory):
     assert {
         bad_rect.status_code, too_big.status_code, bad_variant.status_code, too_many.status_code
     } == {400}
+
+
+async def test_tiles_validation_runs_before_any_backfill(db, client_factory):
+    """A malformed request must 400 without enqueueing a backfill job."""
+    async with client_factory() as ac:
+        r = await ac.post(
+            "/api/projects/p1/graph/tiles",
+            json={**ALL, "rect": {"x0": 5, "y0": 0, "x1": 1, "y1": 1}},
+        )
+    assert r.status_code == 400
+    assert await db.next_layout_job() is None
+
+
+async def test_tiles_culled_collapsed_container_becomes_the_stub(db, client_factory):
+    """z -> c0 must remap to the collapsed container e even when e is culled.
+
+    The rect holds only z; e is collapsed and off-screen.  The wire edge is
+    z -> e and the stub carries e's title, never the inner task c0.
+    """
+    await seed(db)
+    async with client_factory() as ac:
+        first = (await ac.post("/api/projects/p1/graph/tiles", json=ALL)).json()["nodes"]
+        z = next(n for n in first if n["id"] == "z")
+        rect = {"x0": z["x"], "y0": z["y"], "x1": z["x"] + 0.5, "y1": z["y"] + 0.5}
+        body = (await ac.post("/api/projects/p1/graph/tiles", json={**ALL, "rect": rect})).json()
+    assert {n["id"] for n in body["nodes"]} == {"z"}
+    assert [(e["from"], e["to"]) for e in body["edges"]] == [("z", "e")]
+    assert [(s["id"], s["title"]) for s in body["stubs"]] == [("e", "Title e")]
+
+
+async def test_tiles_root_focus_forces_all_and_expands_root(db, client_factory):
+    await seed(db)
+    async with client_factory() as ac:
+        r = await ac.post("/api/projects/p1/graph/tiles", json={
+            "variant": "active", "rect": {"x0": 0, "y0": 0, "x1": 1, "y1": 1},
+            "expanded": [], "root": "e"})
+    body = r.json()
+    ids = {n["id"] for n in body["nodes"]}
+    assert ids == {"e", "c0", "c1", "pkg"}  # c1 is COMPLETED but variant forced to all
+    assert next(n for n in body["nodes"] if n["id"] == "e")["kind"] == "container"
+    assert "z" not in ids  # outside the subtree
+    assert any(s["id"] == "z" for s in body["stubs"])  # z depends on c0: stub at the edge
+
+
+async def test_tiles_max_depth(db, client_factory):
+    await seed(db)
+    async with client_factory() as ac:
+        r = await ac.post(
+            "/api/projects/p1/graph/tiles",
+            json={**ALL, "expanded": ["e", "pkg"], "max_depth": 1},
+        )
+    kinds = {n["id"]: n["kind"] for n in r.json()["nodes"]}
+    assert kinds["e"] == "container" and kinds["pkg"] == "collapsed" and "g0" not in kinds
+
+
+async def test_tiles_filter_hides_nonmatches_and_reveals_path(db, client_factory):
+    await seed(db)
+    async with client_factory() as ac:
+        r = await ac.post("/api/projects/p1/graph/tiles", json={**ALL, "q": "g1"})
+    nodes = {n["id"]: n for n in r.json()["nodes"]}
+    assert set(nodes) == {"e", "pkg", "g1"}
+    assert nodes["e"]["context_only"] and nodes["pkg"]["context_only"]
+    assert not nodes["g1"]["context_only"]
+    assert nodes["e"]["kind"] == "container" and nodes["pkg"]["kind"] == "container"
+
+
+async def test_tiles_finished_status_filter_forces_all(db, client_factory):
+    await seed(db)
+    async with client_factory() as ac:
+        r = await ac.post(
+            "/api/projects/p1/graph/tiles", json={**ALL, "variant": "active", "status": "COMPLETED"}
+        )
+    assert {n["id"] for n in r.json()["nodes"]} == {"e", "c1"}
+
+
+async def test_tiles_status_filter_is_case_insensitive(db, client_factory):
+    await seed(db)
+    async with client_factory() as ac:
+        r = await ac.post(
+            "/api/projects/p1/graph/tiles", json={**ALL, "variant": "active", "status": "completed"}
+        )
+    assert {n["id"] for n in r.json()["nodes"]} == {"e", "c1"}
+
+
+async def test_default_router_delegates_to_the_orchestrator_db(db, monkeypatch):
+    """The statically declared router resolves the live db at request time."""
+    from src.api import dependencies as deps
+    from src.api.graph_layout import router as default_router
+
+    class _Orch:
+        pass
+
+    orch = _Orch()
+    orch.db = db
+    orch.command_handler = None
+    monkeypatch.setattr(deps, "_orchestrator", orch, raising=False)
+
+    app = FastAPI()
+    app.include_router(default_router)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+        pending = await ac.get("/api/projects/p1/graph/extent?variant=all")
+        assert pending.status_code == 202
+        await seed(db)
+        ready = await ac.get("/api/projects/p1/graph/extent?variant=all")
+        assert ready.status_code == 200
+        tiles = await ac.post("/api/projects/p1/graph/tiles", json=ALL)
+    assert tiles.status_code == 200
+    assert "e" in {n["id"] for n in tiles.json()["nodes"]}
