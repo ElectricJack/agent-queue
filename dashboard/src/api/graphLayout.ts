@@ -4,6 +4,7 @@
 // running. The client interceptor in ./client throws only on non-2xx, so a 202
 // lands here as an ordinary success with `response.status === 202` — callers
 // get `{ pending: true }` and are expected to poll.
+import { useEffect, useRef } from "react";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   getExtentApiProjectsProjectIdGraphExtentGet,
@@ -142,7 +143,7 @@ export function useLayoutNode(projectId: string | undefined, taskId: string | nu
   return useQuery({
     queryKey: ["layoutNode", projectId, taskId],
     enabled: !!projectId && !!taskId,
-    queryFn: async ({ signal }): Promise<NodeResponse> => {
+    queryFn: async ({ signal }): Promise<NodeResponse | { pending: true }> => {
       const r = await getNodeApiProjectsProjectIdGraphNodeTaskIdGet({
         client,
         signal,
@@ -150,8 +151,12 @@ export function useLayoutNode(projectId: string | undefined, taskId: string | nu
         query: { variant: "all" },
         throwOnError: true,
       });
+      // A project with no published layout answers 202 and enqueues a
+      // backfill; the body carries no node, so callers must not read one.
+      if (r.response.status === 202) return { pending: true };
       return r.data as NodeResponse;
     },
+    refetchInterval: (q) => (q.state.data && "pending" in q.state.data ? 2000 : false),
   });
 }
 
@@ -174,24 +179,32 @@ const JOB_POLL_MS = 2000;
 const JOB_TIMEOUT_MS = 5 * 60_000;
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** Resolves once every job has settled, or the bound expires. */
-async function awaitJobs(projectId: string, jobs: LayoutJob[]): Promise<void> {
+/**
+ * Resolves once every job has settled, the bound expires, or `signal` aborts,
+ * reporting the ids that settled as failed.
+ */
+async function awaitJobs(projectId: string, jobs: LayoutJob[], signal?: AbortSignal): Promise<string[]> {
+  const failed: string[] = [];
   const waiting = new Set(jobs.map((job) => job.id));
   const deadline = Date.now() + JOB_TIMEOUT_MS;
-  while (waiting.size > 0 && Date.now() < deadline) {
+  while (waiting.size > 0 && Date.now() < deadline && !signal?.aborted) {
     await delay(JOB_POLL_MS);
+    if (signal?.aborted) return failed;
     for (const id of [...waiting]) {
       const r = await getJobApiProjectsProjectIdGraphJobsJobIdGet({
         client,
+        signal,
         path: { project_id: projectId, job_id: id },
         throwOnError: true,
       });
       const status = (r.data as LayoutJob).status;
       // A failed job settles too: the caller reloads either way rather than
       // leaving a half-tidied graph on screen.
+      if (status === "failed") failed.push(id);
       if (status === "done" || status === "failed") waiting.delete(id);
     }
   }
+  return failed;
 }
 
 /**
@@ -200,18 +213,29 @@ async function awaitJobs(projectId: string, jobs: LayoutJob[]): Promise<void> {
  */
 export function useTidyLayout(projectId: string) {
   const qc = useQueryClient();
+  // Polling outlives the toolbar otherwise: an unmount must stop the loop
+  // rather than keep hitting the daemon for a page nobody is looking at.
+  const abort = useRef<AbortController | null>(null);
+  useEffect(() => () => abort.current?.abort(), []);
   return useMutation({
     mutationFn: async () => {
+      abort.current?.abort();
+      const ac = new AbortController();
+      abort.current = ac;
       const r = await postTidyApiProjectsProjectIdGraphTidyPost({
         client,
+        signal: ac.signal,
         path: { project_id: projectId },
         body: {},
         throwOnError: true,
       });
-      await awaitJobs(projectId, (r.data as TidyResponse).jobs ?? []);
+      const failed = await awaitJobs(projectId, (r.data as TidyResponse).jobs ?? [], ac.signal);
+      // A half-tidied graph still has to be reloaded (onSettled does that), but
+      // the reader must be told the tidy did not finish.
+      if (failed.length > 0) throw new Error(`layout job failed: ${failed.join(", ")}`);
       return r.data;
     },
-    onSuccess: () => {
+    onSettled: () => {
       // The extent moves and every tile is stale: the cached query and the
       // mounted layers both have to be told.
       void qc.invalidateQueries({ queryKey: ["layoutExtent", projectId] });

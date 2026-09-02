@@ -35,6 +35,40 @@ export function cellRect(cells: CellKey[]): Rect {
            x1: (Math.max(...xs) + 1) * CELL, y1: (Math.max(...ys) + 1) * CELL };
 }
 
+/**
+ * The server rejects a tiles rect wider or taller than 64 units, which is
+ * exactly 8 cells per axis. A viewport padded by one cell exceeds that at low
+ * zoom on a wide display, so a request has to be split.
+ */
+export const MAX_RECT_CELLS = 8;
+
+/**
+ * The subset of `cells` nearest `centre` whose bounding box still fits inside
+ * the server's rect cap. Callers fetch this batch and ask again for whatever
+ * is left, so the viewport centre loads first.
+ */
+export function boundedBatch(cells: CellKey[], centre: CellKey, max = MAX_RECT_CELLS): CellKey[] {
+  const sorted = [...cells].sort((a, b) => cellDistance(a, centre) - cellDistance(b, centre));
+  const out: CellKey[] = [];
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for (const c of sorted) {
+    const [x, y] = parseCell(c);
+    const nx0 = Math.min(x0, x), nx1 = Math.max(x1, x);
+    const ny0 = Math.min(y0, y), ny1 = Math.max(y1, y);
+    if (nx1 - nx0 + 1 > max || ny1 - ny0 + 1 > max) continue;
+    out.push(c);
+    x0 = nx0; x1 = nx1; y0 = ny0; y1 = ny1;
+  }
+  return out;
+}
+
+/** The cell holding the centre of `rect`. */
+export function centreCell(rect: Rect): CellKey {
+  const cx = Math.floor((rect.x0 + rect.x1) / 2 / CELL);
+  const cy = Math.floor((rect.y0 + rect.y1) / 2 / CELL);
+  return `${cx}:${cy}`;
+}
+
 export function cellDistance(a: CellKey, b: CellKey): number {
   const [ax, ay] = parseCell(a), [bx, by] = parseCell(b);
   return Math.max(Math.abs(ax - bx), Math.abs(ay - by));

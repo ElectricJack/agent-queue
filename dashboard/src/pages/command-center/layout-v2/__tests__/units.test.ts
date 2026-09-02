@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { cellDistance, cellRect, cellsForRect, maxDepthForZoom, toPx, worldRectFromViewport } from "../units";
+import {
+  boundedBatch, cellDistance, cellRect, cellsForRect, centreCell, maxDepthForZoom, toPx,
+  worldRectFromViewport,
+} from "../units";
 
 describe("units", () => {
   it("scales units to pixels", () => {
@@ -26,6 +29,26 @@ describe("units", () => {
   });
   it("cell rect of an empty list is zero-sized", () => {
     expect(cellRect([])).toEqual({ x0: 0, y0: 0, x1: 0, y1: 0 });
+  });
+  it("keeps a batch inside the server's 64-unit rect cap, centre first", () => {
+    // 2560x1440 at zoom 0.15 covers ~71x62 units: padded, far more than 8 cells.
+    const rect = worldRectFromViewport({ x: 0, y: 0, zoom: 0.15 }, 2560, 1440);
+    const wanted = cellsForRect(rect, 1);
+    const batch = boundedBatch(wanted, centreCell(rect));
+    const r = cellRect(batch);
+    expect(r.x1 - r.x0).toBeLessThanOrEqual(64);
+    expect(r.y1 - r.y0).toBeLessThanOrEqual(64);
+    expect(batch.length).toBeGreaterThan(0);
+    expect(batch).toContain(centreCell(rect));
+    // The batch is a strict subset here, so the caller still has work to do.
+    expect(batch.length).toBeLessThan(wanted.length);
+  });
+  it("returns every cell when they already fit", () => {
+    const cells = cellsForRect({ x0: 0, y0: 0, x1: 8, y1: 8 }, 1);
+    expect(boundedBatch(cells, "0:0").sort()).toEqual([...cells].sort());
+  });
+  it("centreCell is the cell holding the rect's midpoint", () => {
+    expect(centreCell({ x0: 0, y0: 0, x1: 32, y1: 16 })).toBe("2:1");
   });
   it("lod thresholds", () => {
     expect(maxDepthForZoom(0.2)).toBe(0);

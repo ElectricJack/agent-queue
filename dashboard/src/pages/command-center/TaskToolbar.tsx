@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { useLocation } from "react-router-dom";
 import { MagnifyingGlassIcon, PlusIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import CreateTaskModal from "../../components/CreateTaskModal";
 import { useSystemStatus } from "../../api/hooks";
@@ -13,8 +14,12 @@ export default function TaskToolbar() {
   const { projectId, filters, focusId, setQuery, setStatus, setShowCompleted, clearFilters } = useTaskWorkspace();
   const layoutV2 = useSystemStatus().data?.graph_layout_enabled === true;
   const variant = filters.showCompleted || focusId ? "all" : "active";
-  // Locating matches only makes sense against a server-side layout.
-  const { next: jumpNext, count: jumpCount } = useJumpToResult(layoutV2 ? projectId : undefined, variant, filters);
+  // Only the graph pans to a hit, and only a server-side layout knows where
+  // one is: on the Tasks tab the control would do nothing, so it is not shown
+  // and the `locate` request is never issued.
+  const onGraph = useLocation().pathname.endsWith("/graph");
+  const { next: jumpNext, count: jumpCount } = useJumpToResult(
+    layoutV2 && onGraph ? projectId : undefined, variant, filters);
   const tidy = useTidyLayout(projectId ?? "");
   const [createOpen, setCreateOpen] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -44,7 +49,7 @@ export default function TaskToolbar() {
           disabled={!!focusId} onChange={(e) => setShowCompleted(e.target.checked)} className="accent-indigo-500 disabled:opacity-50" />
         Show completed
       </label>
-      {layoutV2 && jumpCount > 0 && <button type="button" onClick={jumpNext}
+      {layoutV2 && onGraph && jumpCount > 0 && <button type="button" onClick={jumpNext}
         title="Pan the graph to the next matching task"
         className="h-9 rounded-md border border-gray-700 px-3 text-xs text-gray-200 hover:bg-gray-800">
         Next result ({jumpCount})
@@ -57,6 +62,7 @@ export default function TaskToolbar() {
         className="h-9 rounded-md border border-gray-700 px-3 text-xs text-gray-200 hover:bg-gray-800 disabled:opacity-50">
         {tidy.isPending ? "Tidying…" : "Tidy layout"}
       </button>}
+      {tidy.isError && <span role="alert" className="text-xs text-amber-200">Tidy failed. Try again.</span>}
       <button type="button" onClick={() => setCreateOpen(true)} title="Add task (N)"
         className="inline-flex h-9 items-center gap-1.5 rounded-md bg-indigo-600 px-3 text-sm font-medium text-white hover:bg-indigo-500">
         <PlusIcon className="h-4 w-4" /> Add task <kbd className="ml-1 text-xs text-indigo-200">N</kbd>

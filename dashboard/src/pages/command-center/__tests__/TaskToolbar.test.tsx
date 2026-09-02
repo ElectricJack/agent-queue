@@ -7,7 +7,7 @@ import { TaskWorkspaceProvider, useTaskWorkspace } from "../TaskWorkspace";
 import TaskToolbar from "../TaskToolbar";
 
 const mocks = vi.hoisted(() => ({
-  create: vi.fn(), open: vi.fn(), live: vi.fn(), tidy: vi.fn(),
+  create: vi.fn(), open: vi.fn(), live: vi.fn(), tidy: vi.fn(), tidyFailed: false,
   locate: vi.fn(async () => ({ hits: [{ id: "t1", x: 1, y: 2, w: 1, h: 1 }] })),
   layoutV2: false,
   error: null as Error | null,
@@ -19,7 +19,7 @@ vi.mock("../../../api/hooks", () => ({
   useSystemStatus: () => ({ data: { graph_layout_enabled: mocks.layoutV2 } }),
 }));
 vi.mock("../../../api/graphLayout", () => ({
-  useTidyLayout: () => ({ mutate: mocks.tidy, isPending: false }),
+  useTidyLayout: () => ({ mutate: mocks.tidy, isPending: false, isError: mocks.tidyFailed }),
   locate: mocks.locate,
 }));
 vi.mock("../../../panes/store", () => ({ useShellPaneStore: () => ({ open: mocks.open }) }));
@@ -37,7 +37,7 @@ function mount(path = "/projects/alpha/graph") {
   </Routes></ShortcutsProvider></MemoryRouter>);
 }
 afterEach(cleanup);
-beforeEach(() => { vi.clearAllMocks(); mocks.error = null; mocks.layoutV2 = false;
+beforeEach(() => { vi.clearAllMocks(); mocks.error = null; mocks.layoutV2 = false; mocks.tidyFailed = false;
   mocks.locate.mockImplementation(async () => ({ hits: [{ id: "t1", x: 1, y: 2, w: 1, h: 1 }] })); });
 
 describe("shared Command Center task controls", () => {
@@ -125,5 +125,27 @@ describe("layout-aware task controls", () => {
     const checkbox = screen.getByRole("checkbox", { name: "Show completed" });
     expect(checkbox).toBeDisabled();
     expect(checkbox).toBeChecked();
+  });
+
+  it("keeps Next result off the Tasks tab and issues no locate there", () => {
+    mocks.layoutV2 = true;
+    mount("/projects/alpha/tasks?q=check");
+    expect(screen.queryByRole("button", { name: /Next result/ })).not.toBeInTheDocument();
+    expect(mocks.locate).not.toHaveBeenCalled();
+    // Tidy is not tab-specific and stays available.
+    expect(screen.getByRole("button", { name: "Tidy layout" })).toBeInTheDocument();
+  });
+
+  it("never locates with empty filters (the endpoint rejects that request)", () => {
+    mocks.layoutV2 = true;
+    mount("/projects/alpha/graph");
+    expect(mocks.locate).not.toHaveBeenCalled();
+  });
+
+  it("reports a failed tidy", () => {
+    mocks.layoutV2 = true;
+    mocks.tidyFailed = true;
+    mount("/projects/alpha/graph");
+    expect(screen.getByRole("alert")).toHaveTextContent("Tidy failed");
   });
 });

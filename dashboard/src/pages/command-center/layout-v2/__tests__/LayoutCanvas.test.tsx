@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import type { TilesResponse } from "@aq/ts-client";
@@ -14,11 +14,12 @@ interface FlowProps {
 
 const flow = vi.hoisted(() => ({ current: null as FlowProps | null }));
 const fitBounds = vi.hoisted(() => vi.fn());
+const setCenter = vi.hoisted(() => vi.fn());
 vi.mock("@xyflow/react", () => ({
   MarkerType: { ArrowClosed: "arrowclosed" },
   Position: { Top: "top", Bottom: "bottom", Left: "left", Right: "right" },
   ReactFlowProvider: ({ children }: { children: ReactNode }) => children,
-  useReactFlow: () => ({ fitBounds }),
+  useReactFlow: () => ({ fitBounds, setCenter }),
   ReactFlow: (props: FlowProps) => {
     flow.current = props;
     return <div>
@@ -37,7 +38,7 @@ vi.mock("@xyflow/react", () => ({
 const tiles = vi.hoisted(() => ({
   store: null as unknown,
   pending: false,
-  error: null,
+  error: null as Error | null,
   refetchVisible: vi.fn(),
   loaded: true,
   params: null as unknown,
@@ -89,6 +90,8 @@ beforeEach(() => {
   tiles.refetchVisible = vi.fn();
   extents.pending = false;
   fitBounds.mockReset();
+  setCenter.mockReset();
+  tiles.error = null;
   layoutNode.data = undefined;
   localStorage.clear();
 });
@@ -182,5 +185,34 @@ describe("LayoutCanvas", () => {
       { ...toPx(hit.x, hit.y), ...sizePx(hit.w, hit.h) },
       expect.anything(),
     );
+  });
+
+  it("shows an error band with a retry instead of the empty state when tiles fail", () => {
+    tiles.store = emptyStore();
+    tiles.error = new Error("rect larger than 64.0 units");
+    render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent("rect larger than 64.0 units");
+    expect(screen.queryByText("No tasks or playbooks match these filters.")).toBeNull();
+    tiles.refetchVisible.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(tiles.refetchVisible).toHaveBeenCalled();
+  });
+
+  it("centres the viewport on a keyboard target so an off-screen node is reachable", () => {
+    render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+    fireEvent.keyDown(screen.getByRole("region", { name: "Task graph" }), { key: "ArrowRight" });
+    // "z" sits two units right of "e": its centre is (2*240 + 240/2, 156/2).
+    expect(setCenter).toHaveBeenCalledWith(600, 78, expect.objectContaining({ duration: 0 }));
+  });
+
+  it("waits for the focus node's layout: a 202 fits nothing, the real response fits once", () => {
+    layoutNode.data = { pending: true };
+    const view = render(<MemoryRouter><LayoutCanvas {...base} focusId="e" /></MemoryRouter>);
+    expect(fitBounds).not.toHaveBeenCalled();
+    expect(screen.getByRole("navigation", { name: "Focus path" })).toHaveTextContent("e");
+    layoutNode.data = { node: n("e", "container", 0, 0, { w: 3, h: 2 }), ancestors: [], layout_version: 1 };
+    view.rerender(<MemoryRouter><LayoutCanvas {...base} focusId="e" /></MemoryRouter>);
+    expect(fitBounds).toHaveBeenCalledTimes(1);
   });
 });

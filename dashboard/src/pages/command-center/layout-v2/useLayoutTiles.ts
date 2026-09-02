@@ -8,7 +8,9 @@ import {
   nodeCount,
   type LayoutStore,
 } from "./layoutStore";
-import { NODE_BUDGET, cellRect, cellsForRect, type CellKey, type Rect } from "./units";
+import {
+  NODE_BUDGET, boundedBatch, cellRect, cellsForRect, centreCell, type CellKey, type Rect,
+} from "./units";
 
 interface Options {
   onBudgetExceeded?: () => void;
@@ -38,7 +40,12 @@ export function useLayoutTiles(
   storeRef.current = store;
   const inflight = useRef<AbortController | null>(null);
   const dirty = useRef(false);
+  // A failed request must not be retried on its own: the error re-renders the
+  // caller, the caller hands back a new rect, and the hook would hammer the
+  // daemon. The band the canvas shows offers an explicit Retry instead.
+  const failed = useRef(false);
   const wantedRef = useRef<CellKey[]>([]);
+  const centreRef = useRef<CellKey>("0:0");
   const paramsKey = JSON.stringify(params);
   const paramsRef = useRef(params);
   paramsRef.current = params;
@@ -46,7 +53,7 @@ export function useLayoutTiles(
   onBudget.current = opts.onBudgetExceeded;
 
   const load = useCallback(async () => {
-    if (!projectId) return;
+    if (!projectId || failed.current) return;
     const wanted = wantedRef.current;
     const missing = missingCells(storeRef.current, wanted);
     if (missing.length === 0) {
@@ -59,10 +66,14 @@ export function useLayoutTiles(
       dirty.current = true;
       return;
     }
+    // The server rejects a rect wider than 64 units, so one pass fetches only
+    // the cells nearest the viewport centre that still fit; `dirty` below asks
+    // for the rest.
+    const batch = boundedBatch(missing, centreRef.current);
     const ac = new AbortController();
     inflight.current = ac;
     try {
-      const res = await fetchTiles(projectId, cellRect(missing), paramsRef.current, ac.signal);
+      const res = await fetchTiles(projectId, cellRect(batch), paramsRef.current, ac.signal);
       if (ac.signal.aborted) return;
       if ("pending" in res) {
         setPending(true);
@@ -72,18 +83,26 @@ export function useLayoutTiles(
       setPending(false);
       setLoaded(true);
       setError(null);
-      const merged = evictFar(mergeTiles(storeRef.current, missing, res), wantedRef.current);
+      // Under `root` the server ignores the rect and answers with the whole
+      // subtree, so evicting by cell would throw away nodes the response just
+      // delivered and make every pan re-download them.
+      const root = !!paramsRef.current.root;
+      const merged = root
+        ? { ...mergeTiles(storeRef.current, batch, res), whole: true }
+        : evictFar(mergeTiles(storeRef.current, batch, res), wantedRef.current);
       storeRef.current = merged;
       setStore(merged);
       const depth = paramsRef.current.maxDepth ?? null;
-      if (nodeCount(merged) > NODE_BUDGET && (depth === null || depth > 0)) onBudget.current?.();
+      // `max_depth` is ignored under `root` too: stepping it down would only
+      // churn the params and refetch the same subtree.
+      if (!root && nodeCount(merged) > NODE_BUDGET && (depth === null || depth > 0)) onBudget.current?.();
       // A response carrying a new layout_version makes mergeTiles drop every
       // previously-loaded cell and re-add only this request's, so cells still
       // inside the viewport can come back unloaded. Ask for another pass
       // rather than waiting for the next pan to notice.
       if (missingCells(merged, wantedRef.current).length > 0) dirty.current = true;
     } catch (e) {
-      if (!ac.signal.aborted) { setError(e as Error); setLoaded(true); }
+      if (!ac.signal.aborted) { failed.current = true; dirty.current = false; setError(e as Error); setLoaded(true); }
     } finally {
       if (inflight.current === ac) inflight.current = null;
       if (dirty.current) {
@@ -98,6 +117,7 @@ export function useLayoutTiles(
     inflight.current?.abort();
     inflight.current = null;
     dirty.current = false;
+    failed.current = false;
     const fresh = emptyStore();
     storeRef.current = fresh;
     setStore(fresh);
@@ -110,6 +130,7 @@ export function useLayoutTiles(
   useEffect(() => {
     if (!viewportRect) return;
     wantedRef.current = cellsForRect(viewportRect, 1);
+    centreRef.current = centreCell(viewportRect);
     void load();
   }, [viewportRect, load]);
 
@@ -126,10 +147,14 @@ export function useLayoutTiles(
       for (const id of cells.get(c) ?? []) nodes.delete(id);
       cells.delete(c);
     }
-    storeRef.current = { ...s, loaded: loadedCells, cells, nodes };
+    // `whole` would otherwise make missingCells report nothing to do, so a
+    // focused graph could never be reloaded.
+    storeRef.current = { ...s, loaded: loadedCells, cells, nodes, whole: false };
     inflight.current?.abort();
     inflight.current = null;
     dirty.current = false;
+    failed.current = false;
+    setError(null);
     void load();
   }, [load]);
 

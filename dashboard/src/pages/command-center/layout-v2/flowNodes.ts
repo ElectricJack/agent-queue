@@ -65,6 +65,21 @@ export function toFlowElements(store: LayoutStore, ctx: FlowContext): { nodes: N
       container_id: null, kind: "stub", context_only: true, agg_children: 0, agg_descendants: 0, agg_completed: 0, agg_running: 0, agg_blocked: 0, agg_active: 0 } as LayoutNode;
     nodes.push({ id: s.id, type: "task", className: "aq-stub", position: toPx(x, s.y + ctx.offsetY), ...sizePx(1, 1), zIndex: 5, draggable: false, connectable: false, data: taskNodeData(stub, ctx, gatesFor(s.id)) });
   }
+  // Boundary markers: a card with more far dependencies than the tile carries
+  // stubs for gets one "+N more" chip on the side the links leave from.
+  for (const [key, overflow] of store.stubOverflow) {
+    const anchor = store.nodes.get(overflow.node_id);
+    if (!anchor || overflow.more <= 0) continue;
+    const outward = overflow.direction === "out";
+    const x = outward ? anchor.x + anchor.w + 0.15 : anchor.x - 0.55;
+    const marker: LayoutNode = { id: `overflow:${key}`, title: `+${overflow.more} more`, status: "PENDING",
+      priority: 100, is_blocked: false, x, y: anchor.y, w: 0.4, h: 1, depth: anchor.depth,
+      container_id: null, kind: "stub", context_only: true, agg_children: 0, agg_descendants: 0,
+      agg_completed: 0, agg_running: 0, agg_blocked: 0, agg_active: 0 } as LayoutNode;
+    nodes.push({ id: marker.id, type: "task", className: "aq-stub aq-stub-overflow",
+      position: toPx(x, anchor.y + ctx.offsetY), ...sizePx(0.4, 1), zIndex: 4, selectable: false,
+      draggable: false, connectable: false, data: taskNodeData(marker, ctx, []) });
+  }
   const edges: Edge[] = [];
   for (const e of store.edges.values()) {
     const from = pos.get(e.from), to = pos.get(e.to);

@@ -78,4 +78,23 @@ describe("toFlowElements", () => {
     expect((mine.data as { task: { title: string } }).task.title).toBe("Mine");
     expect(mine.position.x).toBe(4 * 240);
   });
+  it('renders one "+N more" marker per stub_overflow entry, on the side the links leave from', () => {
+    const store = mergeTiles(emptyStore(), ["0:0"], {
+      nodes: [n("z", "card", 2, 1)],
+      edges: [], stubs: [],
+      stub_overflow: [{ node_id: "z", direction: "out", more: 7 },
+                      { node_id: "z", direction: "in", more: 2 }],
+      workers: [], gates: [], layout_version: 1,
+    } as never);
+    const { nodes } = toFlowElements(store, ctx);
+    const out = nodes.find((x) => x.id === "overflow:z|out")!;
+    const incoming = nodes.find((x) => x.id === "overflow:z|in")!;
+    expect(out.className).toBe("aq-stub aq-stub-overflow");
+    expect((out.data as { task: { title: string } }).task.title).toBe("+7 more");
+    expect((incoming.data as { task: { title: string } }).task.title).toBe("+2 more");
+    // Outgoing sits past the card's right edge, incoming just left of it.
+    expect(out.position.x).toBeGreaterThan(2 * 240);
+    expect(incoming.position.x).toBeLessThan(2 * 240);
+    expect(out.position.y).toBe(1 * 156);
+  });
 });

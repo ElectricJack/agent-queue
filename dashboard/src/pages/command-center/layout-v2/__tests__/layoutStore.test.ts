@@ -45,4 +45,30 @@ describe("layoutStore", () => {
     expect([...s1.cells.get("0:0")!]).toEqual(["a"]);
     expect(s1.nodes.has("b")).toBe(false);
   });
+  it("keeps workers and gates from earlier cells and prunes them with their nodes", () => {
+    const first = mergeTiles(emptyStore(), ["0:0"], res([node("a", 0, 0)], {
+      workers: [{ agent_id: "w1", name: "W1", docked_at: "a", in_collapsed: false }],
+      gates: [{ id: "g1", gate_type: "approval", status: "open", task_ids: ["a"] }],
+    }));
+    // A response for another cell carries neither: they must survive it.
+    const second = mergeTiles(first, ["10:10"], res([node("far", 81, 81)]));
+    expect(second.workers.map((w) => w.agent_id)).toEqual(["w1"]);
+    expect(second.gates.map((g) => g.id)).toEqual(["g1"]);
+    // Evicting the cell that held "a" drops the annotations anchored to it.
+    const evicted = evictFar(second, ["10:10"]);
+    expect(evicted.nodes.has("a")).toBe(false);
+    expect(evicted.workers).toEqual([]);
+    expect(evicted.gates).toEqual([]);
+  });
+  it("keeps stub_overflow markers for known anchors only", () => {
+    const s = mergeTiles(emptyStore(), ["0:0"], res([node("a", 0, 0)], {
+      stub_overflow: [{ node_id: "a", direction: "out", more: 3 },
+                      { node_id: "ghost", direction: "in", more: 1 }],
+    }));
+    expect([...s.stubOverflow.keys()]).toEqual(["a|out"]);
+  });
+  it("a root response marks the store whole so nothing is ever missing", () => {
+    const s = { ...mergeTiles(emptyStore(), ["0:0"], res([node("a", 0, 0)])), whole: true };
+    expect(missingCells(s, ["5:5", "9:9"])).toEqual([]);
+  });
 });

@@ -64,6 +64,7 @@ interface LayerElements {
   workers: GraphWorker[];
   pending: boolean;
   loaded: boolean;
+  error: Error | null;
 }
 
 interface LayerProps {
@@ -115,7 +116,7 @@ function ProjectLayer({
   const budget = useRef(onBudgetExceeded);
   budget.current = onBudgetExceeded;
   const options = useMemo(() => ({ onBudgetExceeded: () => budget.current() }), []);
-  const { store, pending, loaded, refetchVisible } = useLayoutTiles(projectId, params, rect, options);
+  const { store, pending, loaded, error, refetchVisible } = useLayoutTiles(projectId, params, rect, options);
 
   useEffect(
     () => registerLayoutRefetch(projectId, refetchVisible),
@@ -130,8 +131,8 @@ function ProjectLayer({
       id: worker.agent_id, name: worker.name, current_task_id: worker.docked_at,
       in_collapsed: worker.in_collapsed, profile_id: null, session_id: null,
     }));
-    onElements(projectId, { nodes, edges, workers, pending, loaded });
-  }, [store, pending, loaded, projectId, projectNames, offsetY, expanded, handlers, onElements]);
+    onElements(projectId, { nodes, edges, workers, pending, loaded, error });
+  }, [store, pending, loaded, error, projectId, projectNames, offsetY, expanded, handlers, onElements]);
 
   return null;
 }
@@ -142,7 +143,7 @@ function Inner(props: LayoutCanvasProps) {
     selectedTaskId, playbooks = NO_PLAYBOOKS, selectedPlaybookId, onPlaybookClick,
   } = props;
   const { expandedTaskIds, toggleExpanded } = useExpandedTaskIds();
-  const { fitBounds } = useReactFlow();
+  const { fitBounds, setCenter } = useReactFlow();
   const wrapRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
   const [viewport, setViewport] = useState<Viewport | null>(initialViewport);
@@ -314,6 +315,12 @@ function Inner(props: LayoutCanvasProps) {
   );
   const pending = projectIds.some((pid) => layers.get(pid)?.pending ?? true);
   const allLoaded = projectIds.every((pid) => layers.get(pid)?.loaded);
+  // A failed tiles request must never be reported as an empty graph.
+  const layerError = projectIds.map((pid) => layers.get(pid)?.error).find(Boolean) ?? null;
+  const retryLayers = useCallback(
+    () => projectIds.forEach((pid) => refetchLayout(pid)),
+    [projectIds],
+  );
   const relationTypes = useMemo(
     () => [...new Set(edges.map((edge) => String(edge.data?.depType)))].sort(),
     [edges],
@@ -323,7 +330,10 @@ function Inner(props: LayoutCanvasProps) {
   // and dependencies leaving it arrive as stubs.
   const focusProject = projectIds[0];
   const focusOffset = offsets.get(focusProject ?? "") ?? 0;
-  const { data: focusNode } = useLayoutNode(focusId ? focusProject : undefined, focusId);
+  // A project whose layout is still building answers 202 for the focus node:
+  // there is no box to fit and no title to show until it lands.
+  const { data: focusData } = useLayoutNode(focusId ? focusProject : undefined, focusId);
+  const focusNode = focusData && !("pending" in focusData) ? focusData : undefined;
   useEffect(() => {
     if (!focusId || !focusNode) return;
     const position = toPx(focusNode.node.x, focusNode.node.y + focusOffset);
@@ -373,9 +383,18 @@ function Inner(props: LayoutCanvasProps) {
       event.preventDefault();
       if (next) {
         setKbFocusId(next.id);
-        const button = [...(wrapRef.current?.querySelectorAll<HTMLButtonElement>("button[data-task-id], button[data-graph-node-id]") ?? [])]
-          .find((element) => (element.dataset.graphNodeId ?? element.dataset.taskId) === next.id);
-        button?.focus({ preventScroll: true });
+        // `onlyRenderVisibleElements` means an off-screen target has no button
+        // to focus: bring it into view first, then focus it once React Flow has
+        // rendered it.
+        const width = next.width ?? NODE_WIDTH;
+        const height = next.height ?? NODE_HEIGHT;
+        setCenter(next.position.x + width / 2, next.position.y + height / 2,
+          { zoom: viewport?.zoom ?? 1, duration: 0 });
+        requestAnimationFrame(() => {
+          const button = [...(wrapRef.current?.querySelectorAll<HTMLButtonElement>("button[data-task-id], button[data-graph-node-id]") ?? [])]
+            .find((element) => (element.dataset.graphNodeId ?? element.dataset.taskId) === next.id);
+          button?.focus({ preventScroll: true });
+        });
       }
     } else if (!taskButton && (event.key === "Enter" || event.key === "o")) {
       event.preventDefault();
@@ -385,6 +404,10 @@ function Inner(props: LayoutCanvasProps) {
 
   return (
     <div className="flex h-full min-h-0 w-full flex-col">
+      {layerError && <p role="alert" className="shrink-0 border-b border-amber-800/50 bg-amber-950/30 px-4 py-2 text-sm text-amber-200">
+        Could not load the graph. {layerError.message}{" "}
+        <button type="button" className="underline" onClick={retryLayers}>Retry</button>
+      </p>}
       {focusId && <Breadcrumbs
         projectName={projectNames.get(focusProject ?? "") ?? "Project"}
         ancestors={focusNode?.ancestors?.map((ancestor) => ({ id: ancestor.id, title: ancestor.title })) ?? []}
@@ -445,7 +468,7 @@ function Inner(props: LayoutCanvasProps) {
           )}
         </ReactFlow>
         {pending && <div role="status" className="pointer-events-none absolute inset-0 flex items-center justify-center bg-gray-950/70 text-sm text-gray-300">Laying out…</div>}
-        {allLoaded && !pending && nodes.length === 0 && <p className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-gray-500">No tasks or playbooks match these filters.</p>}
+        {allLoaded && !pending && !layerError && nodes.length === 0 && <p className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-gray-500">No tasks or playbooks match these filters.</p>}
       </div>
     </div>
   );

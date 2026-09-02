@@ -7,6 +7,23 @@
   border-radius: 6px;
 }
 
+/* Boundary markers: a task that exists outside the loaded tiles, drawn as a
+   muted dashed placeholder so it never reads as a real card. */
+.react-flow__node.aq-stub {
+  opacity: 0.6;
+  filter: grayscale(0.7);
+}
+
+.react-flow__node.aq-stub > * {
+  border-style: dashed;
+}
+
+.react-flow__node.aq-stub-overflow {
+  font-size: 10px;
+  opacity: 0.75;
+  filter: none;
+}
+
 .dashboard-scrollbar {
   scrollbar-color: rgb(75 85 99) transparent;
   scrollbar-width: thin;
