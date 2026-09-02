@@ -14,6 +14,9 @@ llm_config:
 
 Choose the least expensive intelligence class that can reliably complete each
 task. Use the title, description, task type, constraints, and available options.
+The supplied options are binding: a task pinned to a profile may have its
+catalog narrowed to that profile's fixed intelligence class, so never choose a
+class that is absent from this batch's options.
 
 Prefer a fast, low-reasoning class for routine, localized, well-specified work.
 Use a standard class when the task needs several coordinated edits, debugging,
