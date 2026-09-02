@@ -891,6 +891,75 @@ default-deny receipt projection, never raw values.
 | `completed_at` | REAL | nullable | NULL while the attempt is open |
 | `duration_ms` | INTEGER | NOT NULL DEFAULT 0 | Attempt duration |
 
+### Table: `playbook_waits`
+
+One row per durable suspension point of a V2 run (design spec §10; Package 3
+child plan §6.5).  A wait is inert data, never code: `match` is a flat JSON
+mapping of dotted event field path to required literal, evaluated in Python
+over the candidate set narrowed by `idx_playbook_waits_match`, because a
+predicate read back from the database after a restart must not be able to
+execute anything.
+
+Registration happens on `commit_boundary`'s own connection, so a run is never
+suspended with its wait invisible.  `uq_playbook_waits_active_step` is a
+partial unique index over `state = 'active'`: one live wait per step
+instance, so a duplicated resume raises rather than producing two claimable
+rows.  `snapshot_version` records the snapshot the run is suspended *on* — a
+resume that finds it disagreeing with `playbook_v2_runs.snapshot_version`
+refuses with `wait_version_mismatch`.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `wait_id` | TEXT | PRIMARY KEY | Caller-assigned wait identifier |
+| `run_id` | TEXT | NOT NULL, FK → playbook_v2_runs (CASCADE) | Suspended run |
+| `step_id` | TEXT | NOT NULL | Step that opened the wait |
+| `iteration` | INTEGER | NOT NULL DEFAULT -1 | `-1` outside a loop, `0..n` inside one |
+| `kind` | TEXT | NOT NULL, CHECK | One of: event, timer, human, agent_task |
+| `event_type` | TEXT | NOT NULL DEFAULT '' | Empty matches any event type |
+| `correlation_key` | TEXT | NOT NULL DEFAULT '' | Digest of (kind, event_type, match), for operator search |
+| `match` | TEXT | NOT NULL DEFAULT '{}' | JSON: dotted field path → required literal |
+| `deadline_at` | REAL | nullable | NULL never expires |
+| `snapshot_version` | INTEGER | NOT NULL | Snapshot version the wait suspends |
+| `state` | TEXT | NOT NULL DEFAULT 'active', CHECK | One of: active, claimed, expired, cleared |
+| `claimed_event_id` | TEXT | nullable | Event that claimed it; NULL for an expiry |
+| `claimed_at` | REAL | nullable | When it was claimed or expired |
+| `created_at` | REAL | NOT NULL | Set on insert |
+
+### Table: `playbook_pending_events`
+
+An event that matched an activation which was not `ready` is retained here
+rather than dropped (child plan §10.3), so recovery is "rebuild, activate,
+dispatch the retained events" and never "the events are gone".
+
+Deduplication is `uq_playbook_pending_events_dedup`, a partial unique index
+over `resolved_at IS NULL AND dedup_key <> ''` — the index, not a pre-read,
+because a pre-read races.  An empty `dedup_key` therefore never deduplicates.
+Replay order is `ORDER BY received_at, pending_event_id`.  `resolved_at` /
+`resolved_by` / `resolution` are the operator-audit columns; resolution CASes
+on `resolved_at IS NULL`, so two operators clicking "dispatch" produce one
+dispatch.  Retention is 7 days by default, and a per-playbook quota
+(`playbooks.v2_max_pending_events_per_playbook`) keeps the table from being a
+denial-of-service surface reachable by any event producer.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `pending_event_id` | TEXT | PRIMARY KEY | UUID string |
+| `playbook_id` | TEXT | NOT NULL | Playbook the event was routed to |
+| `scope` | TEXT | NOT NULL DEFAULT 'system' | Activation scope |
+| `scope_identifier` | TEXT | NOT NULL DEFAULT '' | Project id for project scope, else empty |
+| `event_type` | TEXT | NOT NULL | Event type as received |
+| `event` | TEXT | NOT NULL DEFAULT '{}' | JSON event body |
+| `event_id` | TEXT | nullable | Producer's event id when it has one |
+| `dedup_key` | TEXT | NOT NULL DEFAULT '' | Empty disables deduplication |
+| `reason` | TEXT | NOT NULL, CHECK | One of: stale_contract, invalid_artifact, disabled, unavailable, question_required |
+| `attempts` | INTEGER | NOT NULL DEFAULT 0 | Dispatch attempts made after retention |
+| `last_error` | TEXT | nullable | Last dispatch failure |
+| `received_at` | REAL | NOT NULL | Arrival time; the replay order |
+| `expires_at` | REAL | NOT NULL | `received_at + retention`; collectable past it |
+| `resolved_at` | REAL | nullable | NULL while unresolved |
+| `resolved_by` | TEXT | nullable | Server-derived principal that resolved it |
+| `resolution` | TEXT | nullable, CHECK | One of: dispatched, discarded, expired |
+
 ### Table: `task_completion_records`
 
 Append-only audit records for accepted task-close operations.  This deliberately

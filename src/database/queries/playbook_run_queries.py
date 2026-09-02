@@ -21,18 +21,30 @@ from __future__ import annotations
 import json
 import logging
 import time
+import uuid
+from collections.abc import AsyncIterator, Mapping
+from contextlib import asynccontextmanager
 from dataclasses import replace
+from typing import Any
 
-from sqlalchemy import delete, insert, select, update
+from sqlalchemy import delete, func, insert, or_, select, update
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncConnection
 
-from src.database.tables import playbook_step_receipts, playbook_v2_runs
+from src.database.tables import (
+    playbook_pending_events,
+    playbook_step_receipts,
+    playbook_v2_runs,
+    playbook_waits,
+)
 from src.playbooks.receipts import StepReceipt
 from src.playbooks.run_state import (
     DEFAULT_STATE_LIMITS,
     TERMINAL_LIFECYCLES,
     DuplicateAttempt,
+    DuplicateWait,
     IllegalLifecycleTransition,
+    PendingEventQuotaExceeded,
     RunLifecycle,
     RunSnapshot,
     SnapshotVersionConflict,
@@ -42,7 +54,14 @@ from src.playbooks.run_state import (
     serialize_snapshot,
     validate_transition,
 )
-from src.playbooks.waits import EMPTY_WAIT_CHANGES, WaitChangeSet
+from src.playbooks.waits import (
+    EMPTY_WAIT_CHANGES,
+    MatchableEvent,
+    WaitChangeSet,
+    WaitClaim,
+    WaitSpec,
+    matches,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +99,96 @@ def _receipt_row(receipt: StepReceipt) -> dict:
         "started_at": receipt.started_at,
         "completed_at": receipt.completed_at,
         "duration_ms": receipt.duration_ms,
+    }
+
+
+#: ``playbooks.v2_max_pending_events_per_playbook`` when no config is bound.
+DEFAULT_PENDING_EVENT_QUOTA = 1000
+
+#: One quota warning per playbook per minute — a flood is exactly the case
+#: where an unthrottled warning turns a full retention table into a full disk.
+_QUOTA_WARNING_INTERVAL = 60.0
+_last_quota_warning: dict[str, float] = {}
+
+
+def _warn_pending_quota(playbook_id: str, quota: int, now: float) -> None:
+    last = _last_quota_warning.get(playbook_id)
+    if last is not None and now - last < _QUOTA_WARNING_INTERVAL:
+        return
+    _last_quota_warning[playbook_id] = now
+    logger.warning(
+        "playbook %s is at its pending-event quota (%d unresolved); "
+        "further events for it are refused until some are resolved",
+        playbook_id,
+        quota,
+    )
+
+
+def _wait_row(wait: WaitSpec, snapshot_version: int) -> dict:
+    return {
+        "wait_id": wait.wait_id,
+        "run_id": wait.run_id,
+        "step_id": wait.step_id,
+        "iteration": wait.iteration,
+        "kind": wait.kind,
+        "event_type": wait.event_type,
+        "correlation_key": wait.correlation_key,
+        "match": _dumps(dict(wait.match)),
+        "deadline_at": wait.deadline_at,
+        "snapshot_version": snapshot_version,
+        "state": "active",
+        "claimed_event_id": None,
+        "claimed_at": None,
+        "created_at": time.time(),
+    }
+
+
+def _row_to_wait(row) -> WaitSpec:
+    return WaitSpec(
+        wait_id=row["wait_id"],
+        run_id=row["run_id"],
+        step_id=row["step_id"],
+        iteration=int(row["iteration"]),
+        kind=row["kind"],
+        event_type=row["event_type"],
+        match=json.loads(row["match"]),
+        deadline_at=row["deadline_at"],
+    )
+
+
+def _row_to_claim(row, event_id: str | None, now: float, *, expired: bool) -> WaitClaim:
+    return WaitClaim(
+        wait_id=row["wait_id"],
+        run_id=row["run_id"],
+        step_id=row["step_id"],
+        iteration=int(row["iteration"]),
+        kind=row["kind"],
+        snapshot_version=int(row["snapshot_version"]),
+        claimed_event_id=event_id,
+        claimed_at=now,
+        expired=expired,
+    )
+
+
+def _row_to_pending_event(row) -> dict[str, Any]:
+    """Field-for-field ``PendingEventDTO`` (§4.6) plus the audit columns."""
+    return {
+        "pending_event_id": row["pending_event_id"],
+        "playbook_id": row["playbook_id"],
+        "scope": row["scope"],
+        "scope_identifier": row["scope_identifier"],
+        "event_type": row["event_type"],
+        "event": json.loads(row["event"]),
+        "event_id": row["event_id"],
+        "dedup_key": row["dedup_key"],
+        "reason": row["reason"],
+        "attempts": int(row["attempts"]),
+        "last_error": row["last_error"],
+        "received_at": row["received_at"],
+        "expires_at": row["expires_at"],
+        "resolved_at": row["resolved_at"],
+        "resolved_by": row["resolved_by"],
+        "resolution": row["resolution"],
     }
 
 
@@ -252,18 +361,35 @@ class PlaybookRunQueryMixin:
                 raise DuplicateAttempt(
                     receipt.run_id, receipt.step_id, receipt.iteration, receipt.attempt
                 ) from exc
-            await self._apply_wait_changes(conn, wait_changes, advanced.version)
+            await self._apply_wait_changes(
+                conn, snapshot.run_id, wait_changes, advanced.version
+            )
         return advanced
 
-    async def _apply_wait_changes(self, conn, wait_changes: WaitChangeSet, version: int) -> None:
+    async def _apply_wait_changes(
+        self, conn: AsyncConnection, run_id: str, wait_changes: WaitChangeSet, version: int
+    ) -> None:
         """Applied on the boundary's own connection — see §4.5.
 
-        Replaced by the real implementation when the wait tables land; until
-        then a non-empty change set is a programming error rather than a
-        silently dropped registration.
+        Order is ``clear_run_waits`` → ``clear_wait_ids`` → ``register``, so a
+        step that finishes one wait and opens another in the same boundary
+        cannot trip ``uq_playbook_waits_active_step``.
         """
-        if not wait_changes.is_empty:
-            raise NotImplementedError("durable waits are not available in this revision")
+        if wait_changes.is_empty:
+            return
+        if wait_changes.clear_run_waits:
+            await self.clear_for_run(run_id, conn=conn)
+        if wait_changes.clear_wait_ids:
+            await conn.execute(
+                update(playbook_waits)
+                .where(
+                    playbook_waits.c.wait_id.in_(list(wait_changes.clear_wait_ids)),
+                    playbook_waits.c.state == "active",
+                )
+                .values(state="cleared")
+            )
+        for wait in wait_changes.register:
+            await self.register(wait, version, conn=conn)
 
     async def request_cancel(
         self, run_id: str, *, expected_version: int, reason: str, requested_by: str
@@ -405,6 +531,306 @@ class PlaybookRunQueryMixin:
             await conn.execute(
                 delete(playbook_step_receipts).where(
                     playbook_step_receipts.c.receipt_id.in_(list(doomed))
+                )
+            )
+        return len(doomed)
+
+    # -- waits (§4.5) --------------------------------------------------------
+
+    @asynccontextmanager
+    async def _wait_conn(self, conn: AsyncConnection | None) -> AsyncIterator[AsyncConnection]:
+        """Borrow the boundary's connection, or open our own transaction.
+
+        This is the atomicity seam of §4.5: with a caller's ``conn`` the
+        registration commits or rolls back with the snapshot advance, so the
+        window in which a run is suspended and its wait is invisible does not
+        exist.
+        """
+        if conn is not None:
+            yield conn
+            return
+        async with self.immediate() as owned:
+            yield owned
+
+    async def register(
+        self, wait: WaitSpec, snapshot_version: int, *, conn: AsyncConnection | None = None
+    ) -> str:
+        """Open one durable wait, recording the snapshot it suspends.
+
+        ``snapshot_version`` is the version the boundary is *writing*, not the
+        one it loaded: a resume that finds the two disagreeing refuses with
+        ``wait_version_mismatch`` rather than resuming into a moved-on state.
+        """
+        values = _wait_row(wait, snapshot_version)
+        try:
+            async with self._wait_conn(conn) as active:
+                await active.execute(insert(playbook_waits).values(**values))
+        except IntegrityError as exc:
+            # uq_playbook_waits_active_step — one live wait per step instance.
+            raise DuplicateWait(wait.run_id, wait.step_id, wait.iteration) from exc
+        return wait.wait_id
+
+    async def claim_for_event(
+        self, event: MatchableEvent, *, now: float, limit: int = 100
+    ) -> list[WaitClaim]:
+        """Claim every active wait this event satisfies, at most once each.
+
+        The predicate is evaluated in Python over an index-narrowed candidate
+        set (``idx_playbook_waits_match``) because ``match`` is inert JSON,
+        then each candidate is claimed by a CAS on ``state='active'``.  Two
+        concurrent dispatches of the same event therefore produce exactly one
+        claim per wait: the loser's UPDATE matches zero rows.
+        """
+        claims: list[WaitClaim] = []
+        async with self.immediate() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        select(playbook_waits)
+                        .where(
+                            playbook_waits.c.state == "active",
+                            or_(
+                                playbook_waits.c.event_type == event.event_type,
+                                playbook_waits.c.event_type == "",
+                            ),
+                        )
+                        .order_by(playbook_waits.c.created_at, playbook_waits.c.wait_id)
+                        .limit(limit)
+                    )
+                )
+                .mappings()
+                .fetchall()
+            )
+            for row in rows:
+                if not matches(_row_to_wait(row), event):
+                    continue
+                result = await conn.execute(
+                    update(playbook_waits)
+                    .where(
+                        playbook_waits.c.wait_id == row["wait_id"],
+                        playbook_waits.c.state == "active",
+                    )
+                    .values(
+                        state="claimed",
+                        claimed_event_id=event.event_id,
+                        claimed_at=now,
+                    )
+                )
+                if result.rowcount != 1:
+                    continue
+                claims.append(_row_to_claim(row, event.event_id, now, expired=False))
+        return claims
+
+    async def expire_due(self, now: float, *, limit: int = 100) -> list[WaitClaim]:
+        """Claim every active wait whose deadline has passed.
+
+        Same CAS as :meth:`claim_for_event` with ``state='expired'``, so a
+        wait that an event claims in the same instant is expired by nobody.
+        """
+        claims: list[WaitClaim] = []
+        async with self.immediate() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        select(playbook_waits)
+                        .where(
+                            playbook_waits.c.state == "active",
+                            playbook_waits.c.deadline_at.is_not(None),
+                            playbook_waits.c.deadline_at <= now,
+                        )
+                        .order_by(playbook_waits.c.deadline_at, playbook_waits.c.wait_id)
+                        .limit(limit)
+                    )
+                )
+                .mappings()
+                .fetchall()
+            )
+            for row in rows:
+                result = await conn.execute(
+                    update(playbook_waits)
+                    .where(
+                        playbook_waits.c.wait_id == row["wait_id"],
+                        playbook_waits.c.state == "active",
+                    )
+                    .values(state="expired", claimed_at=now)
+                )
+                if result.rowcount != 1:
+                    continue
+                claims.append(_row_to_claim(row, None, now, expired=True))
+        return claims
+
+    async def clear_for_run(
+        self, run_id: str, *, conn: AsyncConnection | None = None
+    ) -> int:
+        """Deactivate every active wait of one run; returns how many moved."""
+        async with self._wait_conn(conn) as active:
+            result = await active.execute(
+                update(playbook_waits)
+                .where(
+                    playbook_waits.c.run_id == run_id,
+                    playbook_waits.c.state == "active",
+                )
+                .values(state="cleared")
+            )
+        return int(result.rowcount)
+
+    async def list_active(self, run_id: str) -> list[WaitSpec]:
+        stmt = (
+            select(playbook_waits)
+            .where(
+                playbook_waits.c.run_id == run_id,
+                playbook_waits.c.state == "active",
+            )
+            .order_by(playbook_waits.c.created_at, playbook_waits.c.wait_id)
+        )
+        async with self._engine.connect() as conn:
+            rows = (await conn.execute(stmt)).mappings().fetchall()
+        return [_row_to_wait(row) for row in rows]
+
+    # -- pending events (§10.3) ---------------------------------------------
+
+    def playbook_pending_event_quota(self) -> int:
+        """``playbooks.v2_max_pending_events_per_playbook``, or the default."""
+        configured = getattr(self, "_playbook_pending_event_quota", None)
+        return DEFAULT_PENDING_EVENT_QUOTA if configured is None else configured
+
+    def set_playbook_pending_event_quota(self, quota: int) -> None:
+        self._playbook_pending_event_quota = int(quota)
+
+    async def retain_pending_event(
+        self,
+        *,
+        playbook_id: str,
+        scope: str,
+        scope_identifier: str,
+        event_type: str,
+        event: Mapping[str, Any],
+        event_id: str | None,
+        dedup_key: str,
+        reason: str,
+        now: float,
+        ttl_seconds: float,
+    ) -> str | None:
+        """Retain an event whose activation is not ``ready``.
+
+        Returns the new id, or ``None`` when ``uq_playbook_pending_events_dedup``
+        rejects it as a duplicate of an unresolved event with the same
+        ``dedup_key`` — deduplication is the index, never a pre-read, because
+        a pre-read races.  The quota *is* a pre-read, and is allowed to be
+        approximate under concurrency: it is a flood ceiling, not an
+        invariant.
+        """
+        quota = self.playbook_pending_event_quota()
+        pending_event_id = uuid.uuid4().hex
+        try:
+            async with self.immediate() as conn:
+                unresolved = (
+                    await conn.execute(
+                        select(func.count())
+                        .select_from(playbook_pending_events)
+                        .where(
+                            playbook_pending_events.c.playbook_id == playbook_id,
+                            playbook_pending_events.c.resolved_at.is_(None),
+                        )
+                    )
+                ).scalar_one()
+                if int(unresolved) >= quota:
+                    _warn_pending_quota(playbook_id, quota, now)
+                    raise PendingEventQuotaExceeded(playbook_id, quota)
+                await conn.execute(
+                    insert(playbook_pending_events).values(
+                        pending_event_id=pending_event_id,
+                        playbook_id=playbook_id,
+                        scope=scope,
+                        scope_identifier=scope_identifier,
+                        event_type=event_type,
+                        event=_dumps(dict(event)),
+                        event_id=event_id,
+                        dedup_key=dedup_key,
+                        reason=reason,
+                        attempts=0,
+                        last_error=None,
+                        received_at=now,
+                        expires_at=now + ttl_seconds,
+                        resolved_at=None,
+                        resolved_by=None,
+                        resolution=None,
+                    )
+                )
+        except IntegrityError:
+            # The transaction rolled back; only the SELECT preceded the insert.
+            return None
+        return pending_event_id
+
+    async def resolve_pending_event(
+        self, pending_event_id: str, *, resolution: str, resolved_by: str, now: float
+    ) -> bool:
+        """CAS on ``resolved_at IS NULL`` — two operators produce one dispatch."""
+        async with self.immediate() as conn:
+            result = await conn.execute(
+                update(playbook_pending_events)
+                .where(
+                    playbook_pending_events.c.pending_event_id == pending_event_id,
+                    playbook_pending_events.c.resolved_at.is_(None),
+                )
+                .values(resolved_at=now, resolved_by=resolved_by, resolution=resolution)
+            )
+        return int(result.rowcount) == 1
+
+    async def list_pending_events(
+        self,
+        *,
+        playbook_id: str | None = None,
+        include_resolved: bool = False,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """Retained events in arrival order — the replay order of §6.6."""
+        stmt = select(playbook_pending_events)
+        if playbook_id is not None:
+            stmt = stmt.where(playbook_pending_events.c.playbook_id == playbook_id)
+        if not include_resolved:
+            stmt = stmt.where(playbook_pending_events.c.resolved_at.is_(None))
+        stmt = (
+            stmt.order_by(
+                playbook_pending_events.c.received_at,
+                playbook_pending_events.c.pending_event_id,
+            )
+            .limit(limit)
+            .offset(offset)
+        )
+        async with self._engine.connect() as conn:
+            rows = (await conn.execute(stmt)).mappings().fetchall()
+        return [_row_to_pending_event(row) for row in rows]
+
+    async def purge_pending_events(self, now: float, *, limit: int = 1000) -> int:
+        """Collect resolved or expired retentions (§12.1: 7 days by default).
+
+        An unresolved, unexpired event is never collectable however old it
+        looks: it is the only remaining record that the event arrived.
+        """
+        async with self.immediate() as conn:
+            doomed = (
+                (
+                    await conn.execute(
+                        select(playbook_pending_events.c.pending_event_id)
+                        .where(
+                            or_(
+                                playbook_pending_events.c.resolved_at.is_not(None),
+                                playbook_pending_events.c.expires_at <= now,
+                            )
+                        )
+                        .limit(limit)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            if not doomed:
+                return 0
+            await conn.execute(
+                delete(playbook_pending_events).where(
+                    playbook_pending_events.c.pending_event_id.in_(list(doomed))
                 )
             )
         return len(doomed)

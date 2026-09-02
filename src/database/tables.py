@@ -1132,6 +1132,85 @@ playbook_step_receipts = Table(
     Index("idx_playbook_step_receipts_key", "idempotency_key"),
 )
 
+playbook_waits = Table(
+    "playbook_waits",
+    metadata,
+    Column("wait_id", Text, primary_key=True),
+    Column(
+        "run_id", Text,
+        ForeignKey("playbook_v2_runs.run_id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("step_id", Text, nullable=False),
+    Column("iteration", Integer, nullable=False, server_default="-1"),
+    Column("kind", Text, nullable=False),
+    Column("event_type", Text, nullable=False, server_default=""),
+    Column("correlation_key", Text, nullable=False, server_default=""),
+    Column("match", Text, nullable=False, server_default="{}"),
+    Column("deadline_at", Float, nullable=True),
+    Column("snapshot_version", Integer, nullable=False),
+    Column("state", Text, nullable=False, server_default="active"),
+    Column("claimed_event_id", Text, nullable=True),
+    Column("claimed_at", Float, nullable=True),
+    Column("created_at", Float, nullable=False),
+    CheckConstraint(
+        "kind IN ('event', 'timer', 'human', 'agent_task')",
+        name="ck_playbook_waits_kind",
+    ),
+    CheckConstraint(
+        "state IN ('active', 'claimed', 'expired', 'cleared')",
+        name="ck_playbook_waits_state",
+    ),
+    Index(
+        "uq_playbook_waits_active_step",
+        "run_id", "step_id", "iteration",
+        unique=True,
+        sqlite_where=text("state = 'active'"),
+        postgresql_where=text("state = 'active'"),
+    ),
+    Index("idx_playbook_waits_match", "state", "event_type"),
+    Index("idx_playbook_waits_deadline", "state", "deadline_at"),
+)
+
+playbook_pending_events = Table(
+    "playbook_pending_events",
+    metadata,
+    Column("pending_event_id", Text, primary_key=True),
+    Column("playbook_id", Text, nullable=False),
+    Column("scope", Text, nullable=False, server_default="system"),
+    Column("scope_identifier", Text, nullable=False, server_default=""),
+    Column("event_type", Text, nullable=False),
+    Column("event", Text, nullable=False, server_default="{}"),
+    Column("event_id", Text, nullable=True),
+    Column("dedup_key", Text, nullable=False, server_default=""),
+    Column("reason", Text, nullable=False),
+    Column("attempts", Integer, nullable=False, server_default="0"),
+    Column("last_error", Text, nullable=True),
+    Column("received_at", Float, nullable=False),
+    Column("expires_at", Float, nullable=False),
+    Column("resolved_at", Float, nullable=True),
+    Column("resolved_by", Text, nullable=True),
+    Column("resolution", Text, nullable=True),
+    CheckConstraint(
+        "reason IN ('stale_contract', 'invalid_artifact', 'disabled', "
+        "'unavailable', 'question_required')",
+        name="ck_playbook_pending_events_reason",
+    ),
+    CheckConstraint(
+        "resolution IS NULL OR resolution IN ('dispatched', 'discarded', 'expired')",
+        name="ck_playbook_pending_events_resolution",
+    ),
+    Index(
+        "uq_playbook_pending_events_dedup",
+        "playbook_id", "dedup_key",
+        unique=True,
+        sqlite_where=text("resolved_at IS NULL AND dedup_key <> ''"),
+        postgresql_where=text("resolved_at IS NULL AND dedup_key <> ''"),
+    ),
+    Index("idx_playbook_pending_events_playbook", "playbook_id", "received_at"),
+    Index("idx_playbook_pending_events_expiry", "expires_at"),
+)
+
 task_assignment_routes = Table(
     "task_assignment_routes",
     metadata,
