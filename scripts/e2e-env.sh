@@ -244,8 +244,8 @@ tags: [profile, agent-type, e2e, pool]
 
 ## Role
 A pull-based pool worker for the swarm functional-test kit.  Claim a task,
-do it, close it with `--claim-next`, repeat until the daemon says
-`session_exhausted`, then `aq session drain-ack`.
+do it, close it with `--claim-next`, then `aq session drain-ack` when the
+daemon requests a fresh context.  A replacement session claims the next task.
 
 Under Tier 1 (`sessions.provider: fake`) nothing actually reads this Role —
 `scripts/e2e-smoke.sh` acts as the worker itself.  Under Tier 2 the real
@@ -256,9 +256,10 @@ Under Tier 1 (`sessions.provider: fake`) nothing actually reads this Role —
 {
   "harness": "claude",
   "lifecycle": "pool",
+  "default_class": "standard-medium",
   "min_active": 0,
   "max_active": 2,
-  "max_claims_per_session": 2,
+  "max_claims_per_session": 1,
   "needs_workspace": true,
   "workspaces": ["project-repo"]
 }
@@ -285,6 +286,11 @@ MD
 # `review-and-fix` names `reviewer` and `coding` as node profiles; graph
 # validation resolves both against the DB, so the vault must carry them.
 for role in reviewer coding; do
+    if [ "$role" = "reviewer" ]; then
+        default_class="standard-low"
+    else
+        default_class="standard-medium"
+    fi
     mkdir -p "$E2E_VAULT/agent-types/$role"
     cat > "$E2E_VAULT/agent-types/$role/profile.md" <<MD
 ---
@@ -304,6 +310,7 @@ A task-lifecycle profile the formula fixtures route nodes to.  Present so
 {
   "harness": "claude",
   "lifecycle": "task",
+  "default_class": "$default_class",
   "needs_workspace": true,
   "workspaces": ["project-repo"]
 }
@@ -380,6 +387,9 @@ mcp_server:
 # The whole point of the kit.
 swarm:
   enabled: true
+  # Keep the fixture aligned with the production default: every claimed task
+  # gets a new model conversation and therefore a new pool session.
+  fresh_context_per_task: true
   claim_wait_max: 30
   max_starts_per_tick: 2
   max_drains_per_tick: 5

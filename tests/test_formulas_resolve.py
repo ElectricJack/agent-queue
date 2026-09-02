@@ -84,7 +84,10 @@ def test_merge_nodes_by_key_child_wins_new_appended(reg):
     assert review["title"] == "Review branch {branch} (strict)"  # child wins
     assert review["acceptance"] == ["findings written"]  # inherited (child did not set)
     assert doc["parent"]["title"] == "Review and fix {branch}"
-    assert doc["defaults"] == {"profile": "{reviewer}"}
+    assert doc["defaults"] == {
+        "profile": "{reviewer}",
+        "intelligence_class": "standard-low",
+    }
 
 
 def test_merge_defaults_child_null_does_not_clobber_inherited(reg, tmp_path):

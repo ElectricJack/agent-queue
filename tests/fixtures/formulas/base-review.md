@@ -13,6 +13,7 @@ Review the branch for correctness.
 version: 1
 defaults:
   profile: "{reviewer}"
+  intelligence_class: standard-low
 nodes:
   - key: review
     title: Review {branch}
