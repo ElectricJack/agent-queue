@@ -33,7 +33,6 @@ from src.discord.embeds import (
     make_embed,
     truncate,
     EmbedStyle,
-    TASK_TYPE_EMOJIS,
     LIMIT_FIELD_VALUE,
     LIMIT_DESCRIPTION,
 )
