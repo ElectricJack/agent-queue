@@ -110,6 +110,15 @@ class DeleteAgentResponse(BaseModel):
     name: str
 
 
+class AgentMessageResponse(BaseModel):
+    """Durable supervisor message queued for one or more live workers."""
+
+    model_config = {"extra": "allow"}
+    message_id: str | None = None
+    count: int | None = None
+    recipients: list[dict[str, Any]] = []
+
+
 class GetAgentErrorResponse(BaseModel):
     task_id: str
     title: str = ""
@@ -274,6 +283,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "create_agent": AgentSummary,
     "edit_agent": AgentSummary,
     "delete_agent": DeleteAgentResponse,
+    "agent_message": AgentMessageResponse,
     "start_agent_terminal": AgentSummary,
     "pause_agent": ListAgentsResponse,  # deprecated, returns error
     "resume_agent": ListAgentsResponse,  # deprecated, returns error

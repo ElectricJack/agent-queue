@@ -31,6 +31,7 @@ class PoolStatusRow:
         ready (int):
         max_active (int | None | Unset):
         quarantined_until (float | None | Unset):
+        quarantined_reason (None | str | Unset):
         instances (list[PoolInstanceStatus] | Unset):
     """
 
@@ -45,6 +46,7 @@ class PoolStatusRow:
     ready: int
     max_active: int | None | Unset = UNSET
     quarantined_until: float | None | Unset = UNSET
+    quarantined_reason: None | str | Unset = UNSET
     instances: list[PoolInstanceStatus] | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -79,6 +81,12 @@ class PoolStatusRow:
         else:
             quarantined_until = self.quarantined_until
 
+        quarantined_reason: None | str | Unset
+        if isinstance(self.quarantined_reason, Unset):
+            quarantined_reason = UNSET
+        else:
+            quarantined_reason = self.quarantined_reason
+
         instances: list[dict[str, Any]] | Unset = UNSET
         if not isinstance(self.instances, Unset):
             instances = []
@@ -105,6 +113,8 @@ class PoolStatusRow:
             field_dict["max_active"] = max_active
         if quarantined_until is not UNSET:
             field_dict["quarantined_until"] = quarantined_until
+        if quarantined_reason is not UNSET:
+            field_dict["quarantined_reason"] = quarantined_reason
         if instances is not UNSET:
             field_dict["instances"] = instances
 
@@ -151,6 +161,15 @@ class PoolStatusRow:
 
         quarantined_until = _parse_quarantined_until(d.pop("quarantined_until", UNSET))
 
+        def _parse_quarantined_reason(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        quarantined_reason = _parse_quarantined_reason(d.pop("quarantined_reason", UNSET))
+
         _instances = d.pop("instances", UNSET)
         instances: list[PoolInstanceStatus] | Unset = UNSET
         if _instances is not UNSET:
@@ -172,6 +191,7 @@ class PoolStatusRow:
             ready=ready,
             max_active=max_active,
             quarantined_until=quarantined_until,
+            quarantined_reason=quarantined_reason,
             instances=instances,
         )
 
