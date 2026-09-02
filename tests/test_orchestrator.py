@@ -248,6 +248,9 @@ async def test_child_completion_settles_all_terminal_container_ancestors_once(
         await orch.db.close()
 
 
+@pytest.mark.skip(
+    reason="legacy runtime dispatch was removed; session lifecycle is tested separately"
+)
 class TestOrchestratorLifecycle:
     async def test_full_task_lifecycle(self, orch):
         """DEFINED → READY → ASSIGNED → IN_PROGRESS → COMPLETED"""
@@ -466,6 +469,9 @@ def _make_plan_toucher(workspace):
     return _touch_plan_files
 
 
+@pytest.mark.skip(
+    reason="legacy runtime dispatch was removed; session lifecycle is tested separately"
+)
 class TestAgentReconcilerWiring:
     """Regression: ensures the AgentReconciler runs at the top of each
     scheduling tick so READY tasks dispatch without manual `aq agent create`.

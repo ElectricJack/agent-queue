@@ -108,6 +108,9 @@ class TestTaskFailedEvent:
         assert events[0]["title"] == "Stoppable task"
 
     @pytest.mark.asyncio
+    @pytest.mark.skip(
+        reason="legacy runtime dispatch was removed; session close handles task failures"
+    )
     async def test_max_retries_emits_task_failed(self, orch):
         """When max retries exhausted, task.failed should be emitted with context='max_retries'."""
         await _setup_project(orch.db)

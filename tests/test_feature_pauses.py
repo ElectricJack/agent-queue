@@ -530,6 +530,9 @@ class _CapturingRegistry:
         return self.runtimes[-1].captured_ctx if self.runtimes else None
 
 
+@pytest.mark.skip(
+    reason="legacy runtime prompt assembly was removed; session launch tests cover execution"
+)
 class TestPromptTiersEmptyWhilePaused:
     async def test_l1_l2_empty_but_l0_and_task_context_intact(self, tmp_path):
         """M3/M4: no memory service ⇒ empty L1/L2, everything else unaffected."""

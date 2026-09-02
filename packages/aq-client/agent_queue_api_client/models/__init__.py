@@ -6,6 +6,10 @@ from .add_dependency_response_422 import AddDependencyResponse422
 from .add_workspace_request import AddWorkspaceRequest
 from .add_workspace_response import AddWorkspaceResponse
 from .add_workspace_response_422 import AddWorkspaceResponse422
+from .agent_message_request import AgentMessageRequest
+from .agent_message_response import AgentMessageResponse
+from .agent_message_response_422 import AgentMessageResponse422
+from .agent_message_response_recipients_item import AgentMessageResponseRecipientsItem
 from .agent_question_detail import AgentQuestionDetail
 from .agent_settings import AgentSettings
 from .agent_summary import AgentSummary
@@ -463,6 +467,9 @@ from .message_reply_response import MessageReplyResponse
 from .message_reply_response_422 import MessageReplyResponse422
 from .message_send_request import MessageSendRequest
 from .message_send_request_pane_open_type_0 import MessageSendRequestPaneOpenType0
+from .message_status_request import MessageStatusRequest
+from .message_status_response import MessageStatusResponse
+from .message_status_response_422 import MessageStatusResponse422
 from .note_summary import NoteSummary
 from .orchestrator_control_request import OrchestratorControlRequest
 from .orchestrator_control_response import OrchestratorControlResponse
@@ -871,6 +878,10 @@ __all__ = (
     "AddWorkspaceRequest",
     "AddWorkspaceResponse",
     "AddWorkspaceResponse422",
+    "AgentMessageRequest",
+    "AgentMessageResponse",
+    "AgentMessageResponse422",
+    "AgentMessageResponseRecipientsItem",
     "AgentQuestionDetail",
     "AgentSettings",
     "AgentSummary",
@@ -1322,6 +1333,9 @@ __all__ = (
     "MessageReplyResponse422",
     "MessageSendRequest",
     "MessageSendRequestPaneOpenType0",
+    "MessageStatusRequest",
+    "MessageStatusResponse",
+    "MessageStatusResponse422",
     "NoteSummary",
     "OrchestratorControlRequest",
     "OrchestratorControlResponse",

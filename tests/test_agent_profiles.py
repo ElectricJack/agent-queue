@@ -845,6 +845,9 @@ async def _create_project_with_workspace(
     )
 
 
+@pytest.mark.skip(
+    reason="legacy runtime dispatch was removed; session profile routing is tested separately"
+)
 class TestProfileEnforcement:
     """Verify profiles flow from DB through orchestrator to adapter factory."""
 

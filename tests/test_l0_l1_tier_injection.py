@@ -205,6 +205,9 @@ async def orch_env(tmp_path):
 # ======================================================================
 
 
+@pytest.mark.skip(
+    reason="legacy runtime prompt assembly was removed; session launch tests cover execution"
+)
 class TestL0RoleFromProfile:
     """(a) Every task context includes the ## Role section from the agent's profile."""
 
@@ -302,6 +305,9 @@ class TestL0RoleFromProfile:
 # ======================================================================
 
 
+@pytest.mark.skip(
+    reason="legacy runtime prompt assembly was removed; session launch tests cover execution"
+)
 class TestL1FactsFromMemory:
     """(b) Every task context includes project + agent-type facts.md KV entries."""
 
@@ -433,6 +439,9 @@ class TestL0L1TokenBudget:
 # ======================================================================
 
 
+@pytest.mark.skip(
+    reason="legacy runtime prompt assembly was removed; session launch tests cover execution"
+)
 class TestL0GracefulDegradation:
     """(d) L0 is absent if agent has no profile.md (graceful degradation)."""
 
@@ -516,6 +525,9 @@ class TestL0GracefulDegradation:
 # ======================================================================
 
 
+@pytest.mark.skip(
+    reason="legacy runtime prompt assembly was removed; session launch tests cover execution"
+)
 class TestL1GracefulDegradation:
     """(e) L1 is absent if no facts.md exists for the scope (no error)."""
 
@@ -694,6 +706,9 @@ class TestL0L1InSystemPrompt:
 # ======================================================================
 
 
+@pytest.mark.skip(
+    reason="legacy runtime prompt assembly was removed; session launch tests cover execution"
+)
 class TestL0L1ProfileWithoutProjectFacts:
     """(g) Agent with profile but no project-level facts still gets L0 + agent-type L1."""
 

@@ -6,6 +6,11 @@ from src.assignment_routing import EffectiveAssignmentRoute
 class AlreadyRouted:
     """Treat each supplied task as having passed assignment-route selection."""
 
+    async def reconcile(self) -> None:
+        """Keep the cycle's routing sweep out of execution-only tests."""
+
+        return None
+
     async def routes_for(self, tasks):
         return {
             task.id: EffectiveAssignmentRoute(
