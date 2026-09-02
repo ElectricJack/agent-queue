@@ -278,8 +278,10 @@ async def test_compaction_of_a_real_layout_is_the_identity_when_nothing_is_colla
         assert len({rows[f"s{i}"].rel_y for i in range(8)}) > 1  # chain folded
         assert set(boxes) == set(rows)
         for tid, r in rows.items():
-            assert (boxes[tid].x, boxes[tid].y) == pytest.approx((r.abs_x, r.abs_y)), tid
-            assert (boxes[tid].w, boxes[tid].h) == pytest.approx((r.w, r.h)), tid
+            # Exactly, not approximately: a float that drifts on every
+            # request is a node that jitters on every poll.
+            assert (boxes[tid].x, boxes[tid].y) == (r.abs_x, r.abs_y), tid
+            assert (boxes[tid].w, boxes[tid].h) == (r.w, r.h), tid
     finally:
         await db.close()
 

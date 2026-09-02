@@ -33,7 +33,7 @@ moved, but its interior is left alone).
 
 from __future__ import annotations
 
-from collections.abc import Collection, Iterable, Mapping
+from collections.abc import Callable, Collection, Iterable, Mapping
 from dataclasses import dataclass
 
 from src.task_graph.layout.constants import (
@@ -139,7 +139,7 @@ def compact_layout(
 
 def _pack(
     kids: Iterable[LayoutRow],
-    size_of,
+    size_of: Callable[[str], tuple[float, float]],
 ) -> tuple[dict[str, tuple[float, float]], float, float]:
     """Re-pack one scope's children, returning ``(rel positions, w, h)``.
 
@@ -160,7 +160,10 @@ def _pack(
     for key in sorted(lines):
         line = sorted(lines[key], key=lambda r: (r.rel_x, r.task_id))
         dx = 0.0
-        new_y = key - dy
+        # The line's own `rel_y`, not the rounded grouping key: with no
+        # deltas above it this has to reproduce the persisted coordinate
+        # exactly, not to within the grouping tolerance.
+        new_y = line[0].rel_y - dy
         line_h = 0.0
         for kid in line:
             w, h = size_of(kid.task_id)
