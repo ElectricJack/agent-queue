@@ -465,12 +465,14 @@ async def check_request_scope(
                 return "out of scope: project_id mismatch"
             if args.get("session_id") not in (None, scope.session_id):
                 return "out of scope: session_id mismatch"
-            if command == "pr_merge":
-                if args.get("pr_url") != pr_url:
-                    return "out of scope: a final reviewer may only merge its review branch PR"
-            elif command in {"reopen_with_feedback", "task_show", "get_task", "task_comments"}:
-                if args.get("task_id") not in worker_ids:
-                    return "out of scope: a final reviewer may only act on tasks from its review branch"
+            branch_bound = {"reopen_with_feedback", "task_show", "get_task", "task_comments"}
+            if command == "pr_merge" and args.get("pr_url") != pr_url:
+                return "out of scope: a final reviewer may only merge its review branch PR"
+            if command in branch_bound and args.get("task_id") not in worker_ids:
+                return (
+                    "out of scope: a final reviewer may only act on tasks "
+                    "from its review branch"
+                )
             args["project_id"] = scope.project_id
             args["session_id"] = scope.session_id
             return None

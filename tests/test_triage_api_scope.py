@@ -14,6 +14,11 @@ from src.api.auth import SessionTokenStore
 from src.api.codegen import build_category_routers
 from src.api.execute import router as execute_router
 from src.api.middleware import TokenAuthMiddleware
+from src.api.scope import (
+    _FINAL_REVIEWER_COMMANDS,
+    _REVIEWER_COMMANDS,
+    _TRIAGE_COMMANDS,
+)
 from src.commands.handler import CommandHandler
 from src.config import AppConfig, DiscordConfig
 from src.database import Database
@@ -191,6 +196,28 @@ async def test_triage_can_read_another_task_in_its_project(api, command):
     result = api.result(await api.post(command, {"task_id": "target"}))
     assert result["id"] == "target"
     assert result["project_id"] == "p"
+
+
+@pytest.mark.parametrize(
+    "command", sorted(_TRIAGE_COMMANDS & _REVIEWER_COMMANDS & _FINAL_REVIEWER_COMMANDS),
+)
+async def test_triage_keeps_its_carve_out_for_commands_other_roles_also_claim(api, command):
+    """Reading a task is a triage, reviewer *and* final-reviewer capability.
+
+    Both review blocks run before the triage one, so a session that is neither
+    kind of reviewer must fall through them rather than be refused by them.
+    Regression for 54ab3ee1, where the final-reviewer block returned the
+    ordinary-scope error outright and pre-empted the triage carve-out below it.
+    """
+    result = api.result(await api.post(command, {"task_id": "target"}))
+    assert result["id"] == "target"
+
+
+def test_the_shared_read_commands_are_still_shared():
+    """Guards the parametrization above from silently going empty."""
+    assert _TRIAGE_COMMANDS & _REVIEWER_COMMANDS & _FINAL_REVIEWER_COMMANDS == {
+        "get_task", "task_show",
+    }
 
 
 async def test_triage_reads_only_open_routing_gates_in_its_project(api):
