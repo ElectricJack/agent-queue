@@ -29,6 +29,7 @@ class EditProjectProfileRequest:
         mcp_servers (list[Any] | None | Unset):
         system_prompt_suffix (None | str | Unset):
         install (EditProjectProfileRequestInstallType0 | None | Unset):
+        default_class (None | str | Unset):
     """
 
     project_id: str
@@ -41,6 +42,7 @@ class EditProjectProfileRequest:
     mcp_servers: list[Any] | None | Unset = UNSET
     system_prompt_suffix: None | str | Unset = UNSET
     install: EditProjectProfileRequestInstallType0 | None | Unset = UNSET
+    default_class: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -106,6 +108,12 @@ class EditProjectProfileRequest:
         else:
             install = self.install
 
+        default_class: None | str | Unset
+        if isinstance(self.default_class, Unset):
+            default_class = UNSET
+        else:
+            default_class = self.default_class
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -130,6 +138,8 @@ class EditProjectProfileRequest:
             field_dict["system_prompt_suffix"] = system_prompt_suffix
         if install is not UNSET:
             field_dict["install"] = install
+        if default_class is not UNSET:
+            field_dict["default_class"] = default_class
 
         return field_dict
 
@@ -238,6 +248,15 @@ class EditProjectProfileRequest:
 
         install = _parse_install(d.pop("install", UNSET))
 
+        def _parse_default_class(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        default_class = _parse_default_class(d.pop("default_class", UNSET))
+
         edit_project_profile_request = cls(
             project_id=project_id,
             agent_type=agent_type,
@@ -249,6 +268,7 @@ class EditProjectProfileRequest:
             mcp_servers=mcp_servers,
             system_prompt_suffix=system_prompt_suffix,
             install=install,
+            default_class=default_class,
         )
 
         edit_project_profile_request.additional_properties = d

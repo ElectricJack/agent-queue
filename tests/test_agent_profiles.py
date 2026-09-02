@@ -1251,3 +1251,78 @@ agent_profile:
         profile = await orch.db.get_profile("dupe")
         assert profile.name == "Version 2"
         await orch.db.close()
+
+
+class TestProfileDefaultClassViaApi:
+    """The generated FastAPI request models must carry ``default_class``.
+
+    ``_make_input_model`` builds the request body from the tool
+    ``input_schema``; pydantic ignores undeclared keys, so a field the
+    command accepts but the schema omits is silently dropped at the API
+    boundary even though ``aq`` and MCP callers can set it.
+    """
+
+    @pytest.fixture
+    async def api(self, tmp_path, monkeypatch):
+        import httpx
+        from fastapi import FastAPI
+
+        from src.api import dependencies as deps
+        from src.api.codegen import build_category_routers
+        from src.commands.handler import CommandHandler
+
+        config = AppConfig(
+            database_path=str(tmp_path / "test.db"),
+            workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
+        )
+        orch = Orchestrator(config)
+        await orch.initialize()
+        handler = CommandHandler(orch, config)
+        monkeypatch.setattr(deps, "_command_handler", handler)
+        monkeypatch.setattr(deps, "_orchestrator", orch)
+        await orch.db.create_project(Project(id="proj", name="Proj"))
+        await handler.execute("create_profile", {"id": "coder", "name": "Coder"})
+        await handler.execute(
+            "create_project_profile", {"project_id": "proj", "agent_type": "coder"}
+        )
+
+        app = FastAPI()
+        for router in build_category_routers():
+            app.include_router(router)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            yield client, orch.db
+        await orch.db.close()
+
+    async def test_edit_profile_writes_default_class(self, api):
+        client, db = api
+        resp = await client.post(
+            "/api/agent/edit-profile",
+            json={"profile_id": "coder", "default_class": "standard-medium"},
+        )
+        assert resp.status_code == 200, resp.text
+        assert "default_class" in resp.json()["fields"]
+        profile = await db.get_profile("coder")
+        assert profile.default_class == "standard-medium"
+
+    async def test_edit_profile_writes_install(self, api):
+        client, db = api
+        resp = await client.post(
+            "/api/agent/edit-profile",
+            json={"profile_id": "coder", "install": {"npm": ["eslint-mcp"]}},
+        )
+        assert resp.status_code == 200, resp.text
+        profile = await db.get_profile("coder")
+        assert profile.install == {"npm": ["eslint-mcp"]}
+
+    async def test_edit_project_profile_writes_default_class(self, api):
+        client, db = api
+        resp = await client.post(
+            "/api/agent/edit-project-profile",
+            json={"project_id": "proj", "agent_type": "coder", "default_class": "deep-high"},
+        )
+        assert resp.status_code == 200, resp.text
+        profile = await db.get_profile("project:proj:coder")
+        assert profile.default_class == "deep-high"

@@ -41,9 +41,9 @@ export default function ProfileSubject({ args, setToolbar }: PaneViewProps<Args>
   };
 
   const save = async () => {
-    // Same stale-OpenAPI-shape casts as SystemProfileEditDrawer.onSave —
-    // mcp_servers/default_class aren't on the generated request type yet;
-    // the daemon accepts them (see _cmd_edit_profile).
+    // Same stale-OpenAPI-shape cast as SystemProfileEditDrawer.onSave —
+    // mcp_servers is still typed as a dict on the generated request type;
+    // the daemon accepts a list[str] (see _cmd_edit_profile).
     await edit.mutateAsync({
       profile_id: args.subjectId,
       name: form.name || null,

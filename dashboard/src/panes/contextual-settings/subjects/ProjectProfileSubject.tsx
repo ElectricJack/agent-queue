@@ -56,7 +56,7 @@ export default function ProjectProfileSubject({ args, setToolbar }: PaneViewProp
       system_prompt_suffix: form.system_prompt_suffix || null,
       allowed_tools: form.allowed_tools,
       mcp_servers: form.mcp_servers,
-    } as unknown as Parameters<typeof edit.mutateAsync>[0]);
+    });
     resetBaseline(form);
   };
 

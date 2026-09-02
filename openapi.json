@@ -17710,6 +17710,31 @@
             ],
             "title": "System Prompt Suffix",
             "description": "New system prompt suffix (optional)"
+          },
+          "default_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Class",
+            "description": "New default intelligence class id (optional)"
+          },
+          "install": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Install",
+            "description": "New install manifest (optional)"
           }
         },
         "type": "object",
@@ -17862,6 +17887,18 @@
               }
             ],
             "title": "Install",
+            "description": ""
+          },
+          "default_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Class",
             "description": ""
           }
         },

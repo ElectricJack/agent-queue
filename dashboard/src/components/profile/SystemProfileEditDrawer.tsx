@@ -55,8 +55,6 @@ export default function SystemProfileEditDrawer({ open, onClose, profileId }: Pr
       // a list[str] of registry names (matches edit_project_profile).
       // Cast to bypass the stale OpenAPI shape until the backend model is
       // tightened.
-      // default_class isn't on the generated request type yet; the
-      // backend accepts it (see _cmd_edit_profile). Cast to loosen shape.
       await edit.mutateAsync({
         profile_id: profileId,
         name: form.name || null,
