@@ -33,8 +33,7 @@ Agent Queue — self-improving orchestration platform for AI coding agents. Mana
 ```bash
 pip install -e ".[dev,cli]"
 pip install -e packages/aq-client      # typed API client (generated)
-pytest tests/ -n auto                  # all tests (parallel via pytest-xdist; ~5× faster)
-pytest tests/test_orchestrator.py -v   # specific file — sequential is fine for single-file runs
+pytest tests/test_orchestrator.py -n auto -q   # focused tests for what you changed (see Testing below)
 ./run.sh start                         # start daemon
 ```
 
@@ -43,6 +42,26 @@ pytest tests/test_orchestrator.py -v   # specific file — sequential is fine fo
 - Async-first: use `GitManager` async API (`a`-prefixed), never sync `subprocess.run()` in production
 - Commands return `{"success": bool, ...}` dicts
 - All state changes go through `CommandHandler` (single entry point for Discord + MCP + CLI)
+
+## Testing — read this before running anything
+
+The suite is **11,330 tests** and, until the schema-cache work lands, every fresh test database replays 58 alembic migrations (~8 s each, ~2,700 tests pay it). A full run takes **~14 minutes on 24 cores and effectively never finishes serially**. Running it casually stalls every agent on the machine.
+
+Rules:
+- **Never run a bare `pytest` / `pytest tests/` mid-task.** Run only the tests for the code you touch.
+- **Always run in parallel:** add `-n auto` (pytest-xdist is installed). Single-file runs may go without it.
+- **Find focused tests** (the layout is one file per area, `tests/test_<area>.py`, plus `tests/perf/`, `tests/llm/`, `tests/fixtures/`):
+  ```bash
+  pytest tests/test_playbook_runner.py -n auto -q          # the file for the module you changed
+  pytest tests/test_claim_queries.py tests/test_pools.py -n auto -q   # a few related files
+  pytest -k "schema_setup or run_schema" -n auto -q         # by name, across files
+  pytest --co -q -k <term> | tail -20                        # discover which tests mention <term>
+  pytest --lf -n auto -q                                     # re-run only what failed last time
+  pytest tests/test_x.py -x -q                               # stop at first failure while iterating
+  ```
+- **Skip the slow-by-nature markers** unless the change is about them: `-m "not tmux and not integration and not perf"` (real tmux, Milvus, latency budgets).
+- **One broader run at the end of a task, not during:** the area suite for what you changed (e.g. `pytest tests/test_playbook*.py tests/test_pipeline*.py -n auto -q`). The whole-repo run is for CI and explicit review gates only.
+- Ruff on changed files only: `ruff check <paths>`.
 
 ## Database Migrations (Alembic)
 
