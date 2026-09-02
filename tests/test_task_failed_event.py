@@ -19,6 +19,7 @@ from src.models import (
     Workspace,
 )
 from src.orchestrator import Orchestrator
+from tests.assignment_routing_helpers import install_already_routed
 
 
 class MockAdapter:
@@ -59,6 +60,7 @@ async def orch(tmp_path):
     config.worktrees.enabled = False
     o = Orchestrator(config, runtimes=MockAdapterFactory())
     await o.initialize()
+    install_already_routed(o)
     yield o
     if o._running_tasks:
         await asyncio.gather(*o._running_tasks.values(), return_exceptions=True)
