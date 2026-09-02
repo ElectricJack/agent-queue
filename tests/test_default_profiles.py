@@ -155,7 +155,7 @@ def test_final_reviewer_profile_has_merge_authority():
     tools = (parsed.capabilities or {}).get("aq_commands", [])
     assert "pr_merge" in tools, "final-reviewer must have merge authority"
     assert parsed.config.get("needs_workspace") is True
-    assert parsed.config.get("read_only") is False
+    assert parsed.config.get("read_only") is True
 
 
 def test_seeded_final_reviewer_profile_parses_without_errors(tmp_path):
