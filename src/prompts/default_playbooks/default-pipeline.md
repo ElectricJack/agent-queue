@@ -19,9 +19,10 @@ The system default pipeline. Reacts to task lifecycle events.
 Ships five rules:
 
 - **Per-task review** (`task.completed`) — on every `task.completed` whose task
-  has a `branch_name`, spawns one reviewer task with a `discovered-from` edge
-  to the reviewed task and attaches a `task` gate to each downstream dependent
-  so nothing downstream runs until the review completes.
+  has a `branch_name` and produced code, spawns one reviewer task with a
+  `discovered-from` edge to the reviewed task and attaches a `task` gate to
+  each downstream dependent so nothing downstream runs until the review
+  completes.
 - **Per-branch final review** (`task.completed`, `scope: branch`) — maintains
   exactly one `final-reviewer` task per `(project, branch)` pair keyed by
   `branch-review:<branch_name>` via `ensure_task`. Every per-task review on
@@ -39,6 +40,15 @@ Ships five rules:
   once the gate is resolved, calls `task_batch_commit` for the awaited
   proposal so the approved batch is written into the task graph.
 
+Both review rules also require `event.no_code` to be falsy. The session close
+path sets `no_code: true` on `task.completed` when the task by construction
+left no commits behind — a `read_only: true` profile (the shipped `reviewer`
+and `final-reviewer`) or a close with `--work-outcome no-op`. Reviewer tasks
+run on a slot checked out on their own `aq/<id>` branch, so they carry a
+`branch_name` like any other session task; without this guard every finished
+review spawned a review *of the review*, recursively. Emitters that do not set
+the key (container settlement, custom pipelines) still fire the review.
+
 The `ensure_task` nodes below pin `profile_id` but no `intelligence_class`, so
 the assignment-routing playbook chooses the class for the tasks they create. A
 pinned profile is a compatibility constraint, not a route: until that decision
@@ -53,7 +63,12 @@ be compatible with the task.
     {
       "id": "per-task-review",
       "on": "task.completed",
-      "when": {"field": "event.task.branch_name", "truthy": true},
+      "when": {
+        "all": [
+          {"field": "event.task.branch_name", "truthy": true},
+          {"field": "event.no_code", "truthy": false}
+        ]
+      },
       "entry": "create-review",
       "nodes": {
         "create-review": {
@@ -108,7 +123,8 @@ be compatible with the task.
       "when": {
         "all": [
           {"field": "event.task.branch_name", "truthy": true},
-          {"field": "event.task.pr_url", "truthy": true}
+          {"field": "event.task.pr_url", "truthy": true},
+          {"field": "event.no_code", "truthy": false}
         ]
       },
       "entry": "ensure-final",

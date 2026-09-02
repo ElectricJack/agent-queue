@@ -1176,11 +1176,24 @@ class ExecutionMixin:
         # ``pr_url`` for ``event.task.pr_url`` to read as truthy.
         if new_status == TaskStatus.COMPLETED:
             try:
+                # ``no_code`` is the same verdict git verification used a
+                # moment ago (``_task_produces_no_code``: ``read_only``
+                # profile or ``--work-outcome no-op``).  The review rules in
+                # default-pipeline.md guard on it: a reviewer's own task
+                # carries a ``branch_name`` like any other session task (the
+                # slot is checked out on ``aq/<id>``), so without this flag
+                # every finished review spawned a review *of the review*, and
+                # so on — reviewer tasks nested three deep on the live queue.
+                # ``truthy: false`` in the guard means an emitter that does
+                # not set the key (container settlement, hand-written events)
+                # still fires the review, so this only ever narrows.
+                no_code = await self._task_produces_no_code(ctx)
                 await self._emit_task_event(
                     "task.completed",
                     task,
                     agent_id=task.assigned_agent_id,
                     agent_type=task.profile_id,
+                    no_code=no_code,
                 )
             except Exception:
                 # Best-effort, exactly like the notification below it: a

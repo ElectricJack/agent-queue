@@ -184,6 +184,44 @@ def test_per_task_review_rule_parses():
     )
 
 
+def _task_completed_rule_whens() -> dict[str, dict]:
+    """``rule id -> when`` for every rule the default pipeline hangs on task.completed."""
+    from src.playbooks.compiler import compile_playbook
+
+    compiled = compile_playbook(_DEFAULT_PIPELINE.read_text(encoding="utf-8"))
+    assert compiled.errors == [], compiled.errors
+    metas = compiled.playbook.pipeline_rules["task.completed"]
+    if isinstance(metas, (str, dict)):
+        metas = [metas]
+    return {m["entry"]: m["when"] for m in metas}
+
+
+def test_review_rules_skip_no_code_completions():
+    """Both review rules must stand down for a task that produced no code.
+
+    The close path sets ``no_code: true`` for a ``read_only`` profile or a
+    ``--work-outcome no-op`` close.  A reviewer task has a ``branch_name``
+    like any other session task (its slot is on ``aq/<id>``), so without this
+    guard ``per-task-review`` reviewed every finished review, recursively.
+    An emitter that omits the key must still fire — the guard only narrows.
+    """
+    whens = _task_completed_rule_whens()
+    review_when = next(w for e, w in whens.items() if e.startswith("per-task-review-"))
+    final_when = next(w for e, w in whens.items() if e.startswith("per-branch-final-review-"))
+
+    hydrated = {"task": {"branch_name": "aq/r-1", "pr_url": "https://github.com/o/r/pull/1"}}
+
+    assert _eval_pipeline_when(review_when, {**hydrated, "no_code": True}) is False
+    assert _eval_pipeline_when(final_when, {**hydrated, "no_code": True}) is False
+
+    assert _eval_pipeline_when(review_when, {**hydrated, "no_code": False}) is True
+    assert _eval_pipeline_when(final_when, {**hydrated, "no_code": False}) is True
+
+    # Key absent (container settlement, hand-written events): code-bearing.
+    assert _eval_pipeline_when(review_when, hydrated) is True
+    assert _eval_pipeline_when(final_when, hydrated) is True
+
+
 # ---------------------------------------------------------------------------
 # T2: fires on completion with branch
 # ---------------------------------------------------------------------------

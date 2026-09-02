@@ -87,7 +87,11 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
     },
     "task.completed": {
         "required": ["task_id", "project_id", "title"],
-        "optional": ["agent_id", "agent_type"],
+        # ``no_code``: set by the session close path when the task by
+        # construction left no commits behind (``read_only`` profile or
+        # ``--work-outcome no-op``).  The default pipeline's review rules
+        # skip such tasks; emitters that omit it are treated as code-bearing.
+        "optional": ["agent_id", "agent_type", "no_code"],
     },
     "task.failed": {
         "required": ["task_id", "project_id", "title", "status", "context"],
