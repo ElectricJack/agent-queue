@@ -27,6 +27,8 @@ from sqlalchemy import event, inspect, text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.pool import NullPool, StaticPool
 
+from src.database.migration_guard import VERIFY, migration_decision
+
 logger = logging.getLogger(__name__)
 
 # Resolve alembic.ini relative to the project root (two levels up from this file)
@@ -345,6 +347,46 @@ def _run_alembic_upgrade(sync_connection) -> None:
     command.upgrade(alembic_cfg, "head")
 
 
+def _verify_schema_at_head(sync_connection) -> None:
+    """Read-only counterpart to :func:`_run_alembic_upgrade`.
+
+    Used when the caller may *not* migrate the database it is pointed at
+    (see :mod:`src.database.migration_guard`).  Three outcomes:
+
+    * stamped at the code's head — return, the process may proceed;
+    * stamped at a revision this checkout does not have — the same unknown
+      revision diagnostic the upgrade path raises;
+    * anything else (behind head, or never stamped) — refuse and name the
+      operator action, because migrating is not ours to do.
+    """
+    from alembic.config import Config
+    from alembic.migration import MigrationContext
+    from alembic.script import ScriptDirectory
+
+    from src.database.migration_guard import SchemaBehindCode, refusal_message
+
+    _preflight_check_alembic_version(sync_connection)
+    alembic_cfg = Config(str(_ALEMBIC_INI))
+    alembic_cfg.attributes["connection"] = sync_connection
+    script = ScriptDirectory.from_config(alembic_cfg)
+    ctx = MigrationContext.configure(sync_connection)
+    current = set(ctx.get_current_heads())
+    heads = set(script.get_heads())
+    if current == heads:
+        return
+    raise SchemaBehindCode(
+        refusal_message(
+            str(sync_connection.engine.url),
+            detail=(
+                "Schema behind code: the database is stamped "
+                f"{sorted(current) or 'nothing'} but this checkout's head is "
+                f"{sorted(heads)}. Ask the operator to upgrade (`aq db upgrade`) or "
+                "restart the daemon."
+            ),
+        )
+    )
+
+
 def _stamp_alembic_baseline(sync_connection) -> None:
     """Stamp an existing database at the baseline migration.
 
@@ -382,12 +424,27 @@ async def run_schema_setup(engine: AsyncEngine) -> None:
     is a no-op inside an already-open transaction), leaving that second
     connection unable to see the earlier revision's work.
     """
+    if migration_decision(str(engine.url)) == VERIFY:
+        await verify_schema_current(engine)
+        return
+
     database_path = _sqlite_database_path(engine)
     if database_path and _schema_cache_is_enabled(database_path):
         if await _restore_schema_from_cache(database_path):
             return
 
     await _run_schema_setup_without_cache(engine)
+
+
+async def verify_schema_current(engine: AsyncEngine) -> None:
+    """Assert *engine*'s schema is at this checkout's head, without migrating.
+
+    The read-only path a worker session, the CLI and pytest take when they
+    open the daemon's production database: connecting is fine, silently
+    changing its schema is not.
+    """
+    async with engine.connect() as conn:
+        await conn.run_sync(_verify_schema_at_head)
 
 
 async def _run_schema_setup_without_cache(engine: AsyncEngine) -> None:

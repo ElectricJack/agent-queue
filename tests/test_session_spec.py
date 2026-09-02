@@ -508,6 +508,25 @@ class TestEnvMarkers:
         assert spec.lifecycle == "named"
         assert spec.session_name == "n-supervisor--proj-1"
 
+    def test_every_session_gets_database_isolation(self, builder):
+        """A slot's db tooling points at scratch, never at config.yaml.
+
+        Both halves matter: ``AQ_DB_SCOPE`` is what makes
+        ``src.database.migration_guard`` refuse a migration against the
+        production URL, and the two URL overrides mean the ordinary path
+        never reaches the guard at all.  Regression for 2026-09-02, when a
+        worker session stamped production with an unmerged revision.
+        """
+        env = _build(builder).env
+        assert env["AQ_DB_SCOPE"] == "worker"
+        assert env["AQ_DATABASE_URL"] == "/wd/.aq/scratch.db"
+        assert env["AGENT_QUEUE_DB"] == env["AQ_DATABASE_URL"]
+
+    def test_a_harness_may_pin_its_own_database_url(self, builder):
+        """Isolation is a default, not a cage: an explicit pin still wins."""
+        harness = replace(CLAUDE, env=(("AGENT_QUEUE_DB", "/pinned.db"),))
+        assert _build(builder, harness=harness).env["AGENT_QUEUE_DB"] == "/pinned.db"
+
     def test_harness_env_is_merged(self, builder):
         harness = replace(CLAUDE, env=(("MY_FLAG", "1"),))
         assert _build(builder, harness=harness).env["MY_FLAG"] == "1"

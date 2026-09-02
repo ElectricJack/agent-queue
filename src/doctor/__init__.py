@@ -10,6 +10,7 @@ contract those owners must follow.
 
 from src.doctor.builtin import builtin_checks
 from src.doctor.capability_checks import capability_checks
+from src.doctor.db_checks import db_checks
 from src.doctor.formula_checks import formula_checks
 from src.doctor.hierarchy_checks import hierarchy_checks
 from src.doctor.integration_checks import integration_checks
@@ -38,6 +39,7 @@ __all__ = [
     "default_registry",
     "exit_code_for",
     "capability_checks",
+    "db_checks",
     "profile_checks",
     "formula_checks",
     "resource_checks",
@@ -68,6 +70,8 @@ def default_registry() -> DoctorRegistry:
     for check in workspace_checks():
         registry.register(check)
     for check in profile_checks():
+        registry.register(check)
+    for check in db_checks():
         registry.register(check)
     for check in playbook_v2_checks():
         registry.register(check)

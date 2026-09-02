@@ -97,6 +97,30 @@ alembic upgrade head  # apply locally
 - `src/database/hierarchy_migration.py` is the swarm-work-model hierarchy migration's canonicalisation logic (snapshot → canonicalise → validate → apply), driven by Alembic revisions `a1b2c3d4e5f6` (DDL) and `b2c3d4e5f6a7` (data + partial unique index) and exercised standalone via `aq system db-preflight-hierarchy`
 - Test with: `pytest tests/test_database.py -v`
 
+## Never migrate the operator's database
+
+Migrations against the database in `~/.agent-queue/config.yaml` are
+**daemon-only**. Inside a worktree slot you must never run `alembic upgrade`,
+`alembic stamp`, or `aq start`: on 2026-09-02 a worker did exactly that and
+stamped `alembic_version` with an unmerged branch's revision, after which the
+daemon refused to boot until an operator hand-wrote a merge revision.
+
+- Your session carries `AQ_DB_SCOPE=worker` and `AQ_DATABASE_URL` /
+  `AGENT_QUEUE_DB` pointing at a per-slot scratch SQLite file. Leave all
+  three alone. Tests build their own temporary databases and are unaffected.
+- `run_schema_setup` refuses to migrate the production URL from any scope but
+  `daemon`/`operator`, and instead raises **"schema behind code; ask the
+  operator to upgrade"**. That is the guard working — report it, do not
+  upgrade around it.
+- Only an operator, outside a slot, runs `aq db upgrade`. `aq db current` is
+  the read-only "am I behind?" answer and is always safe.
+- If a database is already stamped with a revision this checkout does not
+  have, `aq doctor --check db.alembic_orphan` names the branch and file that
+  define it and can repair it with `--fix`.
+
+See [docs/guides/migrations.md](docs/guides/migrations.md) and
+`src/database/migration_guard.py`.
+
 ## Key Subsystems
 
 - **Self-Improvement Loop:** Reflection engine → knowledge extraction → memory consolidation → prompt builder delivery. Autonomous — no manual intervention needed. See `docs/specs/design/self-improvement.md`.
