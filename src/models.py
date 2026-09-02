@@ -1362,6 +1362,11 @@ class PipelineContext:
     verification_issues: list[str] = field(default_factory=list)
     #: Rendered feedback text handed back to the agent on an in-session retry.
     verification_feedback: str = ""
+    #: ``--work-outcome`` from ``aq task close`` (``shipped`` | ``no-op`` |
+    #: ``blocked`` | ``abandoned``), empty when the agent gave none.  Git
+    #: verification reads ``no-op`` as "this task produced no code": there is
+    #: nothing to push, PR or merge, so the require-a-PR gate does not apply.
+    work_outcome: str = ""
 
 
 @dataclass(frozen=True)

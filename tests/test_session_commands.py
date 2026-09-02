@@ -1459,3 +1459,41 @@ class TestEndToEndOnFakeProvider:
         action = AssignAction(task_id="t1", agent_id="a1", project_id="p1")
         await real_orch._launch_session_for_task(action, task, profile, None)
         assert await db.get_session_for_task("t1") is None
+
+    async def test_no_op_work_outcome_reaches_git_verification(
+        self, db, real_orch, real_handler, provider, tmp_path, monkeypatch
+    ):
+        """``--work-outcome no-op`` must be visible to git verification.
+
+        The gate's "this task produced no code" decision (task
+        swift-ridge-95) keys off ``PipelineContext.work_outcome``; if the
+        close surface ever stops threading it through, a read-only reviewer
+        is back to being refused for a PR it was never going to open.
+        """
+        import asyncio
+
+        await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+        session = await db.get_session_for_task("t1")
+        seen: dict = {}
+
+        async def _capture(ctx):
+            seen["work_outcome"] = ctx.work_outcome
+            return None, True
+
+        monkeypatch.setattr(real_orch, "_run_completion_pipeline", _capture)
+        close = await asyncio.wait_for(
+            real_handler.execute(
+                "task_close",
+                {
+                    "task_id": "t1",
+                    "session_id": session.id,
+                    "outcome": "pass",
+                    "work_outcome": "no-op",
+                    "summary": "Reviewed; nothing to ship.",
+                },
+            ),
+            timeout=2,
+        )
+        assert close["success"] is True and close["status"] == "COMPLETED"
+        assert seen == {"work_outcome": "no-op"}
+        assert await db.get_task_meta("t1", "work_outcome") == "no-op"
