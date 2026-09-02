@@ -31,7 +31,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 
-from src.commands.claim_commands import remove_claim_file_if_matches
+from src.commands.claim_commands import read_claim_file, remove_claim_file_if_matches
 from src.models import SessionRecord, TaskStatus
 from src.sessions.exit_classifier import ExitVerdict, Verdict, classify_exit
 from src.sessions.provider import (
@@ -1008,6 +1008,12 @@ class SessionReconciler:
                 # Releasing here is idempotent with that later close-path
                 # release, while terminating would incorrectly bypass pool
                 # scale-down grace and an explicit drain acknowledgement.
+                claim_file = read_claim_file(row.work_dir) if row.work_dir else None
+                cleanup_epoch = (
+                    claim_file.get("claim_epoch")
+                    if claim_file is not None and claim_file.get("task_id") == row.task_id
+                    else task.claim_epoch if task is not None else row.last_claim_epoch
+                )
                 release = await self.db.release_claim(
                     row.id,
                     task_status=task.status if task is not None else TaskStatus.READY,
@@ -1021,7 +1027,7 @@ class SessionReconciler:
                     remove_claim_file_if_matches(
                         row.work_dir,
                         row.task_id,
-                        row.last_claim_epoch,
+                        cleanup_epoch,
                     )
                 continue
             provider = self._provider_for(row)

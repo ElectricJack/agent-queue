@@ -75,22 +75,30 @@ def remove_claim_file(work_dir: str) -> None:
         pass
 
 
+def read_claim_file(work_dir: str) -> dict | None:
+    """Return a valid claim-file object, or ``None`` when it cannot be read."""
+    path = os.path.join(work_dir, CLAIM_FILE)
+    try:
+        with open(path) as f:
+            claim = json.load(f)
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return None
+    return claim if isinstance(claim, dict) else None
+
+
 def remove_claim_file_if_matches(work_dir: str, task_id: str, claim_epoch: int | None) -> None:
     """Remove a claim file only when it still belongs to this claim.
 
     Pool workers can claim again between a terminal close and its delayed
     cleanup, so unconditional removal could erase the successor's fence.
     """
-    path = os.path.join(work_dir, CLAIM_FILE)
-    try:
-        with open(path) as f:
-            claim = json.load(f)
-    except (FileNotFoundError, OSError, json.JSONDecodeError):
+    claim = read_claim_file(work_dir)
+    if claim is None:
         return
     if claim.get("task_id") != task_id or claim.get("claim_epoch") != claim_epoch:
         return
     try:
-        os.remove(path)
+        os.remove(os.path.join(work_dir, CLAIM_FILE))
     except FileNotFoundError:
         pass
 
