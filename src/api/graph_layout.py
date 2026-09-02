@@ -32,6 +32,8 @@ from src.api.models.graph_layout import (
     LocateResponse,
     NodeResponse,
     StubOverflow,
+    TidyRequest,
+    TidyResponse,
     TilesRequest,
     TilesResponse,
 )
@@ -422,6 +424,32 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
         ]
         return LocateResponse(hits=hits, truncated=len(ordered) > limit)
 
+    @router.post("/api/projects/{project_id}/graph/tidy", response_model=TidyResponse)
+    async def post_tidy(project_id: str, req: TidyRequest):
+        await _project_or_404(project_id)
+        if req.variant is not None:
+            _variant(req.variant)
+        if command_handler is not None:
+            res = await command_handler.execute(
+                "graph_tidy",
+                {"project_id": project_id, **({"variant": req.variant} if req.variant else {})},
+            )
+            if not res.get("success"):
+                raise HTTPException(status_code=400, detail=res.get("error", "tidy failed"))
+            jobs = res["jobs"]
+        else:
+            variants = [req.variant] if req.variant else list(VARIANTS)
+            jobs = [await db.enqueue_layout_job(project_id, v, "tidy") for v in variants]
+        return TidyResponse(jobs=[LayoutJob(**j) for j in jobs])
+
+    @router.get("/api/projects/{project_id}/graph/jobs/{job_id}", response_model=LayoutJob)
+    async def get_job(project_id: str, job_id: str):
+        await _project_or_404(project_id)
+        job = await db.get_layout_job(job_id)
+        if job is None or job["project_id"] != project_id:
+            raise HTTPException(status_code=404, detail=f"No job '{job_id}'")
+        return LayoutJob(**job)
+
     return router
 
 
@@ -508,6 +536,21 @@ def _build_default_router() -> APIRouter:
             q=q,
             status=status,
             limit=limit,
+        )
+
+    @router.post("/api/projects/{project_id}/graph/tidy", response_model=TidyResponse)
+    async def post_tidy(project_id: str, req: TidyRequest):
+        return await _call(
+            "/api/projects/{project_id}/graph/tidy", "POST", project_id=project_id, req=req
+        )
+
+    @router.get("/api/projects/{project_id}/graph/jobs/{job_id}", response_model=LayoutJob)
+    async def get_job(project_id: str, job_id: str):
+        return await _call(
+            "/api/projects/{project_id}/graph/jobs/{job_id}",
+            "GET",
+            project_id=project_id,
+            job_id=job_id,
         )
 
     return router

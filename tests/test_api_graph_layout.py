@@ -286,6 +286,23 @@ async def test_locate_returns_positions_capped(db, client_factory):
     assert all({"id", "x", "y", "w", "h"} <= set(h) for h in body["hits"])
 
 
+async def test_tidy_enqueues_and_jobs_reports(db, client_factory):
+    await seed(db)
+    async with client_factory() as ac:
+        r = await ac.post("/api/projects/p1/graph/tidy", json={})
+        assert r.status_code == 200
+        jobs = r.json()["jobs"]
+        assert {j["variant"] for j in jobs} == {"all", "active"}
+        assert all(j["status"] == "queued" for j in jobs)
+        again = await ac.post("/api/projects/p1/graph/tidy", json={"variant": "all"})
+        assert again.json()["jobs"][0]["id"] == next(j["id"] for j in jobs if j["variant"] == "all")
+        j = await ac.get(f"/api/projects/p1/graph/jobs/{jobs[0]['id']}")
+        assert j.status_code == 200 and j.json()["kind"] == "tidy"
+        ext = await ac.get("/api/projects/p1/graph/extent?variant=all")
+        assert ext.json()["job"]["status"] == "queued"
+        assert (await ac.get("/api/projects/p1/graph/jobs/nope")).status_code == 404
+
+
 async def test_default_router_delegates_to_the_orchestrator_db(db, monkeypatch):
     """The statically declared router resolves the live db at request time."""
     from src.api import dependencies as deps
