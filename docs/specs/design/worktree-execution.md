@@ -179,6 +179,8 @@ Subtasks of a plan all resume the parent's branch (`resume_branch = parent.branc
 
 What *is* fixed now is the reporting. The refusal was surfacing as a per-attempt Discord "Git Error", which described a scheduling wait as a fault. It is now recognised (`_is_branch_busy_error`) and logged as the expected wait it is. The same applies to the pool ramp: slots are created one per dispatch, so a cold cap-N project needs N−1 dispatch rounds to warm up, each previously costing a "No Workspace — use /add-workspace" notice for a condition the operator can neither cause nor fix. Both now pause quietly; genuine exhaustion still notifies.
 
+**Only a *resume* has a sibling.** `_is_branch_busy_error` alone does not make a refusal a sibling wait: without a `resume_branch` the task owns `aq/<task_id>` by itself, and the same refusal means its own branch is still checked out somewhere — a released slot stays on its last task's branch (§3.4), so a retry landing on a *different* slot collides with its own predecessor, and a slot left on a deleted task's branch pins it for good. Neither clears itself. The wait is therefore classified on `resume_branch`, not on the git text: with one it is the sibling wait above (quiet, self-clearing); without one it logs a warning naming the real branch and notifies the operator, who can find the holding slot with `aq doctor --check worktrees.orphans`. Classifying the second case as the first logged the literal text `waits for branch None — a sibling holds it in another slot` and looped silently forever (observed live: calm-flare, 2026-09-01).
+
 ---
 
 ## 5. Reaping — slots, not tasks

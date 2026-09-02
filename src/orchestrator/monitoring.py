@@ -36,12 +36,25 @@ class MonitoringMixin:
         exhaustion, with ``resume_after`` set to a future timestamp.
         This method scans all PAUSED tasks and transitions any whose
         backoff timer has expired back to READY for re-scheduling.
+
+        ``PAUSED`` with ``resume_after IS NULL`` is the operator-hold
+        sentinel (``task_queries._not_manually_paused``): every lifecycle
+        write is fenced on it, so such a task can only leave PAUSED through
+        ``resume_task``.  A hold always carries a ``manual_pause`` metadata
+        snapshot, written in the same transaction.  One *without* that
+        snapshot is therefore not a hold at all — it is a task wedged by a
+        crash or a partial write, and nothing else will ever look at it
+        again.  Recover it here (this cascade runs every cycle, so a daemon
+        restart picks it up too) rather than leaving it queued forever.
         """
         paused = await self.db.list_tasks(status=TaskStatus.PAUSED)
         now = time.time()
         for task in paused:
             if task.resume_after is None:
                 snapshot = await self.db.get_task_meta(task.id, "manual_pause")
+                if snapshot is None:
+                    await self._recover_orphaned_pause(task)
+                    continue
                 if isinstance(snapshot, dict) and snapshot.get("cleanup_pending"):
                     try:
                         await self.pause_task(task.id)
@@ -56,6 +69,39 @@ class MonitoringMixin:
                     assigned_agent_id=None,
                     resume_after=None,
                 )
+
+    async def _recover_orphaned_pause(self, task) -> None:
+        """Return a task wedged in PAUSED with no operator hold to READY.
+
+        ``resume_task`` is the only writer that can move it: the manual-pause
+        fence rejects ``transition_task`` for exactly this state.  With no
+        ``manual_pause`` snapshot to restore, it resumes to READY and clears
+        the stale assignment — which is what the interrupted pause would have
+        produced had it completed.
+
+        The status and the metadata were read in two separate transactions,
+        so re-read before acting: an operator hold committing between them
+        looks exactly like a wedge from here, and resuming their hold would
+        be the worst possible misfire.
+        """
+        current = await self.db.get_task(task.id)
+        if current is None or current.status != TaskStatus.PAUSED:
+            return
+        if current.resume_after is not None:
+            return
+        if await self.db.get_task_meta(task.id, "manual_pause") is not None:
+            return
+        logger.warning(
+            "Task %s was PAUSED with no resume timer and no operator hold — "
+            "resuming it; nothing else would have scheduled it again",
+            task.id,
+        )
+        try:
+            await self.db.resume_task(task.id)
+        except Exception:
+            logger.warning(
+                "Could not recover orphaned pause on task %s", task.id, exc_info=True
+            )
 
     async def _check_defined_tasks(self) -> None:
         """Promote DEFINED/BLOCKED tasks to READY when the graph allows it.

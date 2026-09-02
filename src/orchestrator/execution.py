@@ -510,6 +510,17 @@ class ExecutionMixin:
                         task.id,
                         no_ws_backoff,
                     )
+                elif wait_reason == "branch_held":
+                    # The task's own branch sits in a slot nobody will move:
+                    # unlike the two waits above this never clears itself, so
+                    # it has to reach the operator rather than loop quietly.
+                    await self._emit_text_notify(
+                        f"**Branch In Use:** Task `{task.id}` paused for "
+                        f"{no_ws_backoff}s — its branch is checked out in "
+                        f"another worktree. Run `aq doctor --check "
+                        f"worktrees.orphans` to find the slot holding it.",
+                        project_id=action.project_id,
+                    )
                 else:
                     await self._emit_text_notify(
                         f"**No Workspace:** Task `{task.id}` paused for "

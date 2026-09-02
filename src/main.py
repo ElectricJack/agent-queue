@@ -120,6 +120,16 @@ async def run(config_path: str, profile: str | None = None) -> bool:
     from src.doctor import default_registry as default_doctor_registry
 
     orch.doctor_registry = default_doctor_registry()
+
+    # worktree-execution claims its reserved ids (trust-and-ops §5.5) only
+    # when slots are actually in use; with worktrees off, doctor's INFO
+    # placeholder is the truthful answer.
+    if config.worktrees.enabled:
+        from src.doctor.worktree_checks import worktree_checks
+
+        for check in worktree_checks():
+            orch.doctor_registry.register(check)
+
     logger.info("Doctor registry: %d built-in checks", len(orch.doctor_registry))
 
     # Daemon-wide wiring.  No in-process runtime is registered: every agent
