@@ -391,9 +391,7 @@ export function useUploadTaskAttachment() {
     mutationFn: async ({ taskId, file }: { taskId: string; file: File }) => (
       await uploadAttachmentApiTasksTaskIdAttachmentsPost({
         path: { task_id: taskId },
-        // The pinned generator types OpenAPI binary strings as `string`,
-        // while its multipart serializer correctly accepts Blob/File values.
-        body: { file: file as unknown as string },
+        body: { file },
         throwOnError: true,
       })
     ).data,
