@@ -1698,6 +1698,39 @@ T-27, T-28, T-32 and T-36 to T-41, the §10 fixtures, and the §9 migration move
 with it. Commits 2-6 of §12 (the dashboard slice) are unaffected: they consume
 §4, which is checked in.
 
+### 16.3 Re-run on 2026-09-02 at `62667475` (task solid-harbor.46.1, second attempt)
+
+§3.2 was re-run after PR #180 (Package 3, `aq/solid-harbor.35`) and PR #181
+(commit 1 of this package, `feature/playbook-v2-pkg5-api`) merged to `main`.
+Result: **Package 3 is present; Packages 1, 2 and 4 are still absent on `main`
+and on every `origin/*` branch** (`git cat-file -e` against each remote ref for
+`definition.py`, `explanation.py`, `engine.py`, `receipts.py`,
+`contracts/registry.py`, `playbook_run_queries.py` — no hits).
+
+| Checklist item | Expected | Found at `62667475` |
+|---|---|---|
+| `src/playbooks/definition.py` (`PlaybookDefinition`, `Rule`, `SourceRef`) | P2 | absent |
+| `src/playbooks/explanation.py` (`explain_step`, `StepExplanation`, `EffectClause`) | P1 | absent |
+| `src/commands/contracts/registry.py` (`get_contract`) | P1 | absent |
+| `src/playbooks/artifact_store.py` (`ArtifactRef`, `ArtifactStore`) | P3 | **present** — `load(sha)` returns `PlaybookDefinition` when Package 2 is importable, else the parsed JSON |
+| `src/playbooks/activation.py` (`ActivationHealth`) | P3 | **present** — exactly the six §4.4 values (check 3 passes) |
+| `src/database/queries/playbook_artifact_queries.py` | P3 | **present** — `upsert_playbook_artifact`, `get_playbook_artifact`, `set_playbook_activation`; no list-artifacts or get/list-activation reads yet |
+| `src/database/queries/playbook_run_queries.py` | P3/P4 | absent |
+| `src/playbooks/receipts.py`, `src/playbooks/engine.py` | P4 | absent |
+| `playbook_activations` table (§3.2 check 2) | P3 | **present, with `activated_by`** — the activation half of §9 is unnecessary and will not ship |
+| `playbook_pending_events` table (§3.2 check 2) | P3/P4 | absent — the pending half of §9 stays with the package that creates the table; it is not an additive migration here |
+| V1 surfaces (§3.2 check 4) | present | `dashboard/src/pages/playbook-graph/` and `src/playbooks/graph_view.py` untouched |
+
+Consequence: the §16.2 deferral still stands. `project_graph` takes a
+`PlaybookDefinition` and an `explain_step` result, `diff_artifacts` takes two
+`PlaybookDefinition`s and the execution-fingerprint input set from
+`get_contract`, and `project_overlay` takes a `PlaybookRunV2` and `StepReceipt`
+rows — none of which exist. Every test named in §16.2 (T-4 to T-9, T-27, T-28,
+T-32, T-36 to T-41, T-43, T-44) consumes one of those inputs. The
+`_v2_storage_unavailable` seam remains in place; its module docstring was
+updated in this commit to say which packages have landed. Re-run §3.2 once
+Packages 1, 2 and 4 are on `main`.
+
 ---
 
 ## 17. Open items for the next child plans
