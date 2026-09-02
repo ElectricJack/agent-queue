@@ -113,6 +113,23 @@ async def _seeded_source(tmp_path) -> str:
                 "VALUES ('a','a','worker','p',0)"
             )
         )
+        # playbook_activations -> playbook_artifacts is a plain (non-deferred)
+        # FK, so the copy only works if both tables are in _ORDERED_TABLES and
+        # the artifact is inserted first.
+        await conn.execute(
+            text(
+                "INSERT INTO playbook_artifacts (artifact_sha256, playbook_id, scope, "
+                "source_digest, contract_fingerprint, compiler_build, path, created_at) "
+                "VALUES ('sha','pb','system','src','contract','build','/pb.json',0)"
+            )
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO playbook_activations (activation_id, playbook_id, scope, "
+                "health, active_artifact_sha256, updated_at) "
+                "VALUES ('act','pb','system','ready','sha',0)"
+            )
+        )
         for i in (1, 2, 3):
             await conn.execute(
                 text(
@@ -150,6 +167,14 @@ async def test_migrate_sqlite_to_postgres_copies_rows_and_restores_deferred_fks(
             assert (
                 await conn.execute(text("SELECT current_task_id FROM agents WHERE id='a'"))
             ).scalar() == "p"
+            assert (
+                await conn.execute(
+                    text(
+                        "SELECT active_artifact_sha256 FROM playbook_activations "
+                        "WHERE activation_id='act'"
+                    )
+                )
+            ).scalar() == "sha"
         await target.reset_for_tests()
     finally:
         await target.close()

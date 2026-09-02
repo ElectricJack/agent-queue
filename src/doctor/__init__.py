@@ -21,6 +21,7 @@ from src.doctor.models import (
     Severity,
 )
 from src.doctor.pool_checks import pool_checks
+from src.doctor.profile_checks import profile_checks
 from src.doctor.resource_checks import resource_checks
 from src.doctor.runner import DoctorRegistry, exit_code_for, run_doctor
 from src.doctor.workspace_checks import workspace_checks
@@ -36,6 +37,7 @@ __all__ = [
     "default_registry",
     "exit_code_for",
     "capability_checks",
+    "profile_checks",
     "formula_checks",
     "resource_checks",
     "integration_checks",
@@ -62,5 +64,7 @@ def default_registry() -> DoctorRegistry:
     for check in capability_checks():
         registry.register(check)
     for check in workspace_checks():
+        registry.register(check)
+    for check in profile_checks():
         registry.register(check)
     return registry

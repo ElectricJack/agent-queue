@@ -199,6 +199,56 @@ Exceptions:
   no unambiguous way to strip a prefix when multiple servers might define
   the same bare tool name.
 
+### 3.1 System profiles: seeding, drift, and reseeding
+
+The profiles under `src/profiles/defaults/` are *shipped system profiles*.
+`vault.ensure_default_profiles()` copies each to
+`vault/agent-types/<id>/profile.md` on startup and is deliberately
+**write-if-absent**: an existing file is never overwritten, so operator edits
+survive upgrades and the vault copy is the source of truth once it exists.
+
+The cost of that rule is drift. A vault copy seeded by an older release keeps
+that release's schema and semantics forever, and some `## Config` fields are
+load-bearing rather than cosmetic:
+
+| field | why a stale value matters |
+|---|---|
+| `read_only` | `GitOpsMixin._task_produces_no_code()` (`src/orchestrator/git_ops.py`) reads it to decide whether a task must push a branch and open a PR. A vault `reviewer` still saying `read_only: false` re-arms the require-a-PR close gate for a session that is told never to push. |
+| `harness` | selects which CLI actually runs the agent. |
+| `lifecycle` | push (`task`) vs pull (`pool`) vs `named`. |
+| `needs_workspace` | whether the orchestrator acquires a worktree. |
+
+Section renames drift the same way — a copy predating the `## Tools` →
+`## Capabilities` rename routes through the legacy `allowed_tools` adapter
+forever.
+
+**Detection** is `src/profiles/drift.py`, surfaced two ways:
+
+- `profiles.system_drift` — a report-only doctor check (trust-and-ops §5.2).
+- `aq agent profile-drift [--profile-id <id>] [--drifted-only]` — the same
+  comparison as a command, one row per system profile with its status
+  (`ok` / `not_seeded` / `drifted` / `unreadable`), the diverging semantic
+  fields, and missing/extra section headings.
+
+Only the four fields above and *missing* sections count as drift. A changed
+`description`, `model` or `default_class`, and sections the operator added,
+are the operator's business and are reported for context but never flagged.
+
+**Repair** is explicit and per-profile:
+
+```bash
+aq agent profile-drift --drifted-only     # what diverged, and how
+aq agent profile-reseed reviewer          # restore the shipped version
+```
+
+`profile-reseed` copies the old file to `profile.md.bak-<epoch>` (pass
+`--backup false` to skip) before writing the shipped default, then syncs the
+new text straight to the DB. There is deliberately no `aq doctor --fix` for
+this: overwriting an operator-owned vault file automatically would violate the
+`--fix` safety rules (trust-and-ops §5.4).
+
+---
+
 ---
 
 ## 4. Starter Knowledge Packs

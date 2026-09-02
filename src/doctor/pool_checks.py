@@ -44,9 +44,9 @@ so an in-flight launch is never caught.  Four shapes, four verdicts:
 * disabled, or ``ERROR``/``PAUSED`` — unusable and unowned; retired, never
   deleted.
 
-Every repair writes one ``pool.agent_repaired`` event, so ``aq events
---event-type pool.agent_repaired`` answers "why is this worker RETIRED?"
-long after the doctor run has scrolled away.
+Every repair writes one ``pool.agent_repaired`` event, so ``aq system
+get-recent-events --event-type pool.agent_repaired`` answers "why is this
+worker RETIRED?" long after the doctor run has scrolled away.
 """
 
 from __future__ import annotations
@@ -273,8 +273,9 @@ async def _fix_orphan_agents(ctx: DoctorContext) -> CheckResult:
 async def _audit(ctx: DoctorContext, agent, reason: str) -> None:
     """One durable row per repaired agent -- never a silent mutation.
 
-    ``aq events --event-type pool.agent_repaired`` is the answer to "why is
-    this worker RETIRED?" long after the doctor run has scrolled away.
+    ``aq system get-recent-events --event-type pool.agent_repaired`` is the
+    answer to "why is this worker RETIRED?" long after the doctor run has
+    scrolled away.
     """
     try:
         await ctx.db.log_event(
