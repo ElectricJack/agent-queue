@@ -1873,3 +1873,78 @@ P2 (`solid-harbor.30`) and P4 (`solid-harbor.39`); §9's
 - **Package 6** consumes this surface for reviewed activation: its inventory can start read-only before Package 5 lands (roadmap §7), but no artifact may be activated until the diff and health UI of commit 4 exists.
 - **Package 7** deletes `playbook_graph_view`, `src/playbooks/graph_view.py`, `src/api/models/playbook.py`'s graph DTOs, `dashboard/src/pages/playbook-graph/`, the `graph` tab, and both flags from §8; then renames the `semantic` tab to `graph`. Nothing else in this package is temporary.
 - **Deferred deliberately:** live streaming of run overlays (the 5 s poll of §6.4 is sufficient for M5 and avoids coupling to `src/api/streams.py` before the engine's lifecycle events settle in Package 4), and an artifact-history browser beyond the activation panel's list. Both are follow-ups, not exit-gate requirements.
+
+### 16.9 Re-run on 2026-09-02 at `6f5a5237` (task solid-harbor.46.1, twelfth attempt)
+
+`origin/main` is `6f5a5237`. The precondition verdict is unchanged for the
+twelfth consecutive run, but this run **ships the §10 fixtures**, which are
+the one part of item 4 that does not depend on Packages 1, 2 or 4.
+
+- **Check 1.** Unchanged from §16.8. Missing: `src/playbooks/definition.py`
+  (P2), `src/playbooks/explanation.py` and
+  `src/commands/contracts/registry.py` (P1), `src/playbooks/engine.py`,
+  `src/playbooks/receipts.py` and
+  `src/database/queries/playbook_run_queries.py` (P4). Present:
+  `artifact_store.py`, `activation.py`, `playbook_artifact_queries.py`,
+  `api/models/playbook_v2.py`, `commands/playbook_v2_commands.py`.
+- **Check 2.** `playbook_activations` present with `activated_by`
+  (`tables.py:1013`); `playbook_pending_events` still absent — `grep` for
+  the table name in `src/database/tables.py` returns nothing.
+- **`origin/*` sweep.** 294 refs; zero hits for any of the six P1/P2/P4
+  files.
+- **Open PRs.** Eight (#194, #196, #197, #198, #199, #200, #201, #202);
+  none adds a Package 1, 2 or 4 file. #198 — the terminal-BLOCKED
+  re-promotion fix — is **still open**, so the re-run churn continues.
+
+#### What this run shipped
+
+The §10 fixtures are *data*, not code: §10.1 is given verbatim in this plan
+and §10.2 is a mechanical derivation of it, so authoring them invents no
+P1/P2/P4 type and does not violate §3.3. They are now on disk, and the
+structural properties §10 calls "load-bearing for a test" are asserted
+directly rather than left as prose:
+
+- `tests/fixtures/playbooks/v2/review-pipeline.artifact.json` — §10.1
+  transcribed verbatim from the fenced block above (13 steps, 2 rules,
+  version 5).
+- `tests/fixtures/playbooks/v2/review-pipeline.v6.artifact.json` — §10.2's
+  companion: an executable change to the `ensure_task` title template, one
+  reworded step title (`classify-risk`, presentation-only and byte-identical
+  otherwise), one added `check-gate` case, and a fresh `source_hash`. Drives
+  `executable_change=True`, `presentation_change_count=1`.
+- `tests/fixtures/playbooks/v2/review-pipeline.receipts.json` — §10.2's 11
+  receipts: `ensure-review-task` attempt 1 `failure` / attempt 2 `success`,
+  `classify-risk` `high`, `escalate` `completed`, `await-approval`
+  `approve`, `done`, plus five `open-gate` receipts at `iteration_index`
+  0–4 with iteration 3 `failure` under `failure_policy: collect`;
+  `truncated: False`. Every `selected_edge_id` is the §5.1 content-derived
+  form `f'{rule_id}::{step_id}::{outcome}'` and joins a transition declared
+  in the v5 artifact, so the overlay ids will join the projected graph's ids
+  by construction.
+- `tests/test_playbook_v2_fixtures.py` — 31 tests. They reach no further
+  than the frozen §4 `ReceiptDTO`, so they stay green while P1/P2/P4 are in
+  flight, and they pin the properties a later edit could silently drop: the
+  closed-subgraph invariant (no transition crosses a rule boundary), the
+  convergence pair, the loop-back edge, the `check-gate` case/default pair
+  that share a `(source, target)` and must stay independently selectable
+  (the V1 dedupe regression §5.1 names), the three terminals inside one
+  rule, the five reserved LLM outcomes, one of every `ValueKind`, the
+  retry that selects no edge, and the terminal that selects no edge.
+
+Note one correction the DTO forced: §4.1's `ValueKind` is the *expression*
+kind (`literal` / `event_ref` / `binding_ref` / `loop_ref` / `template` /
+`expression` / `redacted` / `unresolved`), not a data type. The declared
+type goes in `ExplanationValueDTO.type_name`. The receipts fixture is
+written accordingly and validated against `ReceiptDTO`.
+
+#### Still deferred, unchanged
+
+Items 1, 2, 3 and the T-4..T-44 test bodies all bind to P1/P2/P4 types.
+Item 5 is unchanged from §16.2: the `activated_by` half is unnecessary
+(the column shipped with P3) and the `playbook_pending_events` half must
+ship with that table's owner (solid-harbor.36), not as an additive
+migration here.
+
+Human action, unchanged: add `blocks` edges `solid-harbor.46.1 ->
+solid-harbor.26 / .30 / .39` (or pause this task), and merge PR #198 so a
+hard close stops being re-promoted within the minute.
