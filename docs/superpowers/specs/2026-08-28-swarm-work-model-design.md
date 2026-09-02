@@ -935,6 +935,24 @@ Three budgets are kept apart, because they measure different things and cannot a
 service in CI, and asserts the table. SQLite runs the same suite with timing relaxed 4×,
 transaction counts identical, and its own exact logical-statement and worst-case bounds.
 
+**Recorded deltas above the `task_claim --next` row.** The `PG ≤ 6 / SQLite ≤ 7` figure is
+the *holder-recording core* of the claim transaction. Work landed since carries its own
+statements inside the same commit, and `tests/perf/test_claim_statements.py` asserts the
+sum; each addition is listed here rather than folded silently into the number, so the core
+stays legible and any future growth has to be argued for the same way:
+
+| Addition | Statements | Why it must be in the claim transaction |
+|---|---|---|
+| durable-worker eligibility guard (`SELECT agents.id … FOR UPDATE`) | +1 | a worker soft-deleted concurrently must not end up holding the task |
+| task-session attempt row (§10 holder history) | +2 (one joined read, one `INSERT`) | a crash between the claim and a later attempt write leaves a held task with no attempt to attribute it to |
+
+Outside the transaction, `task_claim` end-to-end additionally pays pre-launch task/session
+revalidation (+2), `activate_claim`'s session-before-task holder lock (+1, ordering that
+keeps activation deadlock-free against claim and release), the activation claim fence (+1)
+and pause-checkpoint cleanup (+1). Current asserted totals: claim transaction 10 (PG) /
+12 (SQLite, incl. `BEGIN IMMEDIATE` + `COMMIT`); `task_claim` happy path 18 / 22;
+`release_claim` 9 / 11 — the release closing its open attempt row is the +1 there.
+
 ### 16. Testing
 
 **Concurrency and durability (the review's scenarios, each a named test).**

@@ -202,7 +202,18 @@ class TestClaimStatementBudgets:
         # revalidation (+2), activation claim fence (+1), and pause-checkpoint
         # cleanup (+1) bring the measured SQLite path from 14 to 19. These
         # protect a concurrent pause/reassignment; retain a bounded budget.
-        budget = 19 if dialect == "sqlite" else 17
+        #
+        # Task-session history (commit 7c9a308e, "retain task session
+        # history") adds 3 more, to 22 / 18:
+        #   +2 inside the claim transaction -- the attempt row must be
+        #      written in the *same* commit as the claim, or a crash between
+        #      the two leaves a held task with no attempt to attribute it to.
+        #      See ``test_claim_transaction_statement_budget``.
+        #   +1 ``activate_claim``'s ``SELECT sessions.id ... FOR UPDATE``
+        #      holder lock, which takes the session row *before* the task row
+        #      so activation locks in the same order as claim and release
+        #      (a PostgreSQL deadlock otherwise).
+        budget = 22 if dialect == "sqlite" else 18
         print(f"\ntask_claim happy path ({dialect}): {c['n']} statements (budget {budget})")
         assert c["n"] <= budget, f"{c['n']} statements > budget {budget}"
 
@@ -223,6 +234,19 @@ class TestClaimStatementBudgets:
         COMMIT are SQLite's explicit ``BEGIN IMMEDIATE`` / ``COMMIT``
         (PostgreSQL does not emit them as cursor statements, hence the
         lower budget there).
+
+        **Now 12 / 10.**  Task-session history (commit 7c9a308e) records
+        the attempt row inside this transaction:
+        ``_start_task_session_attempt``'s single joined read (the session
+        row, the agent's display name, and the "already open for this
+        pair?" probe, in one statement) and its ``INSERT``.  Both belong
+        here rather than in a follow-up commit: spec §10 requires the
+        holder to be recorded *in* the claim transaction, and an attempt
+        row written afterwards would be lost by any crash in between,
+        leaving a held task with no attempt to attribute it to.  Two
+        statements is the floor short of a schema change -- the read
+        already collapses what were three reads, and the ``INSERT`` cannot
+        be merged with it.
         """
         _require_returning(any_db)
         await _seed_worker_scale(any_db)
@@ -245,7 +269,7 @@ class TestClaimStatementBudgets:
         # The two outer-loop pre-reads (session+profile join, project) are
         # not part of the transaction.
         n = c["n"] - 2
-        budget = 10 if dialect == "sqlite" else 8
+        budget = 12 if dialect == "sqlite" else 10
         print(f"\nclaim transaction only ({dialect}): {n} statements (budget {budget})")
         assert n <= budget, f"{n} statements > budget {budget}"
 
@@ -294,6 +318,15 @@ class TestClaimStatementBudgets:
         ``blocked_predicate()``, which is what ``projection_stable=True``
         asserts (and ``_apply_transition`` re-checks — a release to a
         terminal or BLOCKED status still recomputes in full).
+
+        **Now 11 / 9.**  Task-session history (commit 7c9a308e) closes the
+        open attempt in the same transaction that gives the task back
+        (``UPDATE task_session_attempts SET state, ended_at, end_reason``);
+        an attempt left open past the release is what the dashboard reads
+        as "still running".  PostgreSQL was already at its 9 and is
+        unchanged; only the SQLite number moves, because ``BEGIN
+        IMMEDIATE`` / ``COMMIT`` put it exactly 2 above PostgreSQL and the
+        old 10 had drifted off that relationship.
         """
         _require_returning(any_db)
         await _seed_worker_scale(any_db)
@@ -307,7 +340,7 @@ class TestClaimStatementBudgets:
                 sid, task_status=TaskStatus.READY, context="perf", now=time.time()
             )
         dialect = any_db._engine.dialect.name
-        budget = 10 if dialect == "sqlite" else 9
+        budget = 11 if dialect == "sqlite" else 9
         print(f"\nrelease_claim ({dialect}): {c['n']} statements (budget {budget})")
         assert c["n"] <= budget, f"{c['n']} statements > budget {budget}"
 

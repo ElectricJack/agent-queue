@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from uuid import uuid4
 
-from sqlalchemy import func, insert, or_, select, update
+from sqlalchemy import and_, func, insert, or_, select, update
 
 from src.database.tables import agents, sessions, task_session_attempts
 
@@ -25,8 +25,38 @@ class TaskSessionQueryMixin:
     async def _start_task_session_attempt(
         self, conn, session_id, *, started_at=None, work_dir=None
     ):
+        """Record the session's attempt at its current task; ``id`` or ``None``.
+
+        This runs *inside* the claim transaction (``record_holder``) and
+        inside ``create_session``, so it is on the hot path spec §15 budgets
+        the claim transaction.  The session row, the agent's display name and
+        the "is there already an open attempt for this pair" probe are all
+        read in **one** statement: two outer joins off the session row cost
+        nothing extra on either dialect and save two round trips per claim.
+        """
+        existing_open = and_(
+            task_session_attempts.c.session_id == sessions.c.id,
+            task_session_attempts.c.task_id == sessions.c.task_id,
+            task_session_attempts.c.ended_at.is_(None),
+            task_session_attempts.c.state.in_(LIVE_ATTEMPT_STATES),
+        )
         row = (
-            (await conn.execute(select(sessions).where(sessions.c.id == session_id)))
+            (
+                await conn.execute(
+                    select(
+                        sessions,
+                        agents.c.name.label("_agent_name"),
+                        task_session_attempts.c.id.label("_open_attempt_id"),
+                    )
+                    .select_from(
+                        sessions.outerjoin(agents, agents.c.id == sessions.c.agent_id).outerjoin(
+                            task_session_attempts, existing_open
+                        )
+                    )
+                    .where(sessions.c.id == session_id)
+                    .limit(1)
+                )
+            )
             .mappings()
             .first()
         )
@@ -34,25 +64,8 @@ class TaskSessionQueryMixin:
             return None
         # Caller holds the session writer/row lock, so a repeated assignment
         # converges without making duplicate associations.
-        existing = (
-            await conn.execute(
-                select(task_session_attempts.c.id).where(
-                    *open_attempts(session_id),
-                    task_session_attempts.c.task_id == row["task_id"],
-                )
-            )
-        ).scalar_one_or_none()
-        if existing is not None:
-            return existing
-        agent_name = None
-        if row["agent_id"]:
-            agent_name = (
-                await conn.execute(
-                    select(agents.c.name).where(
-                        agents.c.id == row["agent_id"],
-                    )
-                )
-            ).scalar_one_or_none()
+        if row["_open_attempt_id"] is not None:
+            return row["_open_attempt_id"]
         values = {
             key: row[key]
             for key in (
@@ -77,7 +90,7 @@ class TaskSessionQueryMixin:
         values.update(
             id=uuid4().hex,
             session_id=session_id,
-            agent_name=agent_name,
+            agent_name=row["_agent_name"] if row["agent_id"] else None,
             started_at=row["started_at"] if started_at is None else started_at,
             session_started_at=row["started_at"],
             outcome=None,
