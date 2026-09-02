@@ -1075,10 +1075,14 @@ Data step — canonicalise from an **immutable snapshot** taken before any write
 6. Rejected edges are re-attachable by hand (`aq task reparent`) or kept as
    `discovered-from` provenance by the operator (`aq task deps add … --type discovered-from`).
 
-**Shipped profile defaults** (inert until `swarm.enabled`): `worker-fast`
-(`lifecycle: pool, max_claims_per_session: 2, max_active: 3`), `worker-standard`
-(`pool, 5, 3`), `worker-deep` (`pool, max_claims_per_session` unset = unlimited,
+**Shipped profile defaults** (inert until `swarm.enabled`):
+`worker-fast-medium-claude` (`lifecycle: pool, max_claims_per_session: 2,
+max_active: 3`), `worker-standard-medium-claude` (`pool, 5, 3`),
+`worker-deep-high-claude` (`pool, max_claims_per_session` unset = unlimited,
 `max_session_age: 14400, max_active: 1`). `min_active: 0` everywhere.
+(These shipped as `worker-fast` / `worker-standard` / `worker-deep` when this
+spec was written; the ids became provider-explicit later — see
+`docs/guides/worker-pools.md` §7b for the migration.)
 
 **Implementation plan split** (each independently mergeable):
 1. Part I — hierarchy, graph creator, migration, doctor checks, `children/progress/reparent`.

@@ -1523,8 +1523,8 @@
         "tags": [
           "agent"
         ],
-        "summary": "Delete an agent profile. Any tasks or projects referencing it will have their profile cleared.",
-        "description": "Delete an agent profile. Any tasks or projects referencing it will have their profile cleared.",
+        "summary": "Delete an agent profile. Any tasks or projects referencing it will have their profile cleared. Deleting a shipped default also records it as retired so startup seeding stops re-creating it; profile_reseed brings it back.",
+        "description": "Delete an agent profile. Any tasks or projects referencing it will have their profile cleared. Deleting a shipped default also records it as retired so startup seeding stops re-creating it; profile_reseed brings it back.",
         "operationId": "delete_profile",
         "requestBody": {
           "content": {
@@ -2322,8 +2322,8 @@
         "tags": [
           "agent"
         ],
-        "summary": "Overwrite one vault system profile with the version shipped in src/profiles/defaults/, keeping a .bak-<epoch> copy of the old file. The explicit repair for profile_drift findings \u2014 startup seeding is write-if-absent and will never do this for you.",
-        "description": "Overwrite one vault system profile with the version shipped in src/profiles/defaults/, keeping a .bak-<epoch> copy of the old file. The explicit repair for profile_drift findings \u2014 startup seeding is write-if-absent and will never do this for you.",
+        "summary": "Overwrite one vault system profile with the version shipped in src/profiles/defaults/, keeping a .bak-<epoch> copy of the old file. The explicit repair for profile_drift findings \u2014 startup seeding is write-if-absent and will never do this for you. Also clears any delete-time retirement tombstone for the profile.",
+        "description": "Overwrite one vault system profile with the version shipped in src/profiles/defaults/, keeping a .bak-<epoch> copy of the old file. The explicit repair for profile_drift findings \u2014 startup seeding is write-if-absent and will never do this for you. Also clears any delete-time retirement tombstone for the profile.",
         "operationId": "profile_reseed",
         "requestBody": {
           "content": {
@@ -16541,6 +16541,18 @@
             "type": "string",
             "title": "Profile Id",
             "description": "Profile ID to delete"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason",
+            "description": "Why this profile is being retired. Stored on the tombstone when the deleted profile is a shipped default."
           }
         },
         "type": "object",
@@ -16558,6 +16570,22 @@
           "name": {
             "type": "string",
             "title": "Name"
+          },
+          "retired": {
+            "type": "boolean",
+            "title": "Retired",
+            "default": false
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
           }
         },
         "type": "object",
@@ -29842,6 +29870,11 @@
           "created": {
             "type": "boolean",
             "title": "Created",
+            "default": false
+          },
+          "unretired": {
+            "type": "boolean",
+            "title": "Unretired",
             "default": false
           },
           "warnings": {

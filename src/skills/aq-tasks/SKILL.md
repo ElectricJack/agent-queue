@@ -177,7 +177,7 @@ routing gate, so triage — not the filer — dedupes and routes it. `--from-spe
 # Ad-hoc task creation.  --reason is required on a worker-filed task and is
 # stored on the discovered-from edge back to the task you hold.
 aq task create --project <pid> --title "..." --description "..." \
-  --profile worker-standard --priority 50 --reason "why this exists"
+  --profile worker-standard-medium-claude --priority 50 --reason "why this exists"
 
 # From a spec (preferred for multi-task graphs)
 aq task create --from-spec vault/projects/<pid>/specs/<slug>.md
@@ -185,7 +185,7 @@ aq task create --from-spec <path> --dry-run   # validate first, always
 
 # Create under an existing container (single task or a --from-spec graph)
 aq task create --project <pid> --title "..." --description "..." \
-  --profile worker-standard --parent <container_task_id>
+  --profile worker-standard-medium-claude --parent <container_task_id>
 ```
 
 Always pass at least `--project` and `--title` from a worker session: with

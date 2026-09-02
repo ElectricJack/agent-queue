@@ -26,7 +26,7 @@ reconciliation-design.md`` §2, "Auto-picking a project default profile"):
 
 1. ``claude-opus``
 2. ``claude-sonnet``
-3. ``worker-standard``
+3. ``worker-standard-medium-claude``
 4. any remaining general-purpose profile, alphabetically by id
 5. any remaining non-supervisor profile, alphabetically by id
 
@@ -41,13 +41,17 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 #: Tried first, in this exact order, when picking a project default.
-#: ``worker-standard`` is named explicitly because the alphabetical
-#: fallback below picked ``worker-deep`` out of the shipped worker ladder
-#: (deep < fast < standard), quietly making the most expensive tier every
-#: project's default for tasks that carry no profile of their own.
+#: ``worker-standard-medium-claude`` is named explicitly because the
+#: alphabetical fallback below picked ``worker-deep-high-claude`` out of the
+#: shipped worker ladder (deep < fast < standard), quietly making the most
+#: expensive tier every project's default for tasks that carry no profile of
+#: their own.  The legacy pre-rename ids are kept as trailing entries so a
+#: vault seeded before the provider-explicit rename still resolves to the
+#: standard tier instead of falling through to alphabetical order.
 PREFERRED_DEFAULT_PROFILE_IDS: tuple[str, ...] = (
     "claude-opus",
     "claude-sonnet",
+    "worker-standard-medium-claude",
     "worker-standard",
 )
 

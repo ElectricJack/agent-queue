@@ -23,6 +23,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from src.profiles.retired_defaults import is_retired
+
 #: ``## Config`` keys whose value changes behaviour rather than presentation.
 #: A divergence in any of these is what makes a stale vault profile dangerous:
 #:
@@ -44,6 +46,11 @@ SEMANTIC_CONFIG_FIELDS: tuple[str, ...] = (
 #: Status values a :class:`ProfileDrift` can carry, worst last.
 STATUS_OK = "ok"
 STATUS_NOT_SEEDED = "not_seeded"
+#: Absent from the vault *on purpose* — the operator deleted this shipped
+#: default and :mod:`src.profiles.retired_defaults` holds the tombstone that
+#: stops startup seeding re-creating it.  Distinguished from
+#: ``not_seeded`` because the two need opposite advice.
+STATUS_RETIRED = "retired"
 STATUS_DRIFTED = "drifted"
 STATUS_UNREADABLE = "unreadable"
 
@@ -123,6 +130,11 @@ class ProfileDrift:
             return f"{self.profile_id}: matches shipped default"
         if self.status == STATUS_NOT_SEEDED:
             return f"{self.profile_id}: no vault copy (seeded on next daemon start)"
+        if self.status == STATUS_RETIRED:
+            return (
+                f"{self.profile_id}: retired by the operator, not re-seeded "
+                f"(`aq agent profile-reseed {self.profile_id}` restores it)"
+            )
         if self.status == STATUS_UNREADABLE:
             return f"{self.profile_id}: {'; '.join(self.errors)}"
         parts = [
@@ -174,7 +186,9 @@ def diff_profile(
 
     vault_path = vault_profile_path(data_dir, profile_id)
     if not os.path.isfile(vault_path):
-        drift.status = STATUS_NOT_SEEDED
+        drift.status = (
+            STATUS_RETIRED if is_retired(data_dir, profile_id) else STATUS_NOT_SEEDED
+        )
         return drift
 
     shipped_config, shipped_sections, shipped_errors = _parse(shipped_path)
