@@ -30,3 +30,25 @@
 .dashboard-scrollbar::-webkit-scrollbar-thumb:hover {
   background-color: rgb(75 85 99);
 }
+
+/* uPlot ships a light-theme stylesheet; the shell is dark-only, so the
+   cursor, hover marker and tooltip surfaces are restated here rather than
+   inherited as black-on-dark. */
+.aq-uplot .u-title,
+.aq-uplot .u-legend {
+  color: rgb(209 213 219);
+  font-size: 11px;
+}
+
+.aq-uplot .u-cursor-x,
+.aq-uplot .u-cursor-y {
+  border-color: rgb(107 114 128);
+}
+
+.aq-uplot .u-cursor-pt {
+  border-color: rgb(17 24 39);
+}
+
+.aq-uplot .u-select {
+  background: rgba(99, 102, 241, 0.18);
+}
