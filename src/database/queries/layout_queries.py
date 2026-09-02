@@ -251,6 +251,20 @@ class LayoutQueryMixin:
             )
         return dict(row) if row else None
 
+    async def list_layout_jobs(self, project_id: str, variant: str, *, statuses) -> list[dict]:
+        """Jobs for one (project, variant) in the given statuses, oldest first."""
+        async with self._engine.begin() as conn:
+            res = await conn.execute(
+                select(layout_jobs)
+                .where(
+                    layout_jobs.c.project_id == project_id,
+                    layout_jobs.c.variant == variant,
+                    layout_jobs.c.status.in_(list(statuses)),
+                )
+                .order_by(layout_jobs.c.requested_at)
+            )
+            return [dict(m) for m in res.mappings()]
+
     # ── snapshot & rows ──────────────────────────────────────────────────
     async def load_project_snapshot(self, project_id: str):
         from src.database.queries.hierarchy_queries import CONTAINER_KEY, CONTAINER_VALUE
