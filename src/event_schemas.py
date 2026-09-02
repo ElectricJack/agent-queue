@@ -96,8 +96,9 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
         # ``review_task``: set by the same path when the task is one the
         # pipeline created as a review (``review:task:`` / ``branch-review:``
         # dedup key, see ``src/review_keys.py``).  The review rules skip these
-        # too, independent of any profile flag; emitters that omit it are
-        # treated as ordinary work.
+        # too, independent of any profile flag.  Emitters may omit it: the
+        # pipeline dispatch path re-derives it from the hydrated task row, so
+        # a review is never reviewed whatever the emitter sent.
         "optional": ["agent_id", "agent_type", "no_code", "review_task"],
     },
     "task.failed": {

@@ -1,6 +1,6 @@
 ---
 name: aq-playbooks-and-gates
-description: Playbook runs and human-in-the-loop gates in aq. Use to inspect a paused playbook run, resolve a human gate (approve / reject), see which gates are currently open, run a playbook by hand, or check playbook health. Also covers how the default pipeline routes task events into review + final-review + spec-ingest flows.
+description: Playbook runs and human-in-the-loop gates in aq. Use to find and inspect a paused playbook run, resume it with an approve / reject decision, run a playbook by hand, or check playbook health. Also covers how the default pipeline routes task events into review + final-review + spec-ingest flows.
 allowed-tools:
   - Bash
 ---
@@ -16,32 +16,41 @@ Human-in-the-loop gates pause a run until a human answers.
 
 ```bash
 aq playbook list                                 # every playbook + enabled state
-aq playbook show <playbook_id>                   # metadata + rules
+aq playbook get-source --playbook-id <id>        # the playbook's markdown source
 aq playbook health                               # active runs, stuck, failure rate
-aq playbook show-graph <playbook_id>             # DAG rendered as ASCII
+aq playbook show-graph --playbook-id <id>        # DAG rendered as ASCII
 ```
 
 ## Inspect runs
 
 ```bash
-aq playbook runs                                 # recent runs across all playbooks
-aq playbook runs --playbook <id> --status running
-aq playbook inspect-run <run_id>                 # nodes, statuses, outputs
+aq playbook list-runs                            # recent runs across all playbooks
+aq playbook list-runs --playbook-id <id> --status running
+aq playbook inspect-run --run-id <run_id>        # nodes, statuses, outputs
 ```
 
 ## Resolve a paused run
 
-If a run hit a HITL gate and is waiting:
+A run that hit a HITL node parks in status `paused`. Find it, read why it
+stopped, then hand it the decision:
 
 ```bash
-aq gate list --status open --project <pid>
-aq gate show <gate_id>                           # full detail incl. waiter tasks
-aq gate resolve --gate-id <gate_id> \
-  --resolved-by <your_session_id> \
-  --resolution approve                           # or 'reject'
+aq playbook list-runs --status paused            # everything awaiting a human
+aq playbook inspect-run --run-id <run_id>        # which node paused, and on what
+aq playbook resume --run-id <run_id> --human-input "approve"
 ```
 
-Two things happen when you resolve:
+`--human-input` is free text: it is appended to the run's conversation and
+is what the next transition is evaluated against, so say *approve* / *reject*
+plus the reason rather than a bare token.
+
+Gate rows themselves (`gate_list` / `gate_show` / `gate_resolve`) have no
+usable CLI form right now — `aq task gate-list`, `aq task gate-show` and
+`aq task gate-resolve` are generated with no parameters at all, so they
+cannot name a gate (tracked by `bright-forge-33`). Drive paused runs through
+`aq playbook resume` until that lands.
+
+When a gate does resolve, two things happen:
 1. The gate row transitions to `resolved` + records who resolved it.
 2. Every waiter task attached to the gate re-checks its blocked state;
    if the gate was the only blocker, the task flips to `READY`.
@@ -53,7 +62,8 @@ Ordinary playbook markdown edits enqueue a compile task under the
 
 ```bash
 aq playbook validate vault/system/playbooks/<name>.md   # parse + lint
-aq playbook install <playbook_id> <compiled_json_path>  # atomic swap
+aq playbook install --playbook-id <playbook_id> \
+  --compiled-path <compiled_json_path>                  # atomic swap
 ```
 
 For the `pipeline` kind (deterministic parse, no LLM), edits go
@@ -62,8 +72,8 @@ straight to the parser — no task enqueued.
 ## Run a playbook by hand
 
 ```bash
-aq playbook run <playbook_id> --project <pid> \
-  --context '{"task_id": "..."}'                # pass a JSON context
+aq playbook run --playbook-id <playbook_id> \
+  --event '{"type": "manual", "project_id": "<pid>", "task_id": "..."}'
 ```
 
 Useful for testing a rule change locally without waiting for the
@@ -88,8 +98,8 @@ The default pipeline is a `kind: pipeline` playbook that wires:
 To see it in action:
 
 ```bash
-aq playbook show default-pipeline
-aq playbook runs --playbook default-pipeline --limit 20
+aq playbook show-graph --playbook-id default-pipeline
+aq playbook list-runs --playbook-id default-pipeline --limit 20
 ```
 
 ## Rules of thumb

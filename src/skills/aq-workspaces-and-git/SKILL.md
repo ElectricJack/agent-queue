@@ -14,13 +14,21 @@ where you are:
 
 ```bash
 pwd                              # the working directory the daemon put you in
-aq project list-workspaces --project <pid>   # every workspace + who holds each lock
+echo "$AQ_WORK_DIR"              # the same path, from the session environment
+aq prime                         # restates work_dir + branch for the held task
 ```
 
-For the specific workspace bound to your task:
+The branch is on the task row; the workspace path is not, so read the path
+from the environment above rather than from the task:
 
 ```bash
-aq task get <task_id> --json | jq '.workspace_path, .branch_name'
+aq --json task show <task_id> | jq -r '.data.branch_name'
+```
+
+An operator (not a worker token) can see every workspace and its lock holder:
+
+```bash
+aq project list-workspaces --project-id <pid>   # every workspace + who holds each lock
 ```
 
 ## Git via plain CLI
@@ -94,17 +102,20 @@ working tree, so the daemon refuses to launch a session in it.
 
 ## Workspace admin commands
 
-Non-elevated sessions can inspect; only supervisor / operator elevates.
+These are operator reads: a plain worker or reviewer token gets
+`out of scope: <command>` back, and reaping is elevated on top of that.
 
 ```bash
-aq project list-workspaces --project <pid>
-aq workspace show <workspace_id>          # single workspace detail
-aq workspace doctor --project <pid>       # check locks + git health
-aq workspace reap --project <pid>         # (elevated) cull dead worktrees
+aq project list-workspaces --project-id <pid>     # all workspaces + lock holders
+aq project workspace-doctor --project-id <pid>    # check locks + git health
+aq project workspace-reap --project-id <pid>      # (elevated) cull dead worktrees
 ```
+
+There is no per-workspace show command — `list-workspaces` is the detail
+view, filtered by project.
 
 ## Release + attach
 
 You do not normally release the workspace — task close does it. If you
 absolutely need to (e.g. hand off mid-run), the supervisor should call
-`aq workspace release --workspace-id <id>` on your behalf.
+`aq project release-workspace --workspace-id <id>` on your behalf.
