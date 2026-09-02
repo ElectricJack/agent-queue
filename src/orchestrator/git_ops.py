@@ -746,6 +746,17 @@ class GitOpsMixin:
                     pr_url = await self.git.afind_open_pr(workspace, task.branch_name)
                     if pr_url:
                         ctx.pr_url = pr_url
+                    elif await self.git.ais_ancestor(
+                        workspace,
+                        task.branch_name,
+                        f"origin/{default_branch}",
+                    ):
+                        logger.info(
+                            "Task %s: branch '%s' is already integrated into '%s'",
+                            task.id,
+                            task.branch_name,
+                            default_branch,
+                        )
                     else:
                         failures.append(
                             (
