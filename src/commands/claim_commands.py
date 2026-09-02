@@ -480,6 +480,7 @@ class ClaimCommandsMixin:
                         agent_id=row.agent_id,
                         work_dir=row.work_dir,
                         now=now,
+                        agent_reserved=True,
                     )
                     new_claim = (row, task, slot)
 
@@ -515,12 +516,9 @@ class ClaimCommandsMixin:
 
     async def _prepare_and_activate(self, session, row, task, cap=None, *, slot=None) -> dict:
         async with self.orchestrator._task_control_lock(task.id):
-            current = await self.db.get_task(task.id)
-            fresh = await self.db.get_session(session.id)
-            if (current is None or current.status != TaskStatus.IN_PROGRESS
-                    or current.claim_epoch != task.claim_epoch or fresh is None
-                    or fresh.task_id != task.id or fresh.claim_phase != "preparing"
-                    or fresh.desired_state != "running"):
+            if not await self.db.claim_preparation_is_current(
+                session.id, task.id, task.claim_epoch
+            ):
                 self._resolve_claim_waiters(session.id, task.claim_epoch, "prepare_failed")
                 return self._simple(ClaimResult.PREPARE_FAILED, "claim changed before preparation", row, cap)
             return await self._prepare_and_activate_locked(session, row, task, cap, slot=slot)
