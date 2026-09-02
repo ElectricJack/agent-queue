@@ -145,6 +145,7 @@ Authorized project moves transfer known active-task comment ownership in the sam
 | `repo_url` | TEXT | DEFAULT '' | Repository URL for the project (added via migration) |
 | `repo_default_branch` | TEXT | DEFAULT 'main' | Default branch name (added via migration) |
 | `default_profile_id` | TEXT | nullable REFERENCES agent_profiles(id) | Default agent profile (added via migration) |
+| `assignment_playbook_id` | TEXT | nullable | Assignment-routing playbook selected for the project; NULL uses the bundled system default. Added by Alembic `a7c91e4d2b63` |
 | `integration_mode` | TEXT | nullable | Project-level integration policy: `'direct'`, `'pull_request'`, or NULL (fall through to config `integration.default_mode`). Added by Alembic `c4d5e6f7a8b9` |
 | `created_at` | REAL | NOT NULL | Unix timestamp, set on insert |
 
