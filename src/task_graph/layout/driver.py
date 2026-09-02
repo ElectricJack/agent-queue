@@ -178,13 +178,53 @@ class LayoutDriver:
         ws, extent = await asyncio.to_thread(
             build_full_write_set, snapshot, edges, variant, blocked=blocked, mode=mode, seed=self.seed
         )
-        # Replace everything: rows no longer present are deleted.
-        existing = await self.db.load_layout_rows(project_id, variant, list(snapshot))
+        # Replace everything: rows no longer present (including orphans left
+        # behind by a deleted task, or stray rows under this project_id/
+        # variant for a task that never belonged here) are deleted.
+        existing = await self.db.load_subtree_rows(project_id, variant)
         keep = {r.task_id for r in ws.upserts}
         ws.deletes = [tid for tid in existing if tid not in keep]
         return await self.db.publish_layout(
             project_id, variant, ws, consumed_seq=None, extent=extent, node_count_delta=None
         )
+
+    async def reconcile(self, project_id: str) -> int:
+        """Compare the ``all`` variant's rows to the snapshot and mark drift dirty.
+
+        Detects tasks with no row, rows with no task, rows whose
+        ``container_id`` differs from the task's parent, and rows whose
+        ``kind`` disagrees with the container flag. Each discrepancy writes
+        a dirty mark with reason ``reconcile``; ``reconciled_at`` is then
+        stamped on both variants' meta rows. Returns the number of marks
+        enqueued.
+        """
+        import time
+
+        from sqlalchemy import update
+
+        from src.database.tables import project_layout_meta
+
+        if await self.db.get_layout_meta(project_id, "all") is None:
+            return 0
+
+        snapshot, _ = await self.db.load_project_snapshot(project_id)
+        all_rows = await self.db.load_subtree_rows(project_id, "all")
+        bad: set[str] = set()
+        for tid, t in snapshot.items():
+            r = all_rows.get(tid)
+            if r is None or r.container_id != t.parent_id or \
+                    (r.kind == "container") != t.is_container:
+                bad.add(tid)
+        for tid in all_rows:
+            if tid not in snapshot:
+                bad.add(tid)
+        if bad:
+            async with self.db._engine.begin() as conn:
+                await self.db.mark_layout_dirty(project_id, sorted(bad), "reconcile", conn=conn)
+        async with self.db._engine.begin() as conn:
+            await conn.execute(update(project_layout_meta).where(
+                project_layout_meta.c.project_id == project_id).values(reconciled_at=time.time()))
+        return len(bad)
 
     # ── incremental ─────────────────────────────────────────────────────
     async def process_dirty(

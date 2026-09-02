@@ -332,3 +332,53 @@ async def test_load_subtree_ids_escapes_like_wildcards(db):
     await LayoutDriver(db).full_layout("p1", "all")
     assert sorted(await db.load_subtree_ids("p1", "all", "/a_b/")) == ["a_b", "a_b-k0"]
     assert sorted(await db.load_subtree_ids("p1", "all", "/aXb/")) == ["aXb", "aXb-k0"]
+
+
+async def test_reconcile_repairs_a_deleted_row(db):
+    kids = await seed_epic(db, n=2)
+    drv = LayoutDriver(db)
+    await drv.full_layout("p1", "all")
+    await drv.full_layout("p1", "active")
+    from sqlalchemy import delete
+
+    from src.database.tables import task_layouts
+    async with db._engine.begin() as conn:
+        await conn.execute(delete(task_layouts).where(task_layouts.c.task_id == kids[0]))
+    assert await drv.reconcile("p1") == 1
+    await drv.process_dirty("p1", min_age_seconds=0)
+    assert kids[0] in await db.load_layout_rows("p1", "all", kids)
+
+
+async def test_reconcile_with_no_layout_yet_is_a_noop(db):
+    await seed_epic(db, n=2)
+    assert await LayoutDriver(db).reconcile("p1") == 0
+
+
+async def test_full_layout_purges_rows_left_by_a_different_project(db):
+    from src.models import Project, Task
+    from src.task_graph.layout.model import LayoutRow, WriteSet
+
+    await db.create_project(Project(id="p2", name="P2"))
+    await db.create_task(Task(id="x", project_id="p2", title="x", description=""))
+
+    kids = await seed_epic(db, n=1)
+    drv = LayoutDriver(db)
+    await drv.full_layout("p1", "all")
+
+    # Publish a stray row for a task that belongs to p2 under p1's layout —
+    # the project_id/variant key allows it even though "x" is not in p1.
+    stray = LayoutRow(
+        task_id="x", container_id=None, path="/x/", depth=0, rank=0, order_key="0",
+        w=1, h=1, rel_x=0, rel_y=0, abs_x=0, abs_y=0, kind="card",
+    )
+    await db.publish_layout(
+        "p1", "all", WriteSet(upserts=[stray]), consumed_seq=None, extent=(1, 1),
+        node_count_delta=None,
+    )
+    assert "x" in await db.load_subtree_rows("p1", "all")
+
+    await drv.full_layout("p1", "all")
+    rows = await db.load_subtree_rows("p1", "all")
+    assert "x" not in rows
+    for k in ("e", *kids):
+        assert k in rows
