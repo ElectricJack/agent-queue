@@ -117,3 +117,45 @@ def test_shipped_review_profiles_exist_with_these_ids():
         assert (defaults / profile_id / "profile.md").is_file(), (
             f"REVIEW_PROFILE_IDS names '{profile_id}' but no such shipped profile exists"
         )
+
+
+@pytest.mark.parametrize(
+    ("dedup_key", "expected"),
+    [
+        ("review:task:abc", {"task_id": "abc", "review_task": True}),
+        ("branch-review:aq/x", {"task_id": "abc", "review_task": True}),
+        ("spec-ingest:x", {"task_id": "abc"}),
+        (None, {"task_id": "abc"}),
+    ],
+)
+def test_flag_review_task_event_only_narrows(dedup_key, expected):
+    """The dispatch path sets ``review_task`` from the row; it never clears it."""
+    from src.review_keys import flag_review_task_event
+
+    event = {"task_id": "abc"}
+    assert flag_review_task_event(event, dedup_key) is event
+    assert event == expected
+
+    # An emitter that already flagged the task keeps its flag either way.
+    flagged = {"task_id": "abc", "review_task": True}
+    flag_review_task_event(flagged, dedup_key)
+    assert flagged["review_task"] is True
+
+
+@pytest.mark.parametrize(
+    ("dedup_key", "expected"),
+    [
+        ("review:task:abc", "abc"),
+        ("review:task:sound-horizon-77.18.2", "sound-horizon-77.18.2"),
+        ("review:task:", None),
+        ("branch-review:aq/x", None),
+        ("spec-ingest:x", None),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_reviewed_task_id(dedup_key, expected):
+    """``reviewed_task_id`` inverts ``review_task_dedup_key``; anything else is ``None``."""
+    from src.review_keys import reviewed_task_id
+
+    assert reviewed_task_id(dedup_key) == expected

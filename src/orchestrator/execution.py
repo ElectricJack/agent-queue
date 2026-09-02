@@ -12,7 +12,7 @@ from src.orchestrator.base_workspace import base_checkout_refusal
 from src.logging_config import CorrelationContext
 from src.discord.notifications import format_task_started
 from src.notifications.builder import build_agent_summary, build_task_detail
-from src.api.models.agent import AgentSummary
+from src.api.models.agent import AgentSettings, AgentSummary
 from src.notifications.events import (
     TaskBlockedEvent,
     TaskCompletedEvent,
@@ -1203,7 +1203,18 @@ class ExecutionMixin:
                 # keys the rows however it likes, and with a non-read-only
                 # reviewer that left every guard blind and the chain grew
                 # again (task solid-beacon-50).
-                no_code = await self._task_produces_no_code(ctx)
+                #
+                # ``_on_playbook_trigger`` derives the dedup-key signal from
+                # the task row too, so an emitter that predates this flag
+                # cannot reopen the recursion (task prime-cascade-64).
+                # ``ctx.branch_no_commits`` is the final layer: the
+                # branch itself carried no commits ahead of its base when the
+                # completion pipeline asked, so there is literally nothing for
+                # a reviewer to read (task bright-forge-78).  It catches what
+                # the structural signals cannot — a renamed reviewer profile
+                # used by a custom pipeline, or an ordinary worker that closed
+                # ``pass`` having committed nothing.
+                no_code = await self._task_produces_no_code(ctx) or ctx.branch_no_commits
                 await self._emit_task_event(
                     "task.completed",
                     task,
@@ -1319,6 +1330,10 @@ class ExecutionMixin:
                 id=task.assigned_agent_id or "",
                 name=task.assigned_agent_id or "unknown",
                 profile_id=task.profile_id or "",
+                settings=AgentSettings(
+                    name=task.assigned_agent_id or "unknown",
+                    profile_id=task.profile_id or "",
+                ),
             )
         )
 

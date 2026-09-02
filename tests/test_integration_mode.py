@@ -679,3 +679,83 @@ class TestEmptyBranchSkipsThePrGate:
 
         assert await orch._phase_verify(ctx) == PhaseResult.STOP
         assert any("uncommitted" in msg.lower() for msg in ctx.verification_issues)
+
+
+class TestEmptyBranchIsFlaggedNoCode:
+    """The completion pipeline records whether the branch carried any work.
+
+    Third guard against the review pipeline reviewing nothing (task
+    bright-forge-78): ``_task_produces_no_code`` asks about intent and the
+    pipeline's ``review_task`` key asks about provenance, but a reviewer with
+    a rewritten profile and a custom dedup key dodges both.  The branch
+    itself cannot lie — zero commits ahead of the base means an empty diff.
+
+    The verdict has to be taken *before* integration, which merges the branch
+    into the default and would then make real work look empty.
+    """
+
+    async def _run_pipeline(self, orch, task, monkeypatch, *, ahead, worktree=False):
+        await orch.db.create_task(task)
+        orch.git.acount_commits_ahead = AsyncMock(return_value=ahead)
+        orch.git.aget_current_branch = AsyncMock(return_value=task.branch_name)
+        orch.git.afind_open_pr = AsyncMock(return_value="https://github.com/org/repo/pull/1")
+        monkeypatch.setattr(orch, "_task_is_worktree_mode", AsyncMock(return_value=worktree))
+        monkeypatch.setattr(
+            orch, "_phase_integrate", AsyncMock(return_value=PhaseResult.CONTINUE)
+        )
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = _ctx(orch, task, ws.workspace_path)
+        ctx.work_outcome = "shipped"
+        assert await orch._run_completion_pipeline(ctx) == (ctx.pr_url, True)
+        return ctx
+
+    async def test_pr_mode_empty_branch_is_flagged(self, orch, monkeypatch):
+        ctx = await self._run_pipeline(orch, _pr_task("t-flag-empty"), monkeypatch, ahead=0)
+        assert ctx.branch_no_commits is True
+
+    async def test_pr_mode_branch_with_commits_is_not_flagged(self, orch, monkeypatch):
+        ctx = await self._run_pipeline(orch, _pr_task("t-flag-ahead"), monkeypatch, ahead=4)
+        assert ctx.branch_no_commits is False
+
+    async def test_worktree_mode_empty_branch_is_flagged(self, orch, monkeypatch):
+        """Non-PR worktree slots are asked too — integration merges later."""
+        ctx = await self._run_pipeline(
+            orch, _direct_task("t-flag-wt"), monkeypatch, ahead=0, worktree=True
+        )
+        assert ctx.branch_no_commits is True
+
+    async def test_the_legacy_direct_path_is_never_asked(self, orch, monkeypatch):
+        """Verification already merged the branch into the default there.
+
+        Counting commits ahead after that auto-merge returns zero for a
+        branch that shipped real work, so the question is not asked at all
+        and the review keeps firing.
+        """
+        ctx = await self._run_pipeline(
+            orch, _direct_task("t-flag-direct"), monkeypatch, ahead=0, worktree=False
+        )
+        assert ctx.branch_no_commits is False
+
+    async def test_an_unanswerable_count_is_not_flagged(self, orch, monkeypatch):
+        """Unknown is not empty — never disarm a review on a failed lookup."""
+        ctx = await self._run_pipeline(
+            orch, _pr_task("t-flag-unknown"), monkeypatch, ahead=None
+        )
+        assert ctx.branch_no_commits is False
+
+    async def test_a_git_failure_is_not_flagged(self, orch, monkeypatch):
+        task = _pr_task("t-flag-raises")
+        await orch.db.create_task(task)
+        orch.git.acount_commits_ahead = AsyncMock(side_effect=RuntimeError("git exploded"))
+        orch.git.aget_current_branch = AsyncMock(return_value=task.branch_name)
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = _ctx(orch, task, ws.workspace_path)
+
+        assert await orch._branch_left_no_commits(ctx) is False
+
+    async def test_a_task_without_a_branch_is_not_asked(self, orch):
+        task = _pr_task("t-flag-nobranch", branch_name=None)
+        ctx = _ctx(orch, task, "/tmp")
+
+        assert await orch._branch_left_no_commits(ctx) is False
+        orch.git.acount_commits_ahead.assert_not_awaited()

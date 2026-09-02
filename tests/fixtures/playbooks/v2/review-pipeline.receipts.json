@@ -1,0 +1,555 @@
+{
+  "receipts": [
+    {
+      "receipt_id": "rcpt-01",
+      "step_id": "ensure-review-task",
+      "rule_id": "review-on-task-completed",
+      "step_kind": "command",
+      "attempt": 1,
+      "iteration_index": null,
+      "outcome": "failure",
+      "selected_edge_id": null,
+      "started_at": 1788300000.0,
+      "completed_at": 1788300000.4,
+      "duration_seconds": 0.4,
+      "inputs": [
+        {
+          "label": "Project",
+          "source": "event",
+          "required": true,
+          "value": {
+            "kind": "event_ref",
+            "display": "this event's project",
+            "canonical": "proj-alpha",
+            "redacted": false,
+            "type_name": "string"
+          }
+        },
+        {
+          "label": "Title",
+          "source": "template",
+          "required": true,
+          "value": {
+            "kind": "template",
+            "display": "Review: Add claim epoch fence",
+            "canonical": "Review: Add claim epoch fence",
+            "redacted": false,
+            "type_name": "string"
+          }
+        }
+      ],
+      "result": null,
+      "token_usage": null,
+      "idempotency_key": "run-7:ensure-review-task:1",
+      "principal_fingerprint": "sha256:9f1c",
+      "profile_id": null,
+      "contract_fingerprint": "sha256:aa11bb22cc33dd44ee55ff6677889900aabbccddeeff00112233445566778899",
+      "error": "database is locked",
+      "wait": null,
+      "cancellation": null
+    },
+    {
+      "receipt_id": "rcpt-02",
+      "step_id": "ensure-review-task",
+      "rule_id": "review-on-task-completed",
+      "step_kind": "command",
+      "attempt": 2,
+      "iteration_index": null,
+      "outcome": "success",
+      "selected_edge_id": "review-on-task-completed::ensure-review-task::success",
+      "started_at": 1788300001.0,
+      "completed_at": 1788300001.3,
+      "duration_seconds": 0.3,
+      "inputs": [
+        {
+          "label": "Project",
+          "source": "event",
+          "required": true,
+          "value": {
+            "kind": "event_ref",
+            "display": "this event's project",
+            "canonical": "proj-alpha",
+            "redacted": false,
+            "type_name": "string"
+          }
+        },
+        {
+          "label": "Title",
+          "source": "template",
+          "required": true,
+          "value": {
+            "kind": "template",
+            "display": "Review: Add claim epoch fence",
+            "canonical": "Review: Add claim epoch fence",
+            "redacted": false,
+            "type_name": "string"
+          }
+        }
+      ],
+      "result": {
+        "kind": "literal",
+        "display": "task solid-harbor.91",
+        "canonical": {
+          "task_id": "solid-harbor.91",
+          "created": true
+        },
+        "redacted": false,
+        "type_name": "TaskRef"
+      },
+      "token_usage": null,
+      "idempotency_key": "run-7:ensure-review-task:2",
+      "principal_fingerprint": "sha256:9f1c",
+      "profile_id": null,
+      "contract_fingerprint": "sha256:aa11bb22cc33dd44ee55ff6677889900aabbccddeeff00112233445566778899",
+      "error": null,
+      "wait": null,
+      "cancellation": null
+    },
+    {
+      "receipt_id": "rcpt-03",
+      "step_id": "classify-risk",
+      "rule_id": "review-on-task-completed",
+      "step_kind": "llm",
+      "attempt": 1,
+      "iteration_index": null,
+      "outcome": "high",
+      "selected_edge_id": "review-on-task-completed::classify-risk::high",
+      "started_at": 1788300001.4,
+      "completed_at": 1788300006.9,
+      "duration_seconds": 5.5,
+      "inputs": [
+        {
+          "label": "Review task",
+          "source": "binding",
+          "required": true,
+          "value": {
+            "kind": "binding_ref",
+            "display": "the task bound as `review`",
+            "canonical": {
+              "task_id": "solid-harbor.91"
+            },
+            "redacted": false,
+            "type_name": "TaskRef"
+          }
+        }
+      ],
+      "result": {
+        "kind": "literal",
+        "display": "risk=high",
+        "canonical": {
+          "risk": "high"
+        },
+        "redacted": false,
+        "type_name": "object"
+      },
+      "token_usage": {
+        "input_tokens": 3120,
+        "output_tokens": 48,
+        "total_tokens": 3168,
+        "estimated": false
+      },
+      "idempotency_key": "run-7:classify-risk:1",
+      "principal_fingerprint": "sha256:9f1c",
+      "profile_id": "reviewer",
+      "contract_fingerprint": "sha256:dd44ee55ff6677889900aabbccddeeff0011223344556677889900112233",
+      "error": null,
+      "wait": null,
+      "cancellation": null
+    },
+    {
+      "receipt_id": "rcpt-04",
+      "step_id": "escalate",
+      "rule_id": "review-on-task-completed",
+      "step_kind": "agent_task",
+      "attempt": 1,
+      "iteration_index": null,
+      "outcome": "completed",
+      "selected_edge_id": "review-on-task-completed::escalate::completed",
+      "started_at": 1788300007.0,
+      "completed_at": 1788300900.0,
+      "duration_seconds": 893.0,
+      "inputs": [
+        {
+          "label": "Objective",
+          "source": "literal",
+          "required": true,
+          "value": {
+            "kind": "literal",
+            "display": "Re-review the change and record the riskiest line",
+            "canonical": "Re-review the change and record the riskiest line",
+            "redacted": false,
+            "type_name": "string"
+          }
+        }
+      ],
+      "result": {
+        "kind": "literal",
+        "display": "child task solid-harbor.92 completed",
+        "canonical": {
+          "task_id": "solid-harbor.92",
+          "outcome": "pass"
+        },
+        "redacted": false,
+        "type_name": "TaskRef"
+      },
+      "token_usage": null,
+      "idempotency_key": "run-7:escalate:1",
+      "principal_fingerprint": "sha256:9f1c",
+      "profile_id": "reviewer",
+      "contract_fingerprint": null,
+      "error": null,
+      "wait": null,
+      "cancellation": null
+    },
+    {
+      "receipt_id": "rcpt-05",
+      "step_id": "await-approval",
+      "rule_id": "review-on-task-completed",
+      "step_kind": "wait",
+      "attempt": 1,
+      "iteration_index": null,
+      "outcome": "approve",
+      "selected_edge_id": "review-on-task-completed::await-approval::approve",
+      "started_at": 1788300900.1,
+      "completed_at": 1788304500.1,
+      "duration_seconds": 3600.0,
+      "inputs": [
+        {
+          "label": "Correlation key",
+          "source": "binding",
+          "required": true,
+          "value": {
+            "kind": "binding_ref",
+            "display": "the review task's id",
+            "canonical": "solid-harbor.91",
+            "redacted": false,
+            "type_name": "string"
+          }
+        }
+      ],
+      "result": {
+        "kind": "literal",
+        "display": "approve",
+        "canonical": "approve",
+        "redacted": false,
+        "type_name": "string"
+      },
+      "token_usage": null,
+      "idempotency_key": null,
+      "principal_fingerprint": "sha256:9f1c",
+      "profile_id": null,
+      "contract_fingerprint": null,
+      "error": null,
+      "wait": {
+        "wait_kind": "human",
+        "correlation_key": "solid-harbor.91",
+        "registered_at": 1788300900.1,
+        "deadline_at": 1788387300.1,
+        "deadline_source": "wait",
+        "matched_at": 1788304500.1,
+        "matched_event_id": "evt-approval-1"
+      },
+      "cancellation": null
+    },
+    {
+      "receipt_id": "rcpt-06",
+      "step_id": "done",
+      "rule_id": "review-on-task-completed",
+      "step_kind": "terminal",
+      "attempt": 1,
+      "iteration_index": null,
+      "outcome": "completed",
+      "selected_edge_id": null,
+      "started_at": 1788304500.2,
+      "completed_at": 1788304500.2,
+      "duration_seconds": 0.0,
+      "inputs": [],
+      "result": null,
+      "token_usage": null,
+      "idempotency_key": null,
+      "principal_fingerprint": "sha256:9f1c",
+      "profile_id": null,
+      "contract_fingerprint": null,
+      "error": null,
+      "wait": null,
+      "cancellation": null
+    },
+    {
+      "receipt_id": "rcpt-07",
+      "step_id": "open-gate",
+      "rule_id": "sweep-on-spec-created",
+      "step_kind": "command",
+      "attempt": 1,
+      "iteration_index": 0,
+      "outcome": "success",
+      "selected_edge_id": "sweep-on-spec-created::open-gate::success",
+      "started_at": 1788305000.0,
+      "completed_at": 1788305000.5,
+      "duration_seconds": 0.5,
+      "inputs": [
+        {
+          "label": "Gate type",
+          "source": "literal",
+          "required": true,
+          "value": {
+            "kind": "literal",
+            "display": "review",
+            "canonical": "review",
+            "redacted": false,
+            "type_name": "string"
+          }
+        },
+        {
+          "label": "Title",
+          "source": "template",
+          "required": true,
+          "value": {
+            "kind": "template",
+            "display": "Spec ingest: downstream task 0",
+            "canonical": "Spec ingest: downstream task 0",
+            "redacted": false,
+            "type_name": "string"
+          }
+        }
+      ],
+      "result": {
+        "kind": "literal",
+        "display": "gate gate-0",
+        "canonical": {
+          "gate_id": "gate-0",
+          "created": true
+        },
+        "redacted": false,
+        "type_name": "GateRef"
+      },
+      "token_usage": null,
+      "idempotency_key": "run-8:open-gate:0:1",
+      "principal_fingerprint": "sha256:9f1c",
+      "profile_id": null,
+      "contract_fingerprint": "sha256:bb22cc33dd44ee55ff6677889900aabbccddeeff001122334455667788990011",
+      "error": null,
+      "wait": null,
+      "cancellation": null
+    },
+    {
+      "receipt_id": "rcpt-08",
+      "step_id": "open-gate",
+      "rule_id": "sweep-on-spec-created",
+      "step_kind": "command",
+      "attempt": 1,
+      "iteration_index": 1,
+      "outcome": "success",
+      "selected_edge_id": "sweep-on-spec-created::open-gate::success",
+      "started_at": 1788305002.0,
+      "completed_at": 1788305002.5,
+      "duration_seconds": 0.5,
+      "inputs": [
+        {
+          "label": "Gate type",
+          "source": "literal",
+          "required": true,
+          "value": {
+            "kind": "literal",
+            "display": "review",
+            "canonical": "review",
+            "redacted": false,
+            "type_name": "string"
+          }
+        },
+        {
+          "label": "Title",
+          "source": "template",
+          "required": true,
+          "value": {
+            "kind": "template",
+            "display": "Spec ingest: downstream task 1",
+            "canonical": "Spec ingest: downstream task 1",
+            "redacted": false,
+            "type_name": "string"
+          }
+        }
+      ],
+      "result": {
+        "kind": "literal",
+        "display": "gate gate-1",
+        "canonical": {
+          "gate_id": "gate-1",
+          "created": false
+        },
+        "redacted": false,
+        "type_name": "GateRef"
+      },
+      "token_usage": null,
+      "idempotency_key": "run-8:open-gate:1:1",
+      "principal_fingerprint": "sha256:9f1c",
+      "profile_id": null,
+      "contract_fingerprint": "sha256:bb22cc33dd44ee55ff6677889900aabbccddeeff001122334455667788990011",
+      "error": null,
+      "wait": null,
+      "cancellation": null
+    },
+    {
+      "receipt_id": "rcpt-09",
+      "step_id": "open-gate",
+      "rule_id": "sweep-on-spec-created",
+      "step_kind": "command",
+      "attempt": 1,
+      "iteration_index": 2,
+      "outcome": "success",
+      "selected_edge_id": "sweep-on-spec-created::open-gate::success",
+      "started_at": 1788305004.0,
+      "completed_at": 1788305004.5,
+      "duration_seconds": 0.5,
+      "inputs": [
+        {
+          "label": "Gate type",
+          "source": "literal",
+          "required": true,
+          "value": {
+            "kind": "literal",
+            "display": "review",
+            "canonical": "review",
+            "redacted": false,
+            "type_name": "string"
+          }
+        },
+        {
+          "label": "Title",
+          "source": "template",
+          "required": true,
+          "value": {
+            "kind": "template",
+            "display": "Spec ingest: downstream task 2",
+            "canonical": "Spec ingest: downstream task 2",
+            "redacted": false,
+            "type_name": "string"
+          }
+        }
+      ],
+      "result": {
+        "kind": "literal",
+        "display": "gate gate-2",
+        "canonical": {
+          "gate_id": "gate-2",
+          "created": true
+        },
+        "redacted": false,
+        "type_name": "GateRef"
+      },
+      "token_usage": null,
+      "idempotency_key": "run-8:open-gate:2:1",
+      "principal_fingerprint": "sha256:9f1c",
+      "profile_id": null,
+      "contract_fingerprint": "sha256:bb22cc33dd44ee55ff6677889900aabbccddeeff001122334455667788990011",
+      "error": null,
+      "wait": null,
+      "cancellation": null
+    },
+    {
+      "receipt_id": "rcpt-10",
+      "step_id": "open-gate",
+      "rule_id": "sweep-on-spec-created",
+      "step_kind": "command",
+      "attempt": 1,
+      "iteration_index": 3,
+      "outcome": "failure",
+      "selected_edge_id": "sweep-on-spec-created::open-gate::failure",
+      "started_at": 1788305006.0,
+      "completed_at": 1788305006.5,
+      "duration_seconds": 0.5,
+      "inputs": [
+        {
+          "label": "Gate type",
+          "source": "literal",
+          "required": true,
+          "value": {
+            "kind": "literal",
+            "display": "review",
+            "canonical": "review",
+            "redacted": false,
+            "type_name": "string"
+          }
+        },
+        {
+          "label": "Title",
+          "source": "template",
+          "required": true,
+          "value": {
+            "kind": "template",
+            "display": "Spec ingest: downstream task 3",
+            "canonical": "Spec ingest: downstream task 3",
+            "redacted": false,
+            "type_name": "string"
+          }
+        }
+      ],
+      "result": null,
+      "token_usage": null,
+      "idempotency_key": "run-8:open-gate:3:1",
+      "principal_fingerprint": "sha256:9f1c",
+      "profile_id": null,
+      "contract_fingerprint": "sha256:bb22cc33dd44ee55ff6677889900aabbccddeeff001122334455667788990011",
+      "error": "gate_create: project not found",
+      "wait": null,
+      "cancellation": null
+    },
+    {
+      "receipt_id": "rcpt-11",
+      "step_id": "open-gate",
+      "rule_id": "sweep-on-spec-created",
+      "step_kind": "command",
+      "attempt": 1,
+      "iteration_index": 4,
+      "outcome": "success",
+      "selected_edge_id": "sweep-on-spec-created::open-gate::success",
+      "started_at": 1788305008.0,
+      "completed_at": 1788305008.5,
+      "duration_seconds": 0.5,
+      "inputs": [
+        {
+          "label": "Gate type",
+          "source": "literal",
+          "required": true,
+          "value": {
+            "kind": "literal",
+            "display": "review",
+            "canonical": "review",
+            "redacted": false,
+            "type_name": "string"
+          }
+        },
+        {
+          "label": "Title",
+          "source": "template",
+          "required": true,
+          "value": {
+            "kind": "template",
+            "display": "Spec ingest: downstream task 4",
+            "canonical": "Spec ingest: downstream task 4",
+            "redacted": false,
+            "type_name": "string"
+          }
+        }
+      ],
+      "result": {
+        "kind": "literal",
+        "display": "gate gate-4",
+        "canonical": {
+          "gate_id": "gate-4",
+          "created": true
+        },
+        "redacted": false,
+        "type_name": "GateRef"
+      },
+      "token_usage": null,
+      "idempotency_key": "run-8:open-gate:4:1",
+      "principal_fingerprint": "sha256:9f1c",
+      "profile_id": null,
+      "contract_fingerprint": "sha256:bb22cc33dd44ee55ff6677889900aabbccddeeff001122334455667788990011",
+      "error": null,
+      "wait": null,
+      "cancellation": null
+    }
+  ],
+  "truncated": false
+}

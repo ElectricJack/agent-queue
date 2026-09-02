@@ -19,10 +19,12 @@ tool-use loop — no business logic is reimplemented here.
 
 from __future__ import annotations
 
+import ast
 import inspect
 import json
 import logging
 import os
+import textwrap
 from typing import Any
 
 from mcp.server import FastMCP
@@ -154,23 +156,44 @@ _ANY_ARGS_METADATA = FuncMetadata(arg_model=_AnyArgs, fn_is_coroutine=True)
 # ---------------------------------------------------------------------------
 
 
-def _discover_all_commands() -> dict[str, dict]:
+def _discover_all_commands(warn_on_empty_schema: bool = False) -> dict[str, dict]:
     """Discover all commands from CommandHandler by introspecting ``_cmd_*`` methods.
 
     Returns a dict mapping command name → basic tool definition dict for
-    every ``_cmd_*`` method on ``CommandHandler``.  The tool definitions
-    use a permissive schema (``type: object`` with no required properties)
-    and derive descriptions from the method docstring.
+    every ``_cmd_*`` method on ``CommandHandler``.  Descriptions come from
+    the method docstring.  The input schema comes from
+    ``_FALLBACK_INPUT_SCHEMAS`` when the command has one, and is otherwise
+    the empty ``{"type": "object", "properties": {}}``.
 
     This is used as a safety net: any command present in ``CommandHandler``
     but absent from ``_ALL_TOOL_DEFINITIONS`` will still be registered via
-    MCP with a basic (but functional) schema.
+    MCP — and reach the CLI and the codegen API router — with a functional
+    schema.
+
+    **An empty schema means the command takes no arguments at all**, on every
+    surface: the generated Click command has only ``--help`` and the FastAPI
+    request model drops every client field.  That is right for the handful of
+    genuinely argument-less commands and wrong for everything else, so a
+    command whose handler reads ``args`` and has neither a typed definition
+    nor a fallback schema is worth a warning rather than passing silently (see
+    ``_needs_arguments``).
+
+    That warning is opt-in via *warn_on_empty_schema*, and only
+    ``register_command_tools`` asks for it: discovery also runs on every ``aq``
+    invocation (``src.cli.auto_commands.register_auto_commands``) and on every
+    app build, where a logger with no handlers writes straight to the user's
+    stderr.  Once per daemon start, into the daemon log, is loud enough — the
+    hard gate is ``tests/test_command_surface.py``.
     """
     # Lazy import to avoid circular dependency at module level.
     # CommandHandler imports tool_registry → tool_registry is imported here.
     from src.commands.handler import CommandHandler  # noqa: E402
+    from src.tools.definitions import _FALLBACK_INPUT_SCHEMAS
+
+    typed = {d["name"] for d in _ALL_TOOL_DEFINITIONS}
 
     discovered: dict[str, dict] = {}
+    undefined: list[str] = []
     for attr_name in dir(CommandHandler):
         if not attr_name.startswith("_cmd_"):
             continue
@@ -184,13 +207,54 @@ def _discover_all_commands() -> dict[str, dict]:
         first_line = doc.split("\n")[0].strip() if doc else ""
         description = first_line or f"Execute the {cmd_name} command."
 
+        schema = _FALLBACK_INPUT_SCHEMAS.get(cmd_name)
+        if schema is None:
+            schema = {"type": "object", "properties": {}}
+            if cmd_name not in typed and _needs_arguments(method):
+                undefined.append(cmd_name)
+
         discovered[cmd_name] = {
             "name": cmd_name,
             "description": description,
-            "input_schema": {"type": "object", "properties": {}},
+            "input_schema": schema,
         }
 
+    if undefined and warn_on_empty_schema:
+        logger.warning(
+            "%d command(s) reach MCP/CLI/API with an empty input schema even "
+            "though their handler reads args — callers cannot pass any "
+            "argument: %s. Add a definition to _ALL_TOOL_DEFINITIONS or a "
+            "schema to _FALLBACK_INPUT_SCHEMAS (src/tools/definitions.py).",
+            len(undefined),
+            ", ".join(sorted(undefined)),
+        )
+
     return discovered
+
+
+def _needs_arguments(method: Any) -> bool:
+    """Does this ``_cmd_*`` implementation actually read its ``args`` dict?
+
+    Body inspection, not a signature check: every handler takes ``args``
+    whether or not it uses it, so the signature says nothing.  A handler that
+    never loads ``args`` (``list_projects``, ``archive_settings``) is
+    genuinely argument-less and an empty schema is correct for it.  Anything
+    that does read it — directly, or by handing it to a resolver such as
+    ``_resolve_session(args)`` — needs a schema, or its callers have no way to
+    pass the value the handler then reports as missing.
+
+    Returns ``False`` when the source cannot be parsed, which keeps this a
+    diagnostic and never a hard failure.
+    """
+    try:
+        source = textwrap.dedent(inspect.getsource(method))
+        tree = ast.parse(source)
+    except (OSError, TypeError, SyntaxError, IndentationError):  # pragma: no cover
+        return False
+    return any(
+        isinstance(node, ast.Name) and node.id == "args" and isinstance(node.ctx, ast.Load)
+        for node in ast.walk(tree)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -321,7 +385,7 @@ def register_command_tools(
     # --- Pass 3: auto-discover any missing commands -----------------------
 
     try:
-        all_commands = _discover_all_commands()
+        all_commands = _discover_all_commands(warn_on_empty_schema=True)
     except Exception:
         logger.warning(
             "Could not auto-discover CommandHandler commands; "

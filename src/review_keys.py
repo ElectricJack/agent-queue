@@ -29,6 +29,13 @@ because each one alone is disarmable:
 playbook markdown remains the source of truth for the key strings; nothing
 here may drift from it.
 
+The pipeline dispatch path sets the same flag again from the hydrated task row
+via :func:`flag_review_task_event`; this covers emitters that omit it.  Finally,
+``ensure_task`` refuses to create a ``review:task:<X>`` row when X itself
+carries either pipeline review key, via :func:`reviewed_task_id` and
+:func:`is_pipeline_review_task`.  That command-level guard protects older
+emitters and operator-edited pipeline copies that lack the event guards.
+
 Kept dependency-free so both the doctor and the orchestrator can import it.
 """
 
@@ -64,6 +71,17 @@ def branch_review_dedup_key(branch_name: str) -> str:
 REVIEW_PROFILE_IDS: frozenset[str] = frozenset({"reviewer", "final-reviewer"})
 
 
+def reviewed_task_id(dedup_key: str | None) -> str | None:
+    """The task a ``review:task:<id>`` key reviews, or ``None`` for any other key.
+
+    Inverse of :func:`review_task_dedup_key`.  ``branch-review:`` keys name a
+    branch, not a task, so they yield ``None`` too.
+    """
+    if not dedup_key or not dedup_key.startswith(REVIEW_TASK_DEDUP_PREFIX):
+        return None
+    return dedup_key[len(REVIEW_TASK_DEDUP_PREFIX):] or None
+
+
 def is_pipeline_review_task(dedup_key: str | None) -> bool:
     """True when *dedup_key* marks a task the pipeline itself created as a review."""
     if not dedup_key:
@@ -89,3 +107,16 @@ def is_review_completion(dedup_key: str | None, profile_id: str | None) -> bool:
     either one on its own (see the module docstring).
     """
     return is_pipeline_review_task(dedup_key) or is_review_role(profile_id)
+
+
+def flag_review_task_event(event: dict, dedup_key: str | None) -> dict:
+    """Set ``review_task`` on *event* when *dedup_key* marks a pipeline review.
+
+    Mutates and returns *event*.  Only ever narrows: a flag the emitter already
+    set is left alone, and a task without a review key gets no flag at all, so
+    the ``truthy: false`` guards in the review rules read exactly as before for
+    ordinary work.
+    """
+    if is_pipeline_review_task(dedup_key):
+        event["review_task"] = True
+    return event

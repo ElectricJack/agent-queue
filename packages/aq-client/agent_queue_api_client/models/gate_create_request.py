@@ -16,7 +16,7 @@ class GateCreateRequest:
     """
     Attributes:
         project_id (str): Project id that owns the gate
-        gate_type (str): Gate kind, e.g. 'review'
+        gate_type (str): Gate kind. 'routing' gates resolve only via task_route.
         title (str): Human-readable gate title
         question (None | str | Unset): Optional prompt shown to the resolver
         await_id (None | str | Unset): Optional external id the gate is waiting on

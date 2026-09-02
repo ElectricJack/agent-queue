@@ -2158,3 +2158,106 @@ class TestFailedBlockedReport:
 
         # Should have notified twice — once per project
         assert orch._emit_text_notify.call_count == 2
+
+
+class TestTerminalBlockedIsNotRecovered:
+    """A terminal close must stay BLOCKED through the promotion cascade.
+
+    Regression for crisp-pinnacle-54: the BLOCKED-recovery rule (design
+    §4.4) promoted ``BLOCKED ∧ is_blocked = 0`` whenever the task carried
+    *any* blocking edge.  Every child of a container carries a
+    ``parent-child`` edge, so a child closed ``--failure-class hard`` was
+    re-dispatched on the next cycle, forever.
+    """
+
+    async def _hard_close_child_of_released_container(self, orch):
+        from src.models import AgentState, DepType
+
+        await _create_project_with_workspace(orch.db)
+        await orch.db.create_profile(AgentProfile(id="claude", name="Claude", harness="claude"))
+        await orch.db.create_agent(
+            Agent(id="a-hard", name="agent-hard", profile_id="claude", state=AgentState.BUSY)
+        )
+        await orch.db.create_task(
+            Task(
+                id="t-epic",
+                project_id="p-1",
+                title="Container",
+                description="released container",
+                status=TaskStatus.IN_PROGRESS,
+            )
+        )
+        child = Task(
+            id="t-epic.1",
+            project_id="p-1",
+            title="Child",
+            description="child of a released container",
+            status=TaskStatus.IN_PROGRESS,
+            parent_task_id="t-epic",
+            assigned_agent_id="a-hard",
+            profile_id="claude",
+        )
+        await orch.db.create_task(child)
+        await orch.db.add_dependency("t-epic.1", "t-epic", DepType.PARENT_CHILD.value)
+
+        result = await orch.complete_session_task(
+            child, outcome="fail", failure_class="hard", notes="cannot be done"
+        )
+        assert result["status"] == TaskStatus.BLOCKED.value
+        refreshed = await orch.db.get_task("t-epic.1")
+        assert refreshed.status == TaskStatus.BLOCKED
+        # The container is released, so the projection is clear: this is
+        # exactly the shape the recovery rule used to misread.
+        assert refreshed.is_blocked is False
+        return refreshed
+
+    @pytest.mark.parametrize("authoritative", [False, True])
+    async def test_hard_failed_child_stays_blocked_across_cycles(self, orch, authoritative):
+        orch.config.work_graph.blocked_state_authoritative = authoritative
+        await self._hard_close_child_of_released_container(orch)
+
+        for _ in range(3):
+            await orch._check_defined_tasks()
+            assert (await orch.db.get_task("t-epic.1")).status == TaskStatus.BLOCKED
+
+        await _run_cycle_and_wait(orch)
+        assert (await orch.db.get_task("t-epic.1")).status == TaskStatus.BLOCKED
+        assert await orch.db.get_task_meta("t-epic.1", "blocked_terminal") == (
+            "session_close_hard_failure"
+        )
+
+    async def test_restart_clears_the_terminal_mark(self, orch):
+        """An operator restart is the sanctioned way back; the mark goes with it."""
+        await self._hard_close_child_of_released_container(orch)
+
+        await orch.db.transition_task("t-epic.1", TaskStatus.READY, context="restart_task")
+        assert (await orch.db.get_task("t-epic.1")).status == TaskStatus.READY
+        assert await orch.db.get_task_meta("t-epic.1", "blocked_terminal") is None
+
+    async def test_graph_blocked_task_still_recovers(self, orch):
+        """The recovery rule keeps working for a BLOCKED task with a real graph reason."""
+        from src.models import DepType
+
+        orch.config.work_graph.blocked_state_authoritative = True
+        await _create_project_with_workspace(orch.db)
+        await orch.db.create_task(
+            Task(id="t-dep", project_id="p-1", title="Dep", description="d", status=TaskStatus.READY)
+        )
+        await orch.db.create_task(
+            Task(
+                id="t-waiter",
+                project_id="p-1",
+                title="Waiter",
+                description="d",
+                status=TaskStatus.BLOCKED,
+            )
+        )
+        await orch.db.add_dependency("t-waiter", "t-dep", DepType.BLOCKS.value)
+        assert (await orch.db.get_task("t-waiter")).is_blocked is True
+
+        await orch._check_defined_tasks()
+        assert (await orch.db.get_task("t-waiter")).status == TaskStatus.BLOCKED
+
+        await orch.db.transition_task("t-dep", TaskStatus.COMPLETED)
+        await orch._check_defined_tasks()
+        assert (await orch.db.get_task("t-waiter")).status == TaskStatus.READY
