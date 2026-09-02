@@ -1,5 +1,14 @@
 from src.task_graph.layout.model import LayoutRow
-from src.task_graph.layout.view import ancestors_of, depth_first_order, resolve_visible
+from src.task_graph.layout.view import (
+    ancestors_of,
+    cap_stubs,
+    depth_first_order,
+    dock_workers,
+    forced_expansion_for,
+    owner_map,
+    remap_edges,
+    resolve_visible,
+)
 
 
 def row(tid, path, depth, kind="card", children=0, rank=0, key="U", x=0.0, y=0.0):
@@ -57,3 +66,42 @@ def test_depth_first_order_uses_ordinals():
         "a0": row("a0", "/a/a0/", 1, rank=0, key="U"),
     }
     assert depth_first_order(rows) == ["b", "a", "a0", "a1"]
+
+
+def test_owner_map_longest_prefix():
+    rows = {"t": row("t", "/e/p/t/", 2), "p": row("p", "/e/p/", 1, "container", 1)}
+    assert owner_map(rows, {"e": "/e/", "p": "/e/p/"}) == {"t": "p", "p": "p"}
+
+
+def test_remap_dedupes_and_drops_hierarchy_edges():
+    visible = {"e": "collapsed", "z": "card"}
+    owner = {"t1": "e", "t2": "e"}
+    edges = [("z", "t1", "blocks", None), ("z", "t2", "blocks", None),
+             ("t1", "e", "parent-child", None), ("t1", "t2", "blocks", None)]
+    wire, orphans = remap_edges(edges, visible, owner)
+    assert wire == [{"from": "z", "to": "e", "dep_type": "blocks", "description": None, "count": 2}]
+    assert orphans == set()
+
+
+def test_remap_reports_orphans_for_stubs():
+    wire, orphans = remap_edges([("z", "far", "blocks", None)], {"z": "card"}, {})
+    assert orphans == {"far"} and wire[0]["to"] == "far"
+
+
+def test_cap_stubs_keeps_eight_then_summarizes():
+    hub = {"hub": "card"}
+    edges = [{"from": f"d{i}", "to": "hub", "dep_type": "blocks", "description": None, "count": 1} for i in range(12)]
+    stub_rows = {f"d{i}": row(f"d{i}", f"/d{i}/", 0, x=float(i)) for i in range(12)}
+    kept, stubs, more = cap_stubs(edges, stub_rows, set(hub), limit=8)
+    assert len(kept) == 8 and len(stubs) == 8
+    assert more == [{"node_id": "hub", "direction": "in", "more": 4}]
+
+
+def test_dock_workers_on_visible_ancestor():
+    agents = [{"id": "a1", "current_task_id": "t"}, {"id": "a2", "current_task_id": "z"}, {"id": "a3", "current_task_id": None}]
+    docked = dock_workers(agents, {"e", "z"}, {"t": "e"})
+    assert [(d["docked_at"], d["in_collapsed"]) for d in docked] == [("e", True), ("z", False)]
+
+
+def test_forced_expansion_is_all_ancestors():
+    assert forced_expansion_for({"t"}, ROWS) == {"e", "p"}
