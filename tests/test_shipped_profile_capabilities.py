@@ -34,7 +34,9 @@ PROFILE_IDS = sorted(p.name for p in DEFAULTS_DIR.iterdir() if (p / "profile.md"
 
 #: §1.5 — commands a shipped profile names that its own session token cannot
 #: dispatch, because ``check_command_scope`` answers before the command is
-#: ever reached. This is a **pre-existing** gap that Package 0 surfaces
+#: ever reached. Elevated supervisors bypass that worker-scope command set,
+#: so their explicit capability list is reachable and contributes no entries.
+#: The remaining entries are a **pre-existing** gap that Package 0 surfaces
 #: rather than repairs: closing it by adding names to ``AGENT_COMMAND_SET``
 #: would widen a server-owned allowlist, which is precisely what this package
 #: exists to prevent.
@@ -48,7 +50,7 @@ EXPECTED_UNREACHABLE: dict[str, set[str]] = {
     "playbook-compiler": set(),
     "reviewer": {"reopen_with_feedback"},
     "spec-ingest": {"get_downstream_tasks", "task_batch_propose"},
-    "supervisor": {"add_dependency", "edit_task", "task_recover"},
+    "supervisor": set(),
     "triage": {"edit_task"},
     "worker-deep": {"pr_merge"},
     "worker-fast": {"pr_merge"},
@@ -118,5 +120,9 @@ class TestShippedProfile:
     def test_unreachable_command_report_matches_the_pin(self, profile_id):
         """§1.5 report — surfaced, not failed, but pinned so it cannot grow."""
         parsed = _parsed(profile_id)
-        unreachable = set(parsed.capabilities["aq_commands"]) - REACHABLE
+        unreachable = (
+            set()
+            if profile_id == "supervisor"
+            else set(parsed.capabilities["aq_commands"]) - REACHABLE
+        )
         assert unreachable == EXPECTED_UNREACHABLE[profile_id]
