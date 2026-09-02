@@ -19,6 +19,20 @@ def _definition():
     return PlaybookDefinition.model_validate(twin())
 
 
+def test_artifact_store_exports_the_canonical_storage_error_family():
+    from src.playbooks import artifact_store, run_state
+
+    for name in (
+        "ArtifactTooLarge",
+        "ArtifactHashCollision",
+        "ArtifactVerificationFailed",
+    ):
+        store_error = getattr(artifact_store, name)
+        canonical_error = getattr(run_state, name)
+        assert store_error is canonical_error
+        assert issubclass(store_error, run_state.PlaybookStorageError)
+
+
 def test_canonical_bytes_match_package_two():
     from src.playbooks.artifact_store import ArtifactStore
     from src.playbooks.definition import canonical_bytes

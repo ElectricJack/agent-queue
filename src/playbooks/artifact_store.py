@@ -13,22 +13,11 @@ from src.playbooks.definition import (
     artifact_sha256 as definition_artifact_sha256,
     canonical_bytes as definition_canonical_bytes,
 )
-
-
-class ArtifactStoreError(RuntimeError):
-    """Base error for artifact storage failures."""
-
-
-class ArtifactTooLarge(ArtifactStoreError):
-    """The canonical artifact exceeds the configured byte limit."""
-
-
-class ArtifactHashCollision(ArtifactStoreError):
-    """A hash-named file contains bytes different from its claimed content."""
-
-
-class ArtifactVerificationFailed(ArtifactStoreError):
-    """An artifact's file bytes do not match its SHA-256 identity."""
+from src.playbooks.run_state import (
+    ArtifactHashCollision,
+    ArtifactTooLarge,
+    ArtifactVerificationFailed,
+)
 
 
 class ArtifactStore:
