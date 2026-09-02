@@ -175,6 +175,7 @@ class TestCheckCommandScope:
             "memory_search",
             "task_claim",
             "session_drain_ack",
+            "subagent_event",
             "create_task",
             "project_ready",
             "formula_list",

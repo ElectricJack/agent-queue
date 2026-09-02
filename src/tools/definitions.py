@@ -3896,6 +3896,48 @@ _ALL_TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "subagent_event",
+        "description": (
+            "Record one SubagentStart / SubagentStop from a harness hook so the "
+            "flock view can fold live sub-agent counts per session. The session is "
+            "taken from the caller's token scope; duplicate deliveries collapse onto "
+            "the row they already wrote. Backs `aq subagent event --hook-json`."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "event": {
+                    "type": "string",
+                    "enum": ["start", "stop"],
+                    "description": "Which side of the sub-agent lifecycle this hook fired for.",
+                },
+                "subagent_id": {
+                    "type": "string",
+                    "description": (
+                        "Harness-supplied identifier for the sub-agent; pairs a stop "
+                        "with its start."
+                    ),
+                },
+                "session_id": {
+                    "type": "string",
+                    "description": (
+                        "Session that spawned the sub-agent (optional — taken from the "
+                        "token scope; only a local caller may name it)."
+                    ),
+                },
+                "agent_type": {
+                    "type": "string",
+                    "description": "Sub-agent type reported by the harness (optional).",
+                },
+                "turn_id": {
+                    "type": "string",
+                    "description": "Harness turn the sub-agent belongs to (optional).",
+                },
+            },
+            "required": ["event", "subagent_id"],
+        },
+    },
+    {
         "name": "ask_human",
         "description": (
             "Ask a human a question via a human gate, blocking on their response. "
