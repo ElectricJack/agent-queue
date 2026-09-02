@@ -33,6 +33,23 @@ export function __dispatchEventForTests(event: NotifyEvent): void {
   for (const fn of eventListeners) fn(event);
 }
 
+/**
+ * Subscribe to raw frames without the query-invalidation pass.
+ *
+ * The Metrics tab needs every ``metrics.tick`` at 1 Hz and invalidates
+ * nothing — routing it through `useEventStream` would run the whole
+ * invalidation switch sixty times a minute for a frame that touches no
+ * React Query key.
+ */
+export function useRawEventSubscription(listener: (event: NotifyEvent) => void): void {
+  useEffect(() => {
+    eventListeners.add(listener);
+    return () => {
+      eventListeners.delete(listener);
+    };
+  }, [listener]);
+}
+
 function setStatus(s: ConnectionStatus) {
   currentStatus = s;
   for (const fn of statusListeners) fn(s);
@@ -184,6 +201,10 @@ export function useEventStream(options: UseEventStreamOptions = {}) {
       onEvent?.(event);
 
       const type = event.event_type;
+
+      // The metrics sampler ticks once a second and owns no query cache of
+      // its own — the Metrics page subscribes to the raw frame directly.
+      if (type.startsWith("metrics.")) return;
 
       if (type.startsWith("notify.playbook_run_") || type.startsWith("playbook.")) {
         // Let in-flight snapshots finish; subsequent polling also recovers missed frames.

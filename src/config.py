@@ -1544,6 +1544,61 @@ class SwarmConfig:
 
 
 @dataclass
+class MetricsConfig:
+    """Fleet metrics sampler and time series (dashboard Metrics tab).
+
+    The two intervals exist because the series have very different costs.
+    ``interval_seconds`` drives the cheap tier — two grouped counts, the
+    load average and ``/proc/meminfo`` — and is what the dashboard's live
+    cadence follows.  ``slow_interval_seconds`` drives everything that
+    range-scans an append-only table (the token ledger, the sub-agent event
+    fold); those values are carried forward between slow ticks so the
+    per-second sample is still complete.
+
+    Retention is per resolution tier, and each tier is pruned against its
+    own horizon.  Defaults keep 1 hour of per-second detail, 30 days of
+    minutes, and a year of hours.
+    """
+
+    enabled: bool = True
+    interval_seconds: float = 1.0
+    slow_interval_seconds: float = 5.0
+    #: Seconds of per-second samples buffered before one batched commit.  A
+    #: commit is an fsync; batching turns a per-second fsync into one per
+    #: window.  The live chart is fed by the WebSocket tick, not by this
+    #: write, so the only thing at risk is the newest few seconds of stored
+    #: history if the daemon is killed.
+    flush_interval_seconds: float = 5.0
+    rollup_interval_seconds: float = 60.0
+    retain_seconds_1s: int = 3600
+    retain_seconds_1m: int = 30 * 86400
+    retain_seconds_1h: int = 365 * 86400
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        for key in (
+            "interval_seconds",
+            "slow_interval_seconds",
+            "flush_interval_seconds",
+            "rollup_interval_seconds",
+        ):
+            if getattr(self, key) <= 0:
+                errors.append(ConfigError("metrics", key, "must be > 0"))
+        if self.slow_interval_seconds < self.interval_seconds:
+            errors.append(
+                ConfigError(
+                    "metrics",
+                    "slow_interval_seconds",
+                    "must be >= interval_seconds",
+                )
+            )
+        for key in ("retain_seconds_1s", "retain_seconds_1m", "retain_seconds_1h"):
+            if getattr(self, key) < 0:
+                errors.append(ConfigError("metrics", key, "must be >= 0"))
+        return errors
+
+
+@dataclass
 class AppConfig:
     """Top-level application configuration aggregating all subsystem configs.
 
@@ -1602,6 +1657,7 @@ class AppConfig:
     integration: IntegrationConfig = field(default_factory=IntegrationConfig)
     swarm: SwarmConfig = field(default_factory=SwarmConfig)
     resources: ResourcesConfig = field(default_factory=ResourcesConfig)
+    metrics: MetricsConfig = field(default_factory=MetricsConfig)
     agent_profiles: list[AgentProfileConfig] = field(default_factory=list)
     global_token_budget_daily: int | None = None
     max_daily_playbook_tokens: int | None = None
@@ -1776,6 +1832,7 @@ class AppConfig:
         errors.extend(self.integration.validate())
         errors.extend(self.swarm.validate())
         errors.extend(self.resources.validate())
+        errors.extend(self.metrics.validate())
         # Sessions are the only execution path (the runtime subsystem was
         # removed), so a disabled session runtime is a daemon that accepts
         # work and never starts any of it.  Warn, don't reject: the mode is
@@ -1909,6 +1966,7 @@ HOT_RELOADABLE_SECTIONS = {
     "integration",
     "swarm",
     "resources",
+    "metrics",
     "pricing",
     "surface",
 }
@@ -1974,6 +2032,7 @@ _SECTION_FIELDS = {
     "work_graph",
     "swarm",
     "resources",
+    "metrics",
     "agent_profiles",
     "global_token_budget_daily",
     "max_daily_playbook_tokens",
@@ -2684,6 +2743,19 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             load_warn_ratio=float(res.get("load_warn_ratio", 1.0)),
             max_pytest_processes=int(res.get("max_pytest_processes", 24)),
             cgroups=cgroups,
+        )
+
+    if "metrics" in raw and isinstance(raw["metrics"], dict):
+        met = raw["metrics"]
+        config.metrics = MetricsConfig(
+            enabled=bool(met.get("enabled", True)),
+            interval_seconds=float(met.get("interval_seconds", 1.0)),
+            slow_interval_seconds=float(met.get("slow_interval_seconds", 5.0)),
+            flush_interval_seconds=float(met.get("flush_interval_seconds", 5.0)),
+            rollup_interval_seconds=float(met.get("rollup_interval_seconds", 60.0)),
+            retain_seconds_1s=int(met.get("retain_seconds_1s", 3600)),
+            retain_seconds_1m=int(met.get("retain_seconds_1m", 30 * 86400)),
+            retain_seconds_1h=int(met.get("retain_seconds_1h", 365 * 86400)),
         )
 
     if "agent_profiles" in raw:
