@@ -4,15 +4,19 @@ When you discover work while executing the current task that is outside its scop
 example, a bug, missing documentation, follow-up, or spec divergence — file it instead of
 silently expanding your own scope. Then keep moving on the task you hold.
 
-Before filing, deduplicate with `aq task list` and any available dedup keys. File one task
-per distinct, confirmed finding; do not create speculative epics.
+File one task per distinct, confirmed finding; do not create speculative epics. Your
+session token cannot read the project's queue (`list_tasks` is off the agent surface), so
+do not try to deduplicate by listing — a worker-filed task lands DEFINED with a routing
+gate for triage, which is where dedup and routing happen. Write the title so that
+judgement is easy: name the symptom and the file, not a generic area.
 
-Use `aq task create --title "..." --description "..." --reason "..."` with a clear title
-and description grounded in what you found. The worker filing path creates the
-`discovered-from` edge back to the task you hold; make `--reason` say why the task exists,
-referencing the current task and the finding. If the edge-reason field is unavailable, put
-that why in the first line of the new task's description. If you need to add an edge
-explicitly, use `aq task add-dependency` with `--dep-type discovered-from` and the reason.
+Use `aq task create --project "$AQ_PROJECT_ID" --title "..." --description "..."
+--reason "..."` with a clear title and description grounded in what you found. Pass
+`--project` explicitly: without it the CLI first asks the daemon to list projects, which
+your token refuses. The worker filing path creates the `discovered-from` edge back to the
+task you hold; make `--reason` say why the task exists, referencing the current task and
+the finding. Repeat the same why in the first line of the new task's description, so it
+survives for readers who only see the task.
 
 If the current task is a child of a container or epic (`parent_task_id` is set), generally
 create the emergent task under that same parent with `--parent <container-id>` so it remains

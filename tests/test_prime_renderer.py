@@ -579,3 +579,120 @@ class TestPrimeDocumentModel:
         assert variables["task.id"] == "t1"
         assert variables["work_dir"] == "/wd"
         assert variables["branch"] == "main"
+
+
+# ---------------------------------------------------------------------------
+# The static templates may only instruct commands the token can execute
+# ---------------------------------------------------------------------------
+
+
+#: ``aq <group> <sub>`` phrase -> the command name ``check_command_scope``
+#: gates, or ``None`` for a CLI verb that never reaches the daemon.
+_CLI_TO_COMMAND: dict[str, str | None] = {
+    "aq test": None,
+    "aq prime": "prime",
+    "aq schema": "get_schema",
+    "aq doctor": "doctor_run",
+    "aq handoff": "task_handoff",
+    "aq inbox": "message_inbox",
+    "aq session": "session_list",
+    "aq session drain-ack": "session_drain_ack",
+    "aq task add-dependency": "add_dependency",
+    "aq task claim": "task_claim",
+    "aq task close": "task_close",
+    "aq task comment": "task_comment",
+    "aq task comments": "task_comments",
+    "aq task create": "create_task",
+    "aq task delete": "delete_task",
+    "aq task heartbeat": "task_heartbeat",
+    "aq task list": "list_tasks",
+    "aq task restart": "restart_task",
+    "aq task set": "task_set",
+    "aq task show": "task_show",
+    "aq message inbox": "message_inbox",
+    "aq message reply": "message_reply",
+    "aq message send": "message_send",
+    "aq memory save": "memory_save",
+    "aq memory search": "memory_search",
+    "aq project ready": "project_ready",
+}
+
+
+def _aq_phrases(paragraph: str) -> set[str]:
+    """The ``aq …`` invocations a paragraph names, normalized across line wraps.
+
+    Resolves each hit to the longest form that ``_CLI_TO_COMMAND`` knows, so
+    "aq session drain-ack" is not read as the bare group "aq session" and
+    "aq test tests/foo.py" is not read as a two-word subcommand.  An unknown
+    hit keeps its longest form, which is what the caller reports.
+    """
+    import re
+
+    flat = " ".join(paragraph.split())
+    found = set()
+    for match in re.finditer(r"\baq(?:\s+[a-z][a-z0-9-]*){1,2}", flat):
+        words = match.group(0).split()
+        for candidate in (" ".join(words), " ".join(words[:2])):
+            if candidate in _CLI_TO_COMMAND:
+                found.add(candidate)
+                break
+        else:
+            found.add(" ".join(words))
+    return found
+
+
+class TestStaticGuidanceStaysOnTheAgentSurface:
+    """A prime template must not tell an agent to run a command its token refuses.
+
+    Every session token is gated on ``AGENT_COMMAND_SET`` (aq-surface §7.2), so
+    guidance naming an operator command is an instruction the agent can only
+    discover is impossible by trying it — which is exactly how the reviewer
+    reject path and the "deduplicate with ``aq task list``" filing step were
+    found to be dead letters. A command outside the agent surface may still be
+    *named*, but only in a paragraph that says it is refused, so a reader is
+    told the outcome instead of spending a turn on it.
+    """
+
+    async def test_every_templated_aq_command_is_reachable_or_marked_refused(self):
+        from src.api.scope import AGENT_COMMAND_SET
+        from src.prime.sections import _TEMPLATES_DIR
+
+        unknown: list[tuple[str, str]] = []
+        unreachable: list[tuple[str, str]] = []
+        for path in sorted(_TEMPLATES_DIR.rglob("*.md")):
+            for paragraph in path.read_text(encoding="utf-8").split("\n\n"):
+                for phrase in _aq_phrases(paragraph):
+                    if phrase not in _CLI_TO_COMMAND:
+                        unknown.append((path.name, phrase))
+                        continue
+                    command = _CLI_TO_COMMAND[phrase]
+                    if command is None or command in AGENT_COMMAND_SET:
+                        continue
+                    if "out of scope" not in paragraph:
+                        unreachable.append((path.name, phrase))
+        assert not unknown, (
+            f"unclassified aq phrases in prime templates: {unknown}. "
+            "Add them to _CLI_TO_COMMAND with the command name they dispatch."
+        )
+        assert not unreachable, (
+            f"prime templates instruct commands a session token refuses: {unreachable}. "
+            "Either drop the instruction or name the command only in a paragraph "
+            "that says it is out of scope."
+        )
+
+    async def test_the_guard_catches_a_reintroduced_operator_instruction(self):
+        """The scan is only worth having if this exact regression fails it."""
+        from src.api.scope import AGENT_COMMAND_SET
+
+        stale = "Before filing, deduplicate with `aq task list` and any dedup keys."
+        assert _aq_phrases(stale) == {"aq task list"}
+        assert _CLI_TO_COMMAND["aq task list"] not in AGENT_COMMAND_SET
+        assert "out of scope" not in stale
+
+    async def test_a_refused_command_named_with_its_refusal_is_allowed(self):
+        """Naming an operator command as a counterexample stays legal."""
+        from src.api.scope import AGENT_COMMAND_SET
+
+        marked = "Operator surfaces (`aq doctor`) answer `out of scope: <command>`."
+        assert _CLI_TO_COMMAND["aq doctor"] not in AGENT_COMMAND_SET
+        assert "out of scope" in marked

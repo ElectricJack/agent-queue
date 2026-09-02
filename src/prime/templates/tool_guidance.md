@@ -1,8 +1,10 @@
 This session's surface is CLI-first (docs/specs/design/aq-surface.md D6). Prefer shelling
-out to `aq <command>` for anything exploratory or administrative — `aq task list`, `aq task
-show <id>`, `aq schema` (never guess enum values; look them up), `aq doctor`, etc. The CLI
+out to `aq <command>` for anything exploratory or administrative — `aq task show <id>`,
+`aq task comments <id>`, `aq schema` (never guess enum values; look them up), etc. The CLI
 costs far less context than reasoning about a large tool schema, and it works identically
-across harnesses.
+across harnesses. Your session token is scoped to this task, this session and this project:
+operator surfaces (`aq task list`, `aq doctor`, `aq session ...`, deleting or restarting
+tasks) answer `out of scope: <command>` and are not worth retrying.
 
 Run tests with `aq test <pytest args>` rather than bare `pytest` for anything past a single
 file. It takes one of this box's global test slots before running, and applies the per-session
