@@ -66,8 +66,12 @@ def sync_detailed(
     body: DeleteProfileRequest,
 ) -> Response[DeleteProfileResponse | DeleteProfileResponse422]:
     """Delete an agent profile. Any tasks or projects referencing it will have their profile cleared.
+    Deleting a shipped default also records it as retired so startup seeding stops re-creating it;
+    profile_reseed brings it back.
 
      Delete an agent profile. Any tasks or projects referencing it will have their profile cleared.
+    Deleting a shipped default also records it as retired so startup seeding stops re-creating it;
+    profile_reseed brings it back.
 
     Args:
         body (DeleteProfileRequest):
@@ -97,8 +101,12 @@ def sync(
     body: DeleteProfileRequest,
 ) -> DeleteProfileResponse | DeleteProfileResponse422 | None:
     """Delete an agent profile. Any tasks or projects referencing it will have their profile cleared.
+    Deleting a shipped default also records it as retired so startup seeding stops re-creating it;
+    profile_reseed brings it back.
 
      Delete an agent profile. Any tasks or projects referencing it will have their profile cleared.
+    Deleting a shipped default also records it as retired so startup seeding stops re-creating it;
+    profile_reseed brings it back.
 
     Args:
         body (DeleteProfileRequest):
@@ -123,8 +131,12 @@ async def asyncio_detailed(
     body: DeleteProfileRequest,
 ) -> Response[DeleteProfileResponse | DeleteProfileResponse422]:
     """Delete an agent profile. Any tasks or projects referencing it will have their profile cleared.
+    Deleting a shipped default also records it as retired so startup seeding stops re-creating it;
+    profile_reseed brings it back.
 
      Delete an agent profile. Any tasks or projects referencing it will have their profile cleared.
+    Deleting a shipped default also records it as retired so startup seeding stops re-creating it;
+    profile_reseed brings it back.
 
     Args:
         body (DeleteProfileRequest):
@@ -152,8 +164,12 @@ async def asyncio(
     body: DeleteProfileRequest,
 ) -> DeleteProfileResponse | DeleteProfileResponse422 | None:
     """Delete an agent profile. Any tasks or projects referencing it will have their profile cleared.
+    Deleting a shipped default also records it as retired so startup seeding stops re-creating it;
+    profile_reseed brings it back.
 
      Delete an agent profile. Any tasks or projects referencing it will have their profile cleared.
+    Deleting a shipped default also records it as retired so startup seeding stops re-creating it;
+    profile_reseed brings it back.
 
     Args:
         body (DeleteProfileRequest):

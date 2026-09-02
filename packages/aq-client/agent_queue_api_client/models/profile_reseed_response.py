@@ -19,6 +19,7 @@ class ProfileReseedResponse:
         path (str | Unset):  Default: ''.
         backup_path (None | str | Unset):
         created (bool | Unset):  Default: False.
+        unretired (bool | Unset):  Default: False.
         warnings (list[str] | None | Unset):
         sync_errors (list[str] | None | Unset):
     """
@@ -27,6 +28,7 @@ class ProfileReseedResponse:
     path: str | Unset = ""
     backup_path: None | str | Unset = UNSET
     created: bool | Unset = False
+    unretired: bool | Unset = False
     warnings: list[str] | None | Unset = UNSET
     sync_errors: list[str] | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -43,6 +45,8 @@ class ProfileReseedResponse:
             backup_path = self.backup_path
 
         created = self.created
+
+        unretired = self.unretired
 
         warnings: list[str] | None | Unset
         if isinstance(self.warnings, Unset):
@@ -75,6 +79,8 @@ class ProfileReseedResponse:
             field_dict["backup_path"] = backup_path
         if created is not UNSET:
             field_dict["created"] = created
+        if unretired is not UNSET:
+            field_dict["unretired"] = unretired
         if warnings is not UNSET:
             field_dict["warnings"] = warnings
         if sync_errors is not UNSET:
@@ -99,6 +105,8 @@ class ProfileReseedResponse:
         backup_path = _parse_backup_path(d.pop("backup_path", UNSET))
 
         created = d.pop("created", UNSET)
+
+        unretired = d.pop("unretired", UNSET)
 
         def _parse_warnings(data: object) -> list[str] | None | Unset:
             if data is None:
@@ -139,6 +147,7 @@ class ProfileReseedResponse:
             path=path,
             backup_path=backup_path,
             created=created,
+            unretired=unretired,
             warnings=warnings,
             sync_errors=sync_errors,
         )

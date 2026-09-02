@@ -60,10 +60,10 @@ profile that is not already `lifecycle: pool`.
 
 ```bash
 aq pool set-lifecycle --project-id agent-queue \
-    --profile-id worker-standard-high --lifecycle pool
+    --profile-id worker-standard-high-claude --lifecycle pool
 
 aq pool scale --project-id agent-queue \
-    --profile-id worker-standard-high --min 0 --max 3
+    --profile-id worker-standard-high-claude --min 0 --max 3
 ```
 
 Both write the **project-scoped** override, never the system profile:
@@ -315,7 +315,7 @@ The rollback is one command per profile and needs no restart:
 
 ```bash
 aq pool set-lifecycle --project-id agent-queue \
-    --profile-id worker-standard-high --lifecycle task
+    --profile-id worker-standard-high-claude --lifecycle task
 ```
 
 What it does, in order:
@@ -378,8 +378,8 @@ least-loaded profile first and watch a full tick before continuing.
 
 ```bash
 P=agent-queue
-aq pool set-lifecycle --project-id $P --profile-id worker-standard-low --lifecycle pool
-aq pool scale         --project-id $P --profile-id worker-standard-low --min 0 --max 1
+aq pool set-lifecycle --project-id $P --profile-id worker-standard-low-claude --lifecycle pool
+aq pool scale         --project-id $P --profile-id worker-standard-low-claude --min 0 --max 1
 aq pool status --project-id $P
 ```
 
@@ -422,15 +422,15 @@ git -C ~/.agent-queue/vault status --short   # if the vault is version-controlle
 ### Worked example — this repo's own cutover
 
 The bounds agreed for the `agent-queue` project, under a project cap of 8.
-`triage`, `supervisor` and `worker-deep` stay on `lifecycle: task`.
+`triage`, `supervisor` and `worker-deep-high-claude` stay on `lifecycle: task`.
 
 | Profile | Harness | `min` | `max` |
 |---|---|---|---|
-| `worker-standard-high` | claude | 0 | 3 |
-| `worker-standard` | claude | 0 | 2 |
-| `worker-standard-low` | claude | 0 | 1 |
+| `worker-standard-high-claude` | claude | 0 | 3 |
+| `worker-standard-medium-claude` | claude | 0 | 2 |
+| `worker-standard-low-claude` | claude | 0 | 1 |
 | `worker-standard-high-codex` | codex | 0 | 2 |
-| `worker-deep-codex` | codex | 0 | 2 |
+| `worker-deep-medium-codex` | codex | 0 | 2 |
 | `worker-standard-low-codex` | codex | 0 | 1 |
 
 The maxima sum to 11 against a cap of 8 — deliberate over-subscription, so a
@@ -438,7 +438,9 @@ quiet profile's headroom is usable by a busy one (§3).
 
 ```bash
 P=agent-queue
-for spec in worker-standard-low:1 worker-standard-low-codex:1             worker-standard:2 worker-deep-codex:2             worker-standard-high-codex:2 worker-standard-high:3; do
+for spec in worker-standard-low-claude:1  worker-standard-low-codex:1 \
+            worker-standard-medium-claude:2 worker-deep-medium-codex:2 \
+            worker-standard-high-codex:2   worker-standard-high-claude:3; do
   profile=${spec%:*}; max=${spec#*:}
   aq pool set-lifecycle --project-id $P --profile-id "$profile" --lifecycle pool
   aq pool scale         --project-id $P --profile-id "$profile" --min 0 --max "$max"
@@ -449,6 +451,101 @@ aq pool status --project-id $P
 Ordered smallest-first on purpose: the first two lines are the cheap probe
 that the vault override, the harness and the claim loop all work, before the
 profiles that carry the real load are moved.
+
+---
+
+## 7b. Migrating a vault seeded before the provider-explicit rename
+
+Shipped worker profiles used to have provider-implicit ids — `worker-fast`,
+`worker-standard`, `worker-deep`, all of them silently on the `claude`
+harness. They now state their provider, and their level, in the id:
+
+| Old id | New id | Display name |
+|---|---|---|
+| `worker-fast` | `worker-fast-medium-claude` | Claude · Fast (Medium) |
+| `worker-standard` | `worker-standard-medium-claude` | Claude · Standard (Medium) |
+| `worker-deep` | `worker-deep-high-claude` | Claude · Deep (High) |
+
+The convention is `worker-<tier>-<level>-<provider>`, so a Codex sibling is a
+separate profile (`worker-standard-medium-codex`) rather than the same profile
+with its harness repointed — the id always describes what actually runs.
+
+**Nothing renames itself.** An existing vault keeps its old directories, and
+startup seeding is write-if-absent, so an upgrade adds the three new ids
+alongside the three old ones. Migrate deliberately:
+
+**1. See what you have.**
+
+```bash
+ls ~/.agent-queue/vault/agent-types/
+aq agent profile-drift            # `retired` / `not_seeded` rows included
+```
+
+**2. Move open work off the old ids.** Tasks and project defaults still point
+at the old profile, and deleting it clears those references.
+
+```bash
+aq task list --project agent-queue --status READY   # find the ones still pinned
+aq task route --task-id <task-id> --profile-id worker-standard-medium-claude
+aq project set agent-queue default-profile worker-standard-medium-claude
+```
+
+**3. Move pool bounds across.** Bounds live on the *project override*, not the
+system profile, so they do not follow a rename:
+
+```bash
+P=agent-queue
+aq pool set-lifecycle --project-id $P --profile-id worker-standard-medium-claude --lifecycle pool
+aq pool scale         --project-id $P --profile-id worker-standard-medium-claude --min 0 --max 2
+aq pool set-lifecycle --project-id $P --profile-id worker-standard --lifecycle task
+```
+
+**4. Delete the old profile.**
+
+```bash
+aq agent delete-profile --profile-id worker-standard \
+    --reason "moved to the provider-explicit ladder"
+```
+
+Nothing re-creates it: `worker-standard` is no longer a shipped id, so startup
+seeding has nothing to seed it from.
+
+### Retiring a shipped default
+
+Deleting one of the *current* shipped defaults is the case that used to
+regress. `ensure_default_profiles()` runs on every daemon start and is
+write-if-absent, so "no `vault/agent-types/<id>/`" read as *fresh install* and
+the profile came straight back — along with any pool that had been sized
+against it.
+
+`aq agent delete-profile` now records a shipped id in
+`~/.agent-queue/vault/agent-types/.retired-defaults`, and seeding skips every
+id listed there:
+
+```bash
+aq agent delete-profile --profile-id worker-fast-medium-claude \
+    --reason "fleet runs the -high variants only"
+```
+
+The response carries `retired: true`, and `aq agent profile-drift` reports the
+profile as `retired` rather than `not_seeded` — the two need opposite advice,
+so they are separate statuses.
+
+To bring one back, reseed it; that clears the tombstone in the same command
+and syncs the restored profile to the database without waiting for the vault
+watcher:
+
+```bash
+aq agent profile-reseed --profile-id worker-fast-medium-claude
+```
+
+The tombstone is a small JSON file (`{"version": 1, "retired": {...}}`) that
+records when each id was retired and why, so a hand edit works too — but the
+reseed command is the supported path.
+
+> Only `aq agent delete-profile` writes a tombstone. Removing
+> `vault/agent-types/<id>/` with `rm -rf` leaves no record, and the next
+> restart re-seeds it.
 
 ---
 

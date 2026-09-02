@@ -519,9 +519,10 @@ class WorktreeSlotManager:
           a branch already checked out in the base, which is the normal
           topology.
 
-        So: salvage → ``reset --hard`` → ``clean -fd`` (never ``-x``), and the
-        slot deliberately stays on its task branch.  The branch is the durable
-        artifact (§3.4); the next :meth:`reset_slot_for_task` moves it.
+        So: salvage → ``reset --hard`` → ``clean -fd`` (never ``-x``). A
+        clean branch whose remote is exactly in sync is detached onto
+        ``origin/<default>`` so a pool-owned slot cannot pin a retry branch.
+        Unpushed or salvaged work remains checked out for forensics (§3.4).
 
         Returns True when uncommitted work was archived to a task context.
         """
@@ -541,12 +542,46 @@ class WorktreeSlotManager:
                 await self.git._arun_unlocked(
                     ["clean", "-fd", "-e", WORKTREE_SENTINEL_NAME], cwd=str(slot_dir)
                 )
+                branch = await self.git.aget_current_branch(str(slot_dir))
+                if not salvaged and branch.startswith(BRANCH_PREFIX):
+                    await self._detach_if_branch_is_pushed(slot_dir, base_path, branch)
             except GitError as e:
                 # Never fatal: the next reset_slot_for_task repeats this under
                 # its own error handling, and a slot that cannot be cleaned
                 # simply fails acquisition-time setup instead of a task.
                 logger.warning("Could not restore slot %s: %s", slot_dir, e)
         return salvaged
+
+    async def _detach_if_branch_is_pushed(
+        self, slot_dir: Path, base_path: str, branch: str
+    ) -> None:
+        """Detach a clean slot only when its task branch matches origin.
+
+        A remote ref is fetched under the caller's base mutex, then compared
+        by object id. A missing remote or a differing local tip means the
+        branch contains unpushed work and must remain checked out for the
+        retry/forensic path.
+        """
+        if not await self.git.ahas_remote(base_path):
+            return
+        try:
+            await self.git._arun_unlocked(["fetch", "origin"], cwd=base_path)
+            remote_branch = f"origin/{branch}"
+            if not await self._ref_exists(str(slot_dir), remote_branch):
+                return
+            local = await self.git._arun_unlocked(["rev-parse", branch], cwd=str(slot_dir))
+            remote = await self.git._arun_unlocked(
+                ["rev-parse", remote_branch], cwd=str(slot_dir)
+            )
+            if local.strip() != remote.strip():
+                return
+            default = await self._default_branch(base_path)
+            await self.git._arun_unlocked(
+                ["switch", "--detach", f"origin/{default}"], cwd=str(slot_dir)
+            )
+            logger.info("Detached clean pushed branch %s from slot %s", branch, slot_dir)
+        except GitError as exc:
+            logger.warning("Could not check whether %s is safely pushed: %s", branch, exc)
 
     async def _abort_in_progress(self, slot_dir: Path | str) -> None:
         """Best-effort ``merge/rebase/cherry-pick --abort`` + stale-lock sweep."""
@@ -773,6 +808,7 @@ class WorktreeSlotManager:
         continuation resumes its predecessor's branch and its tip is left
         exactly where it was.
         """
+        await self._detach_stale_branch_holders(slot_dir, branch)
         exists = await self._ref_exists(str(slot_dir), branch)
         if exists:
             await self.git._arun_unlocked(["switch", branch], cwd=str(slot_dir))
@@ -791,6 +827,44 @@ class WorktreeSlotManager:
         await self.git._arun_unlocked(
             ["switch", "-c", branch, start_ref], cwd=str(slot_dir)
         )
+
+    async def _detach_stale_branch_holders(self, slot_dir: Path, branch: str) -> None:
+        """Free *branch* when its other holder is an abandoned worker slot.
+
+        Git itself is authoritative about which worktree holds a branch.  A
+        claim file and a live pool session are the two independent liveness
+        fences: only when neither names the holder is detaching safe.  A live
+        holder remains a normal branch-busy condition, never something a
+        claiming worker is allowed to disturb.
+        """
+        from src.claim_file import read_claim_file
+
+        base_ws = await self._base_of_slot_dir(slot_dir)
+        if base_ws is None:
+            return
+        entries = await self.git.aworktree_list(base_ws.workspace_path)
+        live_work_dirs = {
+            _norm_path(session.work_dir)
+            for session in await self.db.list_sessions(live_only=True)
+            if session.work_dir
+        }
+        mine = _norm_path(slot_dir)
+        for entry in entries:
+            path = entry.get("path")
+            if not path or entry.get("branch") != branch or _norm_path(path) == mine:
+                continue
+            if read_claim_file(path) is not None or _norm_path(path) in live_work_dirs:
+                raise GitError(f"branch {branch} is already used by worktree at {path}")
+            logger.warning("Detaching stale worktree %s from %s before claim preparation", path, branch)
+            await self.git._arun_unlocked(["switch", "--detach"], cwd=path)
+
+    async def _base_of_slot_dir(self, slot_dir: Path) -> Workspace | None:
+        """Find the base row for a slot path without trusting its sentinel."""
+        target = _norm_path(slot_dir)
+        for ws in await self.db.list_workspaces():
+            if ws.is_slot and _norm_path(ws.workspace_path) == target:
+                return await self._base_of(ws)
+        return None
 
     async def _retry_reset_ref(
         self,

@@ -1,0 +1,23 @@
+{
+  "propose": [
+    "activatable",
+    "artifact",
+    "artifact_sha256",
+    "compiler_build",
+    "contract_fingerprint",
+    "counts",
+    "diagnostics",
+    "semantic_diff",
+    "source_digest",
+    "success"
+  ],
+  "shadow_compile": [
+    "clean",
+    "lowered",
+    "rows",
+    "source_errors",
+    "success",
+    "total"
+  ],
+  "validate": ["artifact_sha256", "counts", "diagnostics", "success"]
+}

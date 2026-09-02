@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import json
 from typing import Any, Final, Mapping
 
 from pydantic import ValidationError
@@ -24,6 +25,7 @@ from src.playbooks.definition import (
     contract_fingerprint,
     scope_from_v1,
     source_digest,
+    truncate_excerpt,
 )
 from src.playbooks.semantic_diff import DefinitionDiff, diff_definitions
 from src.playbooks.validation import (
@@ -62,6 +64,27 @@ AUTHORITATIVE_FIELDS: Final[frozenset[str]] = frozenset(
 class SemanticBody(V2Base):
     rules: list[Rule]
     steps: dict[str, Step]
+
+
+class DuplicateSemanticKey(ValueError):
+    """Raised before model validation when a proposal repeats a JSON key."""
+
+
+def load_semantic_body_json(text: str) -> Mapping[str, Any]:
+    """Parse an untrusted semantic body without last-key-wins ambiguity."""
+
+    def reject(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise DuplicateSemanticKey(f"duplicate JSON key: {key}")
+            result[key] = value
+        return result
+
+    value = json.loads(text, object_pairs_hook=reject)
+    if not isinstance(value, Mapping):
+        raise ValueError("semantic body must be a JSON object")
+    return value
 
 
 @dataclass(frozen=True)
@@ -126,6 +149,57 @@ def _snapshots(
     )
 
 
+def _sanitize_source_refs(value: Any, source: PlaybookSource) -> tuple[Any, list[Diagnostic]]:
+    """Bound compiler-supplied source references before Pydantic loads them.
+
+    Source references are presentation data, but they are still untrusted
+    compiler output.  Keep an out-of-range reference visible as an error and
+    truncate an overlong excerpt deterministically so the rest of the proposal
+    remains reviewable instead of collapsing into an unrelated model error.
+    """
+    diagnostics: list[Diagnostic] = []
+    line_count = max(1, len(source.raw.splitlines()))
+
+    def walk(item: Any) -> Any:
+        if isinstance(item, list):
+            return [walk(child) for child in item]
+        if not isinstance(item, Mapping):
+            return item
+        clean = {key: walk(child) for key, child in item.items()}
+        if {"path", "start_line", "end_line"} <= clean.keys():
+            start = clean.get("start_line")
+            end = clean.get("end_line")
+            if (
+                isinstance(start, int)
+                and isinstance(end, int)
+                and (start < 1 or end < start or end > line_count)
+            ):
+                diagnostics.append(
+                    Diagnostic(
+                        "error",
+                        "source_ref_out_of_range",
+                        f"source reference lines {start}-{end} are outside 1-{line_count}",
+                        source=None,
+                    )
+                )
+            excerpt = clean.get("excerpt")
+            if isinstance(excerpt, str):
+                bounded, truncated = truncate_excerpt(excerpt)
+                clean["excerpt"] = bounded
+                if truncated:
+                    diagnostics.append(
+                        Diagnostic(
+                            "info",
+                            "excerpt_truncated",
+                            "source excerpt was truncated to 400 characters",
+                            source=None,
+                        )
+                    )
+        return clean
+
+    return walk(value), diagnostics
+
+
 def propose(
     source: PlaybookSource,
     body: Mapping[str, Any],
@@ -135,10 +209,12 @@ def propose(
     profiles: ProfileLookup,
     events: EventSchemaLookup,
     version: int,
+    enforce_inventory: bool = True,
 ) -> CompileProposal:
     """Build a review-only proposal from trusted source and untrusted body."""
     diagnostics: list[Diagnostic] = []
-    clean = dict(body)
+    clean, source_diagnostics = _sanitize_source_refs(dict(body), source)
+    diagnostics.extend(source_diagnostics)
     for key in sorted(AUTHORITATIVE_FIELDS & clean.keys()):
         clean.pop(key)
         diagnostics.append(
@@ -184,7 +260,7 @@ def propose(
     diagnostics.extend(
         validate_definition(
             artifact,
-            inventory=source.inventory,
+            inventory=source.inventory if enforce_inventory else None,
             contracts=contracts,
             profiles=profiles,
             events=events,

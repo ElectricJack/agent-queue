@@ -650,6 +650,13 @@ _CANONICAL_PAYLOADS["pool.session_claimed"] = {
     "task_id": "t-1",
     "task_title": "Implement feature X",
 }
+_CANONICAL_PAYLOADS["pool.prepare_failed"] = {
+    "project_id": "proj-1",
+    "profile_id": "worker",
+    "session_id": "sess-1",
+    "task_id": "t-1",
+    "reason": "git switch failed",
+}
 _CANONICAL_PAYLOADS["pool.session_drained"] = {
     "project_id": "proj-1",
     "profile_id": "worker",

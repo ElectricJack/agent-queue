@@ -21,11 +21,33 @@ def test_falls_back_to_claude_sonnet():
 
 
 def test_prefers_the_standard_worker_over_the_deep_one():
-    """Alphabetical order made ``worker-deep`` the default for every
-    unpinned task, which is the most expensive lane, not the sensible one."""
+    """Alphabetical order made ``worker-deep-high-claude`` the default for
+    every unpinned task, which is the most expensive lane, not the sensible
+    one."""
+    assert select_default_profile_id(
+        [
+            "worker-deep-high-claude",
+            "worker-fast-medium-claude",
+            "worker-standard-medium-claude",
+            "reviewer",
+        ]
+    ) == "worker-standard-medium-claude"
+
+
+def test_prefers_the_legacy_standard_worker_in_a_pre_rename_vault():
+    """A vault seeded before the provider-explicit rename still has only the
+    old ids; falling through to alphabetical order there would hand every
+    unpinned task to ``worker-deep``."""
     assert select_default_profile_id(
         ["worker-deep", "worker-fast", "worker-standard", "reviewer"]
     ) == "worker-standard"
+
+
+def test_the_renamed_standard_worker_wins_over_the_legacy_one():
+    """Mid-migration both ids exist; the provider-explicit one is preferred."""
+    assert select_default_profile_id(
+        ["worker-standard", "worker-standard-medium-claude"]
+    ) == "worker-standard-medium-claude"
 
 
 def test_falls_back_to_general_purpose_alphabetically():

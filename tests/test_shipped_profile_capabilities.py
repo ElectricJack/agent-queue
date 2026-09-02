@@ -52,9 +52,9 @@ EXPECTED_UNREACHABLE: dict[str, set[str]] = {
     "spec-ingest": {"get_downstream_tasks", "task_batch_propose"},
     "supervisor": set(),
     "triage": {"edit_task"},
-    "worker-deep": {"pr_merge"},
-    "worker-fast": {"pr_merge"},
-    "worker-standard": {"pr_merge"},
+    "worker-deep-high-claude": {"pr_merge"},
+    "worker-fast-medium-claude": {"pr_merge"},
+    "worker-standard-medium-claude": {"pr_merge"},
 }
 
 REACHABLE = AGENT_COMMAND_SET | _TRIAGE_COMMANDS | _PLAYBOOK_COMPILER_COMMANDS

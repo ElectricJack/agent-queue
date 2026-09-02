@@ -206,6 +206,7 @@ class ContractInfo:
     result_schema: Mapping[str, Any]
     outcomes: frozenset[str]
     execution_fingerprint: str
+    outcome_classes: Mapping[str, str] = dataclass_field(default_factory=dict)
 
 
 @runtime_checkable
@@ -288,6 +289,10 @@ class RegistryContractLookup:
             result_schema=execution.result_model.model_json_schema(),
             outcomes=frozenset(outcome.name for outcome in execution.outcomes),
             execution_fingerprint=contract.fingerprint(),
+            outcome_classes={
+                outcome.name: str(outcome.classification.value)
+                for outcome in execution.outcomes
+            },
         )
 
 

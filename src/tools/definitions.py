@@ -141,6 +141,10 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "playbook_pending_events": "playbook",
     "playbook_pending_event_action": "playbook",
     "playbook_run_overlay": "playbook",
+    # playbook V2 review-only compiler -- Package 2
+    "playbook_v2_validate": "playbook",
+    "playbook_v2_propose": "playbook",
+    "playbook_v2_shadow_compile": "playbook",
     # plugin — installation, configuration, lifecycle
     "plugin_list": "plugin",
     "plugin_info": "plugin",
@@ -2638,11 +2642,23 @@ _ALL_TOOL_DEFINITIONS = [
     },
     {
         "name": "delete_profile",
-        "description": "Delete an agent profile. Any tasks or projects referencing it will have their profile cleared.",
+        "description": (
+            "Delete an agent profile. Any tasks or projects referencing it will have "
+            "their profile cleared. Deleting a shipped default also records it as "
+            "retired so startup seeding stops re-creating it; profile_reseed brings "
+            "it back."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "profile_id": {"type": "string", "description": "Profile ID to delete"},
+                "reason": {
+                    "type": "string",
+                    "description": (
+                        "Why this profile is being retired. Stored on the tombstone "
+                        "when the deleted profile is a shipped default."
+                    ),
+                },
             },
             "required": ["profile_id"],
         },
@@ -2724,7 +2740,8 @@ _ALL_TOOL_DEFINITIONS = [
             "Overwrite one vault system profile with the version shipped in "
             "src/profiles/defaults/, keeping a .bak-<epoch> copy of the old file. "
             "The explicit repair for profile_drift findings — startup seeding is "
-            "write-if-absent and will never do this for you."
+            "write-if-absent and will never do this for you. Also clears any "
+            "delete-time retirement tombstone for the profile."
         ),
         "input_schema": {
             "type": "object",
@@ -5207,6 +5224,68 @@ _ALL_TOOL_DEFINITIONS = [
     # markdown playbook is an agent-produced task, so the agent needs to
     # check its own work and install the artifact.
     # -----------------------------------------------------------------
+    {
+        "name": "playbook_v2_validate",
+        "description": (
+            "Validate an immutable Playbook V2 JSON artifact inside the vault "
+            "against the strict model, registered command contracts, profiles, "
+            "and event schemas. Read-only; never installs or activates."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Vault-relative or absolute path to a V2 artifact JSON file.",
+                }
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "playbook_v2_propose",
+        "description": (
+            "Turn an agent-produced rules/steps JSON body into a reviewable "
+            "Playbook V2 proposal using server-owned source identity and live "
+            "contract fingerprints. Read-only; never persists or activates."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "playbook_id": {
+                    "type": "string",
+                    "description": "Frontmatter id of the authoritative Markdown source.",
+                },
+                "semantic_body_path": {
+                    "type": "string",
+                    "description": "Path inside the vault to JSON containing only rules and steps.",
+                },
+                "baseline_artifact_path": {
+                    "type": "string",
+                    "description": "Optional prior V2 artifact for semantic diff and next version.",
+                },
+            },
+            "required": ["playbook_id", "semantic_body_path"],
+        },
+    },
+    {
+        "name": "playbook_v2_shadow_compile",
+        "description": (
+            "Read every installed vault playbook source, deterministically lower "
+            "supported kinds, and return validation diagnostics. Operator-only, "
+            "read-only, and never writes runtime or activation state."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "scope": {
+                    "type": "string",
+                    "enum": ["system", "project", "agent_type"],
+                    "description": "Optional source-scope filter.",
+                }
+            },
+        },
+    },
     {
         "name": "playbook_validate",
         "description": (

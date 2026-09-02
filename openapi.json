@@ -1523,8 +1523,8 @@
         "tags": [
           "agent"
         ],
-        "summary": "Delete an agent profile. Any tasks or projects referencing it will have their profile cleared.",
-        "description": "Delete an agent profile. Any tasks or projects referencing it will have their profile cleared.",
+        "summary": "Delete an agent profile. Any tasks or projects referencing it will have their profile cleared. Deleting a shipped default also records it as retired so startup seeding stops re-creating it; profile_reseed brings it back.",
+        "description": "Delete an agent profile. Any tasks or projects referencing it will have their profile cleared. Deleting a shipped default also records it as retired so startup seeding stops re-creating it; profile_reseed brings it back.",
         "operationId": "delete_profile",
         "requestBody": {
           "content": {
@@ -2322,8 +2322,8 @@
         "tags": [
           "agent"
         ],
-        "summary": "Overwrite one vault system profile with the version shipped in src/profiles/defaults/, keeping a .bak-<epoch> copy of the old file. The explicit repair for profile_drift findings \u2014 startup seeding is write-if-absent and will never do this for you.",
-        "description": "Overwrite one vault system profile with the version shipped in src/profiles/defaults/, keeping a .bak-<epoch> copy of the old file. The explicit repair for profile_drift findings \u2014 startup seeding is write-if-absent and will never do this for you.",
+        "summary": "Overwrite one vault system profile with the version shipped in src/profiles/defaults/, keeping a .bak-<epoch> copy of the old file. The explicit repair for profile_drift findings \u2014 startup seeding is write-if-absent and will never do this for you. Also clears any delete-time retirement tombstone for the profile.",
+        "description": "Overwrite one vault system profile with the version shipped in src/profiles/defaults/, keeping a .bak-<epoch> copy of the old file. The explicit repair for profile_drift findings \u2014 startup seeding is write-if-absent and will never do this for you. Also clears any delete-time retirement tombstone for the profile.",
         "operationId": "profile_reseed",
         "requestBody": {
           "content": {
@@ -6147,6 +6147,147 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PlaybookV2GraphResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/playbook/v2-propose": {
+      "post": {
+        "tags": [
+          "playbook"
+        ],
+        "summary": "Turn an agent-produced rules/steps JSON body into a reviewable Playbook V2 proposal using server-owned source identity and live contract fingerprints. Read-only; never persists or activates.",
+        "description": "Turn an agent-produced rules/steps JSON body into a reviewable Playbook V2 proposal using server-owned source identity and live contract fingerprints. Read-only; never persists or activates.",
+        "operationId": "playbook_v2_propose",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaybookV2ProposeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybookV2ProposeResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/playbook/v2-shadow-compile": {
+      "post": {
+        "tags": [
+          "playbook"
+        ],
+        "summary": "Read every installed vault playbook source, deterministically lower supported kinds, and return validation diagnostics. Operator-only, read-only, and never writes runtime or activation state.",
+        "description": "Read every installed vault playbook source, deterministically lower supported kinds, and return validation diagnostics. Operator-only, read-only, and never writes runtime or activation state.",
+        "operationId": "playbook_v2_shadow_compile",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaybookV2ShadowCompileRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybookV2ShadowCompileResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/playbook/v2-validate": {
+      "post": {
+        "tags": [
+          "playbook"
+        ],
+        "summary": "Validate an immutable Playbook V2 JSON artifact inside the vault against the strict model, registered command contracts, profiles, and event schemas. Read-only; never installs or activates.",
+        "description": "Validate an immutable Playbook V2 JSON artifact inside the vault against the strict model, registered command contracts, profiles, and event schemas. Read-only; never installs or activates.",
+        "operationId": "playbook_v2_validate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaybookV2ValidateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybookV2ValidateResponse"
                 }
               }
             }
@@ -14913,6 +15054,106 @@
         "title": "CompiledPlaybookNode",
         "description": "The serializable fields produced by ``PlaybookNode.to_dict()``.\n\nEach field is optional according to the compiled-node rules: a key is\npresent only when the compiler set it.  This is what the dashboard node\ninspector renders, so the prompt here is the full untruncated text."
       },
+      "CompilerDiagnosticCountsDTO": {
+        "properties": {
+          "error": {
+            "type": "integer",
+            "title": "Error",
+            "default": 0
+          },
+          "warning": {
+            "type": "integer",
+            "title": "Warning",
+            "default": 0
+          },
+          "question": {
+            "type": "integer",
+            "title": "Question",
+            "default": 0
+          },
+          "info": {
+            "type": "integer",
+            "title": "Info",
+            "default": 0
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "CompilerDiagnosticCountsDTO"
+      },
+      "CompilerDiagnosticDTO": {
+        "properties": {
+          "severity": {
+            "type": "string",
+            "enum": [
+              "error",
+              "warning",
+              "question",
+              "info"
+            ],
+            "title": "Severity"
+          },
+          "code": {
+            "type": "string",
+            "title": "Code"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          },
+          "rule_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rule Id"
+          },
+          "step_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Step Id"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SourceRefDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "severity",
+          "code",
+          "message"
+        ],
+        "title": "CompilerDiagnosticDTO"
+      },
       "ContractChangeDTO": {
         "properties": {
           "command": {
@@ -16541,6 +16782,18 @@
             "type": "string",
             "title": "Profile Id",
             "description": "Profile ID to delete"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason",
+            "description": "Why this profile is being retired. Stored on the tombstone when the deleted profile is a shipped default."
           }
         },
         "type": "object",
@@ -16558,6 +16811,22 @@
           "name": {
             "type": "string",
             "title": "Name"
+          },
+          "retired": {
+            "type": "boolean",
+            "title": "Retired",
+            "default": false
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
           }
         },
         "type": "object",
@@ -28491,6 +28760,239 @@
         "title": "PlaybookV2GraphResponse",
         "description": "Filtering is server-side and lossless.  ``playbook_v2_graph(event_type=...)``\nnarrows ``rules``/``nodes``/``edges`` to the rules triggered by that event and\nevery node reachable from them.  ``event_groups`` always lists all events, so\nthe selector never depends on the current filter."
       },
+      "PlaybookV2ProposeRequest": {
+        "properties": {
+          "playbook_id": {
+            "type": "string",
+            "title": "Playbook Id",
+            "description": "Frontmatter id of the authoritative Markdown source."
+          },
+          "semantic_body_path": {
+            "type": "string",
+            "title": "Semantic Body Path",
+            "description": "Path inside the vault to JSON containing only rules and steps."
+          },
+          "baseline_artifact_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Baseline Artifact Path",
+            "description": "Optional prior V2 artifact for semantic diff and next version."
+          }
+        },
+        "type": "object",
+        "required": [
+          "playbook_id",
+          "semantic_body_path"
+        ],
+        "title": "PlaybookV2ProposeRequest"
+      },
+      "PlaybookV2ProposeResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "activatable": {
+            "type": "boolean",
+            "title": "Activatable"
+          },
+          "artifact_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artifact Sha256"
+          },
+          "source_digest": {
+            "type": "string",
+            "title": "Source Digest"
+          },
+          "contract_fingerprint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contract Fingerprint"
+          },
+          "compiler_build": {
+            "type": "string",
+            "title": "Compiler Build"
+          },
+          "counts": {
+            "$ref": "#/components/schemas/CompilerDiagnosticCountsDTO"
+          },
+          "diagnostics": {
+            "items": {
+              "$ref": "#/components/schemas/CompilerDiagnosticDTO"
+            },
+            "type": "array",
+            "title": "Diagnostics",
+            "default": []
+          },
+          "semantic_diff": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Semantic Diff"
+          },
+          "artifact": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artifact"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success",
+          "activatable",
+          "source_digest",
+          "compiler_build",
+          "counts"
+        ],
+        "title": "PlaybookV2ProposeResponse"
+      },
+      "PlaybookV2ShadowCompileRequest": {
+        "properties": {
+          "scope": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope",
+            "description": "Optional source-scope filter."
+          }
+        },
+        "type": "object",
+        "title": "PlaybookV2ShadowCompileRequest"
+      },
+      "PlaybookV2ShadowCompileResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "lowered": {
+            "type": "integer",
+            "title": "Lowered"
+          },
+          "clean": {
+            "type": "integer",
+            "title": "Clean"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/ShadowCompileRowDTO"
+            },
+            "type": "array",
+            "title": "Rows",
+            "default": []
+          },
+          "source_errors": {
+            "items": {
+              "$ref": "#/components/schemas/ShadowSourceErrorDTO"
+            },
+            "type": "array",
+            "title": "Source Errors",
+            "default": []
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success",
+          "total",
+          "lowered",
+          "clean"
+        ],
+        "title": "PlaybookV2ShadowCompileResponse"
+      },
+      "PlaybookV2ValidateRequest": {
+        "properties": {
+          "path": {
+            "type": "string",
+            "title": "Path",
+            "description": "Vault-relative or absolute path to a V2 artifact JSON file."
+          }
+        },
+        "type": "object",
+        "required": [
+          "path"
+        ],
+        "title": "PlaybookV2ValidateRequest"
+      },
+      "PlaybookV2ValidateResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "artifact_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artifact Sha256"
+          },
+          "counts": {
+            "$ref": "#/components/schemas/CompilerDiagnosticCountsDTO"
+          },
+          "diagnostics": {
+            "items": {
+              "$ref": "#/components/schemas/CompilerDiagnosticDTO"
+            },
+            "type": "array",
+            "title": "Diagnostics",
+            "default": []
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success",
+          "counts"
+        ],
+        "title": "PlaybookV2ValidateResponse"
+      },
       "PlaybookValidateRequest": {
         "properties": {
           "path": {
@@ -29842,6 +30344,11 @@
           "created": {
             "type": "boolean",
             "title": "Created",
+            "default": false
+          },
+          "unretired": {
+            "type": "boolean",
+            "title": "Unretired",
             "default": false
           },
           "warnings": {
@@ -34303,6 +34810,80 @@
           "title"
         ],
         "title": "SetTaskStatusResponse"
+      },
+      "ShadowCompileRowDTO": {
+        "properties": {
+          "playbook_id": {
+            "type": "string",
+            "title": "Playbook Id"
+          },
+          "vault_path": {
+            "type": "string",
+            "title": "Vault Path"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "lowered": {
+            "type": "boolean",
+            "title": "Lowered"
+          },
+          "artifact_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artifact Sha256"
+          },
+          "counts": {
+            "$ref": "#/components/schemas/CompilerDiagnosticCountsDTO"
+          },
+          "diagnostics": {
+            "items": {
+              "$ref": "#/components/schemas/CompilerDiagnosticDTO"
+            },
+            "type": "array",
+            "title": "Diagnostics",
+            "default": []
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "playbook_id",
+          "vault_path",
+          "kind",
+          "lowered",
+          "counts"
+        ],
+        "title": "ShadowCompileRowDTO"
+      },
+      "ShadowSourceErrorDTO": {
+        "properties": {
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "errors": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Errors",
+            "default": []
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "path"
+        ],
+        "title": "ShadowSourceErrorDTO"
       },
       "ShowEffectiveProfileRequest": {
         "properties": {

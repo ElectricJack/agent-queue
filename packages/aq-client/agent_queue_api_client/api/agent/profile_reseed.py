@@ -67,11 +67,13 @@ def sync_detailed(
 ) -> Response[ProfileReseedResponse | ProfileReseedResponse422]:
     """Overwrite one vault system profile with the version shipped in src/profiles/defaults/, keeping a
     .bak-<epoch> copy of the old file. The explicit repair for profile_drift findings — startup seeding
-    is write-if-absent and will never do this for you.
+    is write-if-absent and will never do this for you. Also clears any delete-time retirement tombstone
+    for the profile.
 
      Overwrite one vault system profile with the version shipped in src/profiles/defaults/, keeping a
     .bak-<epoch> copy of the old file. The explicit repair for profile_drift findings — startup seeding
-    is write-if-absent and will never do this for you.
+    is write-if-absent and will never do this for you. Also clears any delete-time retirement tombstone
+    for the profile.
 
     Args:
         body (ProfileReseedRequest):
@@ -102,11 +104,13 @@ def sync(
 ) -> ProfileReseedResponse | ProfileReseedResponse422 | None:
     """Overwrite one vault system profile with the version shipped in src/profiles/defaults/, keeping a
     .bak-<epoch> copy of the old file. The explicit repair for profile_drift findings — startup seeding
-    is write-if-absent and will never do this for you.
+    is write-if-absent and will never do this for you. Also clears any delete-time retirement tombstone
+    for the profile.
 
      Overwrite one vault system profile with the version shipped in src/profiles/defaults/, keeping a
     .bak-<epoch> copy of the old file. The explicit repair for profile_drift findings — startup seeding
-    is write-if-absent and will never do this for you.
+    is write-if-absent and will never do this for you. Also clears any delete-time retirement tombstone
+    for the profile.
 
     Args:
         body (ProfileReseedRequest):
@@ -132,11 +136,13 @@ async def asyncio_detailed(
 ) -> Response[ProfileReseedResponse | ProfileReseedResponse422]:
     """Overwrite one vault system profile with the version shipped in src/profiles/defaults/, keeping a
     .bak-<epoch> copy of the old file. The explicit repair for profile_drift findings — startup seeding
-    is write-if-absent and will never do this for you.
+    is write-if-absent and will never do this for you. Also clears any delete-time retirement tombstone
+    for the profile.
 
      Overwrite one vault system profile with the version shipped in src/profiles/defaults/, keeping a
     .bak-<epoch> copy of the old file. The explicit repair for profile_drift findings — startup seeding
-    is write-if-absent and will never do this for you.
+    is write-if-absent and will never do this for you. Also clears any delete-time retirement tombstone
+    for the profile.
 
     Args:
         body (ProfileReseedRequest):
@@ -165,11 +171,13 @@ async def asyncio(
 ) -> ProfileReseedResponse | ProfileReseedResponse422 | None:
     """Overwrite one vault system profile with the version shipped in src/profiles/defaults/, keeping a
     .bak-<epoch> copy of the old file. The explicit repair for profile_drift findings — startup seeding
-    is write-if-absent and will never do this for you.
+    is write-if-absent and will never do this for you. Also clears any delete-time retirement tombstone
+    for the profile.
 
      Overwrite one vault system profile with the version shipped in src/profiles/defaults/, keeping a
     .bak-<epoch> copy of the old file. The explicit repair for profile_drift findings — startup seeding
-    is write-if-absent and will never do this for you.
+    is write-if-absent and will never do this for you. Also clears any delete-time retirement tombstone
+    for the profile.
 
     Args:
         body (ProfileReseedRequest):

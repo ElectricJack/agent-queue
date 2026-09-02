@@ -198,6 +198,12 @@ class EditProfileResponse(BaseModel):
 class DeleteProfileResponse(BaseModel):
     deleted: str
     name: str
+    #: True when the deleted profile was a shipped default and a tombstone
+    #: was written to ``vault/agent-types/.retired-defaults`` so startup
+    #: seeding stops re-creating it.
+    retired: bool = False
+    #: Operator-facing explanation of the tombstone, when one was written.
+    note: str | None = None
 
 
 class ListAvailableToolsResponse(BaseModel):
@@ -250,7 +256,9 @@ class ProfileDriftRow(BaseModel):
     """One system profile's vault copy compared against the shipped default."""
 
     profile_id: str
-    #: ``ok`` / ``not_seeded`` / ``drifted`` / ``unreadable``.
+    #: ``ok`` / ``not_seeded`` / ``retired`` / ``drifted`` / ``unreadable``.
+    #: ``retired`` means the operator deleted this shipped default and
+    #: startup seeding deliberately leaves it absent.
     status: str = "ok"
     config: list[ProfileConfigDivergence] = []
     #: Section headings (lowercased) the shipped default has and the vault
@@ -274,6 +282,8 @@ class ProfileReseedResponse(BaseModel):
     #: ``None`` when there was no existing file to back up.
     backup_path: str | None = None
     created: bool = False
+    #: True when this reseed also cleared a delete-time retirement tombstone.
+    unretired: bool = False
     warnings: list[str] | None = None
     sync_errors: list[str] | None = None
 

@@ -973,6 +973,19 @@ class SessionCommandsMixin:
         )
 
         if is_pool:
+            # Pool sessions acquire a slot before they know which task they
+            # will claim, so they cannot use dispatch-time branch affinity.
+            # Return a clean, pushed branch to detached HEAD before dropping
+            # the task lock; unpushed work intentionally remains pinned for
+            # the forensic retry path (worktree-execution §3.4).
+            slot = await self.orchestrator._slot_workspace_at(session.work_dir)
+            if slot is not None:
+                try:
+                    await self.orchestrator._worktree_slots().restore_slot_after_task(
+                        slot, task_id=task_id
+                    )
+                except Exception:
+                    logger.warning("Could not restore pool slot for %s", task_id, exc_info=True)
             # The workspace agent-lock is retained (``terminate_pool_session``
             # is the only path that drops it); only the task-hold is released.
             await self.db.release_claim(

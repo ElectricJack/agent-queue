@@ -901,6 +901,10 @@ _PLAYBOOK_COMMANDS = [
     "playbook_pending_events",
     "playbook_pending_event_action",
     "playbook_run_overlay",
+    # Playbook V2 review-only compiler (Package 2).
+    "playbook_v2_validate",
+    "playbook_v2_propose",
+    "playbook_v2_shadow_compile",
 ]
 
 
