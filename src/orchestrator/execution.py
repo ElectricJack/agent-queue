@@ -21,7 +21,7 @@ from src.notifications.events import (
     TaskThreadOpenEvent,
 )
 from src.profiles.sync import underlying_agent_type
-from src.review_keys import is_pipeline_review_task
+from src.review_keys import is_review_completion
 from src.models import (
     AgentOutput,
     AgentResult,
@@ -1193,21 +1193,27 @@ class ExecutionMixin:
                 # ``no_code`` is only as good as the reviewer profile's
                 # ``read_only`` flag: an operator who hands the reviewer
                 # Write/Edit tools (``read_only: false``) turns it off and the
-                # recursion is back (task sound-horizon-77.18.2).  The pipeline
-                # stamps every review it creates with a ``review:task:`` /
-                # ``branch-review:`` dedup key, so a finishing task carrying
-                # one *is* a review whatever its profile says, and the rules
-                # guard on this flag as well.  ``_on_playbook_trigger`` derives
-                # it from the task row too, so an emitter that predates this
-                # flag cannot reopen the recursion (task prime-cascade-64).
+                # recursion is back (task sound-horizon-77.18.2).  So
+                # ``is_review_completion`` ORs two signals no profile edit can
+                # reach: the ``review:task:`` / ``branch-review:`` dedup key
+                # this pipeline stamps on every review it creates, and the
+                # ``reviewer`` / ``final-reviewer`` profile id.  The second
+                # exists because the first is only the *shipped* pipeline's
+                # mark — a project routing reviews through its own pipeline
+                # keys the rows however it likes, and with a non-read-only
+                # reviewer that left every guard blind and the chain grew
+                # again (task solid-beacon-50).
                 #
-                # ``ctx.branch_no_commits`` is the third and last layer: the
+                # ``_on_playbook_trigger`` derives the dedup-key signal from
+                # the task row too, so an emitter that predates this flag
+                # cannot reopen the recursion (task prime-cascade-64).
+                # ``ctx.branch_no_commits`` is the final layer: the
                 # branch itself carried no commits ahead of its base when the
                 # completion pipeline asked, so there is literally nothing for
                 # a reviewer to read (task bright-forge-78).  It catches what
-                # the other two cannot — a renamed reviewer profile, a custom
-                # pipeline that keys its reviews differently, or an ordinary
-                # worker that closed ``pass`` having committed nothing.
+                # the structural signals cannot — a renamed reviewer profile
+                # used by a custom pipeline, or an ordinary worker that closed
+                # ``pass`` having committed nothing.
                 no_code = await self._task_produces_no_code(ctx) or ctx.branch_no_commits
                 await self._emit_task_event(
                     "task.completed",
@@ -1215,7 +1221,7 @@ class ExecutionMixin:
                     agent_id=task.assigned_agent_id,
                     agent_type=task.profile_id,
                     no_code=no_code,
-                    review_task=is_pipeline_review_task(task.dedup_key),
+                    review_task=is_review_completion(task.dedup_key, task.profile_id),
                 )
             except Exception:
                 # Best-effort, exactly like the notification below it: a

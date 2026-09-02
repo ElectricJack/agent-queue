@@ -1,35 +1,40 @@
-"""The dedup keys the default pipeline stamps on the review tasks it creates.
+"""How the system recognises a task whose work product is a review verdict.
 
-``src/prompts/default_playbooks/default-pipeline.md`` is the source of truth:
-``per-task-review`` writes ``review:task:<task_id>`` and
-``per-branch-final-review`` writes ``branch-review:<branch_name>``.  Two other
-places need the same strings and must not drift from it:
+A review leaves no branch and no diff, so nothing about it should be routed
+back into the review stage — but a reviewer runs on an ordinary worktree slot
+checked out on its own ``aq/<id>`` branch, so its row looks like any other
+session task from the outside.  Left unrecognised, every finished review
+spawned a review *of* the review: task solid-beacon-50 caught a seven-deep
+``Review: Review: ...`` chain grown from one CI-red task.
 
-* ``src/doctor/integration_checks.py`` looks for the ``review:task:`` row to
-  decide whether a finished PR was ever reviewed;
-* the session close path (``execution.py``) flags a finishing task that carries
-  either key as ``review_task`` on ``task.completed`` so the review rules never
-  review a review.  The older ``no_code`` flag came from the reviewer profile's
-  ``read_only`` setting, which an operator can (and did) turn off; the dedup
-  key is the pipeline's own mark on the row and survives any profile edit;
-* the pipeline dispatch path (``Orchestrator._on_playbook_trigger``) sets the
-  same flag again from the hydrated task row via :func:`flag_review_task_event`;
-* ``ensure_task`` (``src/commands/task_commands.py``) refuses to create a
-  ``review:task:<X>`` row when X itself carries either key, via
-  :func:`reviewed_task_id` + :func:`is_pipeline_review_task`.  The three
-  guards above all live on the ``task.completed`` event and the rules' ``when``
-  clauses, and none of them reaches a daemon still running older code or an
-  operator-edited vault copy of the pipeline whose rules lack the guards
-  (``ensure_default_playbooks`` never refreshes a copy it does not recognise):
-  ``Review: Review: ...`` chains ten deep reached the live queue that way
-  (task solid-harbor-68).  The command that writes the row is the one place
-  every version of the pipeline must pass through.
-  The rules guard with ``truthy: false``, which passes on a *missing* key, so
-  an emitter that never sets it — a daemon still running code older than the
-  flag, container settlement, a hand-written event — used to fire the review
-  anyway and ``Review: Review: Review: ...`` chains grew six deep on the live
-  queue (task prime-cascade-64).  Deriving it at dispatch makes the guard hold
-  for every emitter.
+Three independent signals say "this was a review", and the close path
+(``execution.py``) ORs them into the ``review_task`` flag on
+``task.completed``, which both review rules in
+``src/prompts/default_playbooks/default-pipeline.md`` guard on.  Three,
+because each one alone is disarmable:
+
+* **the profile's ``read_only`` flag** — carried separately as ``no_code``
+  (``git_ops._task_produces_no_code``).  An operator who hands the reviewer
+  Write/Edit tools turns it off.
+* **the pipeline's dedup key** — ``per-task-review`` writes
+  ``review:task:<task_id>``, ``per-branch-final-review`` writes
+  ``branch-review:<branch_name>``.  A project that routes reviews through its
+  own pipeline keys the rows however it likes, and this reads False.
+* **the reviewer role** — the ``reviewer`` / ``final-reviewer`` profile ids.
+  Survives both of the above, and is what a custom pipeline running the
+  shipped reviewer profiles still trips.
+
+``src/doctor/integration_checks.py`` is the fourth consumer: it looks for the
+``review:task:`` row to decide whether a finished PR was ever reviewed.  The
+playbook markdown remains the source of truth for the key strings; nothing
+here may drift from it.
+
+The pipeline dispatch path sets the same flag again from the hydrated task row
+via :func:`flag_review_task_event`; this covers emitters that omit it.  Finally,
+``ensure_task`` refuses to create a ``review:task:<X>`` row when X itself
+carries either pipeline review key, via :func:`reviewed_task_id` and
+:func:`is_pipeline_review_task`.  That command-level guard protects older
+emitters and operator-edited pipeline copies that lack the event guards.
 
 Kept dependency-free so both the doctor and the orchestrator can import it.
 """
@@ -59,6 +64,13 @@ def branch_review_dedup_key(branch_name: str) -> str:
     return f"{BRANCH_REVIEW_DEDUP_PREFIX}{branch_name}"
 
 
+#: Profile ids whose whole job is to produce a review verdict.  These profiles
+#: ship with ``read_only: true`` (``src/profiles/defaults/{reviewer,
+#: final-reviewer}/profile.md``), but the id is the signal here, not the flag —
+#: that is the point of keeping it separate from ``no_code``.
+REVIEW_PROFILE_IDS: frozenset[str] = frozenset({"reviewer", "final-reviewer"})
+
+
 def reviewed_task_id(dedup_key: str | None) -> str | None:
     """The task a ``review:task:<id>`` key reviews, or ``None`` for any other key.
 
@@ -75,6 +87,26 @@ def is_pipeline_review_task(dedup_key: str | None) -> bool:
     if not dedup_key:
         return False
     return dedup_key.startswith(PIPELINE_REVIEW_DEDUP_PREFIXES)
+
+
+def is_review_role(profile_id: str | None) -> bool:
+    """True when *profile_id* names a profile that only ever produces a verdict.
+
+    Deliberately id-based: unlike ``read_only`` this cannot be edited away in
+    the profile markdown, so it still holds for a project that gives its
+    reviewers write tools.
+    """
+    return (profile_id or "") in REVIEW_PROFILE_IDS
+
+
+def is_review_completion(dedup_key: str | None, profile_id: str | None) -> bool:
+    """True when a task finishing with these fields produced a review verdict.
+
+    The ``review_task`` flag the close path puts on ``task.completed``.  Either
+    structural signal is enough; both are checked because a project can defeat
+    either one on its own (see the module docstring).
+    """
+    return is_pipeline_review_task(dedup_key) or is_review_role(profile_id)
 
 
 def flag_review_task_event(event: dict, dedup_key: str | None) -> dict:
