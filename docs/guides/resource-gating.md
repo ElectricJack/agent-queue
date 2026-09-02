@@ -121,7 +121,7 @@ aq test --aq-help                        # this help (-h belongs to pytest)
 ```
 
 Everything that is not an `--aq-*` option goes to pytest untouched. The
-wrapper adds `-n <cap>` and the default marker deselects **only when you
+wrapper adds `-n <cap> --dist loadfile` and the default marker deselects **only when you
 did not pass your own** — `aq test -m perf tests/perf` and `aq test -p
 no:xdist tests/` both do exactly what they say.
 

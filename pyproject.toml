@@ -158,7 +158,11 @@ where = ["."]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests", "packages"]
-addopts = "-n auto --dist loadfile --durations=10 -m \"not perf and not migration and not slow and not tmux and not integration\""
+# No xdist options (``-n``/``--dist``) here: ``aq test`` adds the box's worker
+# cap plus ``--dist loadfile`` and CI passes them explicitly, while
+# ``pytest -p no:xdist`` (the documented serial path) unloads those options
+# with the plugin and errors on any left in addopts.
+addopts = "--durations=10 -m \"not perf and not migration and not slow and not tmux and not integration\""
 markers = [
     "functional: tests that launch real Claude CLI (require auth + API key)",
     "functional_mcp: functional tests requiring npm/npx for MCP servers",

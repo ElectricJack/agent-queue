@@ -65,6 +65,26 @@ class TestArgvComposition:
             )
         )
         assert "-n" not in args
+        # ``--dist`` is an xdist option too: with the plugin off it is
+        # "unrecognized arguments", exactly like ``-n``.
+        assert "--dist" not in args
+
+    def test_the_worker_cap_distributes_by_file(self):
+        # ``--dist loadfile`` keeps a module's tests on one worker (PR #47
+        # chose it for the per-module database fixtures).  It used to live
+        # in pyproject's addopts, where it broke ``pytest -p no:xdist``; now
+        # it travels with the ``-n`` the wrapper adds.
+        args = _args(_compose_pytest_argv(("tests/",), workers=4, markers="", apply_markers=False))
+        assert args[args.index("--dist") + 1] == "loadfile"
+
+    def test_an_explicit_dist_mode_is_never_doubled(self):
+        args = _args(
+            _compose_pytest_argv(
+                ("--dist", "load", "tests/"), workers=4, markers="", apply_markers=False
+            )
+        )
+        assert args.count("--dist") == 1
+        assert args[args.index("--dist") + 1] == "load"
 
     def test_an_unrelated_p_flag_still_gets_the_cap(self):
         # Regression: treating any -p as "the caller manages plugins"
@@ -269,3 +289,41 @@ class TestDefaultDeselectsMatchPyproject:
         from src.cli.test_runner import _FALLBACK_MARKERS
 
         assert self._terms(_FALLBACK_MARKERS) == pyproject_deselects
+
+
+class TestPyprojectKeepsSerialPytestWorking:
+    """pyproject's ``addopts`` must not carry xdist options.
+
+    PR #47 put ``-n auto --dist loadfile`` there.  ``-p no:xdist`` unloads
+    the plugin *and* its options, so the documented serial path
+    (``pytest -p no:xdist``, and ``aq test -p no:xdist`` which deliberately
+    adds no ``-n``) died with "unrecognized arguments: -n --dist loadfile".
+    Parallelism belongs on the command line: ``aq test`` adds the box's cap
+    and CI passes ``-n auto`` explicitly.
+    """
+
+    def test_addopts_carry_no_xdist_options(self):
+        import shlex
+        import tomllib
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent.parent
+        data = tomllib.loads((root / "pyproject.toml").read_text())
+        addopts = shlex.split(data["tool"]["pytest"]["ini_options"]["addopts"])
+        assert not _has_flag(tuple(addopts), "-n", "--numprocesses", "--dist"), addopts
+
+    def test_pytest_with_xdist_disabled_collects(self):
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent.parent
+        proc = subprocess.run(
+            [sys.executable, "-m", "pytest", "-p", "no:xdist", "--co", "-q", __file__],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=300,
+            check=False,
+        )
+        assert proc.returncode == 0, proc.stdout + proc.stderr
