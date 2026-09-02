@@ -131,3 +131,27 @@ def test_default_pipeline_source_refs_point_to_exact_json_key_lines(tmp_path):
     }.items():
         step = body["steps"][step_id]
         assert lines[step["source"]["start_line"] - 1].strip().startswith(f'"{key}": {{')
+
+
+def test_duplicate_terminal_keys_map_to_their_owning_rule_lines(tmp_path):
+    path = _copy_source(tmp_path, "default-pipeline.md")
+    source = PlaybookSource.load(path, vault_root=tmp_path / "vault")
+    assert isinstance(source, PlaybookSource)
+    body, diagnostics = lower_pipeline(source)
+    assert diagnostics == []
+    assert {
+        step_id: body["steps"][step_id]["source"]["start_line"]
+        for step_id in (
+            "per-task-review--done",
+            "per-branch-final-review--done",
+            "spec-ingest-on-approve--done",
+            "proposal-ready-gate--done",
+            "commit-on-gate-resolve--done",
+        )
+    } == {
+        "per-task-review--done": 165,
+        "per-branch-final-review--done": 237,
+        "spec-ingest-on-approve--done": 257,
+        "proposal-ready-gate--done": 277,
+        "commit-on-gate-resolve--done": 293,
+    }

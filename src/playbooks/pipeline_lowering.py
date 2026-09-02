@@ -63,12 +63,15 @@ class _JsonKeyLines:
         )
         return self._find(pattern)
 
-    def ref_for_object_key(self, key: str) -> dict[str, Any]:
+    def ref_for_object_key(self, key: str, *, start_line: int | None = None) -> dict[str, Any]:
         pattern = re.compile(rf'^\s*"{re.escape(key)}"\s*:\s*\{{')
-        return self._find(pattern)
+        return self._find(pattern, start_line=start_line)
 
-    def _find(self, pattern: re.Pattern[str]) -> dict[str, Any]:
-        for offset, text in enumerate(self._lines):
+    def _find(
+        self, pattern: re.Pattern[str], *, start_line: int | None = None
+    ) -> dict[str, Any]:
+        start_offset = max(0, (start_line or self._first_line) - self._first_line)
+        for offset, text in enumerate(self._lines[start_offset:], start=start_offset):
             if pattern.search(text):
                 return _ref(self._source, self._first_line + offset, text)
         return _ref(self._source)
@@ -198,6 +201,7 @@ def lower_pipeline(
         rule_id = raw_rule.get("id")
         if not isinstance(rule_id, str):
             continue
+        rule_source = locations.ref_for_pair("id", rule_id)
         nodes = raw_rule.get("nodes", {})
         # V1 scopes node ids to a rule while V2's steps map is global.  The
         # deterministic prefix is artifact-local and therefore does not need
@@ -206,7 +210,9 @@ def lower_pipeline(
             return f"{rule_id}--{node_id}"
         for node_id, node in nodes.items():
             step_id = node_key(node_id)
-            source_ref = locations.ref_for_object_key(node_id)
+            source_ref = locations.ref_for_object_key(
+                node_id, start_line=rule_source["start_line"]
+            )
             if node.get("terminal"):
                 steps[step_id] = {
                     "type": "terminal",
@@ -278,7 +284,7 @@ def lower_pipeline(
                 "trigger": {"event_type": event},
                 "guard": _condition(raw_rule.get("when")),
                 "entry_step": node_key(raw_rule.get("entry", "")),
-                "source": locations.ref_for_pair("id", rule_id),
+                "source": rule_source,
             }
         )
     return {"rules": rules, "steps": steps}, []
