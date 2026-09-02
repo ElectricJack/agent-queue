@@ -52,6 +52,7 @@ def default_registry() -> DoctorRegistry:
     for check in formula_checks():
         registry.register(check)
     for check in resource_checks():
+        registry.register(check)
     for check in integration_checks():
         registry.register(check)
     return registry
