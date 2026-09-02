@@ -13,6 +13,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 from click.testing import CliRunner
 
+# Import the application first so its ordered command registrations are stable.
+# Importing ``daemon`` first makes its legacy ``logs`` command overwrite the
+# filter-capable command from ``src.cli.logs`` on this xdist worker.
+from src.cli.app import cli
 import src.cli.daemon as daemon_mod
 
 
@@ -33,8 +37,6 @@ def test_daemon_start_reports_docker_or_subprocess_failure_without_claiming_succ
     runner, tmp_path, monkeypatch, no_popen,
 ):
     """Plan 20: each unsafe precondition refuses distinctly, spawns nothing."""
-    from src.cli.app import cli
-
     config_path = tmp_path / "config.yaml"
     monkeypatch.setattr(daemon_mod, "CONFIG_PATH", str(config_path))
     monkeypatch.setattr(daemon_mod, "CONFIG_DIR", str(tmp_path))
