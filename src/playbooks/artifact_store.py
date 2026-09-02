@@ -10,27 +10,16 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from src.playbooks.artifact_ref import ARTIFACT_SCHEMA_GENERATION, ArtifactRef, SHA256_RE
+from src.playbooks.run_state import (
+    ArtifactHashCollision,
+    ArtifactTooLarge,
+    ArtifactVerificationFailed,
+)
 
 if TYPE_CHECKING:
     from src.playbooks.definition import PlaybookDefinition as PlaybookDefinitionT
 else:  # pragma: no cover - Package 2 has not merged on every Package 3 branch.
     PlaybookDefinitionT = Any
-
-
-class ArtifactStoreError(RuntimeError):
-    """Base error for artifact storage failures."""
-
-
-class ArtifactTooLarge(ArtifactStoreError):
-    """The canonical artifact exceeds the configured byte limit."""
-
-
-class ArtifactHashCollision(ArtifactStoreError):
-    """A hash-named file contains bytes different from its claimed content."""
-
-
-class ArtifactVerificationFailed(ArtifactStoreError):
-    """An artifact's file bytes do not match its SHA-256 identity."""
 
 
 class ArtifactStore:
