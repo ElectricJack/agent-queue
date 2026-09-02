@@ -163,9 +163,10 @@ class TestReconcilePools:
             assert (await db.get_workspace_for_agent(s.agent_id)) is not None
         kinds = [c.args[0] for c in orch.bus.emit.await_args_list]
         assert kinds.count("pool.scaled") == 1
-        # The bus is in-process and `pool.` is not a WebSocket-forwarded
-        # prefix, so the audit row is the only trace an operator surface
-        # (`aq events --event-type pool.scaled`) can read back.
+        # The bus is in-process and its WebSocket forward is live-only, so
+        # the audit row is the only trace an operator surface
+        # (`aq system get-recent-events --event-type pool.scaled`) can read
+        # back after the fact.
         rows = await db.get_recent_events(event_type="pool.scaled")
         assert len(rows) == 1
         assert rows[0]["project_id"] == PROJECT_ID
