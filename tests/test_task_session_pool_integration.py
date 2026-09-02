@@ -31,6 +31,7 @@ async def test_pool_termination_retains_specific_reason(orch, db):  # noqa: F811
             conn,
             session_id=row.id,
             task_id="task",
+            claim_epoch=0,
             agent_id=row.agent_id,
             work_dir=row.work_dir,
             now=time.time(),

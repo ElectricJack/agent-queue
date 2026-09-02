@@ -456,7 +456,15 @@ class DatabaseBackend(Protocol):
     ) -> str | None: ...
     async def take_task(self, conn, task_id: str, *, agent_id: str, now: float) -> Task | None: ...
     async def record_holder(
-        self, conn, *, session_id: str, task_id: str, agent_id: str, work_dir: str, now: float
+        self,
+        conn,
+        *,
+        session_id: str,
+        task_id: str,
+        claim_epoch: int,
+        agent_id: str,
+        work_dir: str,
+        now: float,
     ) -> Workspace | None: ...
     async def activate_claim(
         self, session_id: str, task_id: str, *, epoch: int, now: float, conn=None

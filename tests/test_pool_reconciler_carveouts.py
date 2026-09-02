@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from src.commands.claim_commands import write_claim_file
 from src.config import AppConfig, DiscordConfig
 from src.database import Database
 from src.models import (
@@ -290,6 +292,48 @@ class TestPrepareTimeoutFlagGate:
 
 
 class TestOrphans:
+    async def test_terminal_pool_task_release_removes_claim_file(
+        self, db, reconciler, tmp_path
+    ):
+        sid = await held_pool_session(db, phase="preparing")
+        work_dir = tmp_path / "pool-slot"
+        await db.update_session(sid, work_dir=str(work_dir))
+        claim_file = work_dir / ".aq" / "claim.json"
+        write_claim_file(
+            str(work_dir),
+            {"task_id": "t1", "claim_epoch": 1, "session_id": sid},
+        )
+        await db.transition_task("t1", TaskStatus.COMPLETED, context="test", force=True)
+
+        live, now = await observe(reconciler)
+        await reconciler._step_orphans(live, now)
+
+        assert not claim_file.exists()
+
+    async def test_lost_terminal_release_preserves_successor_claim_file(
+        self, db, reconciler, tmp_path, monkeypatch
+    ):
+        sid = await held_pool_session(db)
+        work_dir = tmp_path / "pool-slot"
+        await db.update_session(sid, work_dir=str(work_dir), last_claim_epoch=1)
+        successor = {"task_id": "t2", "claim_epoch": 2, "session_id": sid}
+        write_claim_file(
+            str(work_dir),
+            {"task_id": "t1", "claim_epoch": 1, "session_id": sid},
+        )
+        await db.transition_task("t1", TaskStatus.COMPLETED, context="test", force=True)
+
+        async def lose_release(*args, **kwargs):
+            write_claim_file(str(work_dir), successor)
+            return MagicMock(released=False)
+
+        monkeypatch.setattr(db, "release_claim", lose_release)
+        live, now = await observe(reconciler)
+        await reconciler._step_orphans(live, now)
+
+        claim_file = work_dir / ".aq" / "claim.json"
+        assert json.loads(claim_file.read_text()) == successor
+
     async def test_terminal_pool_task_releases_hold_without_terminating_worker(self, db, reconciler):
         sid = await held_pool_session(db)
         await db.transition_task("t1", TaskStatus.COMPLETED, context="test", force=True)
