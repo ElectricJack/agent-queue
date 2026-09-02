@@ -737,6 +737,26 @@ history survives archival of the active task row.
 | `notes` | TEXT | NOT NULL DEFAULT '' | Supplemental close notes |
 | `completed_at` | REAL | NOT NULL | Unix timestamp |
 
+### Table: `task_assignment_routes`
+
+Persisted routing decisions for task assignment playbooks. Each task has at
+most one current decision; the project index supports routing and audit views.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `task_id` | TEXT | PRIMARY KEY, REFERENCES tasks(id) ON DELETE CASCADE | Routed task |
+| `project_id` | TEXT | NOT NULL REFERENCES projects(id) ON DELETE CASCADE | Owning project; indexed |
+| `input_hash` | TEXT | NOT NULL | Hash of routing inputs |
+| `task_updated_at` | REAL | NOT NULL | Task update timestamp used for the decision |
+| `options_hash` | TEXT | NOT NULL | Hash of candidate route options |
+| `intelligence_class` | TEXT | NOT NULL | Selected intelligence class |
+| `provider` | TEXT | nullable | Selected provider, when specified |
+| `playbook_id` | TEXT | NOT NULL | Assignment playbook identifier |
+| `playbook_version` | INTEGER | NOT NULL | Compiled playbook version |
+| `playbook_run_id` | TEXT | NOT NULL REFERENCES playbook_runs(run_id) ON DELETE CASCADE | Source run |
+| `reason` | TEXT | NOT NULL | Decision rationale |
+| `decided_at` | REAL | NOT NULL | Unix timestamp of the decision |
+
 ### Table: `workflows`
 
 Multi-agent pipelines with stage gates and agent affinity.
