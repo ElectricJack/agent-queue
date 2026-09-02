@@ -155,6 +155,14 @@ _REVIEWER_COMMANDS = frozenset({
     "reopen_with_feedback", "task_show", "get_task", "task_comments",
 })
 
+# A final review is a branch-wide verdict.  Its authority is derived from the
+# graph the default pipeline writes: final review ``blocks`` each per-task
+# review, and each per-task review has one ``discovered-from`` worker task.
+# The worker tasks must agree on one branch and PR URL; ambiguity fails closed.
+_FINAL_REVIEWER_COMMANDS = frozenset({
+    "reopen_with_feedback", "task_show", "get_task", "task_comments", "pr_merge", "git_diff",
+})
+
 
 async def reviewed_task_for_reviewer(db, scope: RequestScope) -> str | None:
     """Return the one task a live reviewer session may act on, else ``None``.
@@ -217,6 +225,94 @@ async def reviewed_task_for_reviewer(db, scope: RequestScope) -> str | None:
     if reviewed is None or reviewed.project_id != scope.project_id:
         return None
     return reviewed_id
+
+
+async def reviewed_branch_for_final_reviewer(
+    db, scope: RequestScope,
+) -> tuple[frozenset[str], str] | None:
+    """Return a live final review's worker tasks and their one PR URL.
+
+    ``final-reviewer`` has exceptional merge authority, so its grant is
+    anchored in persisted graph provenance rather than editable task prose or
+    client-supplied branch fields.  Every blocked review must resolve to one
+    worker on the same branch and PR; a malformed or mixed graph grants
+    nothing.
+    """
+    from src.models import AgentState, TaskStatus
+
+    if db is None or not scope.session_id or not scope.project_id:
+        return None
+    session = await db.get_session(scope.session_id)
+    profiles = {"final-reviewer", f"project:{scope.project_id}:final-reviewer"}
+    if (
+        session is None
+        or session.task_id != scope.task_id
+        or session.project_id != scope.project_id
+        or session.profile_id not in profiles
+        or session.lifecycle != "task"
+        or session.state not in {"starting", "running"}
+        or session.desired_state != "running"
+        or not session.agent_id
+    ):
+        return None
+    final_review = await db.get_task(session.task_id)
+    if (
+        final_review is None
+        or final_review.project_id != scope.project_id
+        or final_review.profile_id not in profiles
+        or final_review.status != TaskStatus.IN_PROGRESS
+        or final_review.assigned_agent_id != session.agent_id
+        or final_review.claim_epoch != session.last_claim_epoch
+    ):
+        return None
+    agent = await db.get_agent(session.agent_id)
+    if not (
+        agent is not None
+        and agent.enabled
+        and agent.deleted_at is None
+        and agent.state == AgentState.BUSY
+        and agent.current_task_id == final_review.id
+    ):
+        return None
+
+    review_ids = {
+        task_id for task_id, dep_type in await db.get_typed_dependencies(final_review.id)
+        if dep_type == "blocks"
+    }
+    if not review_ids:
+        return None
+    worker_ids: set[str] = set()
+    branches: set[str] = set()
+    pr_urls: set[str] = set()
+    reviewer_profiles = {"reviewer", f"project:{scope.project_id}:reviewer"}
+    for review_id in review_ids:
+        review = await db.get_task(review_id)
+        if (
+            review is None
+            or review.project_id != scope.project_id
+            or review.profile_id not in reviewer_profiles
+        ):
+            return None
+        workers = {
+            task_id for task_id, dep_type in await db.get_typed_dependencies(review.id)
+            if dep_type == "discovered-from"
+        }
+        if len(workers) != 1:
+            return None
+        worker = await db.get_task(next(iter(workers)))
+        if (
+            worker is None
+            or worker.project_id != scope.project_id
+            or not worker.branch_name
+            or not worker.pr_url
+        ):
+            return None
+        worker_ids.add(worker.id)
+        branches.add(worker.branch_name)
+        pr_urls.add(worker.pr_url)
+    if len(branches) != 1 or len(pr_urls) != 1:
+        return None
+    return frozenset(worker_ids), next(iter(pr_urls))
 
 
 
@@ -347,8 +443,32 @@ async def check_request_scope(
             return None
         # Not a reviewer.  ``task_show``/``get_task`` are also triage
         # capabilities, so fall through rather than pre-empting that carve-out.
-        if command not in _TRIAGE_COMMANDS:
+        if command not in _TRIAGE_COMMANDS and command not in _FINAL_REVIEWER_COMMANDS:
             return error
+
+    if scope.kind == "session" and not scope.elevated and command in _FINAL_REVIEWER_COMMANDS:
+        ordinary_args = dict(args)
+        error = check_command_scope(command, ordinary_args, scope)
+        if error is None:
+            args.update(ordinary_args)
+            return None
+        reviewed_branch = await reviewed_branch_for_final_reviewer(db, scope)
+        if reviewed_branch is None:
+            return error
+        worker_ids, pr_url = reviewed_branch
+        if args.get("project_id") not in (None, scope.project_id):
+            return "out of scope: project_id mismatch"
+        if args.get("session_id") not in (None, scope.session_id):
+            return "out of scope: session_id mismatch"
+        if command == "pr_merge":
+            if args.get("pr_url") != pr_url:
+                return "out of scope: a final reviewer may only merge its review branch PR"
+        elif command in {"reopen_with_feedback", "task_show", "get_task", "task_comments"}:
+            if args.get("task_id") not in worker_ids:
+                return "out of scope: a final reviewer may only act on tasks from its review branch"
+        args["project_id"] = scope.project_id
+        args["session_id"] = scope.session_id
+        return None
 
     if scope.kind != "session" or scope.elevated or command not in _TRIAGE_COMMANDS:
         return check_command_scope(command, args, scope)
