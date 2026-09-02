@@ -121,6 +121,13 @@ from src.playbooks.run_task import sync_playbook_run_task
 
 logger = logging.getLogger(__name__)
 
+# A pause whose checkpoint cannot be captured is retried by the monitoring
+# cascade every cycle.  Bound that: after this many attempts the pause
+# finishes without a checkpoint rather than spinning forever.
+PAUSE_CHECKPOINT_RETRY_META = "manual_pause_checkpoint_retry"
+PAUSE_CHECKPOINT_MAX_ATTEMPTS = 3
+PAUSE_CHECKPOINT_MAX_BACKOFF = 30.0
+
 
 def _parse_reset_time(error_msg: str) -> float | None:
     """Extract a session-limit reset timestamp from an error message.
@@ -1215,7 +1222,21 @@ class Orchestrator(
                 await self._finish_manual_pause(task_id, snapshot)
             return await self.db.resume_task(task_id)
 
-    async def _finish_manual_pause(self, task_id: str, snapshot: dict) -> None:
+    async def retry_manual_pause_cleanup(self, task_id: str) -> None:
+        """Cascade-driven retry of a pause whose stop cleanup has not finished.
+
+        Distinct from :meth:`pause_task` so the retry can back off between
+        attempts: an operator asking for the pause (or the resume) again is
+        an explicit request and never defers.
+        """
+        async with self._task_control_lock(task_id):
+            snapshot = await self.db.get_task_meta(task_id, "manual_pause")
+            if isinstance(snapshot, dict) and snapshot.get("cleanup_pending"):
+                await self._finish_manual_pause(task_id, snapshot, deferrable=True)
+
+    async def _finish_manual_pause(
+        self, task_id: str, snapshot: dict, *, deferrable: bool = False
+    ) -> None:
         """Confirm stop before releasing the old claim; safe to retry after reload."""
         if not snapshot.get("cleanup_pending"):
             return
@@ -1274,17 +1295,80 @@ class Orchestrator(
             raise ValueError("Task is paused with multiple locked workspaces; retaining resources for safe recovery.")
         ws = owned_workspaces[0] if owned_workspaces else None
         if ws:
-            from src.orchestrator.task_checkpoint import capture_checkpoint
-            try:
-                await capture_checkpoint(self.db, self.git, task_id, ws.workspace_path)
-            except Exception as exc:
-                raise ValueError(f"Task is paused, but its workspace could not be preserved: {exc}. Retry Resume.") from exc
+            if not await self._checkpoint_paused_workspace(task_id, ws, deferrable=deferrable):
+                return  # Backing off between bounded retries; the cascade calls again.
             self._remove_sentinel(ws.workspace_path)
+        await self.db.delete_task_meta(task_id, PAUSE_CHECKPOINT_RETRY_META)
         await self.db.finish_task_pause(task_id, snapshot)
         if adapter is not None and self._adapters.get(agent_id) is adapter:
             self._adapters.pop(agent_id, None)
         self._task_exec_start.pop(task_id, None)
         self._task_pre_exec_sha.pop(task_id, None)
+
+    async def _checkpoint_paused_workspace(self, task_id: str, ws, *, deferrable: bool) -> bool:
+        """Preserve a paused slot's work, and converge even when that is impossible.
+
+        Returns True when the pause may finish, False while a bounded retry is
+        still backing off.  Capture failure used to raise unconditionally, and
+        the monitoring cascade retries a pending pause every cycle — so a slot
+        that had already been reassigned, or a repository that cannot produce a
+        commit at all, spun forever on "remains paused; stop cleanup will
+        retry".  A workspace that is simply gone converges immediately (there
+        is nothing left to retry for); anything else gets
+        ``PAUSE_CHECKPOINT_MAX_ATTEMPTS`` tries with backoff, after which we
+        salvage whatever uncommitted work is still reachable, record why no
+        checkpoint exists, and let the pause finish.  A half-paused task is
+        worse than a paused one carrying a note about what could not be kept.
+        """
+        from src.orchestrator.task_checkpoint import capture_checkpoint
+
+        state = await self.db.get_task_meta(task_id, PAUSE_CHECKPOINT_RETRY_META) or {}
+        if deferrable and state.get("next_attempt_at", 0) > time.time():
+            return False
+        try:
+            await capture_checkpoint(self.db, self.git, task_id, ws.workspace_path)
+        except Exception as exc:
+            reason = str(exc) or exc.__class__.__name__
+        else:
+            return True
+        attempts = int(state.get("attempts", 0)) + 1
+        if attempts < PAUSE_CHECKPOINT_MAX_ATTEMPTS and Path(ws.workspace_path).is_dir():
+            await self.db.set_task_meta(task_id, PAUSE_CHECKPOINT_RETRY_META, {
+                "attempts": attempts,
+                "next_attempt_at": time.time() + min(2.0 ** attempts, PAUSE_CHECKPOINT_MAX_BACKOFF),
+                "reason": reason,
+            })
+            raise ValueError(
+                f"Task is paused, but its workspace could not be preserved: {reason}. Retry Resume."
+            )
+        logger.warning(
+            "Task %s is being paused without a Git checkpoint after %d attempt(s) on %s: %s",
+            task_id, attempts, ws.workspace_path, reason,
+        )
+        await self._salvage_paused_workspace(task_id, ws)
+        try:
+            await self.db.add_task_context(
+                task_id,
+                type="manual_pause_no_checkpoint",
+                label=f"No Git checkpoint captured for {ws.workspace_path}",
+                content=(
+                    f"no checkpoint captured: {reason}\n\n"
+                    "The pause was finished anyway so the task would not stay "
+                    "half-paused. Nothing will be restored into the workspace on "
+                    "resume; check for a worktree_salvage patch on this task if "
+                    "uncommitted work was still readable."
+                ),
+            )
+        except Exception as exc:  # a context write must never block convergence
+            logger.warning("Could not record pause checkpoint note for %s: %s", task_id, exc)
+        return True
+
+    async def _salvage_paused_workspace(self, task_id: str, ws) -> None:
+        """Reuse the slot salvage path so a pause without a checkpoint keeps dirty work."""
+        try:
+            await self._worktree_slots().salvage_dirty(ws, task_id)
+        except Exception as exc:  # best-effort by contract
+            logger.warning("Could not salvage paused workspace for %s: %s", task_id, exc)
 
     async def stop_task(self, task_id: str) -> str | None:
         """Forcibly stop an in-progress task and release its agent.

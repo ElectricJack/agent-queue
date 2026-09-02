@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
+import type { ClipboardEvent, DragEvent } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   ArrowTopRightOnSquareIcon,
   ClipboardIcon,
+  PhotoIcon,
+  TrashIcon,
 } from "@heroicons/react/24/outline";
 import {
   useTask,
@@ -10,6 +13,9 @@ import {
   useResolveGate,
   useDeleteTask,
   useReopenWithFeedback,
+  useTaskAttachments,
+  useUploadTaskAttachment,
+  useDeleteTaskAttachment,
   type Task,
   type TaskCompletionDetail,
   type TaskRef,
@@ -45,11 +51,17 @@ export default function TaskDetailPane({
   const resolveGate = useResolveGate();
   const deleteTask = useDeleteTask();
   const reopenWithFeedback = useReopenWithFeedback();
+  const attachments = useTaskAttachments(args.taskId, !!task);
+  const uploadAttachment = useUploadTaskAttachment();
+  const deleteAttachment = useDeleteTaskAttachment();
   const { open, close } = useShellPaneStore();
 
   const [modal, setModal] = useState<LocalModal>(null);
   const [moreOpen, setMoreOpen] = useState(false);
   const [feedback, setFeedback] = useState("");
+  const [dragActive, setDragActive] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<{ complete: number; total: number } | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const location = useLocation();
   const from = (location.state as { from?: string } | null)?.from ?? location.pathname + location.search;
   const openFull = useCallback(() => {
@@ -64,6 +76,40 @@ export default function TaskDetailPane({
   const taskGates = (
     (gates ?? []) as Array<GateSummary & { task_ids?: string[] }>
   ).filter((g) => (g.task_ids ?? []).includes(args.taskId));
+
+  const uploadFiles = useCallback(async (files: File[]) => {
+    const images = files.filter((file) => file.type.startsWith("image/"));
+    if (images.length === 0) return;
+    setUploadError(null);
+    setUploadProgress({ complete: 0, total: images.length });
+    try {
+      for (const [index, image] of images.entries()) {
+        await uploadAttachment.mutateAsync({ taskId: args.taskId, file: image });
+        setUploadProgress({ complete: index + 1, total: images.length });
+      }
+    } catch (error) {
+      setUploadError(error instanceof Error ? error.message : "Attachment upload failed");
+    } finally {
+      setUploadProgress(null);
+    }
+  }, [args.taskId, uploadAttachment]);
+
+  const onPaste = (event: ClipboardEvent<HTMLDivElement>) => {
+    const files = Array.from(event.clipboardData.items)
+      .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => file !== null);
+    if (files.length > 0) {
+      event.preventDefault();
+      void uploadFiles(files);
+    }
+  };
+
+  const onDrop = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setDragActive(false);
+    void uploadFiles(Array.from(event.dataTransfer.files));
+  };
 
   // Must stay inside effects: `setToolbar`/`setShortcuts` are ShellPaneHost
   // useState setters, so publishing during render re-renders the parent on
@@ -107,7 +153,32 @@ export default function TaskDetailPane({
   }
 
   return (
-    <div className="flex flex-col gap-4 p-4">
+    <div
+      className="relative flex flex-col gap-4 p-4"
+      data-testid="task-attachment-drop-zone"
+      onPaste={onPaste}
+      onDragEnter={(event) => {
+        event.preventDefault();
+        setDragActive(true);
+      }}
+      onDragOver={(event) => {
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "copy";
+      }}
+      onDragLeave={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+          setDragActive(false);
+        }
+      }}
+      onDrop={onDrop}
+    >
+      {dragActive && (
+        <div className="pointer-events-none absolute inset-2 z-20 flex items-center justify-center rounded-lg border-2 border-dashed border-indigo-400 bg-gray-950/90">
+          <p className="flex items-center gap-2 text-sm font-medium text-indigo-200">
+            <PhotoIcon className="h-5 w-5" /> Drop screenshots to attach
+          </p>
+        </div>
+      )}
       <header className="min-w-0">
         <p className="truncate font-mono text-xs text-gray-500">{args.taskId}</p>
         <h2 className="mt-0.5 truncate text-lg font-semibold text-gray-100">
@@ -149,6 +220,66 @@ export default function TaskDetailPane({
       {task && <TaskAttention task={task as Task & { needs_attention?: string | null }} />}
 
       {task && <TaskDescription key={task.id} task={task} />}
+
+      {task && (
+        <section>
+          <div className="mb-1.5 flex items-center justify-between gap-3">
+            <h3 className="text-xs font-semibold uppercase text-gray-500">Attachments</h3>
+            <span className="text-xs text-gray-500">Drop or paste an image</span>
+          </div>
+          {uploadProgress && (
+            <div className="mb-2" role="status">
+              <div className="mb-1 flex justify-between text-xs text-gray-400">
+                <span>Uploading screenshots…</span>
+                <span>{uploadProgress.complete} / {uploadProgress.total}</span>
+              </div>
+              <progress
+                aria-label="Attachment upload progress"
+                className="h-1.5 w-full accent-indigo-500"
+                max={uploadProgress.total}
+                value={uploadProgress.complete}
+              />
+            </div>
+          )}
+          {uploadError && <p className="mb-2 text-xs text-red-400" role="alert">{uploadError}</p>}
+          {(attachments.data?.attachments ?? []).length > 0 ? (
+            <ul className="grid grid-cols-2 gap-2">
+              {(attachments.data?.attachments ?? []).map((attachment) => (
+                <li key={attachment.id} className="group relative overflow-hidden rounded-lg border border-gray-800 bg-gray-900">
+                  <a href={attachment.url} target="_blank" rel="noreferrer">
+                    <img
+                      src={attachment.url}
+                      alt={attachment.name}
+                      className="h-28 w-full object-cover"
+                    />
+                  </a>
+                  <div className="flex items-center gap-2 px-2 py-1.5">
+                    <span className="min-w-0 flex-1 truncate text-xs text-gray-300" title={attachment.name}>
+                      {attachment.name}
+                    </span>
+                    <button
+                      type="button"
+                      aria-label={`Remove ${attachment.name}`}
+                      disabled={deleteAttachment.isPending}
+                      onClick={() => deleteAttachment.mutate({
+                        taskId: args.taskId,
+                        attachmentId: attachment.id,
+                      })}
+                      className="rounded p-1 text-gray-500 hover:bg-gray-800 hover:text-red-400 disabled:opacity-50"
+                    >
+                      <TrashIcon className="h-4 w-4" />
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <div className="rounded-lg border border-dashed border-gray-800 px-3 py-4 text-center text-xs text-gray-500">
+              Drag screenshots anywhere onto this pane, or paste from the clipboard.
+            </div>
+          )}
+        </section>
+      )}
 
       {task && <TaskSessions taskId={args.taskId} onOpenSession={close} fromTaskPane />}
 

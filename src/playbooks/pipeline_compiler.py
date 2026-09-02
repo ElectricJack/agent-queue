@@ -10,6 +10,15 @@ Pipeline metadata (``kind: pipeline``, ``role``, per-node ``action`` payload)
 lands on real optional fields of :class:`CompiledPlaybook` and
 :class:`PlaybookNode` — no monkey-patches, no ``__dict__`` stashes — so the
 data round-trips cleanly through :class:`CompiledPlaybookStore`.
+
+**Frontmatter ``scope`` here is not authoritative.** This module reads it
+only to validate that the author declared one; the installed value is
+overwritten by
+:func:`~src.playbooks.compiler.apply_source_authority` at the manager /
+install layer, which derives it from the vault path (Playbook V2 Package 0
+§3.8) — ``compile_pipeline`` is a pure ``markdown -> CompilationResult``
+function with no path argument, so it cannot make that call itself. A file
+under ``projects/acme/playbooks/`` cannot declare ``scope: system``.
 """
 
 from __future__ import annotations

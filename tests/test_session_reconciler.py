@@ -580,6 +580,10 @@ class TestExitHandling:
         assert await db.get_task_meta("t1", "needs_attention") == "session_rapid_crash"
         assert "session.quarantined" in bus.types()
         assert "task.quarantined" in bus.types()
+        failed = bus.payload("task.failed")
+        assert failed is not None, bus.types()
+        assert failed["status"] == TaskStatus.BLOCKED.value
+        assert failed["context"] == "session_rapid_crash"
 
     async def test_productive_death_pauses_with_a_backoff_never_silently_ready(
         self, db, provider, reconciler, bus, config, caplog
@@ -632,6 +636,26 @@ class TestExitHandling:
         assert task.status is TaskStatus.BLOCKED
         assert await db.get_task_meta("t1", "needs_attention") == "session_exited_open"
         assert "task.restarted" not in bus.types()
+        # The terminal leg is a *failure*: task.failed is what the reflection
+        # playbook and the failure-notification path trigger on, so an exit
+        # that ends here has to raise it rather than going silent.
+        failed = bus.payload("task.failed")
+        assert failed is not None, bus.types()
+        assert failed["task_id"] == "t1"
+        assert failed["status"] == TaskStatus.BLOCKED.value
+        assert failed["context"] == "session_exited_without_close_exhausted"
+        assert "exited without close" in failed["error"]
+
+    async def test_productive_death_with_budget_left_does_not_emit_task_failed(
+        self, db, provider, reconciler, bus
+    ):
+        """A retriable exit is paused for a retry, not reported as failed."""
+        await _task(db)
+        row = await _session(db, provider, started_at=NOW - 100_000)
+        provider.script_death(row.name)
+        await reconciler.tick(now=NOW)
+        assert (await db.get_task("t1")).status is TaskStatus.PAUSED
+        assert "task.failed" not in bus.types()
 
     async def test_exit_without_close_is_explained_by_aq_task_explain(
         self, db, provider, reconciler
@@ -1230,6 +1254,10 @@ class TestBackstop:
         assert task.status is TaskStatus.BLOCKED
         assert await db.get_task_meta("t1", "needs_attention") == "stuck_timeout"
         assert "task.quarantined" in bus.types()
+        failed = bus.payload("task.failed")
+        assert failed is not None, bus.types()
+        assert failed["status"] == TaskStatus.BLOCKED.value
+        assert failed["context"] == "stuck_timeout"
 
     @pytest.mark.parametrize("authoritative", [False, True])
     async def test_backstop_block_survives_next_promotion_cycle(
@@ -1554,7 +1582,7 @@ class TestOrphanStep:
         assert (await db.get_session("n1")).state == "running"
 
     async def test_open_task_with_a_non_live_row_is_released(
-        self, db, provider, releasing_reconciler, tmp_path
+        self, db, provider, releasing_reconciler, bus, tmp_path
     ):
         """B3's mirror: nothing else looks at this.
 
@@ -1573,6 +1601,10 @@ class TestOrphanStep:
         assert await db.get_task_meta("t1", "needs_attention") == "session_not_live"
         assert (await db.get_agent("a1")).state is AgentState.IDLE
         assert (await db.get_workspace("ws1")).locked_by_task_id is None
+        failed = bus.payload("task.failed")
+        assert failed is not None, bus.types()
+        assert failed["status"] == TaskStatus.BLOCKED.value
+        assert failed["context"] == "session_not_live"
 
     async def test_a_relaunch_in_flight_is_not_mistaken_for_a_stranded_task(
         self, db, provider, releasing_reconciler, tmp_path

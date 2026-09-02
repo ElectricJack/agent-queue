@@ -35,7 +35,7 @@ _ENV_VAR_RE = re.compile(r"\$\{(\w+)\}")
 SECTION_NOTES: dict[str, str] = {
     "memory": "Temporary — overhaul pause; see docs/specs/design/feature-pauses.md.",
     "playbooks": "Temporary — overhaul pause; see docs/specs/design/feature-pauses.md.",
-    "sessions": "Framework overhaul: session runtime. Disabled until the lane lands.",
+    "sessions": "Session runtime: the only path a task runs on. Off dispatches nothing.",
     "worktrees": "Framework overhaul: per-slot git worktrees. Disabled until the lane lands.",
     "security": "Framework overhaul: env scrubbing + doctor thresholds.",
     "pricing": "Framework overhaul: model price table for token-ledger cost rollups.",

@@ -1,14 +1,16 @@
-"""T3 reviewer follow-up: enforce ``profile.read_only`` at workspace
-acquisition.
+"""``profile.read_only`` no longer changes workspace acquisition.
 
-A read-only profile must never hold a write lock on a mutable kind — the
-lock is the only mechanism that prevents concurrent writers from being
-silently overwritten.  ``acquire_for_task(..., read_only=True)``
-attaches the workspace WITHOUT calling the lock path, so a read-only
-profile can only observe the repo (git log/diff/show) and never own it.
+It used to: a read-only profile attached the ``project-repo`` kind's *first*
+workspace without taking a lock, so a reviewer could not silently own the
+repo.  What that actually did was hand every read-only agent the kind's
+**base** row — under worktree mode the registry root, routinely a ``LINK``
+pointing at a human's own checkout — and the caller then wrote
+``.agent-queue-lock`` into it anyway, so read-only agents both ran their
+tools in the operator's tree and serialized on its sentinel.
 
-Also verifies the declarative half of the enforcement: the default
-reviewer profile lists no write/edit/commit/push tools.
+The contract now: read-only is a statement of write *intent*, enforced
+declaratively by the profile's tool list.  A read-only task acquires a
+disposable slot exactly like any other task, and never the base.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ from src.database import Database
 from src.models import (
     Agent,
     AgentProfile,
+    KIND_MODE_WORKTREE,
     Project,
     RepoSourceType,
     SYSTEM_KIND_SCOPE,
@@ -63,7 +66,7 @@ async def _mktask(db, tid="t1"):
     return t
 
 
-async def _project_repo(db):
+async def _project_repo(db, *, mode: str = KIND_MODE_WORKTREE):
     await db.upsert_workspace_kind(
         WorkspaceKind(
             project_id=SYSTEM_KIND_SCOPE,
@@ -71,6 +74,7 @@ async def _project_repo(db):
             is_git_repo=True,
             lockable=True,
             default_lock_mode="exclusive",
+            mode=mode,
             created_at=_now(),
             updated_at=_now(),
         )
@@ -83,20 +87,55 @@ async def _project_repo(db):
     )
 
 
+async def _add_slot(db, ws_id: str, index: int):
+    await db.create_workspace(
+        Workspace(
+            id=ws_id,
+            project_id="p1",
+            workspace_path=f"/tmp/repo/.aq/worktrees/slot-{index}",
+            source_type=RepoSourceType.WORKTREE,
+            kind_id="project-repo",
+            slot_index=index,
+            base_workspace_id="ws-repo",
+        )
+    )
+
+
 class TestReadOnlyAcquisition:
-    async def test_read_only_attaches_without_lock(self, db):
+    async def test_read_only_takes_a_slot_not_the_base(self, db):
+        """The regression this file exists for."""
         await _project_repo(db)
+        await _add_slot(db, "ws-slot-0", 0)
         agent = await _mkagent(db)
         task = await _mktask(db)
 
-        att = await acquire_for_task(db, task, agent.id, read_only=True)
-        assert att.first_of_kind("project-repo") is not None
+        att = await acquire_for_task(
+            db, task, agent.id, worktrees_enabled=True, worktree_slot_cap=1
+        )
+        attachment = att.first_of_kind("project-repo")
+        assert attachment is not None
+        assert attachment.workspace.id == "ws-slot-0"
+        assert attachment.workspace.is_slot
 
-        # No write lock was acquired — the workspace row is not locked
-        # to this task.
-        ws = await db.first_workspace_of_kind(project_id="p1", kind_id="project-repo")
-        assert ws.locked_by_task_id in (None, "")
-        assert ws.locked_by_agent_id in (None, "")
+        # ...and the base is untouched: no lock, so no session is ever
+        # routed into the developer's checkout.
+        assert (await db.get_workspace("ws-repo")).locked_by_task_id in (None, "")
+
+    async def test_read_only_locks_its_slot(self, db):
+        """A read-only agent owns its disposable slot for the task's life.
+
+        Sharing an unlocked workspace was the old behaviour; it let a second
+        agent reset the tree out from under the reader mid-read.
+        """
+        await _project_repo(db)
+        await _add_slot(db, "ws-slot-0", 0)
+        agent = await _mkagent(db)
+        task = await _mktask(db)
+
+        await acquire_for_task(
+            db, task, agent.id, worktrees_enabled=True, worktree_slot_cap=1
+        )
+        assert (await db.get_workspace("ws-slot-0")).locked_by_task_id == task.id
 
     async def test_writable_profile_still_locks(self, db):
         # Baseline: a normal (read_only=False) profile keeps the write lock.
@@ -106,14 +145,14 @@ class TestReadOnlyAcquisition:
         await _project_repo(db)
         task = await _mktask(db, tid="t2")
 
-        await acquire_for_task(db, task, agent.id, read_only=False)
+        await acquire_for_task(db, task, agent.id)
         ws = await db.first_workspace_of_kind(project_id="p1", kind_id="project-repo")
         assert ws.locked_by_task_id == "t2"
 
 
 class TestReviewerProfileDeclarative:
-    """Belt-and-braces: the shipped reviewer profile must not list write
-    tools even if the acquisition guard is ever bypassed."""
+    """The declarative half is now the *whole* of ``read_only``: the shipped
+    reviewer profile must not list write tools."""
 
     def test_reviewer_tool_list_has_no_write_tools(self):
         # Locate the shipped reviewer profile relative to this test.

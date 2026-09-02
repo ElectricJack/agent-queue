@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass
 from enum import Enum
 import hashlib
 import json
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 
 from src.models import AssignmentOption, Task, TaskAssignmentRoute
 
@@ -22,6 +22,16 @@ def select_assignment_playbook(manager, project):
     """Resolve the system default or a project-scoped explicit override."""
 
     playbook_id = project.assignment_playbook_id or DEFAULT_ASSIGNMENT_PLAYBOOK_ID
+    if manager is None:
+        # ``playbooks.enabled=false`` leaves ``Orchestrator.playbook_manager``
+        # None (feature-pause branch in src/orchestrator/core.py).  Routing is
+        # then simply unavailable: report it as a configuration error and wait,
+        # exactly like a missing or disabled playbook.  Never an AttributeError
+        # -- callers guard on AssignmentPlaybookError, not on that.
+        raise AssignmentPlaybookError(
+            "assignment playbook manager is unavailable: the playbook subsystem "
+            f"is disabled (playbooks.enabled=false); effective playbook '{playbook_id}'"
+        )
     playbook = manager.get_playbook(playbook_id)
     if playbook is None:
         raise AssignmentPlaybookError(f"assignment playbook '{playbook_id}' is missing")
@@ -84,8 +94,17 @@ def assignment_input_hash(task: Task) -> str:
     return _digest(assignment_input(task))
 
 
-def options_hash(options: Sequence[AssignmentOption]) -> str:
-    """Hash stable compatibility, excluding transient idle/busy occupancy."""
+def options_hash(
+    options: Sequence[AssignmentOption],
+    *,
+    profile_defaults: Iterable[tuple[str, str]] = (),
+) -> str:
+    """Hash stable compatibility, excluding transient idle/busy occupancy.
+
+    ``profile_defaults`` carries the fixed classes that profile-pinned tasks
+    must obey.  It intentionally belongs to the project-wide catalog hash:
+    pool claim queries use that one cached value when checking a saved route.
+    """
 
     stable = [
         {
@@ -97,7 +116,11 @@ def options_hash(options: Sequence[AssignmentOption]) -> str:
         for option in options
     ]
     stable.sort(key=lambda item: (item["intelligence_class"], item["provider"]))
-    return _digest(stable)
+    defaults = sorted(
+        (str(profile_id), str(class_id))
+        for profile_id, class_id in profile_defaults
+    )
+    return _digest({"options": stable, "profile_defaults": defaults})
 
 
 def resolve_effective_route(

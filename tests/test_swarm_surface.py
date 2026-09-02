@@ -111,6 +111,8 @@ def test_pool_lifecycle_command_is_part_of_the_generated_surface():
 def test_read_claim_epoch_prefers_file(tmp_path, monkeypatch):
     from src.cli.agent_surface import read_claim_epoch
 
+    monkeypatch.delenv("AQ_TASK_ID", raising=False)
+    monkeypatch.delenv("AQ_SESSION_ID", raising=False)
     monkeypatch.setenv("AQ_CLAIM_EPOCH", "9")
     assert read_claim_epoch(str(tmp_path)) == 9
     (tmp_path / ".aq").mkdir()
@@ -136,6 +138,8 @@ def test_cli_close_sends_claim_epoch(tmp_path, monkeypatch):
             return {"success": True}
 
     monkeypatch.setattr(agent_surface, "_get_client", lambda *a, **k: FakeClient())
+    monkeypatch.delenv("AQ_TASK_ID", raising=False)
+    monkeypatch.delenv("AQ_SESSION_ID", raising=False)
     (tmp_path / ".aq").mkdir()
     (tmp_path / ".aq" / "claim.json").write_text(json.dumps({"task_id": "t1", "claim_epoch": 4}))
     monkeypatch.chdir(tmp_path)
@@ -151,12 +155,29 @@ def test_read_claim_epoch_walks_up_from_a_subdirectory(tmp_path, monkeypatch):
     """M5: a worker that ``cd``ed into a subdirectory still resolves its epoch."""
     from src.cli.agent_surface import read_claim_epoch
 
+    monkeypatch.delenv("AQ_TASK_ID", raising=False)
+    monkeypatch.delenv("AQ_SESSION_ID", raising=False)
     monkeypatch.delenv("AQ_CLAIM_EPOCH", raising=False)
     (tmp_path / ".aq").mkdir()
     (tmp_path / ".aq" / "claim.json").write_text(json.dumps({"task_id": "t", "claim_epoch": 7}))
     deep = tmp_path / "src" / "pkg" / "sub"
     deep.mkdir(parents=True)
     assert read_claim_epoch(str(deep)) == 7
+
+
+def test_read_claim_epoch_ignores_another_session_claim_file(tmp_path, monkeypatch):
+    """A reused slot must fall back to the calling worker's environment epoch."""
+    from src.cli.agent_surface import read_claim_epoch
+
+    monkeypatch.setenv("AQ_TASK_ID", "active-task")
+    monkeypatch.setenv("AQ_SESSION_ID", "active-session")
+    monkeypatch.setenv("AQ_CLAIM_EPOCH", "2")
+    (tmp_path / ".aq").mkdir()
+    (tmp_path / ".aq" / "claim.json").write_text(json.dumps({
+        "task_id": "reassigned-task", "session_id": "new-session", "claim_epoch": 1,
+    }))
+
+    assert read_claim_epoch(str(tmp_path)) == 2
 
 
 def test_read_claim_epoch_returns_none_outside_a_workspace(tmp_path, monkeypatch):
@@ -398,6 +419,28 @@ async def test_pool_scale_survives_a_resync(pool_handler, tmp_path):
     assert (scoped.min_active, scoped.max_active) == (4, 9)
 
 
+async def test_pool_scale_clears_an_existing_max_in_db_and_vault(pool_handler, tmp_path):
+    """An explicit ``max: None`` removes the cap — the CLI spells it `--max null`."""
+    from src.profiles.parser import parse_profile
+
+    await pool_handler._cmd_pool_scale(
+        {"project_id": PROJECT_ID, "profile_id": "worker", "min": 1, "max": 5}
+    )
+    res = await pool_handler._cmd_pool_scale(
+        {"project_id": PROJECT_ID, "profile_id": "worker", "max": None}
+    )
+    assert res["success"], res
+    assert res["max_active"] is None
+
+    parsed = parse_profile(_override_path(tmp_path).read_text(encoding="utf-8"))
+    assert "max_active" not in parsed.config, "the key must be removed, not set to a string"
+    assert parsed.config["min_active"] == 1
+
+    scoped = await pool_handler.db.get_profile(f"project:{PROJECT_ID}:worker")
+    assert scoped.max_active is None
+    assert scoped.min_active == 1
+
+
 async def test_pool_scale_updates_an_existing_override(pool_handler, tmp_path):
     """A second scale edits the override in place, preserving its prose."""
     from src.profiles.parser import parse_profile
@@ -416,6 +459,28 @@ async def test_pool_scale_updates_an_existing_override(pool_handler, tmp_path):
     assert parsed.config["max_active"] == 8
     assert parsed.config["min_active"] == 1, "min must be left alone when only max is passed"
     assert "Keep notes." in text
+
+
+async def test_pool_scale_clears_an_existing_max_in_db_and_vault(pool_handler, tmp_path):
+    """An explicit null removes a prior cap rather than leaving it unchanged."""
+    from src.profiles.parser import parse_profile
+
+    await pool_handler._cmd_pool_scale(
+        {"project_id": PROJECT_ID, "profile_id": "worker", "min": 1, "max": 4}
+    )
+
+    result = await pool_handler._cmd_pool_scale(
+        {"project_id": PROJECT_ID, "profile_id": "worker", "max": None}
+    )
+
+    assert result["success"], result
+    assert (result["min_active"], result["max_active"]) == (1, None)
+    scoped = await pool_handler.db.get_profile(f"project:{PROJECT_ID}:worker")
+    assert scoped is not None
+    assert (scoped.min_active, scoped.max_active) == (1, None)
+    parsed = parse_profile(_override_path(tmp_path).read_text(encoding="utf-8"))
+    assert parsed.config["min_active"] == 1
+    assert "max_active" not in parsed.config
 
 
 async def test_pool_lifecycle_is_project_scoped_durable_and_guarded(pool_handler, tmp_path):

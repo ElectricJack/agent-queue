@@ -322,6 +322,68 @@ class TestPrepareCreatesAndResetsASlot:
         finally:
             await o.shutdown()
 
+    async def test_retry_keeps_what_the_previous_attempt_pushed(
+        self, tmp_path, base_repo
+    ):
+        """A pushed attempt is published; the retry must see its own work.
+
+        Re-pointing the branch at the fresh start point is right while the
+        work is only local.  Once it is on ``origin/<branch>`` — very often
+        with a PR open on it — discarding it locally unpublishes nothing:
+        the agent just finds an empty branch, and its next push is a
+        non-fast-forward.  So the retry resumes from the published tip.
+        """
+        o = await _orch(tmp_path, worktrees_enabled=True)
+        try:
+            await _seed(o, base_repo, mode=KIND_MODE_WORKTREE, cap=1)
+            t, a = await _mk(o, "tsk-1", "a-1")
+            p = Path(await o._prepare_workspace(t, a))
+            (p / "attempt.txt").write_text("real work\n")
+            _git(["add", "-A"], cwd=p)
+            _git(["commit", "-m", "real work"], cwd=p)
+            pushed = _git(["rev-parse", "HEAD"], cwd=p)
+            _git(["push", "origin", "aq/tsk-1"], cwd=p)
+            await o._release_workspaces_for_task("tsk-1")
+
+            t = await o.db.get_task("tsk-1")
+            p2 = Path(await o._prepare_workspace(t, a))
+            assert _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=p2) == "aq/tsk-1"
+            assert _git(["rev-parse", "HEAD"], cwd=p2) == pushed
+            assert (p2 / "attempt.txt").exists(), "pushed work must survive the retry"
+        finally:
+            await o.shutdown()
+
+    async def test_retry_moves_forward_when_the_pushed_tip_is_already_merged(
+        self, tmp_path, base_repo
+    ):
+        """Keeping the published tip must not pin a retry to stale history."""
+        o = await _orch(tmp_path, worktrees_enabled=True)
+        try:
+            await _seed(o, base_repo, mode=KIND_MODE_WORKTREE, cap=1)
+            t, a = await _mk(o, "tsk-1", "a-1")
+            p = Path(await o._prepare_workspace(t, a))
+            (p / "attempt.txt").write_text("merged work\n")
+            _git(["add", "-A"], cwd=p)
+            _git(["commit", "-m", "merged work"], cwd=p)
+            _git(["push", "origin", "aq/tsk-1"], cwd=p)
+            await o._release_workspaces_for_task("tsk-1")
+
+            # Someone merged it and main moved on.
+            _git(["checkout", "main"], cwd=base_repo)
+            _git(["merge", "--ff-only", "aq/tsk-1"], cwd=base_repo)
+            (base_repo / "later.txt").write_text("after\n")
+            _git(["add", "-A"], cwd=base_repo)
+            _git(["commit", "-m", "later"], cwd=base_repo)
+            _git(["push", "origin", "main"], cwd=base_repo)
+            head_of_main = _git(["rev-parse", "main"], cwd=base_repo)
+
+            t = await o.db.get_task("tsk-1")
+            p2 = Path(await o._prepare_workspace(t, a))
+            assert _git(["rev-parse", "HEAD"], cwd=p2) == head_of_main
+            assert (p2 / "later.txt").exists(), "the retry starts from current main"
+        finally:
+            await o.shutdown()
+
 
 # ─────────────────────────── the flag actually gates ─────────────────────
 

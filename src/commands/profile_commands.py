@@ -991,3 +991,75 @@ class ProfileCommandsMixin:
             force=force,
         )
         return report.to_dict()
+
+    async def _cmd_profile_audit(self, args: dict) -> dict:
+        """Report which profiles still derive capabilities from allowed_tools.
+
+        The migration list for Package 6's fleet-readiness gate: an operator
+        runs this, confirms zero ``legacy``-source profiles, and only then
+        flips ``security.capability_enforcement`` to ``enforce``.  Until
+        then a legacy-shaped profile is warned about rather than denied
+        (Playbook V2 Package 0 §3.6), which is what keeps an un-migrated
+        fleet running — and what makes it easy to forget.
+
+        Args:
+            project_id (str): Optional — restrict to one project's profiles.
+            legacy_only (bool): Only report profiles needing migration.
+
+        Returns:
+            ``{"success": True, "profiles": [...], "legacy_count": int,
+            "enforcement": str}`` — one row per profile with its ``source``
+            (``explicit`` / ``legacy``), the three adapted namespaces, and
+            the policy fingerprint.
+        """
+        from src.profiles.capabilities import NAMESPACES, capability_policy_for
+
+        project_id = args.get("project_id")
+        legacy_only = bool(args.get("legacy_only"))
+
+        rows: list[dict] = []
+        for profile in await self.db.list_profiles():
+            if project_id and not profile.id.startswith(f"project:{project_id}:"):
+                continue
+            source = (
+                "legacy"
+                if all(getattr(profile, ns, None) is None for ns in NAMESPACES)
+                else "explicit"
+            )
+            if legacy_only and source != "legacy":
+                continue
+            try:
+                policy = capability_policy_for(
+                    profile, plugin_command_names=self._plugin_command_names()
+                )
+            except Exception as exc:
+                rows.append(
+                    {
+                        "id": profile.id,
+                        "source": source,
+                        "error": str(exc),
+                        "harness_tools": [],
+                        "aq_commands": [],
+                        "plugin_tools": [],
+                        "fingerprint": None,
+                    }
+                )
+                continue
+            rows.append(
+                {
+                    "id": profile.id,
+                    "source": source,
+                    **policy.to_canonical(),
+                    "fingerprint": policy.fingerprint(),
+                }
+            )
+
+        rows.sort(key=lambda r: (r["source"] != "legacy", r["id"]))
+        return {
+            "success": True,
+            "profiles": rows,
+            "legacy_count": sum(1 for r in rows if r["source"] == "legacy"),
+            "enforcement": getattr(
+                self.config.security, "capability_enforcement", "audit"
+            ),
+        }

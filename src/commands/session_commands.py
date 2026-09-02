@@ -815,7 +815,7 @@ class SessionCommandsMixin:
                     "error": (
                         "descendants are manually paused: "
                         + ", ".join(paused)
-                        + "; resume them first (aq task resume <id>)"
+                        + "; resume them first (aq task resume --task-id <id>)"
                     ),
                     "manually_paused_descendants": paused,
                 }

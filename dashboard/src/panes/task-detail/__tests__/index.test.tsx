@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { useState } from "react";
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import TaskDetailPane from "../index";
@@ -12,6 +12,9 @@ vi.mock("../../../api/agents", () => ({ useAgentFlock: () => mockUseAgentFlock()
 const mockUseTask = vi.fn();
 const mockUseGates = vi.fn();
 const mockUseResolveGate = vi.fn();
+const mockUseTaskAttachments = vi.fn();
+const mockUseUploadTaskAttachment = vi.fn();
+const mockUseDeleteTaskAttachment = vi.fn();
 
 vi.mock("../../../api/hooks", async () => {
   const actual = await vi.importActual<typeof import("../../../api/hooks")>(
@@ -22,6 +25,9 @@ vi.mock("../../../api/hooks", async () => {
     useTask: (...args: unknown[]) => mockUseTask(...args),
     useGates: (...args: unknown[]) => mockUseGates(...args),
     useResolveGate: (...args: unknown[]) => mockUseResolveGate(...args),
+    useTaskAttachments: (...args: unknown[]) => mockUseTaskAttachments(...args),
+    useUploadTaskAttachment: (...args: unknown[]) => mockUseUploadTaskAttachment(...args),
+    useDeleteTaskAttachment: (...args: unknown[]) => mockUseDeleteTaskAttachment(...args),
   };
 });
 
@@ -93,11 +99,97 @@ beforeEach(() => {
   mockUseTask.mockReset();
   mockUseGates.mockReset();
   mockUseResolveGate.mockReset();
+  mockUseTaskAttachments.mockReset();
+  mockUseUploadTaskAttachment.mockReset();
+  mockUseDeleteTaskAttachment.mockReset();
   mockOpen.mockReset();
   mockClose.mockReset();
   mockNavigate.mockReset();
   mockUseGates.mockReturnValue({ data: [] });
   mockUseResolveGate.mockReturnValue({ mutate: vi.fn() });
+  mockUseTaskAttachments.mockReturnValue({ data: { success: true, attachments: [] } });
+  mockUseUploadTaskAttachment.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
+  mockUseDeleteTaskAttachment.mockReturnValue({ mutate: vi.fn(), isPending: false });
+});
+
+describe("TaskDetailPane — screenshot attachments", () => {
+  it("uploads an image pasted from the clipboard", async () => {
+    const mutateAsync = vi.fn().mockResolvedValue({ success: true });
+    mockUseTask.mockReturnValue({ data: fixtureTask, isLoading: false, isError: false });
+    mockUseUploadTaskAttachment.mockReturnValue({ mutateAsync, isPending: false });
+    renderWithRouter(<TaskDetailPane {...noopProps()} />);
+
+    const image = new File(["png"], "clipboard.png", { type: "image/png" });
+    fireEvent.paste(screen.getByTestId("task-attachment-drop-zone"), {
+      clipboardData: {
+        items: [{ kind: "file", type: "image/png", getAsFile: () => image }],
+      },
+    });
+
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledWith({ taskId: "t1", file: image }));
+  });
+
+  it("uploads image files dropped anywhere on the task pane", async () => {
+    const mutateAsync = vi.fn().mockResolvedValue({ success: true });
+    mockUseTask.mockReturnValue({ data: fixtureTask, isLoading: false, isError: false });
+    mockUseUploadTaskAttachment.mockReturnValue({ mutateAsync, isPending: false });
+    renderWithRouter(<TaskDetailPane {...noopProps()} />);
+
+    const image = new File(["png"], "dropped.png", { type: "image/png" });
+    fireEvent.drop(screen.getByTestId("task-attachment-drop-zone"), {
+      dataTransfer: { files: [image] },
+    });
+
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledWith({ taskId: "t1", file: image }));
+  });
+
+  it("shows progress while an attachment upload is pending", async () => {
+    let finishUpload!: () => void;
+    const mutateAsync = vi.fn(() => new Promise<void>((resolve) => { finishUpload = resolve; }));
+    mockUseTask.mockReturnValue({ data: fixtureTask, isLoading: false, isError: false });
+    mockUseUploadTaskAttachment.mockReturnValue({ mutateAsync, isPending: true });
+    renderWithRouter(<TaskDetailPane {...noopProps()} />);
+
+    const image = new File(["png"], "pending.png", { type: "image/png" });
+    fireEvent.drop(screen.getByTestId("task-attachment-drop-zone"), {
+      dataTransfer: { files: [image] },
+    });
+
+    expect(await screen.findByRole("progressbar", { name: "Attachment upload progress" }))
+      .toHaveValue(0);
+    finishUpload();
+    await waitFor(() => {
+      expect(screen.queryByRole("progressbar", { name: "Attachment upload progress" }))
+        .not.toBeInTheDocument();
+    });
+  });
+
+  it("renders attachment thumbnails and removes the selected attachment", () => {
+    const remove = vi.fn();
+    mockUseTask.mockReturnValue({ data: fixtureTask, isLoading: false, isError: false });
+    mockUseTaskAttachments.mockReturnValue({
+      data: {
+        success: true,
+        attachments: [{
+          id: "abc-screen.png",
+          name: "screen.png",
+          path: "/tmp/abc-screen.png",
+          url: "/api/tasks/t1/attachments/abc-screen.png",
+          content_type: "image/png",
+          size: 123,
+        }],
+      },
+    });
+    mockUseDeleteTaskAttachment.mockReturnValue({ mutate: remove, isPending: false });
+    renderWithRouter(<TaskDetailPane {...noopProps()} />);
+
+    expect(screen.getByRole("img", { name: "screen.png" })).toHaveAttribute(
+      "src",
+      "/api/tasks/t1/attachments/abc-screen.png",
+    );
+    screen.getByRole("button", { name: "Remove screen.png" }).click();
+    expect(remove).toHaveBeenCalledWith({ taskId: "t1", attachmentId: "abc-screen.png" });
+  });
 });
 
 describe("TaskDetailPane — header, description, actions", () => {

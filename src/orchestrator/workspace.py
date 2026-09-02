@@ -142,30 +142,14 @@ class WorkspaceMixin:
             slot_affinity = await self._slot_branch_affinity(task, project)
 
         self._workspace_wait_reasons.pop(task.id, None)
-        # T3 reviewer follow-up: resolve the profile so ``read_only`` can be
-        # honored at acquisition time.  A read-only profile MUST NOT hold a
-        # write lock on any mutable kind.
-        resolved_profile = await self._resolve_profile(task)
-        read_only = bool(resolved_profile and getattr(resolved_profile, "read_only", False))
-        if read_only:
-            # Read-only acquisition trades safety guarantees for concurrency:
-            # * no write lock is taken on the mutable project-repo kind, so
-            #   two read-only agents can share a workspace another agent is
-            #   *simultaneously mutating* — the reader may observe torn state
-            #   (half-written files, index mid-rebase);
-            # * the acquired workspace may not be the one whose contents the
-            #   caller expected — reads reflect whatever state the writer
-            #   happens to be in at read time.
-            # Read-only tasks must therefore treat their workspace as a
-            # best-effort snapshot, never as an authoritative source.
-            # Emitted at DEBUG so it doesn't flood daemon logs on every
-            # normal dispatch (previously INFO on every acquisition).
-            logger.debug(
-                "Task %s: profile '%s' is read_only — workspace acquired "
-                "without a write lock",
-                task.id,
-                resolved_profile.id if resolved_profile else "?",
-            )
+        # ``profile.read_only`` deliberately plays no part in acquisition.
+        # It used to skip the lock, which handed read-only agents the kind's
+        # base row — the developer's own checkout under worktree mode — and
+        # serialized them on its sentinel.  Read-only is a statement about
+        # write *intent*, not about isolation, so a read-only task takes an
+        # ordinary disposable slot like everything else.  The declarative
+        # half of the guarantee (no write tools in the profile's tool list)
+        # is unchanged.
         try:
             attachment_set = await acquire_for_task(
                 self.db,
@@ -175,7 +159,6 @@ class WorkspaceMixin:
                 worktree_slot_cap=(
                     self._project_slot_cap(project) if worktrees_enabled else None
                 ),
-                read_only=read_only,
                 preferred_workspaces=slot_affinity or None,
             )
         except AcquisitionFailed:

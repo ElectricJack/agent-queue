@@ -115,6 +115,12 @@ def test_explicit_broken_override_never_falls_back() -> None:
         select_assignment_playbook(_Manager(None), project)
 
 
+def test_unavailable_assignment_playbook_manager_is_a_domain_error() -> None:
+    """Coordinator callers can handle an unavailable manager per project."""
+    with pytest.raises(AssignmentPlaybookError, match="manager is unavailable"):
+        select_assignment_playbook(None, Project(id="p", name="P"))
+
+
 def test_default_assignment_playbook_is_seeded_write_if_absent(tmp_path: Path) -> None:
     first = ensure_default_playbooks(str(tmp_path))
     second = ensure_default_playbooks(str(tmp_path))
@@ -139,3 +145,16 @@ def test_default_assignment_playbook_uses_fast_low_router() -> None:
     assert result.success
     assert result.playbook.llm_config.intelligence_class == "fast-low"
     assert result.playbook.max_tokens == 4096
+
+
+def test_paused_playbook_subsystem_reports_config_error_not_attribute_error() -> None:
+    """``playbooks.enabled=false`` leaves ``playbook_manager`` None (core.py
+    feature-pause branch).  Selection must surface that as the ordinary
+    "unavailable playbook" configuration error every call site already
+    handles, not an AttributeError that escapes the guards."""
+    with pytest.raises(AssignmentPlaybookError, match="playbook subsystem is disabled"):
+        select_assignment_playbook(None, Project(id="p", name="P"))
+
+    project = Project(id="p", name="P", assignment_playbook_id="project-router")
+    with pytest.raises(AssignmentPlaybookError, match="playbook subsystem is disabled"):
+        select_assignment_playbook(None, project)

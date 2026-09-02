@@ -53,10 +53,12 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "delete_profile": "agent",
     "list_available_tools": "agent",
     "check_profile": "agent",
+    "profile_audit": "agent",
     "agent_message": "agent",
     "install_profile": "agent",
     "export_profile": "agent",
     "import_profile": "agent",
+    "subagent_event": "agent",
     # agent profiles (project-scoped CRUD wrappers)
     "create_project_profile": "agent",
     "edit_project_profile": "agent",
@@ -946,6 +948,16 @@ _ALL_TOOL_DEFINITIONS = [
                         "Pre-route the task to this agent profile on create. "
                         "Tasks created via ensure_task skip triage, so the "
                         "ensuring pipeline pins the executing profile directly."
+                    ),
+                },
+                "intelligence_class": {
+                    "type": "string",
+                    "description": (
+                        "Vault intelligence class for the task on create. A "
+                        "pinned profile is not a route on its own: without an "
+                        "explicit class the task waits for the assignment "
+                        "playbook to choose one. Both apply only when this "
+                        "call creates the task."
                     ),
                 },
             },
@@ -2271,6 +2283,30 @@ _ALL_TOOL_DEFINITIONS = [
                 "profile_id": {"type": "string", "description": "Profile ID to check"},
             },
             "required": ["profile_id"],
+        },
+    },
+    {
+        "name": "profile_audit",
+        "description": (
+            "Report which agent profiles still derive their capabilities from the "
+            "legacy allowed_tools list rather than an explicit ## Capabilities "
+            "block. One row per profile with its source (explicit/legacy), the "
+            "three capability namespaces, and the policy fingerprint — the "
+            "migration list to clear before capability enforcement is set to "
+            "'enforce'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Only audit this project's profiles",
+                },
+                "legacy_only": {
+                    "type": "boolean",
+                    "description": "Only report profiles that still need migration",
+                },
+            },
         },
     },
     {
@@ -3813,6 +3849,44 @@ _ALL_TOOL_DEFINITIONS = [
                     ),
                 },
             },
+        },
+    },
+    {
+        "name": "subagent_event",
+        "description": (
+            "Record a native sub-agent start or stop event for the calling session. "
+            "Harness hooks use this to report their own child-agent lifecycle; the "
+            "session identity comes from the bearer token when present."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "event": {
+                    "type": "string",
+                    "enum": ["start", "stop"],
+                    "description": "Native lifecycle event reported by the harness hook.",
+                },
+                "subagent_id": {
+                    "type": "string",
+                    "description": "Harness-provided identifier for the child agent.",
+                },
+                "agent_type": {
+                    "type": "string",
+                    "description": "Optional harness sub-agent type.",
+                },
+                "turn_id": {
+                    "type": "string",
+                    "description": "Optional harness turn identifier.",
+                },
+                "session_id": {
+                    "type": "string",
+                    "description": (
+                        "Session to attribute the event to for local replay only; a bearer "
+                        "token always supplies its own session identity."
+                    ),
+                },
+            },
+            "required": ["event", "subagent_id"],
         },
     },
     {
