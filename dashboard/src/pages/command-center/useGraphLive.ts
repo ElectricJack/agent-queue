@@ -4,6 +4,7 @@ import type { ProjectGraphResponse } from "@aq/ts-client";
 import { useEventStream, type ConnectionStatus } from "../../ws/useEventStream";
 import type { NotifyEvent } from "../../ws/types";
 import { projectGraphKey } from "../../api/graph";
+import { refetchLayout } from "./layout-v2/liveRegistry";
 import type { GraphTaskNode } from "./types";
 
 // Coalesce a burst, but do not postpone indefinitely while agents keep working.
@@ -43,6 +44,9 @@ export function useGraphLive(projectIds: string[]) {
           await qc.cancelQueries(filters);
           if (pending.get(pid) === entry && selectedRef.current.includes(pid)) {
             await qc.invalidateQueries(filters);
+            // The tiled layout lives outside React Query's cache, so mounted
+            // layers are told separately — on the same coalesced schedule.
+            refetchLayout(pid);
           }
         } finally {
           if (pending.get(pid) === entry) {

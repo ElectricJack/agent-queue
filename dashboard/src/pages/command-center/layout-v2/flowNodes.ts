@@ -8,7 +8,8 @@ import { sizePx, toPx } from "./units";
 export interface FlowHandlers { onOpenTask: (id: string) => void; onToggleChildren: (id: string) => void; onFocus: (id: string) => void }
 export interface FlowContext { projectId: string; offsetY: number; expanded: ReadonlySet<string>; handlers: FlowHandlers }
 
-function taskData(n: LayoutNode, ctx: FlowContext, gates: GraphGate[]): TaskNodeData {
+/** The card payload for one layout node; shared with the flat mobile list. */
+export function taskNodeData(n: LayoutNode, ctx: FlowContext, gates: GraphGate[]): TaskNodeData {
   const task = {
     id: n.id, title: n.title, status: n.status, priority: n.priority, is_blocked: n.is_blocked,
     profile_id: n.profile_id, intelligence_class: n.intelligence_class, assigned_agent_id: n.assigned_agent_id,
@@ -37,7 +38,7 @@ export function toFlowElements(store: LayoutStore, ctx: FlowContext): { nodes: N
       const data: ContainerNodeData = { node: n, projectId: ctx.projectId, ...ctx.handlers };
       nodes.push({ id: n.id, type: "container", position, ...sizePx(n.w, n.h), zIndex: n.depth, selectable: false, draggable: false, connectable: false, data });
     } else {
-      nodes.push({ id: n.id, type: "task", position, ...sizePx(1, 1), zIndex: 100 + n.depth, draggable: false, connectable: false, data: taskData(n, ctx, gatesFor(n.id)) });
+      nodes.push({ id: n.id, type: "task", position, ...sizePx(1, 1), zIndex: 100 + n.depth, draggable: false, connectable: false, data: taskNodeData(n, ctx, gatesFor(n.id)) });
     }
   }
   for (const s of store.stubs.values()) {
@@ -45,7 +46,7 @@ export function toFlowElements(store: LayoutStore, ctx: FlowContext): { nodes: N
     pos.set(s.id, { x: s.x, y: s.y });
     const stub: LayoutNode = { id: s.id, title: s.title ?? s.id, status: "PENDING", priority: 100, is_blocked: false, x: s.x, y: s.y, w: 1, h: 1, depth: 0,
       container_id: null, kind: "stub", context_only: true, agg_children: 0, agg_descendants: 0, agg_completed: 0, agg_running: 0, agg_blocked: 0, agg_active: 0 } as LayoutNode;
-    nodes.push({ id: s.id, type: "task", className: "aq-stub", position: toPx(s.x, s.y + ctx.offsetY), ...sizePx(1, 1), zIndex: 5, draggable: false, connectable: false, data: taskData(stub, ctx, gatesFor(s.id)) });
+    nodes.push({ id: s.id, type: "task", className: "aq-stub", position: toPx(s.x, s.y + ctx.offsetY), ...sizePx(1, 1), zIndex: 5, draggable: false, connectable: false, data: taskNodeData(stub, ctx, gatesFor(s.id)) });
   }
   const edges: Edge[] = [];
   for (const e of store.edges.values()) {

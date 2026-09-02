@@ -12,11 +12,12 @@ import { edgeStyleForType } from "../layout";
 import { useExpandedTaskIds } from "../useGraphHierarchy";
 import { useLayoutExtents, useLayoutNode, type TilesParams, type Variant } from "../../../api/graphLayout";
 import { useLayoutTiles } from "./useLayoutTiles";
-import { registerLayoutRefetch } from "./liveRegistry";
+import { refetchLayout, registerLayoutRefetch } from "./liveRegistry";
 import { toFlowElements, type FlowHandlers } from "./flowNodes";
 import { maxDepthForZoom, sizePx, toPx, worldRectFromViewport, type Rect } from "./units";
-import { NODE_HEIGHT, NODE_WIDTH, type GraphAgent, type GraphViewProps } from "../types";
+import { NODE_HEIGHT, NODE_WIDTH, type GraphViewProps, type GraphWorker } from "../types";
 import type { TaskFilters } from "../taskFilters";
+import type { LocateHit } from "@aq/ts-client";
 
 /** A project band's label: a plain marker, not a card, so it never steals clicks. */
 function ProjectHeaderNode({ data }: { data: { label: string } }) {
@@ -50,13 +51,16 @@ export interface LayoutCanvasProps extends Pick<GraphViewProps,
   filters: TaskFilters;
   focusId: string | null;
   setFocus: (id: string | null) => void;
+  /** A located match the toolbar asked for; each request is a fresh object. */
+  jumpTarget?: LocateHit | null;
 }
 
 interface LayerElements {
   nodes: Node[];
   edges: Edge[];
-  workers: GraphAgent[];
+  workers: GraphWorker[];
   pending: boolean;
+  loaded: boolean;
 }
 
 interface LayerProps {
@@ -76,7 +80,8 @@ function nearestIn(nodes: Node[], from: Node, dir: "up" | "down" | "left" | "rig
   let best: Node | null = null;
   let bestScore = Infinity;
   for (const node of nodes) {
-    if (node.id === from.id) continue;
+    // Project bands are labels, not destinations.
+    if (node.id === from.id || node.type === "projectHeader") continue;
     const dx = node.position.x - from.position.x;
     const dy = node.position.y - from.position.y;
     const primary = dir === "up" ? -dy : dir === "down" ? dy : dir === "right" ? dx : -dx;
@@ -106,7 +111,7 @@ function ProjectLayer({
   const budget = useRef(onBudgetExceeded);
   budget.current = onBudgetExceeded;
   const options = useMemo(() => ({ onBudgetExceeded: () => budget.current() }), []);
-  const { store, pending, refetchVisible } = useLayoutTiles(projectId, params, rect, options);
+  const { store, pending, loaded, refetchVisible } = useLayoutTiles(projectId, params, rect, options);
 
   useEffect(
     () => registerLayoutRefetch(projectId, refetchVisible),
@@ -117,19 +122,19 @@ function ProjectLayer({
     const { nodes, edges } = toFlowElements(store, { projectId, offsetY, expanded, handlers });
     // Docking is resolved server-side, so a worker's `docked_at` is already a
     // visible node id.
-    const workers: GraphAgent[] = store.workers.map((worker) => ({
+    const workers: GraphWorker[] = store.workers.map((worker) => ({
       id: worker.agent_id, name: worker.name, current_task_id: worker.docked_at,
-      profile_id: null, session_id: null,
+      in_collapsed: worker.in_collapsed, profile_id: null, session_id: null,
     }));
-    onElements(projectId, { nodes, edges, workers, pending });
-  }, [store, pending, projectId, offsetY, expanded, handlers, onElements]);
+    onElements(projectId, { nodes, edges, workers, pending, loaded });
+  }, [store, pending, loaded, projectId, offsetY, expanded, handlers, onElements]);
 
   return null;
 }
 
 function Inner(props: LayoutCanvasProps) {
   const {
-    projectIds, projectNames, variant, filters, focusId, setFocus, onTaskClick, onBackgroundClick,
+    projectIds, projectNames, variant, filters, focusId, setFocus, jumpTarget, onTaskClick, onBackgroundClick,
     selectedTaskId, playbooks = NO_PLAYBOOKS, selectedPlaybookId, onPlaybookClick,
   } = props;
   const { expandedTaskIds, toggleExpanded } = useExpandedTaskIds();
@@ -170,7 +175,10 @@ function Inner(props: LayoutCanvasProps) {
 
   const zoomDepth = maxDepthForZoom(viewport?.zoom ?? 1);
   const maxDepth = depthOverride === null ? zoomDepth : Math.min(depthOverride, zoomDepth ?? Infinity);
-  useEffect(() => { setDepthOverride(null); }, [viewport?.zoom]);
+  const paramsSignature = `${focusId ?? ""}|${variant}|${filters.query.trim()}|${filters.status}|${[...expandedTaskIds].sort().join(",")}`;
+  // A new query means a new node population: the previous budget cut no longer
+  // describes it.
+  useEffect(() => { setDepthOverride(null); }, [viewport?.zoom, paramsSignature]);
   const onBudgetExceeded = useCallback(
     () => setDepthOverride((current) => Math.max(0, (current ?? zoomDepth ?? 2) - 1)),
     [zoomDepth],
@@ -195,6 +203,26 @@ function Inner(props: LayoutCanvasProps) {
     // rebuilds on every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectIds, heightsKey]);
+
+  // A layout that was still building answered 202 for its tiles too, and
+  // nothing re-fires when the job finishes: ask the layers to load once the
+  // extent arrives.
+  const pendingExtents = projectIds.map((_, i) => {
+    const extent = extents[i];
+    return !extent || "pending" in extent;
+  }).join(",");
+  const previousPendingRef = useRef<string | null>(null);
+  useEffect(() => {
+    const previous = previousPendingRef.current?.split(",");
+    previousPendingRef.current = pendingExtents;
+    if (!previous) return;
+    pendingExtents.split(",").forEach((value, i) => {
+      const pid = projectIds[i];
+      if (pid && previous[i] === "true" && value === "false") refetchLayout(pid);
+    });
+    // projectIds is covered by pendingExtents' positional identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingExtents]);
 
   const params = useMemo<TilesParams>(() => ({
     variant: focusId ? "all" : variant,
@@ -278,7 +306,8 @@ function Inner(props: LayoutCanvasProps) {
     () => projectIds.flatMap((pid) => layers.get(pid)?.workers ?? []),
     [projectIds, layers],
   );
-  const pending = projectIds.some((pid) => layers.get(pid)?.pending);
+  const pending = projectIds.some((pid) => layers.get(pid)?.pending ?? true);
+  const allLoaded = projectIds.every((pid) => layers.get(pid)?.loaded);
   const relationTypes = useMemo(
     () => [...new Set(edges.map((edge) => String(edge.data?.depType)))].sort(),
     [edges],
@@ -295,6 +324,17 @@ function Inner(props: LayoutCanvasProps) {
     const box = sizePx(focusNode.node.w, focusNode.node.h);
     fitBounds({ x: position.x, y: position.y, width: box.width, height: box.height }, { padding: 0.1, duration: 0 });
   }, [focusId, focusNode, fitBounds, focusOffset]);
+
+  // Jumping to a search result only needs the hit's box: the tiles covering it
+  // load from the viewport change like any other pan.
+  const jumpOffset = offsets.get(focusProject ?? "") ?? 0;
+  useEffect(() => {
+    if (!jumpTarget) return;
+    const position = toPx(jumpTarget.x, jumpTarget.y + jumpOffset);
+    const box = sizePx(jumpTarget.w, jumpTarget.h);
+    fitBounds({ x: position.x, y: position.y, width: box.width, height: box.height }, { padding: 0.4, duration: 300 });
+    setKbFocusId(jumpTarget.id);
+  }, [jumpTarget, jumpOffset, fitBounds]);
 
   const openNode = (node: Node) => {
     if (node.type === "playbook") openPlaybook(String((node.data.playbook as { id: string }).id));
@@ -397,7 +437,7 @@ function Inner(props: LayoutCanvasProps) {
           )}
         </ReactFlow>
         {pending && <div role="status" className="pointer-events-none absolute inset-0 flex items-center justify-center bg-gray-950/70 text-sm text-gray-300">Laying out…</div>}
-        {!pending && nodes.length === 0 && <p className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-gray-500">No tasks or playbooks match these filters.</p>}
+        {allLoaded && !pending && nodes.length === 0 && <p className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-gray-500">No tasks or playbooks match these filters.</p>}
       </div>
     </div>
   );

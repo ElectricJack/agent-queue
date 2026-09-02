@@ -9,6 +9,8 @@ export type GraphTaskNode = NonNullable<ProjectGraphResponse["tasks"]>[number];
 export type GraphEdge = NonNullable<ProjectGraphResponse["edges"]>[number];
 export type GraphGate = NonNullable<ProjectGraphResponse["gates"]>[number];
 export type GraphAgent = NonNullable<ProjectGraphResponse["agents"]>[number];
+/** A worker badge's agent; the tiled layout also reports collapsed docking. */
+export type GraphWorker = GraphAgent & { in_collapsed?: boolean };
 
 export interface MergedGraph {
   tasks: GraphTaskNode[];

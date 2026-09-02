@@ -28,6 +28,9 @@ export function useLayoutTiles(
 ) {
   const [store, setStore] = useState<LayoutStore>(emptyStore);
   const [pending, setPending] = useState(false);
+  // Distinguishes "nothing here" from "nothing back yet": callers must not
+  // claim an empty graph before the first response for these params lands.
+  const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<Error | null>(null);
   // storeRef is the authority during a load: `load` is async and must not read
   // a stale render's `store`.
@@ -46,7 +49,10 @@ export function useLayoutTiles(
     if (!projectId) return;
     const wanted = wantedRef.current;
     const missing = missingCells(storeRef.current, wanted);
-    if (missing.length === 0) return;
+    if (missing.length === 0) {
+      if (wanted.length > 0) setLoaded(true);
+      return;
+    }
     if (inflight.current) {
       // Re-evaluate once the current request lands: the viewport may have
       // moved again, and firing a second request now would race the merge.
@@ -60,9 +66,11 @@ export function useLayoutTiles(
       if (ac.signal.aborted) return;
       if ("pending" in res) {
         setPending(true);
+        setLoaded(true);
         return;
       }
       setPending(false);
+      setLoaded(true);
       setError(null);
       const merged = evictFar(mergeTiles(storeRef.current, missing, res), wantedRef.current);
       storeRef.current = merged;
@@ -75,7 +83,7 @@ export function useLayoutTiles(
       // rather than waiting for the next pan to notice.
       if (missingCells(merged, wantedRef.current).length > 0) dirty.current = true;
     } catch (e) {
-      if (!ac.signal.aborted) setError(e as Error);
+      if (!ac.signal.aborted) { setError(e as Error); setLoaded(true); }
     } finally {
       if (inflight.current === ac) inflight.current = null;
       if (dirty.current) {
@@ -93,6 +101,7 @@ export function useLayoutTiles(
     const fresh = emptyStore();
     storeRef.current = fresh;
     setStore(fresh);
+    setLoaded(false);
     void load();
     // paramsKey is the structural identity of `params`.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -109,15 +118,15 @@ export function useLayoutTiles(
     // server-side (deleted, or now collapsed into a parent) lingering until
     // eviction, because mergeTiles only adds. Drop their membership too.
     const s = storeRef.current;
-    const loaded = new Set(s.loaded);
+    const loadedCells = new Set(s.loaded);
     const cells = new Map(s.cells);
     const nodes = new Map(s.nodes);
     for (const c of wantedRef.current) {
-      loaded.delete(c);
+      loadedCells.delete(c);
       for (const id of cells.get(c) ?? []) nodes.delete(id);
       cells.delete(c);
     }
-    storeRef.current = { ...s, loaded, cells, nodes };
+    storeRef.current = { ...s, loaded: loadedCells, cells, nodes };
     inflight.current?.abort();
     inflight.current = null;
     dirty.current = false;
@@ -127,7 +136,7 @@ export function useLayoutTiles(
   useEffect(() => () => inflight.current?.abort(), []);
 
   return useMemo(
-    () => ({ store, pending, error, refetchVisible }),
-    [store, pending, error, refetchVisible],
+    () => ({ store, pending, loaded, error, refetchVisible }),
+    [store, pending, loaded, error, refetchVisible],
   );
 }

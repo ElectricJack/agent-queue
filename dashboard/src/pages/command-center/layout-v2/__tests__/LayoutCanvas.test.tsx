@@ -38,8 +38,10 @@ const tiles = vi.hoisted(() => ({
   pending: false,
   error: null,
   refetchVisible: vi.fn(),
+  loaded: true,
   params: null as unknown,
 }));
+const extents = vi.hoisted(() => ({ pending: false }));
 vi.mock("../useLayoutTiles", () => ({
   useLayoutTiles: (_projectId: string, params: unknown) => {
     tiles.params = params;
@@ -48,14 +50,16 @@ vi.mock("../useLayoutTiles", () => ({
 }));
 const layoutNode = vi.hoisted(() => ({ data: undefined as unknown }));
 vi.mock("../../../../api/graphLayout", () => ({
-  useLayoutExtents: (ids: string[]) =>
-    ids.map(() => ({ layout_version: 1, extent_w: 10, extent_h: 10, node_count: 3 })),
+  useLayoutExtents: (ids: string[]) => ids.map(() => extents.pending
+    ? { pending: true }
+    : { layout_version: 1, extent_w: 10, extent_h: 10, node_count: 3 }),
   useLayoutNode: () => layoutNode,
   locate: vi.fn(),
   useTidyLayout: () => ({ mutate: vi.fn() }),
 }));
 
 import { emptyStore, mergeTiles } from "../layoutStore";
+import { sizePx, toPx } from "../units";
 import LayoutCanvas from "../LayoutCanvas";
 
 const n = (id: string, kind: string, x: number, y: number, extra: Record<string, unknown> = {}) => ({
@@ -80,6 +84,9 @@ beforeEach(() => {
     edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
   } as unknown as TilesResponse);
   tiles.params = null;
+  tiles.loaded = true;
+  tiles.refetchVisible = vi.fn();
+  extents.pending = false;
   fitBounds.mockReset();
   layoutNode.data = undefined;
   localStorage.clear();
@@ -115,5 +122,40 @@ describe("LayoutCanvas", () => {
     act(() => (node.data as { onToggleChildren: (id: string) => void }).onToggleChildren("e"));
     await screen.findByTestId("node-e");
     expect((tiles.params as { expanded: string[] }).expanded).toEqual(["e"]);
+  });
+
+  it("does not claim an empty graph before the first tiles response", () => {
+    tiles.store = emptyStore();
+    tiles.loaded = false;
+    render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+    expect(screen.queryByText("No tasks or playbooks match these filters.")).toBeNull();
+    expect(screen.getByRole("region", { name: "Task graph" })).toBeInTheDocument();
+  });
+
+  it("shows the empty state once every layer has loaded with nothing to draw", () => {
+    tiles.store = emptyStore();
+    tiles.loaded = true;
+    render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+    expect(screen.getByText("No tasks or playbooks match these filters.")).toBeInTheDocument();
+  });
+
+  it("loads tiles when a project's extent stops being pending", () => {
+    extents.pending = true;
+    const view = render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+    tiles.refetchVisible.mockClear();
+    extents.pending = false;
+    view.rerender(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+    expect(tiles.refetchVisible).toHaveBeenCalled();
+  });
+
+  it("fits the viewport to a located search result", () => {
+    const view = render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+    fitBounds.mockClear();
+    const hit = { id: "z", x: 2, y: 1, w: 1, h: 1 };
+    view.rerender(<MemoryRouter><LayoutCanvas {...base} jumpTarget={hit} /></MemoryRouter>);
+    expect(fitBounds).toHaveBeenCalledWith(
+      { ...toPx(hit.x, hit.y), ...sizePx(hit.w, hit.h) },
+      expect.anything(),
+    );
   });
 });

@@ -9,9 +9,11 @@ import {
   getExtentApiProjectsProjectIdGraphExtentGet,
   getLocateApiProjectsProjectIdGraphLocateGet,
   getNodeApiProjectsProjectIdGraphNodeTaskIdGet,
+  postListApiProjectsProjectIdGraphListPost,
   postTidyApiProjectsProjectIdGraphTidyPost,
   postTilesApiProjectsProjectIdGraphTilesPost,
   type ExtentResponse,
+  type ListResponse,
   type LocateResponse,
   type NodeResponse,
   type TilesResponse,
@@ -55,6 +57,31 @@ export async function fetchTiles(
   return r.data as TilesResponse;
 }
 
+export interface ListParams {
+  variant: Variant;
+  expanded: string[];
+  q: string;
+  status: string;
+  cursor: string | null;
+  limit: number;
+}
+
+/** One page of the flat, ordered node list backing the mobile view. */
+export async function fetchList(
+  projectId: string,
+  body: ListParams,
+  signal?: AbortSignal,
+): Promise<ListResponse> {
+  const r = await postListApiProjectsProjectIdGraphListPost({
+    client,
+    signal,
+    path: { project_id: projectId },
+    body,
+    throwOnError: true,
+  });
+  return r.data as ListResponse;
+}
+
 export const layoutExtentKey = (pid: string, variant: Variant) =>
   ["layoutExtent", pid, variant] as const;
 
@@ -93,7 +120,10 @@ export function useLayoutExtents(
     queries: projectIds.map((pid) => ({
       queryKey: layoutExtentKey(pid, variant),
       queryFn: ({ signal }: { signal: AbortSignal }) => fetchExtent(pid, variant, signal),
-      refetchInterval: 60_000,
+      // Same cadence as the single-project hook: a building layout must not
+      // leave the canvas waiting a minute for its extent.
+      refetchInterval: (q: { state: { data?: ExtentResponse | { pending: true } } }) =>
+        (q.state.data && "pending" in q.state.data ? 2000 : 60_000),
       staleTime: 30_000,
     })),
     combine: (results) => results.map((r) => r.data),
