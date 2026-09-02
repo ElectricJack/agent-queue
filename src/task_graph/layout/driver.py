@@ -19,6 +19,11 @@ from src.task_graph.layout.model import (
 logger = logging.getLogger(__name__)
 
 
+def _chunks(seq: list[str], size: int) -> list[list[str]]:
+    """Split *seq* into consecutive slices of at most *size* items."""
+    return [seq[i:i + size] for i in range(0, len(seq), size)]
+
+
 class LayoutRelayDepthExceeded(ValueError):
     """A batch could not settle every moved subtree into a stable frame.
 
@@ -314,15 +319,21 @@ class _IncrementalBatch:
 
     # ── row access ──────────────────────────────────────────────────────
     async def _preload_db_rows(self) -> None:
-        """Prime ``_db_cache`` with one bulk query instead of per-id ones.
+        """Prime ``_db_cache`` with a handful of bulk queries instead of
+        per-id ones.
 
-        Every dirty task id and its (pre-move) parent almost always needs a
+        Every dirty task id and its CURRENT parent (``self.parent_of``,
+        already the post-move parent from this batch's snapshot — the
+        pre-move parent, when different, is handled separately by
+        ``_seed_queue``'s own ``_db_row`` lookup) almost always needs a
         ``_db_row`` lookup somewhere in this batch (``_seed_queue``,
         ``_frame_row``, ``_current_size``, ``_needs_relay``) — fetching them
         one id at a time was the dominant cost of a small batch (each
-        ``load_layout_rows`` call opens its own transaction). ``_db_row``
-        still falls back to a single-id fetch for any id not covered here
-        (e.g. a container discovered later via resize propagation).
+        ``load_layout_rows`` call opens its own transaction). Chunked at
+        1,000 ids/query to stay clear of parameter-count ceilings on a large
+        batch. ``_db_row`` still falls back to a single-id fetch for any id
+        not covered here (e.g. a container discovered later via resize
+        propagation).
         """
         ids: set[str] = set()
         for tid, _ in self.marks:
@@ -333,9 +344,10 @@ class _IncrementalBatch:
         ids -= set(self._db_cache)
         if not ids:
             return
-        rows = await self.db.load_layout_rows(self.project_id, self.variant, list(ids))
-        for tid in ids:
-            self._db_cache[tid] = rows.get(tid)
+        for chunk in _chunks(sorted(ids), 1000):
+            rows = await self.db.load_layout_rows(self.project_id, self.variant, chunk)
+            for tid in chunk:
+                self._db_cache[tid] = rows.get(tid)
 
     async def _db_row(self, tid: str) -> LayoutRow | None:
         if tid not in self._db_cache:
@@ -441,6 +453,14 @@ class _IncrementalBatch:
             return
         kids = self.children_of.get(cid, [])
         existing = await self.db.load_children_layout_rows(self.project_id, self.variant, cid)
+        # load_children_layout_rows already fetched every child row in one
+        # query — seed _db_cache from it so _current_size/_needs_relay's
+        # per-id _db_row lookups for these same ids hit the cache instead of
+        # opening their own round trip. (cid's own stored row is already
+        # cached: _frame_row above called _db_row(cid), which always
+        # populates the cache — hit or miss — before returning.)
+        for k, r in existing.items():
+            self._db_cache.setdefault(k, r)
         path = crow.path if crow else "/"
         depth = crow.depth + 1 if crow else 0
         origin = self._origin(crow) if crow else (0.0, 0.0)
