@@ -25,6 +25,8 @@ jobs:
             command: pytest tests/ -n auto
           - name: migration-and-slow
             command: pytest tests/ -n auto -m "migration or slow"
+          - name: postgres-integration
+            command: pytest tests/ -n auto -m "integration or perf"
 
     # Postgres backend for the perf/claim-query suite's Postgres parametrisation
     # (tests/perf/conftest.py's ``any_db``, tests/test_claim_queries.py's ``db``) —
