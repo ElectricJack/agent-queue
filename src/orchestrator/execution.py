@@ -775,7 +775,7 @@ class ExecutionMixin:
         # the claim file the agent's ``.aq`` tooling reads, and hand the
         # epoch to the harness as ``AQ_CLAIM_EPOCH`` so its writes are
         # fenced identically.
-        from src.commands.claim_commands import write_claim_file
+        from src.claim_file import write_claim_file
 
         claim_epoch = await self.db.bump_claim_epoch(task.id)
         write_claim_file(

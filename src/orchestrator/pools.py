@@ -635,7 +635,7 @@ class PoolsMixin:
         still_owned = agent is None or agent.current_task_id in (None, session.task_id)
         if not other_live and still_owned:
             await self.db.terminate_pool_session(session.id, reason=reason, task_status=task_status)
-            from src.commands.claim_commands import remove_claim_file
+            from src.claim_file import remove_claim_file
             try:
                 remove_claim_file(session.work_dir)
             except Exception:
