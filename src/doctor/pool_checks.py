@@ -52,14 +52,100 @@ worker RETIRED?" long after the doctor run has scrolled away.
 from __future__ import annotations
 
 import time
+from pathlib import Path
 
+from src.claim_file import read_claim_file
 from src.doctor.models import CheckResult, DoctorCheck, DoctorContext, Severity
 from src.doctor.runner import apply_fix
+from src.git.manager import GitManager
 from src.models import AgentState, TaskStatus
+from src.orchestrator.worktree_manager import BRANCH_PREFIX
 
 OWNER = "swarm-work-model"
 
 _LIVE_TASK_STATUSES = (TaskStatus.IN_PROGRESS, TaskStatus.ASSIGNED)
+
+
+# ---------------------------------------------------------------------------
+# pools.stale_worktree_checkouts
+# ---------------------------------------------------------------------------
+
+
+async def _find_stale_worktree_checkouts(ctx: DoctorContext) -> list[dict]:
+    """Return idle slots pinned to a non-live task branch without a claim.
+
+    Git's worktree inventory wins over sentinels here: git is what rejects
+    the next ``switch``. Only registered slot paths are considered, so a
+    doctor repair never detaches a human's arbitrary worktree.
+    """
+    workspaces = await ctx.db.list_workspaces()
+    bases = {ws.id: ws for ws in workspaces if not ws.is_slot}
+    slots = [ws for ws in workspaces if ws.is_slot and ws.base_workspace_id in bases]
+    git = GitManager()
+    branches: dict[str, str] = {}
+    for base_id in {ws.base_workspace_id for ws in slots}:
+        base = bases[base_id]
+        if not Path(base.workspace_path).is_dir():
+            continue
+        try:
+            entries = await git.aworktree_list(base.workspace_path)
+        except Exception:
+            continue
+        branches.update(
+            {
+                str(Path(e["path"]).resolve()): e["branch"]
+                for e in entries
+                if e.get("path") and e.get("branch")
+            }
+        )
+
+    stale: list[dict] = []
+    for slot in slots:
+        path = str(Path(slot.workspace_path).resolve())
+        branch = branches.get(path)
+        if not branch or not branch.startswith(BRANCH_PREFIX) or read_claim_file(path) is not None:
+            continue
+        task_id = branch[len(BRANCH_PREFIX):]
+        task = await ctx.db.get_task(task_id)
+        if task is None or task.status == TaskStatus.IN_PROGRESS:
+            continue
+        stale.append(
+            {
+                "workspace_id": slot.id,
+                "path": slot.workspace_path,
+                "branch": branch,
+                "task_id": task_id,
+                "task_status": task.status.value,
+            }
+        )
+    return stale
+
+
+async def _check_stale_worktree_checkouts(ctx: DoctorContext) -> CheckResult:
+    if ctx.db is None:
+        return _no_db_result("pools.stale_worktree_checkouts")
+    stale = await _find_stale_worktree_checkouts(ctx)
+    if not stale:
+        return CheckResult(
+            id="pools.stale_worktree_checkouts",
+            severity=Severity.OK,
+            detail="no stale slot worktree checkouts",
+        )
+    return CheckResult(
+        id="pools.stale_worktree_checkouts",
+        severity=Severity.WARN,
+        detail=f"{len(stale)} slot worktree(s) pin a non-live task branch without a claim",
+        data={"count": len(stale), "slots": stale},
+    )
+
+
+async def _fix_stale_worktree_checkouts(ctx: DoctorContext) -> CheckResult:
+    if ctx.db is None:
+        return _no_db_result("pools.stale_worktree_checkouts")
+    git = GitManager()
+    for stale in await _find_stale_worktree_checkouts(ctx):
+        await git._arun(["switch", "--detach"], cwd=stale["path"])
+    return await _check_stale_worktree_checkouts(ctx)
 
 
 async def _pool_profile_ids(db) -> set[str]:
@@ -337,6 +423,7 @@ async def _fix_preparing_stuck(ctx: DoctorContext) -> CheckResult:
                 now=now,
                 result="prepare_failed",
                 needs_attention="prepare_timeout",
+                prepare_backoff=True,
             )
         else:
             await ctx.db.update_session(s.id, claim_phase=None, claim_phase_at=None)
@@ -455,6 +542,12 @@ async def _check_holder_consistency(ctx: DoctorContext) -> CheckResult:
 
 def pool_checks() -> list[DoctorCheck]:
     return [
+        DoctorCheck(
+            id="pools.stale_worktree_checkouts",
+            run=_check_stale_worktree_checkouts,
+            fix=_fix_stale_worktree_checkouts,
+            owner=OWNER,
+        ),
         DoctorCheck(id="pools.stuck", run=_check_pools_stuck, fix=_fix_pools_stuck, owner=OWNER),
         DoctorCheck(
             id="pools.orphan_agents",
