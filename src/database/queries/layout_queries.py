@@ -34,6 +34,26 @@ class LayoutQueryMixin:
         if rows:
             await conn.execute(insert(layout_dirty), rows)
 
+    async def _layout_parent_ids(self, task_ids: Iterable[str], *, conn) -> list[str]:
+        """Parents of *task_ids* that are not themselves in *task_ids*.
+
+        Used by delete/archive: those paths drop the task's layout rows in
+        the same transaction, so the driver cannot recover the former
+        container from a stored row. Marking the surviving parent makes the
+        container re-flow (closing the gap) and refreshes its ancestors'
+        aggregates.
+        """
+        from src.database.tables import tasks
+
+        ids = list(dict.fromkeys(task_ids))
+        if not ids:
+            return []
+        rows = (
+            await conn.execute(select(tasks.c.parent_task_id).where(tasks.c.id.in_(ids)))
+        ).fetchall()
+        gone = set(ids)
+        return sorted({r[0] for r in rows if r[0] is not None} - gone)
+
     async def dirty_layout_projects(self) -> list[str]:
         async with self._engine.begin() as conn:
             res = await conn.execute(
@@ -42,9 +62,18 @@ class LayoutQueryMixin:
             return [r[0] for r in res.fetchall()]
 
     async def pop_layout_dirty(
-        self, project_id: str, *, min_age_seconds: float
+        self, project_id: str, *, min_age_seconds: float, limit: int = 1000
     ) -> tuple[int, list[tuple[str, str]]]:
-        """Read (not delete) the project's dirty rows if the newest is old enough."""
+        """Read (not delete) the project's oldest dirty rows, newest-old-enough.
+
+        At most *limit* rows are returned, in ``seq`` order, and the
+        returned sequence number is the largest ``seq`` among **the rows
+        actually returned** — so it stays a correct ``consumed_seq`` for
+        ``clear_layout_dirty`` and anything past the limit survives for the
+        next batch. Without the cap a project that accumulated marks while
+        the feature was off would try to fold the whole backlog into one
+        batch.
+        """
         async with self._engine.begin() as conn:
             newest = (
                 await conn.execute(
@@ -59,9 +88,25 @@ class LayoutQueryMixin:
                 select(layout_dirty.c.seq, layout_dirty.c.task_id, layout_dirty.c.reason)
                 .where(layout_dirty.c.project_id == project_id)
                 .order_by(layout_dirty.c.seq)
+                .limit(limit)
             )
             rows = res.fetchall()
         return (max(r[0] for r in rows), [(r[1], r[2]) for r in rows]) if rows else (0, [])
+
+    async def trim_layout_dirty(self, *, older_than: float | None = None) -> int:
+        """Discard dirty marks across every project; return the row count.
+
+        ``older_than`` is an absolute wall-clock timestamp; ``None`` (the
+        default) deletes everything. Used by the orchestrator step while the
+        layout feature is disabled, where marks would otherwise accumulate
+        forever with no consumer — enabling the feature later starts from a
+        full layout, so discarded marks are harmless.
+        """
+        async with self._engine.begin() as conn:
+            stmt = delete(layout_dirty)
+            if older_than is not None:
+                stmt = stmt.where(layout_dirty.c.created_at < older_than)
+            return (await conn.execute(stmt)).rowcount or 0
 
     # ── FK-holder cleanup ───────────────────────────────────────────────
     async def delete_layout_rows_for_tasks(self, task_ids: Iterable[str], *, conn) -> None:
@@ -362,7 +407,14 @@ class LayoutQueryMixin:
                 out.setdefault(t, []).append((x, y))
             return out
 
-    async def subtree_aggregates(self, project_id, variant, path_prefix) -> dict:
+    async def subtree_aggregates(self, project_id, path_prefix) -> dict:
+        """Counts over the subtree at *path_prefix*, from the ``all`` variant.
+
+        Deliberately variant-independent: aggregates describe the real task
+        tree, so they are always read from ``all`` (the ``active`` variant
+        hides finished tasks and stubs whole subtrees away, which would make
+        the counts wrong).
+        """
         from src.database.tables import task_layouts, tasks
         from src.task_graph.layout.constants import FINISHED_STATUSES, RUNNING_STATUSES
 
@@ -389,14 +441,12 @@ class LayoutQueryMixin:
         }
 
     # ── publish ─────────────────────────────────────────────────────────
-    async def publish_layout(
-        self, project_id, variant, write_set, *, consumed_seq, extent, node_count_delta
-    ) -> int:
+    async def publish_layout(self, project_id, variant, write_set, *, consumed_seq, extent) -> int:
         """Apply upserts/deletes/translations for one layout variant atomically.
 
-        ``node_count_delta`` is accepted for interface stability but the
-        node count is always recomputed with a single ``COUNT(*)`` inside
-        the same transaction, so it stays correct regardless of caller math.
+        The node count is always recomputed with a single ``COUNT(*)``
+        inside the same transaction, so it stays correct regardless of what
+        the caller did.
 
         A translation applies to DESCENDANTS only
         (``path LIKE prefix || '%' AND path != prefix``): the container's
@@ -465,7 +515,13 @@ class LayoutQueryMixin:
             # a per-row round trip: an incremental batch touching dozens (or
             # hundreds, on a root reflow) of rows was paying one round trip
             # AND one from-scratch N-row VALUES compilation per publish.
-            touched: list[tuple[str, float, float, float, float]] = []
+            # Keyed by task id, NOT a list: a node can be both upserted (at
+            # its pre-translation absolute position) and picked up by the
+            # post-upsert re-SELECT of a translation covering it. Two
+            # positions for one id would insert two sets of cells — ghost
+            # cells at the stale box. The translation pass runs after the
+            # upserts, so its entry overwrites and the last write wins.
+            touched: dict[str, tuple[float, float, float, float]] = {}
             if write_set.upserts:
                 rows_vals = [
                     {
@@ -504,7 +560,8 @@ class LayoutQueryMixin:
                     index_elements=["project_id", "variant", "task_id"], set_=upd
                 )
                 await conn.execute(stmt, rows_vals)
-                touched.extend((r.task_id, r.abs_x, r.abs_y, r.w, r.h) for r in write_set.upserts)
+                for r in write_set.upserts:
+                    touched[r.task_id] = (r.abs_x, r.abs_y, r.w, r.h)
 
             # translations — descendants only; the container's own row is
             # upserted separately by the pass that moved it (controller
@@ -534,37 +591,28 @@ class LayoutQueryMixin:
                         task_layouts.c.path != t.path_prefix,
                     )
                 )
-                touched.extend(tuple(m) for m in moved.fetchall())
+                for tid, ax, ay, tw, th in moved.fetchall():
+                    touched[tid] = (ax, ay, tw, th)
 
             # cells for every touched row
             if touched:
-                ids = [t[0] for t in touched]
                 await conn.execute(
                     delete(cells).where(
                         cells.c.project_id == project_id,
                         cells.c.variant == variant,
-                        cells.c.task_id.in_(ids),
+                        cells.c.task_id.in_(list(touched)),
                     )
                 )
-                crow = []
-                for tid, x, y, w, h in touched:
-                    for cx, cy in cells_for_box(x, y, w, h):
-                        crow.append(
-                            {
-                                "project_id": project_id,
-                                "variant": variant,
-                                "cell_x": cx,
-                                "cell_y": cy,
-                                "task_id": tid,
-                            }
-                        )
-                # a task may appear twice in `touched` (upsert + translation); dedupe
-                seen = set()
                 crow = [
-                    c
-                    for c in crow
-                    if (c["task_id"], c["cell_x"], c["cell_y"]) not in seen
-                    and not seen.add((c["task_id"], c["cell_x"], c["cell_y"]))
+                    {
+                        "project_id": project_id,
+                        "variant": variant,
+                        "cell_x": cx,
+                        "cell_y": cy,
+                        "task_id": tid,
+                    }
+                    for tid, (bx, by, bw, bh) in touched.items()
+                    for cx, cy in cells_for_box(bx, by, bw, bh)
                 ]
                 if crow:
                     await conn.execute(insert(cells), crow)

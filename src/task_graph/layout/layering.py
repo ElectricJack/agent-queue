@@ -65,8 +65,19 @@ def _find_cycle(edges: list[tuple[str, str]]) -> list[tuple[str, str]] | None:
 
 
 def minimal_ranks(children: dict[str, SnapTask], edges: list[tuple[str, str]]) -> dict[str, int]:
-    """Longest-path layering: rank(dependent) >= rank(blocker) + 1."""
-    acyclic = break_cycles(children, edges)
+    """Longest-path layering over *edges*, which may still contain cycles."""
+    return minimal_ranks_acyclic(children, break_cycles(children, edges))
+
+
+def minimal_ranks_acyclic(
+    children: dict[str, SnapTask], acyclic: list[tuple[str, str]]
+) -> dict[str, int]:
+    """Longest-path layering: rank(dependent) >= rank(blocker) + 1.
+
+    *acyclic* must already have come through :func:`break_cycles` (callers
+    that need the broken edge list anyway pass it straight in rather than
+    paying for a second cycle search).
+    """
     blockers: dict[str, list[str]] = defaultdict(list)
     for d, b in acyclic:
         blockers[d].append(b)

@@ -1037,12 +1037,19 @@ class TaskQueryMixin:
             affected.add(parent)
         # Mark before the rows go: after the DELETEs there is no project id
         # left to attribute the marks to.  ``_delete_one`` drops each task's
-        # layout rows (an FK holder on ``tasks``) inside this transaction.
+        # layout rows (an FK holder on ``tasks``) inside this transaction, so
+        # the layout driver can no longer discover the vanished task's former
+        # container from a stored row — mark the surviving PARENTS too, or the
+        # former container never re-flows and its ancestors' aggregates go
+        # stale.
         project_id = (
             await conn.execute(select(tasks.c.project_id).where(tasks.c.id == task_id))
         ).scalar_one_or_none()
         if project_id is not None:
-            await self.mark_layout_dirty(project_id, ids, "task.deleted", conn=conn)
+            await self.mark_layout_dirty(
+                project_id, [*ids, *await self._layout_parent_ids(ids, conn=conn)],
+                "task.deleted", conn=conn,
+            )
         for tid in reversed(ids):  # deepest first (subtree_ids is shallow→deep)
             await self._delete_one(tid, conn=conn)
         flipped = await self.recompute_blocked(affected, conn=conn) if affected else set()

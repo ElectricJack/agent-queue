@@ -198,6 +198,10 @@ async def test_write_plan_marks_container_with_zero_nodes(db):
     assert plan.node_rows == []
     await write_plan(db, plan)
     assert (plan.parent_id, "task.created") in await marks(db)
+    # ``set_parent_bulk`` normally sets the container flag, but a node-less
+    # plan never reaches it — ``write_plan`` owes ``mark_container`` too.
+    async with db._engine.begin() as conn:
+        assert await db.is_container(plan.parent_id, conn=conn)
 
 
 async def test_write_plan_marks_both_edge_endpoints(db):

@@ -2619,7 +2619,11 @@ class Orchestrator(
             await self._auto_archive_tasks()
 
             # Task graph layout: consume durable dirty marks, run one job, reconcile.
-            await self._run_layout_step()
+            # Layout is a projection — a failure here must never abort the cycle.
+            try:
+                await self._run_layout_step()
+            except Exception as e:
+                logger.warning("Layout step failed: %s", e)
 
             # 11. V1 memory compaction removed (roadmap 8.6).
             # Memory lifecycle is now managed by MemoryPlugin.

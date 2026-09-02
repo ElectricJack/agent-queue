@@ -209,3 +209,34 @@ def test_graph_layout_config_validate_rejects_negative():
 
     errors = GraphLayoutConfig(reconcile_interval_seconds=-1).validate()
     assert [e.field for e in errors] == ["reconcile_interval_seconds"]
+
+def test_graph_layout_config_reads_top_level_block(tmp_path):
+    """``update_config``/``config_editor`` address sections by AppConfig
+    field name and write them as TOP-LEVEL yaml keys, so the loader has to
+    honour a top-level ``graph_layout:`` block or every runtime edit to this
+    section is a silent no-op."""
+    from src.config import load_config
+
+    p = tmp_path / "c.yaml"
+    p.write_text(yaml.dump({
+        "discord": {"bot_token": "t", "guild_id": "1"},
+        "database_path": str(tmp_path / "test.db"),
+        "graph_layout": {"enabled": True, "tidy_job_budget_seconds": 5},
+    }))
+    cfg = load_config(str(p))
+    assert cfg.graph_layout.enabled is True
+    assert cfg.graph_layout.tidy_job_budget_seconds == 5
+    assert cfg.graph_layout.incremental_debounce_ms == 500
+
+
+def test_graph_layout_nested_block_wins_over_top_level(tmp_path):
+    from src.config import load_config
+
+    p = tmp_path / "c.yaml"
+    p.write_text(yaml.dump({
+        "discord": {"bot_token": "t", "guild_id": "1"},
+        "database_path": str(tmp_path / "test.db"),
+        "dashboard": {"graph_layout": {"incremental_debounce_ms": 250}},
+        "graph_layout": {"incremental_debounce_ms": 999},
+    }))
+    assert load_config(str(p)).graph_layout.incremental_debounce_ms == 250

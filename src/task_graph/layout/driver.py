@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections import defaultdict
 from typing import Literal
 
@@ -16,6 +17,7 @@ from src.task_graph.layout.constants import (
     RANKING_DEP_TYPES,
     ROOT,
     RUNNING_STATUSES,
+    TIDY_JOB_SECONDS,
     VARIANTS,
 )
 from src.task_graph.layout.engine import layout_container
@@ -133,7 +135,16 @@ def build_full_write_set(
     blocked: set[str],
     mode: Literal["tidy"] = "tidy",
     seed: int = 0,
+    deadline: float | None = None,
 ) -> tuple[WriteSet, tuple[float, float]]:
+    """Lay out every container in *snapshot* from scratch (§4.7).
+
+    *deadline* is an absolute ``time.monotonic()`` value bounding the whole
+    job (spec §4.7's 60 s job budget). Once it passes, the remaining
+    containers are laid with ``mode="incremental"`` and no existing rows —
+    barycenter placement only, skipping the tidy improvement loop — so the
+    job still produces a complete, correct layout, just a less pretty one.
+    """
     present, stubs = _visible(snapshot, variant)
     children_of: dict[str | None, list[str]] = defaultdict(list)
     for tid in present:
@@ -155,12 +166,25 @@ def build_full_write_set(
     sizes: dict[str, tuple[float, float]] = {}
     rel_rows: dict[str, LayoutRow] = {}
 
+    over_budget = False
+
     # Bottom-up: lay out a container after all its container children.
     def lay(container_id: str | None, path: str, depth: int) -> tuple[float, float]:
+        nonlocal over_budget
         kids = children_of.get(container_id, [])
         for k in kids:
             if snapshot[k].is_container and k not in stubs:
                 sizes[k] = lay(k, f"{path}{k}/", depth + 1)
+        container_mode: str = mode
+        if deadline is not None and time.monotonic() > deadline:
+            if not over_budget:
+                over_budget = True
+                logger.warning(
+                    "layout tidy job budget exhausted; remaining containers get "
+                    "barycenter placement only (variant=%s)",
+                    variant,
+                )
+            container_mode = "incremental"
         scope = ContainerScope(
             container_id=container_id,
             container_path=path,
@@ -171,7 +195,7 @@ def build_full_write_set(
             child_sizes={k: sizes[k] for k in kids if k in sizes},
             stub_ids=frozenset(s for s in stubs if s in kids),
         )
-        res = layout_container(scope, mode=mode, seed=seed)
+        res = layout_container(scope, mode=container_mode, seed=seed)
         rel_rows.update(res.rows)
         return res.allocated
 
@@ -196,9 +220,11 @@ def build_full_write_set(
 
 
 class LayoutDriver:
-    def __init__(self, db, *, seed: int = 0):
+    def __init__(self, db, *, seed: int = 0, tidy_job_seconds: float | None = TIDY_JOB_SECONDS):
         self.db = db
         self.seed = seed
+        # Spec §4.7's overall tidy-job budget. ``None`` disables it.
+        self.tidy_job_seconds = tidy_job_seconds
 
     async def _blocked_ids(self, project_id: str) -> set[str]:
         tasks = await self.db.list_tasks(project_id=project_id)
@@ -209,6 +235,9 @@ class LayoutDriver:
     ) -> int:
         snapshot, edges = await self.db.load_project_snapshot(project_id)
         blocked = await self._blocked_ids(project_id)
+        deadline = (
+            time.monotonic() + self.tidy_job_seconds if self.tidy_job_seconds is not None else None
+        )
         ws, extent = await asyncio.to_thread(
             build_full_write_set,
             snapshot,
@@ -217,6 +246,7 @@ class LayoutDriver:
             blocked=blocked,
             mode=mode,
             seed=self.seed,
+            deadline=deadline,
         )
         # Replace everything: rows no longer present (including orphans left
         # behind by a deleted task, or stray rows under this project_id/
@@ -225,7 +255,7 @@ class LayoutDriver:
         keep = {r.task_id for r in ws.upserts}
         ws.deletes = [tid for tid in existing if tid not in keep]
         return await self.db.publish_layout(
-            project_id, variant, ws, consumed_seq=None, extent=extent, node_count_delta=None
+            project_id, variant, ws, consumed_seq=None, extent=extent
         )
 
     async def reconcile(self, project_id: str) -> int:
@@ -238,8 +268,6 @@ class LayoutDriver:
         stamped on both variants' meta rows. Returns the number of marks
         enqueued.
         """
-        import time
-
         from sqlalchemy import update
 
         from src.database.tables import project_layout_meta
@@ -694,5 +722,4 @@ class _IncrementalBatch:
             self.ws,
             consumed_seq=consumed_seq,
             extent=extent,
-            node_count_delta=None,
         )

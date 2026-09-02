@@ -1341,7 +1341,14 @@ class SwarmConfig:
 
 @dataclass
 class GraphLayoutConfig:
-    """Server-side task graph layout (spatial-layout design §8). YAML: ``dashboard.graph_layout``."""
+    """Server-side task graph layout (spatial-layout design §8).
+
+    YAML: ``dashboard.graph_layout`` (the spec's spelling) **or** a
+    top-level ``graph_layout:`` block. Both are read; the nested one wins.
+    The top-level spelling is what the config editor writes — it addresses
+    sections by ``AppConfig`` field name — so ``update_config("graph_layout",
+    ...)`` has to be honoured or it would silently no-op.
+    """
 
     enabled: bool = False
     reconcile_interval_seconds: int = 900
@@ -2452,7 +2459,11 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             max_filings_per_task=int(sw.get("max_filings_per_task", 20)),
         )
 
-    gl = (raw.get("dashboard") or {}).get("graph_layout") or {}
+    # Both spellings: the spec nests it under ``dashboard``, while
+    # ``config_editor``/``update_config`` write AppConfig field names as
+    # top-level keys. Reading only one of them would make runtime edits
+    # silently ineffective.
+    gl = (raw.get("dashboard") or {}).get("graph_layout") or raw.get("graph_layout") or {}
     config.graph_layout = GraphLayoutConfig(
         enabled=bool(gl.get("enabled", False)),
         reconcile_interval_seconds=int(gl.get("reconcile_interval_seconds", 900)),

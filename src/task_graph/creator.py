@@ -396,6 +396,11 @@ async def write_plan(
             await db.mark_layout_dirty(
                 plan.parent_row["project_id"], [plan.parent_id], "task.created", conn=conn
             )
+            # Likewise for the container flag: ``set_parent_bulk`` marks it
+            # for a plan WITH nodes, but a node-less plan never reaches it
+            # and its parent would never become a container at all.
+            # Idempotent, so the two paths can both run.
+            await db.mark_container(plan.parent_id, conn=conn)
         if plan.provisional:
             real: dict[str, str] = {}
             for key in plan.ids:

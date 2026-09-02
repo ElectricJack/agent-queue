@@ -25,7 +25,7 @@ from src.task_graph.layout.constants import (
 )
 from src.task_graph.layout.cost import container_cost
 from src.task_graph.layout.flow import FlowResult, flow_container
-from src.task_graph.layout.layering import break_cycles, minimal_ranks
+from src.task_graph.layout.layering import break_cycles, minimal_ranks_acyclic
 from src.task_graph.layout.model import ContainerScope, LayoutRow
 from src.task_graph.layout.order_key import between
 
@@ -296,7 +296,9 @@ def layout_container(scope: ContainerScope, *, mode: Mode, seed: int = 0) -> Con
     is_root = scope.container_id is None
     sizes = _sizes(scope)
     edges = break_cycles(scope.children, scope.sibling_edges)
-    minimal = minimal_ranks(scope.children, edges)
+    # ``edges`` is already acyclic — don't make ``minimal_ranks`` repeat the
+    # cycle search over the same list.
+    minimal = minimal_ranks_acyclic(scope.children, edges)
     rng = random.Random(seed)
     changed: set[str] = set()
 

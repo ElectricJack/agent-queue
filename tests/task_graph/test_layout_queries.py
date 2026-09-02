@@ -90,7 +90,7 @@ async def test_publish_is_atomic_and_bumps_version(db):
     await db.create_task(Task(id="a", project_id="p1", title="A", description=""))
     await db.create_task(Task(id="b", project_id="p1", title="B", description=""))
     ws = WriteSet(upserts=[row("a", 0, 0, "/a/"), row("b", 9, 0, "/b/")])
-    v1 = await db.publish_layout("p1", "all", ws, consumed_seq=None, extent=(10, 1), node_count_delta=None)
+    v1 = await db.publish_layout("p1", "all", ws, consumed_seq=None, extent=(10, 1))
     assert v1 == 1
     meta = await db.get_layout_meta("p1", "all")
     assert meta["node_count"] == 2 and meta["extent_w"] == 10
@@ -105,10 +105,10 @@ async def test_translation_moves_subtree_and_rewrites_cells(db):
         await db.create_task(Task(id=t, project_id="p1", title=t, description=""))
     ws = WriteSet(upserts=[row("e", 0, 0, "/e/", kind="container", w=3, h=3),
                            row("c", 0.5, 0.5, "/e/c/", container="e", depth=1)])
-    await db.publish_layout("p1", "all", ws, consumed_seq=None, extent=(3, 3), node_count_delta=None)
+    await db.publish_layout("p1", "all", ws, consumed_seq=None, extent=(3, 3))
     ws2 = WriteSet(upserts=[row("e", 8, 0, "/e/", kind="container", w=3, h=3)],
                    translations=[Translation(path_prefix="/e/", dx=8.0, dy=0.0)])
-    v = await db.publish_layout("p1", "all", ws2, consumed_seq=None, extent=(11, 3), node_count_delta=0)
+    v = await db.publish_layout("p1", "all", ws2, consumed_seq=None, extent=(11, 3))
     assert v == 2
     rows = await db.load_layout_rows("p1", "all", ["e", "c"])
     assert rows["e"].abs_x == 8.0 and rows["c"].abs_x == 8.5
@@ -138,8 +138,8 @@ async def test_subtree_aggregates(db):
         row("c2", 1, 0, "/e/c2/", "e", 1, kind="container"),
         row("g", 0, 0, "/e/c2/g/", "c2", 2),
     ])
-    await db.publish_layout("p1", "all", ws, consumed_seq=None, extent=(3, 3), node_count_delta=None)
-    agg = await db.subtree_aggregates("p1", "all", "/e/")
+    await db.publish_layout("p1", "all", ws, consumed_seq=None, extent=(3, 3))
+    agg = await db.subtree_aggregates("p1", "/e/")
     assert agg == {
         "children": 2, "descendants": 3, "completed": 1, "running": 1,
         "blocked": 1, "active": 2,
@@ -150,5 +150,55 @@ async def test_publish_clears_consumed_dirty_rows(db):
     async with db._engine.begin() as conn:
         await db.mark_layout_dirty("p1", ["x"], "task.created", conn=conn)
     seq, _ = await db.pop_layout_dirty("p1", min_age_seconds=0)
-    await db.publish_layout("p1", "all", WriteSet(), consumed_seq=seq, extent=(0, 0), node_count_delta=0)
+    await db.publish_layout("p1", "all", WriteSet(), consumed_seq=seq, extent=(0, 0))
+    assert await db.dirty_layout_projects() == []
+
+
+async def test_upsert_then_translation_of_the_same_node_leaves_no_ghost_cells(db):
+    """A node can be both upserted (at its pre-translation absolute frame)
+    and covered by a translation whose post-UPDATE re-SELECT reports its new
+    frame. Recording both positions would insert two sets of cells, and the
+    stale set would keep answering tile queries for a box nothing occupies."""
+    from src.task_graph.layout.flow import cells_for_box
+
+    for t in ("x", "b", "bc"):
+        await db.create_task(Task(id=t, project_id="p1", title=t, description=""))
+    ws = WriteSet(upserts=[
+        row("x", 0, 0, "/x/", kind="container", w=40, h=40),
+        row("b", 0, 0, "/x/b/", container="x", depth=1, kind="container", w=20, h=20),
+        row("bc", 1, 1, "/x/b/bc/", container="b", depth=2),
+    ])
+    await db.publish_layout("p1", "all", ws, consumed_seq=None, extent=(40, 40))
+    assert (await db.load_cells("p1", "all", ["bc"]))["bc"] == cells_for_box(1, 1, 1, 1)
+
+    # The child is upserted at its OLD frame while "/x/b/" translates by
+    # (+30, +20): the translation is what carries it to its real position.
+    ws2 = WriteSet(
+        upserts=[row("bc", 1, 1, "/x/b/bc/", container="b", depth=2)],
+        translations=[Translation(path_prefix="/x/b/", dx=30.0, dy=20.0)],
+    )
+    await db.publish_layout("p1", "all", ws2, consumed_seq=None, extent=(80, 80))
+    rows = await db.load_layout_rows("p1", "all", ["bc"])
+    assert (rows["bc"].abs_x, rows["bc"].abs_y) == (31.0, 21.0)
+    assert (await db.load_cells("p1", "all", ["bc"]))["bc"] == cells_for_box(31.0, 21.0, 1.0, 1.0)
+
+
+async def test_pop_layout_dirty_is_capped_and_leaves_the_rest(db):
+    async with db._engine.begin() as conn:
+        await db.mark_layout_dirty("p1", [f"t{i}" for i in range(1500)], "task.created", conn=conn)
+    seq, rows = await db.pop_layout_dirty("p1", min_age_seconds=0)
+    assert len(rows) == 1000
+    # The returned seq covers exactly the rows returned, so consuming it
+    # retires those and no more.
+    async with db._engine.begin() as conn:
+        await db.clear_layout_dirty("p1", seq, conn=conn)
+    seq2, rest = await db.pop_layout_dirty("p1", min_age_seconds=0)
+    assert len(rest) == 500 and seq2 > seq
+    assert {r[0] for r in rows} | {r[0] for r in rest} == {f"t{i}" for i in range(1500)}
+
+
+async def test_trim_layout_dirty_discards_everything(db):
+    async with db._engine.begin() as conn:
+        await db.mark_layout_dirty("p1", ["a", "b", "c"], "task.created", conn=conn)
+    assert await db.trim_layout_dirty() == 3
     assert await db.dirty_layout_projects() == []

@@ -373,7 +373,6 @@ async def test_full_layout_purges_rows_left_by_a_different_project(db):
     )
     await db.publish_layout(
         "p1", "all", WriteSet(upserts=[stray]), consumed_seq=None, extent=(1, 1),
-        node_count_delta=None,
     )
     assert "x" in await db.load_subtree_rows("p1", "all")
 
@@ -419,3 +418,87 @@ async def test_reparenting_freshly_created_task_does_not_relay_root(db, monkeypa
     assert versions["all"] is not None
     assert None not in calls, f"root was re-laid unnecessarily: {calls}"
     assert "e" in calls
+
+
+async def test_deleting_middle_child_closes_the_gap_and_updates_aggregates(db):
+    """Delete drops the task's layout rows in its own transaction, so the
+    driver can no longer find the former container from a stored row — the
+    delete path has to mark the surviving PARENT as well. Without that the
+    remaining children keep their old coordinates (a hole where the deleted
+    card was) and the epic's aggregates stay at the pre-delete counts."""
+    kids = await seed_epic(db, n=3)
+    drv = LayoutDriver(db)
+    await drv.full_layout("p1", "all")
+    await drv.full_layout("p1", "active")
+    await drv.process_dirty("p1", min_age_seconds=0)
+
+    await db.delete_task(kids[1])
+    await drv.process_dirty("p1", min_age_seconds=0)
+
+    rows = await db.load_layout_rows("p1", "all", ["e", *kids])
+    assert kids[1] not in rows
+    assert rows[kids[0]].rel_x == 0.0
+    assert rows[kids[2]].rel_x == pytest.approx(1.2)
+    assert rows["e"].agg_children == 2 and rows["e"].agg_descendants == 2
+
+
+async def test_archiving_a_completed_child_closes_the_gap_and_updates_aggregates(db):
+    kids = await seed_epic(db, n=3)
+    drv = LayoutDriver(db)
+    await drv.full_layout("p1", "all")
+    await drv.full_layout("p1", "active")
+    await drv.process_dirty("p1", min_age_seconds=0)
+
+    await db.transition_task(kids[1], TaskStatus.COMPLETED, force=True)
+    assert await db.archive_task(kids[1])
+    await drv.process_dirty("p1", min_age_seconds=0)
+
+    rows = await db.load_layout_rows("p1", "all", ["e", *kids])
+    assert kids[1] not in rows
+    assert rows[kids[0]].rel_x == 0.0
+    assert rows[kids[2]].rel_x == pytest.approx(1.2)
+    assert rows["e"].agg_children == 2 and rows["e"].agg_descendants == 2
+
+
+async def test_deleting_a_nested_container_updates_its_parents_aggregates(db):
+    await seed_epic(db, n=1)  # e / e-c0
+    await db.create_task(Task(id="pkg", project_id="p1", title="pkg", description=""))
+    async with db._engine.begin() as conn:
+        await db.set_parent("pkg", "e", conn=conn)
+    for i in range(2):
+        tid = f"pkg-c{i}"
+        await db.create_task(Task(id=tid, project_id="p1", title=tid, description=""))
+        async with db._engine.begin() as conn:
+            await db.set_parent(tid, "pkg", conn=conn)
+    drv = LayoutDriver(db)
+    await drv.full_layout("p1", "all")
+    await drv.full_layout("p1", "active")
+    await drv.process_dirty("p1", min_age_seconds=0)
+    before = (await db.load_layout_rows("p1", "all", ["e"]))["e"]
+    assert (before.agg_children, before.agg_descendants) == (2, 4)
+
+    await db.delete_task("pkg", cascade=True)
+    await drv.process_dirty("p1", min_age_seconds=0)
+
+    rows = await db.load_subtree_rows("p1", "all")
+    assert "pkg" not in rows and "pkg-c0" not in rows
+    assert rows["e"].agg_children == 1 and rows["e"].agg_descendants == 1
+
+
+async def test_tidy_job_budget_falls_back_to_placement_only(db, caplog):
+    """An already-expired job budget still lays out every node (§4.7): the
+    remaining containers just get placement without the improvement loop,
+    and the driver says so exactly once."""
+    kids = await seed_epic(db, n=3)
+    with caplog.at_level("WARNING", logger="src.task_graph.layout.driver"):
+        await LayoutDriver(db, tidy_job_seconds=0).full_layout("p1", "all")
+    assert set(await db.load_layout_rows("p1", "all", ["e", *kids])) == {"e", *kids}
+    assert len([r for r in caplog.records if "tidy job budget exhausted" in r.getMessage()]) == 1
+
+
+async def test_generous_tidy_job_budget_does_not_warn(db, caplog):
+    kids = await seed_epic(db, n=3)
+    with caplog.at_level("WARNING", logger="src.task_graph.layout.driver"):
+        await LayoutDriver(db, tidy_job_seconds=600).full_layout("p1", "all")
+    assert not [r for r in caplog.records if "tidy job budget" in r.getMessage()]
+    assert set(await db.load_layout_rows("p1", "all", ["e", *kids])) == {"e", *kids}
