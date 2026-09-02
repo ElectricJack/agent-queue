@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-
 import pytest
 
 from tests.playbook_v2_helpers import twin
@@ -35,8 +33,34 @@ def test_artifact_store_exports_the_canonical_storage_error_family():
         assert issubclass(store_error, run_state.PlaybookStorageError)
 
 
+def test_canonical_bytes_match_package_two():
+    from src.playbooks.artifact_store import ArtifactStore
+    from src.playbooks.definition import canonical_bytes
+
+    definition = _definition()
+    assert ArtifactStore.canonical_bytes(definition) == canonical_bytes(definition)
+
+
+def test_put_rejects_invalid_definition_before_writing(tmp_path):
+    from pydantic import ValidationError
+
+    from src.playbooks.artifact_store import ArtifactStore
+
+    store = ArtifactStore(str(tmp_path))
+    with pytest.raises(ValidationError):
+        store.put(
+            {"id": "not-a-valid-v2-definition"},
+            source_digest="sha256:" + "a" * 64,
+            contract_fingerprint="sha256:" + "b" * 64,
+            compiler_build="test-build",
+        )
+
+    assert not (tmp_path / "artifacts").exists()
+
+
 def test_put_writes_hash_named_canonical_bytes_and_is_idempotent(tmp_path):
     from src.playbooks.artifact_store import ArtifactStore
+    from src.playbooks.definition import artifact_sha256, canonical_bytes
 
     store = ArtifactStore(str(tmp_path))
     definition = _definition()
@@ -47,9 +71,11 @@ def test_put_writes_hash_named_canonical_bytes_and_is_idempotent(tmp_path):
         compiler_build="test-build",
     )
 
-    expected = hashlib.sha256(store.canonical_bytes(definition)).hexdigest()
-    assert ref.artifact_sha256 == f"sha256:{expected}"
-    assert (tmp_path / "artifacts" / f"{expected}.json").read_bytes() == store.canonical_bytes(definition)
+    expected = artifact_sha256(definition)
+    assert ref.artifact_sha256 == expected
+    assert (tmp_path / "artifacts" / f"{expected[7:]}.json").read_bytes() == canonical_bytes(
+        definition
+    )
     assert store.put(
         definition,
         source_digest="sha256:" + "a" * 64,
