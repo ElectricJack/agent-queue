@@ -562,6 +562,11 @@ class TestDriftDetection:
             "gate_resolve",
             "gate_show",
             "project_ready",
+            # Harness-hook receiver behind ``aq subagent event --hook-json``
+            # (src/commands/surface_commands.py).  Fired by the harness's own
+            # SubagentStart/SubagentStop hooks, not by the LLM, so it is left
+            # to auto-discovery rather than given a rich schema.
+            "subagent_event",
         }
         tools = await mcp_server.list_tools()
         extra = {t.name for t in tools} - {d["name"] for d in _ALL_TOOL_DEFINITIONS}
@@ -658,6 +663,11 @@ class TestDriftDetection:
             "gate_resolve",
             "gate_show",
             "project_ready",
+            # Harness-hook receiver behind ``aq subagent event --hook-json``
+            # (src/commands/surface_commands.py).  Fired by the harness's own
+            # SubagentStart/SubagentStop hooks, not by the LLM, so it is left
+            # to auto-discovery rather than given a rich schema.
+            "subagent_event",
             # Dev/e2e credential minter (src/commands/session_commands.py).
             # Excluded from MCP outright (DEFAULT_EXCLUDED_COMMANDS) and
             # elevated/local-only on HTTP, so it carries a codegen-only

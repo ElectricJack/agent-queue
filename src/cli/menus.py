@@ -249,7 +249,7 @@ def task_creation_wizard(
     console.print()
     console.print("[bold green]✅ Task configuration complete![/]")
 
-    result = {
+    result: dict[str, Any] = {
         "project_id": project_id,
         "title": title,
         "description": description,
