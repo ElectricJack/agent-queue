@@ -948,6 +948,16 @@ _ALL_TOOL_DEFINITIONS = [
                         "ensuring pipeline pins the executing profile directly."
                     ),
                 },
+                "intelligence_class": {
+                    "type": "string",
+                    "description": (
+                        "Vault intelligence class for the task on create. A "
+                        "pinned profile is not a route on its own: without an "
+                        "explicit class the task waits for the assignment "
+                        "playbook to choose one. Both apply only when this "
+                        "call creates the task."
+                    ),
+                },
             },
             "required": ["project_id", "dedup_key", "title"],
         },
