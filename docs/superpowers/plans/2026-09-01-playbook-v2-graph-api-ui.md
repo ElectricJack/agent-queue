@@ -1792,6 +1792,38 @@ facts, recorded so the loop can be stopped rather than re-run:
   of a container. Filed as its own task (see the task comment); not fixed
   here because it is orchestrator scope, not Package 5.
 
+### 16.7 Re-run on 2026-09-02 at `5a3c31b0` (task solid-harbor.46.1, eighth attempt)
+
+`origin/main` has moved to `5a3c31b0` — PR #191 (Package 3 rework) merged.
+The §3.2 checks are otherwise unchanged from §16.5/§16.6:
+
+- **Check 1.** Present on `main`: `src/playbooks/artifact_store.py`,
+  `src/playbooks/artifact_ref.py`, `src/playbooks/activation.py`,
+  `src/database/queries/playbook_artifact_queries.py`. Missing:
+  `src/playbooks/definition.py` (P2), `src/playbooks/explanation.py` and
+  `src/commands/contracts/registry.py` (P1), `src/playbooks/engine.py`,
+  `src/playbooks/receipts.py` and
+  `src/database/queries/playbook_run_queries.py` (P4).
+- **Check 2.** `playbook_activations` present with `activated_by`;
+  `playbook_pending_events` still absent from `src/database/tables.py`.
+- **`origin/*` sweep.** 289 refs; no ref carries any Package 1, 2 or 4 file.
+
+One thing did change, and it closes the §16.5 caveat: with #191 merged, the
+Package 3 surfaces the seam would bind to are now stable on `main`. They are
+still not sufficient on their own. `ArtifactStore.load` is typed
+`PlaybookDefinitionT`, which degrades to a raw `json.loads` dict while
+`src/playbooks/definition.py` is absent; `PlaybookArtifactQueryMixin` exposes
+only `upsert_playbook_artifact`, `get_playbook_artifact` and
+`set_playbook_activation` — there is still no activation *read*, and no run or
+receipt query at all. So item 1 of the task (artifact load **plus** activation
+read **plus** V2 run and receipts read) cannot be completed from P3 alone, and
+items 2–4 consume the P2 definition model and P1's `explain_step`, which §3.3
+forbids inventing here.
+
+Status is therefore unchanged: this package stays blocked on
+`solid-harbor.26` (P1), `solid-harbor.30` (P2) and `solid-harbor.39` (P4),
+and §9's `playbook_pending_events` half stays with `solid-harbor.36`.
+
 ---
 
 ## 17. Open items for the next child plans
