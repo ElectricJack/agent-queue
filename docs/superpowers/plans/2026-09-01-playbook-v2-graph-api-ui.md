@@ -1745,6 +1745,27 @@ task to the Package 1, 2 and 4 tasks and each attempt re-derives the same
 result. The next attempt should be scheduled only after those three packages
 merge, and should start at §3.2.
 
+### 16.5 Re-run on 2026-09-02 at `d8086cb9` (task solid-harbor.46.1, fourth attempt)
+
+`origin/main` had not moved since §16.4, and the four §3.2 checks and the
+`origin/*` sweep gave the same result. Two facts recorded here so the next
+attempt does not re-derive them:
+
+- `ArtifactStore.load` (`src/playbooks/artifact_store.py`) returns the raw
+  JSON `dict` whenever `src.playbooks.definition` is absent, and
+  `playbook_artifact_queries.py` exposes only `upsert`/`get` artifact and
+  `set_playbook_activation` — there is no activation read. So even the
+  Package 3-only slice of item 1 (`playbook_activation_health`) has no input
+  model and no query to sit on without inventing Package 2/3 shapes (§3.3).
+- Open PR #191 (`aq/solid-harbor.35-rework`) reworks Package 3's
+  `artifact_store.py` and `playbook_artifact_queries.py`. It adds none of the
+  Package 1/2/4 files and no activation read query; the seam should not be
+  wired to Package 3 surfaces until it merges.
+
+This session's scope cannot list the queue or read any other task, so the
+missing `blocks` edges to the Package 1, 2 and 4 tasks could not be added
+from here; a human was asked (via `aq message send`) to add them and reopen.
+
 ---
 
 ## 17. Open items for the next child plans
