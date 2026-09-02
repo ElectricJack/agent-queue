@@ -1706,6 +1706,7 @@ HOT_RELOADABLE_SECTIONS = {
     "swarm",
     "pricing",
     "surface",
+    "graph_layout",
 }
 """Config sections that can be safely updated at runtime without restart."""
 
@@ -1768,6 +1769,7 @@ _SECTION_FIELDS = {
     "state_machine",
     "work_graph",
     "swarm",
+    "graph_layout",
     "agent_profiles",
     "global_token_budget_daily",
     "max_daily_playbook_tokens",
