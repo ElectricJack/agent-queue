@@ -460,6 +460,51 @@ async def test_archiving_a_completed_child_closes_the_gap_and_updates_aggregates
     assert rows["e"].agg_children == 2 and rows["e"].agg_descendants == 2
 
 
+async def test_deleting_a_root_task_closes_the_gap(db):
+    """Root-level tasks have no parent, so ``_layout_parent_ids`` marks
+    nothing but the deleted task itself — the driver has to fall back to
+    dirtying root directly, or the surviving siblings keep their stale
+    rel_x and root's extent never shrinks. Regression test for the
+    ``_seed_queue`` "task is gone" branch."""
+    for t in ("a", "b", "c"):
+        await db.create_task(Task(id=t, project_id="p1", title=t, description=""))
+    drv = LayoutDriver(db)
+    await drv.full_layout("p1", "all")
+    await drv.full_layout("p1", "active")
+    await drv.process_dirty("p1", min_age_seconds=0)
+    meta_before = await db.get_layout_meta("p1", "all")
+
+    await db.delete_task("a")
+    await drv.process_dirty("p1", min_age_seconds=0)
+
+    for variant in ("all", "active"):
+        rows = await db.load_layout_rows("p1", variant, ["b", "c"])
+        assert rows["b"].rel_x == 0.0
+        assert rows["c"].rel_x == pytest.approx(1.2)
+    meta_after = await db.get_layout_meta("p1", "all")
+    assert meta_after["extent_w"] < meta_before["extent_w"]
+
+
+async def test_archiving_a_completed_root_task_closes_the_gap(db):
+    for t in ("a", "b", "c"):
+        await db.create_task(Task(id=t, project_id="p1", title=t, description=""))
+    drv = LayoutDriver(db)
+    await drv.full_layout("p1", "all")
+    await drv.full_layout("p1", "active")
+    await drv.process_dirty("p1", min_age_seconds=0)
+    meta_before = await db.get_layout_meta("p1", "all")
+
+    await db.transition_task("a", TaskStatus.COMPLETED, force=True)
+    assert await db.archive_task("a")
+    await drv.process_dirty("p1", min_age_seconds=0)
+
+    rows = await db.load_layout_rows("p1", "all", ["b", "c"])
+    assert rows["b"].rel_x == 0.0
+    assert rows["c"].rel_x == pytest.approx(1.2)
+    meta_after = await db.get_layout_meta("p1", "all")
+    assert meta_after["extent_w"] < meta_before["extent_w"]
+
+
 async def test_deleting_a_nested_container_updates_its_parents_aggregates(db):
     await seed_epic(db, n=1)  # e / e-c0
     await db.create_task(Task(id="pkg", project_id="p1", title="pkg", description=""))

@@ -489,6 +489,13 @@ class _IncrementalBatch:
                 row = await self._db_row(tid)
                 if row is not None:
                     dirty.add(row.container_id)
+                elif reason in ("task.deleted", "task.archived"):
+                    # A ROOT-level task's layout row is deleted in the same
+                    # transaction as the delete/archive mark, so there's no
+                    # stored row left to read container_id from. Fall back to
+                    # dirtying root directly — a task with a parent is still
+                    # covered above because its row (and its parent's) survive.
+                    dirty.add(None)
             if reason.startswith("parent.changed:"):
                 # Dirty the container the task's STORED row actually sits
                 # under in this variant, not the reason string's old-parent
