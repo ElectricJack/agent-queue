@@ -15,6 +15,7 @@ import { useLayoutTiles } from "./useLayoutTiles";
 import { refetchLayout, registerLayoutRefetch } from "./liveRegistry";
 import { toFlowElements, type FlowHandlers } from "./flowNodes";
 import { maxDepthForZoom, sizePx, toPx, worldRectFromViewport, type Rect } from "./units";
+import { DENSITY_STORAGE_KEY, DEFAULT_DENSITY, storedDensity, type LayoutDensity } from "./density";
 import {
   NODE_HEIGHT, NODE_WIDTH, type ContainerNodeData, type GraphViewProps, type GraphWorker,
   type SelectableTask, type TaskNodeData,
@@ -92,6 +93,7 @@ interface LayerProps {
   handlers: FlowHandlers;
   onBudgetExceeded: () => void;
   onElements: (projectId: string, elements: LayerElements) => void;
+  density: LayoutDensity;
 }
 
 function nearestIn(nodes: Node[], from: Node, dir: "up" | "down" | "left" | "right"): Node | null {
@@ -116,15 +118,15 @@ function nearestIn(nodes: Node[], from: Node, dir: "up" | "down" | "left" | "rig
  * project isolated: only the layer whose store changed re-runs its conversion.
  */
 function ProjectLayer({
-  projectId, projectNames, offsetY, params, viewport, width, height, expanded, handlers, onBudgetExceeded, onElements,
+  projectId, projectNames, offsetY, params, viewport, width, height, expanded, handlers, onBudgetExceeded, onElements, density,
 }: LayerProps) {
   // Memoised per layer: `useLayoutTiles` re-runs its viewport effect on every
   // new rect identity, so a fresh object per render would refetch needlessly.
   const rect = useMemo<Rect | null>(() => {
     if (!viewport || width === 0) return null;
-    const world = worldRectFromViewport(viewport, width, height);
+    const world = worldRectFromViewport(viewport, width, height, density);
     return { x0: world.x0, y0: world.y0 - offsetY, x1: world.x1, y1: world.y1 - offsetY };
-  }, [viewport, width, height, offsetY]);
+  }, [viewport, width, height, offsetY, density]);
 
   const budget = useRef(onBudgetExceeded);
   budget.current = onBudgetExceeded;
@@ -137,7 +139,7 @@ function ProjectLayer({
   );
 
   useEffect(() => {
-    const { nodes, edges } = toFlowElements(store, { projectId, offsetY, expanded, handlers, projectNames });
+    const { nodes, edges } = toFlowElements(store, { projectId, offsetY, expanded, handlers, projectNames, density });
     // Docking is resolved server-side, so a worker's `docked_at` is already a
     // visible node id.
     const workers: GraphWorker[] = store.workers.map((worker) => ({
@@ -145,7 +147,7 @@ function ProjectLayer({
       in_collapsed: worker.in_collapsed, profile_id: null, session_id: null,
     }));
     onElements(projectId, { nodes, edges, workers, pending, loaded, error });
-  }, [store, pending, loaded, error, projectId, projectNames, offsetY, expanded, handlers, onElements]);
+  }, [store, pending, loaded, error, projectId, projectNames, offsetY, expanded, handlers, onElements, density]);
 
   return null;
 }
@@ -164,6 +166,7 @@ function Inner(props: LayoutCanvasProps) {
   const [layers, setLayers] = useState<ReadonlyMap<string, LayerElements>>(new Map());
   const [localSelectedId, setLocalSelectedId] = useState<string | null>(null);
   const [kbFocusId, setKbFocusId] = useState<string | null>(null);
+  const [density, setDensity] = useState<LayoutDensity>(storedDensity);
   const frame = useRef<number | null>(null);
   const trailing = useRef<Viewport | null>(null);
 
@@ -178,6 +181,7 @@ function Inner(props: LayoutCanvasProps) {
     return () => observer.disconnect();
   }, []);
   useEffect(() => () => { if (frame.current !== null) cancelAnimationFrame(frame.current); }, []);
+  useEffect(() => { window.localStorage.setItem(DENSITY_STORAGE_KEY, density); }, [density]);
 
   // Leading-edge rAF throttle: the first move of a gesture lands immediately
   // (so the level of detail reacts at once) and the rest coalesce into the
@@ -293,7 +297,7 @@ function Inner(props: LayoutCanvasProps) {
     const playbookNodes: Node[] = playbooks.map((playbook, i) => ({
       id: `playbook:${playbook.id}`,
       type: "playbook",
-      position: toPx(i % PLAYBOOKS_PER_ROW, -1.5 - Math.floor(i / PLAYBOOKS_PER_ROW) * 1.3),
+      position: toPx(i % PLAYBOOKS_PER_ROW, -1.5 - Math.floor(i / PLAYBOOKS_PER_ROW) * 1.3, density),
       width: NODE_WIDTH,
       height: NODE_HEIGHT,
       draggable: false,
@@ -303,7 +307,7 @@ function Inner(props: LayoutCanvasProps) {
     const headers: Node[] = projectIds.length > 1 ? projectIds.map((pid) => ({
       id: `project:${pid}`,
       type: "projectHeader",
-      position: toPx(0, (offsets.get(pid) ?? 0) - 0.4),
+      position: toPx(0, (offsets.get(pid) ?? 0) - 0.4, density),
       selectable: false,
       draggable: false,
       connectable: false,
@@ -317,7 +321,7 @@ function Inner(props: LayoutCanvasProps) {
       selected: node.id === selectedId,
       className: node.id === kbFocusId ? [node.className, "aq-focused"].filter(Boolean).join(" ") : node.className,
     }));
-  }, [playbooks, projectIds, offsets, layers, selectedId, kbFocusId, openPlaybook, projectNames]);
+  }, [playbooks, projectIds, offsets, layers, selectedId, kbFocusId, openPlaybook, projectNames, density]);
   const edges = useMemo(
     () => projectIds.flatMap((pid) => layers.get(pid)?.edges ?? []),
     [projectIds, layers],
@@ -349,21 +353,21 @@ function Inner(props: LayoutCanvasProps) {
   const focusNode = focusData && !("pending" in focusData) ? focusData : undefined;
   useEffect(() => {
     if (!focusId || !focusNode) return;
-    const position = toPx(focusNode.node.x, focusNode.node.y + focusOffset);
-    const box = sizePx(focusNode.node.w, focusNode.node.h);
+    const position = toPx(focusNode.node.x, focusNode.node.y + focusOffset, density);
+    const box = sizePx(focusNode.node.w, focusNode.node.h, density);
     fitBounds({ x: position.x, y: position.y, width: box.width, height: box.height }, { padding: 0.1, duration: 0 });
-  }, [focusId, focusNode, fitBounds, focusOffset]);
+  }, [focusId, focusNode, fitBounds, focusOffset, density]);
 
   // Jumping to a search result only needs the hit's box: the tiles covering it
   // load from the viewport change like any other pan.
   const jumpOffset = offsets.get(focusProject ?? "") ?? 0;
   useEffect(() => {
     if (!jumpTarget) return;
-    const position = toPx(jumpTarget.x, jumpTarget.y + jumpOffset);
-    const box = sizePx(jumpTarget.w, jumpTarget.h);
+    const position = toPx(jumpTarget.x, jumpTarget.y + jumpOffset, density);
+    const box = sizePx(jumpTarget.w, jumpTarget.h, density);
     fitBounds({ x: position.x, y: position.y, width: box.width, height: box.height }, { padding: 0.4, duration: 300 });
     setKbFocusId(jumpTarget.id);
-  }, [jumpTarget, jumpOffset, fitBounds]);
+  }, [jumpTarget, jumpOffset, fitBounds, density]);
 
   const openNode = (node: Node) => {
     if (node.type === "playbook") openPlaybook(String((node.data.playbook as { id: string }).id));
@@ -434,7 +438,7 @@ function Inner(props: LayoutCanvasProps) {
         {projectIds.map((pid) => (
           <ProjectLayer key={pid} projectId={pid} projectNames={projectNames} offsetY={offsets.get(pid) ?? 0} params={params}
             viewport={viewport} width={size.w} height={size.h} expanded={expandedTaskIds} handlers={handlers}
-            onBudgetExceeded={onBudgetExceeded} onElements={onElements} />
+            onBudgetExceeded={onBudgetExceeded} onElements={onElements} density={density} />
         ))}
         <ReactFlow
           nodes={nodes}
@@ -463,6 +467,17 @@ function Inner(props: LayoutCanvasProps) {
         >
           <Background gap={24} color="#1f2937" />
           <Controls position="bottom-right" showInteractive={false} />
+          <Panel position="top-right">
+            <label className="rounded border border-gray-700 bg-gray-950/95 px-2 py-1 text-xs text-gray-300">
+              Density
+              <select aria-label="Graph density" value={density} onChange={(event) => setDensity(event.target.value as LayoutDensity)}
+                className="ml-2 bg-transparent text-xs text-white outline-none">
+                <option value="compact">Compact</option>
+                <option value={DEFAULT_DENSITY}>Comfortable</option>
+                <option value="spacious">Spacious</option>
+              </select>
+            </label>
+          </Panel>
           <AgentAvatarLayer agents={workers} />
           {relationTypes.length > 0 && (
             <Panel position="bottom-left">

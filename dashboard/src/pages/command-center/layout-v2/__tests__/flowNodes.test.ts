@@ -27,6 +27,26 @@ describe("toFlowElements", () => {
     expect(edges).toHaveLength(1);
     expect(edges[0]).toMatchObject({ source: "c", target: "z", label: "×2", sourceHandle: "out-right", targetHandle: "in-left" });
   });
+  it("keeps a wrapped serial chain in two rows and routes the reverse row through left handles", () => {
+    const store = mergeTiles(emptyStore(), ["0:0"], {
+      nodes: [
+        n("a", "card", 0, 0), n("b", "card", 1.15, 0), n("c", "card", 2.3, 0), n("d", "card", 3.45, 0),
+        n("e", "card", 3.5, 1.22), n("f", "card", 2.35, 1.22),
+      ],
+      edges: [
+        { from: "b", to: "a", dep_type: "blocks", description: null, count: 1 },
+        { from: "c", to: "b", dep_type: "blocks", description: null, count: 1 },
+        { from: "d", to: "c", dep_type: "blocks", description: null, count: 1 },
+        { from: "e", to: "d", dep_type: "blocks", description: null, count: 1 },
+        { from: "f", to: "e", dep_type: "blocks", description: null, count: 1 },
+      ], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+    } as never);
+    const { nodes, edges } = toFlowElements(store, ctx);
+    expect(nodes.find((node) => node.id === "e")!.position.y).toBeGreaterThan(nodes.find((node) => node.id === "d")!.position.y);
+    expect(edges).toHaveLength(5);
+    expect(edges.find((edge) => edge.source === "d" && edge.target === "e")).toMatchObject({ sourceHandle: "out-bottom", targetHandle: "in-top" });
+    expect(edges.find((edge) => edge.source === "e" && edge.target === "f")).toMatchObject({ sourceHandle: "out-left", targetHandle: "in-right" });
+  });
   it("renders stubs as dashed task nodes and drops edges with no endpoints", () => {
     const store = mergeTiles(emptyStore(), ["0:0"], {
       nodes: [n("z", "card", 0, 0)],

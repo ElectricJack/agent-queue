@@ -3,17 +3,17 @@ import { Handle, Position } from "@xyflow/react";
 import type { ContainerNodeData } from "../types";
 import { UNIT_H } from "./units";
 
-const HEADER_PX = 0.35 * UNIT_H;
-
 export interface ContainerNodeProps { id: string; data: ContainerNodeData; selected?: boolean }
 
 export default function ContainerNode({ data, selected }: ContainerNodeProps) {
   const { node, onFocus, onToggleChildren, onOpenTask } = data;
+  const headerPx = 0.35 * UNIT_H * (data.layoutScale ?? 1);
   return (
     <div data-container-id={node.id} className={`h-full w-full rounded-lg border border-white/15 bg-white/[0.03] ${selected ? "outline outline-2 outline-white" : ""} ${node.context_only ? "border-dashed" : ""}`}>
       <Handle id="in-left" type="target" position={Position.Left} isConnectable={false} />
+      <Handle id="in-right" type="target" position={Position.Right} isConnectable={false} />
       <Handle id="in-top" type="target" position={Position.Top} isConnectable={false} />
-      <div className="flex items-center gap-2 px-2 text-[11px] text-gray-200" style={{ height: HEADER_PX }}>
+      <div className="flex items-center gap-2 px-2 text-[11px] text-gray-200" style={{ height: headerPx }}>
         <button type="button" aria-label={`Open task ${node.title}`} data-task-id={node.id}
           className="nodrag nopan min-w-0 flex-1 truncate text-left font-medium hover:underline"
           onClick={(e) => { e.stopPropagation(); onOpenTask?.(node.id, { id: node.id, playbook_run_id: node.playbook_run_id }); }}>{node.title}</button>
@@ -26,6 +26,7 @@ export default function ContainerNode({ data, selected }: ContainerNodeProps) {
         <button type="button" aria-label={`Collapse children of ${node.title}`} aria-expanded={true} className="nodrag nopan rounded p-0.5 hover:bg-white/10"
           onClick={(e) => { e.stopPropagation(); onToggleChildren?.(node.id); }}><ChevronDownIcon className="h-3.5 w-3.5" /></button>
       </div>
+      <Handle id="out-left" type="source" position={Position.Left} isConnectable={false} />
       <Handle id="out-right" type="source" position={Position.Right} isConnectable={false} />
       <Handle id="out-bottom" type="source" position={Position.Bottom} isConnectable={false} />
     </div>

@@ -25,11 +25,12 @@ interface CardProps {
   data: TaskNodeData;
   selected?: boolean;
   fluid?: boolean;
+  layoutScale?: number;
 }
 
 /** The task action and expansion action are sibling buttons, so every part
  *  of the card remains clickable without nested interactive elements. */
-export function TaskCard({ data, selected = false, fluid = false }: CardProps) {
+export function TaskCard({ data, selected = false, fluid = false, layoutScale = 1 }: CardProps) {
   const { task, gates, hierarchy, onOpenTask, onToggleChildren, onFocus } = data;
   const blocked = isTaskBlocked(task);
   const tone = STATUS_TONE[task.status] ?? STATUS_TONE.DEFINED;
@@ -47,7 +48,7 @@ export function TaskCard({ data, selected = false, fluid = false }: CardProps) {
     <div
       data-task-card
       className={`relative flex flex-col rounded-md border text-xs shadow ${tone} ${urgent} ${hierarchy.contextOnly ? "border-dashed" : ""} ${selected ? "outline outline-2 outline-white" : ""}`}
-      style={{ width: fluid ? "100%" : NODE_WIDTH, height: NODE_HEIGHT }}
+      style={{ width: fluid ? "100%" : NODE_WIDTH * layoutScale, height: NODE_HEIGHT * layoutScale }}
     >
       <button
         type="button"
@@ -138,8 +139,10 @@ export default function TaskNode({ data, selected }: NodeProps<TaskNodeType>) {
   return (
     <>
       <Handle id="in-left" type="target" position={Position.Left} isConnectable={false} />
+      <Handle id="in-right" type="target" position={Position.Right} isConnectable={false} />
       <Handle id="in-top" type="target" position={Position.Top} isConnectable={false} />
-      <TaskCard data={data} selected={selected} />
+      <TaskCard data={data} selected={selected} layoutScale={data.layoutScale} />
+      <Handle id="out-left" type="source" position={Position.Left} isConnectable={false} />
       <Handle id="out-right" type="source" position={Position.Right} isConnectable={false} />
       <Handle id="out-bottom" type="source" position={Position.Bottom} isConnectable={false} />
     </>

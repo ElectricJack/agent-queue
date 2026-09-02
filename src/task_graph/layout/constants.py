@@ -4,12 +4,16 @@ from __future__ import annotations
 
 CARD_W = 1.0
 CARD_H = 1.0
-SIBLING_GAP = 0.2
-LINE_GAP = 0.3
-PADDING = 0.15
+# Comfortable is deliberately compact enough for ordinary 10–30 card epics
+# without crowding arrowheads or container chrome.  The dashboard can scale
+# this presentation locally, but these values remain the stable, persisted
+# world-coordinate default.
+SIBLING_GAP = 0.15
+LINE_GAP = 0.22
+PADDING = 0.1
 HEADER_H = 0.35
-TARGET_ROW_WIDTH = 4.0
-TARGET_ROW_WIDTH_ROOT = 6.0
+TARGET_ROW_WIDTH = 4.5
+TARGET_ROW_WIDTH_ROOT = 7.0
 GROWTH_BANDS = (1.5, 3.0, 6.0, 12.0, 24.0, 48.0)
 CELL_SIZE = 8.0
 

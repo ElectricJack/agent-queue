@@ -96,6 +96,43 @@ def _sizes(scope: ContainerScope) -> dict[str, tuple[float, float]]:
     return sizes
 
 
+def _serial_chains(ordered: list[list[str]], edges: list[tuple[str, str]]) -> tuple[tuple[str, ...], ...]:
+    """Return consecutive singleton ranks linked as a dependency chain.
+
+    A narrow unrelated stack must keep its normal rank flow.  Only a direct
+    blocker → dependent edge between every consecutive singleton rank earns
+    the compact serpentine treatment.
+    """
+    links = set(edges)
+    chains: list[tuple[str, ...]] = []
+    index = 0
+    while index < len(ordered):
+        if len(ordered[index]) != 1:
+            index += 1
+            continue
+        chain = [ordered[index][0]]
+        cursor = index + 1
+        while cursor < len(ordered):
+            if not ordered[cursor]:
+                # Incremental placement may use one rank of slack.  Empty
+                # ordinal ranks do not interrupt the visual dependency run.
+                cursor += 1
+                continue
+            if len(ordered[cursor]) != 1:
+                break
+            dependent = ordered[cursor][0]
+            if (dependent, chain[-1]) not in links:
+                break
+            chain.append(dependent)
+            cursor += 1
+        if len(chain) > 1:
+            chains.append(tuple(chain))
+            index = cursor
+        else:
+            index += 1
+    return tuple(chains)
+
+
 def _kind(scope: ContainerScope, cid: str) -> str:
     if cid in scope.stub_ids:
         return "stub"
@@ -135,7 +172,9 @@ def _rows(scope: ContainerScope, ordinals, flow: FlowResult, sizes) -> dict[str,
 
 def _evaluate(ordinals, scope, sizes, edges, minimal, is_root) -> tuple[float, FlowResult]:
     ordered = _ordered_from(ordinals)
-    flow = flow_container(ordered, sizes, is_root=is_root)
+    flow = flow_container(
+        ordered, sizes, is_root=is_root, serpentine_chains=_serial_chains(ordered, edges),
+    )
     cost = container_cost(ordered, flow.positions, edges, minimal, flow.lines_per_rank)
     return cost, flow
 

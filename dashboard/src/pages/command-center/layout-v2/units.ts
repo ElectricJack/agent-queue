@@ -1,4 +1,5 @@
 import { NODE_HEIGHT, NODE_WIDTH } from "../types";
+import { DENSITY_SCALE, type LayoutDensity } from "./density";
 
 export const UNIT_W = NODE_WIDTH;
 export const UNIT_H = NODE_HEIGHT;
@@ -7,14 +8,21 @@ export const NODE_BUDGET = 400;
 export type Rect = { x0: number; y0: number; x1: number; y1: number };
 export type CellKey = `${number}:${number}`;
 
-export const toPx = (x: number, y: number) => ({ x: x * UNIT_W, y: y * UNIT_H });
-export const sizePx = (w: number, h: number) => ({ width: w * UNIT_W, height: h * UNIT_H });
+const scaleFor = (density: LayoutDensity = "comfortable") => DENSITY_SCALE[density];
 
-export function worldRectFromViewport(vp: { x: number; y: number; zoom: number }, widthPx: number, heightPx: number): Rect {
-  const x0 = (0 - vp.x) / vp.zoom / UNIT_W;
-  const y0 = (0 - vp.y) / vp.zoom / UNIT_H;
-  const x1 = (widthPx - vp.x) / vp.zoom / UNIT_W;
-  const y1 = (heightPx - vp.y) / vp.zoom / UNIT_H;
+export const toPx = (x: number, y: number, density?: LayoutDensity) => ({
+  x: x * UNIT_W * scaleFor(density), y: y * UNIT_H * scaleFor(density),
+});
+export const sizePx = (w: number, h: number, density?: LayoutDensity) => ({
+  width: w * UNIT_W * scaleFor(density), height: h * UNIT_H * scaleFor(density),
+});
+
+export function worldRectFromViewport(vp: { x: number; y: number; zoom: number }, widthPx: number, heightPx: number, density?: LayoutDensity): Rect {
+  const scale = scaleFor(density);
+  const x0 = (0 - vp.x) / vp.zoom / UNIT_W / scale;
+  const y0 = (0 - vp.y) / vp.zoom / UNIT_H / scale;
+  const x1 = (widthPx - vp.x) / vp.zoom / UNIT_W / scale;
+  const y1 = (heightPx - vp.y) / vp.zoom / UNIT_H / scale;
   return { x0, y0, x1, y1 };
 }
 

@@ -2,6 +2,7 @@ import pytest
 
 from src.database import Database
 from src.models import Project, Task, TaskStatus
+from src.task_graph.layout.constants import CARD_W, SIBLING_GAP
 from src.task_graph.layout.driver import LayoutDriver
 
 
@@ -438,7 +439,7 @@ async def test_deleting_middle_child_closes_the_gap_and_updates_aggregates(db):
     rows = await db.load_layout_rows("p1", "all", ["e", *kids])
     assert kids[1] not in rows
     assert rows[kids[0]].rel_x == 0.0
-    assert rows[kids[2]].rel_x == pytest.approx(1.2)
+    assert rows[kids[2]].rel_x == pytest.approx(CARD_W + SIBLING_GAP)
     assert rows["e"].agg_children == 2 and rows["e"].agg_descendants == 2
 
 
@@ -456,7 +457,7 @@ async def test_archiving_a_completed_child_closes_the_gap_and_updates_aggregates
     rows = await db.load_layout_rows("p1", "all", ["e", *kids])
     assert kids[1] not in rows
     assert rows[kids[0]].rel_x == 0.0
-    assert rows[kids[2]].rel_x == pytest.approx(1.2)
+    assert rows[kids[2]].rel_x == pytest.approx(CARD_W + SIBLING_GAP)
     assert rows["e"].agg_children == 2 and rows["e"].agg_descendants == 2
 
 
@@ -480,7 +481,7 @@ async def test_deleting_a_root_task_closes_the_gap(db):
     for variant in ("all", "active"):
         rows = await db.load_layout_rows("p1", variant, ["b", "c"])
         assert rows["b"].rel_x == 0.0
-        assert rows["c"].rel_x == pytest.approx(1.2)
+        assert rows["c"].rel_x == pytest.approx(CARD_W + SIBLING_GAP)
     meta_after = await db.get_layout_meta("p1", "all")
     assert meta_after["extent_w"] < meta_before["extent_w"]
 
@@ -500,7 +501,7 @@ async def test_archiving_a_completed_root_task_closes_the_gap(db):
 
     rows = await db.load_layout_rows("p1", "all", ["b", "c"])
     assert rows["b"].rel_x == 0.0
-    assert rows["c"].rel_x == pytest.approx(1.2)
+    assert rows["c"].rel_x == pytest.approx(CARD_W + SIBLING_GAP)
     meta_after = await db.get_layout_meta("p1", "all")
     assert meta_after["extent_w"] < meta_before["extent_w"]
 

@@ -106,6 +106,20 @@ describe("LayoutCanvas", () => {
     expect(tiles.params).toMatchObject({ variant: "active", expanded: [], root: null, q: "", status: "" });
   });
 
+  it("uses comfortable density by default and persists a user-selected density", () => {
+    render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+    const density = screen.getByRole("combobox", { name: "Graph density" });
+    expect(density).toHaveValue("comfortable");
+    fireEvent.change(density, { target: { value: "compact" } });
+    expect(localStorage.getItem("aq.command-center.graph-density")).toBe("compact");
+  });
+
+  it("restores the saved density for this browser user", () => {
+    localStorage.setItem("aq.command-center.graph-density", "spacious");
+    render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+    expect(screen.getByRole("combobox", { name: "Graph density" })).toHaveValue("spacious");
+  });
+
   it("lowers max depth when zoomed out", () => {
     render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
     act(() => flow.current!.onMove!(null, { x: 0, y: 0, zoom: 0.2 }));

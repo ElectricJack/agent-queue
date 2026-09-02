@@ -1,7 +1,13 @@
 import time
 
 from src.task_graph.layout import engine as engine_module
-from src.task_graph.layout.constants import CARD_H, CARD_W
+from src.task_graph.layout.constants import (
+    CARD_H,
+    CARD_W,
+    LINE_GAP,
+    SIBLING_GAP,
+    TARGET_ROW_WIDTH_ROOT,
+)
 from src.task_graph.layout.engine import layout_container
 from src.task_graph.layout.model import ContainerScope, SnapTask
 
@@ -25,6 +31,22 @@ def test_fresh_layout_places_dependents_below_blockers():
     assert res.rows["a"].rank == 0 and res.rows["b"].rank == 1
     assert res.rows["b"].rel_y > res.rows["a"].rel_y
     assert res.rows["a"].path == "/a/" and res.rows["a"].depth == 0
+
+
+def test_long_serial_dependencies_fold_into_serpentine_rows_without_changing_ordinals():
+    ids = [chr(ord("a") + i) for i in range(8)]
+    res = layout_container(
+        scope([task(task_id, created=index) for index, task_id in enumerate(ids)], edges=list(zip(ids[1:], ids))),
+        mode="incremental",
+    )
+    assert [res.rows[task_id].rank for task_id in ids] == sorted(
+        res.rows[task_id].rank for task_id in ids
+    )
+    # The root has the wider target, so six cards fill its first line.
+    assert res.rows["f"].rel_x == 5 * (CARD_W + SIBLING_GAP)
+    assert res.rows["g"].rel_x == TARGET_ROW_WIDTH_ROOT - CARD_W
+    assert res.rows["g"].rel_y == CARD_H + LINE_GAP
+    assert res.rows["h"].rel_x < res.rows["g"].rel_x
 
 
 def test_insert_into_large_container_moves_no_existing_ordinal():

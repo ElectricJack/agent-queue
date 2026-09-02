@@ -58,6 +58,8 @@ export interface TaskNodeData extends Record<string, unknown> {
   onOpenTask?: (taskId: string, task?: SelectableTask) => void;
   onToggleChildren?: (taskId: string) => void;
   onFocus?: (taskId: string) => void;
+  /** Presentation-only scale selected in the tiled graph. */
+  layoutScale?: number;
 }
 
 export interface ContainerNodeData extends Record<string, unknown> {
@@ -66,6 +68,7 @@ export interface ContainerNodeData extends Record<string, unknown> {
   onFocus?: (taskId: string) => void;
   onToggleChildren?: (taskId: string) => void;
   onOpenTask?: (taskId: string, task?: SelectableTask) => void;
+  layoutScale?: number;
 }
 
 export interface StubNodeData extends Record<string, unknown> {
