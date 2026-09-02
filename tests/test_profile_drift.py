@@ -23,6 +23,7 @@ from src.profiles.drift import (
     STATUS_DRIFTED,
     STATUS_NOT_SEEDED,
     STATUS_OK,
+    STATUS_RETIRED,
     STATUS_UNREADABLE,
     diff_profile,
     reseed_profile,
@@ -116,6 +117,30 @@ def test_missing_vault_copy_is_not_seeded_not_drift(defaults_root, data_dir):
     drift = diff_profile("reviewer", data_dir, defaults_root)
     assert drift.status == STATUS_NOT_SEEDED
     assert not drift.is_drifted
+    assert "seeded on next daemon start" in drift.summary()
+
+
+def test_a_tombstoned_id_reads_as_retired_not_not_seeded(defaults_root, data_dir):
+    """The two look identical on disk and need opposite advice: ``not_seeded``
+    is about to be fixed by startup, ``retired`` never will be."""
+    from src.profiles.retired_defaults import retire_default
+
+    retire_default(data_dir, "reviewer", "not used here")
+
+    drift = diff_profile("reviewer", data_dir, defaults_root)
+    assert drift.status == STATUS_RETIRED
+    # Retirement is a decision, not divergence — the doctor check stays quiet.
+    assert not drift.is_drifted
+    assert "profile-reseed reviewer" in drift.summary()
+    assert drift.to_dict()["status"] == STATUS_RETIRED
+
+
+def test_a_tombstone_does_not_mask_a_vault_copy_that_exists(defaults_root, data_dir):
+    from src.profiles.retired_defaults import retire_default
+
+    _write(_vault(data_dir), SHIPPED)
+    retire_default(data_dir, "reviewer")
+    assert diff_profile("reviewer", data_dir, defaults_root).status == STATUS_OK
 
 
 def test_stale_read_only_is_reported(defaults_root, data_dir):

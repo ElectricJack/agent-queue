@@ -143,7 +143,7 @@ Create a project and put work on the queue:
 
 ```bash
 aq project create --name my-app --repo-url https://github.com/you/my-app.git
-aq agent create --name worker-1 --profile-id worker-standard
+aq agent create --name worker-1 --profile-id worker-standard-medium-claude
 aq task create --project my-app --title "Add rate limiting to the API"
 
 aq status

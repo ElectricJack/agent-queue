@@ -285,6 +285,28 @@ class ProfileCommandsMixin:
         return result
 
     async def _cmd_delete_profile(self, args: dict) -> dict:
+        """Delete a profile from the vault and the database.
+
+        Deleting a *shipped* default also leaves a tombstone in
+        ``vault/agent-types/.retired-defaults``.  Without it
+        ``vault.ensure_default_profiles()`` — which is write-if-absent and
+        runs every daemon start — reads the missing directory as a fresh
+        install and re-creates the profile, silently undoing the operator's
+        decision at the next restart.  ``aq agent profile-reseed <id>``
+        clears the tombstone and is the explicit way back.
+
+        Args:
+            profile_id (str): Required — the profile to delete.
+            reason (str): Optional note stored on the tombstone when the
+                deleted profile is a shipped default.
+
+        Returns:
+            ``{"deleted", "name"}``, plus ``"retired": True`` when a
+            tombstone was written.
+        """
+        from src.profiles.drift import system_profile_ids
+        from src.profiles.retired_defaults import retire_default
+
         profile_id = args.get("profile_id", "").strip()
         if not profile_id:
             return {"error": "profile_id is required"}
@@ -308,7 +330,21 @@ class ProfileCommandsMixin:
         if profile:
             await self.db.delete_profile(profile_id)
 
-        return {"deleted": profile_id, "name": name}
+        result: dict = {"deleted": profile_id, "name": name}
+        if profile_id in system_profile_ids():
+            await asyncio.to_thread(
+                retire_default,
+                self.config.data_dir,
+                profile_id,
+                (args.get("reason") or "").strip(),
+            )
+            result["retired"] = True
+            result["note"] = (
+                f"'{profile_id}' is a shipped default; recorded as retired so "
+                f"startup does not re-seed it. Restore it with "
+                f"'aq agent profile-reseed {profile_id}'."
+            )
+        return result
 
     # --- Project-scoped profile CRUD ----------------------------------------
     #
@@ -1150,6 +1186,7 @@ class ProfileCommandsMixin:
         from pathlib import Path
 
         from src.profiles.drift import reseed_profile, system_profile_ids
+        from src.profiles.retired_defaults import unretire_default
         from src.profiles.sync import sync_profile_text_to_db
 
         profile_id = (args.get("profile_id") or "").strip()
@@ -1170,6 +1207,12 @@ class ProfileCommandsMixin:
             profile_id,
             None,
             True if backup is None else bool(backup),
+        )
+        # An explicit reseed is the operator taking the profile back, so the
+        # delete-time tombstone must go with it — otherwise the next startup
+        # would still count this id as retired and the record would drift.
+        result["unretired"] = await asyncio.to_thread(
+            unretire_default, self.config.data_dir, profile_id
         )
 
         markdown = Path(result["path"]).read_text(encoding="utf-8")

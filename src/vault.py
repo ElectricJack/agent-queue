@@ -1389,7 +1389,8 @@ def ensure_vault_layout(data_dir: str) -> None:
     # Legacy hardcoded ``claude-opus`` / ``claude-sonnet`` seed calls
     # removed in favor of the 3-tier × 4-thinking intelligence-class
     # matrix — pick capability via ``intelligence_class``/``default_class``
-    # on the shipped ``worker-{fast,standard,deep}`` profiles instead.
+    # on the shipped ``worker-{fast,standard,deep}-<level>-claude`` profiles
+    # instead.
     # The old profiles are legacy-only; ``ensure_claude_*_profile`` and
     # ``ensure_shared_claude_memory_dir`` and the ``CLAUDE_*_PROFILE``
     # constants remain in this module for one release as an opt-in
@@ -1719,6 +1720,15 @@ def ensure_default_profiles(data_dir: str) -> dict:
     survive upgrades, and a user who wants the shipped version back
     deletes their copy.
 
+    **Operator opt-out**: "absent from the vault" used to mean only *fresh
+    install*, so a shipped default the operator deleted on purpose came
+    straight back at the next daemon start.  ``aq agent delete-profile``
+    now leaves a tombstone in ``vault/agent-types/.retired-defaults``
+    (:mod:`src.profiles.retired_defaults`) and ids listed there are
+    skipped here and reported under ``retired``.  ``aq agent
+    profile-reseed <id>`` clears the tombstone and is the explicit way
+    back.
+
     The cost of that rule is drift: a copy seeded by an older release keeps
     that release's schema and semantics forever, including load-bearing
     ``## Config`` fields like ``read_only``.  ``src/profiles/drift.py``
@@ -1730,16 +1740,21 @@ def ensure_default_profiles(data_dir: str) -> dict:
         data_dir: The root data directory (e.g. ``~/.agent-queue``).
 
     Returns:
-        Dict with ``created`` (profile-id list) and ``skipped``
-        (profile-id list) — both are ids, not paths.
+        Dict with ``created`` (profile-id list), ``skipped`` (already
+        present) and ``retired`` (deliberately deleted by the operator, so
+        not re-seeded) — all are ids, not paths.
     """
+    from src.profiles.retired_defaults import retired_default_ids
+
     defaults_root = os.path.join(os.path.dirname(__file__), "profiles", "defaults")
     agent_types_root = os.path.join(data_dir, "vault", "agent-types")
 
-    result: dict = {"created": [], "skipped": []}
+    result: dict = {"created": [], "skipped": [], "retired": []}
     if not os.path.isdir(defaults_root):
         logger.debug("No default profiles directory found at %s", defaults_root)
         return result
+
+    retired = retired_default_ids(data_dir)
 
     for profile_id in sorted(os.listdir(defaults_root)):
         src_path = os.path.join(defaults_root, profile_id, "profile.md")
@@ -1752,6 +1767,11 @@ def ensure_default_profiles(data_dir: str) -> dict:
         if os.path.exists(dst_path):
             result["skipped"].append(profile_id)
             continue
+        if profile_id in retired:
+            # The operator deleted this one on purpose. Re-creating it here
+            # would silently undo that at every restart.
+            result["retired"].append(profile_id)
+            continue
         os.makedirs(dst_dir, exist_ok=True)
         shutil.copy2(src_path, dst_path)
         result["created"].append(profile_id)
@@ -1762,6 +1782,13 @@ def ensure_default_profiles(data_dir: str) -> dict:
             len(result["created"]),
             agent_types_root,
             ", ".join(result["created"]),
+        )
+    if result["retired"]:
+        logger.info(
+            "Skipped %d operator-retired default profile(s): %s "
+            "(restore one with 'aq agent profile-reseed <id>')",
+            len(result["retired"]),
+            ", ".join(result["retired"]),
         )
     return result
 

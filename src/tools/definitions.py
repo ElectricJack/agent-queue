@@ -2638,11 +2638,23 @@ _ALL_TOOL_DEFINITIONS = [
     },
     {
         "name": "delete_profile",
-        "description": "Delete an agent profile. Any tasks or projects referencing it will have their profile cleared.",
+        "description": (
+            "Delete an agent profile. Any tasks or projects referencing it will have "
+            "their profile cleared. Deleting a shipped default also records it as "
+            "retired so startup seeding stops re-creating it; profile_reseed brings "
+            "it back."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "profile_id": {"type": "string", "description": "Profile ID to delete"},
+                "reason": {
+                    "type": "string",
+                    "description": (
+                        "Why this profile is being retired. Stored on the tombstone "
+                        "when the deleted profile is a shipped default."
+                    ),
+                },
             },
             "required": ["profile_id"],
         },
@@ -2724,7 +2736,8 @@ _ALL_TOOL_DEFINITIONS = [
             "Overwrite one vault system profile with the version shipped in "
             "src/profiles/defaults/, keeping a .bak-<epoch> copy of the old file. "
             "The explicit repair for profile_drift findings — startup seeding is "
-            "write-if-absent and will never do this for you."
+            "write-if-absent and will never do this for you. Also clears any "
+            "delete-time retirement tombstone for the profile."
         ),
         "input_schema": {
             "type": "object",

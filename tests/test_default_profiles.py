@@ -15,7 +15,11 @@ from src.profiles.parser import parse_profile
 from src.vault import ensure_default_profiles, ensure_vault_layout
 
 SHIPPED_PROFILE_IDS = ("supervisor", "planner", "reviewer", "final-reviewer")
-WORKER_PROFILE_IDS = ("worker-fast", "worker-standard", "worker-deep")
+WORKER_PROFILE_IDS = (
+    "worker-fast-medium-claude",
+    "worker-standard-medium-claude",
+    "worker-deep-high-claude",
+)
 
 
 def _vault_profile_path(root: Path, profile_id: str) -> Path:

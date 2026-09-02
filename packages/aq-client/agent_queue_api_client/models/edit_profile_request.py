@@ -10,6 +10,8 @@ from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.edit_profile_request_install_type_0 import EditProfileRequestInstallType0
+
+
 T = TypeVar("T", bound="EditProfileRequest")
 
 
@@ -44,6 +46,7 @@ class EditProfileRequest:
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.edit_profile_request_install_type_0 import EditProfileRequestInstallType0
+
         profile_id = self.profile_id
 
         name: None | str | Unset
@@ -139,6 +142,7 @@ class EditProfileRequest:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.edit_profile_request_install_type_0 import EditProfileRequestInstallType0
+
         d = dict(src_dict)
         profile_id = d.pop("profile_id")
 
