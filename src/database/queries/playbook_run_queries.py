@@ -24,7 +24,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any
 
 from sqlalchemy import and_, delete, func, insert, or_, select, text, update
@@ -108,6 +108,18 @@ def _receipt_row(receipt: StepReceipt) -> dict:
 
 #: ``playbooks.v2_max_pending_events_per_playbook`` when no config is bound.
 DEFAULT_PENDING_EVENT_QUOTA = 1000
+
+# ``resolved_by`` is an audit field, not an operator-only field: expiry is a
+# deterministic system decision and must identify the component that made it.
+PENDING_EVENT_EXPIRY_ACTOR = "retention_sweep"
+
+
+@dataclass(frozen=True, slots=True)
+class PendingEventPurge:
+    """The two distinct actions performed by a pending-event sweep."""
+
+    expired: int
+    purged: int
 
 #: One quota warning per playbook per minute — a flood is exactly the case
 #: where an unthrottled warning turns a full retention table into a full disk.
@@ -926,22 +938,25 @@ class PlaybookRunQueryMixin:
             rows = (await conn.execute(stmt)).mappings().fetchall()
         return [_row_to_pending_event(row) for row in rows]
 
-    async def purge_pending_events(self, now: float, *, limit: int = 1000) -> int:
-        """Collect resolved or expired retentions (§12.1: 7 days by default).
+    async def purge_pending_events(
+        self, now: float, *, resolved_before: float, limit: int = 1000
+    ) -> PendingEventPurge:
+        """Expire unresolved events, then collect resolved events past their horizon.
 
-        An unresolved, unexpired event is never collectable however old it
-        looks: it is the only remaining record that the event arrived.
+        Expiry is an auditable resolution rather than a delete: an operator
+        can inspect the original event, when it expired, and which system
+        component made that decision throughout the configured retention
+        window. ``resolved_before`` comes from the retention sweeper so policy
+        stays in configuration rather than being hidden in this query.
         """
         async with self.immediate() as conn:
-            doomed = (
+            expiring = (
                 (
                     await conn.execute(
                         select(playbook_pending_events.c.pending_event_id)
                         .where(
-                            or_(
-                                playbook_pending_events.c.resolved_at.is_not(None),
-                                playbook_pending_events.c.expires_at <= now,
-                            )
+                            playbook_pending_events.c.resolved_at.is_(None),
+                            playbook_pending_events.c.expires_at <= now,
                         )
                         .limit(limit)
                     )
@@ -949,11 +964,50 @@ class PlaybookRunQueryMixin:
                 .scalars()
                 .all()
             )
-            if not doomed:
-                return 0
-            await conn.execute(
-                delete(playbook_pending_events).where(
-                    playbook_pending_events.c.pending_event_id.in_(list(doomed))
+            expired = 0
+            if expiring:
+                result = await conn.execute(
+                    update(playbook_pending_events)
+                    .where(
+                        playbook_pending_events.c.pending_event_id.in_(list(expiring)),
+                        playbook_pending_events.c.resolved_at.is_(None),
+                        playbook_pending_events.c.expires_at <= now,
+                    )
+                    .values(
+                        resolved_at=now,
+                        resolved_by=PENDING_EVENT_EXPIRY_ACTOR,
+                        resolution="expired",
+                    )
                 )
-            )
-        return len(doomed)
+                expired = int(result.rowcount)
+
+            # One bounded sweep does at most ``limit`` state changes. Newly
+            # expired rows consume the budget first, so an expiry flood cannot
+            # make the maintenance transaction unbounded.
+            remaining = max(limit - expired, 0)
+            purged = 0
+            if remaining:
+                doomed = (
+                    (
+                        await conn.execute(
+                            select(playbook_pending_events.c.pending_event_id)
+                            .where(
+                                playbook_pending_events.c.resolved_at.is_not(None),
+                                playbook_pending_events.c.resolved_at <= resolved_before,
+                            )
+                            .limit(remaining)
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                if doomed:
+                    result = await conn.execute(
+                        delete(playbook_pending_events).where(
+                            playbook_pending_events.c.pending_event_id.in_(list(doomed)),
+                            playbook_pending_events.c.resolved_at.is_not(None),
+                            playbook_pending_events.c.resolved_at <= resolved_before,
+                        )
+                    )
+                    purged = int(result.rowcount)
+        return PendingEventPurge(expired=expired, purged=purged)
