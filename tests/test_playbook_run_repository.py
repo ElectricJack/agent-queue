@@ -10,6 +10,7 @@ fence, which is why ``POSTGRES_TEST_DSN`` matters for this file.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 from dataclasses import replace
 
@@ -24,6 +25,7 @@ from src.playbooks.run_state import (
     LoopFrame,
     RunBudget,
     RunLifecycle,
+    RunRepository,
     RunSnapshot,
     SnapshotVersionConflict,
     StateLimitExceeded,
@@ -115,6 +117,19 @@ def make_receipt(snapshot: RunSnapshot, **overrides) -> StepReceipt:
     }
     base.update(overrides)
     return StepReceipt(**base)
+
+
+def test_run_repository_preserves_the_step_receipt_type_contract():
+    from src.playbooks import run_state
+
+    commit_annotations = inspect.get_annotations(
+        RunRepository.commit_boundary, eval_str=False
+    )
+    list_annotations = inspect.get_annotations(RunRepository.list_receipts, eval_str=False)
+
+    assert commit_annotations["receipt"] == "StepReceipt"
+    assert list_annotations["return"] == "list[StepReceipt]"
+    assert "StepReceipt" not in vars(run_state)
 
 
 # -- B-1: the snapshot value ------------------------------------------------
