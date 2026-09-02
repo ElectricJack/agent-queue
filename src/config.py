@@ -887,6 +887,11 @@ class PlaybooksConfig:
     #: from graph reads."  Removed in Package 7.
     v2_activation_writes: bool = False
 
+    #: Review-only Package 2 compiler commands.  Compilation, validation and
+    #: shadow reports never persist or activate an artifact.  Removed in
+    #: Playbook V2 Package 7.
+    v2_compiler_enabled: bool = False
+
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
         for field_name in (

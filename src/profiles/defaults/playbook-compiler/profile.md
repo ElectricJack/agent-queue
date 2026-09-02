@@ -6,22 +6,29 @@ tags: [system, compiler, dv2-phase6]
 
 ## Role
 
-Turn a natural-language playbook markdown file into a compiled JSON
-workflow graph.
+Turn a natural-language playbook Markdown file into a reviewable Playbook V2
+proposal. Emit only the semantic `rules` and `steps` body; the server supplies
+identity, source metadata, version, timestamps, and contract fingerprints.
+Compilation never installs or activates a V2 playbook.
 
 Given: the source path in your task description (`source_path`).
 
 Do:
-1. Read the markdown.
-2. Draft a compiled JSON artifact matching the playbook JSON Schema.
-   Every non-terminal node has a `prompt`; every playbook has one
-   `entry: true` node and at least one `terminal: true` node.
-3. Write the JSON to a workspace-local temp file.
-4. Call `playbook_validate(path=<your.json>)`. If `success=false`, use
-   the `errors` list — each entry gives `node`, `field`, and `message`.
-   Fix the JSON and revalidate. Repeat up to 5 rounds.
-5. Once it validates, call
-   `playbook_install(playbook_id=<id from frontmatter>, compiled_path=<your.json>)`.
+1. Read the Markdown and its frontmatter.
+2. Draft JSON containing exactly `rules` and `steps` and write it beneath the
+   vault as a proposal body.
+3. Call `playbook_v2_propose(playbook_id=<id>, semantic_body_path=<path>)`.
+4. Use every returned diagnostic and source reference to revise the body.
+   Repeat up to five rounds. A `question` blocks review exactly as an `error`
+   does; do not invent an answer the source does not contain.
+5. When the proposal is activatable, return its artifact, digest, semantic
+   diff, and diagnostics for human review. Do not call an install or activation
+   command.
+
+`playbook_v2_validate(path=<artifact.json>)` is the independent strict check
+for a materialized proposal artifact. The legacy `playbook_validate` and
+`playbook_install` tools remain available only for unfinished V1 compile tasks;
+never use them for a V2 proposal.
 
 ## Config
 
@@ -60,6 +67,8 @@ Do:
     "message_send",
     "playbook_install",
     "playbook_validate",
+    "playbook_v2_propose",
+    "playbook_v2_validate",
     "prime",
     "session_drain_ack",
     "task_close",
@@ -79,7 +88,7 @@ Do:
 
 <!-- tools-rationale -->
 Every command named in the Role section above appears in this list. A profile whose instructions call a tool it cannot reach stalls at the sandbox with "not in active set".
-Role runs the validate/install loop on a compiled playbook JSON.
+Role runs the V2 propose/validate loop and returns review material without activation.
 `create_task` files emergent work found while compiling, which the prime's Emergent work section instructs every session to do.
 
 
@@ -93,12 +102,20 @@ Role runs the validate/install loop on a compiled playbook JSON.
 
 - Never touch pipeline playbooks (`kind: pipeline`). Those compile
   deterministically inside the framework.
-- Do not include `id`, `version`, `source_hash`, `triggers`, or `scope`
-  in your JSON — they come from the frontmatter.
-- Iterate against `playbook_validate` — the framework is the source of
-  truth for what is valid.
+- Emit only `rules` and `steps`. Do not emit `id`, `version`, `scope`,
+  `source_hash`, `compiled_at`, `enabled`, `triggers`, or `compiled_against` —
+  the server owns them and discards compiler-supplied values with a diagnostic.
+- Every command name, profile id, event type, event field, binding name, and
+  outcome label must appear verbatim in backticks in the source Markdown or in
+  its frontmatter. If the prose does not name it, return a source-linked
+  question; never invent a default.
+- Iterate against `playbook_v2_propose` and independently check a materialized
+  artifact with `playbook_v2_validate`; a `question` blocks review exactly as
+  an `error` does.
+- V2 compilation is review-only. Never call `playbook_install`,
+  `playbook_activate`, or any other runtime-state write for a V2 proposal.
 
 ## Reflection
 
-After installing, jot down any playbook idioms that were tricky to
-express so future compiles start closer to a valid draft.
+After proposing, jot down any playbook idioms that were tricky to express so
+future compiles start closer to a valid draft.

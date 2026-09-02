@@ -1,0 +1,8 @@
+{
+  "compiled_against": {"commands": {"ensure_task": "sha256:0000000000000000000000000000000000000000000000000000000000000000"}},
+  "enabled": true,
+  "id": "smuggled",
+  "rules": [],
+  "scope": {"type": "system"},
+  "steps": {}
+}

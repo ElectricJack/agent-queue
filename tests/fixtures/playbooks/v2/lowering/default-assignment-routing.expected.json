@@ -1,0 +1,6 @@
+{
+  "executable_step_count": 1,
+  "rule_count": 1,
+  "step_count": 2,
+  "step_types": ["llm", "terminal"]
+}

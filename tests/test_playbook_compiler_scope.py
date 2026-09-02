@@ -13,6 +13,13 @@ from src.models import Agent, AgentProfile, AgentState, Project, SessionRecord, 
 
 pytestmark = pytest.mark.asyncio
 
+COMPILER_COMMANDS = [
+    "playbook_validate",
+    "playbook_install",
+    "playbook_v2_validate",
+    "playbook_v2_propose",
+]
+
 
 @pytest.fixture
 async def compiler(tmp_path):
@@ -69,8 +76,8 @@ def scope(agent_id="compiler"):
     )
 
 
-@pytest.mark.parametrize("command", ["playbook_validate", "playbook_install"])
-async def test_live_compiler_can_validate_and_install_its_artifact(compiler, command):
+@pytest.mark.parametrize("command", COMPILER_COMMANDS)
+async def test_live_compiler_can_reach_its_review_commands(compiler, command):
     args = {}
     assert await check_request_scope(command, args, scope(), db=compiler) is None
     assert args == {
@@ -80,7 +87,7 @@ async def test_live_compiler_can_validate_and_install_its_artifact(compiler, com
     }
 
 
-@pytest.mark.parametrize("command", ["playbook_validate", "playbook_install"])
+@pytest.mark.parametrize("command", COMPILER_COMMANDS)
 async def test_ordinary_worker_cannot_claim_compiler_capabilities(compiler, command):
     assert (
         await check_request_scope(command, {}, scope("worker"), db=compiler)
@@ -114,4 +121,11 @@ async def test_compiler_cannot_spoof_another_identity(compiler):
     assert (
         await check_request_scope("playbook_install", args, scope(), db=compiler)
         == "out of scope: task_id mismatch"
+    )
+
+
+async def test_shadow_compile_remains_operator_only(compiler):
+    assert (
+        await check_request_scope("playbook_v2_shadow_compile", {}, scope(), db=compiler)
+        == "out of scope: playbook_v2_shadow_compile"
     )
