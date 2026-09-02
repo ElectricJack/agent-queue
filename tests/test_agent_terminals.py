@@ -1,6 +1,7 @@
 """Explicit terminal starts use fake providers and a disposable database only."""
 
 import asyncio
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -117,6 +118,25 @@ async def test_worker_starts_private_named_terminal_with_scoped_token(handler):
     assert "aq task claim" not in spec.prompt and "aq inbox" not in spec.prompt
     assert await handler.db.list_projects() == [] and await handler.db.list_tasks() == []
     assert (await handler.db.get_agent("worker-a")).state == AgentState.IDLE
+
+
+async def test_terminal_persists_hook_coverage_from_the_launched_spec(handler):
+    harness = handler.orchestrator.harness_registry.get("claude")
+    handler.orchestrator.harness_registry.upsert(
+        replace(
+            harness,
+            supports_hooks=True,
+            hook_files=((".aq/hooks/claude.json", "hooks/claude.json"),),
+            settings_flag="--settings",
+        )
+    )
+
+    result = await start(handler)
+
+    assert "error" not in result, result
+    assert provider(handler).starts[0].hooks_provisioned is True
+    row = await handler.db.get_session(result["session_id"])
+    assert row.hooks_provisioned is True
 
 
 async def test_repeated_terminal_start_returns_one_row_and_one_provider_launch(handler):
