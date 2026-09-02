@@ -27,7 +27,10 @@ registry (Package 1), and the engine, receipts, V2 runs and pending events
 therefore fully wired end to end (registration, HTTP route, CLI verb, generated
 clients, feature flags, argument validation, scope) and returns
 ``V2_STORAGE_UNAVAILABLE_ERROR`` at the single seam where it would read that
-state.  ``_v2_storage_unavailable`` is that seam: the task that lands the
+state.  The one exception is ``playbook_activation_health``: activation health
+needs nothing but Package 3's own rows and files, so with
+``playbooks.v2_storage_enabled`` on it reads real activations and computes
+health against the live contract and capability-profile registries.  ``_v2_storage_unavailable`` is that seam: the task that lands the
 projections (child plan §16.2, §16.3) replaces its body and fills in
 ``graph_projection``, ``artifact_diff`` and ``run_overlay``, without touching
 the wire contract in ``src/api/models/playbook_v2.py``.
@@ -186,6 +189,23 @@ class PlaybookV2CommandsMixin:
     def _v2_activation_writes_enabled(self) -> bool:
         playbooks = getattr(self.config, "playbooks", None)
         return bool(getattr(playbooks, "v2_activation_writes", False))
+
+    def _v2_activation_storage_ready(self) -> bool:
+        """Whether activation health can actually be read from this build.
+
+        Health needs only Package 3 state — ``playbook_activations`` plus the
+        artifact rows and files — so it is the one projection that does not
+        wait for the rest of ``_v2_storage_unavailable``\'s seam.  The gate is
+        the storage flag itself plus the query the read path calls, so a
+        database adapter without the V2 tables still reports the seam error
+        rather than raising.
+        """
+        playbooks = getattr(self.config, "playbooks", None)
+        if not bool(getattr(playbooks, "v2_storage_enabled", False)):
+            return False
+        return hasattr(self.db, "list_playbook_activations") and hasattr(
+            self.db, "get_playbook_artifact_row"
+        )
 
     def _v2_compiler_enabled(self) -> bool:
         playbooks = getattr(self.config, "playbooks", None)
@@ -458,6 +478,16 @@ class PlaybookV2CommandsMixin:
         reports the health it would have.  ``health="disabled"`` means there is
         no active artifact at all.
 
+        Health is computed on demand from stored rows and the **live**
+        registries, so a command contract or capability profile that has moved
+        since the artifact was compiled reports ``stale_contract`` here with a
+        reason naming the command or profile.  Nothing is written: persisting
+        health stays the retention sweep\'s one-directional job.
+
+        ``pending_event_count`` and ``running_count`` are the run-overlay
+        counts Package 5 fills in with the rest of the projections; they are
+        left at their DTO defaults rather than guessed at here.
+
         Args:
             playbook_id: Optional — one playbook. All activations when absent.
             scope: Optional — ``system``, ``project`` or ``agent_type``.
@@ -478,7 +508,32 @@ class PlaybookV2CommandsMixin:
                 "error": f"Invalid health '{health}'. Valid: {', '.join(sorted(_VALID_HEALTH))}"
             }
 
-        return self._v2_storage_unavailable()
+        playbook_id = _clean_str(args, "playbook_id")
+
+        if not self._v2_activation_storage_ready():
+            return self._v2_storage_unavailable()
+
+        from src.playbooks.activation import load_activation_health
+
+        contracts, profiles, _events = await self._v2_lookups()
+        records = await load_activation_health(self.db, contracts=contracts, profiles=profiles)
+
+        activations = [
+            record.as_dict()
+            for record in records
+            if (not playbook_id or record.playbook_id == playbook_id)
+            and (not scope or record.scope == scope)
+            and (not health or record.health.value == health)
+        ]
+        by_health: dict[str, int] = {}
+        for activation in activations:
+            by_health[activation["health"]] = by_health.get(activation["health"], 0) + 1
+        return {
+            "success": True,
+            "activations": activations,
+            "count": len(activations),
+            "by_health": by_health,
+        }
 
     async def _cmd_playbook_artifact_diff(self, args: dict) -> dict:
         """Diff two playbook artifacts semantically, before activation.
