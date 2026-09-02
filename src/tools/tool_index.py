@@ -9,9 +9,14 @@ tools by describing what they want to do.
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+def _norm(vec: list[float]) -> float:
+    return math.sqrt(sum(v * v for v in vec))
 
 
 class ToolIndex:
@@ -19,7 +24,8 @@ class ToolIndex:
 
     def __init__(self) -> None:
         self._tools: list[dict[str, str]] = []  # [{name, description}, ...]
-        self._embeddings: Any = None  # numpy ndarray (N, dim)
+        self._embeddings: list[list[float]] = []  # one row per tool
+        self._norms: list[float] = []  # cached ||row||, parallel to _embeddings
         self._provider: Any = None
         self._ready = False
 
@@ -40,7 +46,6 @@ class ToolIndex:
             ``embedding_api_key`` are used.
         """
         try:
-            import numpy as np
             from memsearch.embeddings import get_provider
         except ImportError:
             logger.info("ToolIndex: memsearch not available, semantic tool search disabled")
@@ -64,14 +69,15 @@ class ToolIndex:
                 api_key=memory_config.embedding_api_key or None,
             )
             raw = await provider.embed(texts)
-            self._embeddings = np.array(raw, dtype=np.float32)
+            self._embeddings = [[float(v) for v in row] for row in raw]
+            self._norms = [_norm(row) for row in self._embeddings]
             self._provider = provider
             self._ready = True
             logger.info(
                 "ToolIndex: indexed %d tools (%s, dim=%d)",
                 len(self._tools),
                 memory_config.embedding_provider,
-                self._embeddings.shape[1],
+                len(self._embeddings[0]) if self._embeddings else 0,
             )
         except Exception:
             logger.warning("ToolIndex: failed to build embeddings", exc_info=True)
@@ -85,27 +91,31 @@ class ToolIndex:
         if not self._ready or self._provider is None:
             return []
 
-        import numpy as np
-
         try:
             raw = await self._provider.embed([query])
-            query_vec = np.array(raw[0], dtype=np.float32)
+            query_vec = [float(v) for v in raw[0]]
         except Exception:
             logger.warning("ToolIndex: query embedding failed", exc_info=True)
             return []
 
-        # Cosine similarity
-        dots = self._embeddings @ query_vec
-        norms = np.linalg.norm(self._embeddings, axis=1) * np.linalg.norm(query_vec)
-        sims = dots / np.maximum(norms, 1e-10)
+        query_norm = _norm(query_vec)
 
-        top_idx = np.argsort(sims)[::-1][:top_k]
+        # Cosine similarity. The index holds a few hundred short vectors, so a
+        # plain Python loop is cheap enough to avoid a NumPy dependency in the
+        # daemon's runtime path.
+        scored: list[tuple[float, int]] = []
+        for i, row in enumerate(self._embeddings):
+            dot = sum(a * b for a, b in zip(row, query_vec))
+            sim = dot / max(self._norms[i] * query_norm, 1e-10)
+            if sim > 0.0:
+                scored.append((sim, i))
+
+        scored.sort(key=lambda pair: pair[0], reverse=True)
         return [
             {
                 "name": self._tools[i]["name"],
                 "description": self._tools[i]["description"],
-                "score": round(float(sims[i]), 3),
+                "score": round(sim, 3),
             }
-            for i in top_idx
-            if sims[i] > 0.0
+            for sim, i in scored[:top_k]
         ]
