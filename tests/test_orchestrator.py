@@ -1409,6 +1409,7 @@ class TestPhaseVerifyApprovalTask:
         mock_git.aget_current_branch = AsyncMock(return_value="feature-1")
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
         mock_git.afind_open_pr = AsyncMock(return_value="https://github.com/org/repo/pull/42")
+        mock_git.ais_ancestor = AsyncMock(return_value=False)
         mock_git._arun = AsyncMock(return_value="0")
         mock_git.acommit_all = AsyncMock(return_value=True)
         mock_git.apush_branch = AsyncMock(return_value=None)
@@ -1477,12 +1478,85 @@ class TestPhaseVerifyApprovalTask:
         # On task branch but no PR
         orch.git.aget_current_branch = AsyncMock(return_value="feature-2")
         orch.git.afind_open_pr = AsyncMock(return_value=None)
+        orch.git.ais_ancestor = AsyncMock(return_value=False)
 
         ws = await orch.db.get_workspace("ws-1")
         ctx = self._make_ctx(orch, task, ws.workspace_path)
 
         result = await orch._phase_verify(ctx)
         assert result == PhaseResult.STOP
+
+    async def test_passes_when_merged_pr_is_found(self, pipeline_orch):
+        """A merged PR proves the task's branch has already shipped."""
+        orch = pipeline_orch
+        from src.models import PhaseResult
+
+        task = Task(
+            id="t-merged-pr",
+            project_id="p-1",
+            title="Test",
+            description="test",
+            branch_name="feature-merged",
+            status=TaskStatus.IN_PROGRESS,
+            integration_mode="pull_request",
+        )
+        await orch.db.create_task(task)
+        orch.git.aget_current_branch = AsyncMock(return_value="feature-merged")
+        orch.git.afind_open_pr = AsyncMock(return_value="https://github.com/org/repo/pull/99")
+
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = self._make_ctx(orch, task, ws.workspace_path)
+
+        assert await orch._phase_verify(ctx) == PhaseResult.CONTINUE
+        assert ctx.pr_url == "https://github.com/org/repo/pull/99"
+
+    async def test_closed_unmerged_pr_still_fails(self, pipeline_orch):
+        """The lookup excludes CLOSED PRs, so an unmerged branch still fails."""
+        orch = pipeline_orch
+        from src.models import PhaseResult
+
+        task = Task(
+            id="t-closed-pr",
+            project_id="p-1",
+            title="Test",
+            description="test",
+            branch_name="feature-closed",
+            status=TaskStatus.IN_PROGRESS,
+            integration_mode="pull_request",
+        )
+        await orch.db.create_task(task)
+        orch.git.aget_current_branch = AsyncMock(return_value="feature-closed")
+        orch.git.afind_open_pr = AsyncMock(return_value=None)
+        orch.git.ais_ancestor = AsyncMock(return_value=False)
+
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = self._make_ctx(orch, task, ws.workspace_path)
+
+        assert await orch._phase_verify(ctx) == PhaseResult.STOP
+
+    async def test_passes_when_branch_is_already_merged_without_pr(self, pipeline_orch):
+        """Direct or squash integration is sufficient even without a PR record."""
+        orch = pipeline_orch
+        from src.models import PhaseResult
+
+        task = Task(
+            id="t-merged-branch",
+            project_id="p-1",
+            title="Test",
+            description="test",
+            branch_name="feature-integrated",
+            status=TaskStatus.IN_PROGRESS,
+            integration_mode="pull_request",
+        )
+        await orch.db.create_task(task)
+        orch.git.aget_current_branch = AsyncMock(return_value="feature-integrated")
+        orch.git.afind_open_pr = AsyncMock(return_value=None)
+        orch.git.ais_ancestor = AsyncMock(return_value=True)
+
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = self._make_ctx(orch, task, ws.workspace_path)
+
+        assert await orch._phase_verify(ctx) == PhaseResult.CONTINUE
 
 
 class TestPhaseVerifyIntermediateSubtask:
