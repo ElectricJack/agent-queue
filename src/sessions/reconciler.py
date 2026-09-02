@@ -31,6 +31,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 
+from src.commands.claim_commands import remove_claim_file_if_matches
 from src.models import SessionRecord, TaskStatus
 from src.sessions.exit_classifier import ExitVerdict, Verdict, classify_exit
 from src.sessions.provider import (
@@ -1007,7 +1008,7 @@ class SessionReconciler:
                 # Releasing here is idempotent with that later close-path
                 # release, while terminating would incorrectly bypass pool
                 # scale-down grace and an explicit drain acknowledgement.
-                await self.db.release_claim(
+                release = await self.db.release_claim(
                     row.id,
                     task_status=task.status if task is not None else TaskStatus.READY,
                     context="terminal_pool_release",
@@ -1016,6 +1017,12 @@ class SessionReconciler:
                     expected_claim_epoch=row.last_claim_epoch,
                     drain_after_release=self.config.swarm.fresh_context_per_task,
                 )
+                if release.released and row.work_dir:
+                    remove_claim_file_if_matches(
+                        row.work_dir,
+                        row.task_id,
+                        row.last_claim_epoch,
+                    )
                 continue
             provider = self._provider_for(row)
             if provider is None:

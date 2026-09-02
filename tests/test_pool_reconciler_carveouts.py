@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from src.commands.claim_commands import write_claim_file
 from src.config import AppConfig, DiscordConfig
 from src.database import Database
 from src.models import (
@@ -290,6 +291,24 @@ class TestPrepareTimeoutFlagGate:
 
 
 class TestOrphans:
+    async def test_terminal_pool_task_release_removes_claim_file(
+        self, db, reconciler, tmp_path
+    ):
+        sid = await held_pool_session(db)
+        work_dir = tmp_path / "pool-slot"
+        await db.update_session(sid, work_dir=str(work_dir), last_claim_epoch=1)
+        claim_file = work_dir / ".aq" / "claim.json"
+        write_claim_file(
+            str(work_dir),
+            {"task_id": "t1", "claim_epoch": 1, "session_id": sid},
+        )
+        await db.transition_task("t1", TaskStatus.COMPLETED, context="test", force=True)
+
+        live, now = await observe(reconciler)
+        await reconciler._step_orphans(live, now)
+
+        assert not claim_file.exists()
+
     async def test_terminal_pool_task_releases_hold_without_terminating_worker(self, db, reconciler):
         sid = await held_pool_session(db)
         await db.transition_task("t1", TaskStatus.COMPLETED, context="test", force=True)
