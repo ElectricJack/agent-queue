@@ -454,3 +454,99 @@ class TestSlotCapBoundIsSymmetric:
             worktree_slot_cap=2,
         )
         assert got is not None and got.slot_index == 0
+
+
+# ───────────── branch affinity: prefer the slot holding the branch ────────
+
+
+class TestBranchAffinityHint:
+    """``preferred_workspaces`` is the acquisition half of the §3.4 fix.
+
+    A released slot stays on its last task's branch, so a retry handed a
+    *different* slot cannot check that branch out and pauses forever.  The
+    caller computes which slot holds the branch; acquisition's only job is
+    to prefer it — softly, so a busy holder never blocks the task.
+    """
+
+    async def test_hint_wins_over_the_first_free_slot(self, db):
+        await _worktree_project(db, slots=3)
+        task = await _mktask(db)
+        agent = await _mkagent(db)
+        att = await acquire_for_task(
+            db,
+            task,
+            agent.id,
+            worktrees_enabled=True,
+            preferred_workspaces={"project-repo": "ws-slot-2"},
+        )
+        assert _primary(att).id == "ws-slot-2"
+
+    async def test_a_busy_holder_falls_back_instead_of_blocking(self, db):
+        """Never a hard wait: parking a task behind whoever holds its old
+        slot trades one stall for another."""
+        await _worktree_project(db, slots=2)
+        blocker = await _mktask(db, task_id="blocker")
+        blocker_agent = await _mkagent(db, agent_id="a-blocker")
+        await acquire_for_task(
+            db,
+            blocker,
+            blocker_agent.id,
+            worktrees_enabled=True,
+            preferred_workspaces={"project-repo": "ws-slot-1"},
+        )
+
+        task = await _mktask(db, task_id="t2")
+        agent = await _mkagent(db, agent_id="a2")
+        att = await acquire_for_task(
+            db,
+            task,
+            agent.id,
+            worktrees_enabled=True,
+            preferred_workspaces={"project-repo": "ws-slot-1"},
+        )
+        assert _primary(att).id == "ws-slot-0"
+
+    async def test_an_explicit_task_pin_outranks_the_hint(self, db):
+        """``Task.preferred_workspace_id`` is an operator's instruction; the
+        hint is only an optimization."""
+        await _worktree_project(db, slots=3)
+        task = await _mktask(db, preferred="ws-slot-2")
+        agent = await _mkagent(db)
+        att = await acquire_for_task(
+            db,
+            task,
+            agent.id,
+            worktrees_enabled=True,
+            preferred_workspaces={"project-repo": "ws-slot-1"},
+        )
+        assert _primary(att).id == "ws-slot-2"
+
+    async def test_a_hint_for_an_out_of_cap_slot_is_ignored(self, db):
+        """The cap bound is not negotiable — a shrunk cap retires slot rows
+        the reaper has not reached yet, and handing one out re-opens the very
+        capacity/acquisition disagreement ``worktree_slot_cap`` closed."""
+        await _worktree_project(db, slots=3)
+        task = await _mktask(db)
+        agent = await _mkagent(db)
+        att = await acquire_for_task(
+            db,
+            task,
+            agent.id,
+            worktrees_enabled=True,
+            worktree_slot_cap=2,
+            preferred_workspaces={"project-repo": "ws-slot-2"},
+        )
+        assert _primary(att).id == "ws-slot-0"
+
+    async def test_a_hint_naming_an_unknown_workspace_is_harmless(self, db):
+        await _worktree_project(db, slots=2)
+        task = await _mktask(db)
+        agent = await _mkagent(db)
+        att = await acquire_for_task(
+            db,
+            task,
+            agent.id,
+            worktrees_enabled=True,
+            preferred_workspaces={"project-repo": "ws-gone"},
+        )
+        assert _primary(att).id == "ws-slot-0"
