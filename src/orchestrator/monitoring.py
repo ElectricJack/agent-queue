@@ -71,6 +71,15 @@ class MonitoringMixin:
                     assigned_agent_id=None,
                     resume_after=None,
                 )
+                # The backoff is over and the task is back on the frontier.
+                # A ``needs_attention`` flag written with the pause (the
+                # session reconciler's exit-without-close leg) has done its
+                # job — the durable task comment is the incident trail —
+                # and left in place it would mark a running task as needing
+                # attention, keep it out of BLOCKED re-promotion, and turn
+                # any later BLOCKED into a false recovery incident.  The
+                # supervisor's retry decision clears it the same way.
+                await self.db.delete_task_meta(task.id, "needs_attention")
 
     def _pause_cleanup_retries(self) -> dict[str, int]:
         """Per-task count of consecutive failed pause-cleanup retries."""
