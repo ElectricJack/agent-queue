@@ -6,8 +6,16 @@ import math
 from dataclasses import dataclass, field
 
 from src.task_graph.layout.constants import (
-    CARD_H, CARD_W, CELL_SIZE, HEADER_H, LINE_GAP, PADDING, SIBLING_GAP,
-    TARGET_ROW_WIDTH, TARGET_ROW_WIDTH_ROOT, band_up,
+    CARD_H,
+    CARD_W,
+    CELL_SIZE,
+    HEADER_H,
+    LINE_GAP,
+    PADDING,
+    SIBLING_GAP,
+    TARGET_ROW_WIDTH,
+    TARGET_ROW_WIDTH_ROOT,
+    band_up,
 )
 
 

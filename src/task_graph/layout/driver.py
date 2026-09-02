@@ -8,12 +8,23 @@ from collections import defaultdict
 from typing import Literal
 
 from src.task_graph.layout.constants import (
-    CARD_H, CARD_W, FINISHED_STATUSES, HEADER_H, PADDING, RANKING_DEP_TYPES, ROOT,
-    RUNNING_STATUSES, VARIANTS,
+    CARD_H,
+    CARD_W,
+    FINISHED_STATUSES,
+    HEADER_H,
+    PADDING,
+    RANKING_DEP_TYPES,
+    ROOT,
+    RUNNING_STATUSES,
+    VARIANTS,
 )
 from src.task_graph.layout.engine import layout_container
 from src.task_graph.layout.model import (
-    ContainerScope, LayoutRow, SnapTask, Translation, WriteSet,
+    ContainerScope,
+    LayoutRow,
+    SnapTask,
+    Translation,
+    WriteSet,
 )
 
 logger = logging.getLogger(__name__)
@@ -21,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 def _chunks(seq: list[str], size: int) -> list[list[str]]:
     """Split *seq* into consecutive slices of at most *size* items."""
-    return [seq[i:i + size] for i in range(0, len(seq), size)]
+    return [seq[i : i + size] for i in range(0, len(seq), size)]
 
 
 class LayoutRelayDepthExceeded(ValueError):
@@ -72,11 +83,13 @@ def _visible(snapshot: dict[str, SnapTask], variant: str) -> tuple[set[str], set
             present.add(p)
             stubs.discard(p)
             p = snapshot[p].parent_id
+
     # children of stubs are not present
     def prune(tid: str) -> None:
         for c in children_of.get(tid, ()):
             present.discard(c)
             prune(c)
+
     for s in stubs:
         prune(s)
     return present, stubs
@@ -86,7 +99,14 @@ def _aggregates(snapshot, children_of, blocked: set[str]) -> dict[str, dict[str,
     out: dict[str, dict[str, int]] = {}
 
     def walk(tid: str) -> dict[str, int]:
-        agg = {"children": 0, "descendants": 0, "completed": 0, "running": 0, "blocked": 0, "active": 0}
+        agg = {
+            "children": 0,
+            "descendants": 0,
+            "completed": 0,
+            "running": 0,
+            "blocked": 0,
+            "active": 0,
+        }
         for c in children_of.get(tid, ()):
             sub = walk(c)
             t = snapshot[c]
@@ -123,8 +143,12 @@ def build_full_write_set(
         all_children_of[t.parent_id].append(t.id)
     rank_edges: dict[str | None, list[tuple[str, str]]] = defaultdict(list)
     for d, b, typ in edges:
-        if typ in RANKING_DEP_TYPES and d in present and b in present \
-                and snapshot[d].parent_id == snapshot[b].parent_id:
+        if (
+            typ in RANKING_DEP_TYPES
+            and d in present
+            and b in present
+            and snapshot[d].parent_id == snapshot[b].parent_id
+        ):
             rank_edges[snapshot[d].parent_id].append((d, b))
     aggs = _aggregates(snapshot, all_children_of, blocked)
 
@@ -138,8 +162,11 @@ def build_full_write_set(
             if snapshot[k].is_container and k not in stubs:
                 sizes[k] = lay(k, f"{path}{k}/", depth + 1)
         scope = ContainerScope(
-            container_id=container_id, container_path=path, depth=depth,
-            children={k: snapshot[k] for k in kids}, existing={},
+            container_id=container_id,
+            container_path=path,
+            depth=depth,
+            children={k: snapshot[k] for k in kids},
+            existing={},
             sibling_edges=rank_edges.get(container_id, []),
             child_sizes={k: sizes[k] for k in kids if k in sizes},
             stub_ids=frozenset(s for s in stubs if s in kids),
@@ -177,11 +204,19 @@ class LayoutDriver:
         tasks = await self.db.list_tasks(project_id=project_id)
         return {t.id for t in tasks if getattr(t, "is_blocked", False)}
 
-    async def full_layout(self, project_id: str, variant: str, *, mode: Literal["tidy"] = "tidy") -> int:
+    async def full_layout(
+        self, project_id: str, variant: str, *, mode: Literal["tidy"] = "tidy"
+    ) -> int:
         snapshot, edges = await self.db.load_project_snapshot(project_id)
         blocked = await self._blocked_ids(project_id)
         ws, extent = await asyncio.to_thread(
-            build_full_write_set, snapshot, edges, variant, blocked=blocked, mode=mode, seed=self.seed
+            build_full_write_set,
+            snapshot,
+            edges,
+            variant,
+            blocked=blocked,
+            mode=mode,
+            seed=self.seed,
         )
         # Replace everything: rows no longer present (including orphans left
         # behind by a deleted task, or stray rows under this project_id/
@@ -217,8 +252,11 @@ class LayoutDriver:
         bad: set[str] = set()
         for tid, t in snapshot.items():
             r = all_rows.get(tid)
-            if r is None or r.container_id != t.parent_id or \
-                    (r.kind == "container") != t.is_container:
+            if (
+                r is None
+                or r.container_id != t.parent_id
+                or (r.kind == "container") != t.is_container
+            ):
                 bad.add(tid)
         for tid in all_rows:
             if tid not in snapshot:
@@ -227,8 +265,11 @@ class LayoutDriver:
             async with self.db._engine.begin() as conn:
                 await self.db.mark_layout_dirty(project_id, sorted(bad), "reconcile", conn=conn)
         async with self.db._engine.begin() as conn:
-            await conn.execute(update(project_layout_meta).where(
-                project_layout_meta.c.project_id == project_id).values(reconciled_at=time.time()))
+            await conn.execute(
+                update(project_layout_meta)
+                .where(project_layout_meta.c.project_id == project_id)
+                .values(reconciled_at=time.time())
+            )
         return len(bad)
 
     # ── incremental ─────────────────────────────────────────────────────
@@ -302,8 +343,12 @@ class _IncrementalBatch:
             self.children_of[self.parent_of[tid]].append(tid)
         self.rank_edges: dict[str | None, list[tuple[str, str]]] = defaultdict(list)
         for d, b, typ in edges:
-            if typ in RANKING_DEP_TYPES and d in self.present and b in self.present \
-                    and self.parent_of[d] == self.parent_of[b]:
+            if (
+                typ in RANKING_DEP_TYPES
+                and d in self.present
+                and b in self.present
+                and self.parent_of[d] == self.parent_of[b]
+            ):
                 self.rank_edges[self.parent_of[d]].append((d, b))
 
         self.ws = WriteSet()
@@ -472,11 +517,15 @@ class _IncrementalBatch:
             if self.snapshot[k].is_container and k not in self.stubs:
                 child_sizes[k] = await self._current_size(k)
         scope = ContainerScope(
-            container_id=cid, container_path=path, depth=depth,
+            container_id=cid,
+            container_path=path,
+            depth=depth,
             children={k: self.snapshot[k] for k in kids},
             existing={k: r for k, r in existing.items() if k in kids},
-            sibling_edges=self.rank_edges.get(cid, []), child_sizes=child_sizes,
-            stub_ids=frozenset(s for s in self.stubs if s in kids), origin=origin,
+            sibling_edges=self.rank_edges.get(cid, []),
+            child_sizes=child_sizes,
+            stub_ids=frozenset(s for s in self.stubs if s in kids),
+            origin=origin,
         )
         res = await asyncio.to_thread(layout_container, scope, mode=mode, seed=self.seed)
         self.processed.add(cid)
@@ -529,7 +578,9 @@ class _IncrementalBatch:
             if steps > self.MAX_DRAIN_STEPS:
                 logger.warning(
                     "layout incremental drain exceeded %d steps (project=%s variant=%s)",
-                    self.MAX_DRAIN_STEPS, self.project_id, self.variant,
+                    self.MAX_DRAIN_STEPS,
+                    self.project_id,
+                    self.variant,
                 )
                 self.queue.clear()
                 break
@@ -638,6 +689,10 @@ class _IncrementalBatch:
         meta = await self.db.get_layout_meta(self.project_id, self.variant)
         extent = self.ws.sizes.get(ROOT, (meta["extent_w"], meta["extent_h"]))
         return await self.db.publish_layout(
-            self.project_id, self.variant, self.ws,
-            consumed_seq=consumed_seq, extent=extent, node_count_delta=None,
+            self.project_id,
+            self.variant,
+            self.ws,
+            consumed_seq=consumed_seq,
+            extent=extent,
+            node_count_delta=None,
         )

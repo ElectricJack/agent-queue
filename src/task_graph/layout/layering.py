@@ -64,9 +64,7 @@ def _find_cycle(edges: list[tuple[str, str]]) -> list[tuple[str, str]] | None:
     return None
 
 
-def minimal_ranks(
-    children: dict[str, SnapTask], edges: list[tuple[str, str]]
-) -> dict[str, int]:
+def minimal_ranks(children: dict[str, SnapTask], edges: list[tuple[str, str]]) -> dict[str, int]:
     """Longest-path layering: rank(dependent) >= rank(blocker) + 1."""
     acyclic = break_cycles(children, edges)
     blockers: dict[str, list[str]] = defaultdict(list)

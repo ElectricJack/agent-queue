@@ -15,8 +15,13 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from src.task_graph.layout.constants import (
-    CARD_H, CARD_W, INCREMENTAL_EVALS, INCREMENTAL_SECONDS,
-    MAX_OPTIMIZED_SIBLINGS, TIDY_EVALS, TIDY_SECONDS,
+    CARD_H,
+    CARD_W,
+    INCREMENTAL_EVALS,
+    INCREMENTAL_SECONDS,
+    MAX_OPTIMIZED_SIBLINGS,
+    TIDY_EVALS,
+    TIDY_SECONDS,
 )
 from src.task_graph.layout.cost import container_cost
 from src.task_graph.layout.flow import FlowResult, flow_container
@@ -60,9 +65,10 @@ class _Budget:
         if time.monotonic() - self.started >= self.seconds:
             if not self._warned:
                 logger.warning(
-                    "layout budget wall-clock safety valve tripped after "
-                    "%.2fs (evals used=%d/%d)",
-                    self.seconds, self.used, self.evals,
+                    "layout budget wall-clock safety valve tripped after %.2fs (evals used=%d/%d)",
+                    self.seconds,
+                    self.used,
+                    self.evals,
                 )
                 self._warned = True
             self.used = self.evals
@@ -104,10 +110,19 @@ def _rows(scope: ContainerScope, ordinals, flow: FlowResult, sizes) -> dict[str,
         w, h = sizes[cid]
         prev = scope.existing.get(cid)
         rows[cid] = LayoutRow(
-            task_id=cid, container_id=scope.container_id,
-            path=f"{scope.container_path}{cid}/", depth=scope.depth,
-            rank=rank, order_key=key, w=w, h=h, rel_x=rx, rel_y=ry,
-            abs_x=ox + rx, abs_y=oy + ry, kind=_kind(scope, cid),
+            task_id=cid,
+            container_id=scope.container_id,
+            path=f"{scope.container_path}{cid}/",
+            depth=scope.depth,
+            rank=rank,
+            order_key=key,
+            w=w,
+            h=h,
+            rel_x=rx,
+            rel_y=ry,
+            abs_x=ox + rx,
+            abs_y=oy + ry,
+            kind=_kind(scope, cid),
             agg_children=prev.agg_children if prev else 0,
             agg_descendants=prev.agg_descendants if prev else 0,
             agg_completed=prev.agg_completed if prev else 0,
@@ -186,8 +201,9 @@ def _place_new(
         _, flow0 = _evaluate(ordinals, scope, sizes, edges, minimal, is_root)
         positions0 = flow0.positions
     for rank in (rank0, rank0 + 1):
-        in_rank = sorted((c for c, (r, _) in ordinals.items() if r == rank),
-                         key=lambda c: ordinals[c][1])
+        in_rank = sorted(
+            (c for c, (r, _) in ordinals.items() if r == rank), key=lambda c: ordinals[c][1]
+        )
         if not blockers:
             # No blockers: this node just appends to the rank's end. Only
             # evaluate the end gap — iterating every gap wastes the budget
@@ -295,8 +311,10 @@ def layout_container(scope: ContainerScope, *, mode: Mode, seed: int = 0) -> Con
         # Seed keys by created_at so the sweep has a deterministic start.
         for r in set(minimal.values()):
             prev = None
-            for cid in sorted((c for c in scope.children if minimal[c] == r),
-                              key=lambda c: (scope.children[c].created_at, c)):
+            for cid in sorted(
+                (c for c in scope.children if minimal[c] == r),
+                key=lambda c: (scope.children[c].created_at, c),
+            ):
                 prev = between(prev, None)
                 ordinals[cid] = (r, prev)
         if len(scope.children) <= MAX_OPTIMIZED_SIBLINGS:
