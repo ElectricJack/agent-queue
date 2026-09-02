@@ -41,6 +41,7 @@ from src.database.tables import (
     rate_limits,
     repos,
     sessions,
+    subagent_events,
     system_config,
     task_context,
     task_comments,
@@ -90,6 +91,7 @@ _ORDERED_TABLES = [
     task_comments,
     task_session_attempts,
     agent_questions,
+    subagent_events,
     # FK → agent_profiles
     projects,
     # FK → projects
