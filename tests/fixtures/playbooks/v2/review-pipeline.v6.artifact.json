@@ -1,0 +1,372 @@
+{
+  "schema_version": 2,
+  "id": "default-pipeline",
+  "version": 6,
+  "scope": {
+    "type": "system"
+  },
+  "source_hash": "sha256:519504ca9a34b4421522b888e052c2a38648bf59fede2b2953297c78a03c10bb",
+  "compiled_at": "2026-09-01T01:00:00Z",
+  "purpose": "routine",
+  "compiled_against": {
+    "commands": {
+      "ensure_task": "sha256:aa11bb22cc33dd44ee55ff6677889900aabbccddeeff00112233445566778899",
+      "gate_create": "sha256:bb22cc33dd44ee55ff6677889900aabbccddeeff001122334455667788990011",
+      "list_tasks": "sha256:cc33dd44ee55ff6677889900aabbccddeeff00112233445566778899001122"
+    },
+    "profiles": {
+      "reviewer": "sha256:dd44ee55ff6677889900aabbccddeeff0011223344556677889900112233"
+    }
+  },
+  "rules": [
+    {
+      "id": "review-on-task-completed",
+      "name": "Open review for a completed task",
+      "trigger": {
+        "event_type": "task.completed",
+        "filter": {
+          "task_type": "code"
+        }
+      },
+      "entry_step": "ensure-review-task",
+      "source": {
+        "path": "system/playbooks/default-pipeline.md",
+        "start_line": 18,
+        "end_line": 46,
+        "heading": "Open review for a completed task"
+      }
+    },
+    {
+      "id": "sweep-on-spec-created",
+      "name": "Sweep downstream tasks for a new spec",
+      "trigger": {
+        "event_type": "spec.created",
+        "filter": null
+      },
+      "entry_step": "list-downstream",
+      "source": {
+        "path": "system/playbooks/default-pipeline.md",
+        "start_line": 48,
+        "end_line": 71,
+        "heading": "Sweep downstream tasks for a new spec"
+      }
+    }
+  ],
+  "steps": {
+    "ensure-review-task": {
+      "type": "command",
+      "rule": "review-on-task-completed",
+      "title": "Ensure a review task",
+      "command": "ensure_task",
+      "inputs": {
+        "project_id": {
+          "type": "event_ref",
+          "path": "project_id"
+        },
+        "title": {
+          "type": "template",
+          "parts": [
+            {
+              "type": "literal",
+              "value": "Code review: "
+            },
+            {
+              "type": "event_ref",
+              "path": "title"
+            }
+          ]
+        }
+      },
+      "save_result_as": "review",
+      "transitions": {
+        "success": "classify-risk",
+        "failure": "review-unavailable",
+        "runtime_error": "review-unavailable"
+      },
+      "source": {
+        "path": "system/playbooks/default-pipeline.md",
+        "start_line": 20,
+        "end_line": 27
+      }
+    },
+    "classify-risk": {
+      "type": "llm",
+      "rule": "review-on-task-completed",
+      "title": "Assess review risk",
+      "profile_id": "reviewer",
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "risk": {
+            "enum": [
+              "low",
+              "high"
+            ]
+          }
+        },
+        "required": [
+          "risk"
+        ]
+      },
+      "budget": {
+        "max_calls": 2,
+        "max_output_tokens": 1024,
+        "max_total_tokens": 8000,
+        "timeout_seconds": 120
+      },
+      "save_result_as": "risk",
+      "transitions": {
+        "low": "await-approval",
+        "high": "escalate",
+        "invalid_output": "review-unavailable",
+        "budget_exceeded": "review-unavailable",
+        "provider_error": "review-unavailable",
+        "timed_out": "review-unavailable",
+        "cancelled": "cancelled-end"
+      },
+      "source": {
+        "path": "system/playbooks/default-pipeline.md",
+        "start_line": 29,
+        "end_line": 34
+      }
+    },
+    "escalate": {
+      "type": "agent_task",
+      "rule": "review-on-task-completed",
+      "title": "Escalate to a senior reviewer",
+      "profile_id": "reviewer",
+      "objective": "Re-review the change and record the riskiest line",
+      "wait_for_completion": true,
+      "cancel_child": false,
+      "timeout_seconds": 3600,
+      "save_result_as": "escalation",
+      "transitions": {
+        "completed": "await-approval",
+        "failed": "review-unavailable",
+        "timed_out": "review-unavailable",
+        "cancelled": "cancelled-end"
+      },
+      "source": {
+        "path": "system/playbooks/default-pipeline.md",
+        "start_line": 36,
+        "end_line": 39
+      }
+    },
+    "await-approval": {
+      "type": "wait",
+      "rule": "review-on-task-completed",
+      "title": "Wait for human approval",
+      "wait_kind": "human",
+      "correlation_key": {
+        "type": "binding_ref",
+        "binding": "review",
+        "path": "task_id"
+      },
+      "timeout_seconds": 86400,
+      "save_result_as": "approval",
+      "transitions": {
+        "approve": "done",
+        "revise": "ensure-review-task",
+        "timed_out": "review-unavailable"
+      },
+      "source": {
+        "path": "system/playbooks/default-pipeline.md",
+        "start_line": 41,
+        "end_line": 44
+      }
+    },
+    "review-unavailable": {
+      "type": "terminal",
+      "rule": "review-on-task-completed",
+      "title": "Review unavailable",
+      "outcome": "failed",
+      "source": {
+        "path": "system/playbooks/default-pipeline.md",
+        "start_line": 45,
+        "end_line": 45
+      }
+    },
+    "cancelled-end": {
+      "type": "terminal",
+      "rule": "review-on-task-completed",
+      "title": "Cancelled",
+      "outcome": "cancelled",
+      "source": {
+        "path": "system/playbooks/default-pipeline.md",
+        "start_line": 46,
+        "end_line": 46
+      }
+    },
+    "done": {
+      "type": "terminal",
+      "rule": "review-on-task-completed",
+      "title": "Review complete",
+      "outcome": "completed",
+      "source": {
+        "path": "system/playbooks/default-pipeline.md",
+        "start_line": 46,
+        "end_line": 46
+      }
+    },
+    "list-downstream": {
+      "type": "command",
+      "rule": "sweep-on-spec-created",
+      "title": "List downstream tasks",
+      "command": "list_tasks",
+      "inputs": {
+        "project_id": {
+          "type": "event_ref",
+          "path": "project_id"
+        },
+        "status": {
+          "type": "literal",
+          "value": "READY"
+        }
+      },
+      "save_result_as": "downstream",
+      "transitions": {
+        "success": "for-each-task",
+        "failure": "sweep-failed",
+        "runtime_error": "sweep-failed"
+      },
+      "source": {
+        "path": "system/playbooks/default-pipeline.md",
+        "start_line": 50,
+        "end_line": 55
+      }
+    },
+    "for-each-task": {
+      "type": "foreach",
+      "rule": "sweep-on-spec-created",
+      "title": "For each downstream task",
+      "collection": {
+        "type": "binding_ref",
+        "binding": "downstream",
+        "path": "tasks"
+      },
+      "item_binding": "task",
+      "failure_policy": "collect",
+      "body_entry": "open-gate",
+      "continuation": "sweep-done",
+      "transitions": {
+        "completed": "sweep-done",
+        "failed": "sweep-failed"
+      },
+      "source": {
+        "path": "system/playbooks/default-pipeline.md",
+        "start_line": 57,
+        "end_line": 62
+      }
+    },
+    "open-gate": {
+      "type": "command",
+      "rule": "sweep-on-spec-created",
+      "title": "Open a spec-ingest gate",
+      "command": "gate_create",
+      "inputs": {
+        "project_id": {
+          "type": "event_ref",
+          "path": "project_id"
+        },
+        "gate_type": {
+          "type": "literal",
+          "value": "review"
+        },
+        "title": {
+          "type": "template",
+          "parts": [
+            {
+              "type": "literal",
+              "value": "Spec ingest: "
+            },
+            {
+              "type": "loop_ref",
+              "binding": "task",
+              "path": "title"
+            }
+          ]
+        }
+      },
+      "save_result_as": "gate",
+      "transitions": {
+        "success": "check-gate",
+        "failure": "sweep-failed",
+        "runtime_error": "sweep-failed"
+      },
+      "source": {
+        "path": "system/playbooks/default-pipeline.md",
+        "start_line": 63,
+        "end_line": 66
+      }
+    },
+    "check-gate": {
+      "type": "decision",
+      "rule": "sweep-on-spec-created",
+      "title": "Was the gate already open?",
+      "cases": [
+        {
+          "when": {
+            "type": "comparison",
+            "op": "eq",
+            "left": {
+              "type": "binding_ref",
+              "binding": "gate",
+              "path": "created"
+            },
+            "right": {
+              "type": "literal",
+              "value": false
+            }
+          },
+          "goto": "for-each-task",
+          "label": "already open"
+        },
+        {
+          "when": {
+            "type": "comparison",
+            "op": "eq",
+            "left": {
+              "type": "loop_ref",
+              "binding": "task",
+              "path": "status"
+            },
+            "right": {
+              "type": "literal",
+              "value": "BLOCKED"
+            }
+          },
+          "goto": "sweep-done",
+          "label": "downstream blocked"
+        }
+      ],
+      "default": "for-each-task",
+      "source": {
+        "path": "system/playbooks/default-pipeline.md",
+        "start_line": 67,
+        "end_line": 69
+      }
+    },
+    "sweep-done": {
+      "type": "terminal",
+      "rule": "sweep-on-spec-created",
+      "title": "Sweep complete",
+      "outcome": "completed",
+      "source": {
+        "path": "system/playbooks/default-pipeline.md",
+        "start_line": 70,
+        "end_line": 70
+      }
+    },
+    "sweep-failed": {
+      "type": "terminal",
+      "rule": "sweep-on-spec-created",
+      "title": "Sweep failed",
+      "outcome": "failed",
+      "source": {
+        "path": "system/playbooks/default-pipeline.md",
+        "start_line": 71,
+        "end_line": 71
+      }
+    }
+  }
+}
