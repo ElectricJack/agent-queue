@@ -44,6 +44,8 @@ from src.models import (
     worktree_setup_hash,
 )
 
+pytestmark = pytest.mark.migration
+
 # The Wave 0 substrate revision that carries the worktree-execution DDL.
 SUBSTRATE_REVISION = "93a8a9e48fb8"
 # Its parent — the point just before the worktree columns exist.

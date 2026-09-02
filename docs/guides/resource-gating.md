@@ -54,7 +54,7 @@ resources:
   test_workers: null            # null → the per-session share
   test_wait_timeout: 1800
   test_poll_interval: 2.0
-  test_deselect_markers: "not tmux and not integration and not perf"
+  test_deselect_markers: "not perf and not migration and not slow and not tmux and not integration"
 
   # Doctor thresholds.
   load_warn_ratio: 1.0          # warn when 5-min load > cores × this

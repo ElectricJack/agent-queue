@@ -170,3 +170,45 @@ class TestCommand:
         # EX_TEMPFAIL: "come back later", not "your tests failed".
         assert result.exit_code == 75
         assert "no test slot free" in result.output
+
+
+class TestDefaultDeselectsMatchPyproject:
+    """The ``-m`` ``aq test`` adds must deselect what pyproject's addopts does.
+
+    pytest's ``-m`` is single-valued: a command-line expression *replaces*
+    the one in ``addopts`` rather than combining with it.  So when
+    pyproject.toml grows a new deselected marker (``migration`` and ``slow``
+    in PR #48) and the ``aq test`` default is not updated, every agent that
+    follows the rules and runs ``aq test`` silently gets those suites back —
+    the exact suites that were pulled out of the default run for cost.
+    """
+
+    @staticmethod
+    def _terms(expression: str) -> set[str]:
+        # "not a and not b" -> {"a", "b"}; anything else is a shape we do
+        # not expect and should fail loudly.
+        terms = set()
+        for clause in expression.split(" and "):
+            words = clause.split()
+            assert words[0] == "not" and len(words) == 2, expression
+            terms.add(words[1])
+        return terms
+
+    @pytest.fixture(scope="class")
+    def pyproject_deselects(self) -> set[str]:
+        import shlex
+        import tomllib
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent.parent
+        data = tomllib.loads((root / "pyproject.toml").read_text())
+        addopts = shlex.split(data["tool"]["pytest"]["ini_options"]["addopts"])
+        return self._terms(addopts[addopts.index("-m") + 1])
+
+    def test_config_default_matches(self, pyproject_deselects):
+        assert self._terms(ResourcesConfig().test_deselect_markers) == pyproject_deselects
+
+    def test_fallback_matches(self, pyproject_deselects):
+        from src.cli.test_runner import _FALLBACK_MARKERS
+
+        assert self._terms(_FALLBACK_MARKERS) == pyproject_deselects

@@ -448,7 +448,7 @@ reads it per launch and `aq test` reads it per run.
 | `test_workers` | `int \| None` | `None` | `-n` cap `aq test` enforces. `None` uses the per-session share. |
 | `test_wait_timeout` | `int` | `1800` | Seconds `aq test` waits for a slot before exiting `75` (`EX_TEMPFAIL`). |
 | `test_poll_interval` | `float` | `2.0` | Slot poll interval while waiting; also the cadence of the "waiting" line. |
-| `test_deselect_markers` | `str` | `"not tmux and not integration and not perf"` | `-m` expression `aq test` applies when the caller passed none. |
+| `test_deselect_markers` | `str` | `"not perf and not migration and not slow and not tmux and not integration"` | `-m` expression `aq test` applies when the caller passed none. |
 | `load_warn_ratio` | `float` | `1.0` | `resources.load` warns when the 5-minute load average exceeds `cores × this`. |
 | `max_pytest_processes` | `int` | `24` | `resources.test_pressure` warns above this many pytest processes box-wide (xdist workers included). `0` disables the check. |
 | `cgroups.enabled` | `bool` | `False` | Launch each session inside a `systemd-run --user --scope`. Requires a one-time root step (`scripts/setup-cgroup-delegation.sh`); degrades to the other layers with a startup log line and a doctor warning when delegation is absent. |
