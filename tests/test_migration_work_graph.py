@@ -17,6 +17,7 @@ import tempfile
 import time
 from pathlib import Path
 
+import pytest
 import sqlalchemy as sa
 from alembic import command
 from alembic.config import Config
@@ -25,6 +26,8 @@ from sqlalchemy import create_engine
 
 WORK_GRAPH_REVISION = "a1c7f3e08b42"
 PRIOR_REVISION = "93a8a9e48fb8"
+
+pytestmark = pytest.mark.migration
 
 
 def _alembic_config(db_url: str) -> Config:
