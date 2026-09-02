@@ -54,14 +54,29 @@ def test_explicit_class_wins_over_saved_route() -> None:
     )
 
 
-def test_saved_route_requires_matching_task_revision_input_and_options() -> None:
+def test_saved_route_requires_matching_input_and_options() -> None:
     task = _task()
     saved = _saved(task)
 
     assert resolve_effective_route(task, saved, "catalog-v1") is not None
-    assert resolve_effective_route(task, replace(saved, task_updated_at=99.0), "catalog-v1") is None
     assert resolve_effective_route(task, replace(saved, input_hash="old"), "catalog-v1") is None
     assert resolve_effective_route(task, saved, "catalog-v2") is None
+    assert resolve_effective_route(task, replace(saved, project_id="other"), "catalog-v1") is None
+
+
+def test_saved_route_survives_a_revision_bump_that_changes_no_routed_input() -> None:
+    """READY→ASSIGNED bumps ``updated_at``; the decision must outlive it."""
+    task = _task()
+    saved = _saved(task)
+
+    assigned = replace(task, updated_at=task.updated_at + 1)
+
+    route = resolve_effective_route(assigned, saved, "catalog-v1")
+
+    assert route is not None
+    assert route.intelligence_class == "standard-medium"
+    assert route.provider == "openai"
+    assert route.source == "playbook"
 
 
 def test_assignment_hashes_are_canonical_and_include_material_changes() -> None:

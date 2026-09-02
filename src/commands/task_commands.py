@@ -3157,6 +3157,15 @@ class TaskCommandsMixin:
             ws_counts = getattr(self.orchestrator, "_last_scheduler_workspace_counts", {})
             idle = getattr(self.orchestrator, "_last_scheduler_idle_by_project", {})
             capacity = build_capacity_reasons(task, state, ws_counts, idle)
+            # The coordinator above already answered the route question with
+            # the richer story (playbook running, retrying, misconfigured);
+            # the scheduler snapshot only knows that no route was in it.
+            if any(reason["code"] == "awaiting_intelligence_route" for reason in reasons):
+                capacity = [
+                    reason
+                    for reason in capacity
+                    if reason["code"] != "awaiting_intelligence_route"
+                ]
             if pool_reason is not None:
                 # A pool-routed task is not in the push queue, so the codes
                 # that describe *that* queue's supply would send an operator

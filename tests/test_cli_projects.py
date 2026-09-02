@@ -73,6 +73,10 @@ def test_project_details_and_set_forward_correct_args_and_render_client_errors(r
          ("set_default_branch", {"project_id": "p1", "branch": "develop"})),
         (["project", "set", "p1", "budget-limit", "unlimited"],
          ("edit_project", {"project_id": "p1", "budget_limit": None})),
+        (["project", "set", "p1", "default-profile", "worker-standard"],
+         ("edit_project", {"project_id": "p1", "default_profile_id": "worker-standard"})),
+        (["project", "set", "p1", "default-profile", "none"],
+         ("edit_project", {"project_id": "p1", "default_profile_id": None})),
     ):
         client = _client({expected[0]: {"success": True}})
         with patch("src.cli.projects._get_client", return_value=client):
