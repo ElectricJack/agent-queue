@@ -154,6 +154,7 @@ def _register_all():
     """Register all built-in formatters. Called once at import time."""
     from .adapters import (
         agent_proxy,
+        plain_proxy,
         project_proxy,
         task_proxy,
     )
@@ -279,7 +280,12 @@ def _register_all():
             lines.append(f"  {i}. " + ", ".join(wave))
         return "\n".join(lines)
 
-    FORMATTERS["task_progress"] = FormatterSpec(render=_render_progress, extract=None, many=False)
+    FORMATTERS["task_progress"] = FormatterSpec(
+        render=_render_progress,
+        extract=None,
+        proxy=plain_proxy,
+        many=False,
+    )
 
     for _dep_cmd in ("task_deps", "get_task_dependencies"):
         FORMATTERS[_dep_cmd] = FormatterSpec(

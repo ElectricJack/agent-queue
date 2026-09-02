@@ -484,3 +484,88 @@ async def test_worker_close_is_not_flagged_review_task(orchestrator_factory):
     completed = _emitted(orch.bus, "task.completed")
     assert len(completed) == 1
     assert completed[0]["review_task"] is False
+
+
+@pytest.mark.asyncio
+async def test_empty_branch_close_is_flagged_no_code(
+    orchestrator_factory, pipeline_engine_factory
+):
+    """A branch that ends with no commits is not worth reviewing.
+
+    The completion pipeline settles that question before integration can
+    merge the branch away and leaves the verdict on the context
+    (``_branch_left_no_commits``); the close path folds it into ``no_code``.
+    It is the guard that survives what the other two cannot: this worker has
+    a writing profile and no review dedup key, so ``read_only`` and
+    ``review_task`` both read False — and there is still nothing to review
+    (task bright-forge-78).
+    """
+    orch = await orchestrator_factory()
+    h = orch.command_handler
+    await _seed(h)
+    await h.db.upsert_profile(AgentProfile(id="reviewer", name="Reviewer"))
+    await h.db.upsert_profile(AgentProfile(id="final-reviewer", name="Final"))
+    engine = pipeline_engine_factory(handler=h)
+
+    async def _empty_branch_pipeline(ctx):
+        ctx.branch_no_commits = True
+        return (getattr(ctx.task, "pr_url", None) or "", True)
+
+    orch._run_completion_pipeline = _empty_branch_pipeline
+
+    task_id = (
+        await h.execute(
+            "create_task",
+            {"project_id": "p", "title": "Do work", "profile_id": "worker"},
+        )
+    )["created"]
+    await h.db.update_task(
+        task_id,
+        branch_name=f"aq/{task_id}",
+        pr_url="https://github.com/o/r/pull/9",
+    )
+    await _close_pass(h, task_id)
+
+    completed = _emitted(orch.bus, "task.completed")
+    assert len(completed) == 1
+    assert completed[0]["no_code"] is True
+    assert completed[0]["review_task"] is False, "not a pipeline-created review"
+
+    await engine.dispatch("task.completed", completed[0], event_id="empty-branch")
+
+    assert await _review_rows(h, task_id) == [], "reviewed a branch with an empty diff"
+    tasks = await h.db.list_tasks(project_id="p")
+    assert [t for t in tasks if t.profile_id == "final-reviewer"] == []
+
+
+@pytest.mark.asyncio
+async def test_branch_with_commits_close_is_still_reviewed(
+    orchestrator_factory, pipeline_engine_factory
+):
+    """The new guard only ever narrows: real work still spawns its review."""
+    orch = await orchestrator_factory()
+    h = orch.command_handler
+    await _seed(h)
+    await h.db.upsert_profile(AgentProfile(id="reviewer", name="Reviewer"))
+    await h.db.upsert_profile(AgentProfile(id="final-reviewer", name="Final"))
+    engine = pipeline_engine_factory(handler=h)
+
+    task_id = (
+        await h.execute(
+            "create_task",
+            {"project_id": "p", "title": "Do work", "profile_id": "worker"},
+        )
+    )["created"]
+    await h.db.update_task(
+        task_id,
+        branch_name=f"aq/{task_id}",
+        pr_url="https://github.com/o/r/pull/10",
+    )
+    await _close_pass(h, task_id)
+
+    completed = _emitted(orch.bus, "task.completed")
+    assert completed[0]["no_code"] is False
+
+    await engine.dispatch("task.completed", completed[0], event_id="with-commits")
+
+    assert await _review_rows(h, task_id), "per-task-review no longer fires"

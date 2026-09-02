@@ -24,6 +24,7 @@ from src.orchestrator.merge_slot import (
     release_merge_slot,
     renew_merge_slot,
 )
+from src.review_keys import REVIEW_PROFILE_IDS
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +35,9 @@ WORK_OUTCOME_NO_OP = "no-op"
 #: Legacy stage profile ids used only when profile resolution is unavailable.
 #: The declarative ``AgentProfile.read_only`` flag is the normal no-code
 #: signal; these preserve the old safe skip for unsynced profile rows.
-NO_CODE_PROFILE_IDS = frozenset({"reviewer", "final-reviewer"})
+#: ``src/review_keys.py`` owns the set — the close path's ``review_task``
+#: guard reads the same ids, and the two must not drift apart.
+NO_CODE_PROFILE_IDS = REVIEW_PROFILE_IDS
 
 
 class GitOpsMixin:
@@ -387,6 +390,53 @@ class GitOpsMixin:
             return bool(profile.read_only)
         return (ctx.task.profile_id or "") in NO_CODE_PROFILE_IDS
 
+    async def _branch_left_no_commits(self, ctx: PipelineContext) -> bool:
+        """True when this task's branch ended with no commits ahead of its base.
+
+        The third guard against the review pipeline reviewing nothing (task
+        bright-forge-78).  ``_task_produces_no_code`` asks about *intent* (a
+        ``read_only`` profile, ``--work-outcome no-op``) and the pipeline's
+        ``review_task`` flag asks about *provenance* (a dedup key this
+        pipeline stamped); both can be dodged by a project that renames or
+        rewrites its reviewer profiles.  This asks the branch itself, so an
+        empty diff is recognised whatever produced it — including a worker
+        that closed ``pass`` having committed nothing.
+
+        Asked only where the answer survives the rest of the close:
+
+        * **worktree mode** — integration merges the branch into the default
+          under the merge slot, after this;
+        * **pull_request mode** — the PR is merged later, by the final
+          reviewer.
+
+        The legacy direct path is deliberately excluded: ``_phase_verify``
+        auto-merges the task branch into the default branch there, so by this
+        point a branch full of work counts zero commits ahead and would be
+        misread as empty.  Unknown stays False, exactly as in
+        :meth:`_abranch_has_no_commits` — "cannot tell" must never disarm a
+        review.
+        """
+        workspace = ctx.workspace_path
+        branch = ctx.task.branch_name
+        if not workspace or not branch:
+            return False
+        pr_mode = (
+            await self._effective_integration_mode(ctx.task) == INTEGRATION_MODE_PULL_REQUEST
+        )
+        if not pr_mode and not await self._task_is_worktree_mode(ctx):
+            return False
+        try:
+            return await self._abranch_has_no_commits(
+                workspace, branch, ctx.default_branch or "main"
+            )
+        except Exception as e:
+            logger.warning(
+                "Task %s: empty-branch check failed (assuming it has work): %s",
+                ctx.task.id,
+                e,
+            )
+            return False
+
     async def _sweep_uncommitted_before_skip(self, ctx: PipelineContext) -> None:
         """Best-effort dirty-slot cleanup on a verification path that skips the checks.
 
@@ -458,6 +508,14 @@ class GitOpsMixin:
             return (ctx.pr_url, False)
         if result == PhaseResult.ERROR:
             return (ctx.pr_url, False)
+
+        # Whether the branch carries any work has to be settled *here*:
+        # verification is done (auto-commit and auto-push have run, so the
+        # answer is final) and integration has not yet merged the branch into
+        # the default branch, which would make a real code task look empty.
+        # The close path reads it off the context to flag ``task.completed``
+        # as ``no_code`` — see ``_branch_left_no_commits``.
+        ctx.branch_no_commits = await self._branch_left_no_commits(ctx)
 
         # Phase 2: Integration (worktree-mode only).  For exclusive-clone
         # tasks the verify phase already handled the merge; for worktree
