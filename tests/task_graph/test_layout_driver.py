@@ -207,3 +207,128 @@ async def test_container_collapses_to_stub_then_reopens_in_active(db):
     assert set(rows) == {"e", kids[0], "gc"}
     assert rows["e"].kind == "container"
     assert _inside(rows["e"], rows[kids[0]]) and _inside(rows[kids[0]], rows["gc"])
+
+
+async def _make_container(db, cid, parent=None, n=0):
+    """Create ``cid`` (optionally under ``parent``) with ``n`` card children."""
+    await db.create_task(Task(id=cid, project_id="p1", title=cid, description=""))
+    if parent is not None:
+        async with db._engine.begin() as conn:
+            await db.set_parent(cid, parent, conn=conn)
+    kids = []
+    for i in range(n):
+        kid = f"{cid}-k{i}"
+        await db.create_task(Task(id=kid, project_id="p1", title=kid, description=""))
+        async with db._engine.begin() as conn:
+            await db.set_parent(kid, cid, conn=conn)
+        kids.append(kid)
+    return kids
+
+
+def _assert_nested(rows, container_id):
+    """Every child row of ``container_id`` sits inside its box and under its path."""
+    parent = rows[container_id]
+    children = [r for r in rows.values() if r.container_id == container_id]
+    assert children, f"{container_id} has no child rows"
+    for child in children:
+        assert child.path.startswith(parent.path), (child.task_id, child.path, parent.path)
+        assert _inside(parent, child), (child.task_id, (child.abs_x, child.abs_y, child.w,
+                                                        child.h), (parent.abs_x, parent.abs_y,
+                                                                   parent.w, parent.h))
+
+
+async def test_moved_big_container_keeps_its_children_inside_it(db):
+    # b is a root container holding two cards; m is a fat container elsewhere.
+    await _make_container(db, "b", n=2)
+    await _make_container(db, "s", n=0)
+    await _make_container(db, "m", parent="s", n=3)
+    drv = LayoutDriver(db)
+    await drv.full_layout("p1", "all")
+    async with db._engine.begin() as conn:
+        await db.set_parent("m", "b", conn=conn)
+        await db.mark_layout_dirty("p1", ["m"], "parent.changed:s", conn=conn)
+    await drv.process_dirty("p1", min_age_seconds=0)
+    ids = ["b", "b-k0", "b-k1", "m", "m-k0", "m-k1", "m-k2"]
+    rows = await db.load_layout_rows("p1", "all", ids)
+    assert rows["m"].path == "/b/m/"
+    _assert_nested(rows, "m")
+    _assert_nested(rows, "b")
+
+
+async def test_container_created_with_children_in_one_batch(db):
+    await _make_container(db, "b", n=2)
+    drv = LayoutDriver(db)
+    await drv.full_layout("p1", "all")
+    kids = await _make_container(db, "m", parent="b", n=3)
+    async with db._engine.begin() as conn:
+        await db.mark_layout_dirty("p1", ["m", *kids], "task.created", conn=conn)
+    await drv.process_dirty("p1", min_age_seconds=0)
+    rows = await db.load_layout_rows("p1", "all", ["b", "b-k0", "b-k1", "m", *kids])
+    assert rows["m"].path == "/b/m/" and rows["m"].kind == "container"
+    _assert_nested(rows, "m")
+    _assert_nested(rows, "b")
+
+
+async def test_dirty_marks_survive_a_failure_in_a_later_variant(db, monkeypatch):
+    from src.task_graph.layout import driver as driver_mod
+
+    kids = await seed_epic(db, n=2)
+    drv = LayoutDriver(db)
+    await drv.full_layout("p1", "all")
+    await drv.full_layout("p1", "active")
+    await db.create_task(Task(id="e-new", project_id="p1", title="new", description=""))
+    async with db._engine.begin() as conn:
+        await db.set_parent("e-new", "e", conn=conn)
+        await db.mark_layout_dirty("p1", ["e-new"], "task.created", conn=conn)
+
+    real_run = driver_mod._IncrementalBatch.run
+
+    async def boom(self, consumed_seq):
+        if self.variant == "active":
+            raise RuntimeError("active exploded")
+        return await real_run(self, consumed_seq)
+
+    monkeypatch.setattr(driver_mod._IncrementalBatch, "run", boom)
+    with pytest.raises(RuntimeError, match="active exploded"):
+        await drv.process_dirty("p1", min_age_seconds=0)
+    assert await db.dirty_layout_projects() == ["p1"]
+
+    monkeypatch.undo()
+    versions = await drv.process_dirty("p1", min_age_seconds=0)
+    assert versions["all"] is not None and versions["active"] is not None
+    assert await db.dirty_layout_projects() == []
+    rows = await db.load_layout_rows("p1", "active", ["e-new", *kids])
+    assert "e-new" in rows
+
+
+async def test_relay_depth_exceeded_aborts_without_publishing(db, monkeypatch):
+    from src.database.queries import hierarchy_queries
+    from src.task_graph.layout import driver as driver_mod
+
+    # A 3-level moved subtree needs more headroom than the product cap allows.
+    monkeypatch.setattr(hierarchy_queries, "MAX_STRUCTURAL_DEPTH", 6)
+    await _make_container(db, "b", n=1)
+    await _make_container(db, "a", n=0)
+    await _make_container(db, "m", parent="a", n=0)
+    await _make_container(db, "c", parent="m", n=0)
+    await _make_container(db, "g", parent="c", n=1)
+    drv = LayoutDriver(db)
+    await drv.full_layout("p1", "all")
+    before = await db.get_layout_meta("p1", "all")
+    async with db._engine.begin() as conn:
+        await db.set_parent("m", "b", conn=conn)
+        await db.mark_layout_dirty("p1", ["m"], "parent.changed:a", conn=conn)
+    monkeypatch.setattr(driver_mod._IncrementalBatch, "MAX_RELAY_ROUNDS", 1)
+    with pytest.raises(driver_mod.LayoutRelayDepthExceeded):
+        await drv.process_dirty("p1", min_age_seconds=0)
+    after = await db.get_layout_meta("p1", "all")
+    assert after["layout_version"] == before["layout_version"]
+    assert await db.dirty_layout_projects() == ["p1"]
+
+
+async def test_load_subtree_ids_escapes_like_wildcards(db):
+    await _make_container(db, "a_b", n=1)
+    await _make_container(db, "aXb", n=1)
+    await LayoutDriver(db).full_layout("p1", "all")
+    assert sorted(await db.load_subtree_ids("p1", "all", "/a_b/")) == ["a_b", "a_b-k0"]
+    assert sorted(await db.load_subtree_ids("p1", "all", "/aXb/")) == ["aXb", "aXb-k0"]

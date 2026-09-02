@@ -19,6 +19,15 @@ from src.task_graph.layout.model import (
 logger = logging.getLogger(__name__)
 
 
+class LayoutRelayDepthExceeded(ValueError):
+    """A batch could not settle every moved subtree into a stable frame.
+
+    Raised before anything is published, so the batch is a no-op and the
+    dirty marks survive; the orchestrator escalates a repeat offender to a
+    full tidy job.
+    """
+
+
 def _visible(snapshot: dict[str, SnapTask], variant: str) -> tuple[set[str], set[str]]:
     """Return (ids present in the variant, container ids rendered as stubs)."""
     if variant == "all":
@@ -194,16 +203,22 @@ class LayoutDriver:
         snapshot, edges = await self.db.load_project_snapshot(project_id)
         blocked = await self._blocked_ids(project_id)
         consumed = False
-        for variant in VARIANTS:
+        for idx, variant in enumerate(VARIANTS):
+            last = idx == len(VARIANTS) - 1
             if await self.db.get_layout_meta(project_id, variant) is None:
                 out[variant] = await self.full_layout(project_id, variant)
                 continue
             batch = _IncrementalBatch(self, project_id, variant, snapshot, edges, blocked, marks)
-            out[variant] = await batch.run(seq)
-            consumed = True
+            # Only the final variant retires the marks: if a later variant
+            # raises, the batch is replayed in full rather than lost. Redoing
+            # an already-applied variant is idempotent — every pass recomputes
+            # from the snapshot.
+            out[variant] = await batch.run(seq if last else None)
+            consumed = consumed or last
         if not consumed:
-            # Every variant was rebuilt from scratch; the marks are still
-            # subsumed, so retire them rather than replaying them forever.
+            # The last variant was rebuilt from scratch (``full_layout`` never
+            # consumes marks), so retire them here rather than replaying them
+            # forever.
             async with self.db._engine.begin() as conn:
                 await self.db.clear_layout_dirty(project_id, seq, conn=conn)
         return out
@@ -218,7 +233,7 @@ class _IncrementalBatch:
     """
 
     MAX_DRAIN_STEPS = 10_000
-    MAX_RELAY_ROUNDS = 8
+    MAX_RELAY_ROUNDS = 16
 
     def __init__(self, driver, project_id, variant, snapshot, edges, blocked, marks):
         self.db = driver.db
@@ -250,7 +265,7 @@ class _IncrementalBatch:
         self.pending: dict[str, LayoutRow] = {}
         self._db_cache: dict[str, LayoutRow | None] = {}
         self.size_of: dict[str, tuple[float, float]] = {}
-        self.laid_under: dict[str | None, str] = {}
+        self.laid_under: dict[str | None, tuple[str, tuple[float, float]]] = {}
         self.translated: dict[str, tuple[float, float]] = {}
         self.processed: set[str | None] = set()
         self.queue: list[tuple[str | None, str]] = []
@@ -291,11 +306,24 @@ class _IncrementalBatch:
             d += 1
         return d
 
-    def _current_size(self, cid: str, existing: dict[str, LayoutRow]) -> tuple[float, float]:
+    async def _current_size(self, cid: str) -> tuple[float, float]:
+        """The allocated size to reserve for a container child.
+
+        The size this batch computed wins; otherwise the container's OWN
+        stored row, wherever it currently sits in the tree — a container
+        moved into a new parent keeps its real size instead of collapsing
+        to a card slot. A container created in this batch has no stored row
+        and starts at a card slot until its own pass reports an allocation.
+        """
         if cid in self.size_of:
             return self.size_of[cid]
-        row = existing.get(cid) or self.pending.get(cid)
+        row = await self._db_row(cid) or self.pending.get(cid)
         return (row.w, row.h) if row else (CARD_W, CARD_H)
+
+    @staticmethod
+    def _origin(row: LayoutRow) -> tuple[float, float]:
+        """Absolute content origin of a container row."""
+        return (row.abs_x + PADDING, row.abs_y + PADDING + HEADER_H)
 
     # ── dirty → containers ──────────────────────────────────────────────
     async def _seed_queue(self) -> None:
@@ -340,14 +368,14 @@ class _IncrementalBatch:
         existing = await self.db.load_children_layout_rows(self.project_id, self.variant, cid)
         path = crow.path if crow else "/"
         depth = crow.depth + 1 if crow else 0
-        origin = (crow.abs_x + PADDING, crow.abs_y + PADDING + HEADER_H) if crow else (0.0, 0.0)
+        origin = self._origin(crow) if crow else (0.0, 0.0)
         if mode == "resize" and any(k not in existing for k in kids):
             # A resize can't place a child that has no ordinal yet.
             mode = "incremental"
-        child_sizes = {
-            k: self._current_size(k, existing)
-            for k in kids if self.snapshot[k].is_container and k not in self.stubs
-        }
+        child_sizes: dict[str, tuple[float, float]] = {}
+        for k in kids:
+            if self.snapshot[k].is_container and k not in self.stubs:
+                child_sizes[k] = await self._current_size(k)
         scope = ContainerScope(
             container_id=cid, container_path=path, depth=depth,
             children={k: self.snapshot[k] for k in kids},
@@ -357,7 +385,11 @@ class _IncrementalBatch:
         )
         res = await asyncio.to_thread(layout_container, scope, mode=mode, seed=self.seed)
         self.processed.add(cid)
-        self.laid_under[cid] = path
+        # Remember the FRAME these children were authored in, not just the
+        # path: a container framed on its pending row (moved here, or created
+        # in this batch) can still move when its real size reaches its parent,
+        # and its children must then be re-laid at the new origin.
+        self.laid_under[cid] = (path, origin)
 
         # Rows that left this container: removed, archived, or hidden by the
         # variant filter. They take their whole subtree with them.
@@ -412,38 +444,51 @@ class _IncrementalBatch:
             cid, mode = self.queue.pop(0)
             await self._lay(cid, mode)
 
-    async def _relay_moved_containers(self) -> None:
-        """Re-lay containers whose own row moved to a new path.
+    async def _needs_relay(self, tid: str) -> bool:
+        """Does this container's subtree sit in a frame it no longer has?"""
+        if tid not in self.present or tid in self.stubs:
+            return False
+        if not self.snapshot[tid].is_container:
+            return False
+        frame = await self._frame_row(tid)
+        if frame is None:
+            return False  # no row anywhere yet; its parent's pass creates one
+        used = self.laid_under.get(tid)
+        if used is None:
+            # Never laid in this batch. Its stored children are fine as long as
+            # the container keeps its path (a move gets no translation) and was
+            # not a stub (a reopened stub has no child rows left at all).
+            stored = await self._db_row(tid)
+            return stored is None or stored.path != frame.path or stored.kind == "stub"
+        return used != (frame.path, self._origin(frame))
 
-        Their descendants carry the old path prefix, so the only correct fix
-        is to lay their children out again under the new path — recursively,
-        since a re-laid child container moves its own subtree in turn.
+    async def _containers_needing_relay(self) -> list[str]:
+        return [tid for tid in sorted(self.pending) if await self._needs_relay(tid)]
+
+    async def _relay_moved_containers(self) -> None:
+        """Re-lay every container whose subtree is stranded in a stale frame.
+
+        Two causes: the container moved to a new path (its descendants keep the
+        old prefix and get no translation), or it was framed on its pending row
+        and that row has since moved — which happens whenever a moved or newly
+        created container reports its real size and its parent re-flows around
+        it. Both are fixed the same way: lay its children again in the frame it
+        actually has now, which is also recursive, since a re-laid child
+        container moves its own subtree in turn.
         """
         for _ in range(self.MAX_RELAY_ROUNDS):
-            again: list[str] = []
-            for tid, row in sorted(self.pending.items()):
-                if tid not in self.present or tid in self.stubs:
-                    continue
-                if not self.snapshot[tid].is_container:
-                    continue
-                laid = self.laid_under.get(tid)
-                if laid is not None:
-                    if laid != row.path:
-                        again.append(tid)
-                    continue
-                old = await self._db_row(tid)
-                if old is None or old.path != row.path or old.kind == "stub":
-                    again.append(tid)
+            again = await self._containers_needing_relay()
             if not again:
                 return
             for tid in again:
                 self.processed.discard(tid)
                 self.queue.append((tid, "incremental"))
             await self._drain()
-        logger.warning(
-            "layout relay did not converge in %d rounds (project=%s variant=%s)",
-            self.MAX_RELAY_ROUNDS, self.project_id, self.variant,
-        )
+        if await self._containers_needing_relay():
+            raise LayoutRelayDepthExceeded(
+                f"layout relay did not converge in {self.MAX_RELAY_ROUNDS} rounds "
+                f"(project={self.project_id} variant={self.variant})"
+            )
 
     # ── aggregates ──────────────────────────────────────────────────────
     async def _refresh_aggregates(self) -> None:
@@ -477,7 +522,7 @@ class _IncrementalBatch:
             self.pending[tid] = row
 
     # ── publish ─────────────────────────────────────────────────────────
-    async def run(self, seq: int) -> int:
+    async def run(self, consumed_seq: int | None) -> int:
         await self._seed_queue()
         await self._drain()
         # Dirty tasks that vanished from this variant go, with their subtree.
@@ -498,5 +543,5 @@ class _IncrementalBatch:
         extent = self.ws.sizes.get(ROOT, (meta["extent_w"], meta["extent_h"]))
         return await self.db.publish_layout(
             self.project_id, self.variant, self.ws,
-            consumed_seq=seq, extent=extent, node_count_delta=None,
+            consumed_seq=consumed_seq, extent=extent, node_count_delta=None,
         )

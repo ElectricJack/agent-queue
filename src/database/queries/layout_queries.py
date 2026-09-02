@@ -11,6 +11,17 @@ from sqlalchemy import delete, func, insert, select, update
 from src.database.tables import layout_dirty, layout_jobs, project_layout_meta
 
 
+def like_prefix(prefix: str) -> str:
+    """A LIKE pattern matching everything under ``prefix``.
+
+    Task ids are user-supplied and may contain LIKE wildcards, so ``%``,
+    ``_`` and the escape character itself are escaped. Always pair with
+    ``.like(..., escape="\\")`` — SQLite and PostgreSQL both honour it.
+    """
+    escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return escaped + "%"
+
+
 class LayoutQueryMixin:
     # ── dirty marks ─────────────────────────────────────────────────────
     async def mark_layout_dirty(
@@ -227,7 +238,7 @@ class LayoutQueryMixin:
                 select(task_layouts.c.task_id).where(
                     task_layouts.c.project_id == project_id,
                     task_layouts.c.variant == variant,
-                    task_layouts.c.path.like(path_prefix + "%"),
+                    task_layouts.c.path.like(like_prefix(path_prefix), escape="\\"),
                 )
             )
             return [r[0] for r in res.fetchall()]
@@ -255,7 +266,7 @@ class LayoutQueryMixin:
                 .select_from(task_layouts.join(tasks, tasks.c.id == task_layouts.c.task_id))
                 .where(task_layouts.c.project_id == project_id,
                        task_layouts.c.variant == "all",
-                       task_layouts.c.path.like(path_prefix + "%"),
+                       task_layouts.c.path.like(like_prefix(path_prefix), escape="\\"),
                        task_layouts.c.path != path_prefix)
             )
             rows = res.fetchall()
@@ -352,7 +363,7 @@ class LayoutQueryMixin:
                     update(task_layouts)
                     .where(task_layouts.c.project_id == project_id,
                            task_layouts.c.variant == variant,
-                           task_layouts.c.path.like(t.path_prefix + "%"),
+                           task_layouts.c.path.like(like_prefix(t.path_prefix), escape="\\"),
                            task_layouts.c.path != t.path_prefix)
                     .values(abs_x=task_layouts.c.abs_x + t.dx, abs_y=task_layouts.c.abs_y + t.dy)
                 )
@@ -361,7 +372,7 @@ class LayoutQueryMixin:
                            task_layouts.c.w, task_layouts.c.h)
                     .where(task_layouts.c.project_id == project_id,
                            task_layouts.c.variant == variant,
-                           task_layouts.c.path.like(t.path_prefix + "%"),
+                           task_layouts.c.path.like(like_prefix(t.path_prefix), escape="\\"),
                            task_layouts.c.path != t.path_prefix)
                 )
                 touched.extend(tuple(m) for m in moved.fetchall())
