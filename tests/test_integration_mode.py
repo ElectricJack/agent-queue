@@ -130,6 +130,17 @@ def _ctx(orch, task, ws_path) -> PipelineContext:
 class TestExecutionRulesByMode:
     """_get_execution_rules varies the git instructions with the mode."""
 
+    def test_orchestrator_constructs_without_a_session_command_import_cycle(self, tmp_path):
+        config = AppConfig(
+            database_path=str(tmp_path / "x.db"),
+            workspace_dir=str(tmp_path / "w"),
+            data_dir=str(tmp_path / "d"),
+        )
+
+        orchestrator = Orchestrator(config, runtimes=_NullRuntimeFactory())
+
+        assert orchestrator.session_reconciler is not None
+
     def test_pr_mode_instructs_push_and_pr_never_merge(self, tmp_path):
         config = AppConfig(
             database_path=str(tmp_path / "x.db"),

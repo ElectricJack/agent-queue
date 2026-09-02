@@ -36,7 +36,6 @@ from src.sessions.provider import (
     NotSubmitted,
     SessionHandle,
 )
-from src.sessions.reconciler import DRAIN_ACK_KEY, LIVE_SESSION_STATES as _LIVE_SESSION_STATES
 
 logger = logging.getLogger(__name__)
 
@@ -597,6 +596,11 @@ class SessionCommandsMixin:
         provider = self._provider_for_session(session)
         if provider is None:
             return {"error": f"Provider '{session.provider}' is not available"}
+        # ``reconciler`` imports claim-file helpers from this package.  Keeping
+        # this import at method scope prevents that initialization path from
+        # re-entering a partially initialized reconciler module.
+        from src.sessions.reconciler import DRAIN_ACK_KEY
+
         try:
             await provider.set_meta(self._session_handle(session), DRAIN_ACK_KEY, "1")
         except Exception as exc:
@@ -729,10 +733,12 @@ class SessionCommandsMixin:
         # task — see ``PipelineContext.close_session_live``.  A local /
         # elevated close (no session in scope) has no agent to hand them to,
         # so it keeps the reopen-to-READY behaviour.
+        from src.sessions.reconciler import LIVE_SESSION_STATES
+
         session_live = bool(
             caller_session_id
             and session is not None
-            and session.state in _LIVE_SESSION_STATES
+            and session.state in LIVE_SESSION_STATES
         )
 
         # --- close-with-summary enforcement (Dv2 Phase 2 §7) --------------
