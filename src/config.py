@@ -2285,6 +2285,18 @@ def _llm_config_from_mapping(m: dict, *, legacy: bool) -> LLMConfig:
     )
 
 
+def _present_kwargs(section: dict, spec: dict) -> dict:
+    """Coerce only keys explicitly present in a YAML section.
+
+    Keeping defaults in both this loader and the dataclasses causes them to
+    drift: a partial ``sessions`` section used ``tmux`` while
+    :class:`SessionsConfig` used ``subprocess``, and a partial ``worktrees``
+    section disabled worktrees although :class:`WorktreesConfig` enables them.
+    Passing only supplied values keeps the dataclass as the source of truth.
+    """
+    return {name: coerce(section[name]) for name, coerce in spec.items() if name in section}
+
+
 def load_config(path: str, profile: str | None = None) -> AppConfig:
     """Load and validate application configuration from a YAML file.
 
@@ -2583,39 +2595,51 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         )
 
     # -- Framework-overhaul substrate sections (Wave 0) ---------------------
-    # Parsing only.  Defaults mirror the dataclass defaults exactly so a
-    # partial section never silently flips a flag on.
+    # Defaults belong to the dataclasses.  Supplying only the YAML keys that
+    # exist makes a partial section equivalent to its default construction.
 
     if "sessions" in raw and isinstance(raw["sessions"], dict):
-        se = raw["sessions"]
         config.sessions = SessionsConfig(
-            enabled=bool(se.get("enabled", True)),
-            provider=se.get("provider", "tmux"),
-            tmux_socket=se.get("tmux_socket", "aq"),
-            lease_ttl_seconds=int(se.get("lease_ttl_seconds", 480)),
-            stall_max_nudges=int(se.get("stall_max_nudges", 3)),
-            stall_backoff_seconds=int(se.get("stall_backoff_seconds", 300)),
-            max_restarts=int(se.get("max_restarts", 3)),
-            restart_window_seconds=int(se.get("restart_window_seconds", 600)),
-            restart_backoff_seconds=int(se.get("restart_backoff_seconds", 30)),
-            dialog_budget_seconds=int(se.get("dialog_budget_seconds", 8)),
-            dialog_settle_seconds=float(se.get("dialog_settle_seconds", 1.5)),
-            nudge_debounce_ms=int(se.get("nudge_debounce_ms", 500)),
-            state_cache_ttl_seconds=int(se.get("state_cache_ttl_seconds", 2)),
-            transcript_poll_seconds=int(se.get("transcript_poll_seconds", 2)),
-            adopt_on_start=bool(se.get("adopt_on_start", True)),
+            **_present_kwargs(
+                raw["sessions"],
+                {
+                    "enabled": bool,
+                    "provider": str,
+                    "tmux_socket": str,
+                    "lease_ttl_seconds": int,
+                    "stall_max_nudges": int,
+                    "stall_backoff_seconds": int,
+                    "max_restarts": int,
+                    "restart_window_seconds": int,
+                    "restart_backoff_seconds": int,
+                    "dialog_budget_seconds": int,
+                    "dialog_settle_seconds": float,
+                    "nudge_debounce_ms": int,
+                    "state_cache_ttl_seconds": int,
+                    "transcript_poll_seconds": int,
+                    "adopt_on_start": bool,
+                    "pane_stream_interval_seconds": float,
+                    "pane_stream_max_sessions": int,
+                    "pane_stream_lines": int,
+                },
+            )
         )
 
     if "worktrees" in raw and isinstance(raw["worktrees"], dict):
-        wt = raw["worktrees"]
         config.worktrees = WorktreesConfig(
-            enabled=bool(wt.get("enabled", False)),
-            retain_failed_days=int(wt.get("retain_failed_days", 7)),
-            merge_slot_ttl_seconds=int(wt.get("merge_slot_ttl_seconds", 600)),
-            prune_remote_branches=bool(wt.get("prune_remote_branches", False)),
-            setup_timeout_seconds=int(wt.get("setup_timeout_seconds", 900)),
-            salvage_dirty=bool(wt.get("salvage_dirty", True)),
-            spawn_conflict_continuation=bool(wt.get("spawn_conflict_continuation", False)),
+            **_present_kwargs(
+                raw["worktrees"],
+                {
+                    "enabled": bool,
+                    "retain_failed_days": int,
+                    "merge_slot_ttl_seconds": int,
+                    "prune_remote_branches": bool,
+                    "setup_timeout_seconds": int,
+                    "salvage_dirty": bool,
+                    "salvage_max_bytes": int,
+                    "spawn_conflict_continuation": bool,
+                },
+            )
         )
 
     if "security" in raw and isinstance(raw["security"], dict):
