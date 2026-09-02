@@ -1109,7 +1109,7 @@ class MessagesConfig:
     Substrate placeholder — see docs/specs/implementation/supervisor-agent.md §10.
     """
 
-    enabled: bool = False  # table + commands usable; delivery engine runs
+    enabled: bool = True  # native supervisor messaging is available by default
     delivery_interval: float = 5.0  # piggybacks the cascade cycle
     reply_timeout: float = 120.0  # transcript-tail fallback trigger
     transcript_tail_fallback: bool = True
@@ -2365,7 +2365,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
     if "messages" in raw and isinstance(raw["messages"], dict):
         ms_cfg = raw["messages"]
         config.messages = MessagesConfig(
-            enabled=bool(ms_cfg.get("enabled", False)),
+            enabled=bool(ms_cfg.get("enabled", True)),
             delivery_interval=float(ms_cfg.get("delivery_interval", 5.0)),
             reply_timeout=float(ms_cfg.get("reply_timeout", 120.0)),
             transcript_tail_fallback=bool(ms_cfg.get("transcript_tail_fallback", True)),
