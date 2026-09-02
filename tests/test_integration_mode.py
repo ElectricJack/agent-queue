@@ -191,6 +191,11 @@ class TestPhaseVerifyByMode:
 
         result = await orch._phase_verify(ctx)
         assert result == PhaseResult.STOP
+        orch.git.ais_ancestor.assert_awaited_once_with(
+            ws.workspace_path,
+            "feature-2",
+            "origin/main",
+        )
 
     async def test_direct_mode_auto_merges_to_default(self, orch):
         task = _direct_task()
