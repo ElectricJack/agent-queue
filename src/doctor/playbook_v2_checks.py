@@ -216,13 +216,25 @@ async def _check_stale_artifacts(ctx: DoctorContext) -> CheckResult:
 
     handler = getattr(ctx, "handler", None)
     activations = []
+    evidence_errors: list[dict[str, str]] = []
     if handler is not None and hasattr(handler, "_release_check_activations"):
         try:
-            activations = await handler._release_check_activations()
-        except Exception:  # pragma: no cover - defensive
+            activations = await handler._release_check_activations(
+                evidence_errors=evidence_errors
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            # Swallowing this to `[]` made the check report a clean fleet from a
+            # daemon whose activations it had never read (`prime-zenith-66`).
             activations = []
+            evidence_errors.append(
+                {"source": "activations", "error": f"{type(exc).__name__}: {exc}"}
+            )
 
-    report = release_check(contract_registry=CONTRACTS, activations=activations)
+    report = release_check(
+        contract_registry=CONTRACTS,
+        activations=activations,
+        evidence_errors=evidence_errors,
+    )
     checked = report["checked"]
     if report["success"]:
         return CheckResult(
@@ -234,6 +246,31 @@ async def _check_stale_artifacts(ctx: DoctorContext) -> CheckResult:
             ),
             data={"checked": checked},
         )
+    data = {
+        "checked": checked,
+        "stale": report["stale"],
+        "unverified": report.get("unverified", []),
+        "evidence_errors": report.get("evidence_errors", []),
+        "blocking_reasons": report.get("blocking_reasons", []),
+    }
+    if not report["stale"]:
+        # Nothing drifted; the check simply could not see everything it must
+        # compare, and "unknown" is not "clean".
+        unreadable = ", ".join(
+            sorted(
+                {row["source"] for row in data["evidence_errors"]}
+                | {row["playbook_id"] or "an unnamed activation" for row in data["unverified"]}
+            )
+        )
+        return CheckResult(
+            id=RELEASE_CHECK_ID,
+            severity=Severity.WARN,
+            detail=(
+                f"the release check could not read all of its evidence ({unreadable}); "
+                "it cannot certify activations it never compared"
+            ),
+            data=data,
+        )
     named = sorted({f"{row['playbook_id']}:{row['dependency']}" for row in report["stale"]})
     return CheckResult(
         id=RELEASE_CHECK_ID,
@@ -242,7 +279,7 @@ async def _check_stale_artifacts(ctx: DoctorContext) -> CheckResult:
             f"{len(report['stale'])} reviewed artifact dependenc(ies) moved since review "
             f"({', '.join(named)}); rebuild the artifact, re-review it, and update the fixture"
         ),
-        data={"checked": checked, "stale": report["stale"]},
+        data=data,
     )
 
 

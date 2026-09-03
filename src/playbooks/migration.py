@@ -1355,6 +1355,70 @@ class StaleArtifact:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class UnverifiedActivation:
+    """One enabled activation the release check could **not** compare.
+
+    The gate's claim is "every enabled activation was compared against the live
+    contracts".  A row whose artifact is missing, unreadable, or whose profile
+    baseline could not be resolved cannot carry that claim, and silently
+    skipping it produced the payload of a clean fleet from a daemon that had
+    read none of its own activations (`prime-zenith-66`).  Each such row is
+    named here instead, and each becomes a blocking reason.
+
+    A *disabled* or *acknowledged* row never lands here: an operator decided
+    about it, and a decision made on purpose is not missing evidence.
+    """
+
+    playbook_id: str
+    scope: str
+    scope_identifier: str | None
+    artifact_sha256: str | None
+    reason: str
+    detail: str = ""
+
+    @property
+    def message(self) -> str:
+        subject = self.playbook_id or "an activation row with no playbook id"
+        where = f" ({self.scope}:{self.scope_identifier})" if self.scope_identifier else ""
+        detail = f" — {self.detail}" if self.detail else ""
+        return (
+            f"{subject}{where}: enabled activation could not be compared against the "
+            f"live contracts [{self.reason}]{detail}; a release cannot be certified "
+            "against evidence that was never collected"
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "playbook_id": self.playbook_id,
+            "scope": self.scope,
+            "scope_identifier": self.scope_identifier,
+            "artifact_sha256": self.artifact_sha256,
+            "reason": self.reason,
+            "detail": self.detail,
+            "message": self.message,
+        }
+
+
+def _unverified(row: Mapping[str, Any], reason: str, detail: str = "") -> UnverifiedActivation:
+    """Build an :class:`UnverifiedActivation` from an activation row.
+
+    *reason* is the fallback; a row that already knows why it is uncomparable
+    carries ``evidence_reason``/``evidence_detail``, which the daemon sets when
+    the failure happened while collecting the row rather than while comparing
+    it.
+    """
+    scope_identifier = row.get("scope_identifier")
+    return UnverifiedActivation(
+        playbook_id=str(row.get("playbook_id") or ""),
+        scope=str(row.get("scope") or "system"),
+        scope_identifier=str(scope_identifier) if scope_identifier else None,
+        artifact_sha256=str(row.get("artifact_sha256") or "") or None,
+        reason=str(row.get("evidence_reason") or reason),
+        detail=str(row.get("evidence_detail") or detail or ""),
+    )
+
+
 def _reviewed_fixture_artifacts(fixture_root: Path) -> dict[str, Any]:
     """Every *approved* fixture artifact under *fixture_root*, by playbook id.
 
@@ -1528,6 +1592,7 @@ def release_check(
     fixture_root: Path | str = REVIEWED_FIXTURE_ROOT,
     profile_fingerprints: Mapping[str, str] | None = None,
     activations: Sequence[Mapping[str, Any]] = (),
+    evidence_errors: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     """Do the reviewed artifacts still match the surface they were compiled against?
 
@@ -1549,12 +1614,30 @@ def release_check(
     test can perturb one.
 
     *activations* are mappings shaped like the rows
-    ``playbook_migration_queries`` returns.  A row that is disabled,
-    acknowledged, or carries no artifact does not block: an operator has
-    already decided about it, and a decision made on purpose is not a
-    regression.  A row may carry its own ``current_profiles`` map — the daemon
-    supplies one resolved from its *live* profile registry, because that, not
-    the shipped defaults, is what its artifacts were compiled against.
+    ``playbook_migration_queries`` returns.  A row that is disabled or
+    acknowledged does not block: an operator has already decided about it, and
+    a decision made on purpose is not a regression.  A row may carry its own
+    ``current_profiles`` map — the daemon supplies one resolved from its *live*
+    profile registry, because that, not the shipped defaults, is what its
+    artifacts were compiled against.
+
+    Every **other** enabled row is either compared or named.  A row with no
+    usable ``artifact_commands`` — a missing artifact, an unreadable one, an
+    unavailable store — becomes an :class:`UnverifiedActivation` in
+    ``unverified``, and one whose ``current_profiles_unavailable`` flag is set
+    has its profile half reported unverified rather than silently held to the
+    shipped defaults, which are a *different* baseline.
+
+    *evidence_errors* are the reads the caller could not perform at all, one
+    ``{"source": ..., "error": ...}`` mapping each, exactly as
+    :func:`build_cutover_report` takes them.  They exist because an unread
+    source and an empty one are not the same fact: an activation query that
+    failed and was rendered as zero activations let this gate certify a fleet
+    nobody looked at.
+
+    Anything in ``evidence_errors`` or ``unverified`` therefore appears in
+    ``blocking_reasons``, and a non-empty ``blocking_reasons`` fails the check
+    just as a stale artifact does.
     """
     fixture_root = Path(fixture_root)
     current_commands = current_command_fingerprints(contract_registry)
@@ -1564,7 +1647,15 @@ def release_check(
         else shipped_profile_fingerprints()
     )
     stale: list[StaleArtifact] = []
+    unverified: list[UnverifiedActivation] = []
     checked: list[str] = []
+    unread = [
+        {
+            "source": str(row.get("source") or "unknown"),
+            "error": str(row.get("error") or "unavailable"),
+        }
+        for row in evidence_errors
+    ]
 
     for playbook_id, definition in _reviewed_fixture_artifacts(fixture_root).items():
         checked.append(playbook_id)
@@ -1581,7 +1672,13 @@ def release_check(
             continue
         playbook_id = str(row.get("playbook_id") or "")
         commands = row.get("artifact_commands") or {}
-        if not playbook_id or not commands:
+        if not playbook_id:
+            unverified.append(
+                _unverified(row, "missing_playbook_id", "the activation row names no playbook")
+            )
+            continue
+        if not commands:
+            unverified.append(_unverified(row, "no_command_evidence"))
             continue
         checked.append(playbook_id)
         stale += _compare_fingerprints(
@@ -1589,20 +1686,33 @@ def release_check(
         )
         profiles = row.get("artifact_profiles")
         if profiles:
-            row_current = row.get("current_profiles")
-            stale += _compare_fingerprints(
-                playbook_id,
-                "activation",
-                "profile",
-                profiles,
-                current_profiles if row_current is None else dict(row_current),
-            )
+            if row.get("current_profiles_unavailable"):
+                unverified.append(_unverified(row, "profile_registry_unavailable"))
+            else:
+                row_current = row.get("current_profiles")
+                stale += _compare_fingerprints(
+                    playbook_id,
+                    "activation",
+                    "profile",
+                    profiles,
+                    current_profiles if row_current is None else dict(row_current),
+                )
+
+    blocking_reasons = [
+        f"evidence source {row['source']!r} could not be read ({row['error']}); "
+        "a release cannot be certified against evidence that was never collected"
+        for row in unread
+    ]
+    blocking_reasons += [entry.message for entry in unverified]
 
     return {
-        "success": not stale,
+        "success": not stale and not blocking_reasons,
         "checked": sorted(set(checked)),
         "registry_fingerprint": str(contract_registry.registry_fingerprint()),
         "stale": [entry.to_dict() for entry in stale],
+        "unverified": [entry.to_dict() for entry in unverified],
+        "evidence_errors": unread,
+        "blocking_reasons": blocking_reasons,
     }
 
 
@@ -1623,6 +1733,7 @@ __all__ = [
     "ShadowObservation",
     "SourceRef",
     "StaleArtifact",
+    "UnverifiedActivation",
     "audit_capabilities",
     "build_inventory",
     "build_cutover_report",

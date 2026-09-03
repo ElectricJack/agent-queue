@@ -77,6 +77,16 @@ class _Handler(PlaybookMigrationCommandsMixin):
         # by whichever fixtures happen to be checked in.
         return self.reviewed_root
 
+    async def _v2_lookups(self):
+        # The real `CommandHandler` always has this seam, and the release check
+        # now treats it *failing* as unread evidence.  The stub therefore has to
+        # answer it rather than be missing it, or every test here would exercise
+        # the profile-registry-unavailable path instead of its own subject.
+        from src.playbooks.migration import shipped_profile_lookup
+        from src.playbooks.validation import RegisteredEventLookup, RegistryContractLookup
+
+        return RegistryContractLookup(), shipped_profile_lookup(), RegisteredEventLookup()
+
 
 @pytest.fixture
 def handler(tmp_path, db):
@@ -738,3 +748,194 @@ async def test_release_check_honours_an_acknowledged_playbook(tmp_path, db):
     # profiles, which the waiver says nothing about.  What the waiver removes
     # is the *activation* row this daemon serves.
     assert [row for row in report["stale"] if row["origin"] == "activation"] == []
+
+
+# ---------------------------------------------------------------------------
+# Live evidence the release check could not read (prime-zenith-66)
+# ---------------------------------------------------------------------------
+#
+# Each of these used to return the payload of a clean fleet — `success: True`,
+# the four shipped fixtures in `checked`, no stale rows — from a daemon that had
+# read none of its own activations.  The release check is the gate that says
+# "every enabled activation was compared"; it may not make that claim about
+# evidence it never collected.
+
+
+class _FailingActivations:
+    """A repository whose activation read raises, wrapping a working one."""
+
+    def __init__(self, inner, exc: Exception) -> None:
+        self._inner = inner
+        self._exc = exc
+
+    def __getattr__(self, item):
+        return getattr(self._inner, item)
+
+    async def list_playbook_activations_with_artifacts(self, *args, **kwargs):
+        raise self._exc
+
+    async def list_playbook_activations(self, *args, **kwargs):
+        raise self._exc
+
+
+@pytest.mark.asyncio
+async def test_release_check_blocks_when_the_activation_query_fails(tmp_path, db):
+    data_dir = str(tmp_path / "aq")
+    os.makedirs(data_dir, exist_ok=True)
+    ensure_default_playbooks(data_dir)
+    handler = _ReleaseHandler(_Config(data_dir), db, _MovedProfiles({}))
+    await _activate_shipped_pipeline(handler)
+    handler.db = _FailingActivations(db, RuntimeError("connection reset"))
+
+    report = await handler._cmd_playbook_release_check({})
+
+    assert report["success"] is False
+    assert {row["source"] for row in report["evidence_errors"]} >= {"activations"}
+    assert any(
+        "activations" in reason and "connection reset" in reason
+        for reason in report["blocking_reasons"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_release_check_blocks_when_the_artifact_store_is_unavailable(
+    tmp_path, db, monkeypatch
+):
+    data_dir = str(tmp_path / "aq")
+    os.makedirs(data_dir, exist_ok=True)
+    ensure_default_playbooks(data_dir)
+    handler = _ReleaseHandler(_Config(data_dir), db, _MovedProfiles({}))
+    await _activate_shipped_pipeline(handler)
+
+    from src.playbooks import artifact_store
+
+    def _boom(*args, **kwargs):
+        raise OSError("compiled root is not readable")
+
+    monkeypatch.setattr(artifact_store, "ArtifactStore", _boom)
+
+    report = await handler._cmd_playbook_release_check({})
+
+    assert report["success"] is False
+    assert {row["source"] for row in report["evidence_errors"]} >= {"artifact_store"}
+    # Every enabled activation is named, not merely the store.
+    assert [row["playbook_id"] for row in report["unverified"]] == ["default-pipeline"]
+    assert report["unverified"][0]["reason"] == "artifact_store_unavailable"
+    # The checked-in fixture of the same name is still compared; what is
+    # missing is the *activation* row this daemon serves, and nothing claims
+    # otherwise.
+    assert [row for row in report["stale"] if row["origin"] == "activation"] == []
+
+
+@pytest.mark.asyncio
+async def test_release_check_blocks_when_an_activated_artifact_cannot_be_loaded(
+    tmp_path, db
+):
+    data_dir = str(tmp_path / "aq")
+    os.makedirs(data_dir, exist_ok=True)
+    ensure_default_playbooks(data_dir)
+    handler = _ReleaseHandler(_Config(data_dir), db, _MovedProfiles({}))
+    definition = await _activate_shipped_pipeline(handler)
+
+    from src.playbooks.artifact_store import ArtifactStore
+
+    store = ArtifactStore(handler.config.compiled_root)
+    sha = definition.artifact_sha256()
+    Path(store.path_for(sha)).unlink()
+
+    report = await handler._cmd_playbook_release_check({})
+
+    assert report["success"] is False
+    row = next(r for r in report["unverified"] if r["playbook_id"] == "default-pipeline")
+    assert row["reason"] == "artifact_unreadable"
+    assert row["artifact_sha256"] == sha
+    assert [r for r in report["stale"] if r["origin"] == "activation"] == []
+
+
+class _FailingLookups(_ReleaseHandler):
+    async def _v2_lookups(self):
+        raise RuntimeError("profile registry is not loaded")
+
+
+@pytest.mark.asyncio
+async def test_release_check_blocks_when_the_profile_registry_is_unavailable(tmp_path, db):
+    """A daemon that cannot read its own profiles may not borrow the shipped ones."""
+    data_dir = str(tmp_path / "aq")
+    os.makedirs(data_dir, exist_ok=True)
+    ensure_default_playbooks(data_dir)
+    handler = _FailingLookups(_Config(data_dir), db, _MovedProfiles({}))
+    await _activate_shipped_pipeline(handler)
+
+    report = await handler._cmd_playbook_release_check({})
+
+    assert report["success"] is False
+    assert {row["source"] for row in report["evidence_errors"]} >= {"profile_registry"}
+    row = next(r for r in report["unverified"] if r["playbook_id"] == "default-pipeline")
+    assert row["reason"] == "profile_registry_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_release_check_reports_an_enabled_activation_with_no_artifact(tmp_path, db):
+    data_dir = str(tmp_path / "aq")
+    os.makedirs(data_dir, exist_ok=True)
+    ensure_default_playbooks(data_dir)
+    handler = _ReleaseHandler(_Config(data_dir), db, _MovedProfiles({}))
+    await _activate_shipped_pipeline(handler)
+    await handler.db.set_playbook_activation(
+        playbook_id="orphan-one",
+        scope="system",
+        scope_identifier="",
+        artifact_sha256=None,
+        enabled=True,
+        activated_by="operator",
+        health="unavailable",
+        reasons="[]",
+    )
+
+    report = await handler._cmd_playbook_release_check({})
+
+    assert report["success"] is False
+    row = next(r for r in report["unverified"] if r["playbook_id"] == "orphan-one")
+    assert row["reason"] == "no_active_artifact"
+
+
+@pytest.mark.asyncio
+async def test_a_clean_live_release_check_reports_no_unread_evidence(tmp_path, db):
+    data_dir = str(tmp_path / "aq")
+    os.makedirs(data_dir, exist_ok=True)
+    ensure_default_playbooks(data_dir)
+    handler = _ReleaseHandler(_Config(data_dir), db, _MovedProfiles({}))
+    await _activate_shipped_pipeline(handler)
+
+    report = await handler._cmd_playbook_release_check({})
+
+    assert report["success"] is True, report["blocking_reasons"]
+    assert report["evidence_errors"] == []
+    assert report["unverified"] == []
+    assert report["blocking_reasons"] == []
+
+
+@pytest.mark.asyncio
+async def test_doctor_release_check_warns_when_the_daemon_cannot_read_activations(
+    tmp_path, db
+):
+    """`_check_stale_artifacts` swallowed the same exception into `activations = []`."""
+    from src.config import AppConfig
+    from src.doctor.models import DoctorContext, Severity
+    from src.doctor.playbook_v2_checks import _check_stale_artifacts
+
+    data_dir = str(tmp_path / "aq")
+    os.makedirs(data_dir, exist_ok=True)
+    ensure_default_playbooks(data_dir)
+    handler = _ReleaseHandler(_Config(data_dir), db, _MovedProfiles({}))
+    await _activate_shipped_pipeline(handler)
+    handler.db = _FailingActivations(db, RuntimeError("connection reset"))
+
+    result = await _check_stale_artifacts(
+        DoctorContext(config=AppConfig(), handler=handler)
+    )
+
+    assert result.severity is Severity.WARN
+    assert "connection reset" in result.detail or any(
+        "connection reset" in reason for reason in result.data.get("blocking_reasons", [])
+    )

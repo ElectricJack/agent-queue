@@ -127,6 +127,17 @@ class PlaybookReleaseCheckResponse(V2Model):
     checked: list[str] = []
     registry_fingerprint: str | None = None
     stale: list[StaleArtifactDTO] = []
+    #: Enabled activations that could **not** be compared — a missing or
+    #: unreadable artifact, an unavailable store, an unresolvable profile
+    #: baseline.  Each names the playbook and why, because a skipped activation
+    #: is not a clean one.
+    unverified: list[dict[str, Any]] = []
+    #: Live evidence the daemon could not read, one ``{"source", "error"}``
+    #: each: an unread activation query is not an empty fleet.
+    evidence_errors: list[dict[str, Any]] = []
+    #: Every reason the check fails that is *not* contract drift.  Non-empty
+    #: means ``success`` is false.
+    blocking_reasons: list[str] = []
     error: str | None = None
 
 

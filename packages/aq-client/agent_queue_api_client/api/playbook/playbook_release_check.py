@@ -68,12 +68,18 @@ def sync_detailed(
     """Check that every reviewed V2 artifact still matches the command contracts it was compiled against.
     Compares the checked-in reviewed fixtures and every enabled activation against the live registry,
     and names each command whose execution fingerprint moved. Offline and read-only: no network, no LLM,
-    no compile. A presentation-only label change does not trip it.
+    no compile. A presentation-only label change does not trip it. Fails closed: any evidence source the
+    daemon could not read appears in evidence_errors, any enabled activation it could not compare
+    appears in unverified, and both block — an unread activation table is never reported as a clean
+    fleet.
 
      Check that every reviewed V2 artifact still matches the command contracts it was compiled against.
     Compares the checked-in reviewed fixtures and every enabled activation against the live registry,
     and names each command whose execution fingerprint moved. Offline and read-only: no network, no LLM,
-    no compile. A presentation-only label change does not trip it.
+    no compile. A presentation-only label change does not trip it. Fails closed: any evidence source the
+    daemon could not read appears in evidence_errors, any enabled activation it could not compare
+    appears in unverified, and both block — an unread activation table is never reported as a clean
+    fleet.
 
     Args:
         body (PlaybookReleaseCheckRequest):
@@ -105,12 +111,18 @@ def sync(
     """Check that every reviewed V2 artifact still matches the command contracts it was compiled against.
     Compares the checked-in reviewed fixtures and every enabled activation against the live registry,
     and names each command whose execution fingerprint moved. Offline and read-only: no network, no LLM,
-    no compile. A presentation-only label change does not trip it.
+    no compile. A presentation-only label change does not trip it. Fails closed: any evidence source the
+    daemon could not read appears in evidence_errors, any enabled activation it could not compare
+    appears in unverified, and both block — an unread activation table is never reported as a clean
+    fleet.
 
      Check that every reviewed V2 artifact still matches the command contracts it was compiled against.
     Compares the checked-in reviewed fixtures and every enabled activation against the live registry,
     and names each command whose execution fingerprint moved. Offline and read-only: no network, no LLM,
-    no compile. A presentation-only label change does not trip it.
+    no compile. A presentation-only label change does not trip it. Fails closed: any evidence source the
+    daemon could not read appears in evidence_errors, any enabled activation it could not compare
+    appears in unverified, and both block — an unread activation table is never reported as a clean
+    fleet.
 
     Args:
         body (PlaybookReleaseCheckRequest):
@@ -137,12 +149,18 @@ async def asyncio_detailed(
     """Check that every reviewed V2 artifact still matches the command contracts it was compiled against.
     Compares the checked-in reviewed fixtures and every enabled activation against the live registry,
     and names each command whose execution fingerprint moved. Offline and read-only: no network, no LLM,
-    no compile. A presentation-only label change does not trip it.
+    no compile. A presentation-only label change does not trip it. Fails closed: any evidence source the
+    daemon could not read appears in evidence_errors, any enabled activation it could not compare
+    appears in unverified, and both block — an unread activation table is never reported as a clean
+    fleet.
 
      Check that every reviewed V2 artifact still matches the command contracts it was compiled against.
     Compares the checked-in reviewed fixtures and every enabled activation against the live registry,
     and names each command whose execution fingerprint moved. Offline and read-only: no network, no LLM,
-    no compile. A presentation-only label change does not trip it.
+    no compile. A presentation-only label change does not trip it. Fails closed: any evidence source the
+    daemon could not read appears in evidence_errors, any enabled activation it could not compare
+    appears in unverified, and both block — an unread activation table is never reported as a clean
+    fleet.
 
     Args:
         body (PlaybookReleaseCheckRequest):
@@ -172,12 +190,18 @@ async def asyncio(
     """Check that every reviewed V2 artifact still matches the command contracts it was compiled against.
     Compares the checked-in reviewed fixtures and every enabled activation against the live registry,
     and names each command whose execution fingerprint moved. Offline and read-only: no network, no LLM,
-    no compile. A presentation-only label change does not trip it.
+    no compile. A presentation-only label change does not trip it. Fails closed: any evidence source the
+    daemon could not read appears in evidence_errors, any enabled activation it could not compare
+    appears in unverified, and both block — an unread activation table is never reported as a clean
+    fleet.
 
      Check that every reviewed V2 artifact still matches the command contracts it was compiled against.
     Compares the checked-in reviewed fixtures and every enabled activation against the live registry,
     and names each command whose execution fingerprint moved. Offline and read-only: no network, no LLM,
-    no compile. A presentation-only label change does not trip it.
+    no compile. A presentation-only label change does not trip it. Fails closed: any evidence source the
+    daemon could not read appears in evidence_errors, any enabled activation it could not compare
+    appears in unverified, and both block — an unread activation table is never reported as a clean
+    fleet.
 
     Args:
         body (PlaybookReleaseCheckRequest):

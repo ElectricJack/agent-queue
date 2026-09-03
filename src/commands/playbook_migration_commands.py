@@ -270,26 +270,45 @@ class PlaybookMigrationCommandsMixin:
     # §5.5 — release check
     # ------------------------------------------------------------------
 
-    async def _release_check_activations(self) -> list[dict]:
+    async def _release_check_activations(
+        self, *, evidence_errors: list[dict[str, str]] | None = None
+    ) -> list[dict]:
         """Enabled activations, each with the artifact's per-command fingerprints.
 
-        An activation whose artifact cannot be loaded is **skipped, not failed**:
-        its condition is already `unavailable` in the activation health surface,
-        and reporting it a second time here as contract drift would name the
-        wrong cause.
+        Every enabled activation produces a row.  One whose artifact cannot be
+        loaded produces a row *without* command evidence, tagged with why, and
+        :func:`release_check` names it in ``unverified`` rather than comparing
+        it.  It used to be skipped here on the grounds that the activation
+        health surface already calls it `unavailable`, but that made the release
+        gate — whose entire claim is "every enabled activation was compared" —
+        report a clean fleet whose activations it had never read
+        (`prime-zenith-66`).  Naming the row costs one line in the report and
+        keeps the claim true.
 
-        Each row also carries `current_profiles`, resolved from this daemon's
-        *live* profile registry rather than from the shipped defaults.  An
-        activated artifact was compiled against the profiles in this database,
-        operator edits included, so holding it to `src/profiles/defaults/`
-        would report a legitimately customised profile as drift.
+        Reads that fail outright — the activation query, the waiver table, the
+        artifact store, the profile registry — are appended to *evidence_errors*
+        in the same ``{"source", "error"}`` shape :func:`build_cutover_report`
+        takes, and each becomes a blocking reason.
+
+        Each comparable row also carries `current_profiles`, resolved from this
+        daemon's *live* profile registry rather than from the shipped defaults.
+        An activated artifact was compiled against the profiles in this
+        database, operator edits included, so holding it to
+        `src/profiles/defaults/` would report a legitimately customised profile
+        as drift.  When that registry cannot be read the row is flagged
+        ``current_profiles_unavailable`` instead, because falling back to the
+        shipped defaults would compare the artifact against a baseline it was
+        never compiled against.
 
         `acknowledged_by` comes from the waiver table: `release_check` skips an
         acknowledged playbook because an operator has already decided about it,
         and activation rows carry no such column of their own.
         """
+        from src.playbooks.migration import profile_fingerprints_for
+
+        errors = evidence_errors if evidence_errors is not None else []
         rows: list[dict] = []
-        activations = await self._enabled_activations()
+        activations = await self._enabled_activations(evidence_errors=errors)
         try:
             acknowledged = {
                 (
@@ -299,9 +318,27 @@ class PlaybookMigrationCommandsMixin:
                 ): ack.get("acknowledged_by")
                 for ack in await self.db.list_playbook_migration_acks()
             }
-        except Exception:  # pragma: no cover - defensive
+        except Exception as exc:  # pragma: no cover - defensive
             logger.warning("release check: acknowledgements unavailable", exc_info=True)
             acknowledged = {}
+            errors.append(_unread_evidence("migration_acks", exc))
+
+        def _row(source: dict, **extra) -> dict:
+            playbook_id = str(source.get("playbook_id") or "")
+            scope = str(source.get("scope") or "")
+            scope_identifier = str(source.get("scope_identifier") or "")
+            return {
+                "playbook_id": playbook_id,
+                "enabled": True,
+                "scope": scope or "system",
+                "scope_identifier": source.get("scope_identifier"),
+                "artifact_sha256": _active_sha(source) or None,
+                "acknowledged_by": acknowledged.get(
+                    (playbook_id, scope, scope_identifier)
+                ),
+                **extra,
+            }
+
         try:
             from src.playbooks.artifact_store import ArtifactStore
 
@@ -309,44 +346,63 @@ class PlaybookMigrationCommandsMixin:
                 self.config.compiled_root,
                 max_artifact_bytes=self.config.playbooks.v2_max_artifact_bytes,
             )
-        except Exception:  # pragma: no cover - defensive
-            logger.debug("release check: artifact store unavailable", exc_info=True)
-            return rows
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("release check: artifact store unavailable", exc_info=True)
+            errors.append(_unread_evidence("artifact_store", exc))
+            # Name the store once and every activation it hides: an operator
+            # needs both the cause and the list of playbooks left unverified.
+            return [
+                _row(
+                    row,
+                    evidence_reason="artifact_store_unavailable",
+                    evidence_detail=f"{type(exc).__name__}: {exc}",
+                )
+                for row in activations
+            ]
+
+        profile_lookup = None
         try:
             _contracts, profile_lookup, _events = await self._v2_lookups()
-        except Exception:  # pragma: no cover - defensive
+        except Exception as exc:  # pragma: no cover - defensive
             logger.warning("release check: profile registry unavailable", exc_info=True)
             profile_lookup = None
+            errors.append(_unread_evidence("profile_registry", exc))
+
         for row in activations:
             sha = _active_sha(row)
             if not sha:
+                rows.append(
+                    _row(
+                        row,
+                        evidence_reason="no_active_artifact",
+                        evidence_detail="the enabled activation names no artifact",
+                    )
+                )
                 continue
             try:
                 definition = store.load(sha)
-            except Exception:
-                logger.debug("release check: artifact %s unreadable", sha, exc_info=True)
-                continue
-            playbook_id = str(row.get("playbook_id") or "")
-            artifact_profiles = dict(definition.compiled_against.profiles)
-            entry = {
-                "playbook_id": playbook_id,
-                "enabled": True,
-                "acknowledged_by": acknowledged.get(
-                    (
-                        playbook_id,
-                        str(row.get("scope") or ""),
-                        str(row.get("scope_identifier") or ""),
+            except Exception as exc:
+                logger.warning("release check: artifact %s unreadable", sha, exc_info=True)
+                rows.append(
+                    _row(
+                        row,
+                        evidence_reason="artifact_unreadable",
+                        evidence_detail=f"{type(exc).__name__}: {exc}",
                     )
-                ),
-                "artifact_commands": dict(definition.compiled_against.commands),
-                "artifact_profiles": artifact_profiles,
-            }
+                )
+                continue
+            artifact_profiles = dict(definition.compiled_against.profiles)
+            entry = _row(
+                row,
+                artifact_commands=dict(definition.compiled_against.commands),
+                artifact_profiles=artifact_profiles,
+            )
             if profile_lookup is not None:
-                from src.playbooks.migration import profile_fingerprints_for
-
                 entry["current_profiles"] = profile_fingerprints_for(
                     profile_lookup, artifact_profiles
                 )
+            else:
+                entry["current_profiles_unavailable"] = True
             rows.append(entry)
         return rows
 
@@ -362,18 +418,47 @@ class PlaybookMigrationCommandsMixin:
         Offline by construction: no network, no LLM, no compile.  It is the same
         assertion `tests/test_playbook_contract_release_check.py` makes in CI,
         available against a live daemon.
+
+        It fails **closed**.  Live evidence this daemon could not read is
+        reported as ``evidence_errors`` and any enabled activation it could not
+        compare as ``unverified``; both feed ``blocking_reasons``, and either
+        one makes ``success`` false.  A gate that answered "yes" from an
+        unreadable activation table would be worse than no gate.
         """
         from src.commands.contracts import CONTRACTS
 
+        evidence_errors: list[dict[str, str]] = []
+        try:
+            activations = await self._release_check_activations(
+                evidence_errors=evidence_errors
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("release check: activations unavailable", exc_info=True)
+            activations = []
+            evidence_errors.append(_unread_evidence("activations", exc))
         try:
             return release_check(
                 contract_registry=CONTRACTS,
                 fixture_root=self._reviewed_fixture_root(),
-                activations=await self._release_check_activations(),
+                activations=activations,
+                evidence_errors=evidence_errors,
             )
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning("release check failed", exc_info=True)
-            return {"success": False, "stale": [], "checked": [], "error": str(exc)}
+            failed = [*evidence_errors, _unread_evidence("release_check", exc)]
+            return {
+                "success": False,
+                "stale": [],
+                "checked": [],
+                "unverified": [],
+                "evidence_errors": failed,
+                "blocking_reasons": [
+                    f"evidence source {row['source']!r} could not be read ({row['error']}); "
+                    "a release cannot be certified against evidence that was never collected"
+                    for row in failed
+                ],
+                "error": str(exc),
+            }
 
     async def _cutover_report_inputs(self) -> dict:
         """Collect report inputs without turning the report into an operation.

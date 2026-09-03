@@ -5339,7 +5339,10 @@ _ALL_TOOL_DEFINITIONS = [
             "fixtures and every enabled activation against the live registry, and "
             "names each command whose execution fingerprint moved. Offline and "
             "read-only: no network, no LLM, no compile. A presentation-only label "
-            "change does not trip it."
+            "change does not trip it. Fails closed: any evidence source the daemon "
+            "could not read appears in evidence_errors, any enabled activation it "
+            "could not compare appears in unverified, and both block — an unread "
+            "activation table is never reported as a clean fleet."
         ),
         "input_schema": {"type": "object", "properties": {}},
     },

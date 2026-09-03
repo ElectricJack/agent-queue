@@ -642,6 +642,8 @@ from .playbook_pending_events_response_422 import PlaybookPendingEventsResponse4
 from .playbook_release_check_request import PlaybookReleaseCheckRequest
 from .playbook_release_check_response import PlaybookReleaseCheckResponse
 from .playbook_release_check_response_422 import PlaybookReleaseCheckResponse422
+from .playbook_release_check_response_evidence_errors_item import PlaybookReleaseCheckResponseEvidenceErrorsItem
+from .playbook_release_check_response_unverified_item import PlaybookReleaseCheckResponseUnverifiedItem
 from .playbook_run_overlay_request import PlaybookRunOverlayRequest
 from .playbook_run_overlay_response import PlaybookRunOverlayResponse
 from .playbook_run_overlay_response_422 import PlaybookRunOverlayResponse422
@@ -1729,6 +1731,8 @@ __all__ = (
     "PlaybookReleaseCheckRequest",
     "PlaybookReleaseCheckResponse",
     "PlaybookReleaseCheckResponse422",
+    "PlaybookReleaseCheckResponseEvidenceErrorsItem",
+    "PlaybookReleaseCheckResponseUnverifiedItem",
     "PlaybookRunOverlayRequest",
     "PlaybookRunOverlayResponse",
     "PlaybookRunOverlayResponse422",
