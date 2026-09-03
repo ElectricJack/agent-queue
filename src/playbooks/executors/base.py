@@ -141,6 +141,10 @@ class ExecutorResult:
     #: "the loop ended" are different instructions and conflating them would
     #: leave a finished loop's item readable on the continuation path.
     clear_loop: bool = False
+    #: Shadow's canonical representation of the command it deliberately did
+    #: not invoke.  It stays in memory and is consumed only by the engine's
+    #: shadow recorder.
+    recorded_command_args: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if not self.outcome:

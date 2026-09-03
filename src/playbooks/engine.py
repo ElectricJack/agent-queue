@@ -56,6 +56,7 @@ from src.playbooks.executors.base import (
     ExecutorResult,
     StepContext,
     StepControl,
+    UnknownStepType,
 )
 from src.playbooks.executors.wait import WaitResumption, resolve_wait_result
 from src.playbooks.expressions import (
@@ -72,6 +73,7 @@ from src.playbooks.run_state import (
     SnapshotVersionConflict,
     StateLimitExceeded,
     bind_step_output,
+    canonical_json,
 )
 from src.playbooks.waits import EMPTY_WAIT_CHANGES, WaitChangeSet, WaitClaim, WaitSpec
 
@@ -158,8 +160,9 @@ class DispatchResult:
     pending: tuple[PendingEventRef, ...] = ()
     #: Rules whose run already existed for this dispatch — a replay.
     deduplicated: tuple[str, ...] = ()
-    #: Ordered ``(step_id, command_name)`` pairs, for shadow parity.
-    commands: tuple[tuple[str, str], ...] = ()
+    #: Ordered ``(step_id, command_name, canonical_args)`` records for
+    #: shadow parity.  They are in-memory observations, never invocations.
+    commands: tuple[tuple[str, str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,6 +172,50 @@ class RunOutcome:
     outcome: str
     snapshot: RunSnapshot | None = None
     receipts: tuple[StepReceipt, ...] = ()
+    commands: tuple[tuple[str, str, str], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class DryRunNode:
+    """One real-graph dry-run visit, including an honest unresolved boundary."""
+
+    step_id: str
+    status: str
+    outcome: str | None = None
+    target: str | None = None
+    reason: str | None = None
+    possible_outcomes: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class DryRunPath:
+    """One bounded path through a selected rule's executable graph."""
+
+    rule_id: str
+    nodes: tuple[DryRunNode, ...]
+    status: str
+    completed: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class DryRunTree:
+    """The bounded real-graph answer returned by :meth:`PlaybookEngine.dry_run`."""
+
+    artifact_sha256: str
+    rules_selected: tuple[str, ...]
+    paths: tuple[DryRunPath, ...]
+    truncated: bool = False
+    step_visits: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class _DryRunCursor:
+    rule_id: str
+    step_id: str
+    scope: ResolutionScope
+    loop: LoopFrame | None
+    nodes: tuple[DryRunNode, ...] = ()
+    unresolved: bool = False
 
 
 class InMemoryRunRecorder:
@@ -182,6 +229,11 @@ class InMemoryRunRecorder:
     def __init__(self) -> None:
         self.snapshots: dict[str, RunSnapshot] = {}
         self.receipts: list[StepReceipt] = []
+        self.commands: list[tuple[str, str, str]] = []
+
+    def record_command(self, step_id: str, command: str, args: Mapping[str, Any]) -> None:
+        """Remember a shadow command without making an external call."""
+        self.commands.append((step_id, command, canonical_json(args).decode("utf-8")))
 
     async def create_run(self, snapshot: RunSnapshot) -> RunSnapshot:
         self.snapshots[snapshot.run_id] = snapshot
@@ -291,7 +343,7 @@ class PlaybookEngine:
         selected: list[str] = []
         run_ids: list[str] = []
         deduplicated: list[str] = []
-        commands: list[tuple[str, str]] = []
+        commands: list[tuple[str, str, str]] = []
         coroutines: list[Any] = []
         rule_order: list[tuple[ArtifactRef, str]] = []
 
@@ -326,10 +378,7 @@ class PlaybookEngine:
             run_ids.append(outcome.run_id)
             if outcome.outcome == "deduplicated":
                 deduplicated.append(rule_id)
-            for receipt in outcome.receipts:
-                step = self._step_of(ref, receipt.step_id)
-                if isinstance(step, CommandStep):
-                    commands.append((receipt.step_id, step.command))
+            commands.extend(outcome.commands)
 
         return DispatchResult(
             dispatch_id=dispatch_id,
@@ -338,6 +387,270 @@ class PlaybookEngine:
             pending=tuple(pending),
             deduplicated=tuple(deduplicated),
             commands=tuple(commands),
+        )
+
+    async def dry_run(
+        self,
+        artifact_ref: ArtifactRef,
+        event: Mapping[str, Any],
+        principal: Any,
+        *,
+        invoke_ai: bool = False,
+        max_paths: int = 32,
+        max_step_visits: int = MAX_STEP_VISITS,
+    ) -> DryRunTree:
+        """Traverse the executable artifact with a bounded symbolic work list.
+
+        This intentionally does not call :meth:`run_rule`: dry-run has no
+        durable run identity, and routing an unresolved branch through the
+        live cursor would pause it after the first boundary.  It nevertheless
+        uses the same artifact, trigger selection, value resolution,
+        deterministic executors and transition fields as live execution.
+        """
+        if max_paths < 1 or max_step_visits < 1:
+            raise ValueError("dry-run bounds must be >= 1")
+        artifact = self._load(artifact_ref)
+        hydrated = await self._hydrate_event(event)
+        event_type = self._event_type(hydrated)
+        rules = tuple(
+            rule for rule in artifact.rules if self._trigger_matches(rule, event_type, hydrated)
+        )
+        work: list[_DryRunCursor] = []
+        paths: list[DryRunPath] = []
+        truncated = False
+        dispatch_id = self._dispatch_id(hydrated)
+        for rule in rules:
+            scope = ResolutionScope(
+                event=dict(hydrated),
+                context=self._context(artifact, rule, dispatch_id),
+                bindings={},
+                loop={},
+            )
+            if len(work) + len(paths) >= max_paths:
+                paths.append(
+                    DryRunPath(
+                        rule.id,
+                        (
+                            DryRunNode(
+                                rule.entry_step, "unresolved", reason="path_limit"
+                            ),
+                        ),
+                        "truncated",
+                    )
+                )
+                truncated = True
+            else:
+                work.append(_DryRunCursor(rule.id, rule.entry_step, scope, None))
+
+        visits = 0
+        while work:
+            cursor = work.pop(0)
+            if visits >= max_step_visits:
+                paths.append(
+                    DryRunPath(
+                        cursor.rule_id,
+                        cursor.nodes
+                        + (DryRunNode(cursor.step_id, "unresolved", reason="visit_limit"),),
+                        "truncated",
+                    )
+                )
+                truncated = True
+                continue
+            visits += 1
+            step = artifact.steps.get(cursor.step_id)
+            if step is None:
+                raise UnknownStepType(f"step {cursor.step_id!r} is not in the artifact")
+            try:
+                inputs = {
+                    name: resolve_value(value, cursor.scope)
+                    for name, value in getattr(step, "inputs", {}).items()
+                }
+            except ValueResolutionError as exc:
+                paths.append(
+                    DryRunPath(
+                        cursor.rule_id,
+                        cursor.nodes
+                        + (
+                            DryRunNode(
+                                cursor.step_id, "unresolved", reason=exc.reason
+                            ),
+                        ),
+                        "unresolved",
+                    )
+                )
+                continue
+
+            executor_mode = (
+                ExecutionMode.LIVE if invoke_ai and step.type == "llm" else ExecutionMode.DRY_RUN
+            )
+            ctx = StepContext(
+                run_id=f"dry-run:{dispatch_id}:{cursor.rule_id}",
+                dispatch_id=dispatch_id,
+                artifact_ref=artifact_ref,
+                artifact=artifact,
+                rule_id=cursor.rule_id,
+                step_id=cursor.step_id,
+                principal=principal,
+                scope=cursor.scope,
+                services=self.services,
+                mode=ExecutionMode.DRY_RUN,
+                iteration_index=None if cursor.loop is None else cursor.loop.index,
+                inputs=inputs,
+                loop_frame=cursor.loop,
+            )
+            try:
+                result = await executor_for(step.type, executor_mode).execute(step, ctx)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # a preview/provider error is an honest boundary
+                result = ExecutorResult(
+                    control=StepControl.UNRESOLVED,
+                    outcome="runtime_error",
+                    diagnostics=(type(exc).__name__,),
+                    possible_outcomes=tuple(sorted(getattr(step, "transitions", {}))),
+                )
+
+            # A foreach collection supplied by a symbolic upstream result has
+            # no items to expand.  The live executor reports an input failure
+            # because a concrete run cannot continue; dry-run instead reports
+            # the honest unresolved loop boundary and never invents an empty
+            # collection or takes the failure edge.
+            if isinstance(step, ForEachStep) and result.outcome == "input_resolution_failed":
+                result = ExecutorResult(
+                    control=StepControl.UNRESOLVED,
+                    outcome="unavailable",
+                    operation=result.operation,
+                    diagnostics=("loop collection is unresolved",),
+                )
+
+            if result.control is StepControl.UNRESOLVED:
+                reason = "; ".join(result.diagnostics) or "unresolved boundary"
+                possible = result.possible_outcomes
+                if not possible:
+                    paths.append(
+                        DryRunPath(
+                            cursor.rule_id,
+                            cursor.nodes
+                            + (
+                                DryRunNode(
+                                    cursor.step_id, "unresolved", reason=reason
+                                ),
+                            ),
+                            "unresolved",
+                        )
+                    )
+                    continue
+                available = max_paths - len(paths) - len(work)
+                if len(possible) > available:
+                    paths.append(
+                        DryRunPath(
+                            cursor.rule_id,
+                            cursor.nodes
+                            + (
+                                DryRunNode(
+                                    cursor.step_id,
+                                    "unresolved",
+                                    reason="path_limit",
+                                    possible_outcomes=tuple(possible),
+                                ),
+                            ),
+                            "truncated",
+                        )
+                    )
+                    truncated = True
+                    continue
+                for outcome in possible:
+                    target = getattr(step, "transitions", {}).get(outcome)
+                    node = DryRunNode(
+                        cursor.step_id,
+                        "unresolved",
+                        outcome=outcome,
+                        target=target,
+                        reason=reason,
+                        possible_outcomes=tuple(possible),
+                    )
+                    if target is None:
+                        paths.append(
+                            DryRunPath(cursor.rule_id, cursor.nodes + (node,), "unresolved")
+                        )
+                    else:
+                        work.append(
+                            _DryRunCursor(
+                                cursor.rule_id,
+                                target,
+                                cursor.scope,
+                                cursor.loop,
+                                cursor.nodes + (node,),
+                                True,
+                            )
+                        )
+                continue
+
+            status = "simulated" if step.type == "command" else "resolved"
+            node = DryRunNode(cursor.step_id, status, outcome=result.outcome)
+            next_scope = cursor.scope
+            if result.value is not None and getattr(step, "save_result_as", None):
+                try:
+                    next_scope = next_scope.with_binding(step.save_result_as, result.value)
+                except ValueResolutionError as exc:
+                    paths.append(
+                        DryRunPath(
+                            cursor.rule_id,
+                            cursor.nodes
+                            + (DryRunNode(cursor.step_id, "unresolved", reason=exc.reason),),
+                            "unresolved",
+                        )
+                    )
+                    continue
+            next_loop = None if result.clear_loop else (result.loop_frame or cursor.loop)
+            if result.control is StepControl.TERMINATE:
+                paths.append(
+                    DryRunPath(
+                        cursor.rule_id,
+                        cursor.nodes + (node,),
+                        "unresolved" if cursor.unresolved else "resolved",
+                        completed=not cursor.unresolved,
+                    )
+                )
+                continue
+            target = (
+                result.goto_step_id
+                if result.control is StepControl.GOTO
+                else getattr(step, "transitions", {}).get(result.outcome)
+            )
+            if target is None:
+                paths.append(
+                    DryRunPath(
+                        cursor.rule_id,
+                        cursor.nodes
+                        + (
+                            DryRunNode(
+                                cursor.step_id,
+                                "unresolved",
+                                reason="outcome has no transition",
+                            ),
+                        ),
+                        "unresolved",
+                    )
+                )
+                continue
+            node = replace(node, target=target)
+            work.append(
+                _DryRunCursor(
+                    cursor.rule_id,
+                    target,
+                    next_scope,
+                    next_loop,
+                    cursor.nodes + (node,),
+                    cursor.unresolved,
+                )
+            )
+        return DryRunTree(
+            artifact_sha256=artifact_ref.artifact_sha256,
+            rules_selected=tuple(rule.id for rule in rules),
+            paths=tuple(paths),
+            truncated=truncated,
+            step_visits=visits,
         )
 
     # ------------------------------------------------------------------
@@ -400,7 +713,10 @@ class PlaybookEngine:
         await self._emit(EVENT_RUN_STARTED, snapshot)
         if pause_before_start:
             return RunOutcome(snapshot.run_id, snapshot.lifecycle, "paused", snapshot)
-        return await self._walk(snapshot, artifact, artifact_ref, principal, mode, repository)
+        outcome = await self._walk(snapshot, artifact, artifact_ref, principal, mode, repository)
+        if isinstance(repository, InMemoryRunRecorder):
+            return replace(outcome, commands=tuple(repository.commands))
+        return outcome
 
     # ------------------------------------------------------------------
     # §3.5 — resume
@@ -764,6 +1080,14 @@ class PlaybookEngine:
                 outcome="runtime_error",
                 diagnostics=(type(exc).__name__,),
             )
+
+        if (
+            mode is ExecutionMode.SHADOW
+            and isinstance(step, CommandStep)
+            and result.recorded_command_args is not None
+            and isinstance(repository, InMemoryRunRecorder)
+        ):
+            repository.record_command(step_id, step.command, result.recorded_command_args)
 
         attempt.receipt_inputs = result.receipt_inputs
         attempt.receipt_result = result.receipt_result
@@ -1474,6 +1798,11 @@ class PlaybookEngine:
         An event before the commit would let a subscriber observe a step that
         a crash then un-happens.
         """
+        # Shadow and dry-run record only in memory.  In particular, a shadow
+        # run may execute against production data, so an event is itself a
+        # forbidden external side effect even when no command was invoked.
+        if snapshot.mode != ExecutionMode.LIVE.value:
+            return
         bus = self.services.bus
         if bus is None:
             return

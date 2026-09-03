@@ -290,7 +290,13 @@ class SymbolicLlmExecutor:
     async def execute(self, step: LlmStep, ctx: StepContext) -> ExecutorResult:
         enum = _outcome_enum(step) or []
         possible = tuple(
-            sorted(set(enum) | (set(step.transitions) & (LLM_RESERVED_OUTCOMES | ENGINE_RESERVED_OUTCOMES)))
+            sorted(
+                set(enum)
+                | (
+                    set(step.transitions)
+                    & ((LLM_RESERVED_OUTCOMES | ENGINE_RESERVED_OUTCOMES) - {"runtime_error"})
+                )
+            )
         )
         return ExecutorResult(
             control=StepControl.UNRESOLVED,
