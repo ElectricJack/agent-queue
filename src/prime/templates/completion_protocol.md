@@ -15,6 +15,33 @@ with an unlisted gap is refused and keeps the task claimed so you can correct it
 
 An explicit close is what lets the scheduler promote the next task. If you're blocked on a human decision, report it with aq message send --to user:dashboard --project "$AQ_PROJECT_ID" --body "Blocked: <question>" instead of stopping silently. The canonical human-operator recipient is `user:dashboard`.
 
+## Never close over unpushed commits
+
+A close that is not a pass does not run the completion pipeline, so nothing
+merges, pushes or reviews your work. Push before you close:
+
+    git push -u origin HEAD
+
+If you close `--outcome fail` with commits that no remote branch has, the
+daemon pushes them for you to `aq/<task-id>` (or `aq/<task-id>-wip` when that
+name is taken by someone else's commits) and records the branch and SHA in
+your completion summary. If it *cannot* push them, the close is refused and
+the task stays yours: push by hand, then close again. Nothing is discarded and
+nothing closes silently — a slot is reset for the next task the moment you let
+go of it, and local-only commits are unreachable from that point on.
+
+## Stacked branches: don't, and if you must, own the exit
+
+Branch from the default branch (`main`). Stack on another task's branch only
+when the work genuinely cannot compile or run without it, and say so in your
+close summary.
+
+When you do stack, the **last** task in the stack owns opening the
+`<base> -> main` pull request. Name that PR explicitly in your close summary.
+A PR merged into a feature branch has put nothing on `main`: the tasks close
+COMPLETED, dependents believe the work shipped, and `main` never gains a line
+of it until somebody merges the base.
+
 ## Stay visible while you work
 
 The daemon holds a lease on this task and watches for activity. If it sees nothing for

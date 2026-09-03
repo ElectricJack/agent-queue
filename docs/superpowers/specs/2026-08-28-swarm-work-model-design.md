@@ -1003,7 +1003,12 @@ from edges), `hierarchy.single_parent`, `hierarchy.depth` (structural),
 (agent rows with no live pool session), `pools.preparing_stuck` (sessions past
 `prepare_timeout` — should be empty if the reconciler step runs), `claims.holder_consistency`
 (for every `IN_PROGRESS` task held by a pool session: `sessions.task_id`,
-`agents.current_task_id`, `workspaces.locked_by_task_id` all agree).
+`agents.current_task_id`, `workspaces.locked_by_task_id` all agree),
+`pools.stranded_feature_branches` (a remote branch that has had PRs merged
+*into* it, is ahead of the default branch, and has no open PR taking it there
+— its merged work is not on `main`; `--fix` prints the `gh pr create` command
+rather than opening the PR, since `aq doctor --fix` runs every fix and opening
+a PR is outward-facing and not undoable).
 
 **Invariant tests.** Every new event type registered with a payload; every new `_cmd_*`
 has a tool definition or is in the exclusion list; `AGENT_COMMAND_SET` entries all exist;

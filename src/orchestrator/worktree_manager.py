@@ -433,6 +433,12 @@ class WorktreeSlotManager:
         # goes through the locking ``_arun``.
         await self._abort_in_progress(slot_dir)
 
+        # The predecessor's *commits* leave with this reset just as surely as
+        # its dirty files do — and unlike the files, nothing was archiving
+        # them.  Push before anything is reset (design §3.4: salvage must
+        # push, not merely leave a local branch behind).
+        await self.salvage_unpushed(slot_ws, prev.task_id if prev else None)
+
         salvaged = await self.salvage_dirty(
             slot_ws, prev.task_id if prev else None, incoming_task_id=task.id
         )
@@ -532,6 +538,7 @@ class WorktreeSlotManager:
         prev = self.read_sentinel(slot_dir)
 
         await self._abort_in_progress(slot_dir)
+        await self.salvage_unpushed(slot_ws, (prev.task_id if prev else None) or task_id)
         salvaged = await self.salvage_dirty(
             slot_ws, prev.task_id if prev else task_id, incoming_task_id=task_id
         )
@@ -589,6 +596,60 @@ class WorktreeSlotManager:
             await self.git.aabort_in_progress_operations(str(slot_dir))
         except Exception as e:  # best-effort by contract
             logger.debug("Abort-in-progress failed in %s: %s", slot_dir, e)
+
+    async def salvage_unpushed(self, slot_ws: Workspace, task_id: str | None):
+        """Push a slot's committed-but-unpushed work before it is reset.
+
+        :meth:`salvage_dirty` archives *uncommitted* changes as a patch; this
+        is the other half, and the one that was missing.  A worker that
+        committed and never pushed left its commits reachable only from a
+        local branch in a slot the next reset was about to move — which is
+        how five commits disappeared and three re-runs of the same task all
+        closed ``blocked`` (``src/orchestrator/stranded_work.py``).
+
+        Best-effort by contract: the caller is a reset path, and a slot that
+        cannot reach its remote must still be resettable.  Returns the
+        :class:`~src.orchestrator.stranded_work.StrandedWork` report, or
+        ``None`` when there was no task to attribute the work to.
+        """
+        if not task_id:
+            return None
+        from src.orchestrator.stranded_work import (
+            UNMERGED_BRANCH_META,
+            UNMERGED_COMMIT_META,
+            preserve_unpushed_work,
+        )
+
+        try:
+            work = await preserve_unpushed_work(
+                self.git,
+                str(slot_ws.workspace_path),
+                task_id,
+                event_bus=self.bus,
+                project_id=slot_ws.project_id,
+            )
+        except Exception:
+            logger.warning(
+                "Unpushed-work salvage failed in %s", slot_ws.workspace_path, exc_info=True
+            )
+            return None
+
+        if work.status == "push_failed":
+            logger.error(
+                "Slot %s is about to be reset with %d unpushed commit(s) that could "
+                "not be pushed (%s); the local branch is the only copy",
+                slot_ws.workspace_path,
+                work.count,
+                work.error,
+            )
+        if work.branch and work.status in ("pushed", "no_remote", "push_failed"):
+            try:
+                await self.db.set_task_meta(task_id, UNMERGED_BRANCH_META, work.branch)
+                if work.commit:
+                    await self.db.set_task_meta(task_id, UNMERGED_COMMIT_META, work.commit)
+            except Exception:
+                logger.debug("Could not record unmerged branch for %s", task_id, exc_info=True)
+        return work
 
     async def salvage_dirty(
         self,

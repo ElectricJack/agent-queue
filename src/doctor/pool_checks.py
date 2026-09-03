@@ -537,6 +537,185 @@ async def _check_holder_consistency(ctx: DoctorContext) -> CheckResult:
     )
 
 
+# ---------------------------------------------------------------------------
+# pools.stranded_feature_branches
+# ---------------------------------------------------------------------------
+
+#: Cap on ``gh``/``git`` probes per doctor run.  A repository with hundreds of
+#: remote branches is already diagnosed by the first few dozen, and doctor is
+#: meant to stay fast and to degrade gracefully offline.
+_MAX_BRANCH_PROBES = 40
+
+
+async def _project_checkouts(ctx: DoctorContext) -> list[tuple[str, str, str]]:
+    """``(project_id, checkout_path, default_branch)`` per project, best-effort."""
+    out: list[tuple[str, str, str]] = []
+    git = GitManager()
+    for project in await ctx.db.list_projects():
+        checkout = await ctx.db.get_project_workspace_path(project.id)
+        if not checkout or not Path(checkout).is_dir():
+            continue
+        default = project.repo_default_branch
+        if not default:
+            try:
+                default = await git.aget_default_branch(checkout)
+            except Exception:
+                continue
+        out.append((project.id, checkout, default))
+    return out
+
+
+async def _find_stranded_feature_branches(ctx: DoctorContext) -> dict:
+    """Remote branches that other work was merged *into* and that never left.
+
+    The failure mode, from Pkg 4: three PRs were merged into
+    ``feature/playbook-v2-pkg4-core``, their tasks closed COMPLETED, and
+    nobody ever opened ``pkg4-core -> main``.  Every surface said the work
+    had shipped; ``main`` did not have it.  Such a branch is identifiable
+    without any daemon state at all:
+
+    (a) it is ahead of the default branch,
+    (b) pull requests have been **merged into** it, and
+    (c) no open pull request delivers it **to** the default branch.
+
+    A second, quieter bucket catches the other half of the same outage —
+    branches ahead of the default branch with no open PR to it and no merged
+    PRs into them (``feature/playbook-v2-pkg4``, whose plan docs were never
+    merged).  ``aq/*`` task branches are excluded from *that* bucket only:
+    a slot's task branch is ahead of main by design and would otherwise
+    drown the report.
+
+    ``gh`` answering ``None`` (no auth, no network, not installed) is
+    "unknown" and is counted, never reported as a finding — an offline
+    doctor run must not accuse every branch in the repository.
+    """
+    git = GitManager()
+    stranded: list[dict] = []
+    stale: list[dict] = []
+    unknown = 0
+    probes = 0
+
+    for project_id, checkout, default in await _project_checkouts(ctx):
+        try:
+            await git._arun(["fetch", "origin", "--prune"], cwd=checkout)
+        except Exception:
+            # Stale remote-tracking refs still answer the question, just
+            # less freshly.  Never fatal: doctor runs offline too.
+            pass
+        branches = await git.alist_remote_branches(checkout)
+        if branches is None:
+            continue
+        for branch in sorted(branches):
+            if branch == default:
+                continue
+            if probes >= _MAX_BRANCH_PROBES:
+                break
+            ahead = await git.acount_commits_ahead(
+                checkout, f"origin/{branch}", f"origin/{default}"
+            )
+            if not ahead:
+                continue
+            probes += 1
+            open_to_default = await git.alist_prs(
+                checkout, state="open", head=branch, base=default, limit=1
+            )
+            merged_into = await git.alist_prs(
+                checkout, state="merged", base=branch, limit=5
+            )
+            if open_to_default is None or merged_into is None:
+                unknown += 1
+                continue
+            if open_to_default:
+                continue
+            finding = {
+                "project_id": project_id,
+                "branch": branch,
+                "ahead": ahead,
+                "default_branch": default,
+                "merged_prs": [pr.get("url") for pr in merged_into],
+                "command": (
+                    f"gh pr create --base {default} --head {branch} "
+                    f'--title "Merge {branch} into {default}" --body "..."'
+                ),
+            }
+            if merged_into:
+                stranded.append(finding)
+            elif not branch.startswith(BRANCH_PREFIX):
+                stale.append(finding)
+    return {"stranded": stranded, "stale": stale, "unknown": unknown}
+
+
+def _stranded_result(found: dict) -> CheckResult:
+    stranded, stale = found["stranded"], found["stale"]
+    data = {
+        "count": len(stranded),
+        "branches": stranded[:50],
+        "stale": stale[:50],
+        "stale_count": len(stale),
+        "unverifiable": found["unknown"],
+        "commands": [f["command"] for f in stranded[:50]],
+    }
+    if stranded:
+        names = ", ".join(f["branch"] for f in stranded[:5])
+        return CheckResult(
+            id="pools.stranded_feature_branches",
+            severity=Severity.WARN,
+            detail=(
+                f"{len(stranded)} branch(es) had PRs merged into them and have no open "
+                f"PR to the default branch: {names}. Their work is not on the default "
+                "branch — re-run with --fix for the gh command that opens the PR."
+            ),
+            fixable=True,
+            data=data,
+        )
+    if stale:
+        names = ", ".join(f["branch"] for f in stale[:5])
+        return CheckResult(
+            id="pools.stranded_feature_branches",
+            severity=Severity.INFO,
+            detail=(
+                f"no stranded merge bases; {len(stale)} branch(es) are ahead of the "
+                f"default branch with no open PR to it: {names}"
+            ),
+            data=data,
+        )
+    return CheckResult(
+        id="pools.stranded_feature_branches",
+        severity=Severity.OK,
+        detail="no feature branch is holding merged work back from the default branch",
+        data=data,
+    )
+
+
+async def _check_stranded_feature_branches(ctx: DoctorContext) -> CheckResult:
+    if ctx.db is None:
+        return _no_db_result("pools.stranded_feature_branches")
+    return _stranded_result(await _find_stranded_feature_branches(ctx))
+
+
+async def _fix_stranded_feature_branches(ctx: DoctorContext) -> CheckResult:
+    """Print the ``gh pr create`` command; never open the PR itself.
+
+    ``aq doctor --fix`` with no ``--check`` runs *every* registered fix, and
+    the design's fix contract is "idempotent and non-destructive".  Opening a
+    pull request is neither idempotent nor undoable from here, and it is
+    outward-facing — it notifies reviewers and can trigger CI on somebody
+    else's repository.  So this fix produces the exact command and leaves the
+    decision with the operator, which the deliverable explicitly allows
+    ("opens (or prints the command to open) a base->main PR").
+    """
+    if ctx.db is None:
+        return _no_db_result("pools.stranded_feature_branches")
+    found = await _find_stranded_feature_branches(ctx)
+    result = _stranded_result(found)
+    if found["stranded"]:
+        result.detail = (
+            f"{len(found['stranded'])} stranded branch(es); run these to open the "
+            "missing PRs:\n" + "\n".join(f["command"] for f in found["stranded"][:50])
+        )
+    return result
+
+
 def pool_checks() -> list[DoctorCheck]:
     return [
         DoctorCheck(
@@ -546,6 +725,17 @@ def pool_checks() -> list[DoctorCheck]:
             owner=OWNER,
         ),
         DoctorCheck(id="pools.stuck", run=_check_pools_stuck, fix=_fix_pools_stuck, owner=OWNER),
+        # ``timeout_s`` is well above the 5s default: this one fetches and
+        # shells out to ``gh`` once or twice per candidate branch.  Its
+        # ``fix`` prints the ``gh pr create`` command rather than running it
+        # — see ``_fix_stranded_feature_branches``.
+        DoctorCheck(
+            id="pools.stranded_feature_branches",
+            run=_check_stranded_feature_branches,
+            fix=_fix_stranded_feature_branches,
+            owner=OWNER,
+            timeout_s=60.0,
+        ),
         DoctorCheck(
             id="pools.orphan_agents",
             run=_check_orphan_agents,

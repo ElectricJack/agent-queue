@@ -1076,6 +1076,39 @@ class ExecutionMixin:
             work_outcome=work_outcome,
         )
 
+        # A close that is not a pass runs no completion pipeline, so nothing
+        # else in this function would ever look at the workspace — which is
+        # exactly how five commits left a slot worktree and vanished
+        # (``src/orchestrator/stranded_work.py``).  Push first, and refuse
+        # the close when the push fails and the agent is still there to fix
+        # it.  Runs before any transition: a refused close must leave the
+        # task exactly as it found it.
+        stranded = None
+        if outcome != "pass":
+            stranded = await self._preserve_unpushed_on_failure(
+                task, workspace_path, project_id=task.project_id
+            )
+            if stranded.status == "push_failed" and session_live:
+                from src.orchestrator.stranded_work import unpushed_close_issues
+
+                issues = unpushed_close_issues(stranded)
+                current = await self.db.get_task(task.id)
+                logger.warning(
+                    "Task %s: close refused, %d commit(s) are on no remote branch",
+                    task.id,
+                    stranded.count,
+                )
+                return {
+                    "status": (current or task).status.value,
+                    "pr_url": None,
+                    "pipeline_ok": False,
+                    "retry_count": None,
+                    "verification_retry": True,
+                    "issues": issues,
+                    "feedback": issues[0],
+                    "unmerged": stranded.to_dict(),
+                }
+
         pr_url = None
         completed_ok = True
         if outcome == "pass":
@@ -1348,12 +1381,67 @@ class ExecutionMixin:
                 expect_claim_epoch=task.claim_epoch,
             )
 
-        return {
+        response = {
             "status": new_status.value,
             "pr_url": pr_url,
             "pipeline_ok": completed_ok,
             "retry_count": new_retry,
         }
+        if stranded is not None and stranded.status in ("pushed", "no_remote"):
+            # ``_cmd_task_close`` writes these into ``completion.summary`` so
+            # the branch is in the record a human reads, not only in metadata.
+            response["unmerged"] = stranded.to_dict()
+            response["unmerged_branch"] = stranded.branch
+            response["unmerged_commit"] = stranded.commit
+        return response
+
+    async def _preserve_unpushed_on_failure(
+        self, task, workspace_path: str | None, *, project_id: str | None = None
+    ):
+        """Push a failing task's unpushed commits and record where they went.
+
+        The metadata write is the durable half: ``unmerged_branch`` /
+        ``unmerged_commit`` are what a retry, the dashboard and the next
+        agent read to find a predecessor's work.  It is written even for the
+        ``no_remote`` case, where the branch is local-only — a name a human
+        can still check out beats no record at all.
+        """
+        from src.orchestrator.stranded_work import (
+            UNMERGED_BRANCH_META,
+            UNMERGED_COMMIT_META,
+            preserve_unpushed_work,
+        )
+
+        try:
+            stranded = await preserve_unpushed_work(
+                self.git,
+                workspace_path,
+                task.id,
+                event_bus=self.bus,
+                project_id=project_id,
+            )
+        except Exception:
+            logger.warning(
+                "Task %s: unpushed-work check failed", task.id, exc_info=True
+            )
+            from src.orchestrator.stranded_work import StrandedWork
+
+            return StrandedWork(status="unknown")
+
+        if stranded.branch and stranded.status in ("pushed", "no_remote", "push_failed"):
+            try:
+                await self.db.set_task_meta(task.id, UNMERGED_BRANCH_META, stranded.branch)
+                if stranded.commit:
+                    await self.db.set_task_meta(
+                        task.id, UNMERGED_COMMIT_META, stranded.commit
+                    )
+            except Exception:
+                logger.warning(
+                    "Task %s: could not record unmerged branch metadata",
+                    task.id,
+                    exc_info=True,
+                )
+        return stranded
 
     async def _emit_close_notify(
         self,

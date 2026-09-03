@@ -123,10 +123,35 @@ A **gate** is a first-class wait record — "something outside the graph must ha
 |---|---|---|
 | `human` | optional context ref (plan id, question id) | a human runs `gate resolve` — **only** path; Discord buttons and the dashboard call the same command |
 | `timer` | target epoch seconds | `now ≥ await_id` (sweep) |
-| `pr-merged` | PR URL | `gh` reports merged (sweep, via the extracted PR-poll helper from the approvals mixin) |
+| `pr-merged` | PR URL | `gh` reports merged **and** the PR's work has reached the default branch (sweep, via the extracted PR-poll helper from the approvals mixin) — see §5.1a |
 | `ci-run` | run id / URL | `gh run` reports success (sweep) |
 | `event` | event type (+ optional payload-filter JSON) | a matching EventBus event fires (subscription resolves immediately; sweep is the restart-safe backstop against events missed while the daemon was down, re-checked from the persisted `events` table) |
 | `task` | task id (cross-project allowed) | that task reaches COMPLETED (sweep) |
+
+#### 5.1a Merged is not the same as "on the default branch"
+
+A `pr-merged` gate exists to tell a dependent "your prerequisite has shipped".
+A PR whose base is a *feature* branch merges without putting a line on the
+default branch, so resolving on `merged` alone is wrong. That is the Pkg 4
+outage: PRs #284/#288/#289 all merged into `feature/playbook-v2-pkg4-core`,
+their tasks closed COMPLETED, every downstream gate resolved — and nothing
+ever merged `pkg4-core` into `main`, so `main` lacked
+`src/playbooks/executors/agent_task.py` while every dependent believed it was
+there.
+
+So `_sweep_resolve_pr_ci_gates` asks a second question of a merged PR
+(`_pr_reached_default_branch`): if `baseRefName` is not the project default
+branch, the gate stays open until `origin/<base>` is an ancestor of
+`origin/<default>`. An **unanswerable** question — no `gh`, no auth, no
+network, no checkout — resolves the gate as before: unknowable must not wedge
+every dependent shut forever.
+
+The merge itself records what it did. `pr_merge` writes `pr_base` and
+`pr_merged_to_default` on the task carrying that PR and returns
+`merged to <base> (not <default>)`, so the state is visible without asking
+GitHub again. `aq doctor --check pools.stranded_feature_branches` is the
+standing alarm for the other half: a branch that has had PRs merged *into* it
+and has no open PR taking it to the default branch.
 
 ### 5.2 Blocking semantics
 

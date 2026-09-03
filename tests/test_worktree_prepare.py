@@ -304,7 +304,22 @@ class TestPrepareCreatesAndResetsASlot:
         finally:
             await o.shutdown()
 
-    async def test_retry_of_a_task_restarts_its_branch(self, tmp_path, base_repo):
+    async def test_retry_reuses_the_branch_and_the_release_publishes_the_attempt(
+        self, tmp_path, base_repo
+    ):
+        """Release publishes the attempt, so the retry resumes it (§3.4).
+
+        This used to assert "a retry starts clean": the release dropped the
+        previous attempt's commit on the floor.  That is the behaviour that
+        lost five commits and made three re-runs of ``solid-harbor.43`` each
+        start from ``main`` and close ``blocked`` again.  Release now pushes
+        anything no remote branch carries (``salvage_unpushed``), and
+        ``_retry_reset_ref`` keeps a published tip the start point does not
+        contain — the same rule the test below already covered for an attempt
+        the *agent* had pushed.  ``TestSalvageUnpushedCommits`` in
+        ``test_worktree_manager.py`` covers the remaining clean-start case:
+        with no remote to publish to, the fresh start point still wins.
+        """
         o = await _orch(tmp_path, worktrees_enabled=True)
         try:
             await _seed(o, base_repo, mode=KIND_MODE_WORKTREE, cap=1)
@@ -313,12 +328,17 @@ class TestPrepareCreatesAndResetsASlot:
             (p / "attempt.txt").write_text("bad\n")
             _git(["add", "-A"], cwd=p)
             _git(["commit", "-m", "bad attempt"], cwd=p)
+            attempt = _git(["rev-parse", "HEAD"], cwd=p)
             await o._release_workspaces_for_task("tsk-1")
 
             t = await o.db.get_task("tsk-1")
             p2 = Path(await o._prepare_workspace(t, a))
             assert _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=p2) == "aq/tsk-1"
-            assert not (p2 / "attempt.txt").exists(), "a retry starts clean"
+            assert (
+                _git(["ls-remote", "origin", "refs/heads/aq/tsk-1"], cwd=p2).split()[0]
+                == attempt
+            ), "the release must publish the attempt before resetting the slot"
+            assert (p2 / "attempt.txt").exists()
         finally:
             await o.shutdown()
 

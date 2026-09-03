@@ -87,6 +87,39 @@ EOF
 The reviewer stage reads the diff from origin/<branch>, so the PR must
 be pushed and reachable before you call `aq task close`.
 
+## Stacked branches — and who owns the exit PR
+
+Branch from the default branch (`main`). Stack on a prerequisite task's
+branch **only** when the work genuinely cannot build or run without it, and
+say so in your close summary.
+
+When a stack is unavoidable:
+
+- Every stacked PR targets the base branch (`gh pr create --base <base>`).
+- The **last** task in the stack owns opening the `<base> -> main` PR, and
+  must name that PR explicitly in its close summary.
+- A PR merged into a feature branch has shipped nothing to `main`. The tasks
+  close COMPLETED and dependents are released, but `main` does not have the
+  code — this is exactly how `feature/playbook-v2-pkg4-core` swallowed three
+  merged PRs. `aq doctor --check pools.stranded_feature_branches` lists
+  branches in that state.
+
+## Never leave commits only in your worktree
+
+Your slot is reset for the next task as soon as you let go of it. Commits that
+no remote branch carries are unreachable from that point on — not by a retry,
+not by a reviewer, not by you.
+
+```bash
+git push -u origin HEAD           # before you close, every time
+git log --oneline origin/HEAD..HEAD   # what is still local-only
+```
+
+A close with `--outcome fail` and unpushed commits is not silently accepted:
+the daemon pushes them to `aq/<task-id>` (or `aq/<task-id>-wip`) and records
+the branch in your completion summary. If the push fails, the close is refused
+and the task stays yours until you push by hand.
+
 ## Reviewers and read-only workspaces
 
 If your profile has `read_only: true` (reviewer / final-reviewer), you
