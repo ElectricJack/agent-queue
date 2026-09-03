@@ -408,12 +408,13 @@ async def _check_needs(graph: TaskGraph, project_id: str, db: Any) -> list[Graph
 
 
 async def _check_profiles(graph: TaskGraph, project_id: str, db: Any) -> list[GraphError]:
-    """Every referenced profile must exist, project override included.
+    """Every referenced profile must exist.
 
-    Resolution also **rewrites** the reference to the id that actually
-    exists: a project override lives under ``project:<pid>:<name>``, and the
-    created task's ``profile_id`` FK has to name that row, not the bare
-    agent-type the author wrote.
+    Profiles are global — a durable worker is shared between projects — so a
+    reference is just the agent-type name.  A retired ``project:<pid>:<name>``
+    reference is reported rather than resolved: the override it named no
+    longer exists, and silently falling back to the system profile would hide
+    a graph that still encodes the old scoping.
     """
     if db is None:
         return []
@@ -421,59 +422,37 @@ async def _check_profiles(graph: TaskGraph, project_id: str, db: Any) -> list[Gr
     cache: dict[str, str | None] = {}
 
     async def resolve(profile_id: str) -> str | None:
-        """Resolve to the profile id that actually exists, or ``None``.
-
-        Idempotent: a reference already scoped to *this* project is checked
-        as-is rather than being prefixed a second time into
-        ``project:p1:project:p1:coding``.
-        """
+        """Resolve to the profile id that actually exists, or ``None``."""
         if profile_id not in cache:
-            resolved: str | None = None
-            scope = _profile_scope(profile_id)
-            if scope is not None:
-                # Already scoped — only a scope matching this project is
-                # even a candidate; the foreign case is rejected by the
-                # caller before we get here.
-                if scope == project_id and await db.get_profile(profile_id) is not None:
-                    resolved = profile_id
-            else:
-                scoped = f"project:{project_id}:{profile_id}"
-                if await db.get_profile(scoped) is not None:
-                    resolved = scoped
-                elif await db.get_profile(profile_id) is not None:
-                    resolved = profile_id
-            cache[profile_id] = resolved
+            cache[profile_id] = (
+                profile_id if await db.get_profile(profile_id) is not None else None
+            )
         return cache[profile_id]
 
     def report(profile_id: str, node_key: str | None) -> None:
         errors.append(
             _error(
                 "unknown_profile",
-                f"profile '{profile_id}' is not defined for project '{project_id}' "
-                "(checked the project override and the system profile)",
+                f"profile '{profile_id}' is not defined for project '{project_id}'",
                 node_key,
             )
         )
 
-    def report_foreign(profile_id: str, scope: str, node_key: str | None) -> None:
+    def report_retired(profile_id: str, scope: str, node_key: str | None) -> None:
         errors.append(
             _error(
-                "foreign_project_profile",
-                f"profile '{profile_id}' is scoped to project '{scope}' — "
-                f"this graph belongs to '{project_id}'; reference the "
-                "agent-type by name and the project override resolves itself",
+                "retired_project_profile",
+                f"profile '{profile_id}' uses the retired project-scoped form "
+                f"(scope '{scope}') — project-scoped profiles were removed; "
+                "reference the agent-type by name",
                 node_key,
             )
         )
 
     async def check(profile_id: str, node_key: str | None) -> str | None:
         scope = _profile_scope(profile_id)
-        if scope is not None and scope != project_id:
-            # `resolve()` used to fall through to the unqualified lookup, so
-            # `project:p2:coding` in a p1 graph validated clean and was written
-            # straight into `tasks.profile_id`. `_check_foreign_projects` only
-            # looks at `node.project`, never at the profile.
-            report_foreign(profile_id, scope, node_key)
+        if scope is not None:
+            report_retired(profile_id, scope, node_key)
             return None
         resolved = await resolve(profile_id)
         if resolved is None:

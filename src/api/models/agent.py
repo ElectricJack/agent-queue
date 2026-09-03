@@ -310,30 +310,6 @@ class ImportProfileResponse(BaseModel):
     ready: bool = False
 
 
-# --- Project-scoped profile responses --------------------------------------
-
-
-class CreateProjectProfileResponse(BaseModel):
-    created: str
-    project_id: str
-    agent_type: str
-    path: str
-    warnings: list[str] | None = None
-
-
-class EditProjectProfileResponse(BaseModel):
-    updated: str
-    fields: list[str] = []
-    warnings: list[str] | None = None
-
-
-class DeleteProjectProfileResponse(BaseModel):
-    deleted: str
-    project_id: str
-    agent_type: str
-    removed_paths: list[str] = []
-
-
 class ProbedToolModel(BaseModel):
     name: str
     description: str = ""
@@ -353,27 +329,11 @@ class CatalogEntryModel(BaseModel):
     is_builtin: bool = False
 
 
-class ProjectProfileRow(BaseModel):
-    agent_type: str
-    global_profile: ProfileDetail | None = Field(default=None, alias="global")
-    scoped: ProfileDetail | None = None
-    effective: ProfileDetail | None = None
-    has_override: bool = False
-
-    model_config = {"populate_by_name": True}
-
-
-class ListProjectProfilesResponse(BaseModel):
-    project_id: str
-    agent_types: list[ProjectProfileRow] = []
-    tool_catalog: dict[str, CatalogEntryModel] = {}
-
-
 class ShowEffectiveProfileResponse(BaseModel):
     project_id: str
     agent_type: str
     profile: ProfileDetail | None = None
-    source: str | None = None  # "project" | "global" | None
+    source: str | None = None  # "global" | "fallback" | None
 
 
 class SubagentEventResponse(BaseModel):
@@ -418,9 +378,5 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "install_profile": InstallProfileResponse,
     "export_profile": ExportProfileResponse,
     "import_profile": ImportProfileResponse,
-    "create_project_profile": CreateProjectProfileResponse,
-    "edit_project_profile": EditProjectProfileResponse,
-    "delete_project_profile": DeleteProjectProfileResponse,
-    "list_project_profiles": ListProjectProfilesResponse,
     "show_effective_profile": ShowEffectiveProfileResponse,
 }

@@ -101,10 +101,6 @@ from .create_playbook_response_422 import CreatePlaybookResponse422
 from .create_profile_request import CreateProfileRequest
 from .create_profile_response import CreateProfileResponse
 from .create_profile_response_422 import CreateProfileResponse422
-from .create_project_profile_request import CreateProjectProfileRequest
-from .create_project_profile_request_install_type_0 import CreateProjectProfileRequestInstallType0
-from .create_project_profile_response import CreateProjectProfileResponse
-from .create_project_profile_response_422 import CreateProjectProfileResponse422
 from .create_project_request import CreateProjectRequest
 from .create_project_response import CreateProjectResponse
 from .create_project_response_422 import CreateProjectResponse422
@@ -134,9 +130,6 @@ from .delete_playbook_response_422 import DeletePlaybookResponse422
 from .delete_profile_request import DeleteProfileRequest
 from .delete_profile_response import DeleteProfileResponse
 from .delete_profile_response_422 import DeleteProfileResponse422
-from .delete_project_profile_request import DeleteProjectProfileRequest
-from .delete_project_profile_response import DeleteProjectProfileResponse
-from .delete_project_profile_response_422 import DeleteProjectProfileResponse422
 from .delete_project_request import DeleteProjectRequest
 from .delete_project_response import DeleteProjectResponse
 from .delete_project_response_422 import DeleteProjectResponse422
@@ -181,10 +174,6 @@ from .edit_profile_request import EditProfileRequest
 from .edit_profile_request_install_type_0 import EditProfileRequestInstallType0
 from .edit_profile_response import EditProfileResponse
 from .edit_profile_response_422 import EditProfileResponse422
-from .edit_project_profile_request import EditProjectProfileRequest
-from .edit_project_profile_request_install_type_0 import EditProjectProfileRequestInstallType0
-from .edit_project_profile_response import EditProjectProfileResponse
-from .edit_project_profile_response_422 import EditProjectProfileResponse422
 from .edit_project_request import EditProjectRequest
 from .edit_project_response import EditProjectResponse
 from .edit_project_response_422 import EditProjectResponse422
@@ -497,10 +486,6 @@ from .list_playbooks_response_422 import ListPlaybooksResponse422
 from .list_profiles_request import ListProfilesRequest
 from .list_profiles_response import ListProfilesResponse
 from .list_profiles_response_422 import ListProfilesResponse422
-from .list_project_profiles_request import ListProjectProfilesRequest
-from .list_project_profiles_response import ListProjectProfilesResponse
-from .list_project_profiles_response_422 import ListProjectProfilesResponse422
-from .list_project_profiles_response_tool_catalog import ListProjectProfilesResponseToolCatalog
 from .list_projects_request import ListProjectsRequest
 from .list_projects_response import ListProjectsResponse
 from .list_projects_response_422 import ListProjectsResponse422
@@ -688,6 +673,7 @@ from .plugin_update_request import PluginUpdateRequest
 from .plugin_update_response import PluginUpdateResponse
 from .plugin_update_response_422 import PluginUpdateResponse422
 from .pool_instance_status import PoolInstanceStatus
+from .pool_project_cap import PoolProjectCap
 from .pool_scale_request import PoolScaleRequest
 from .pool_scale_response import PoolScaleResponse
 from .pool_scale_response_422 import PoolScaleResponse422
@@ -726,7 +712,6 @@ from .profile_reseed_response_422 import ProfileReseedResponse422
 from .profile_subagent_rollup import ProfileSubagentRollup
 from .profile_summary import ProfileSummary
 from .project_graph_response import ProjectGraphResponse
-from .project_profile_row import ProjectProfileRow
 from .project_ready_request import ProjectReadyRequest
 from .project_ready_response import ProjectReadyResponse
 from .project_ready_response_422 import ProjectReadyResponse422
@@ -1173,10 +1158,6 @@ __all__ = (
     "CreateProfileRequest",
     "CreateProfileResponse",
     "CreateProfileResponse422",
-    "CreateProjectProfileRequest",
-    "CreateProjectProfileRequestInstallType0",
-    "CreateProjectProfileResponse",
-    "CreateProjectProfileResponse422",
     "CreateProjectRequest",
     "CreateProjectResponse",
     "CreateProjectResponse422",
@@ -1206,9 +1187,6 @@ __all__ = (
     "DeleteProfileRequest",
     "DeleteProfileResponse",
     "DeleteProfileResponse422",
-    "DeleteProjectProfileRequest",
-    "DeleteProjectProfileResponse",
-    "DeleteProjectProfileResponse422",
     "DeleteProjectRequest",
     "DeleteProjectResponse",
     "DeleteProjectResponse422",
@@ -1253,10 +1231,6 @@ __all__ = (
     "EditProfileRequestInstallType0",
     "EditProfileResponse",
     "EditProfileResponse422",
-    "EditProjectProfileRequest",
-    "EditProjectProfileRequestInstallType0",
-    "EditProjectProfileResponse",
-    "EditProjectProfileResponse422",
     "EditProjectRequest",
     "EditProjectResponse",
     "EditProjectResponse422",
@@ -1563,10 +1537,6 @@ __all__ = (
     "ListProfilesRequest",
     "ListProfilesResponse",
     "ListProfilesResponse422",
-    "ListProjectProfilesRequest",
-    "ListProjectProfilesResponse",
-    "ListProjectProfilesResponse422",
-    "ListProjectProfilesResponseToolCatalog",
     "ListProjectsRequest",
     "ListProjectsResponse",
     "ListProjectsResponse422",
@@ -1754,6 +1724,7 @@ __all__ = (
     "PluginUpdateResponse",
     "PluginUpdateResponse422",
     "PoolInstanceStatus",
+    "PoolProjectCap",
     "PoolScaleRequest",
     "PoolScaleResponse",
     "PoolScaleResponse422",
@@ -1790,7 +1761,6 @@ __all__ = (
     "ProfileSubagentRollup",
     "ProfileSummary",
     "ProjectGraphResponse",
-    "ProjectProfileRow",
     "ProjectReadyRequest",
     "ProjectReadyResponse",
     "ProjectReadyResponse422",

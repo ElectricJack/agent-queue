@@ -2,11 +2,10 @@ import { describe, expect, it } from "vitest";
 import { contextualSettingsArgsSchema } from "../args";
 
 describe("contextualSettingsArgsSchema", () => {
-  it("accepts all five valid shapes", () => {
+  it("accepts all four valid shapes", () => {
     const valid = [
       { subject: "project", subjectId: "demo" },
       { subject: "profile", subjectId: "reviewer" },
-      { subject: "project-profile", subjectId: "coder", projectId: "demo" },
       { subject: "playbook", subjectId: "review-gate" },
       { subject: "intelligence-class", subjectId: "fast-off" },
     ];
@@ -25,10 +24,13 @@ describe("contextualSettingsArgsSchema", () => {
     ).toBe(false);
   });
 
-  it("rejects project-profile missing projectId", () => {
+  it("rejects the retired project-profile subject", () => {
     expect(
-      contextualSettingsArgsSchema.safeParse({ subject: "project-profile", subjectId: "x" })
-        .success,
+      contextualSettingsArgsSchema.safeParse({
+        subject: "project-profile",
+        subjectId: "coder",
+        projectId: "demo",
+      }).success,
     ).toBe(false);
   });
 });

@@ -53,64 +53,33 @@ logger = logging.getLogger(__name__)
 # the singleton scope.  If stale files remain on disk the vault
 # structure migration handles them; we no longer match the pattern so
 # the profile row can't be resurrected via vault sync.
+#: Profiles are global: agents are shared between projects, so there is one
+#: definition per agent type.  ``projects/<pid>/agent-types/`` was retired
+#: with project-scoped profiles — :mod:`src.profiles.project_override_migration`
+#: promotes anything still there into the system profile.
 PROFILE_PATTERNS: list[str] = [
     "agent-types/*/profile.md",
-    "projects/*/agent-types/*/profile.md",
 ]
 
 
-def is_invalid_scoped_flat_path(rel_path: str) -> bool:
-    """Return True for stray scoped profiles sitting in the global folder.
+def is_retired_scoped_path(rel_path: str) -> bool:
+    """Return True for a retired project-scoped profile path.
 
-    ``vault/agent-types/`` is reserved for **system / global** agent
-    types — one folder per agent type, dir name == bare type. Project
-    overrides belong at ``vault/projects/<project>/agent-types/<type>/``.
-
-    Some past code path mistakenly wrote project-scoped profiles into
-    the global folder using the colon-encoded id as a dir name (e.g.
-    ``agent-types/project:my-playbooks:supervisor/profile.md``). That
-    layout was never legitimate, but the scanner used to pick the files
-    up anyway and resurrect deleted overrides on every restart. We
-    detect them structurally — a `:` in the segment after
-    ``agent-types/`` always means a scoped id, which doesn't belong
-    here — and skip them on both the startup scan and live watcher.
+    ``vault/agent-types/`` is reserved for system agent types — one folder
+    per agent type, dir name == bare type.  Two retired layouts can still be
+    on disk in an old vault: ``projects/<pid>/agent-types/<type>/profile.md``
+    (the project override) and the colon-encoded
+    ``agent-types/project:<pid>:<type>/profile.md`` that an older writer
+    produced.  Neither may sync a row — the startup migration promotes and
+    deletes them, and until it has, reading one would resurrect an override
+    that no longer resolves.
     """
     parts = rel_path.replace("\\", "/").split("/")
-    return (
-        len(parts) >= 3
-        and parts[0] == "agent-types"
-        and parts[-1] == "profile.md"
-        and ":" in parts[1]
-    )
-
-
-def project_scoped_profile_id(project_id: str, agent_type: str) -> str:
-    """Format the scoped profile id for a per-project agent-type profile."""
-    return f"project:{project_id}:{agent_type}"
-
-
-def underlying_agent_type(profile_id: str | None) -> str | None:
-    """Extract the underlying agent-type segment from a profile id.
-
-    Project-scoped profile ids use the ``project:{project_id}:{type}``
-    form; callers that emit agent-type metadata on events (e.g. the
-    task executor passing ``agent_type`` on ``task.completed`` /
-    ``task.failed``) must strip the scoping prefix so downstream
-    consumers (the memory extractor, schedulers) see a plain agent-type
-    string rather than the full profile id.
-
-    For a non-scoped id (e.g. ``"claude-code"``), the input is
-    returned unchanged.  For ``None`` or the empty string, returns
-    ``None``.
-    """
-    if not profile_id:
-        return None
-    if profile_id.startswith("project:"):
-        # Expected format: project:<project_id>:<agent_type>
-        parts = profile_id.split(":", 2)
-        if len(parts) == 3 and parts[2]:
-            return parts[2]
-    return profile_id
+    if parts[-1] != "profile.md":
+        return False
+    if len(parts) >= 3 and parts[0] == "agent-types" and ":" in parts[1]:
+        return True
+    return len(parts) >= 4 and parts[0] == "projects" and parts[2] == "agent-types"
 
 
 @dataclass(frozen=True)
@@ -172,15 +141,6 @@ def derive_profile_id(rel_path: str) -> str | None:
         a recognized profile location.
     """
     parts = rel_path.replace("\\", "/").split("/")
-
-    # projects/<project>/agent-types/<type>/profile.md -> project:<project>:<type>
-    if (
-        len(parts) == 5
-        and parts[0] == "projects"
-        and parts[2] == "agent-types"
-        and parts[-1] == "profile.md"
-    ):
-        return project_scoped_profile_id(parts[1], parts[3])
 
     # agent-types/<type>/profile.md -> <type>
     if len(parts) >= 3 and parts[0] == "agent-types" and parts[-1] == "profile.md":
@@ -505,9 +465,10 @@ async def on_profile_changed(
         are copied into the profile's memory folder.
     """
     for change in changes:
-        if is_invalid_scoped_flat_path(change.rel_path):
+        if is_retired_scoped_path(change.rel_path):
             logger.warning(
-                "Ignoring stray scoped profile change in global agent-types folder: %s",
+                "Ignoring retired project-scoped profile change: %s "
+                "(run `aq doctor --check profiles.project_overrides --fix`)",
                 change.rel_path,
             )
             continue
@@ -567,7 +528,6 @@ async def on_profile_changed(
                 and data_dir
                 and path_id
                 and path_id != "supervisor"
-                and not path_id.startswith("project:")
             ):
                 from src.vault import copy_starter_knowledge
 
@@ -679,10 +639,10 @@ def _find_profile_files(vault_root: str) -> list[tuple[str, str]]:
             full_path = os.path.join(dirpath, fname)
             rel_path = os.path.relpath(full_path, vault_root).replace(os.sep, "/")
 
-            if is_invalid_scoped_flat_path(rel_path):
+            if is_retired_scoped_path(rel_path):
                 logger.warning(
-                    "Ignoring stray scoped profile in global agent-types folder: %s "
-                    "(should live under projects/<project>/agent-types/)",
+                    "Ignoring retired project-scoped profile: %s "
+                    "(run `aq doctor --check profiles.project_overrides --fix`)",
                     rel_path,
                 )
                 continue

@@ -404,7 +404,7 @@ Validation is deterministic — the daemon never "interprets" a graph:
 | Cycle among blocking dep types within the graph | error (topological check) |
 | `dep_type` not in the work-graph registry (`blocks`, `parent-child`, `waits-for`, `conditional-blocks`; non-blocking `discovered-from`, `related`, `duplicates`, `supersedes`) | error |
 | Unknown `profile` (against `agent_profiles`, project overrides included) | error |
-| `profile` already scoped to **another** project (`project:<other>:<name>`) | error (`foreign_project_profile`) — scope resolution is otherwise idempotent for this project's own prefix |
+| `profile` written in the retired scoped form (`project:<pid>:<name>`) | error (`retired_project_profile`) — project-scoped profiles were removed; reference the agent-type by name |
 | Node title empty / missing | error |
 | No `acceptance` on a node | warning (created anyway) |
 | `spec_ref` path missing from the vault, or section heading not found | error for `--from-spec`; warning for `--graph` |

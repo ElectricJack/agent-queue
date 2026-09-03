@@ -16,6 +16,18 @@ Agent profiles are **markdown files in the vault** that serve as the source of t
 for agent-type configuration. The database stores a synced copy for fast runtime
 access. This replaces the current DB-only profile model.
 
+Profiles are **global**: one file per agent type at
+`vault/agent-types/<id>/profile.md`, and one `agent_profiles` row per id. A
+durable worker is shared between projects, so a definition that applied to only
+one project was a contradiction — project-scoped profiles
+(`project:<pid>:<id>`, sourced from `vault/projects/<pid>/agent-types/`) were
+retired. Pool `lifecycle` and sizing therefore live on the system profile and
+apply everywhere; sizing still happens per project at runtime, under each
+project's own `max_concurrent_agents` (see [[guides/worker-pools]] §2-3).
+`src/profiles/project_override_migration.py` promotes anything an older vault
+still carries into its system profile — automatically at startup, or on demand
+via `aq doctor --check profiles.project_overrides --fix`.
+
 ---
 
 ## 2. Hybrid Format
@@ -133,8 +145,7 @@ defines the delivery contract:
 
 The prime-visible set is the single tuple
 `src/prime/sections.PRIME_VISIBLE_PROFILE_HEADINGS`; widening what agents see
-means adding a heading there (and, for a project override profile, the same
-headings apply — section 2 supplements section 1, it does not replace it).
+means adding a heading there.
 
 Author `## Rules` as tight, imperative bullets: they are paid for on every
 prime render. Across the shipped agent types the Rules block costs ~290 tokens

@@ -95,17 +95,37 @@ def test_create_task_accepts_swarm_fields():
 def test_pool_commands_defined():
     d = defs()
     assert _TOOL_CATEGORIES["pool_status"] == _TOOL_CATEGORIES["pool_scale"] == "pool"
-    assert {"project_id", "profile_id", "min", "max", "now"} <= set(
+    assert {"profile_id", "min", "max", "now"} <= set(
         d["pool_scale"]["input_schema"]["properties"]
     )
+    # project_id survives as a deprecated no-op for one release, but is no
+    # longer required: bounds live on the (global) system profile.
+    assert d["pool_scale"]["input_schema"]["required"] == ["profile_id"]
+    assert "Deprecated" in d["pool_scale"]["input_schema"]["properties"]["project_id"][
+        "description"
+    ]
 
 
 def test_pool_lifecycle_command_is_part_of_the_generated_surface():
     d = defs()
     assert _TOOL_CATEGORIES["pool_set_lifecycle"] == "pool"
-    assert {"project_id", "profile_id", "lifecycle"} <= set(
+    assert {"profile_id", "lifecycle"} <= set(
         d["pool_set_lifecycle"]["input_schema"]["properties"]
     )
+    assert d["pool_set_lifecycle"]["input_schema"]["required"] == ["profile_id", "lifecycle"]
+
+
+def test_project_scoped_profile_commands_are_gone():
+    """Project-scoped profiles were retired; their CRUD must be off the surface."""
+    d = defs()
+    for name in (
+        "create_project_profile",
+        "edit_project_profile",
+        "delete_project_profile",
+        "list_project_profiles",
+    ):
+        assert name not in d, f"{name} is still registered"
+        assert name not in _TOOL_CATEGORIES
 
 
 def test_read_claim_epoch_prefers_file(tmp_path, monkeypatch):
@@ -280,7 +300,7 @@ async def test_pool_status_empty(handler):
 
 
 async def test_pool_scale_requires_min_or_max(handler):
-    res = await handler._cmd_pool_scale({"project_id": PROJECT_ID, "profile_id": "worker"})
+    res = await handler._cmd_pool_scale({"profile_id": "worker"})
     assert res == {"success": False, "error": "nothing to change: pass min and/or max"}
 
 
@@ -333,126 +353,99 @@ async def pool_handler(handler, tmp_path):
     return handler
 
 
-def _override_path(tmp_path):
-    return (
-        tmp_path
-        / "data"
-        / "vault"
-        / "projects"
-        / PROJECT_ID
-        / "agent-types"
-        / "worker"
-        / "profile.md"
-    )
+def _system_path(tmp_path):
+    return tmp_path / "data" / "vault" / "agent-types" / "worker" / "profile.md"
 
 
-async def test_pool_scale_creates_project_override_in_vault(pool_handler, tmp_path):
-    """The bounds land in the vault file, not just the agent_profiles row."""
+async def test_pool_scale_writes_the_system_profile(pool_handler, tmp_path):
+    """The bounds land in the system vault file, not a project override."""
     from src.profiles.parser import parse_profile
 
-    path = _override_path(tmp_path)
-    assert not path.exists()
-
-    res = await pool_handler._cmd_pool_scale(
-        {"project_id": PROJECT_ID, "profile_id": "worker", "min": 3, "max": 7}
-    )
+    res = await pool_handler._cmd_pool_scale({"profile_id": "worker", "min": 3, "max": 7})
     assert res["success"], res
     assert (res["min_active"], res["max_active"]) == (3, 7)
 
-    assert path.is_file(), "project-scoped override was not created"
-    text = path.read_text(encoding="utf-8")
+    text = _system_path(tmp_path).read_text(encoding="utf-8")
     parsed = parse_profile(text)
     assert parsed.config["min_active"] == 3
     assert parsed.config["max_active"] == 7
-    # The rest of the system definition carried over unchanged.
+    # The rest of the system definition survives the surgical config rewrite.
     assert parsed.config["lifecycle"] == "pool"
     assert "Do the work." in text
     assert "Be careful." in text
-    # The override must own its own row, not upsert the system one.
-    assert parsed.frontmatter.id == f"project:{PROJECT_ID}:worker"
+    assert parsed.frontmatter.id == "worker"
+    # No project override is created any more.
+    assert not (tmp_path / "data" / "vault" / "projects" / PROJECT_ID / "agent-types").exists()
 
 
 async def test_pool_scale_db_row_matches_vault(pool_handler, tmp_path):
+    res = await pool_handler._cmd_pool_scale({"profile_id": "worker", "min": 2, "max": 5})
+    assert res["success"], res
+
+    system = await pool_handler.db.get_profile("worker")
+    assert (system.min_active, system.max_active) == (2, 5)
+    assert await pool_handler.db.get_profile(f"project:{PROJECT_ID}:worker") is None
+
+
+async def test_pool_scale_accepts_project_id_as_a_deprecated_no_op(pool_handler, tmp_path):
+    """Existing scripts keep working, and are told the argument is ignored."""
     res = await pool_handler._cmd_pool_scale(
         {"project_id": PROJECT_ID, "profile_id": "worker", "min": 2, "max": 5}
     )
     assert res["success"], res
-
-    scoped = await pool_handler.db.get_profile(f"project:{PROJECT_ID}:worker")
-    assert scoped is not None, "sync did not create the project-scoped row"
-    assert (scoped.min_active, scoped.max_active) == (2, 5)
-
-
-async def test_pool_scale_never_touches_the_system_row(pool_handler, tmp_path):
-    """First scale with no override: the project row is created, the system
-    row (shared by every other project) keeps its bounds."""
-    before = await pool_handler.db.get_profile("worker")
-    res = await pool_handler._cmd_pool_scale(
-        {"project_id": PROJECT_ID, "profile_id": "worker", "min": 2, "max": 6}
-    )
-    assert res["success"], res
+    assert res["warnings"] and "deprecated" in res["warnings"][0]
     system = await pool_handler.db.get_profile("worker")
-    assert (system.min_active, system.max_active) == (before.min_active, before.max_active)
-    scoped = await pool_handler.db.get_profile(f"project:{PROJECT_ID}:worker")
-    assert (scoped.min_active, scoped.max_active, scoped.lifecycle) == (2, 6, "pool")
+    assert (system.min_active, system.max_active) == (2, 5)
+    assert await pool_handler.db.get_profile(f"project:{PROJECT_ID}:worker") is None
 
 
 async def test_pool_scale_survives_a_resync(pool_handler, tmp_path):
     """Re-syncing the vault must not revert the scale (the old bug)."""
     from src.profiles.sync import sync_profile_text_to_db
 
-    await pool_handler._cmd_pool_scale(
-        {"project_id": PROJECT_ID, "profile_id": "worker", "min": 4, "max": 9}
-    )
-    path = _override_path(tmp_path)
-    scoped_id = f"project:{PROJECT_ID}:worker"
+    await pool_handler._cmd_pool_scale({"profile_id": "worker", "min": 4, "max": 9})
+    path = _system_path(tmp_path)
 
     result = await sync_profile_text_to_db(
         path.read_text(encoding="utf-8"),
         pool_handler.db,
         source_path=str(path),
-        fallback_id=scoped_id,
+        fallback_id="worker",
     )
     assert result.success, result.errors
 
-    scoped = await pool_handler.db.get_profile(scoped_id)
-    assert (scoped.min_active, scoped.max_active) == (4, 9)
+    system = await pool_handler.db.get_profile("worker")
+    assert (system.min_active, system.max_active) == (4, 9)
 
 
 async def test_pool_scale_explicit_null_clears_max_in_db_and_vault(pool_handler, tmp_path):
     """An explicit ``max: None`` removes the cap — the CLI spells it `--max null`."""
     from src.profiles.parser import parse_profile
 
-    await pool_handler._cmd_pool_scale(
-        {"project_id": PROJECT_ID, "profile_id": "worker", "min": 1, "max": 5}
-    )
-    res = await pool_handler._cmd_pool_scale(
-        {"project_id": PROJECT_ID, "profile_id": "worker", "max": None}
-    )
+    await pool_handler._cmd_pool_scale({"profile_id": "worker", "min": 1, "max": 5})
+    res = await pool_handler._cmd_pool_scale({"profile_id": "worker", "max": None})
     assert res["success"], res
     assert res["max_active"] is None
 
-    parsed = parse_profile(_override_path(tmp_path).read_text(encoding="utf-8"))
+    parsed = parse_profile(_system_path(tmp_path).read_text(encoding="utf-8"))
     assert "max_active" not in parsed.config, "the key must be removed, not set to a string"
     assert parsed.config["min_active"] == 1
 
-    scoped = await pool_handler.db.get_profile(f"project:{PROJECT_ID}:worker")
-    assert scoped.max_active is None
-    assert scoped.min_active == 1
+    system = await pool_handler.db.get_profile("worker")
+    assert system.max_active is None
+    assert system.min_active == 1
 
 
-async def test_pool_scale_updates_an_existing_override(pool_handler, tmp_path):
-    """A second scale edits the override in place, preserving its prose."""
+async def test_pool_scale_preserves_author_prose(pool_handler, tmp_path):
+    """A second scale edits the system profile in place, preserving its prose."""
     from src.profiles.parser import parse_profile
 
-    await pool_handler._cmd_pool_scale(
-        {"project_id": PROJECT_ID, "profile_id": "worker", "min": 1, "max": 3}
-    )
-    path = _override_path(tmp_path)
+    await pool_handler._cmd_pool_scale({"profile_id": "worker", "min": 1, "max": 3})
+    path = _system_path(tmp_path)
     # Author-added content must survive the next write.
     path.write_text(path.read_text(encoding="utf-8") + "\n## Reflection\n\nKeep notes.\n")
 
-    await pool_handler._cmd_pool_scale({"project_id": PROJECT_ID, "profile_id": "worker", "max": 8})
+    await pool_handler._cmd_pool_scale({"profile_id": "worker", "max": 8})
 
     text = path.read_text(encoding="utf-8")
     parsed = parse_profile(text)
@@ -461,30 +454,8 @@ async def test_pool_scale_updates_an_existing_override(pool_handler, tmp_path):
     assert "Keep notes." in text
 
 
-async def test_pool_scale_clears_an_existing_max_in_db_and_vault(pool_handler, tmp_path):
-    """An explicit null removes a prior cap rather than leaving it unchanged."""
-    from src.profiles.parser import parse_profile
-
-    await pool_handler._cmd_pool_scale(
-        {"project_id": PROJECT_ID, "profile_id": "worker", "min": 1, "max": 4}
-    )
-
-    result = await pool_handler._cmd_pool_scale(
-        {"project_id": PROJECT_ID, "profile_id": "worker", "max": None}
-    )
-
-    assert result["success"], result
-    assert (result["min_active"], result["max_active"]) == (1, None)
-    scoped = await pool_handler.db.get_profile(f"project:{PROJECT_ID}:worker")
-    assert scoped is not None
-    assert (scoped.min_active, scoped.max_active) == (1, None)
-    parsed = parse_profile(_override_path(tmp_path).read_text(encoding="utf-8"))
-    assert parsed.config["min_active"] == 1
-    assert "max_active" not in parsed.config
-
-
-async def test_pool_lifecycle_is_project_scoped_durable_and_guarded(pool_handler, tmp_path):
-    """A project may opt a system profile in/out without a later sync reverting it."""
+async def test_pool_lifecycle_is_global_durable_and_guarded(pool_handler, tmp_path):
+    """Lifecycle lives on the system profile and a later sync must not revert it."""
     import time
 
     from src.models import SessionRecord
@@ -507,33 +478,34 @@ async def test_pool_lifecycle_is_project_scoped_durable_and_guarded(pool_handler
         )
     )
     changed = await pool_handler._cmd_pool_set_lifecycle(
-        {"project_id": PROJECT_ID, "profile_id": "worker", "lifecycle": "task"}
+        {"profile_id": "worker", "lifecycle": "task"}
     )
     assert changed == {
         "success": True,
-        "project_id": PROJECT_ID,
         "profile_id": "worker",
         "lifecycle": "task",
+        "warnings": [],
     }
-    override = _override_path(tmp_path)
-    assert parse_profile(override.read_text(encoding="utf-8")).config["lifecycle"] == "task"
+    path = _system_path(tmp_path)
+    assert parse_profile(path.read_text(encoding="utf-8")).config["lifecycle"] == "task"
     from src.profiles.sync import sync_profile_text_to_db
 
     resynced = await sync_profile_text_to_db(
-        override.read_text(encoding="utf-8"),
+        path.read_text(encoding="utf-8"),
         pool_handler.db,
-        source_path=str(override),
-        fallback_id=f"project:{PROJECT_ID}:worker",
+        source_path=str(path),
+        fallback_id="worker",
     )
     assert resynced.success, resynced.errors
-    scoped = await pool_handler.db.get_profile(f"project:{PROJECT_ID}:worker")
-    assert scoped.min_active is scoped.max_active is scoped.max_claims_per_session is None
+    system = await pool_handler.db.get_profile("worker")
+    assert system.min_active is system.max_active is system.max_claims_per_session is None
+    # Every project's pool for the profile drains, not just one project's.
     drained = await pool_handler.db.get_session("drain-on-task-lifecycle")
     assert drained.desired_state == "stopped"
 
     pool_handler.config.swarm.enabled = False
     refused = await pool_handler._cmd_pool_set_lifecycle(
-        {"project_id": PROJECT_ID, "profile_id": "worker", "lifecycle": "pool"}
+        {"profile_id": "worker", "lifecycle": "pool"}
     )
     assert refused == {
         "success": False,
@@ -543,23 +515,23 @@ async def test_pool_lifecycle_is_project_scoped_durable_and_guarded(pool_handler
 
 async def test_pool_scale_rejects_zero_max_before_writing(pool_handler, tmp_path):
     """A parser-invalid zero max must not leave DB or vault state behind."""
-    zero = await pool_handler._cmd_pool_scale(
-        {"project_id": PROJECT_ID, "profile_id": "worker", "min": 0, "max": 0}
-    )
+    before = (await pool_handler.db.get_profile("worker"))
+    zero = await pool_handler._cmd_pool_scale({"profile_id": "worker", "min": 0, "max": 0})
     assert zero == {"success": False, "error": "max must be >= 1"}
-    assert not _override_path(tmp_path).exists()
-    assert await pool_handler.db.get_profile(f"project:{PROJECT_ID}:worker") is None
+    after = await pool_handler.db.get_profile("worker")
+    assert (after.min_active, after.max_active) == (before.min_active, before.max_active)
 
 
-async def test_pool_scale_reports_project_cap(pool_handler):
-    """The project cap remains the effective maximum above the profile bound."""
+async def test_pool_scale_reports_each_project_cap(pool_handler):
+    """Bounds are global; each project's cap is still the runtime maximum."""
 
-    capped = await pool_handler._cmd_pool_scale(
-        {"project_id": PROJECT_ID, "profile_id": "worker", "min": 0, "max": 8}
-    )
+    capped = await pool_handler._cmd_pool_scale({"profile_id": "worker", "min": 0, "max": 8})
     assert capped["success"], capped
     assert capped["max_active"] == 8
-    assert capped["project_cap"] == capped["effective_max_active"] == 2
+    assert capped["warnings"] == []
+    caps = {row["project_id"]: row for row in capped["project_caps"]}
+    assert caps[PROJECT_ID]["max_concurrent_agents"] == 2
+    assert caps[PROJECT_ID]["effective_max_active"] == 2
 
 
 async def test_pool_status_includes_live_instance_detail(pool_handler):

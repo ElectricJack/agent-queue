@@ -375,9 +375,9 @@ class TestSelfEdges:
 
 
 class TestProfileScoping:
-    async def test_another_projects_scoped_profile_is_rejected(self, vault):
-        """`project:p2:coding` in a p1 graph validated clean and was written
-        verbatim into ``tasks.profile_id``."""
+    """Project-scoped profiles were retired — the form itself is now an error."""
+
+    async def test_scoped_profile_reference_is_rejected(self, vault):
         graph = parse_graph(
             {
                 "version": 1,
@@ -389,10 +389,10 @@ class TestProfileScoping:
         db = _FakeDB(profiles={"coding", "project:p2:coding"})
         findings = await validate_graph(graph, project_id="p1", db=db, vault_root=vault)
         errors, _ = split_findings(findings)
-        assert {f.rule for f in errors} == {"foreign_project_profile"}
+        assert {f.rule for f in errors} == {"retired_project_profile"}
         assert graph.nodes[0].profile == "project:p2:coding"  # never rewritten
 
-    async def test_foreign_scoped_parent_profile_is_rejected(self, vault):
+    async def test_scoped_parent_profile_is_rejected(self, vault):
         graph = parse_graph(
             {
                 "version": 1,
@@ -402,10 +402,10 @@ class TestProfileScoping:
         )
         db = _FakeDB(profiles={"project:p2:coding"})
         findings = await validate_graph(graph, project_id="p1", db=db, vault_root=vault)
-        assert {f.rule for f in split_findings(findings)[0]} == {"foreign_project_profile"}
+        assert {f.rule for f in split_findings(findings)[0]} == {"retired_project_profile"}
 
-    async def test_own_scoped_profile_resolves_idempotently(self, vault):
-        """Writing the fully-scoped id yourself must not double-prefix."""
+    async def test_a_scoped_reference_to_this_project_is_rejected_too(self, vault):
+        """Even the graph's own project: the override it names no longer exists."""
         graph = parse_graph(
             {
                 "version": 1,
@@ -416,8 +416,7 @@ class TestProfileScoping:
         )
         db = _FakeDB(profiles={"project:p1:special"})
         findings = await validate_graph(graph, project_id="p1", db=db, vault_root=vault)
-        assert [f.rule for f in findings] == []
-        assert graph.nodes[0].profile == "project:p1:special"
+        assert {f.rule for f in split_findings(findings)[0]} == {"retired_project_profile"}
 
 
 # ---------------------------------------------------------------------------
@@ -564,16 +563,14 @@ async def test_validation_matches_golden(case, vault):
 
 
 class TestValidatorDetails:
-    async def test_project_scoped_profile_override_resolves(self, vault):
+    async def test_a_bare_reference_no_longer_falls_back_to_an_override(self, vault):
+        """Only the global profile counts; a leftover override row is not one."""
         graph = parse_graph(
             {"version": 1, "nodes": [{"key": "a", "title": "A", "profile": "special"}]}
         )
         db = _FakeDB(profiles={"project:p1:special"})
         findings = await validate_graph(graph, project_id="p1", db=db, vault_root=vault)
-        assert [f.rule for f in findings if f.is_error] == []
-        # The reference is rewritten to the id that exists, so the created
-        # task's profile_id FK names a real row.
-        assert graph.nodes[0].profile == "project:p1:special"
+        assert {f.rule for f in findings if f.is_error} == {"unknown_profile"}
 
     async def test_system_profile_reference_is_left_alone(self, vault):
         graph = parse_graph(

@@ -10,12 +10,11 @@ import {
 import {
   useEditProject,
   usePauseProject,
+  useProfiles,
   useProject,
-  useProjectProfiles,
   useResumeProject,
 } from "../../api/hooks";
 import DeleteProjectModal from "../../components/DeleteProjectModal";
-import ProjectProfiles from "./Profiles";
 
 export interface FormState {
   name: string;
@@ -40,7 +39,7 @@ const EMPTY_FORM: FormState = {
 export default function ProjectConfig() {
   const { projectId = "" } = useParams();
   const { data: project, isLoading } = useProject(projectId);
-  const { data: profiles } = useProjectProfiles(projectId);
+  const { data: profiles } = useProfiles();
   const editProject = useEditProject();
   const pauseProject = usePauseProject();
   const resumeProject = useResumeProject();
@@ -57,7 +56,7 @@ export default function ProjectConfig() {
   if (isLoading) return <p className="text-sm text-gray-500">Loading...</p>;
   if (!project) return <p className="text-sm text-gray-500">Project not found.</p>;
 
-  const profileOptions = profileOptionsFromRows(profiles?.agent_types ?? []);
+  const profileOptions = dedupeProfileOptions(profiles ?? []);
 
   const startEdit = () => {
     setForm(projectToForm(project));
@@ -265,13 +264,6 @@ export default function ProjectConfig() {
         </div>
       )}
 
-      <section aria-labelledby="profile-overrides-heading" className="space-y-3 border-t border-gray-800 pt-6">
-        <h2 id="profile-overrides-heading" className="text-sm font-semibold uppercase text-gray-500">
-          Profile overrides
-        </h2>
-        <ProjectProfiles />
-      </section>
-
       <section className="rounded-lg border border-red-500/30 bg-red-500/5 p-4">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1">
@@ -379,12 +371,11 @@ export interface ProjectData {
   discord_channel_id?: string | null;
 }
 
-export function profileOptionsFromRows(
-  rows: { scoped?: { id: string; name: string } | null; global?: { id: string; name: string } | null }[],
+/** Agent profiles are global, so the picker is just the deduped profile list. */
+export function dedupeProfileOptions(
+  profiles: { id: string; name: string }[],
 ): { id: string; name: string }[] {
-  return rows
-    .flatMap((row) => [row.scoped, row.global].filter(Boolean) as { id: string; name: string }[])
-    .filter((p, i, arr) => arr.findIndex((q) => q.id === p.id) === i);
+  return profiles.filter((p, i, arr) => arr.findIndex((q) => q.id === p.id) === i);
 }
 
 export function projectToForm(p: ProjectData): FormState {

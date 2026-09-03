@@ -534,13 +534,10 @@ class TestNoCodeTasksSkipThePrGate:
         ctx.work_outcome = "no-op"
         await self._assert_clean_pass(orch, task, ctx)
 
-    async def test_project_read_only_profile_closes_without_a_pr(self, orch):
-        """A project override's declarative read-only flag skips the gate."""
-        await orch.db.create_profile(AgentProfile(id="custom-review", name="custom-review"))
+    async def test_custom_read_only_profile_closes_without_a_pr(self, orch):
+        """A custom profile's declarative read-only flag skips the gate."""
         await orch.db.create_profile(
-            AgentProfile(
-                id="project:p-1:custom-review", name="custom-review", read_only=True
-            )
+            AgentProfile(id="custom-review", name="custom-review", read_only=True)
         )
         task, ctx = await self._no_pr_ctx(
             orch, "t-custom-review", "aq/t-custom-review", profile_id="custom-review"

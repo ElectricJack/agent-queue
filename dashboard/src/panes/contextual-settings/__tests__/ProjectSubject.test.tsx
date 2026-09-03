@@ -37,9 +37,9 @@ describe("ProjectSubject", () => {
       isLoading: false,
       error: null,
     } as unknown as ReturnType<typeof hooks.useProject>);
-    vi.spyOn(hooks, "useProjectProfiles").mockReturnValue({
-      data: { agent_types: [] },
-    } as unknown as ReturnType<typeof hooks.useProjectProfiles>);
+    vi.spyOn(hooks, "useProfiles").mockReturnValue({
+      data: [],
+    } as unknown as ReturnType<typeof hooks.useProfiles>);
   });
 
   it("renders repo_url read-only and enables Save once edited", async () => {

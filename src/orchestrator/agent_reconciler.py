@@ -108,7 +108,7 @@ class AgentReconciler:
                 return any(
                     task_agent_mismatch(
                         task, worker, task_profile=profile,
-                        agent_profile=resolve_agent_profile(worker, project.id, profiles),
+                        agent_profile=resolve_agent_profile(worker, profiles),
                         harness_registry=harness_registry,
                         intelligence_classes=intelligence_classes,
                     ) is None
@@ -141,9 +141,7 @@ class AgentReconciler:
             remaining = max(0, project.max_concurrent_agents - busy)
             for profile_id, task_class in sorted(needed):
                 requested = needed[(profile_id, task_class)]
-                profile = profiles.get(f"project:{project.id}:{profile_id}") or profiles.get(
-                    profile_id
-                )
+                profile = profiles.get(profile_id)
                 if not profile or getattr(profile, "lifecycle", "task") == "pool":
                     continue
                 if max(cooldowns.get(profile_id, 0), cooldowns.get(profile.id, 0)) > now:

@@ -40,7 +40,6 @@ from src.profiles.sync import (
     scan_and_sync_existing_profiles,
     sync_profile_text_to_db,
     sync_profile_to_db,
-    underlying_agent_type,
 )
 from src.vault_watcher import VaultChange, VaultWatcher
 
@@ -4926,45 +4925,6 @@ name: Code Review Agent
 
 
 # ---------------------------------------------------------------------------
-# underlying_agent_type
-# ---------------------------------------------------------------------------
-
-
-class TestUnderlyingAgentType:
-    """Project-scoped profile ids must strip to the underlying type.
-
-    Task events emit ``agent_type`` used by the memory extractor to
-    route guidance duplicates to ``agenttype_{agent_type}`` scope.  For
-    a profile id like ``project:moss-and-spade:claude-code``, passing
-    the raw id would create ``vault/agent-types/project:moss-and-spade:
-    claude-code/memory/`` — a mangled path.  The helper strips the
-    ``project:<project_id>:`` prefix so guidance lands alongside the
-    global ``claude-code`` agent-type scope.
-    """
-
-    def test_non_scoped_id_returned_unchanged(self):
-        assert underlying_agent_type("claude-code") == "claude-code"
-        assert underlying_agent_type("supervisor") == "supervisor"
-        assert underlying_agent_type("claude-opus") == "claude-opus"
-
-    def test_project_scoped_id_strips_prefix(self):
-        assert underlying_agent_type("project:moss-and-spade:claude-code") == "claude-code"
-        assert underlying_agent_type("project:agent-queue:coding") == "coding"
-
-    def test_none_returns_none(self):
-        assert underlying_agent_type(None) is None
-
-    def test_empty_string_returns_none(self):
-        assert underlying_agent_type("") is None
-
-    def test_malformed_scoped_id_returned_as_is(self):
-        # Missing the type segment — don't silently mangle, just pass through.
-        assert underlying_agent_type("project:only-two-parts") == "project:only-two-parts"
-        # Empty type segment.
-        assert underlying_agent_type("project:proj:") == "project:proj:"
-
-
-# ---------------------------------------------------------------------------
 # Startup scan — orphan prune semantics
 # ---------------------------------------------------------------------------
 
@@ -5042,10 +5002,18 @@ name: {agent_type.title()} Agent
         assert kept.model == "claude-sonnet-4-6"
         assert "Pruned orphan profile row: gone" in caplog.text
 
+    @pytest.mark.parametrize(
+        "rel_path,row_id",
+        [
+            ("agent-types/project:foo:supervisor/profile.md", "project:foo:supervisor"),
+            ("projects/foo/agent-types/supervisor/profile.md", "supervisor"),
+        ],
+    )
     @pytest.mark.asyncio
-    async def test_stray_scoped_profile_change_is_ignored_by_watcher(self, db, tmp_path, caplog):
-        """Colon-encoded ids in the global folder are skipped, not resurrected."""
-        rel_path = "agent-types/project:foo:supervisor/profile.md"
+    async def test_retired_scoped_profile_change_is_ignored_by_watcher(
+        self, db, tmp_path, caplog, rel_path, row_id
+    ):
+        """Project-scoped profiles were retired — neither layout may sync a row."""
         vault = tmp_path / "vault"
         _create_file(str(vault / rel_path), MINIMAL_PROFILE)
 
@@ -5055,8 +5023,8 @@ name: {agent_type.title()} Agent
                 db=db,
             )
 
-        assert await db.get_profile("project:foo:supervisor") is None
-        assert "stray scoped profile" in caplog.text
+        assert await db.get_profile(row_id) is None
+        assert "retired project-scoped profile" in caplog.text
 
         # The startup scanner applies the same rule, so the file cannot
         # re-enter through the other door either.
@@ -5064,4 +5032,3 @@ name: {agent_type.title()} Agent
         with caplog.at_level(logging.WARNING, logger="src.profiles.sync"):
             found = _find_profile_files(str(vault))
         assert found == []
-        assert "stray scoped profile" in caplog.text

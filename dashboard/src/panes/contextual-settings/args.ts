@@ -8,11 +8,6 @@ const profileArgs = z.object({
   subject: z.literal("profile"),
   subjectId: z.string().min(1), // system profile id (agent_type)
 });
-const projectProfileArgs = z.object({
-  subject: z.literal("project-profile"),
-  subjectId: z.string().min(1), // agent_type
-  projectId: z.string().min(1),
-});
 const playbookArgs = z.object({
   subject: z.literal("playbook"),
   subjectId: z.string().min(1), // playbook id
@@ -25,7 +20,6 @@ const intelligenceClassArgs = z.object({
 export const contextualSettingsArgsSchema = z.discriminatedUnion("subject", [
   projectArgs,
   profileArgs,
-  projectProfileArgs,
   playbookArgs,
   intelligenceClassArgs,
 ]);

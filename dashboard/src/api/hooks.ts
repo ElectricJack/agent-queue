@@ -5,19 +5,16 @@ import {
   archiveTask,
   createMcpServer,
   createPlaybook,
-  createProjectProfile,
   createTask,
   deleteMcpServer,
   deletePlaybook,
   deleteProfile,
   deleteProject,
-  deleteProjectProfile,
   deleteTask,
   editMcpServer,
   editIntelligenceClass,
   editProfile,
   editProject,
-  editProjectProfile,
   editTask,
   editWorkspace,
   getConfig,
@@ -36,7 +33,6 @@ import {
   listPlaybookRuns,
   listPlaybooks,
   listProfiles,
-  listProjectProfiles,
   listProjects,
   listTasks,
   listWorkspaces,
@@ -89,13 +85,10 @@ import type {
   TaskRef,
   AddWorkspaceRequest,
   CreateMcpServerRequest,
-  CreateProjectProfileRequest,
   CreateTaskRequest,
-  CreateProjectProfileResponse2 as CreateProjectProfileResponse,
   EditProfileRequest,
   EditIntelligenceClassRequest,
   IntelligenceClassModel,
-  EditProjectProfileRequest,
   EditProjectRequest,
   EditTaskRequest,
   EditWorkspaceRequest,
@@ -115,7 +108,6 @@ import type {
   ListPlaybooksResponse,
   PlaybookGraphViewResponse,
   ListProfilesResponse2 as ListProfilesResponse,
-  ListProjectProfilesResponse,
   ListProjectsResponse2 as ListProjectsResponse,
   ListTasksResponse2 as ListTasksResponse,
   ListWorkspacesResponse2 as ListWorkspacesResponse,
@@ -129,7 +121,6 @@ import type {
   ProbeMcpServerResponse,
   ProfileDetail,
   ProfileSummary,
-  ProjectProfileRow,
   ProjectSummary,
   ShowEffectiveProfileResponse,
   TaskDetail,
@@ -172,10 +163,7 @@ export type {
   CatalogEntryModel as CatalogEntry,
   TaskRef,
   CreateMcpServerRequest,
-  CreateProjectProfileRequest,
-  CreateProjectProfileResponse,
   CreateTaskRequest,
-  EditProjectProfileRequest,
   EditTaskRequest,
   EventTrigger,
   GetMcpServerResponse as McpServerDetail,
@@ -187,7 +175,6 @@ export type {
   ProbedToolModel as ProbedTool,
   ProfileDetail,
   ProfileSummary as Profile,
-  ProjectProfileRow,
   ProjectResponse as Project,
   ProjectSummary,
   ShowEffectiveProfileResponse,
@@ -595,7 +582,6 @@ export function useEditProfile() {
     onSuccess: (_d, variables) => {
       queryClient.invalidateQueries({ queryKey: ["profiles"] });
       queryClient.invalidateQueries({ queryKey: ["profile", variables.profile_id] });
-      queryClient.invalidateQueries({ queryKey: ["project-profiles"] });
       queryClient.invalidateQueries({ queryKey: ["effective-profile"] });
     },
   });
@@ -609,7 +595,6 @@ export function useDeleteProfile() {
     onSuccess: (_d, variables) => {
       queryClient.invalidateQueries({ queryKey: ["profiles"] });
       queryClient.invalidateQueries({ queryKey: ["profile", variables.profile_id] });
-      queryClient.invalidateQueries({ queryKey: ["project-profiles"] });
       queryClient.invalidateQueries({ queryKey: ["effective-profile"] });
     },
   });
@@ -985,22 +970,7 @@ export function useCancelPlaybookRun() {
   });
 }
 
-// --- Project profiles (per-agent-type override view) ---
-
-export function useProjectProfiles(projectId: string) {
-  return useQuery({
-    queryKey: ["project-profiles", projectId],
-    queryFn: async () => {
-      const { data } = await listProjectProfiles({
-        body: { project_id: projectId },
-        throwOnError: true,
-      });
-      return data as ListProjectProfilesResponse;
-    },
-    enabled: !!projectId,
-    refetchInterval: 60_000,
-  });
-}
+// --- Effective profile (resolution debug view) ---
 
 export function useEffectiveProfile(projectId: string, agentType: string) {
   return useQuery({
@@ -1013,39 +983,6 @@ export function useEffectiveProfile(projectId: string, agentType: string) {
       return data as ShowEffectiveProfileResponse;
     },
     enabled: !!projectId && !!agentType,
-  });
-}
-
-function invalidateProfileViews(queryClient: ReturnType<typeof useQueryClient>, projectId: string) {
-  queryClient.invalidateQueries({ queryKey: ["project-profiles", projectId] });
-  queryClient.invalidateQueries({ queryKey: ["effective-profile", projectId] });
-  queryClient.invalidateQueries({ queryKey: ["profiles"] });
-}
-
-export function useCreateProjectProfile() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async (input: CreateProjectProfileRequest) =>
-      (await createProjectProfile({ body: input, throwOnError: true })).data as CreateProjectProfileResponse,
-    onSuccess: (_d, variables) => invalidateProfileViews(queryClient, variables.project_id),
-  });
-}
-
-export function useEditProjectProfile() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async (input: EditProjectProfileRequest) =>
-      (await editProjectProfile({ body: input, throwOnError: true })).data,
-    onSuccess: (_d, variables) => invalidateProfileViews(queryClient, variables.project_id),
-  });
-}
-
-export function useDeleteProjectProfile() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async (input: { project_id: string; agent_type: string }) =>
-      (await deleteProjectProfile({ body: input, throwOnError: true })).data,
-    onSuccess: (_d, variables) => invalidateProfileViews(queryClient, variables.project_id),
   });
 }
 
@@ -1093,13 +1030,11 @@ export function useToolCatalog(projectId?: string, serverNames?: string[]) {
   });
 }
 
-function invalidateMcpViews(queryClient: ReturnType<typeof useQueryClient>, projectId?: string | null) {
+function invalidateMcpViews(queryClient: ReturnType<typeof useQueryClient>) {
   queryClient.invalidateQueries({ queryKey: ["mcp-servers"] });
   queryClient.invalidateQueries({ queryKey: ["tool-catalog"] });
   queryClient.invalidateQueries({ queryKey: ["mcp-server"] });
-  if (projectId) {
-    queryClient.invalidateQueries({ queryKey: ["project-profiles", projectId] });
-  }
+  queryClient.invalidateQueries({ queryKey: ["profiles"] });
 }
 
 export function useProbeMcpServer() {
@@ -1107,7 +1042,7 @@ export function useProbeMcpServer() {
   return useMutation({
     mutationFn: async (input: { name: string; project_id?: string }) =>
       (await probeMcpServer({ body: input, throwOnError: true })).data as ProbeMcpServerResponse,
-    onSuccess: (_d, variables) => invalidateMcpViews(queryClient, variables.project_id),
+    onSuccess: () => invalidateMcpViews(queryClient),
   });
 }
 
@@ -1116,7 +1051,7 @@ export function useCreateMcpServer() {
   return useMutation({
     mutationFn: async (input: CreateMcpServerRequest) =>
       (await createMcpServer({ body: input, throwOnError: true })).data,
-    onSuccess: (_d, variables) => invalidateMcpViews(queryClient, variables.project_id),
+    onSuccess: () => invalidateMcpViews(queryClient),
   });
 }
 
@@ -1130,7 +1065,7 @@ export function useEditMcpServer() {
   return useMutation({
     mutationFn: async (input: EditMcpServerInput) =>
       (await editMcpServer({ body: input, throwOnError: true })).data,
-    onSuccess: (_d, variables) => invalidateMcpViews(queryClient, variables.project_id),
+    onSuccess: () => invalidateMcpViews(queryClient),
   });
 }
 
@@ -1139,7 +1074,7 @@ export function useDeleteMcpServer() {
   return useMutation({
     mutationFn: async (input: { name: string; project_id?: string }) =>
       (await deleteMcpServer({ body: input, throwOnError: true })).data,
-    onSuccess: (_d, variables) => invalidateMcpViews(queryClient, variables.project_id),
+    onSuccess: () => invalidateMcpViews(queryClient),
   });
 }
 

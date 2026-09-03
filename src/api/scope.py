@@ -290,7 +290,7 @@ async def reviewed_task_for_reviewer(db, scope: RequestScope) -> str | None:
     if db is None or not scope.session_id or not scope.project_id:
         return None
     session = await db.get_session(scope.session_id)
-    reviewer_profiles = {"reviewer", f"project:{scope.project_id}:reviewer"}
+    reviewer_profiles = {"reviewer"}
     if (
         session is None
         or session.project_id != scope.project_id
@@ -353,7 +353,7 @@ async def reviewed_branch_for_final_reviewer(
     if db is None or not scope.session_id or not scope.project_id:
         return None
     session = await db.get_session(scope.session_id)
-    profiles = {"final-reviewer", f"project:{scope.project_id}:final-reviewer"}
+    profiles = {"final-reviewer"}
     if (
         session is None
         or session.task_id != scope.task_id
@@ -394,7 +394,7 @@ async def reviewed_branch_for_final_reviewer(
     worker_ids: set[str] = set()
     branches: set[str] = set()
     pr_urls: set[str] = set()
-    reviewer_profiles = {"reviewer", f"project:{scope.project_id}:reviewer"}
+    reviewer_profiles = {"reviewer"}
     for review_id in review_ids:
         review = await db.get_task(review_id)
         if (
@@ -470,7 +470,7 @@ async def _has_live_triage_assignment(db, scope: RequestScope) -> bool:
     if db is None or not scope.session_id or not scope.project_id:
         return False
     session = await db.get_session(scope.session_id)
-    triage_profiles = {"triage", f"project:{scope.project_id}:triage"}
+    triage_profiles = {"triage"}
     if (
         session is None
         or session.project_id != scope.project_id
@@ -624,11 +624,6 @@ async def check_request_scope(
         if task is None or task.project_id != project_id:
             return "out of scope: task must belong to this triage project's queue"
         if command == "task_route":
-            profile_id = str(args.get("profile_id") or "")
-            if profile_id.startswith("project:") and not profile_id.startswith(
-                f"project:{project_id}:"
-            ):
-                return "out of scope: profile belongs to another project"
             gates = await db.get_gates_for_task(task.id)
             if not any(
                 gate["project_id"] == project_id

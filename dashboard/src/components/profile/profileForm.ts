@@ -1,4 +1,4 @@
-import type { EditProfileRequest, EditProjectProfileRequest } from "../../api/client";
+import type { EditProfileRequest } from "../../api/client";
 import type { ProfileDetail } from "../../api/hooks";
 
 export interface ProfileFormState {
@@ -26,7 +26,6 @@ export function profileToForm(p: ProfileDetail | null | undefined): ProfileFormS
 }
 
 export type ProfileEditPayload = EditProfileRequest;
-export type ProjectProfileEditPayload = EditProjectProfileRequest;
 
 /** Body the system (global) profile drawer sends to `edit_profile`. */
 export function profileEditPayload(
@@ -39,22 +38,9 @@ export function profileEditPayload(
   };
 }
 
-/** Body the project profile drawer sends to `edit_project_profile`. */
-export function projectProfileEditPayload(
-  projectId: string,
-  agentType: string,
-  form: ProfileFormState,
-): ProjectProfileEditPayload {
-  return {
-    project_id: projectId,
-    agent_type: agentType,
-    ...commonEditFields(form),
-  };
-}
-
-// Both edit paths take the same field set: an empty text box means "clear
-// this field", and mcp_servers is a list of registry names on both — an
-// empty list is a legal value that clears every server, not an omission.
+// An empty text box means "clear this field", and mcp_servers is a list of
+// registry names — an empty list is a legal value that clears every server,
+// not an omission.
 function commonEditFields(form: ProfileFormState) {
   return {
     name: form.name || null,

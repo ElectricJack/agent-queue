@@ -78,8 +78,6 @@ class FlockCommandsMixin:
         profile = await self.db.get_profile(profile_id) if profile_id else None
         if profile is None:
             return {}, f"Profile '{profile_id}' not found"
-        if profile_id.startswith("project:"):
-            return {}, "Global workers need a global profile"
         if current and current.id == SUPERVISOR_AGENT_ID:
             if profile_id != "supervisor":
                 return {}, "The global supervisor must use the supervisor profile"

@@ -742,11 +742,10 @@ class Orchestrator(
         specialize capabilities without changing the worker's saved definition.
         The system fallback still supplies unassigned work when no worker exists.
 
-        Project-scoped overrides are checked first at each level: if a
-        profile with id ``project:{project_id}:{profile_id}`` exists, it
-        takes precedence over the global ``{profile_id}`` profile. This
-        is the row synced from
-        ``vault/projects/{project}/agent-types/{profile_id}/profile.md``.
+        Profiles are global. Workers are shared between projects, so a
+        profile id resolves to exactly one definition — project-scoped
+        overrides were retired (see
+        :mod:`src.profiles.project_override_migration`).
 
         Profiles control: model selection, permission mode (e.g. plan-only),
         allowed tools allowlist, MCP server configuration, and a system prompt
@@ -757,9 +756,6 @@ class Orchestrator(
         if not profile_id and task.assigned_agent_id:
             agent = await self.db.get_agent(task.assigned_agent_id)
             if agent:
-                scoped = await self.db.get_profile(f"project:{task.project_id}:{agent.profile_id}")
-                if scoped:
-                    return scoped
                 worker_default = await self.db.get_profile(agent.profile_id)
                 if worker_default:
                     return worker_default
@@ -768,10 +764,6 @@ class Orchestrator(
         if not profile_id:
             return None
 
-        if project:
-            scoped = await self.db.get_profile(f"project:{project.id}:{profile_id}")
-            if scoped:
-                return scoped
         return await self.db.get_profile(profile_id)
 
     async def _backfill_default_profile_id(self, project: Any) -> str | None:
@@ -1462,15 +1454,13 @@ class Orchestrator(
             await self.db.update_agent(agent_id, state=AgentState.IDLE, current_task_id=None)
             self._adapters.pop(agent_id, None)
 
-        from src.profiles.sync import underlying_agent_type
-
         profile = await self._resolve_profile(task)
         await self._emit_task_failure(
             task,
             "stop_task",
             error="Manually stopped by user",
             agent_id=agent_id,
-            agent_type=underlying_agent_type(profile.id) if profile else None,
+            agent_type=profile.id if profile else None,
         )
         await self._emit_notify(
             "notify.task_stopped",
@@ -2480,24 +2470,27 @@ class Orchestrator(
         # one written, even when other profiles (e.g. the bundled
         # supervisor / claude-* profiles created by ensure_vault_structure)
         # already exist.
-        # Self-heal the legacy colon-encoded layout first.  An older
-        # ``_vault_profile_path`` wrote project-scoped profiles to
-        # ``vault/agent-types/project:<pid>:<type>/`` — a path the profile
-        # scanner refuses to read, so the markdown stopped being the source
-        # of truth while the DB row stayed live.  Relocating before the
-        # migration below means the "vault file already exists" idempotency
-        # check sees the canonical path and skips correctly.
-        from src.profiles.migration import relocate_stray_scoped_profiles
+        # Retire project-scoped profiles first.  Workers are shared between
+        # projects, so an override that only applies to one is a contradiction:
+        # it no longer resolves anywhere, and a pool whose ``lifecycle`` lived
+        # only in the override would silently stop filling.  Promote each
+        # override's ``## Config`` into its system profile and delete it before
+        # the migration below re-derives vault files from DB rows.  Idempotent;
+        # ``aq doctor --check profiles.project_overrides --fix`` repeats it.
+        from src.profiles.project_override_migration import retire_project_scoped_profiles
 
         try:
-            relocation = relocate_stray_scoped_profiles(data_dir)
-            if relocation["relocated"]:
+            retirement = await retire_project_scoped_profiles(data_dir, self.db)
+            if retirement["promoted"] or retirement["deleted_rows"]:
                 logger.info(
-                    "Relocated %d stray scoped profile dir(s) into the project vault layout",
-                    relocation["relocated"],
+                    "Retired project-scoped profiles: %d override(s) promoted, "
+                    "%d legacy row(s) removed",
+                    retirement["promoted"],
+                    len(retirement["deleted_rows"]),
                 )
+                all_profiles = await self.db.list_profiles()
         except Exception:
-            logger.warning("Stray scoped profile relocation failed", exc_info=True)
+            logger.warning("Project-scoped profile retirement failed", exc_info=True)
 
         if all_profiles:
             from src.profiles.migration import migrate_db_profiles_to_vault
@@ -2544,11 +2537,8 @@ class Orchestrator(
             )
 
         # Per-profile directories (vault/agent-types/{profile_id}/).
-        # Skip project-scoped profiles — their vault home is
-        # projects/{project}/agent-types/{type}/, managed elsewhere.
         for profile in all_profiles:
-            if not profile.id.startswith("project:"):
-                self.vault_manager.register_agent_type(profile.id)
+            self.vault_manager.register_agent_type(profile.id)
 
         # Per-project directories via vault_manager (handles project
         # registration beyond what ensure_vault_project_dirs does).

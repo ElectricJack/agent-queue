@@ -65,11 +65,11 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: PoolSetLifecycleRequest,
 ) -> Response[PoolSetLifecycleResponse | PoolSetLifecycleResponse422]:
-    """Set one project's profile lifecycle to task or pool. Refuses pool when swarm.enabled is false. Backs
-    `aq pool set-lifecycle`.
+    """Set a profile's lifecycle to task or pool on the system profile (it applies to every project).
+    Refuses pool when swarm.enabled is false. Backs `aq pool set-lifecycle`.
 
-     Set one project's profile lifecycle to task or pool. Refuses pool when swarm.enabled is false. Backs
-    `aq pool set-lifecycle`.
+     Set a profile's lifecycle to task or pool on the system profile (it applies to every project).
+    Refuses pool when swarm.enabled is false. Backs `aq pool set-lifecycle`.
 
     Args:
         body (PoolSetLifecycleRequest):
@@ -98,11 +98,11 @@ def sync(
     client: AuthenticatedClient | Client,
     body: PoolSetLifecycleRequest,
 ) -> PoolSetLifecycleResponse | PoolSetLifecycleResponse422 | None:
-    """Set one project's profile lifecycle to task or pool. Refuses pool when swarm.enabled is false. Backs
-    `aq pool set-lifecycle`.
+    """Set a profile's lifecycle to task or pool on the system profile (it applies to every project).
+    Refuses pool when swarm.enabled is false. Backs `aq pool set-lifecycle`.
 
-     Set one project's profile lifecycle to task or pool. Refuses pool when swarm.enabled is false. Backs
-    `aq pool set-lifecycle`.
+     Set a profile's lifecycle to task or pool on the system profile (it applies to every project).
+    Refuses pool when swarm.enabled is false. Backs `aq pool set-lifecycle`.
 
     Args:
         body (PoolSetLifecycleRequest):
@@ -126,11 +126,11 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: PoolSetLifecycleRequest,
 ) -> Response[PoolSetLifecycleResponse | PoolSetLifecycleResponse422]:
-    """Set one project's profile lifecycle to task or pool. Refuses pool when swarm.enabled is false. Backs
-    `aq pool set-lifecycle`.
+    """Set a profile's lifecycle to task or pool on the system profile (it applies to every project).
+    Refuses pool when swarm.enabled is false. Backs `aq pool set-lifecycle`.
 
-     Set one project's profile lifecycle to task or pool. Refuses pool when swarm.enabled is false. Backs
-    `aq pool set-lifecycle`.
+     Set a profile's lifecycle to task or pool on the system profile (it applies to every project).
+    Refuses pool when swarm.enabled is false. Backs `aq pool set-lifecycle`.
 
     Args:
         body (PoolSetLifecycleRequest):
@@ -157,11 +157,11 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: PoolSetLifecycleRequest,
 ) -> PoolSetLifecycleResponse | PoolSetLifecycleResponse422 | None:
-    """Set one project's profile lifecycle to task or pool. Refuses pool when swarm.enabled is false. Backs
-    `aq pool set-lifecycle`.
+    """Set a profile's lifecycle to task or pool on the system profile (it applies to every project).
+    Refuses pool when swarm.enabled is false. Backs `aq pool set-lifecycle`.
 
-     Set one project's profile lifecycle to task or pool. Refuses pool when swarm.enabled is false. Backs
-    `aq pool set-lifecycle`.
+     Set a profile's lifecycle to task or pool on the system profile (it applies to every project).
+    Refuses pool when swarm.enabled is false. Backs `aq pool set-lifecycle`.
 
     Args:
         body (PoolSetLifecycleRequest):
