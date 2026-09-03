@@ -6,15 +6,17 @@ field path to required literal and nothing in it can execute.
 
 The race the design spec names — "an event cannot be lost between
 registration and suspension" — is closed by construction rather than by
-retry: ``WaitChangeSet`` travels with the snapshot into
-``RunRepository.commit_boundary``, which applies both on one connection, so
-there is no interval in which a run is suspended and its wait is invisible.
+retry. ``WaitChangeSet`` travels with the snapshot into
+``RunRepository.commit_boundary``, while event ingestion writes a durable
+inbox before matching waits. Registration and ingestion serialize per
+playbook and each scans what the other persisted before it commits.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -40,6 +42,7 @@ class WaitSpec:
     event_type: str = ""
     match: Mapping[str, Any] = field(default_factory=dict)
     deadline_at: float | None = None
+    created_at: float = field(default_factory=time.time)
 
     def __post_init__(self) -> None:
         if not self.wait_id:
@@ -71,6 +74,7 @@ class WaitSpec:
             "event_type": self.event_type,
             "match": dict(self.match),
             "deadline_at": self.deadline_at,
+            "created_at": self.created_at,
         }
 
     @classmethod
@@ -84,6 +88,7 @@ class WaitSpec:
             event_type=data.get("event_type", ""),
             match=dict(data.get("match") or {}),
             deadline_at=data.get("deadline_at"),
+            created_at=float(data.get("created_at", time.time())),
         )
 
 
@@ -100,6 +105,20 @@ class WaitClaim:
     claimed_event_id: str | None
     claimed_at: float
     expired: bool = False
+    event_type: str = ""
+    event_fields: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class WaitRegistration:
+    """The persisted wait and any inbox event that claimed it immediately.
+
+    Package 4 uses ``matched_immediately`` to continue without sleeping after
+    the boundary commits.
+    """
+
+    wait_id: str
+    matched_immediately: WaitClaim | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,6 +145,9 @@ EMPTY_WAIT_CHANGES = WaitChangeSet()
 class MatchableEvent(Protocol):
     """The only thing wait matching needs from Package 4's event object."""
 
+    playbook_id: str
+    scope: str
+    scope_identifier: str
     event_type: str
     event_id: str | None
     fields: Mapping[str, Any]
@@ -166,7 +188,7 @@ class WaitRepository(Protocol):
 
     async def register(
         self, wait: WaitSpec, snapshot_version: int, *, conn: AsyncConnection | None = None
-    ) -> str: ...
+    ) -> WaitRegistration: ...
 
     async def claim_for_event(
         self, event: MatchableEvent, *, now: float, limit: int = 100

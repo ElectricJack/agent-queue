@@ -1281,7 +1281,7 @@ playbook_pending_events = Table(
     Column("resolution", Text, nullable=True),
     CheckConstraint(
         "reason IN ('stale_contract', 'invalid_artifact', 'disabled', "
-        "'unavailable', 'question_required')",
+        "'unavailable', 'question_required', 'wait_registration')",
         name="ck_playbook_pending_events_reason",
     ),
     CheckConstraint(

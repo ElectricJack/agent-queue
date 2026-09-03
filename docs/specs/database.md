@@ -1036,13 +1036,22 @@ refuses with `wait_version_mismatch`.
 | `state` | TEXT | NOT NULL DEFAULT 'active', CHECK | One of: active, claimed, expired, cleared |
 | `claimed_event_id` | TEXT | nullable | Event that claimed it; NULL for an expiry |
 | `claimed_at` | REAL | nullable | When it was claimed or expired |
-| `created_at` | REAL | NOT NULL | Set on insert |
+| `created_at` | REAL | NOT NULL | Wait-decision time; inbox matches must be this new or newer |
 
 ### Table: `playbook_pending_events`
 
 An event that matched an activation which was not `ready` is retained here
 rather than dropped (child plan §10.3), so recovery is "rebuild, activate,
-dispatch the retained events" and never "the events are gone".
+dispatch the retained events" and never "the events are gone". Event-wait
+delivery also uses resolved `wait_registration` rows as a short durable inbox:
+ingestion records the event before scanning waits, and a concurrent wait scans
+events received since its decision time before its registration commits. Both
+sides serialize and match on `(playbook_id, scope, scope_identifier)`. A replay
+with the same routed event id uses the originally stored body and arrival time;
+it cannot mutate history to claim a newer wait. An immediate registration match
+is copied into the committed run snapshot's `pending_wait_claims`, giving the
+engine a durable resume handoff instead of leaving a claimed wait behind a
+paused snapshot.
 
 Deduplication is `uq_playbook_pending_events_dedup`, a partial unique index
 over `resolved_at IS NULL AND dedup_key <> ''` — the index, not a pre-read,
@@ -1050,9 +1059,10 @@ because a pre-read races.  An empty `dedup_key` therefore never deduplicates.
 Replay order is `ORDER BY received_at, pending_event_id`.  `resolved_at` /
 `resolved_by` / `resolution` are the operator-audit columns; resolution CASes
 on `resolved_at IS NULL`, so two operators clicking "dispatch" produce one
-dispatch.  Retention is 7 days by default, and a per-playbook quota
-(`playbooks.v2_max_pending_events_per_playbook`) keeps the table from being a
-denial-of-service surface reachable by any event producer.
+dispatch. Retention is 7 days by default. The configured per-playbook quota
+(`playbooks.v2_max_pending_events_per_playbook`) applies independently to
+unresolved activation rows and to resolved wait-delivery inbox rows, keeping
+either producer path from growing the table without bound.
 
 | Column | Type | Constraints | Notes |
 |---|---|---|---|
@@ -1064,7 +1074,7 @@ denial-of-service surface reachable by any event producer.
 | `event` | TEXT | NOT NULL DEFAULT '{}' | JSON event body |
 | `event_id` | TEXT | nullable | Producer's event id when it has one |
 | `dedup_key` | TEXT | NOT NULL DEFAULT '' | Empty disables deduplication |
-| `reason` | TEXT | NOT NULL, CHECK | One of: stale_contract, invalid_artifact, disabled, unavailable, question_required |
+| `reason` | TEXT | NOT NULL, CHECK | One of: stale_contract, invalid_artifact, disabled, unavailable, question_required, wait_registration |
 | `attempts` | INTEGER | NOT NULL DEFAULT 0 | Dispatch attempts made after retention |
 | `last_error` | TEXT | nullable | Last dispatch failure |
 | `received_at` | REAL | NOT NULL | Arrival time; the replay order |
