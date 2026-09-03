@@ -14,9 +14,15 @@ from src.models import AgentProfile, Project, Task, TaskStatus
 from src.orchestrator import Orchestrator
 from src.playbooks.manager import PlaybookManager
 from src.playbooks.pipeline_compiler import compile_pipeline
-from src.playbooks.routing import uses_default_triage
+from src.playbooks.routing import install_routing_activation_snapshot, uses_default_triage
 from src.vault import ensure_default_intelligence_classes
 from tests.pg_dsn import ensure_worker_postgres_dsn
+from tests.test_routing_admission_v2 import (
+    RecordingStore,
+    SHA,
+    _replace_artifact,
+    _routing_artifact,
+)
 
 POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
 
@@ -91,6 +97,25 @@ async def wired(request, tmp_path, monkeypatch):
         manager._active[playbook.id] = playbook
         manager._index_triggers(playbook)
     manager.set_scope_identifier(custom.id, "p")
+    artifact = _routing_artifact(
+        artifact_id=custom.id,
+        scope={"type": "project", "project_id": "p"},
+        default_triage=False,
+    )
+    install_routing_activation_snapshot(
+        manager,
+        [
+            {
+                "playbook_id": artifact.id,
+                "scope": "project",
+                "scope_identifier": "p",
+                "active_artifact_sha256": SHA,
+                "enabled": True,
+                "health": "ready",
+            }
+        ],
+        artifact_store=RecordingStore({SHA: artifact}),
+    )
     manager.subscribe_to_events()
     orch.playbook_manager = manager
     assert not uses_default_triage(manager, "p")
@@ -181,6 +206,26 @@ async def test_custom_routing_receives_admitted_graph_node_after_commit(wired, e
 async def test_graph_without_routing_policy_preserves_existing_event_behavior(wired):
     wired.custom.nodes = {}
     wired.custom.pipeline_rules = {}
+    artifact = _routing_artifact(
+        artifact_id=wired.custom.id,
+        scope={"type": "project", "project_id": "p"},
+        default_triage=False,
+    )
+    artifact = _replace_artifact(artifact, entry_step="done")
+    install_routing_activation_snapshot(
+        wired.manager,
+        [
+            {
+                "playbook_id": artifact.id,
+                "scope": "project",
+                "scope_identifier": "p",
+                "active_artifact_sha256": SHA,
+                "enabled": True,
+                "health": "ready",
+            }
+        ],
+        artifact_store=RecordingStore({SHA: artifact}),
+    )
     result = await wired.handler._cmd_create_task_graph(
         {
             "project_id": "p",

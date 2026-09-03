@@ -1849,6 +1849,12 @@ class Orchestrator(
                 data_dir=self.config.data_dir,
                 command_handler=self._command_handler,
             )
+            # Routing admission executes synchronously inside task-creation
+            # transactions. Prime its V2 activation view now so that path can
+            # load immutable artifacts without opening a second connection.
+            from src.playbooks.routing import refresh_routing_activation_snapshot
+
+            await refresh_routing_activation_snapshot(self.playbook_manager, self.db)
             # Restore previously compiled playbooks from disk so version numbers
             # continue from where they left off and source-hash change detection
             # can skip recompilation of unchanged files (roadmap 5.1.5).

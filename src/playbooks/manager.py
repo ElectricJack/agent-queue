@@ -224,6 +224,12 @@ class PlaybookManager:
         self._store = store
         self._handler = command_handler
 
+        # Task admission is synchronous inside an already-open write
+        # transaction. Routing owns a preloaded V2 activation snapshot and
+        # serializes refreshes here so an older read cannot publish last.
+        self._routing_activation_snapshot = None
+        self._routing_activation_refresh_lock = asyncio.Lock()
+
         # In-memory registry: playbook_id → active CompiledPlaybook
         self._active: dict[str, CompiledPlaybook] = {}
 
@@ -1574,9 +1580,7 @@ class PlaybookManager:
                 rel_path=rel_path,
                 source_hash=result.playbook.source_hash,
                 version=result.playbook.version,
-                existing_enabled=(
-                    existing_active.enabled if existing_active is not None else None
-                ),
+                existing_enabled=(existing_active.enabled if existing_active is not None else None),
             )
             if diagnostics:
                 logger.warning(
