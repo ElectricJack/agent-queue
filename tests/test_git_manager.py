@@ -1,3 +1,4 @@
+import logging
 import pathlib
 import subprocess
 import pytest
@@ -1027,8 +1028,10 @@ class TestSwitchToBranchRebase:
 class TestMidChainSync:
     """Tests for mid_chain_sync: push intermediate work and rebase mid-chain (G6 fix)."""
 
-    def test_reserved_intermediate_commit_is_never_published(self, git_repo):
-        """Both compatibility-path pushes enforce the delivery guard."""
+    def test_reserved_intermediate_commit_is_never_published(self, git_repo, caplog):
+        """Both compatibility-path pushes enforce the delivery guard, and the
+        refusal is surfaced: the sync returns False and logs a warning instead
+        of reporting success for a branch the remote never received."""
         mgr = GitManager()
         clone = git_repo["clone"]
         mgr.prepare_for_task(clone, "chain/reserved")
@@ -1038,11 +1041,56 @@ class TestMidChainSync:
         _git(["add", "-f", ".codex/settings.json"], cwd=clone)
         _git(["commit", "-m", "reserved intermediate content"], cwd=clone)
 
-        assert mgr.mid_chain_sync(clone, "chain/reserved") is True
+        with caplog.at_level(logging.WARNING, logger="src.git.manager"):
+            assert mgr.mid_chain_sync(clone, "chain/reserved") is False
         assert _git(
             ["ls-remote", "--heads", "origin", "refs/heads/chain/reserved"],
             cwd=clone,
         ) == ""
+        assert any(
+            r.levelno == logging.WARNING and "reserved delivery paths" in r.getMessage()
+            for r in caplog.records
+        ), caplog.text
+
+    def test_post_rebase_guard_refusal_is_surfaced(self, monkeypatch, caplog):
+        """A guard refusal on the force push after the rebase is not a
+        transient push failure: the sync must report it, not return True."""
+        mgr = GitManager()
+        pushes = iter(["a" * 40, GitError("reserved delivery paths: .aq/claim.json")])
+
+        def fake_push(*args, **kwargs):
+            item = next(pushes)
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+        monkeypatch.setattr(mgr, "push_validated_delivery", fake_push)
+        monkeypatch.setattr(mgr, "_run", lambda *a, **k: "")
+
+        with caplog.at_level(logging.WARNING, logger="src.git.manager"):
+            assert mgr.mid_chain_sync("/repo", "chain/reserved", "main") is False
+        assert any(
+            r.levelno == logging.WARNING and "reserved delivery paths" in r.getMessage()
+            for r in caplog.records
+        ), caplog.text
+
+    def test_transient_push_failure_still_reports_sync_success(self, monkeypatch):
+        """Only the guard refusal is fatal; an ordinary rejected push keeps the
+        historical best-effort semantics (rebase locally, retry next subtask)."""
+        mgr = GitManager()
+        calls: list[dict] = []
+
+        def fake_push(*args, **kwargs):
+            calls.append(kwargs)
+            if not kwargs.get("force_with_lease"):
+                raise GitError("! [rejected] non-fast-forward")
+            return "a" * 40
+
+        monkeypatch.setattr(mgr, "push_validated_delivery", fake_push)
+        monkeypatch.setattr(mgr, "_run", lambda *a, **k: "")
+
+        assert mgr.mid_chain_sync("/repo", "chain/transient", "main") is True
+        assert [c.get("force_with_lease", False) for c in calls] == [False, True, True]
 
     def test_mid_chain_sync_pushes_and_rebases(self, git_repo, tmp_path):
         """mid_chain_sync should push the branch to remote and rebase onto

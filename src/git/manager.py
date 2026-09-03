@@ -87,6 +87,35 @@ class GitError(Exception):
     pass
 
 
+_DELIVERY_GUARD_PREFIX = "reserved delivery paths:"
+
+
+def _is_delivery_guard_refusal(exc: BaseException) -> bool:
+    """True when *exc* is the reserved-path delivery guard refusing a push.
+
+    The guard raises a plain ``GitError`` whose message starts with a fixed
+    prefix; ``sync_and_merge`` maps it to ``delivery_guard_failed`` and the
+    mid-chain routes must not mistake it for a transient push failure.
+    """
+    return str(exc).startswith(_DELIVERY_GUARD_PREFIX)
+
+
+def _guard_refused_mid_chain(branch_name: str, exc: GitError) -> bool:
+    """Log and report a delivery-guard refusal during a mid-chain sync.
+
+    Returns True when *exc* is a guard refusal (after logging it at warning),
+    False for any other push failure so callers keep their best-effort path.
+    """
+    if not _is_delivery_guard_refusal(exc):
+        return False
+    logger.warning(
+        "mid-chain sync of %s refused by the delivery guard; branch not published: %s",
+        branch_name,
+        exc,
+    )
+    return True
+
+
 @dataclass(frozen=True)
 class PullRequestIdentity:
     """Immutable PR facts that must agree from review through merge."""
@@ -590,7 +619,10 @@ class GitManager:
         Returns ``True`` if the full sync (push + rebase + force-push)
         succeeded.  Returns ``False`` if the rebase conflicted — the branch
         is left in its original pre-rebase state and the initial push may
-        still have saved the intermediate work to the remote.
+        still have saved the intermediate work to the remote — or if the
+        reserved-path delivery guard refused a push: the branch touches
+        daemon-owned paths, nothing was published, and a warning is logged
+        (transient push failures stay best-effort and still return ``True``).
 
         All failures are non-fatal: callers should catch exceptions and
         continue — the next subtask can still work on the branch as-is.
@@ -606,7 +638,9 @@ class GitManager:
                 branch_name,
                 branch_name,
             )
-        except GitError:
+        except GitError as e:
+            if _guard_refused_mid_chain(branch_name, e):
+                return False
             try:
                 self.push_validated_delivery(
                     checkout_path,
@@ -615,8 +649,10 @@ class GitManager:
                     branch_name,
                     force_with_lease=True,
                 )
-            except GitError:
-                pass  # Push failed — continue with rebase anyway
+            except GitError as e:
+                if _guard_refused_mid_chain(branch_name, e):
+                    return False
+                # Push failed — continue with rebase anyway
 
         # 2. Fetch latest remote state so rebase target is up to date.
         self._run(["fetch", "origin"], cwd=checkout_path)
@@ -644,8 +680,10 @@ class GitManager:
                 branch_name,
                 force_with_lease=True,
             )
-        except GitError:
-            pass  # Rebased locally but push failed — next subtask will try
+        except GitError as e:
+            if _guard_refused_mid_chain(branch_name, e):
+                return False
+            # Rebased locally but push failed — next subtask will try
 
         return True
 
@@ -902,7 +940,7 @@ class GitManager:
                 )
                 return (True, "")
             except GitError as e:
-                if str(e).startswith("reserved delivery paths:"):
+                if _is_delivery_guard_refusal(e):
                     return (False, f"delivery_guard_failed: {e}")
                 if attempt < max_retries:
                     # Re-pull (rebase) to incorporate whatever was pushed
@@ -1640,7 +1678,9 @@ class GitManager:
                 branch_name,
                 branch_name,
             )
-        except GitError:
+        except GitError as e:
+            if _guard_refused_mid_chain(branch_name, e):
+                return False
             try:
                 await self.apush_validated_delivery(
                     checkout_path,
@@ -1649,8 +1689,9 @@ class GitManager:
                     branch_name,
                     force_with_lease=True,
                 )
-            except GitError:
-                pass
+            except GitError as e:
+                if _guard_refused_mid_chain(branch_name, e):
+                    return False
         await self._arun(["fetch", "origin"], cwd=checkout_path)
         try:
             await self._arun(
@@ -1671,8 +1712,9 @@ class GitManager:
                 branch_name,
                 force_with_lease=True,
             )
-        except GitError:
-            pass
+        except GitError as e:
+            if _guard_refused_mid_chain(branch_name, e):
+                return False
         return True
 
     async def apull_branch(
@@ -1842,7 +1884,7 @@ class GitManager:
                 )
                 return (True, "")
             except GitError as e:
-                if str(e).startswith("reserved delivery paths:"):
+                if _is_delivery_guard_refusal(e):
                     return (False, f"delivery_guard_failed: {e}")
                 if attempt < max_retries:
                     await self._arun(

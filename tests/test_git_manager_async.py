@@ -6,6 +6,7 @@ Mirrors key tests from test_git_manager.py but exercises the async methods
 
 import asyncio
 import json
+import logging
 import pathlib
 import subprocess
 from types import SimpleNamespace
@@ -692,6 +693,60 @@ async def test_mid_chain_delivery_guards_both_pre_and_post_rebase_pushes(mgr, mo
         ),
     ]
     unchecked.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_mid_chain_pre_rebase_guard_refusal_is_surfaced(mgr, monkeypatch, caplog):
+    """A reserved-path refusal on the intermediate push is reported, not
+    swallowed: the sync returns False, logs a warning, and does not retry the
+    deterministic guard failure with --force-with-lease."""
+    guarded = AsyncMock(side_effect=GitError("reserved delivery paths: .aq/claim.json"))
+    monkeypatch.setattr(mgr, "apush_validated_delivery", guarded)
+    arun = AsyncMock(return_value="")
+    monkeypatch.setattr(mgr, "_arun", arun)
+
+    with caplog.at_level(logging.WARNING, logger="src.git.manager"):
+        assert await mgr.amid_chain_sync("/repo", "task/chain", "main") is False
+
+    assert guarded.await_count == 1
+    assert any(
+        r.levelno == logging.WARNING and "reserved delivery paths" in r.getMessage()
+        for r in caplog.records
+    ), caplog.text
+
+
+@pytest.mark.asyncio
+async def test_mid_chain_post_rebase_guard_refusal_is_surfaced(mgr, monkeypatch, caplog):
+    """A guard refusal on the post-rebase force push is not a transient push
+    failure: the sync must return False and warn."""
+    guarded = AsyncMock(side_effect=["a" * 40, GitError("reserved delivery paths: .aq/claim.json")])
+    monkeypatch.setattr(mgr, "apush_validated_delivery", guarded)
+    monkeypatch.setattr(mgr, "_arun", AsyncMock(return_value=""))
+
+    with caplog.at_level(logging.WARNING, logger="src.git.manager"):
+        assert await mgr.amid_chain_sync("/repo", "task/chain", "main") is False
+
+    assert guarded.await_count == 2
+    assert any(
+        r.levelno == logging.WARNING and "reserved delivery paths" in r.getMessage()
+        for r in caplog.records
+    ), caplog.text
+
+
+@pytest.mark.asyncio
+async def test_mid_chain_transient_push_failure_still_reports_success(mgr, monkeypatch):
+    """Only the guard refusal is fatal; an ordinary rejected push keeps the
+    best-effort semantics (fall back to --force-with-lease, rebase, return True)."""
+    guarded = AsyncMock(side_effect=[GitError("! [rejected] non-fast-forward"), "a" * 40, "a" * 40])
+    monkeypatch.setattr(mgr, "apush_validated_delivery", guarded)
+    monkeypatch.setattr(mgr, "_arun", AsyncMock(return_value=""))
+
+    assert await mgr.amid_chain_sync("/repo", "task/chain", "main") is True
+    assert guarded.await_args_list == [
+        call("/repo", "origin/main", "task/chain", "task/chain"),
+        call("/repo", "origin/main", "task/chain", "task/chain", force_with_lease=True),
+        call("/repo", "origin/main", "HEAD", "task/chain", force_with_lease=True),
+    ]
 
 
 class TestAsyncPrepareForTask:
