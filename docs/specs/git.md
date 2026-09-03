@@ -293,7 +293,6 @@ remote exists) and rejects changed `.aq/**`, `.aq-worktree.json`, or
 `.codex/**` paths. A reserved path merely tracked and unchanged on the base is
 not rejected. Git errors are unknown—not clean—and stop delivery. No-code and
 `skip_verification` shortcuts cannot bypass this invariant.
-
 ### Immutable PR merge and exact-tip push guard
 
 `aq pr merge` first resolves the PR's base/head names and object IDs, inspects
