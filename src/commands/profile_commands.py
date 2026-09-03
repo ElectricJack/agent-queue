@@ -65,7 +65,6 @@ class ProfileCommandsMixin:
                     "id": p.id,
                     "name": p.name,
                     "description": p.description,
-                    "model": p.model or "(default)",
                     "harness": p.harness,
                     "default_class": p.default_class or "",
                     "allowed_tools": p.allowed_tools,
@@ -111,12 +110,12 @@ class ProfileCommandsMixin:
             id=profile_id,
             name=name,
             description=args.get("description", ""),
-            model=args.get("model", ""),
             permission_mode=args.get("permission_mode", ""),
             allowed_tools=args.get("allowed_tools", []),
             mcp_servers=_mcp_server_names(args.get("mcp_servers")),
             system_prompt_suffix=args.get("system_prompt_suffix", ""),
             install=args.get("install", {}),
+            default_class=args.get("default_class", ""),
         )
         Path(vault_path).write_text(markdown, encoding="utf-8")
 
@@ -161,7 +160,6 @@ class ProfileCommandsMixin:
             "id": profile.id,
             "name": profile.name,
             "description": profile.description,
-            "model": profile.model or "(default)",
             "harness": profile.harness,
             "permission_mode": profile.permission_mode or "(default)",
             "allowed_tools": profile.allowed_tools,
@@ -190,7 +188,6 @@ class ProfileCommandsMixin:
         for fld in (
             "name",
             "description",
-            "model",
             "permission_mode",
             "allowed_tools",
             "mcp_servers",
@@ -203,7 +200,7 @@ class ProfileCommandsMixin:
         if not updates:
             return {
                 "error": (
-                    "No fields to update. Provide name, description, model, "
+                    "No fields to update. Provide name, description, "
                     "permission_mode, allowed_tools, mcp_servers, "
                     "system_prompt_suffix, default_class, or install."
                 )
@@ -232,7 +229,6 @@ class ProfileCommandsMixin:
                 "id": profile.id,
                 "name": profile.name,
                 "description": profile.description,
-                "model": profile.model,
                 "permission_mode": profile.permission_mode,
                 "allowed_tools": profile.allowed_tools,
                 "mcp_servers": profile.mcp_servers,
@@ -259,7 +255,6 @@ class ProfileCommandsMixin:
             id=merged.get("id", profile_id),
             name=merged.get("name", profile_id),
             description=merged.get("description", ""),
-            model=merged.get("model", ""),
             permission_mode=merged.get("permission_mode", ""),
             allowed_tools=merged.get("allowed_tools", []),
             mcp_servers=_mcp_server_names(merged.get("mcp_servers")),
@@ -392,7 +387,7 @@ class ProfileCommandsMixin:
             seed_from_global: Optional.  When True (default), seeds the new
                 profile from the matching global ``{agent_type}`` profile so
                 the override starts as a delta, not a blank slate.
-            Plus any of: name, description, model, permission_mode,
+            Plus any of: name, description, default_class, permission_mode,
             allowed_tools, mcp_servers, system_prompt_suffix, install.
         """
         from pathlib import Path
@@ -428,7 +423,7 @@ class ProfileCommandsMixin:
             global_profile = await self.db.get_profile(agent_type)
             if global_profile:
                 seed = {
-                    "model": global_profile.model,
+                    "default_class": global_profile.default_class or "",
                     "permission_mode": global_profile.permission_mode,
                     "allowed_tools": list(global_profile.allowed_tools or []),
                     "mcp_servers": list(global_profile.mcp_servers or []),
@@ -440,7 +435,7 @@ class ProfileCommandsMixin:
         merged = {
             "name": args.get("name") or f"{agent_type} (project: {project_id})",
             "description": args.get("description", ""),
-            "model": args.get("model", seed.get("model", "")),
+            "default_class": args.get("default_class", seed.get("default_class", "")),
             "permission_mode": args.get("permission_mode", seed.get("permission_mode", "")),
             "allowed_tools": list(args.get("allowed_tools", seed.get("allowed_tools", []))),
             "mcp_servers": _mcp_server_names(
@@ -456,12 +451,12 @@ class ProfileCommandsMixin:
             id=scoped_id,
             name=merged["name"],
             description=merged["description"],
-            model=merged["model"],
             permission_mode=merged["permission_mode"],
             allowed_tools=merged["allowed_tools"],
             mcp_servers=merged["mcp_servers"],
             system_prompt_suffix=merged["system_prompt_suffix"],
             install=merged["install"],
+            default_class=merged["default_class"],
         )
         os.makedirs(os.path.dirname(target), exist_ok=True)
         Path(target).write_text(markdown, encoding="utf-8")
@@ -853,8 +848,8 @@ class ProfileCommandsMixin:
         }
         if profile.description:
             data["description"] = profile.description
-        if profile.model:
-            data["model"] = profile.model
+        if profile.default_class:
+            data["default_class"] = profile.default_class
         if profile.permission_mode:
             data["permission_mode"] = profile.permission_mode
         if profile.allowed_tools:
@@ -989,12 +984,12 @@ class ProfileCommandsMixin:
             id=profile_id,
             name=profile_name,
             description=pdata.get("description", ""),
-            model=pdata.get("model", ""),
             permission_mode=pdata.get("permission_mode", ""),
             allowed_tools=pdata.get("allowed_tools", []),
             mcp_servers=pdata.get("mcp_servers", {}),
             system_prompt_suffix=pdata.get("system_prompt_suffix", ""),
             install=pdata.get("install", {}),
+            default_class=pdata.get("default_class", ""),
         )
         Path(vault_path).write_text(markdown, encoding="utf-8")
 

@@ -194,8 +194,6 @@ def verify_round_trip(profile: AgentProfile, markdown: str) -> tuple[bool, list[
         diffs.append(f"name: DB={profile.name!r}, markdown={rebuilt.get('name', '')!r}")
 
     # Check config fields
-    if rebuilt.get("model", "") != profile.model:
-        diffs.append(f"model: DB={profile.model!r}, markdown={rebuilt.get('model', '')!r}")
     if rebuilt.get("permission_mode", "") != profile.permission_mode:
         diffs.append(
             f"permission_mode: DB={profile.permission_mode!r}, "
@@ -249,7 +247,6 @@ def _render_profile_markdown(profile: AgentProfile) -> str:
         id=profile.id,
         name=profile.name,
         description=profile.description,
-        model=profile.model,
         permission_mode=profile.permission_mode,
         allowed_tools=profile.allowed_tools if profile.allowed_tools else None,
         mcp_servers=profile.mcp_servers if profile.mcp_servers else None,

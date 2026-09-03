@@ -2566,7 +2566,7 @@ _ALL_TOOL_DEFINITIONS = [
         "name": "create_profile",
         "description": (
             "Create a new agent profile. Profiles configure agents with specific tools, "
-            "MCP servers, model overrides, and system prompt additions. Assign profiles "
+            "MCP servers, intelligence classes, and system prompt additions. Assign profiles "
             "to tasks (profile_id) or set as project defaults (default_profile_id)."
         ),
         "input_schema": {
@@ -2584,9 +2584,9 @@ _ALL_TOOL_DEFINITIONS = [
                     "type": "string",
                     "description": "What this profile is for (optional)",
                 },
-                "model": {
+                "default_class": {
                     "type": "string",
-                    "description": "Model override (optional, empty = use default)",
+                    "description": "Default intelligence class id (optional)",
                 },
                 "permission_mode": {
                     "type": "string",
@@ -2633,7 +2633,6 @@ _ALL_TOOL_DEFINITIONS = [
                 "profile_id": {"type": "string", "description": "Profile ID to edit"},
                 "name": {"type": "string", "description": "New display name (optional)"},
                 "description": {"type": "string", "description": "New description (optional)"},
-                "model": {"type": "string", "description": "New model override (optional)"},
                 "permission_mode": {
                     "type": "string",
                     "description": "New permission mode (optional)",
