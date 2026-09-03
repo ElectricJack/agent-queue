@@ -64,6 +64,68 @@ def test_authoritative_fields_are_discarded_not_trusted(tmp_path):
     assert not hasattr(proposal.artifact, "enabled")
 
 
+def test_compiled_against_records_a_delegated_profile(tmp_path):
+    """A literal `profile_id` argument is a profile dependency (`solid-harbor.54`).
+
+    The shipped `default-pipeline` has no AI step at all: it depends on
+    `reviewer` only by handing it a task through `ensure_task`.  Snapshotting
+    just a step's *own* profile left that artifact with an empty map, so no
+    capability change could ever stale it.
+    """
+    from tests.playbook_v2_helpers import stub_policies
+
+    body = _body()
+    body["steps"]["act"]["inputs"]["profile_id"] = {"type": "literal", "value": "reviewer"}
+    path = tmp_path / "delegating.md"
+    path.write_text(
+        "---\nid: demo\nscope: system\ntriggers:\n  - task.completed\n---\n"
+        "Use `demo_command`, `project_id`, `profile_id`, `done`, `worker`, "
+        "`task_id`, and `review`.\n"
+    )
+    source = PlaybookSource.load(path, vault_root=tmp_path)
+    assert isinstance(source, PlaybookSource)
+
+    proposal = propose(
+        source,
+        body,
+        contracts=StubContracts(),
+        profiles=StubProfiles(),
+        events=StubEvents(),
+        version=1,
+    )
+
+    assert proposal.artifact is not None, [d.message for d in proposal.diagnostics]
+    assert proposal.artifact.compiled_against.profiles == {
+        "reviewer": stub_policies()["reviewer"].fingerprint()
+    }
+
+
+def test_a_computed_profile_id_is_not_fingerprinted(tmp_path):
+    """Only a literal can be snapshotted: a run-chosen profile has no compile-time value."""
+    body = _body()
+    body["steps"]["act"]["inputs"]["profile_id"] = {"type": "event_ref", "path": "project_id"}
+    path = tmp_path / "computed.md"
+    path.write_text(
+        "---\nid: demo\nscope: system\ntriggers:\n  - task.completed\n---\n"
+        "Use `demo_command`, `project_id`, `profile_id`, `done`, `worker`, "
+        "`task_id`, and `review`.\n"
+    )
+    source = PlaybookSource.load(path, vault_root=tmp_path)
+    assert isinstance(source, PlaybookSource)
+
+    proposal = propose(
+        source,
+        body,
+        contracts=StubContracts(),
+        profiles=StubProfiles(),
+        events=StubEvents(),
+        version=1,
+    )
+
+    assert proposal.artifact is not None, [d.message for d in proposal.diagnostics]
+    assert proposal.artifact.compiled_against.profiles == {}
+
+
 def test_proposal_is_review_only_and_has_no_activation_side_effect(tmp_path):
     proposal = propose(
         _source(tmp_path),

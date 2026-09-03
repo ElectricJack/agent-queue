@@ -49,13 +49,10 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from src.playbooks.authoring import PlaybookSource
 from src.playbooks.definition import canonical_bytes
+from src.playbooks.migration import shipped_profile_lookup
 from src.playbooks.pipeline_lowering import lower_assignment, lower_pipeline
 from src.playbooks.proposal import propose
-from src.playbooks.validation import (
-    RegisteredEventLookup,
-    RegistryContractLookup,
-    VaultProfileLookup,
-)
+from src.playbooks.validation import RegisteredEventLookup, RegistryContractLookup
 
 FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "playbooks" / "v2"
 FROZEN_V1 = REPO_ROOT / "tests" / "fixtures" / "playbooks" / "v1"
@@ -154,30 +151,16 @@ def _remap_pipeline_refs(body: dict[str, Any], index: ProseIndex) -> dict[str, A
     return body
 
 
-def shipped_profiles() -> dict[str, Any]:
-    """Every profile under ``src/profiles/defaults/``, as capability-policy input."""
-    from types import SimpleNamespace
-
-    from src.profiles.parser import parse_profile, parsed_profile_to_agent_profile
-
-    profiles: dict[str, Any] = {}
-    for profile_md in sorted((REPO_ROOT / "src" / "profiles" / "defaults").glob("*/profile.md")):
-        parsed = parse_profile(profile_md.read_text(encoding="utf-8"))
-        if not parsed.is_valid:
-            raise SystemExit(f"{profile_md}: {parsed.errors}")
-        fields = parsed_profile_to_agent_profile(parsed)
-        profiles[fields["id"]] = SimpleNamespace(**fields)
-    return profiles
-
-
-def profile_lookup() -> VaultProfileLookup:
+def profile_lookup() -> Any:
     """Resolve profiles from ``src/profiles/defaults/``, the shipped set.
 
     Production resolves profiles from the database (``_v2_lookups``); a fixture
     must not depend on one operator's install, so the reviewed artifact is held
-    to the profiles this repository ships.
+    to the profiles this repository ships.  The construction lives in
+    ``src.playbooks.migration`` so the release check that later *holds* the
+    fixture to those profiles resolves them the same way this build did.
     """
-    return VaultProfileLookup(shipped_profiles())
+    return shipped_profile_lookup()
 
 
 def _load(rel_path: str) -> PlaybookSource:

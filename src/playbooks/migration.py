@@ -25,7 +25,7 @@ import json
 import logging
 import os
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -1290,6 +1290,62 @@ def current_command_fingerprints(contract_registry: Any) -> dict[str, str]:
     return fingerprints
 
 
+def shipped_profile_lookup(root: str | None = None) -> Any:
+    """A ``ProfileLookup`` over the profiles **this repository ships**.
+
+    Production resolves profiles from the database, which carries an
+    operator's edits.  A reviewed fixture must not depend on one operator's
+    install, so it is compiled — and held — against
+    ``src/profiles/defaults/<id>/profile.md``.  That is why the release check
+    and ``scripts/rebuild-reviewed-playbook-artifacts.py`` share this
+    construction instead of each growing their own.
+
+    Offline: it reads Markdown off disk and builds capability policies from
+    it.  A shipped profile that no longer parses raises, because a release
+    check that quietly skipped it would report the profile as *removed* and
+    name the wrong cause.
+    """
+    from types import SimpleNamespace
+
+    from src.playbooks.validation import VaultProfileLookup
+    from src.profiles.drift import defaults_root, shipped_profile_path, system_profile_ids
+    from src.profiles.parser import parse_profile, parsed_profile_to_agent_profile
+
+    base = root or defaults_root()
+    profiles: dict[str, Any] = {}
+    for profile_id in system_profile_ids(base):
+        path = shipped_profile_path(profile_id, base)
+        parsed = parse_profile(Path(path).read_text(encoding="utf-8"))
+        if not parsed.is_valid:
+            raise ValueError(f"shipped profile {path} does not parse: {parsed.errors}")
+        fields = parsed_profile_to_agent_profile(parsed)
+        profiles[fields["id"]] = SimpleNamespace(**fields)
+    return VaultProfileLookup(profiles)
+
+
+def profile_fingerprints_for(profile_lookup: Any, profile_ids: Iterable[str]) -> dict[str, str]:
+    """``{profile_id: capability fingerprint}`` for the ids the lookup resolves.
+
+    An unresolvable id is **omitted**, which is the same convention
+    ``load_activation_health`` uses: a missing entry reads as "removed", and
+    inventing a placeholder would make a removal look like a change.
+    """
+    fingerprints: dict[str, str] = {}
+    for profile_id in profile_ids:
+        policy = profile_lookup.policy(profile_id)
+        if policy is not None:
+            fingerprints[profile_id] = str(policy.fingerprint())
+    return fingerprints
+
+
+def shipped_profile_fingerprints(root: str | None = None) -> dict[str, str]:
+    """Capability fingerprints for every shipped system profile, by id."""
+    from src.profiles.drift import defaults_root, system_profile_ids
+
+    base = root or defaults_root()
+    return profile_fingerprints_for(shipped_profile_lookup(base), system_profile_ids(base))
+
+
 def release_check(
     *,
     contract_registry: Any,
@@ -1302,21 +1358,35 @@ def release_check(
     §5.5's release gate, and deliberately **offline**: it performs no network
     call, no LLM call and no compile.  It reads the checked-in fixtures and,
     when given them, the enabled activation rows, and compares each artifact's
-    ``compiled_against`` against the in-process registries.
+    ``compiled_against`` against the in-process registries — both halves of it,
+    commands *and* capability profiles.
 
     A changed *execution* fingerprint is drift; a presentation-only label change
     is not, because the fingerprint is taken over the execution contract alone
-    (``src/commands/contracts/models.py::execution_fingerprint``).
+    (``src/commands/contracts/models.py::execution_fingerprint``).  A changed
+    *capability* fingerprint is drift for the same reason: the artifact was
+    approved on the strength of what those profiles were allowed to do.
+
+    *profile_fingerprints* is the map the fixtures are held to, and defaults to
+    :func:`shipped_profile_fingerprints` — the profiles this build ships, which
+    are the ones a fixture was compiled against.  It is a parameter only so a
+    test can perturb one.
 
     *activations* are mappings shaped like the rows
     ``playbook_migration_queries`` returns.  A row that is disabled,
     acknowledged, or carries no artifact does not block: an operator has
     already decided about it, and a decision made on purpose is not a
-    regression.
+    regression.  A row may carry its own ``current_profiles`` map — the daemon
+    supplies one resolved from its *live* profile registry, because that, not
+    the shipped defaults, is what its artifacts were compiled against.
     """
     fixture_root = Path(fixture_root)
     current_commands = current_command_fingerprints(contract_registry)
-    current_profiles = dict(profile_fingerprints or {})
+    current_profiles = (
+        dict(profile_fingerprints)
+        if profile_fingerprints is not None
+        else shipped_profile_fingerprints()
+    )
     stale: list[StaleArtifact] = []
     checked: list[str] = []
 
@@ -1326,10 +1396,9 @@ def release_check(
         stale += _compare_fingerprints(
             playbook_id, "fixture", "command", compiled.commands, current_commands
         )
-        if profile_fingerprints is not None:
-            stale += _compare_fingerprints(
-                playbook_id, "fixture", "profile", compiled.profiles, current_profiles
-            )
+        stale += _compare_fingerprints(
+            playbook_id, "fixture", "profile", compiled.profiles, current_profiles
+        )
 
     for row in activations:
         if not row.get("enabled", True) or row.get("acknowledged_by"):
@@ -1343,9 +1412,14 @@ def release_check(
             playbook_id, "activation", "command", commands, current_commands
         )
         profiles = row.get("artifact_profiles")
-        if profile_fingerprints is not None and profiles:
+        if profiles:
+            row_current = row.get("current_profiles")
             stale += _compare_fingerprints(
-                playbook_id, "activation", "profile", profiles, current_profiles
+                playbook_id,
+                "activation",
+                "profile",
+                profiles,
+                current_profiles if row_current is None else dict(row_current),
             )
 
     return {
@@ -1379,6 +1453,9 @@ __all__ = [
     "compare",
     "current_command_fingerprints",
     "find_embedded_action_block",
+    "profile_fingerprints_for",
     "release_check",
     "required_capabilities",
+    "shipped_profile_fingerprints",
+    "shipped_profile_lookup",
 ]

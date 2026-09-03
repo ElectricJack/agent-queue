@@ -1,9 +1,9 @@
 ---
 playbook_id: default-pipeline
-artifact_sha256: "sha256:2fb6699afb64309f342d70ddfcea06105a6bf6d44f20bf4fea55da46b1719a18"
+artifact_sha256: "sha256:fd28a4ca3a4f0be27fd8253e132699bd5757461e2b07c78d842dfecfc2fd4cea"
 source_sha256: "sha256:4c5af240e58db3c4a3ce6012dd933305965054a6afeb59827952efd1ecdab123"
 contract_fingerprint: "sha256:64868157d0d987401d13d954e0bd3edc0c01fc427c626b2947d760a57cc855fe"
-reviewed_by: "aq task solid-harbor.52 (worker-standard-high-claude); operator sign-off is this fixture's PR review"
+reviewed_by: "aq task solid-harbor.52, re-recorded by nimble-apex-17 (worker-standard-high-claude); operator sign-off is this fixture's PR review"
 reviewed_at: "2026-09-03"
 decision: approved
 questions_resolved: 3
@@ -108,6 +108,19 @@ budget, and no output schema to review. The three profile ids in
 `profiles_referenced` are *argument values* to `ensure_task` — they name the
 profile the created task will run under, not a profile this playbook executes
 as — and all three ship in `src/profiles/defaults/`.
+
+They are nonetheless **dependencies of this artifact**, and
+`compiled_against.profiles` records a capability fingerprint for each. That is
+the re-record `nimble-apex-17` made: the first recording left the map empty,
+because the compiler only snapshotted a profile a step runs *as*, so widening
+`reviewer` — the profile this playbook hands review work to — could never stale
+the approved artifact. What was reviewed here is not just "the three ids exist"
+but *what those three profiles were allowed to do* on the day of approval, so a
+capability change to any of them now shows up as `stale_contract` in activation
+health and as drift in `aq playbook release-check`. Nothing else in the artifact
+moved: `compiled_at`, `source_hash`, every rule and every step are byte-identical
+to the first recording, and `contract_fingerprint` is unchanged because it covers
+`compiled_against.commands` alone.
 
 Deliberately, the `ensure_task` steps pin `profile_id` but no
 `intelligence_class`, so the assignment-routing playbook still chooses the class

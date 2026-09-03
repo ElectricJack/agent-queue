@@ -39,8 +39,10 @@ from src.playbooks.definition import (
     canonical_bytes,
     contract_fingerprint,
     load_definition_json,
+    referenced_profile_ids,
     source_digest,
 )
+from src.playbooks.migration import shipped_profile_fingerprints, shipped_profile_lookup
 from src.playbooks.validation import (
     RegisteredEventLookup,
     RegistryContractLookup,
@@ -151,7 +153,13 @@ def _inputs(step: Any) -> dict[str, Any]:
 
 def _referenced_profile_ids(definition: PlaybookDefinition) -> set[str]:
     """Profile ids the artifact names — as an `llm` step's profile or as a literal
-    `profile_id` argument to a command step."""
+    `profile_id` argument to a command step.
+
+    Re-derived from the JSON dump rather than from
+    :func:`referenced_profile_ids`, so the production helper the compiler and
+    the release check both use is checked against an independent reading of
+    the same bytes (`test_the_helper_agrees_with_an_independent_reading`).
+    """
     found: set[str] = set()
     for step in definition.steps.values():
         profile_id = getattr(step, "profile_id", None)
@@ -287,6 +295,69 @@ def test_every_profile_resolves(playbook_id: str) -> None:
     assert not unknown, f"{playbook_id} names profiles absent from {PROFILE_DEFAULTS}: {unknown}"
 
 
+@pytest.mark.parametrize("playbook_id", APPROVED_IDS)
+def test_the_helper_agrees_with_an_independent_reading(playbook_id: str) -> None:
+    """`referenced_profile_ids` is what the compiler snapshots against."""
+    definition = _artifact(playbook_id)
+    assert set(referenced_profile_ids(definition)) == _referenced_profile_ids(definition)
+
+
+@pytest.mark.parametrize("playbook_id", APPROVED_IDS)
+def test_compiled_against_fingerprints_every_referenced_profile(playbook_id: str) -> None:
+    """The profile half of `test_every_command_resolves`.
+
+    "The directory exists" is not what the reviewer approved: they approved
+    what those profiles were *allowed to do*.  Recording a fingerprint per
+    referenced profile is what makes a later capability change visible — as
+    `stale_contract` in activation health, and as drift in the release check.
+    An empty map (`solid-harbor.54`) made both unreachable for the one shipped
+    artifact whose profile dependencies are all delegated.
+    """
+    definition = _artifact(playbook_id)
+    recorded = definition.compiled_against.profiles
+    assert set(recorded) == set(referenced_profile_ids(definition)), (
+        "compiled_against.profiles must name exactly the profiles the artifact "
+        "depends on, delegated ones included"
+    )
+    lookup = shipped_profile_lookup()
+    for profile_id, fingerprint in recorded.items():
+        policy = lookup.policy(profile_id)
+        assert policy is not None, f"{playbook_id} names unshipped profile {profile_id!r}"
+        assert policy.fingerprint() == fingerprint, (
+            f"{playbook_id}: profile {profile_id} capabilities drifted from the "
+            "reviewed artifact; rebuild and re-review"
+        )
+
+
+def test_the_pipeline_depends_on_its_review_profiles_only_by_delegation() -> None:
+    """The shape that made the empty map easy to miss, pinned.
+
+    `default-pipeline` has no `llm` or `agent_task` step at all: every one of
+    its three profile dependencies is an `ensure_task` argument.  A future
+    refactor that dropped the delegated half of the snapshot would pass every
+    other assertion in this file, so name the shape here.
+    """
+    definition = _artifact("default-pipeline")
+    own = {
+        getattr(step, "profile_id", None)
+        for step in definition.steps.values()
+        if getattr(step, "profile_id", None)
+    }
+    assert own == set(), "default-pipeline gained an AI step; re-review this fixture"
+    assert set(definition.compiled_against.profiles) == {
+        "reviewer",
+        "final-reviewer",
+        "spec-ingest",
+    }
+
+
+def test_shipped_profile_fingerprints_covers_the_shipped_tree() -> None:
+    """The release check's default profile map is the whole shipped set."""
+    fingerprints = shipped_profile_fingerprints()
+    assert set(fingerprints) == _shipped_profile_ids()
+    assert all(value.startswith("sha256:") for value in fingerprints.values())
+
+
 def test_pipeline_references_the_three_review_profiles() -> None:
     assert _referenced_profile_ids(_artifact("default-pipeline")) == {
         "reviewer",
@@ -317,13 +388,19 @@ def test_review_dedup_key_matches_doctor() -> None:
 
 
 def test_artifact_validates_against_the_live_registries() -> None:
-    """The recorded artifact still resolves every command, event and field."""
+    """The recorded artifact still resolves every command, event and field.
+
+    The shipped profile lookup is passed rather than `None` so the profile
+    half of `stale_contract` is exercised too: with `None` the validator has
+    no registry to compare `compiled_against.profiles` against and stays
+    silent, which is precisely how an empty map went unnoticed.
+    """
     for playbook_id in APPROVED_IDS:
         diagnostics = validate_definition(
             _artifact(playbook_id),
             inventory=None,
             contracts=RegistryContractLookup(),
-            profiles=None,
+            profiles=shipped_profile_lookup(),
             events=RegisteredEventLookup(),
         )
         blocking = [d for d in diagnostics if d.severity in {"error", "question"}]

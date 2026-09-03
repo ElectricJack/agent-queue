@@ -299,3 +299,175 @@ def test_response_models_are_registered():
         "playbook_cutover_report",
     ):
         assert name in RESPONSE_MODELS, name
+
+
+# ---------------------------------------------------------------------------
+# Release check — the live-daemon half of the profile fingerprint gate
+# ---------------------------------------------------------------------------
+
+
+class _ReleaseHandler(_Handler):
+    """The mixin plus the two collaborators the release check reads.
+
+    ``_v2_lookups`` is the seam ``_release_check_activations`` uses to resolve
+    each artifact profile against *this daemon's* registry, so the test can
+    move one profile without touching `src/profiles/defaults/`.
+    """
+
+    def __init__(self, config, db, profiles) -> None:
+        super().__init__(config, db)
+        from src.config import PlaybooksConfig
+
+        config.playbooks = PlaybooksConfig()
+        self._profiles = profiles
+
+    async def _v2_lookups(self):
+        from src.playbooks.validation import RegisteredEventLookup, RegistryContractLookup
+
+        return RegistryContractLookup(), self._profiles, RegisteredEventLookup()
+
+
+class _MovedProfiles:
+    """The shipped lookup with one profile's policy replaced or removed."""
+
+    def __init__(self, overrides) -> None:
+        from src.playbooks.migration import shipped_profile_lookup
+
+        self._shipped = shipped_profile_lookup()
+        self._overrides = overrides
+
+    def policy(self, profile_id):
+        if profile_id in self._overrides:
+            return self._overrides[profile_id]
+        return self._shipped.policy(profile_id)
+
+
+async def _activate_shipped_pipeline(handler):
+    """Store and enable the reviewed `default-pipeline` artifact on ``handler``."""
+    from src.playbooks.activation import profile_fingerprint
+    from src.playbooks.artifact_store import ArtifactStore
+    from src.playbooks.definition import load_definition_json
+
+    fixture = (
+        Path(__file__).resolve().parent
+        / "fixtures"
+        / "playbooks"
+        / "v2"
+        / "default-pipeline"
+        / "artifact.json"
+    )
+    definition = load_definition_json(fixture.read_text(encoding="utf-8"))
+    store = ArtifactStore(handler.config.compiled_root)
+    aggregate = profile_fingerprint(dict(definition.compiled_against.profiles))
+    ref = store.put(
+        definition,
+        source_digest=definition.source_hash,
+        contract_fingerprint=definition.contract_fingerprint(),
+        profile_fingerprint=aggregate,
+        compiler_build=definition.compiler_build or "test-build",
+        version=definition.version,
+    )
+    await handler.db.upsert_playbook_artifact(
+        ref,
+        scope="system",
+        profile_fingerprint=aggregate,
+        path=store.path_for(ref.artifact_sha256),
+        size_bytes=len(store.canonical_bytes(definition)),
+    )
+    await handler.db.set_playbook_activation(
+        playbook_id=ref.playbook_id,
+        scope="system",
+        scope_identifier="",
+        artifact_sha256=ref.artifact_sha256,
+        enabled=True,
+        activated_by="operator",
+        health="ready",
+        reasons="[]",
+    )
+    return definition
+
+
+@pytest.mark.asyncio
+async def test_release_check_rows_carry_the_daemons_live_profile_fingerprints(tmp_path, db):
+    """`solid-harbor.54`: the command used to pass no profile fingerprints at all.
+
+    Without them the profile half of `release_check` never ran, so a capability
+    change to `reviewer` — which the shipped pipeline depends on only through
+    `ensure_task` — could not stale anything.
+    """
+    from src.playbooks.migration import shipped_profile_fingerprints
+
+    data_dir = str(tmp_path / "aq")
+    os.makedirs(data_dir, exist_ok=True)
+    ensure_default_playbooks(data_dir)
+    handler = _ReleaseHandler(_Config(data_dir), db, _MovedProfiles({}))
+    definition = await _activate_shipped_pipeline(handler)
+
+    rows = await handler._release_check_activations()
+
+    assert len(rows) == 1, rows
+    assert rows[0]["artifact_profiles"] == dict(definition.compiled_against.profiles)
+    assert rows[0]["current_profiles"] == {
+        name: shipped_profile_fingerprints()[name]
+        for name in definition.compiled_against.profiles
+    }
+
+    report = await handler._cmd_playbook_release_check({})
+    assert report["success"] is True, report["stale"]
+
+
+@pytest.mark.asyncio
+async def test_release_check_reports_a_moved_delegated_profile(tmp_path, db):
+    from src.profiles.capabilities import CapabilityPolicy
+
+    data_dir = str(tmp_path / "aq")
+    os.makedirs(data_dir, exist_ok=True)
+    ensure_default_playbooks(data_dir)
+    moved = _MovedProfiles(
+        {"reviewer": CapabilityPolicy.from_namespaces(aq_commands=frozenset({"pr_merge"}))}
+    )
+    handler = _ReleaseHandler(_Config(data_dir), db, moved)
+    await _activate_shipped_pipeline(handler)
+
+    report = await handler._cmd_playbook_release_check({})
+
+    assert report["success"] is False
+    row = next(
+        r
+        for r in report["stale"]
+        if r["origin"] == "activation" and r["dependency"] == "reviewer"
+    )
+    assert row["kind"] == "profile"
+    assert row["change"] == "changed"
+    assert row["playbook_id"] == "default-pipeline"
+
+
+@pytest.mark.asyncio
+async def test_release_check_honours_an_acknowledged_playbook(tmp_path, db):
+    """The waiver is the operator's decision, and a decision is not a regression.
+
+    Activation rows carry no `acknowledged_by` column, so the command has to
+    join the waiver table; reading the key straight off the activation row
+    always yielded `None` and made the escape hatch unreachable.
+    """
+    from src.profiles.capabilities import CapabilityPolicy
+
+    data_dir = str(tmp_path / "aq")
+    os.makedirs(data_dir, exist_ok=True)
+    ensure_default_playbooks(data_dir)
+    moved = _MovedProfiles(
+        {"reviewer": CapabilityPolicy.from_namespaces(aq_commands=frozenset({"pr_merge"}))}
+    )
+    handler = _ReleaseHandler(_Config(data_dir), db, moved)
+    await _activate_shipped_pipeline(handler)
+    assert (await handler._cmd_playbook_release_check({}))["success"] is False
+
+    result = await _ack(handler, "default-pipeline", _GOOD_REASON)
+    assert result["success"] is True, result
+
+    report = await handler._cmd_playbook_release_check({})
+    assert report["success"] is True, report["stale"]
+    # The checked-in fixture is still compared — it is held to the shipped
+    # profiles, which the waiver says nothing about.  What the waiver removes
+    # is the *activation* row this daemon serves.
+    assert [row for row in report["stale"] if row["origin"] == "activation"] == []

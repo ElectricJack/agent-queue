@@ -27,6 +27,7 @@ from src.playbooks.expressions import (
     Condition,
     Identifier,
     JsonScalar,
+    LiteralValue,
     QualifiedName,
     V2Base,
     Value,
@@ -549,6 +550,55 @@ def step_values(step: Any) -> list[Any]:
     return values
 
 
+#: The argument name that hands a *delegated* capability profile to a command.
+#: ``ensure_task``'s ``profile_id`` is the one the shipped pipeline uses: the
+#: playbook never runs the reviewer itself, it creates a task the reviewer
+#: profile will be assigned to.  The dependency is no weaker for being
+#: indirect — a capability change there changes what the created task may do —
+#: so it is recorded in ``compiled_against.profiles`` exactly like a profile an
+#: ``LlmStep`` names directly.
+DELEGATED_PROFILE_INPUT: Final[str] = "profile_id"
+
+
+def step_profile_ids(step: Any) -> tuple[str, ...]:
+    """Every capability profile one step depends on, in declaration order.
+
+    Two positions carry one, and both are real dependencies of the artifact:
+
+    * the *own* profile of an :class:`LlmStep` or :class:`AgentTaskStep`, which
+      the step runs as; and
+    * a *delegated* profile — a literal :data:`DELEGATED_PROFILE_INPUT` input,
+      which is how a command step hands work to another profile.
+
+    Only a literal counts.  A ``profile_id`` computed from an event reference
+    is not knowable at compile time, so there is no fingerprint to record and
+    pretending otherwise would freeze a value the run picks.
+    """
+    found: list[str] = []
+    own = getattr(step, "profile_id", None)
+    if isinstance(own, str) and own:
+        found.append(own)
+    delegated = getattr(step, "inputs", None) or {}
+    value = delegated.get(DELEGATED_PROFILE_INPUT) if hasattr(delegated, "get") else None
+    if isinstance(value, LiteralValue) and isinstance(value.value, str) and value.value:
+        found.append(value.value)
+    return tuple(dict.fromkeys(found))
+
+
+def referenced_profile_ids(definition: PlaybookDefinition) -> tuple[str, ...]:
+    """Every capability profile the artifact depends on, sorted.
+
+    This is the set ``compiled_against.profiles`` must cover; it is defined
+    here so the compiler, the validator and the release check cannot drift
+    apart on what "a profile this artifact depends on" means.
+    """
+    found: dict[str, None] = {}
+    for step in definition.steps.values():
+        for profile_id in step_profile_ids(step):
+            found[profile_id] = None
+    return tuple(sorted(found))
+
+
 # --------------------------------------------------------------------------
 # §4.4 — triggers, rules and the artifact
 # --------------------------------------------------------------------------
@@ -861,6 +911,7 @@ def is_executable_path(pointer: str) -> bool:
 __all__ = [
     "AGENT_TASK_RESULT_SCHEMA",
     "COMPILER_BUILD",
+    "DELEGATED_PROFILE_INPUT",
     "EXECUTABLE_FIELDS",
     "FOREACH_RESULT_SCHEMA",
     "LLM_RESERVED_OUTCOMES",
@@ -911,11 +962,13 @@ __all__ = [
     "is_executable_path",
     "load_definition_json",
     "normalize_source",
+    "referenced_profile_ids",
     "reserved_outcomes_for",
     "result_schema_for",
     "scope_from_v1",
     "scope_to_v1",
     "source_digest",
+    "step_profile_ids",
     "step_targets",
     "step_values",
     "truncate_excerpt",

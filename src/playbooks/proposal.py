@@ -25,6 +25,7 @@ from src.playbooks.definition import (
     contract_fingerprint,
     scope_from_v1,
     source_digest,
+    step_profile_ids,
     truncate_excerpt,
 )
 from src.playbooks.semantic_diff import DefinitionDiff, diff_definitions
@@ -131,6 +132,21 @@ def _trusted_purpose(source: PlaybookSource) -> str:
 def _snapshots(
     artifact: PlaybookDefinition, contracts: ContractLookup, profiles: ProfileLookup
 ) -> PlaybookDefinition:
+    """Recompute ``compiled_against`` from the live registries (§7.1).
+
+    ``profiles`` covers both positions :func:`step_profile_ids` knows about —
+    a step's own profile and a *delegated* one handed to a command as a literal
+    ``profile_id`` argument.  The delegated half is what the shipped
+    ``default-pipeline`` uses exclusively: it has no AI step at all, and its
+    dependency on ``reviewer`` / ``final-reviewer`` / ``spec-ingest`` exists
+    only as ``ensure_task`` arguments.  Recording only the own-profile half
+    left that artifact with an empty map, so a capability change could never
+    stale it.
+
+    An unresolvable profile is left out rather than recorded as empty: the map
+    is a *fingerprint of what exists*, and a missing entry is how
+    ``evaluate_health`` reads "not registered here".
+    """
     commands: dict[str, str] = {}
     profiles_out: dict[str, str] = {}
     for step in artifact.steps.values():
@@ -139,8 +155,7 @@ def _snapshots(
             contract = contracts.get(command)
             if contract is not None:
                 commands[command] = contract.execution_fingerprint
-        profile_id = getattr(step, "profile_id", None)
-        if profile_id:
+        for profile_id in step_profile_ids(step):
             policy = profiles.policy(profile_id)
             if policy is not None:
                 profiles_out[profile_id] = policy.fingerprint()

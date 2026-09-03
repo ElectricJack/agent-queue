@@ -22,7 +22,10 @@ from src.commands.contracts import CONTRACTS
 from src.playbooks.migration import (
     REVIEWED_FIXTURE_ROOT,
     current_command_fingerprints,
+    profile_fingerprints_for,
     release_check,
+    shipped_profile_fingerprints,
+    shipped_profile_lookup,
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -31,6 +34,10 @@ FIXTURE_ROOT = REPO_ROOT / REVIEWED_FIXTURE_ROOT
 #: The command whose fingerprint the intentional-change fixture perturbs.
 CHANGED_COMMAND = "ensure_task"
 CHANGED_PLAYBOOK = "default-pipeline"
+#: The delegated capability profile the pipeline hands per-task review to.  It
+#: reaches the artifact only as an `ensure_task` argument — there is no AI step
+#: in `default-pipeline` — which is why `solid-harbor.54` found it unrecorded.
+CHANGED_PROFILE = "reviewer"
 
 
 class _StubRegistration:
@@ -105,6 +112,122 @@ def test_changed_fingerprint_blocks_readiness() -> None:
     ]["commands"][CHANGED_COMMAND]
     assert row["current_fingerprint"] == "sha256:" + "a" * 64
     assert CHANGED_COMMAND in row["message"] and CHANGED_PLAYBOOK in row["message"]
+
+
+def test_changed_profile_capabilities_block_readiness() -> None:
+    """A capability change to a *delegated* profile stales the artifact.
+
+    The reviewer approved what `reviewer` was allowed to do, not merely that a
+    `reviewer` directory exists.  Widening or narrowing it after approval must
+    reach the gate, exactly as a changed command contract does.
+    """
+    perturbed = dict(shipped_profile_fingerprints())
+    perturbed[CHANGED_PROFILE] = "sha256:" + "e" * 64
+    report = release_check(
+        contract_registry=CONTRACTS,
+        fixture_root=FIXTURE_ROOT,
+        profile_fingerprints=perturbed,
+    )
+
+    assert report["success"] is False
+    row = next(r for r in report["stale"] if r["dependency"] == CHANGED_PROFILE)
+    assert row["kind"] == "profile"
+    assert row["origin"] == "fixture"
+    assert row["change"] == "changed"
+    assert row["playbook_id"] == CHANGED_PLAYBOOK
+    assert row["reviewed_fingerprint"] == _artifact(CHANGED_PLAYBOOK)[
+        "compiled_against"
+    ]["profiles"][CHANGED_PROFILE]
+    assert row["current_fingerprint"] == "sha256:" + "e" * 64
+    assert CHANGED_PROFILE in row["message"]
+
+
+def test_removed_profile_blocks_readiness() -> None:
+    perturbed = {
+        name: value
+        for name, value in shipped_profile_fingerprints().items()
+        if name != CHANGED_PROFILE
+    }
+    report = release_check(
+        contract_registry=CONTRACTS,
+        fixture_root=FIXTURE_ROOT,
+        profile_fingerprints=perturbed,
+    )
+    assert report["success"] is False
+    row = next(r for r in report["stale"] if r["dependency"] == CHANGED_PROFILE)
+    assert row["kind"] == "profile"
+    assert row["change"] == "removed"
+    assert row["current_fingerprint"] is None
+
+
+def test_the_profile_half_runs_without_being_asked_to() -> None:
+    """The regression `solid-harbor.54` found: the caller passed nothing.
+
+    `profile_fingerprints` used to default to "skip the profile comparison",
+    and no caller — the command, the doctor check, or this suite — ever passed
+    it.  The default is now the shipped profile set, so the drift above is
+    reachable from `release_check(contract_registry=...)` alone.
+    """
+    assert release_check(contract_registry=CONTRACTS, fixture_root=FIXTURE_ROOT)[
+        "success"
+    ] is True
+    assert shipped_profile_fingerprints()[CHANGED_PROFILE] == _artifact(CHANGED_PLAYBOOK)[
+        "compiled_against"
+    ]["profiles"][CHANGED_PROFILE]
+
+
+def test_an_activation_is_held_to_its_own_live_profiles() -> None:
+    """An activation row carries the fingerprints *its* daemon resolves.
+
+    An activated artifact was compiled against the profiles in that database,
+    operator edits included.  Holding it to `src/profiles/defaults/` would
+    report a legitimately customised profile as drift, so a row's
+    `current_profiles` wins over the shipped map when present.
+    """
+    artifact_profiles = {"house-reviewer": "sha256:" + "1" * 64}
+    agreeing = release_check(
+        contract_registry=CONTRACTS,
+        fixture_root=FIXTURE_ROOT,
+        activations=[
+            {
+                "playbook_id": "house-one",
+                "enabled": True,
+                "artifact_commands": {CHANGED_COMMAND: current_command_fingerprints(CONTRACTS)[CHANGED_COMMAND]},
+                "artifact_profiles": artifact_profiles,
+                "current_profiles": dict(artifact_profiles),
+            }
+        ],
+    )
+    assert agreeing["success"] is True, agreeing["stale"]
+    assert "house-one" in agreeing["checked"]
+
+    moved = release_check(
+        contract_registry=CONTRACTS,
+        fixture_root=FIXTURE_ROOT,
+        activations=[
+            {
+                "playbook_id": "house-one",
+                "enabled": True,
+                "artifact_commands": {CHANGED_COMMAND: current_command_fingerprints(CONTRACTS)[CHANGED_COMMAND]},
+                "artifact_profiles": artifact_profiles,
+                "current_profiles": {"house-reviewer": "sha256:" + "2" * 64},
+            }
+        ],
+    )
+    assert moved["success"] is False
+    row = next(r for r in moved["stale"] if r["playbook_id"] == "house-one")
+    assert (row["origin"], row["kind"], row["dependency"]) == (
+        "activation",
+        "profile",
+        "house-reviewer",
+    )
+
+
+def test_profile_fingerprints_for_omits_what_the_lookup_cannot_resolve() -> None:
+    lookup = shipped_profile_lookup()
+    resolved = profile_fingerprints_for(lookup, [CHANGED_PROFILE, "no-such-profile"])
+    assert set(resolved) == {CHANGED_PROFILE}
+    assert resolved[CHANGED_PROFILE] == shipped_profile_fingerprints()[CHANGED_PROFILE]
 
 
 def test_removed_command_blocks_readiness() -> None:
