@@ -301,10 +301,25 @@ the complete paginated PR-files (merge-base) diff, and resolves the identity a
 second time. Any unreadable or malformed identity/diff, changed identity, or
 changed `.aq/**`, `.aq-worktree.json`, or `.codex/**` path fails closed.
 The eventual `gh pr merge` carries `--match-head-commit <head-oid>` and also
-checks the expected base/head pair immediately before invoking `gh`; a changed
-PR can therefore never turn a review of one head into a merge of another.
-`force=true` may waive only `integration.merge_ci_policy`; it cannot waive
-identity or path safety.
+checks the expected head OID and base branch name immediately before invoking
+`gh`; a changed PR can therefore never turn a review of one head into a merge
+of another, and a PR retargeted onto a different branch after validation is
+refused. `force=true` may waive only `integration.merge_ci_policy`; it cannot
+waive identity or path safety.
+
+The PR identity that is pinned is `(repository, number, base branch, head
+branch, head OID)`. The base branch's *tip* is read and recorded but never
+compared: it moves on every push to the default branch, so under concurrent
+delivery it routinely differs between two reads seconds apart for reasons
+unrelated to the PR. Nothing the merge relies on depends on it — the PR-files
+diff is a merge-base diff, so base movement does not change what the PR
+introduces, and `gh pr merge` merges into the current base tip regardless.
+Pinning it made `pr_merge` refuse with "PR identity changed" whenever another
+agent's PR landed first, with nothing in the error to tell the final-reviewer
+that the PR itself was untouched (exit gate stark-impact-60.6, M4). The two
+refusals that remain name what moved: `head moved from <oid> to <oid>` and
+`retargeted from <branch> to <branch>`; neither is retryable without a fresh
+review of the PR as it now stands.
 
 Every daemon push resolves its source ref immediately beforehand and sends an
 object-ID refspec (`<oid>:refs/heads/<branch>`), rather than a mutable local
