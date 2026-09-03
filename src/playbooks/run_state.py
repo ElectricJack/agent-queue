@@ -117,6 +117,24 @@ class DuplicateAttempt(PlaybookStorageError):
         self.attempt = attempt
 
 
+class DuplicateRun(PlaybookStorageError):
+    """A run already exists for this dispatch and rule.
+
+    ``uq_playbook_v2_runs_dispatch_rule`` is what makes "one matching event
+    creates at most one run per rule" a database property rather than a
+    convention.  It is named here so the engine can act on the collision —
+    reporting the existing run as deduplicated — instead of pattern-matching
+    a driver-specific ``IntegrityError`` message.
+    """
+
+    code = "duplicate_run"
+
+    def __init__(self, dispatch_id: str, rule_id: str) -> None:
+        super().__init__(f"rule {rule_id} already has a run for dispatch {dispatch_id}")
+        self.dispatch_id = dispatch_id
+        self.rule_id = rule_id
+
+
 class DuplicateWait(PlaybookStorageError):
     """A second active wait was registered for a step instance."""
 
@@ -644,6 +662,10 @@ class RunRepository(Protocol):
     async def create_run(self, snapshot: RunSnapshot) -> RunSnapshot: ...
 
     async def load_run(self, run_id: str) -> RunSnapshot | None: ...
+
+    async def find_run_for_dispatch(
+        self, dispatch_id: str, rule_id: str
+    ) -> RunSnapshot | None: ...
 
     async def commit_boundary(
         self,

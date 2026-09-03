@@ -1,0 +1,96 @@
+{
+  "schema_version": 2,
+  "id": "two-failure-outcomes",
+  "version": 1,
+  "scope": {
+    "type": "system"
+  },
+  "source_hash": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+  "compiled_at": "2026-09-01T00:00:00Z",
+  "purpose": "routine",
+  "rules": [
+    {
+      "id": "probe",
+      "name": "Probe",
+      "trigger": {
+        "event_type": "task.completed"
+      },
+      "entry_step": "probe-step",
+      "source": {
+        "path": "system/playbooks/pkg4.md",
+        "start_line": 1,
+        "end_line": 3
+      }
+    }
+  ],
+  "steps": {
+    "probe-step": {
+      "type": "command",
+      "rule": "probe",
+      "title": "Probe two failure outcomes",
+      "command": "two_failures",
+      "inputs": {
+        "project_id": {
+          "type": "event_ref",
+          "path": "project_id"
+        }
+      },
+      "save_result_as": "probe",
+      "transitions": {
+        "ok": "done",
+        "not_found": "no-tasks",
+        "conflict": "retry-later",
+        "runtime_error": "failed-end"
+      },
+      "source": {
+        "path": "system/playbooks/pkg4.md",
+        "start_line": 4,
+        "end_line": 8
+      }
+    },
+    "done": {
+      "type": "terminal",
+      "rule": "probe",
+      "title": "Done",
+      "outcome": "completed",
+      "source": {
+        "path": "system/playbooks/pkg4.md",
+        "start_line": 9,
+        "end_line": 9
+      }
+    },
+    "no-tasks": {
+      "type": "terminal",
+      "rule": "probe",
+      "title": "Nothing found",
+      "outcome": "completed",
+      "source": {
+        "path": "system/playbooks/pkg4.md",
+        "start_line": 10,
+        "end_line": 10
+      }
+    },
+    "retry-later": {
+      "type": "terminal",
+      "rule": "probe",
+      "title": "Conflicted",
+      "outcome": "failed",
+      "source": {
+        "path": "system/playbooks/pkg4.md",
+        "start_line": 11,
+        "end_line": 11
+      }
+    },
+    "failed-end": {
+      "type": "terminal",
+      "rule": "probe",
+      "title": "Failed",
+      "outcome": "failed",
+      "source": {
+        "path": "system/playbooks/pkg4.md",
+        "start_line": 12,
+        "end_line": 12
+      }
+    }
+  }
+}

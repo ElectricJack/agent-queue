@@ -1,0 +1,7 @@
+{
+  "event_id": "evt-spec-approved",
+  "event_type": "spec.approved",
+  "project_id": "proj-1",
+  "spec_id": "spec-1",
+  "title": "Widget spec"
+}
