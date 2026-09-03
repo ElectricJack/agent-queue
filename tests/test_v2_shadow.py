@@ -91,3 +91,15 @@ async def test_shadow_and_live_select_the_same_rules() -> None:
     live_result = await live.dispatch_event(event("task-completed-code"), TRUSTED_LOCAL)
 
     assert shadow_result.rules_selected == live_result.rules_selected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("event_name", ["task-completed-code", "task-completed-docs", "spec-approved"])
+async def test_shadow_matches_live_rule_selection_for_fixture_corpus(event_name: str) -> None:
+    shadow, _ = build()
+    live, _ = build()
+
+    shadow_result = await shadow.dispatch_event(event(event_name), TRUSTED_LOCAL, mode=ExecutionMode.SHADOW)
+    live_result = await live.dispatch_event(event(event_name), TRUSTED_LOCAL)
+
+    assert shadow_result.rules_selected == live_result.rules_selected

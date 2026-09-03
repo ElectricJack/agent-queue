@@ -427,17 +427,9 @@ class PlaybookEngine:
                 loop={},
             )
             if len(work) + len(paths) >= max_paths:
-                paths.append(
-                    DryRunPath(
-                        rule.id,
-                        (
-                            DryRunNode(
-                                rule.entry_step, "unresolved", reason="path_limit"
-                            ),
-                        ),
-                        "truncated",
-                    )
-                )
+                # The selected rule remains visible on the tree, but the
+                # bounded result may not manufacture an extra path just to
+                # describe the omitted frontier.
                 truncated = True
             else:
                 work.append(_DryRunCursor(rule.id, rule.entry_step, scope, None))
@@ -645,6 +637,11 @@ class PlaybookEngine:
                     cursor.unresolved,
                 )
             )
+        if truncated:
+            # A bounded tree is an incomplete answer.  Even a path that
+            # happened to reach a terminal before another frontier hit a
+            # bound must not be reported as a completed dry-run result.
+            paths = [replace(path, status="truncated", completed=False) for path in paths]
         return DryRunTree(
             artifact_sha256=artifact_ref.artifact_sha256,
             rules_selected=tuple(rule.id for rule in rules),

@@ -209,7 +209,12 @@ class LiveLlmExecutor:
             for retry_index in range(retries + 1):
                 if calls >= step.budget.max_calls:
                     return _result(step, ctx, outcome="budget_exceeded", usage=usage)
-                tools = _published_tools(step, ctx)
+                # ``invoke_ai`` can opt a dry-run into a metered model call,
+                # never into a command call.  Do not publish tools in this
+                # context: a model-visible tool is an executable capability,
+                # and dispatching it through the live adapter would bypass
+                # dry-run's preview-only command boundary.
+                tools = [] if ctx.mode is ExecutionMode.DRY_RUN else _published_tools(step, ctx)
                 denied = False
 
                 async def dispatch_tool(name: str, args: dict[str, Any]) -> Any:
