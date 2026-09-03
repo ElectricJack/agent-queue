@@ -626,6 +626,80 @@ async def test_delivery_push_checks_and_pushes_one_immutable_tip_despite_head_mu
     assert pushed == [["push", "origin", f"{clean_tip}:refs/heads/main"]]
 
 
+class TestBranchSourceIsNotShadowedByASameNamedTag:
+    """A delivery source given as a *branch name* must resolve ``refs/heads/<name>``.
+
+    Bare ``git rev-parse <name>`` tries ``refs/<name>`` and ``refs/tags/<name>``
+    before ``refs/heads/<name>``, so a tag planted with the branch's name is what
+    gets validated and pushed.  Only ``HEAD``, object ids and explicit revision
+    expressions keep bare resolution.
+    """
+
+    @staticmethod
+    def _plant_shadowing_tag(clone: str, branch: str) -> tuple[str, str]:
+        """Return ``(branch_tip, decoy_tip)`` after tagging ``<branch>`` elsewhere."""
+        branch_tip = _git(["rev-parse", f"refs/heads/{branch}"], cwd=clone)
+        _git(["switch", "--detach", branch_tip], cwd=clone)
+        decoy_tip = _commit_file(clone, "decoy.txt", "not the branch", "decoy")
+        _git(["tag", branch, decoy_tip], cwd=clone)
+        _git(["switch", branch], cwd=clone)
+        # Sanity: the shadowing is real — bare resolution finds the tag.
+        assert _git(["rev-parse", "--verify", branch], cwd=clone) == decoy_tip
+        return branch_tip, decoy_tip
+
+    @pytest.mark.asyncio
+    async def test_apush_validated_delivery_pushes_the_branch_not_the_tag(self, clone, mgr):
+        branch_tip = _commit_file(clone, "work.txt", "real work", "branch work")
+        _, decoy_tip = self._plant_shadowing_tag(clone, "main")
+
+        pushed = await mgr.apush_validated_delivery(clone, "origin/main", "main", "main")
+
+        assert pushed == branch_tip
+        assert _git(["rev-parse", "origin/main"], cwd=clone) == branch_tip
+        assert _git(["rev-parse", "origin/main"], cwd=clone) != decoy_tip
+
+    @pytest.mark.asyncio
+    async def test_apush_validated_ref_pushes_the_branch_not_the_tag(self, clone, mgr):
+        _git(["switch", "-c", "task/shadowed"], cwd=clone)
+        branch_tip = _commit_file(clone, "work.txt", "real work", "branch work")
+        self._plant_shadowing_tag(clone, "task/shadowed")
+
+        pushed = await mgr.apush_validated_ref(clone, "task/shadowed", "task/shadowed")
+
+        assert pushed == branch_tip
+        assert _git(["rev-parse", "origin/task/shadowed"], cwd=clone) == branch_tip
+
+    @pytest.mark.asyncio
+    async def test_apush_branch_pushes_the_branch_not_the_tag(self, clone, mgr):
+        _git(["switch", "-c", "task/shadowed"], cwd=clone)
+        branch_tip = _commit_file(clone, "work.txt", "real work", "branch work")
+        self._plant_shadowing_tag(clone, "task/shadowed")
+
+        await mgr.apush_branch(clone, "task/shadowed")
+
+        assert _git(["rev-parse", "origin/task/shadowed"], cwd=clone) == branch_tip
+
+    @pytest.mark.asyncio
+    async def test_branch_name_without_a_local_branch_fails_closed(self, clone, mgr):
+        """A tag is never a substitute for a missing branch of the same name."""
+        decoy_tip = _commit_file(clone, "decoy.txt", "decoy", "decoy")
+        _git(["tag", "release/only-a-tag", decoy_tip], cwd=clone)
+
+        with pytest.raises(GitError, match="refs/heads/release/only-a-tag"):
+            await mgr.apush_validated_ref(clone, "release/only-a-tag", "release/only-a-tag")
+        assert "release/only-a-tag" not in _git(["branch", "-r"], cwd=clone)
+
+    @pytest.mark.asyncio
+    async def test_head_oid_and_revision_expressions_keep_bare_resolution(self, clone, mgr):
+        first = _git(["rev-parse", "HEAD"], cwd=clone)
+        second = _commit_file(clone, "work.txt", "more", "second")
+
+        assert await mgr.apush_validated_ref(clone, "HEAD", "by-head") == second
+        assert await mgr.apush_validated_ref(clone, first, "by-oid") == first
+        assert await mgr.apush_validated_ref(clone, "HEAD~1", "by-expr") == first
+        assert await mgr.apush_validated_ref(clone, "refs/heads/main", "by-full") == second
+
+
 class TestAsyncPrepareForTask:
     @pytest.mark.asyncio
     async def test_creates_branch(self, clone, mgr):

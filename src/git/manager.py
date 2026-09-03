@@ -185,6 +185,33 @@ def _validate_rev(name: str, *, field: str = "revision") -> str:
     return name
 
 
+#: Characters that only appear in a git *revision expression* (``HEAD~1``,
+#: ``main@{yesterday}``, ``v1^{commit}``), never in a plain branch name.
+_REVISION_SYNTAX_RE = re.compile(r"[~^@{}]")
+
+
+def _delivery_source_rev(source: str) -> str:
+    """The revision to ``rev-parse`` for a delivery *source*.
+
+    Git's ref lookup order tries ``refs/<name>`` and ``refs/tags/<name>``
+    before ``refs/heads/<name>``, so a bare ``rev-parse main`` answers with a
+    tag called ``main`` when one exists — and a tag planted in a checkout
+    would then be what gets validated and pushed to ``refs/heads/main``.
+    A plain branch name therefore resolves ``refs/heads/<name>`` explicitly
+    (peeled to a commit); only ``HEAD``, object ids, fully qualified refs and
+    revision expressions keep bare resolution, since those name the object
+    the caller means without any lookup-order ambiguity.
+    """
+    if (
+        source == "HEAD"
+        or source.startswith("refs/")
+        or _OID_RE.fullmatch(source.lower())
+        or _REVISION_SYNTAX_RE.search(source)
+    ):
+        return source
+    return f"refs/heads/{source}^{{commit}}"
+
+
 class GitManager:
     # Environment overrides for all git/gh subprocess calls.  Prevents
     # interactive credential prompts that would otherwise write directly to
@@ -679,7 +706,11 @@ class GitManager:
         Plain push (default) is used for the ``sync_and_merge`` flow where
         only the default branch is pushed and force-push is never appropriate.
         """
-        args = ["push", "origin", branch_name]
+        _validate_ref(branch_name)
+        # An explicit refs/heads/ source: a bare name is looked up in git's
+        # ref order, where a same-named tag shadows (or, on push, collides
+        # with) the branch.
+        args = ["push", "origin", f"refs/heads/{branch_name}:refs/heads/{branch_name}"]
         if force_with_lease:
             args.insert(2, "--force-with-lease")
         self._run(args, cwd=checkout_path)
@@ -1624,11 +1655,7 @@ class GitManager:
                 # Remote branch doesn't exist yet (first push).
                 remote_ref_before = None
 
-        tip = (
-            await self._arun(["rev-parse", "--verify", branch_name], cwd=checkout_path)
-        ).strip()
-        if not _OID_RE.fullmatch(tip.lower()):
-            raise GitError(f"could not resolve immutable delivery tip for {branch_name}")
+        tip = await self._aresolve_delivery_tip(checkout_path, branch_name)
         args = ["push", "origin", f"{tip}:refs/heads/{branch_name}"]
         if force_with_lease:
             args.insert(2, "--force-with-lease")
@@ -2374,6 +2401,23 @@ class GitManager:
                     "Failed to emit git.push event for %s", checkout_path, exc_info=True
                 )
 
+    async def _aresolve_delivery_tip(self, checkout_path: str, source: str) -> str:
+        """Resolve a delivery *source* to the one commit id that will be pushed.
+
+        A plain branch name is resolved as ``refs/heads/<name>`` so a
+        same-named tag cannot shadow it (see :func:`_delivery_source_rev`);
+        a missing branch fails closed rather than falling back to whatever
+        else carries the name.
+        """
+        rev = _delivery_source_rev(source)
+        try:
+            tip = (await self._arun(["rev-parse", "--verify", rev], cwd=checkout_path)).strip()
+        except GitError as e:
+            raise GitError(f"could not resolve delivery source {rev}: {e}") from e
+        if not _OID_RE.fullmatch(tip.lower()):
+            raise GitError(f"could not resolve immutable delivery tip for {source}")
+        return tip
+
     async def apush_validated_ref(
         self,
         checkout_path: str,
@@ -2390,9 +2434,7 @@ class GitManager:
         """
         source_ref = _validate_rev(source_ref, field="push source")
         branch = _validate_ref(branch)
-        tip = (await self._arun(["rev-parse", "--verify", source_ref], cwd=checkout_path)).strip()
-        if not _OID_RE.fullmatch(tip.lower()):
-            raise GitError(f"could not resolve immutable delivery tip for {source_ref}")
+        tip = await self._aresolve_delivery_tip(checkout_path, source_ref)
         args = ["push", "origin", f"{tip}:refs/heads/{branch}"]
         if force_with_lease:
             args.insert(2, "--force-with-lease")
@@ -2419,11 +2461,7 @@ class GitManager:
         source_ref = _validate_rev(source_ref, field="delivery source")
         base_ref = _validate_rev(base_ref, field="delivery base")
         branch = _validate_ref(branch)
-        tip = (
-            await self._arun(["rev-parse", "--verify", source_ref], cwd=checkout_path)
-        ).strip()
-        if not _OID_RE.fullmatch(tip.lower()):
-            raise GitError(f"could not resolve immutable delivery tip for {source_ref}")
+        tip = await self._aresolve_delivery_tip(checkout_path, source_ref)
         paths = await self.areserved_paths_in_diff(checkout_path, base_ref, tip)
         if paths:
             raise GitError("reserved delivery paths: " + ", ".join(paths))
