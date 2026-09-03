@@ -418,16 +418,11 @@ class PoolsMixin:
 
             work_dir = workspace.workspace_path
 
-            # A pool may write `.aq/claim.json` long after launch.  The slot
-            # provisioning path installs this block already, but an
-            # exclusive-clone pool bypasses slot setup and needs the same
-            # protection before its session is handed the checkout.
-            is_checkout = kind.is_git_repo and os.path.exists(os.path.join(work_dir, ".git"))
-            if is_checkout and await self.git.avalidate_checkout(work_dir):
-                from src.orchestrator.worktree_manager import WorktreeSlotManager
-
-                exclude_root = await self.git.aworktree_base_path(work_dir) or work_dir
-                WorktreeSlotManager.ensure_git_exclude(exclude_root)
+            # An exclusive-clone pool bypasses slot setup, but may later write
+            # `.aq/claim.json`; install the same managed excludes before its
+            # session receives the checkout.
+            if kind.is_git_repo and os.path.exists(os.path.join(work_dir, ".git")):
+                await self._ensure_control_files_excluded(work_dir)
 
             # Same guard as the task-launch path: a pool session may not run
             # in the base checkout (see :mod:`src.orchestrator.base_workspace`).

@@ -121,17 +121,6 @@ class WorkspaceMixin:
         except OSError:
             pass
 
-    async def _ensure_daemon_git_exclude(self, workspace: str, *, is_worktree: bool) -> None:
-        """Install daemon bookkeeping excludes when *workspace* is a checkout."""
-        if not await self.git.avalidate_checkout(workspace):
-            return
-        exclude_root = workspace
-        if is_worktree:
-            exclude_root = await self.git.aworktree_base_path(workspace) or workspace
-        from src.orchestrator.worktree_manager import WorktreeSlotManager
-
-        WorktreeSlotManager.ensure_git_exclude(exclude_root)
-
     async def _prepare_workspace(self, task: Task, agent) -> str | None:
         async with self._task_control_lock(task.id):
             current = await self.db.get_task(task.id)
@@ -343,11 +332,6 @@ class WorkspaceMixin:
         except OSError as e:
             logger.warning("Failed to write sentinel to %s: %s", workspace, e)
 
-        # A resumed exclusive clone returns below, before ordinary clone
-        # provisioning. Install the managed block first whenever this is
-        # already a checkout so its restored session cannot stage daemon state.
-        await self._ensure_daemon_git_exclude(workspace, is_worktree=is_worktree)
-
         from src.orchestrator.task_checkpoint import CHECKPOINT_META, restore_checkpoint
         if await self.db.get_task_meta(task.id, CHECKPOINT_META):
             try:
@@ -466,10 +450,6 @@ class WorkspaceMixin:
                             ["reset", "--hard", f"origin/{default_branch}"],
                             cwd=workspace,
                         )
-
-            # A newly created clone was not a checkout before the checkpoint
-            # path above, so apply the same exclusion after provisioning.
-            await self._ensure_daemon_git_exclude(workspace, is_worktree=is_worktree)
 
             # Update task branch in DB
             await self.db.update_task(task.id, branch_name=branch_name)
