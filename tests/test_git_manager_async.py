@@ -1627,3 +1627,51 @@ class TestAfindOpenPr:
 
         monkeypatch.setattr(mgr, "_arun_subprocess", fake_subprocess)
         assert await mgr.afind_open_pr(clone, "aq/t-1") is None
+
+
+class TestRootDeliveryGatesTheWholeTree:
+    """``apush_validated_delivery(..., base_ref=None, ...)`` publishes a tree origin has never seen.
+
+    With no base on origin there is no merge-base to diff from, so the reserved
+    delivery gate covers every tracked path in the tip: a daemon bookkeeping
+    file that would be "unchanged on the base" in a normal delivery is here
+    being published for the first time.
+    """
+
+    @pytest.mark.asyncio
+    async def test_refuses_a_tree_that_tracks_reserved_paths(self, bare_repo, clone, mgr):
+        pathlib.Path(clone, ".aq").mkdir()
+        _commit_file(clone, ".aq/claim.json", "{}", "leak daemon state")
+
+        with pytest.raises(GitError, match=r"^reserved delivery paths: \.aq/claim\.json$"):
+            await mgr.apush_validated_delivery(clone, None, "HEAD", "develop")
+
+        assert _git(["branch", "--list", "develop"], cwd=bare_repo) == ""
+
+    @pytest.mark.asyncio
+    async def test_pushes_the_resolved_head_oid_to_a_new_branch(self, bare_repo, clone, mgr):
+        tip = _commit_file(clone, "feature.txt", "content", "clean work")
+
+        pushed = await mgr.apush_validated_delivery(clone, None, "HEAD", "develop")
+
+        assert pushed == tip
+        assert _git(["rev-parse", "refs/heads/develop"], cwd=bare_repo) == tip
+        # The exact-OID refspec still updates the remote-tracking ref, so
+        # callers that read ``origin/<branch>`` afterwards see the new branch.
+        assert _git(["rev-parse", "refs/remotes/origin/develop"], cwd=clone) == tip
+
+    @pytest.mark.asyncio
+    async def test_the_tree_gate_lists_every_reserved_kind(self, clone, mgr):
+        pathlib.Path(clone, ".aq").mkdir()
+        pathlib.Path(clone, ".codex").mkdir()
+        pathlib.Path(clone, "src").mkdir()
+        _commit_file(clone, ".aq/claim.json", "{}", "aq")
+        _commit_file(clone, ".codex/config.toml", "", "codex")
+        _commit_file(clone, ".aq-worktree.json", "{}", "worktree")
+        _commit_file(clone, "src/ok.py", "", "legit")
+
+        assert await mgr.areserved_paths_in_tree(clone, "HEAD") == [
+            ".aq-worktree.json",
+            ".aq/claim.json",
+            ".codex/config.toml",
+        ]
