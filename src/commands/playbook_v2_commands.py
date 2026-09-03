@@ -1101,7 +1101,11 @@ class PlaybookV2CommandsMixin:
         if not pending_event_ids:
             return {"error": "pending_event_ids must be a non-empty list of event ids"}
 
-        if not self._v2_storage_ready("get_pending_events", "resolve_pending_event"):
+        if not self._v2_storage_ready(
+            "get_pending_events",
+            "resolve_pending_event",
+            "record_pending_event_dispatch_failure",
+        ):
             return self._v2_storage_unavailable()
         wanted = set(pending_event_ids)
         rows = await self.db.get_pending_events(pending_event_ids)
@@ -1119,11 +1123,12 @@ class PlaybookV2CommandsMixin:
             if row is None:
                 skipped.append(event_id)
                 continue
+            claimed_at = time.time()
             claimed = await self.db.resolve_pending_event(
                 event_id,
-                resolution=action,
+                resolution="dispatched" if action == "dispatch" else "discarded",
                 resolved_by=actor,
-                now=time.time(),
+                now=claimed_at,
             )
             if not claimed:
                 skipped.append(event_id)
@@ -1138,7 +1143,24 @@ class PlaybookV2CommandsMixin:
                 dispatched.extend(result.run_ids)
             except Exception as exc:  # noqa: BLE001 - each event reports independently
                 logger.warning("pending V2 event %s dispatch failed", event_id, exc_info=True)
-                errors.append(f"{event_id}: {exc}")
+                error = str(exc)
+                try:
+                    restored = await self.db.record_pending_event_dispatch_failure(
+                        event_id,
+                        resolved_by=actor,
+                        resolved_at=claimed_at,
+                        error=error,
+                    )
+                except Exception as restore_exc:  # noqa: BLE001 - report both failures
+                    logger.exception(
+                        "pending V2 event %s could not restore its failed dispatch",
+                        event_id,
+                    )
+                    error = f"{error}; failed to restore pending event: {restore_exc}"
+                else:
+                    if not restored:
+                        error = f"{error}; failed dispatch no longer owns pending event claim"
+                errors.append(f"{event_id}: {error}")
         return {
             "success": not errors,
             "action": action,

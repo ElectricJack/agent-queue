@@ -938,6 +938,60 @@ async def test_resolve_is_exactly_once(db):
     assert sum(1 for ok in outcomes if ok) == 1
 
 
+async def test_failed_pending_event_dispatch_is_retryable_and_audited(db):
+    pending_id = await retain(db)
+    assert await db.resolve_pending_event(
+        pending_id, resolution="dispatched", resolved_by="op-1", now=NOW + 1
+    )
+
+    assert await db.record_pending_event_dispatch_failure(
+        pending_id,
+        resolved_by="op-1",
+        resolved_at=NOW + 1,
+        error="engine unavailable",
+    )
+
+    [row] = await db.list_pending_events(playbook_id="task-review")
+    assert row["attempts"] == 1
+    assert row["last_error"] == "engine unavailable"
+    assert row["resolved_at"] is None
+    assert row["resolved_by"] is None
+    assert row["resolution"] is None
+
+    assert await db.resolve_pending_event(
+        pending_id, resolution="dispatched", resolved_by="op-2", now=NOW + 2
+    )
+    assert await db.list_pending_events(playbook_id="task-review") == []
+
+
+async def test_stale_dispatch_failure_cannot_reopen_a_newer_claim(db):
+    pending_id = await retain(db)
+    assert await db.resolve_pending_event(
+        pending_id, resolution="dispatched", resolved_by="op-1", now=NOW + 1
+    )
+    assert await db.record_pending_event_dispatch_failure(
+        pending_id,
+        resolved_by="op-1",
+        resolved_at=NOW + 1,
+        error="first failure",
+    )
+    assert await db.resolve_pending_event(
+        pending_id, resolution="dispatched", resolved_by="op-2", now=NOW + 2
+    )
+
+    assert not await db.record_pending_event_dispatch_failure(
+        pending_id,
+        resolved_by="op-1",
+        resolved_at=NOW + 1,
+        error="late first failure",
+    )
+    assert await db.list_pending_events(playbook_id="task-review") == []
+    [row] = await db.list_pending_events(playbook_id="task-review", include_resolved=True)
+    assert row["attempts"] == 2
+    assert row["resolved_by"] == "op-2"
+    assert row["resolved_at"] == NOW + 2
+
+
 async def test_pending_event_quota_is_enforced(db):
     db.set_playbook_pending_event_quota(3)
     for i in range(3):

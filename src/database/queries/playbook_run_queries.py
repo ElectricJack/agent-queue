@@ -1388,7 +1388,21 @@ class PlaybookRunQueryMixin:
     async def resolve_pending_event(
         self, pending_event_id: str, *, resolution: str, resolved_by: str, now: float
     ) -> bool:
-        """CAS on ``resolved_at IS NULL`` — two operators produce one dispatch."""
+        """CAS on ``resolved_at IS NULL`` — two operators produce one dispatch.
+
+        A dispatch resolution also records the attempt while it owns the row.
+        If the engine rejects that attempt,
+        :meth:`record_pending_event_dispatch_failure` restores the unresolved
+        state without making the claim available to another operator during
+        dispatch.
+        """
+        values: dict[str, Any] = {
+            "resolved_at": now,
+            "resolved_by": resolved_by,
+            "resolution": resolution,
+        }
+        if resolution == "dispatched":
+            values["attempts"] = playbook_pending_events.c.attempts + 1
         async with self.immediate() as conn:
             result = await conn.execute(
                 update(playbook_pending_events)
@@ -1396,7 +1410,39 @@ class PlaybookRunQueryMixin:
                     playbook_pending_events.c.pending_event_id == pending_event_id,
                     playbook_pending_events.c.resolved_at.is_(None),
                 )
-                .values(resolved_at=now, resolved_by=resolved_by, resolution=resolution)
+                .values(**values)
+            )
+        return int(result.rowcount) == 1
+
+    async def record_pending_event_dispatch_failure(
+        self,
+        pending_event_id: str,
+        *,
+        resolved_by: str,
+        resolved_at: float,
+        error: str,
+    ) -> bool:
+        """Restore one failed dispatch claim to the retryable pending state.
+
+        The complete claim identity is the fence.  A delayed failure from an
+        older attempt cannot reopen a row that a newer operator has already
+        claimed or resolved.
+        """
+        async with self.immediate() as conn:
+            result = await conn.execute(
+                update(playbook_pending_events)
+                .where(
+                    playbook_pending_events.c.pending_event_id == pending_event_id,
+                    playbook_pending_events.c.resolution == "dispatched",
+                    playbook_pending_events.c.resolved_by == resolved_by,
+                    playbook_pending_events.c.resolved_at == resolved_at,
+                )
+                .values(
+                    resolved_at=None,
+                    resolved_by=None,
+                    resolution=None,
+                    last_error=error,
+                )
             )
         return int(result.rowcount) == 1
 
