@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import ActivationPanel from "../ActivationPanel";
@@ -22,6 +22,89 @@ describe("Package 5 review panels", () => {
     await user.click(screen.getByRole("checkbox", { name: "I reviewed the executable diff" }));
     await user.click(button);
     expect(activate).toHaveBeenCalledWith(sha);
+  });
+
+  it("itemises contract and transition changes when no step field moved", () => {
+    // The regression this pins: a contract-only or structural change counts as
+    // semantic and demands an acknowledgement, so it has to be visible.
+    render(
+      <ArtifactDiffPanel
+        diff={{
+          base: artifact,
+          target: artifact,
+          executable_change: true,
+          semantic_change_count: 2,
+          presentation_change_count: 0,
+          steps: [{ step_id: "gate", change: "unchanged", field_changes: [] }],
+          edges: [
+            { edge_id: "review::gate::approve", rule_id: "review", source: "gate", target: "notify", outcome: "approve", change: "modified" },
+            { edge_id: "review::gate::reject", rule_id: "review", source: "gate", target: "stop", outcome: "reject", change: "unchanged" },
+          ],
+          contracts: [
+            { command: "gate_create", fingerprint_before: `sha256:${"1".repeat(64)}`, fingerprint_after: `sha256:${"2".repeat(64)}`, change: "modified" },
+            { command: "task_close", fingerprint_before: "kept", fingerprint_after: "kept", change: "unchanged" },
+          ],
+        }}
+      />,
+    );
+
+    const executable = within(screen.getByRole("list", { name: "Executable changes" }));
+    expect(executable.getAllByRole("listitem")).toHaveLength(2);
+    expect(executable.getByText("review::gate::approve")).toBeInTheDocument();
+    expect(executable.getByText("gate → notify on approve")).toBeInTheDocument();
+    expect(executable.getByText("gate_create")).toBeInTheDocument();
+    expect(executable.getByText("111111111111…")).toBeInTheDocument();
+    expect(executable.getByText("222222222222…")).toBeInTheDocument();
+    // Unchanged rows are noise in a review, not changes.
+    expect(executable.queryByText("review::gate::reject")).toBeNull();
+    expect(executable.queryByText("task_close")).toBeNull();
+  });
+
+  it("shows a rule's event retarget and prints a blocker only once", () => {
+    const message = "Command contract changed for 'gate_create'";
+    render(
+      <ArtifactDiffPanel
+        diff={{
+          base: artifact,
+          target: artifact,
+          executable_change: true,
+          semantic_change_count: 1,
+          rules: [
+            { rule_id: "review", change: "modified", event_type_before: "task.completed", event_type_after: "task.closed", step_ids_added: ["notify"], step_ids_removed: [] },
+            { rule_id: "untouched", change: "unchanged", event_type_before: "task.created", event_type_after: "task.created" },
+          ],
+          diagnostics: [{ severity: "error", code: "stale_contract", message }],
+          activation_blocked: true,
+          activation_blockers: [message, "Activation is disabled"],
+        }}
+      />,
+    );
+
+    const executable = within(screen.getByRole("list", { name: "Executable changes" }));
+    expect(executable.getAllByRole("listitem")).toHaveLength(1);
+    expect(executable.getByText("task.completed")).toBeInTheDocument();
+    expect(executable.getByText("task.closed")).toBeInTheDocument();
+    expect(executable.getByText("steps added: notify")).toBeInTheDocument();
+    // The blockers are derived from the diagnostics; the banner already says it.
+    expect(screen.getAllByText(message)).toHaveLength(1);
+    expect(screen.getByText("Activation is disabled")).toBeInTheDocument();
+  });
+
+  it("never reports no executable changes against a non-zero semantic count", () => {
+    render(
+      <ArtifactDiffPanel
+        diff={{
+          base: artifact,
+          target: artifact,
+          executable_change: true,
+          semantic_change_count: 3,
+          steps: [{ step_id: "gate", change: "unchanged", field_changes: [] }],
+        }}
+      />,
+    );
+
+    expect(screen.queryByRole("list", { name: "Executable changes" })).toBeNull();
+    expect(screen.getByText(/counted semantic changes this artifact diff does not itemize/)).toBeInTheDocument();
   });
 
   it("requires a fresh acknowledgement when the displayed artifact changes", async () => {
