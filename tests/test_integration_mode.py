@@ -71,6 +71,7 @@ async def orch(tmp_path):
     # Default: the task branch carries work, so the PR gate applies.
     mock_git.acount_commits_ahead = AsyncMock(return_value=1)
     mock_git.abranch_exists = AsyncMock(return_value=True)
+    mock_git.aref_exists = AsyncMock(return_value=True)
     mock_git.areserved_paths_in_diff = AsyncMock(return_value=[])
     mock_git._arun = AsyncMock(return_value="0")
     mock_git.acommit_all = AsyncMock(return_value=True)
@@ -405,6 +406,66 @@ class TestPhaseVerifyByMode:
         orch.git.afind_open_pr.assert_awaited_once_with(
             ws.workspace_path, "feature/assigned", include_workspace_head=False
         )
+
+    async def test_pr_mode_uses_remote_only_assigned_ref_but_logical_pr_branch(self, orch):
+        task = _pr_task("t-pr-remote-assigned", branch_name="feature/assigned")
+        await orch.db.create_task(task)
+        orch.git.aget_current_branch = AsyncMock(return_value="main")
+
+        async def ref_exists(_workspace, ref):
+            return ref == "refs/remotes/origin/feature/assigned"
+
+        orch.git.aref_exists = AsyncMock(side_effect=ref_exists)
+        orch.git.acount_commits_ahead = AsyncMock(
+            side_effect=lambda _workspace, branch, _base: (
+                2 if branch == "origin/feature/assigned" else 0
+            )
+        )
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = _ctx(orch, task, ws.workspace_path)
+
+        assert await orch._phase_verify(ctx) == PhaseResult.CONTINUE
+        orch.git.afind_open_pr.assert_awaited_once_with(
+            ws.workspace_path, "feature/assigned", include_workspace_head=False
+        )
+        assert any(
+            call.args[1] == "origin/feature/assigned"
+            for call in orch.git.acount_commits_ahead.await_args_list
+        )
+
+    async def test_pr_mode_prefers_local_assigned_ref(self, orch):
+        task = _pr_task("t-pr-local-assigned", branch_name="feature/assigned")
+        await orch.db.create_task(task)
+        orch.git.aget_current_branch = AsyncMock(return_value="main")
+        orch.git.aref_exists = AsyncMock(return_value=True)
+        orch.git.acount_commits_ahead = AsyncMock(
+            side_effect=lambda _workspace, branch, _base: (
+                2 if branch == "feature/assigned" else 0
+            )
+        )
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = _ctx(orch, task, ws.workspace_path)
+
+        assert await orch._phase_verify(ctx) == PhaseResult.CONTINUE
+        orch.git.aref_exists.assert_awaited_once_with(
+            ws.workspace_path, "refs/heads/feature/assigned"
+        )
+        assert all(
+            call.args[1] != "origin/feature/assigned"
+            for call in orch.git.acount_commits_ahead.await_args_list
+        )
+
+    async def test_pr_mode_unknown_local_assigned_ref_fails_closed(self, orch):
+        task = _pr_task("t-pr-unknown-assigned", branch_name="feature/assigned")
+        await orch.db.create_task(task)
+        orch.git.aget_current_branch = AsyncMock(return_value="main")
+        orch.git.aref_exists = AsyncMock(return_value=None)
+        orch.git.acount_commits_ahead = AsyncMock(return_value=0)
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = _ctx(orch, task, ws.workspace_path)
+
+        assert await orch._phase_verify(ctx) == PhaseResult.STOP
+        orch.git.afind_open_pr.assert_not_awaited()
 
     async def test_pr_mode_rejects_a_stale_pr_for_an_alternate_delivery_branch(self, orch):
         """An alternate branch's PR must deliver its current tip, too."""
@@ -1041,7 +1102,7 @@ class TestEmptyBranchSkipsThePrGate:
         task, ctx = await self._empty_branch_ctx(orch, "t-unknown", "aq/t-unknown")
         orch.git.aget_current_branch = AsyncMock(return_value="main")
         orch.git.acount_commits_ahead = AsyncMock(return_value=None)
-        orch.git.abranch_exists = AsyncMock(return_value=None)
+        orch.git.aref_exists = AsyncMock(return_value=None)
         orch.git.afind_open_pr = AsyncMock(return_value=None)
         orch.git.ais_ancestor = AsyncMock(return_value=False)
 
@@ -1058,7 +1119,7 @@ class TestEmptyBranchSkipsThePrGate:
                 0 if branch == "main" and base == "origin/main" else None
             )
         )
-        orch.git.abranch_exists = AsyncMock(return_value=False)
+        orch.git.aref_exists = AsyncMock(return_value=False)
         orch.git.afind_open_pr = AsyncMock(return_value=None)
         orch.git.ais_ancestor = AsyncMock(return_value=False)
 

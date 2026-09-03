@@ -2936,19 +2936,28 @@ class GitManager:
         """Return whether *branch* exists locally or in ``origin``, else ``None`` on error."""
         branch = _validate_ref(branch, field="branch")
         for ref in (f"refs/heads/{branch}", f"refs/remotes/origin/{branch}"):
-            try:
-                result = await self._arun_subprocess(
-                    ["git", "show-ref", "--verify", "--quiet", ref],
-                    cwd=checkout_path,
-                    timeout=self._GIT_TIMEOUT,
-                )
-            except Exception:
-                return None
-            if result.returncode == 0:
+            exists = await self.aref_exists(checkout_path, ref)
+            if exists is True:
                 return True
-            if result.returncode != 1:
+            if exists is None:
                 return None
         return False
+
+    async def aref_exists(self, checkout_path: str, ref: str) -> bool | None:
+        """Return whether an exact Git ref exists, or ``None`` on probe failure."""
+        try:
+            result = await self._arun_subprocess(
+                ["git", "show-ref", "--verify", "--quiet", _validate_rev(ref)],
+                cwd=checkout_path,
+                timeout=self._GIT_TIMEOUT,
+            )
+        except Exception:
+            return None
+        if result.returncode == 0:
+            return True
+        if result.returncode == 1:
+            return False
+        return None
 
     async def ahas_non_plan_changes(
         self,

@@ -43,8 +43,9 @@ NO_CODE_PROFILE_IDS = REVIEW_PROFILE_IDS
 
 @dataclass(frozen=True)
 class _DeliveryResolution:
-    """Strict resolution of the one ref that carries task delivery work."""
+    """Logical delivery branch plus the concrete ref used for Git inspection."""
 
+    delivery_branch: str | None
     delivery_ref: str | None
     checked_refs: tuple[str, ...]
     no_work: bool = False
@@ -464,34 +465,44 @@ class GitOpsMixin:
         if current_count is None:
             return _DeliveryResolution(
                 None,
+                None,
                 (current_branch,),
                 error=f"Could not verify delivery commits on `{current_branch}`.",
             )
 
         if not assigned_branch or assigned_branch == current_branch:
             if current_count > 0:
-                return _DeliveryResolution(current_branch, (current_branch,))
+                return _DeliveryResolution(
+                    current_branch, current_branch, (current_branch,)
+                )
             if current_branch == default_branch and not has_remote:
                 return _DeliveryResolution(
+                    None,
                     None,
                     (current_branch,),
                     error="Cannot prove an untracked default checkout has no work.",
                 )
-            return _DeliveryResolution(None, (current_branch,), no_work=True)
+            return _DeliveryResolution(None, None, (current_branch,), no_work=True)
 
-        branch_exists = await self.git.abranch_exists(workspace, assigned_branch)
-        if branch_exists is None:
+        assigned_ref, ref_error = await self._resolve_assigned_ref(
+            workspace, assigned_branch
+        )
+        if ref_error:
             return _DeliveryResolution(
                 None,
+                None,
                 (current_branch,),
-                error=f"Could not verify whether delivery branch `{assigned_branch}` exists.",
+                error=ref_error,
             )
-        if not branch_exists:
+        if not assigned_ref:
             if current_count > 0:
-                return _DeliveryResolution(current_branch, (current_branch,))
+                return _DeliveryResolution(
+                    current_branch, current_branch, (current_branch,)
+                )
             if current_branch == default_branch and has_remote:
-                return _DeliveryResolution(None, (current_branch,), no_work=True)
+                return _DeliveryResolution(None, None, (current_branch,), no_work=True)
             return _DeliveryResolution(
+                None,
                 None,
                 (current_branch,),
                 error=(
@@ -502,19 +513,21 @@ class GitOpsMixin:
 
         assigned_count = await self._commits_ahead_of_default(
             workspace,
-            assigned_branch,
+            assigned_ref,
             default_branch,
             has_remote=has_remote,
         )
-        checked_refs = (current_branch, assigned_branch)
+        checked_refs = (current_branch, assigned_ref)
         if assigned_count is None:
             return _DeliveryResolution(
                 None,
+                None,
                 checked_refs,
-                error=f"Could not verify delivery commits on `{assigned_branch}`.",
+                error=f"Could not verify delivery commits on `{assigned_ref}`.",
             )
         if current_count > 0 and assigned_count > 0:
             return _DeliveryResolution(
+                None,
                 None,
                 checked_refs,
                 error=(
@@ -524,10 +537,35 @@ class GitOpsMixin:
                 ),
             )
         if assigned_count > 0:
-            return _DeliveryResolution(assigned_branch, checked_refs)
+            return _DeliveryResolution(assigned_branch, assigned_ref, checked_refs)
         if current_count > 0:
-            return _DeliveryResolution(current_branch, checked_refs)
-        return _DeliveryResolution(None, checked_refs, no_work=True)
+            return _DeliveryResolution(current_branch, current_branch, checked_refs)
+        return _DeliveryResolution(None, None, checked_refs, no_work=True)
+
+    async def _resolve_assigned_ref(
+        self, workspace: str, assigned_branch: str
+    ) -> tuple[str | None, str | None]:
+        """Resolve a logical branch to its preferred concrete local/remote ref."""
+        local_ref = f"refs/heads/{assigned_branch}"
+        local_exists = await self.git.aref_exists(workspace, local_ref)
+        if local_exists is None:
+            return (
+                None,
+                f"Could not verify whether delivery branch `{assigned_branch}` exists.",
+            )
+        if local_exists:
+            return assigned_branch, None
+
+        remote_ref = f"refs/remotes/origin/{assigned_branch}"
+        remote_exists = await self.git.aref_exists(workspace, remote_ref)
+        if remote_exists is None:
+            return (
+                None,
+                f"Could not verify whether delivery branch `{assigned_branch}` exists.",
+            )
+        if remote_exists:
+            return f"origin/{assigned_branch}", None
+        return None, None
 
     async def _task_proves_no_work(
         self,
@@ -735,13 +773,13 @@ class GitOpsMixin:
             delivery_refs = [current_branch]
             assigned_branch = ctx.delivery_branch or task.branch_name
             if assigned_branch and assigned_branch != current_branch:
-                branch_exists = await self.git.abranch_exists(
+                assigned_ref, ref_error = await self._resolve_assigned_ref(
                     workspace, assigned_branch
                 )
-                if branch_exists is None:
+                if ref_error:
                     return PhaseResult.STOP
-                if branch_exists:
-                    delivery_refs.append(assigned_branch)
+                if assigned_ref:
+                    delivery_refs.append(assigned_ref)
             for delivery_ref in delivery_refs:
                 delivery_failure = await self._reserved_delivery_failure(
                     workspace,
@@ -820,6 +858,7 @@ class GitOpsMixin:
             except Exception as exc:
                 resolution = _DeliveryResolution(
                     None,
+                    None,
                     (current_branch,),
                     error=f"Could not resolve the task delivery ref: {exc}",
                 )
@@ -837,7 +876,7 @@ class GitOpsMixin:
                     failures.append(delivery_failure)
                     delivery_guard_blocked = True
             if resolution.delivery_ref:
-                ctx.delivery_branch = resolution.delivery_ref
+                ctx.delivery_branch = resolution.delivery_branch
 
         # This is the sole implicit no-work exit. Intent metadata and a
         # missing assigned branch can only skip delivery after the same
@@ -865,7 +904,10 @@ class GitOpsMixin:
         # job (under the merge slot); the slot deliberately stays on the
         # task branch.  Worktree-execution spec §6.5.
         delivery_ref = resolution.delivery_ref if resolution else None
-        pr_delivery_branch = delivery_ref if pr_mode else None
+        pr_delivery_branch = (
+            resolution.delivery_branch if resolution and pr_mode else None
+        )
+        pr_delivery_ref = delivery_ref if pr_mode else None
         if pr_mode and not pr_delivery_branch and has_uncommitted:
             # The strict resolver cannot prove a delivery tip while tracked or
             # untracked work is still present.  Keep the dirty-tree failure
@@ -1058,7 +1100,7 @@ class GitOpsMixin:
                     else:
                         integrated = await self.git.ais_ancestor(
                             workspace,
-                            pr_delivery_branch,
+                            pr_delivery_ref or pr_delivery_branch,
                             f"origin/{default_branch}",
                             strict=True,
                         )
@@ -1683,7 +1725,7 @@ class GitOpsMixin:
         ):
             logger.info("Task %s: strict Git proof found no work to integrate", task.id)
             return PhaseResult.CONTINUE
-        branch = resolution.delivery_ref
+        branch = resolution.delivery_branch
         if not branch:
             return PhaseResult.STOP
         ctx.delivery_branch = branch

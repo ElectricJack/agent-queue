@@ -484,18 +484,14 @@ async def test_worker_close_is_not_flagged_review_task(orchestrator_factory):
 
 
 @pytest.mark.asyncio
-async def test_empty_branch_close_is_flagged_no_code(
+async def test_shipped_direct_delivery_is_not_flagged_no_code_after_topology_is_empty(
     orchestrator_factory, pipeline_engine_factory
 ):
-    """A branch that ends with no commits is not worth reviewing.
+    """A shipped direct task stays reviewable after merge/push/branch deletion.
 
-    The completion pipeline settles that question before integration can
-    merge the branch away and leaves the verdict on the context; the close
-    path copies that proof into ``no_code``.
-    It is the guard that survives what the other two cannot: this worker has
-    a writing profile and no review dedup key, so ``read_only`` and
-    ``review_task`` both read False — and there is still nothing to review
-    (task bright-forge-78).
+    Direct delivery can make the final topology indistinguishable from an
+    untouched branch.  The proof bit alone therefore cannot classify a task
+    as no-code when the agent explicitly reported shipped work.
     """
     orch = await orchestrator_factory()
     h = orch.command_handler
@@ -521,18 +517,16 @@ async def test_empty_branch_close_is_flagged_no_code(
         branch_name=f"aq/{task_id}",
         pr_url="https://github.com/o/r/pull/9",
     )
-    await _close_pass(h, task_id)
+    await _close_pass(h, task_id, work_outcome="shipped")
 
     completed = _emitted(orch.bus, "task.completed")
     assert len(completed) == 1
-    assert completed[0]["no_code"] is True
+    assert completed[0]["no_code"] is False
     assert completed[0]["review_task"] is False, "not a pipeline-created review"
 
-    await engine.dispatch("task.completed", completed[0], event_id="empty-branch")
+    await engine.dispatch("task.completed", completed[0], event_id="shipped-direct")
 
-    assert await _review_rows(h, task_id) == [], "reviewed a branch with an empty diff"
-    tasks = await h.db.list_tasks(project_id="p")
-    assert [t for t in tasks if t.profile_id == "final-reviewer"] == []
+    assert await _review_rows(h, task_id), "shipped work was suppressed after delivery"
 
 
 @pytest.mark.asyncio

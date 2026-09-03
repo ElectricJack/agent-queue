@@ -235,6 +235,12 @@ class TestAsyncFindOpenPr:
         assert await mgr.abranch_exists(clone, "missing") is None
 
     @pytest.mark.asyncio
+    async def test_exact_ref_exists_distinguishes_local_remote_and_missing(self, mgr, clone):
+        assert await mgr.aref_exists(clone, "refs/heads/main") is True
+        assert await mgr.aref_exists(clone, "refs/remotes/origin/main") is True
+        assert await mgr.aref_exists(clone, "refs/heads/missing") is False
+
+    @pytest.mark.asyncio
     async def test_strict_boolean_probes_preserve_unknown(self, mgr, monkeypatch):
         monkeypatch.setattr(
             mgr,

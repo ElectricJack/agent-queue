@@ -1273,8 +1273,11 @@ class ExecutionMixin:
         # ``pr_url`` for ``event.task.pr_url`` to read as truthy.
         if new_status == TaskStatus.COMPLETED:
             try:
-                # ``no_code`` is set only by the central strict Git no-work
-                # proof. The review rules in default-pipeline.md guard on it:
+                # ``no_code`` requires both explicit no-code intent and the
+                # central strict Git no-work proof. Direct delivery can make
+                # an already-merged branch look empty, so proof alone is not
+                # an outcome classification. The review rules in
+                # default-pipeline.md guard on it:
                 # a reviewer's own task
                 # carries a ``branch_name`` like any other session task (the
                 # slot is checked out on ``aq/<id>``), so without this flag
@@ -1298,7 +1301,9 @@ class ExecutionMixin:
                     task,
                     agent_id=task.assigned_agent_id,
                     agent_type=task.profile_id,
-                    no_code=ctx.no_work_proven,
+                    no_code=(
+                        ctx.no_work_proven and await self._task_produces_no_code(ctx)
+                    ),
                     review_task=is_review_completion(task.dedup_key, task.profile_id),
                 )
             except Exception:
