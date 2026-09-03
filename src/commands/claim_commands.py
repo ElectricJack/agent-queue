@@ -17,10 +17,6 @@ from src.claim_file import (
     write_claim_file,
 )
 from src.models import ClaimResult, TaskStatus
-from src.database.queries.claim_queries import (
-    PREPARE_BACKOFF_ATTEMPTS_KEY,
-    PREPARE_BACKOFF_UNTIL_KEY,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -563,11 +559,9 @@ class ClaimCommandsMixin:
             remove_claim_file(row.work_dir)
             self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
             return self._simple(ClaimResult.PREPARE_FAILED, "released before activation", row, cap)
-        await self.db.delete_task_meta(task.id, "manual_pause_checkpoint")
-        # A successful preparation proves the slot is usable again; reset the
-        # failure ladder so a later, unrelated prepare starts at its minimum.
-        await self.db.delete_task_meta(task.id, PREPARE_BACKOFF_UNTIL_KEY)
-        await self.db.delete_task_meta(task.id, PREPARE_BACKOFF_ATTEMPTS_KEY)
+        # A successful preparation clears its pause checkpoint and failure
+        # ladder together, so a later, unrelated prepare starts at minimum.
+        await self.db.clear_claim_preparation_metadata(task.id)
         self._resolve_claim_waiters(session.id, epoch, "claimed")
         await self.orchestrator._emit_task_event(
             "task.claimed",

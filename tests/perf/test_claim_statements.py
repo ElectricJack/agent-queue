@@ -199,10 +199,12 @@ class TestClaimStatementBudgets:
         assert res["result"] == "claimed"
         dialect = any_db._engine.dialect.name
         # The durable-worker eligibility guard (+1), pre-launch task/session
-        # revalidation (+2), activation claim fence (+1), and pause-checkpoint
-        # cleanup (+1) bring the measured SQLite path from 14 to 19. These
-        # protect a concurrent pause/reassignment; retain a bounded budget.
-        budget = 19 if dialect == "sqlite" else 17
+        # revalidation (+2), activation claim fence (+1), and the durable
+        # task-session-attempt insert (+1) protect concurrent
+        # pause/reassignment and restart recovery. SQLite records two more
+        # transaction-boundary statements around that required insert; the
+        # backoff and pause keys are deliberately cleared by one DELETE.
+        budget = 21 if dialect == "sqlite" else 17
         print(f"\ntask_claim happy path ({dialect}): {c['n']} statements (budget {budget})")
         assert c["n"] <= budget, f"{c['n']} statements > budget {budget}"
 
@@ -243,9 +245,11 @@ class TestClaimStatementBudgets:
         assert prepared["task"] is not None
         dialect = any_db._engine.dialect.name
         # The two outer-loop pre-reads (session+profile join, project) are
-        # not part of the transaction.
+        # not part of the transaction.  The durable task-session-attempt
+        # insert is required so every pool claim has restart/audit history;
+        # it adds one logical statement after the original claim budget.
         n = c["n"] - 2
-        budget = 10 if dialect == "sqlite" else 8
+        budget = 11 if dialect == "sqlite" else 9
         print(f"\nclaim transaction only ({dialect}): {n} statements (budget {budget})")
         assert n <= budget, f"{n} statements > budget {budget}"
 

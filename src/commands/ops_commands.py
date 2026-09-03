@@ -457,10 +457,20 @@ class OpsCommandsMixin:
                         "reason": "lifecycle_changed",
                     },
                 )
-        await self.orchestrator.bus.emit(
-            "pool.lifecycle_changed",
-            {"profile_id": profile_id, "lifecycle": lifecycle},
-        )
+        # The profile edit is global, but lifecycle events are project-routed.
+        # Fan out to every project even when a compatibility caller supplied
+        # ``project_id``: that input does not make the profile configuration
+        # local, and every payload must satisfy the project event schema.
+        project_ids = [project.id for project in await self.db.list_projects()]
+        for project_id in project_ids:
+            await self.orchestrator.bus.emit(
+                "pool.lifecycle_changed",
+                {
+                    "project_id": project_id,
+                    "profile_id": profile_id,
+                    "lifecycle": lifecycle,
+                },
+            )
         return {
             "success": True,
             "profile_id": profile_id,
@@ -546,13 +556,16 @@ class OpsCommandsMixin:
             "terminated": terminated,
             "warnings": warnings,
         }
-        await self.orchestrator.bus.emit(
-            "pool.bounds_changed",
-            {
-                "profile_id": profile_id,
-                "min_active": profile.min_active,
-                "max_active": profile.max_active,
-                "project_caps": project_caps,
-            },
-        )
+        for project_cap in project_caps:
+            await self.orchestrator.bus.emit(
+                "pool.bounds_changed",
+                {
+                    "project_id": project_cap["project_id"],
+                    "profile_id": profile_id,
+                    "min_active": profile.min_active,
+                    "max_active": profile.max_active,
+                    "project_cap": project_cap["max_concurrent_agents"],
+                    "effective_max_active": project_cap["effective_max_active"],
+                },
+            )
         return response

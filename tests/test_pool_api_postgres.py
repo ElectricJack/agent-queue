@@ -110,7 +110,7 @@ async def test_pool_management_routes_round_trip_on_postgres(pool_api):
         assert lifecycle.status_code == 200, lifecycle.text
         assert lifecycle.json()["lifecycle"] == "task"
         assert "\"lifecycle\": \"task\"" in (
-            data_dir / "vault" / "projects" / "pool-project" / "agent-types" / "worker" / "profile.md"
+            data_dir / "vault" / "agent-types" / "worker" / "profile.md"
         ).read_text(encoding="utf-8")
 
         enabled = await client.post(
@@ -124,7 +124,13 @@ async def test_pool_management_routes_round_trip_on_postgres(pool_api):
             json={"project_id": "pool-project", "profile_id": "worker", "min": 0, "max": None},
         )
         assert scaled.status_code == 200, scaled.text
-        assert scaled.json()["project_cap"] == scaled.json()["effective_max_active"] == 2
+        assert scaled.json()["project_caps"] == [
+            {
+                "project_id": "pool-project",
+                "max_concurrent_agents": 2,
+                "effective_max_active": 2,
+            }
+        ]
 
         status = await client.post("/api/pool/status", json={"project_id": "pool-project"})
         assert status.status_code == 200, status.text
