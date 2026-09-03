@@ -1592,23 +1592,29 @@ Run against a daemon with `playbooks.enabled: true`, `playbooks.v2_api: true`, `
 
 Store them under `docs/superpowers/reports/2026-09-01-playbook-v2-pkg5-scenarios/` and link them from the Package 5 exit-gate evidence.
 
-> **Status (2026-09-02, `566ea8d6`) — not capturable yet; do not re-queue blind.**
-> The seven scenarios need a V2 review surface that renders. It does not:
-> `src/playbooks/graph_projection.py`, `artifact_diff.py` and `run_overlay.py`
-> (§5.1-§5.3) are absent from `main` and from all 409 `origin/*` refs, and all seven
-> §5.4 commands in `src/commands/playbook_v2_commands.py` still return
-> `PlaybookV2CommandsMixin._v2_storage_unavailable` (returns at lines
-> 472/514/573/607/638/687/726), so `dashboard/src/pages/playbook-graph-v2/`
-> renders the storage-unavailable error instead of a graph, diff or overlay.
-> `docs/superpowers/reports/2026-09-01-playbook-v2-pkg5-scenarios/` does not
-> exist. This is the second attempt to close the screenshot task
-> (`amber-rapids-37` item 3, then `fair-rapids-36`); both re-derived the same
-> result because the queue carries no dependency edge from the screenshot task
-> to the §16.2 successor. That successor also lands T-4-T-9, T-27, T-28, T-32
-> and T-36-T-41; until it lands, milestone **M5 - Operator legible** (§13.1 note
-> above) is not claimable. **One-line gate before the next attempt:**
-> `ls src/playbooks/graph_projection.py`. If it is still missing, stop — nothing
-> in §13.3 is capturable and no daemon needs to be started.
+> **Status (2026-09-03, `cc7ba7e2`) — captured.** All seven are in
+> `docs/superpowers/reports/2026-09-01-playbook-v2-pkg5-scenarios/`, indexed with
+> a per-scenario "what it shows" table in that directory's
+> [`README.md`](../reports/2026-09-01-playbook-v2-pkg5-scenarios/README.md).
+>
+> The 2026-09-02 blocker is gone: the gate that note prescribed
+> (`ls src/playbooks/graph_projection.py`) passes, `artifact_diff.py` and
+> `run_overlay.py` are present, and `_v2_storage_unavailable` is now conditional
+> on `playbooks.v2_storage_enabled` rather than unconditional.
+>
+> They were **not** captured from a running daemon — a worker slot may not run
+> migrations or start against the operator database. Instead
+> `scripts/pkg5_scenarios/build_payloads.py` produces the exact responses the V2
+> command mixin would serve, by calling `project_graph`, `diff_artifacts`,
+> `project_overlay` and `evaluate_health` on the §10 fixtures against the live
+> `RegistryContractLookup`, and `dashboard/scenarios/` mounts the production
+> `PlaybookSemanticReview` over them with only the fetch transport replaced.
+> `scripts/pkg5_scenarios/capture.sh` drives the page. The fixtures' recorded
+> contract fingerprints match the live registry's, so v5 projects `ready`
+> unmodified. What this proves is what the graph *shows*; the storage,
+> activation-write and pending-event paths stay covered by
+> `tests/test_api_playbook_v2_commands.py` and
+> `tests/test_playbook_activation_commands.py`.
 
 ---
 
