@@ -7,3 +7,28 @@
 # regeneration never silently renames the package out from under its importer.
 package_name_override: agent_queue_api_client
 project_name_override: agent-queue-api-client
+
+# Post-generation hooks, declared explicitly so the generated tree is a
+# function of the pinned generator and not of whichever `ruff` happens to be
+# on PATH.
+#
+# The generator's default hooks are `ruff check --fix-only .` and
+# `ruff format .`, both rooted at the generated project. Recent ruff releases
+# (0.16.5 and 0.16.6 both do) reformat the Python code blocks *inside*
+# README.md, and the hook is skipped altogether -- with a warning, exit code 0
+# -- when ruff is not on PATH. So the same pinned generator wrote two
+# different READMEs: PR #388 ratcheted an unformatted one, which Linux CI
+# (ruff 0.16.6) reformatted on every run, failing
+# tests/test_api_client_contract.py::
+# test_generated_client_boilerplate_matches_what_the_pinned_generator_writes
+# deterministically on main.
+#
+# Scoping both hooks to the Python package leaves README.md exactly as the
+# generator's template writes it — identical with ruff present, absent, or on
+# any version — while the generated Python is still formatted as before (the
+# package directory is the only Python in the tree, so this changes nothing
+# about the .py output). Guarded by
+# test_generated_client_readme_does_not_depend_on_the_ambient_formatter.
+post_hooks:
+  - "ruff check --fix-only agent_queue_api_client"
+  - "ruff format agent_queue_api_client"
