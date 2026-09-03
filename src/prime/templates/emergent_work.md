@@ -18,7 +18,10 @@ task you hold; make `--reason` say why the task exists, referencing the current 
 the finding. Repeat the same why in the first line of the new task's description, so it
 survives for readers who only see the task.
 
-If the current task is a child of a container or epic (`parent_task_id` is set), generally
-create the emergent task under that same parent with `--parent <container-id>` so it remains
-grouped with the epic. File review/exit-gate work and other cross-cutting work that does not
-belong to the epic's deliverable at project level instead.
+If the current task is a child of a container or epic (`parent_task_id` is set), the new
+task is placed as your sibling under that same parent by default, so it stays grouped with
+the epic; `--parent <container-id>` naming that same parent is accepted but not required.
+Pass `--parent <your-task-id>` only when the work belongs *under* your own task. Nothing
+further up or across the tree can be selected. Review/exit-gate work and other cross-cutting
+work that does not belong to the epic's deliverable still lands as your sibling: say in its
+description that it belongs at project level so the epic owner or triage can reparent it.

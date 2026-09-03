@@ -740,12 +740,21 @@ close is skipped for pools; the token is revoked at drain.
 
 - `project_id` := token project (mismatch → `out_of_scope`);
 - `created_by_kind='session'`, `created_by_id=<session_id>`;
-- **holding a task `T`:** `parent_id`, if given, must be `T` or a descendant of `T`
-  (else `hierarchy.parent_out_of_scope`); if absent, a `discovered-from` edge to `T` is
-  added automatically. **Idle (no held task): creation is refused**
-  (`filing_requires_held_task`) — every worker-filed task has a provenance edge to the
-  work that surfaced it, and an idle session has none to give. Anything a worker wants
-  to file it files before closing;
+- **holding a task `T`:** `parent_id`, if given, must be `T`, a descendant of `T`, or
+  **`T`'s own immediate parent** (else `hierarchy.parent_out_of_scope`) — nothing further
+  up or across the tree, and never another project. **If `parent_id` is absent and `T`
+  has a parent, the new task defaults to `T.parent_task_id`**: emergent work found while
+  executing a child of an epic is organised as that child's *sibling*, grouped under the
+  same epic (this is what `AGENTS.md` and the prime "Emergent work" section tell workers
+  to do; the server now does it for them). If `T` is a root, the filing is a root. A
+  `discovered-from` edge to `T` (or to the explicit `discovered_from`, which must also
+  be `T` or a descendant) is written **in the same transaction as the parent-child edge**,
+  carrying the required `reason`, so placement and provenance never disagree — except
+  when the parent *is* the origin (`parent_id = T`), where the parent-child edge already
+  records the relationship and no duplicate edge is added. **Idle (no held task):
+  creation is refused** (`filing_requires_held_task`) — every worker-filed task has a
+  provenance edge to the work that surfaced it, and an idle session has none to give.
+  Anything a worker wants to file it files before closing;
 - **quota:** at most `swarm.max_filings_per_task` (default 20) tasks filed from one held
   task, across all of its claims; beyond it `filing_quota_exceeded`. Durable routing gates
   stop gated work from *running*; the quota stops a looping worker from growing the queue
@@ -758,15 +767,21 @@ close is skipped for pools; the token is revoked at drain.
   (`create_gate(gate_type='routing', await_id=<task_id>)` + `task_gates` row, via the
   existing routing-gate code path that `task-created-routing` uses today). The task is
   therefore blocked by a durable record from the instant it exists; nothing about its
-  safety depends on a playbook running. Subtasks of the held task get no gate: they
-  inherit the container's profile (or `profile_id` = the session's own profile) and
-  proceed once the cascade promotes them;
+  safety depends on a playbook running. Parented filings — subtasks of the held task
+  and sibling filings under its parent alike — get no born-with gate: they sit inside a
+  container the assignment router already routes, inherit `profile_id` from the filing
+  session's own profile when the delegation bound resolves one (never wider), and
+  proceed once the cascade promotes them. A project pipeline whose `task.created` rule
+  attaches a `routing` gate to parented tasks still gets that gate, in the same
+  transaction (`routing_policy`);
 - `profile_id` may be omitted (routing decides) or set only to the session's own profile.
 
 **Policy lives in the default pipeline — it resolves the hold, it does not create it.**
 `task.created` gains optional payload fields `created_by_kind`, `created_by_id`,
 `parent_task_id`, `discovered_from`, `routing_gate_id` (schema registry updated; required
-triple unchanged). The shipped `default-pipeline.md` rule:
+triple unchanged). For a worker filing `parent_task_id` is the parent actually written
+(the shared epic for a sibling filing, `null` for a root or depth-cap fallback) and
+`discovered_from` is the origin task, so a subscriber sees both halves of the placement. The shipped `default-pipeline.md` rule:
 
 ```yaml
 - id: worker-filed-triage

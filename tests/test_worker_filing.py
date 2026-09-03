@@ -264,3 +264,206 @@ async def test_local_task_creation_does_not_accept_spoofed_session_provenance(ha
     })
     created = await db.get_task(result["task_id"])
     assert created.created_by_kind is None and created.created_by_id is None
+
+
+async def holding_child_session(db, sid="s1", epic_id="epic", task_id="epic.1"):
+    """A pool session holding ``epic.1``, a child of the container ``epic``."""
+    await db.create_task(Task(id=epic_id, project_id=PROJECT_ID, title="epic", description="e",
+                              status=TaskStatus.IN_PROGRESS))
+    await holding_session(db, sid=sid, task_id=task_id)
+    async with db._engine.begin() as conn:
+        await db.set_parent(task_id, epic_id, conn=conn)
+    return sid
+
+
+class TestSiblingFiling:
+    """Emergent work found under a child task is filed as its sibling (§12)."""
+
+    async def test_default_filing_from_child_becomes_sibling_with_both_edges(self, handler, db):
+        sid = await holding_child_session(db)
+
+        res = await scoped(handler, sid)._cmd_create_task({
+            "title": "found a bug", "description": "d",
+            "reason": "epic.1 exposed a parser defect",
+        })
+
+        assert res["success"] is True
+        new = await db.get_task(res["task_id"])
+        assert new.parent_task_id == "epic"
+        assert new.id.startswith("epic.") and new.id != "epic.1"
+        assert new.status == TaskStatus.DEFINED
+        deps = await db.get_typed_dependencies(new.id)
+        assert ("epic", "parent-child") in deps
+        assert ("epic.1", "discovered-from") in deps
+        assert len(deps) == 2
+        by_target = {
+            (d["depends_on_task_id"], d["dep_type"]): d["description"]
+            for d in await db.get_typed_dependencies_detailed(new.id)
+        }
+        assert by_target[("epic", "parent-child")] == "epic.1 exposed a parser defect"
+        assert by_target[("epic.1", "discovered-from")] == "epic.1 exposed a parser defect"
+        assert (await db.get_task("epic.1")).filed_count == 1
+
+    async def test_sibling_filing_has_no_root_routing_gate(self, handler, db):
+        sid = await holding_child_session(db)
+
+        res = await scoped(handler, sid)._cmd_create_task({
+            "title": "found a bug", "description": "d", "reason": "epic.1 exposed it",
+        })
+
+        assert res["success"] is True and res.get("gate_id") is None
+        assert await db.get_gates_for_task(res["task_id"]) == []
+
+    async def test_sibling_filing_event_reports_parent_and_origin(self, handler, db):
+        sid = await holding_child_session(db)
+
+        res = await scoped(handler, sid)._cmd_create_task({
+            "title": "found a bug", "description": "d", "reason": "epic.1 exposed it",
+        })
+
+        assert res["success"] is True
+        ev = created_events(handler)[0]
+        assert (ev["parent_task_id"], ev["discovered_from"], ev["created_by_kind"]) == (
+            "epic", "epic.1", "session")
+
+    async def test_explicit_immediate_parent_is_allowed(self, handler, db):
+        sid = await holding_child_session(db)
+
+        res = await scoped(handler, sid)._cmd_create_task({
+            "title": "found a bug", "description": "d", "parent_id": "epic",
+            "reason": "epic.1 exposed it",
+        })
+
+        assert res["success"] is True
+        new = await db.get_task(res["task_id"])
+        assert new.parent_task_id == "epic"
+        deps = await db.get_typed_dependencies(new.id)
+        assert ("epic", "parent-child") in deps and ("epic.1", "discovered-from") in deps
+
+    async def test_grandparent_and_aunt_remain_rejected(self, handler, db):
+        """Only the *immediate* parent opens up — not arbitrary ancestors or
+        the parent's other children."""
+        await db.create_task(Task(id="grand", project_id=PROJECT_ID, title="g", description="g",
+                                  status=TaskStatus.IN_PROGRESS))
+        await db.create_task(Task(id="grand.1", project_id=PROJECT_ID, title="e", description="e",
+                                  status=TaskStatus.IN_PROGRESS))
+        await db.create_task(Task(id="grand.2", project_id=PROJECT_ID, title="aunt",
+                                  description="a", status=TaskStatus.READY))
+        sid = await holding_session(db, task_id="grand.1.1")
+        async with db._engine.begin() as conn:
+            await db.set_parent("grand.1", "grand", conn=conn)
+            await db.set_parent("grand.2", "grand", conn=conn)
+            await db.set_parent("grand.1.1", "grand.1", conn=conn)
+        h = scoped(handler, sid)
+
+        for bad in ("grand", "grand.2"):
+            res = await h._cmd_create_task({"title": "x", "description": "d", "parent_id": bad,
+                                            "reason": "r"})
+            assert res["success"] is False, bad
+            assert "parent" in res["error"]
+        assert (await db.get_task("grand.1.1")).filed_count == 0
+
+    async def test_explicit_held_task_as_parent_still_nests(self, handler, db):
+        """``--parent <held>`` keeps making a grandchild; the sibling default
+        only applies when no parent is supplied."""
+        sid = await holding_child_session(db)
+
+        res = await scoped(handler, sid)._cmd_create_task({
+            "title": "sub", "description": "d", "parent_id": "epic.1",
+            "reason": "This can ship independently",
+        })
+
+        assert res["success"] is True
+        assert res["task_id"] == "epic.1.1"
+        deps = await db.get_typed_dependencies(res["task_id"])
+        # The parent-child edge to the held task already carries provenance;
+        # no redundant discovered-from edge to the same target.
+        assert deps == [("epic.1", "parent-child")]
+        ev = created_events(handler)[0]
+        assert (ev["parent_task_id"], ev["discovered_from"]) == ("epic.1", "epic.1")
+
+    async def test_root_held_task_keeps_root_filing_behaviour(self, handler, db):
+        sid = await holding_session(db)
+
+        res = await scoped(handler, sid)._cmd_create_task({
+            "title": "found a bug", "description": "d", "reason": "held exposed it",
+        })
+
+        assert res["success"] is True and res["gate_id"]
+        new = await db.get_task(res["task_id"])
+        assert new.parent_task_id is None and "." not in new.id
+        assert await db.get_typed_dependencies(new.id) == [("held", "discovered-from")]
+
+    async def test_sibling_default_at_naming_depth_cap_does_not_fall_back(self, handler, db):
+        """A held task at the naming-depth cap (``a.b.c``) still gets a real
+        sibling (``a.b.N``) — the sibling default never trips the cap that an
+        explicit ``--parent <held>`` would."""
+        await db.create_task(Task(id="a", project_id=PROJECT_ID, title="a", description="a",
+                                  status=TaskStatus.IN_PROGRESS))
+        await db.create_task(Task(id="a.1", project_id=PROJECT_ID, title="b", description="b",
+                                  status=TaskStatus.IN_PROGRESS))
+        sid = await holding_session(db, task_id="a.1.1")
+        async with db._engine.begin() as conn:
+            await db.set_parent("a.1", "a", conn=conn)
+            await db.set_parent("a.1.1", "a.1", conn=conn)
+        h = scoped(handler, sid)
+
+        sibling = await h._cmd_create_task({"title": "s", "description": "d", "reason": "r1"})
+        assert sibling["success"] is True
+        assert sibling["task_id"].startswith("a.1.") and sibling["task_id"] != "a.1.1"
+        assert (await db.get_task(sibling["task_id"])).parent_task_id == "a.1"
+
+        capped = await h._cmd_create_task({"title": "c", "description": "d", "reason": "r2",
+                                           "parent_id": "a.1.1"})
+        assert capped["success"] is True
+        assert "." not in capped["task_id"]
+        assert (await db.get_task(capped["task_id"])).parent_task_id is None
+        assert await db.get_typed_dependencies(capped["task_id"]) == [("a.1.1", "discovered-from")]
+        ev = created_events(handler)[-1]
+        assert (ev["parent_task_id"], ev["discovered_from"]) == (None, "a.1.1")
+
+    async def test_sibling_filing_under_closed_epic_rolls_back(self, handler, db):
+        sid = await holding_child_session(db)
+        # ``transition_task`` refuses to close a container with open children;
+        # model the race the guard exists for (epic closed by another writer
+        # between the scope check and ``set_parent``) with a direct update.
+        from sqlalchemy import update
+
+        from src.database.tables import tasks
+
+        async with db._engine.begin() as conn:
+            await conn.execute(
+                update(tasks).where(tasks.c.id == "epic").values(status="COMPLETED")
+            )
+
+        res = await scoped(handler, sid)._cmd_create_task({
+            "title": "x", "description": "d", "reason": "epic.1 exposed it",
+        })
+
+        assert res["success"] is False
+        assert res["code"] == "hierarchy.container_closed"
+        assert {t.id for t in await db.list_tasks(PROJECT_ID)} == {"epic", "epic.1"}
+        assert (await db.get_task("epic.1")).filed_count == 0
+
+    async def test_sibling_provenance_edge_failure_rolls_back_everything(
+        self, handler, db, monkeypatch
+    ):
+        """If the discovered-from write fails after the parent-child edge, the
+        task row, the parent-child edge and the quota reservation all roll back."""
+        sid = await holding_child_session(db)
+        real_add = db.add_dependency
+
+        async def boom(task_id, depends_on, dep_type="blocks", **kw):
+            if dep_type == "discovered-from":
+                raise RuntimeError("provenance write failed")
+            return await real_add(task_id, depends_on, dep_type, **kw)
+
+        monkeypatch.setattr(db, "add_dependency", boom)
+        with pytest.raises(RuntimeError):
+            await scoped(handler, sid)._cmd_create_task({
+                "title": "x", "description": "d", "reason": "epic.1 exposed it",
+            })
+        assert {t.id for t in await db.list_tasks(PROJECT_ID)} == {"epic", "epic.1"}
+        assert (await db.get_task("epic.1")).filed_count == 0
+        async with db._engine.begin() as conn:
+            assert set(await db.subtree_ids("epic", conn=conn)) == {"epic", "epic.1"}
