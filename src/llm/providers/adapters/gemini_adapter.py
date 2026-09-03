@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import uuid
 
-from src.llm.types import ChatResponse, TextBlock, ToolUseBlock
+from src.llm.types import ChatResponse, TextBlock, TokenUsage, ToolUseBlock
 
 
 # ── Tool definition conversion ────────────────────────────────────────
@@ -121,13 +121,23 @@ def convert_messages(messages: list[dict]) -> list:
 def parse_response(response: object) -> ChatResponse:
     """Convert a Gemini response into our normalized ChatResponse."""
     content: list[TextBlock | ToolUseBlock] = []
+    metadata = getattr(response, "usage_metadata", None)
+    usage = (
+        TokenUsage(
+            input_tokens=metadata.prompt_token_count,
+            output_tokens=metadata.candidates_token_count,
+            reported=True,
+        )
+        if metadata is not None
+        else None
+    )
 
     if not response.candidates:
-        return ChatResponse(content=[TextBlock(text="")])
+        return ChatResponse(content=[TextBlock(text="")], usage=usage)
 
     candidate = response.candidates[0]
     if not candidate.content or not candidate.content.parts:
-        return ChatResponse(content=[TextBlock(text="")])
+        return ChatResponse(content=[TextBlock(text="")], usage=usage)
 
     for part in candidate.content.parts:
         if part.text:
@@ -143,7 +153,7 @@ def parse_response(response: object) -> ChatResponse:
                 )
             )
 
-    return ChatResponse(content=content or [TextBlock(text="")])
+    return ChatResponse(content=content or [TextBlock(text="")], usage=usage)
 
 
 # ── Schema conversion helper ─────────────────────────────────────────

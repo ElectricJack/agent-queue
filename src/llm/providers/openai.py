@@ -52,6 +52,10 @@ class OpenAIProvider(LLMProvider):
     def model_name(self) -> str:
         return self._model
 
+    @property
+    def reports_usage(self) -> bool:
+        return True
+
     async def is_model_loaded(self) -> bool:
         """Check if the configured model is currently loaded in Ollama.
 

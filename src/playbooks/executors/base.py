@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Protocol, runtime_checkable
 
 from src.playbooks.expressions import ResolutionScope
 from src.playbooks.receipts import project_receipt
+from src.llm.types import TokenUsage
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from src.commands.authorization import CommandResolver
@@ -96,29 +97,6 @@ ENGINE_RESERVED_OUTCOMES: frozenset[str] = frozenset(
         "provider_error",
     }
 )
-
-
-@dataclass(frozen=True, slots=True)
-class TokenUsage:
-    """Provider-reported usage.  See §4.11 — ``reported=False`` is a hard gate."""
-
-    input_tokens: int = 0
-    output_tokens: int = 0
-    #: True only when the provider adapter returned real counts.  An estimate
-    #: sets ``reported=False``, and a step with a hard ``max_total_tokens``
-    #: refuses to run against a provider that cannot report.
-    reported: bool = False
-
-    @property
-    def total(self) -> int:
-        return self.input_tokens + self.output_tokens
-
-    def __add__(self, other: TokenUsage) -> TokenUsage:
-        return TokenUsage(
-            input_tokens=self.input_tokens + other.input_tokens,
-            output_tokens=self.output_tokens + other.output_tokens,
-            reported=self.reported and other.reported,
-        )
 
 
 @dataclass(frozen=True, slots=True)

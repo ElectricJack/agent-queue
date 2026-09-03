@@ -7,7 +7,7 @@ import uuid
 from dataclasses import dataclass, field
 
 from src.llm.providers.base import LLMProvider
-from src.llm.types import ChatResponse, TextBlock, ToolUseBlock
+from src.llm.types import ChatResponse, TextBlock, TokenUsage, ToolUseBlock
 
 
 @dataclass
@@ -31,26 +31,40 @@ class FakeProvider(LLMProvider):
     def model_name(self) -> str:
         return self._model_name
 
-    def add_response(self, response: ChatResponse) -> None:
+    @property
+    def reports_usage(self) -> bool:
+        """Expose the scripted provider capability for hard-budget tests."""
+        return bool(self._queue) and all(
+            response.usage is not None and response.usage.reported
+            for response in self._queue
+        )
+
+    def add_response(self, response: ChatResponse, *, usage: TokenUsage | None = None) -> None:
+        if usage is not None:
+            response.usage = usage
         self._queue.append(response)
 
-    def add_text(self, text: str) -> None:
-        self._queue.append(ChatResponse(content=[TextBlock(text=text)]))
+    def add_text(self, text: str, *, usage: TokenUsage | None = None) -> None:
+        self._queue.append(ChatResponse(content=[TextBlock(text=text)], usage=usage))
 
-    def add_tool_call(self, name: str, args: dict | None = None) -> None:
+    def add_tool_call(
+        self, name: str, args: dict | None = None, *, usage: TokenUsage | None = None
+    ) -> None:
         self._queue.append(
             ChatResponse(
-                content=[ToolUseBlock(id=f"toolu_{uuid.uuid4().hex[:12]}", name=name, input=args or {})]
+                content=[ToolUseBlock(id=f"toolu_{uuid.uuid4().hex[:12]}", name=name, input=args or {})],
+                usage=usage,
             )
         )
 
-    def add_tool_calls(self, calls: list[tuple[str, dict]]) -> None:
+    def add_tool_calls(self, calls: list[tuple[str, dict]], *, usage: TokenUsage | None = None) -> None:
         self._queue.append(
             ChatResponse(
                 content=[
                     ToolUseBlock(id=f"toolu_{uuid.uuid4().hex[:12]}", name=n, input=a)
                     for n, a in calls
-                ]
+                ],
+                usage=usage,
             )
         )
 
