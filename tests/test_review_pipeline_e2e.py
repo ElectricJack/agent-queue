@@ -213,6 +213,7 @@ async def test_full_review_chain_end_to_end(
             base_oid="a" * 40,
             head_ref=branch,
             head_oid="b" * 40,
+            changed_files=1,
         )
     )
     merge_result = await h.execute(

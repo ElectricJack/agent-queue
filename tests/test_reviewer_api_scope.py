@@ -41,6 +41,7 @@ PR_IDENTITY = PullRequestIdentity(
     base_oid="a" * 40,
     head_ref="feature/reviewed",
     head_oid="b" * 40,
+    changed_files=1,
 )
 
 pytestmark = pytest.mark.asyncio

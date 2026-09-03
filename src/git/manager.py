@@ -97,6 +97,31 @@ class PullRequestIdentity:
     base_oid: str
     head_ref: str
     head_oid: str
+    #: GitHub's own count of files the PR changes, read in the same snapshot
+    #: as the OIDs.  It counts entries of the PR-files listing (a rename or
+    #: copy is one entry with two names), and the listing is only trusted
+    #: when it has exactly this many entries and is below
+    #: :data:`_PR_FILES_API_CAP`.
+    changed_files: int
+
+
+@dataclass(frozen=True)
+class PullRequestFile:
+    """One entry of GitHub's PR-files listing.
+
+    A renamed or copied file is reported under its new ``filename`` with the
+    old name in ``previous_filename``; the reserved-path guard checks both.
+    """
+
+    filename: str
+    previous_filename: str | None = None
+
+    @property
+    def paths(self) -> tuple[str, ...]:
+        """Every name this entry touches: the destination and, for a rename or copy, the source."""
+        if self.previous_filename is None:
+            return (self.filename,)
+        return (self.filename, self.previous_filename)
 
 
 # ---------------------------------------------------------------------------
@@ -117,6 +142,28 @@ _PR_URL_RE = re.compile(
     r"^https://(?P<host>[A-Za-z0-9.-]+)/(?P<owner>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+)"
     r"/pull/(?P<number>[1-9][0-9]*)/?(?:[?#].*)?$"
 )
+#: GitHub's "List pull request files" endpoint documents "Responses include a
+#: maximum of 3000 files"; pagination simply stops there, so a listing that
+#: long may be a truncated prefix of the real diff.
+_PR_FILES_API_CAP = 3000
+
+
+def _pr_changed_file_count(data: dict) -> int:
+    """GitHub's changed-file count from the REST ``pulls/{n}`` snapshot, or raise.
+
+    The count comes from the same response as the OIDs, so it belongs to the
+    exact base/head pair the PR-files listing is later checked against, and
+    it counts that listing's entries: a renamed or copied file is one entry
+    carrying two names.  Only the REST spelling ``changed_files`` is read —
+    the identity never comes from ``gh pr view --json`` (whose field is
+    ``changedFiles``), so accepting it would only widen the guard.  Anything
+    but a non-negative integer (``bool`` is an ``int`` subclass and is not a
+    count) is an incomplete identity and fails closed.
+    """
+    count = data.get("changed_files")
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        raise GitError("could not resolve complete PR identity")
+    return count
 
 
 def _validate_ref(name: str, *, field: str = "branch") -> str:
@@ -2590,6 +2637,7 @@ class GitManager:
             head_ref = data["head"]["ref"]
             base_oid = data["base"]["sha"].lower()
             head_oid = data["head"]["sha"].lower()
+            changed_files = _pr_changed_file_count(data)
         except (KeyError, TypeError, ValueError, AttributeError) as exc:
             raise GitError("could not resolve complete PR identity") from exc
         if (
@@ -2609,22 +2657,59 @@ class GitManager:
             base_oid=base_oid,
             head_ref=head_ref,
             head_oid=head_oid,
+            changed_files=changed_files,
         )
 
-    # jq program for the PR-files endpoint: one path per line. GitHub reports
-    # a renamed or copied file under its new ``filename`` and keeps the old
-    # name in ``previous_filename``, so both are emitted; otherwise a rename
-    # out of ``.aq/`` would read as a clean addition of the destination.
-    _PR_FILES_JQ = ".[] | .filename, (.previous_filename // empty)"
+    # jq program for the PR-files endpoint: one JSON object per entry, with
+    # the destination ``filename`` and, for a rename or copy, the source
+    # ``previous_filename`` (``null`` otherwise).  Emitting an object per
+    # entry keeps the entry count — what GitHub's ``changed_files`` counts —
+    # distinct from the number of names, while still surfacing the source so
+    # a rename out of ``.aq/`` cannot read as a clean addition.  gh prints
+    # non-scalar jq results as JSON, one value per result.
+    _PR_FILES_JQ = ".[] | {filename, previous_filename}"
 
-    async def _apr_changed_paths(
+    @staticmethod
+    def _parse_pr_files(stdout: str) -> list[PullRequestFile]:
+        """Decode the concatenated JSON objects gh prints for :data:`_PR_FILES_JQ`.
+
+        Any value that is not an object with a non-empty string ``filename``
+        and a null or non-empty string ``previous_filename`` fails closed:
+        an entry the guard cannot read is an entry it cannot clear.
+        """
+        decoder = json.JSONDecoder()
+        entries: list[PullRequestFile] = []
+        text = stdout or ""
+        position = 0
+        length = len(text)
+        while True:
+            while position < length and text[position].isspace():
+                position += 1
+            if position >= length:
+                break
+            try:
+                value, position = decoder.raw_decode(text, position)
+            except ValueError as exc:
+                raise GitError("could not inspect PR delivery diff: malformed PR-files entry") from exc
+            if not isinstance(value, dict):
+                raise GitError("could not inspect PR delivery diff: malformed PR-files entry")
+            filename = value.get("filename")
+            previous = value.get("previous_filename")
+            if not isinstance(filename, str) or not filename:
+                raise GitError("could not inspect PR delivery diff: malformed PR-files entry")
+            if previous is not None and (not isinstance(previous, str) or not previous):
+                raise GitError("could not inspect PR delivery diff: malformed PR-files entry")
+            entries.append(PullRequestFile(filename=filename, previous_filename=previous))
+        return entries
+
+    async def _apr_changed_files(
         self, checkout_path: str, identity: PullRequestIdentity
-    ) -> list[str]:
-        """Return every PR-file path from GitHub's paginated merge-base diff.
+    ) -> list[PullRequestFile]:
+        """Return every entry of GitHub's paginated merge-base PR diff.
 
-        Rename and copy sources (``previous_filename``) are included next to
-        their destinations so a reserved path leaving the tree is visible.
-        A copy source is unchanged by the copy itself, so listing it is
+        Rename and copy sources (``previous_filename``) travel with their
+        destinations so a reserved path leaving the tree is visible.  A copy
+        source is unchanged by the copy itself, so listing it is
         conservative: the guard fails closed rather than trusting the status.
         """
         endpoint = f"repos/{identity.repository}/pulls/{identity.number}/files"
@@ -2638,7 +2723,7 @@ class GitManager:
             raise GitError(f"could not inspect PR delivery diff: {exc}") from exc
         if result.returncode != 0:
             raise GitError(f"could not inspect PR delivery diff: {result.stderr.strip()}")
-        return [path for path in (result.stdout or "").splitlines() if path]
+        return self._parse_pr_files(result.stdout)
 
     async def avalidate_pr_for_merge(
         self, checkout_path: str, pr_url: str
@@ -2646,11 +2731,29 @@ class GitManager:
         """Fail closed unless a PR identity and its reserved-path diff are stable.
 
         The REST PR-files endpoint is GitHub's merge-base PR diff and supports
-        pagination. Re-reading the identity after that potentially long query
-        proves the inspected diff still belongs to the precise base/head pair.
+        pagination, but only up to :data:`_PR_FILES_API_CAP` entries, after
+        which it silently stops.  The listing is therefore trusted only when
+        it has exactly as many entries as the PR's own changed-file count and
+        that count is below the cap; otherwise a reserved path could hide in
+        the unlisted tail.  Completeness is judged on entries because that is
+        what GitHub counts — a rename is one entry — while the reserved-path
+        check then inspects every name an entry carries.  Re-reading the
+        identity after that potentially long query proves the inspected diff
+        still belongs to the precise base/head pair.
         """
         identity = await self.aget_pr_identity(checkout_path, pr_url)
-        paths = await self._apr_changed_paths(checkout_path, identity)
+        files = await self._apr_changed_files(checkout_path, identity)
+        if identity.changed_files >= _PR_FILES_API_CAP or len(files) >= _PR_FILES_API_CAP:
+            raise GitError(
+                f"PR changes {identity.changed_files} files but GitHub lists at most "
+                f"{_PR_FILES_API_CAP}; the reserved-path check cannot be complete"
+            )
+        if len(files) != identity.changed_files:
+            raise GitError(
+                f"PR delivery diff is incomplete: GitHub listed {len(files)} of "
+                f"{identity.changed_files} changed files"
+            )
+        paths = [path for entry in files for path in entry.paths]
         reserved = self._daemon_bookkeeping_paths("\0".join(paths))
         if reserved:
             raise GitError(

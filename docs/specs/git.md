@@ -302,10 +302,19 @@ shortcuts cannot bypass this invariant.
 
 ### Immutable PR merge and exact-tip push guard
 
-`aq pr merge` first resolves the PR's base/head names and object IDs, inspects
-the complete paginated PR-files (merge-base) diff, and resolves the identity a
-second time. Any unreadable or malformed identity/diff, changed identity, or
-changed `.aq/**`, `.aq-worktree.json`, or `.codex/**` path fails closed.
+`aq pr merge` first resolves the PR's base/head names, object IDs and
+GitHub's own changed-file count in one snapshot, inspects the complete
+paginated PR-files (merge-base) diff, and resolves the identity a second
+time. Any unreadable or malformed identity/diff, changed identity, or changed
+`.aq/**`, `.aq-worktree.json`, or `.codex/**` path fails closed. GitHub's
+"List pull request files" endpoint returns at most 3000 entries and its
+pagination stops there silently, so the listing is trusted only when it is
+exactly as long as the PR's changed-file count and that count is below 3000;
+a PR at or above the cap, or whose listing disagrees with its count, is
+refused because a reserved path could hide in the unlisted tail. The count
+and the listing are compared entry for entry — a renamed or copied file is
+one entry carrying both its `filename` and its `previous_filename` — and an
+entry the guard cannot decode is refused rather than skipped.
 The eventual `gh pr merge` carries `--match-head-commit <head-oid>` and also
 checks the expected base/head pair immediately before invoking `gh`; a changed
 PR can therefore never turn a review of one head into a merge of another.
