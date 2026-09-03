@@ -23,7 +23,7 @@ import logging
 from pathlib import Path
 
 from src.database.queries.playbook_migration_queries import MIN_ACK_REASON_LENGTH
-from src.playbooks.migration import build_inventory
+from src.playbooks.migration import build_inventory, release_check
 
 logger = logging.getLogger(__name__)
 
@@ -197,3 +197,77 @@ class PlaybookMigrationCommandsMixin:
             ):
                 removed += 1
         return {"success": True, "playbook_id": playbook_id, "removed": removed}
+
+    # ------------------------------------------------------------------
+    # §5.5 — release check
+    # ------------------------------------------------------------------
+
+    async def _release_check_activations(self) -> list[dict]:
+        """Enabled activations, each with the artifact's per-command fingerprints.
+
+        An activation whose artifact cannot be loaded is **skipped, not failed**:
+        its condition is already `unavailable` in the activation health surface,
+        and reporting it a second time here as contract drift would name the
+        wrong cause.
+        """
+        rows: list[dict] = []
+        try:
+            activations = await self.db.list_playbook_activations()
+        except Exception:  # pragma: no cover - defensive
+            logger.warning("release check: activation rows unavailable", exc_info=True)
+            return rows
+        try:
+            from src.playbooks.artifact_store import ArtifactStore
+
+            store = ArtifactStore(
+                self.config.compiled_root,
+                max_artifact_bytes=self.config.playbooks.v2_max_artifact_bytes,
+            )
+        except Exception:  # pragma: no cover - defensive
+            logger.debug("release check: artifact store unavailable", exc_info=True)
+            return rows
+        for row in activations:
+            if not isinstance(row, dict) or not row.get("enabled", True):
+                continue
+            sha = str(row.get("artifact_sha256") or "")
+            if not sha:
+                continue
+            try:
+                definition = store.load(sha)
+            except Exception:
+                logger.debug("release check: artifact %s unreadable", sha, exc_info=True)
+                continue
+            rows.append(
+                {
+                    "playbook_id": str(row.get("playbook_id") or ""),
+                    "enabled": True,
+                    "acknowledged_by": row.get("acknowledged_by"),
+                    "artifact_commands": dict(definition.compiled_against.commands),
+                    "artifact_profiles": dict(definition.compiled_against.profiles),
+                }
+            )
+        return rows
+
+    async def _cmd_playbook_release_check(self, args: dict) -> dict:
+        """Are the reviewed V2 artifacts still valid against the current contracts?
+
+        Compares every checked-in reviewed fixture and every enabled activation
+        against the in-process contract registry, and reports each command whose
+        *execution* fingerprint moved since the artifact was reviewed.  A
+        presentation-only label change does not appear here, because it does not
+        enter the execution fingerprint.
+
+        Offline by construction: no network, no LLM, no compile.  It is the same
+        assertion `tests/test_playbook_contract_release_check.py` makes in CI,
+        available against a live daemon.
+        """
+        from src.commands.contracts import CONTRACTS
+
+        try:
+            return release_check(
+                contract_registry=CONTRACTS,
+                activations=await self._release_check_activations(),
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("release check failed", exc_info=True)
+            return {"success": False, "stale": [], "checked": [], "error": str(exc)}

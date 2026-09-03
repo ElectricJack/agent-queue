@@ -1,11 +1,11 @@
 """Tests for ToolRegistry -- tool categorization and on-demand loading."""
 
 import asyncio
-
-import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from src.tools import ToolRegistry, _TOOL_CATEGORIES
+import pytest
+
+from src.tools import _TOOL_CATEGORIES, ToolRegistry
 
 
 def _make_tool(name: str, category: str | None = None) -> dict:
@@ -913,6 +913,8 @@ _PLAYBOOK_COMMANDS = [
     "playbook_migration_inventory",
     "playbook_migration_acknowledge",
     "playbook_migration_unacknowledge",
+    # The release gate: reviewed artifacts versus the live contract surface.
+    "playbook_release_check",
 ]
 
 

@@ -627,6 +627,9 @@ from .playbook_pending_event_action_response_422 import PlaybookPendingEventActi
 from .playbook_pending_event_action_response_action import PlaybookPendingEventActionResponseAction
 from .playbook_pending_events_request import PlaybookPendingEventsRequest
 from .playbook_pending_events_response_422 import PlaybookPendingEventsResponse422
+from .playbook_release_check_request import PlaybookReleaseCheckRequest
+from .playbook_release_check_response import PlaybookReleaseCheckResponse
+from .playbook_release_check_response_422 import PlaybookReleaseCheckResponse422
 from .playbook_run_overlay_request import PlaybookRunOverlayRequest
 from .playbook_run_overlay_response import PlaybookRunOverlayResponse
 from .playbook_run_overlay_response_422 import PlaybookRunOverlayResponse422
@@ -919,6 +922,10 @@ from .source_ref_dto import SourceRefDTO
 from .spec_approve_request import SpecApproveRequest
 from .spec_approve_response import SpecApproveResponse
 from .spec_approve_response_422 import SpecApproveResponse422
+from .stale_artifact_dto import StaleArtifactDTO
+from .stale_artifact_dto_change import StaleArtifactDTOChange
+from .stale_artifact_dto_kind import StaleArtifactDTOKind
+from .stale_artifact_dto_origin import StaleArtifactDTOOrigin
 from .stall_metrics import StallMetrics
 from .start_agent_terminal_request import StartAgentTerminalRequest
 from .start_agent_terminal_response_422 import StartAgentTerminalResponse422
@@ -1697,6 +1704,9 @@ __all__ = (
     "PlaybookPendingEventActionResponseAction",
     "PlaybookPendingEventsRequest",
     "PlaybookPendingEventsResponse422",
+    "PlaybookReleaseCheckRequest",
+    "PlaybookReleaseCheckResponse",
+    "PlaybookReleaseCheckResponse422",
     "PlaybookRunOverlayRequest",
     "PlaybookRunOverlayResponse",
     "PlaybookRunOverlayResponse422",
@@ -1987,6 +1997,10 @@ __all__ = (
     "SpecApproveRequest",
     "SpecApproveResponse",
     "SpecApproveResponse422",
+    "StaleArtifactDTO",
+    "StaleArtifactDTOChange",
+    "StaleArtifactDTOKind",
+    "StaleArtifactDTOOrigin",
     "StallMetrics",
     "StartAgentTerminalRequest",
     "StartAgentTerminalResponse422",

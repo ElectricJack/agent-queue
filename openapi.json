@@ -6538,6 +6538,53 @@
         }
       }
     },
+    "/api/playbook/release-check": {
+      "post": {
+        "tags": [
+          "playbook"
+        ],
+        "summary": "Check that every reviewed V2 artifact still matches the command contracts it was compiled against. Compares the checked-in reviewed fixtures and every enabled activation against the live registry, and names each command whose execution fingerprint moved. Offline and read-only: no network, no LLM, no compile. A presentation-only label change does not trip it.",
+        "description": "Check that every reviewed V2 artifact still matches the command contracts it was compiled against. Compares the checked-in reviewed fixtures and every enabled activation against the live registry, and names each command whose execution fingerprint moved. Offline and read-only: no network, no LLM, no compile. A presentation-only label change does not trip it.",
+        "operationId": "playbook_release_check",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaybookReleaseCheckRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybookReleaseCheckResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/playbook/run-overlay": {
       "post": {
         "tags": [
@@ -29651,6 +29698,64 @@
         "type": "object",
         "title": "PlaybookPendingEventsRequest"
       },
+      "PlaybookReleaseCheckRequest": {
+        "properties": {},
+        "type": "object",
+        "title": "PlaybookReleaseCheckRequest"
+      },
+      "PlaybookReleaseCheckResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "checked": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Checked",
+            "default": []
+          },
+          "registry_fingerprint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Registry Fingerprint"
+          },
+          "stale": {
+            "items": {
+              "$ref": "#/components/schemas/StaleArtifactDTO"
+            },
+            "type": "array",
+            "title": "Stale",
+            "default": []
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "PlaybookReleaseCheckResponse",
+        "description": "Whether every reviewed artifact still matches the live command surface."
+      },
       "PlaybookRunOverlayRequest": {
         "properties": {
           "run_id": {
@@ -36669,6 +36774,80 @@
         },
         "type": "object",
         "title": "SpecApproveResponse"
+      },
+      "StaleArtifactDTO": {
+        "properties": {
+          "playbook_id": {
+            "type": "string",
+            "title": "Playbook Id"
+          },
+          "origin": {
+            "type": "string",
+            "enum": [
+              "fixture",
+              "activation"
+            ],
+            "title": "Origin"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "command",
+              "profile"
+            ],
+            "title": "Kind"
+          },
+          "dependency": {
+            "type": "string",
+            "title": "Dependency"
+          },
+          "change": {
+            "type": "string",
+            "enum": [
+              "changed",
+              "removed"
+            ],
+            "title": "Change"
+          },
+          "reviewed_fingerprint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewed Fingerprint"
+          },
+          "current_fingerprint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Fingerprint"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "playbook_id",
+          "origin",
+          "kind",
+          "dependency",
+          "change",
+          "message"
+        ],
+        "title": "StaleArtifactDTO",
+        "description": "One reviewed artifact whose compiled-against surface has moved."
       },
       "StallMetrics": {
         "properties": {

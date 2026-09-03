@@ -36,7 +36,6 @@ from src.commands.handler import CommandHandler
 from src.models import PlaybookRun
 from src.playbooks.models import CompiledPlaybook, PlaybookNode, PlaybookTransition
 
-
 # ---------------------------------------------------------------------------
 # Fixtures — shared helpers
 # ---------------------------------------------------------------------------
@@ -1201,6 +1200,8 @@ class TestAllPlaybookCommandsRegistered:
         "playbook_migration_inventory",
         "playbook_migration_acknowledge",
         "playbook_migration_unacknowledge",
+        # The release gate: reviewed artifacts versus the live contract surface.
+        "playbook_release_check",
     ]
 
     def test_all_cmd_methods_exist(self):
@@ -1251,7 +1252,7 @@ class TestAllPlaybookCommandsRegistered:
         and what has a ``_cmd_*`` method) and ``_TOOL_CATEGORIES`` (catches
         drift between the category map and what has a tool definition).
         """
-        from src.tools import ToolRegistry, _ALL_TOOL_DEFINITIONS, _TOOL_CATEGORIES
+        from src.tools import _ALL_TOOL_DEFINITIONS, _TOOL_CATEGORIES, ToolRegistry
 
         registry = ToolRegistry(_ALL_TOOL_DEFINITIONS)
         tool_names = registry.get_category_tool_names("playbook")

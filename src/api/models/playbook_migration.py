@@ -105,8 +105,34 @@ class PlaybookMigrationAckResponse(V2Model):
     error: str | None = None
 
 
+class StaleArtifactDTO(V2Model):
+    """One reviewed artifact whose compiled-against surface has moved."""
+
+    playbook_id: str
+    #: ``fixture`` (a checked-in reviewed artifact) or ``activation`` (a row).
+    origin: Literal["fixture", "activation"]
+    kind: Literal["command", "profile"]
+    dependency: str
+    change: Literal["changed", "removed"]
+    reviewed_fingerprint: str | None = None
+    current_fingerprint: str | None = None
+    message: str
+
+
+class PlaybookReleaseCheckResponse(V2Model):
+    """Whether every reviewed artifact still matches the live command surface."""
+
+    success: bool
+    #: Playbook ids compared, fixtures and enabled activations together.
+    checked: list[str] = []
+    registry_fingerprint: str | None = None
+    stale: list[StaleArtifactDTO] = []
+    error: str | None = None
+
+
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "playbook_migration_inventory": PlaybookMigrationInventoryResponse,
     "playbook_migration_acknowledge": PlaybookMigrationAckResponse,
     "playbook_migration_unacknowledge": PlaybookMigrationAckResponse,
+    "playbook_release_check": PlaybookReleaseCheckResponse,
 }

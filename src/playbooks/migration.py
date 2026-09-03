@@ -27,6 +27,7 @@ import os
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Literal
 
 import yaml
@@ -920,8 +921,194 @@ def audit_capabilities(definition: Any, policy: Any) -> tuple[CapabilityFinding,
     return tuple(findings)
 
 
+
+# ---------------------------------------------------------------------------
+# §5.5 — the release check
+# ---------------------------------------------------------------------------
+
+#: Where the reviewed fixtures live, relative to the repository root.
+REVIEWED_FIXTURE_ROOT = "tests/fixtures/playbooks/v2"
+
+
+@dataclass(frozen=True, slots=True)
+class StaleArtifact:
+    """One reviewed artifact that no longer matches the surface it compiled against."""
+
+    playbook_id: str
+    origin: str                      # "fixture" | "activation"
+    kind: str                        # "command" | "profile"
+    dependency: str                  # the command or profile that moved
+    reviewed_fingerprint: str | None
+    current_fingerprint: str | None
+
+    @property
+    def change(self) -> str:
+        return "removed" if self.current_fingerprint is None else "changed"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "playbook_id": self.playbook_id,
+            "origin": self.origin,
+            "kind": self.kind,
+            "dependency": self.dependency,
+            "change": self.change,
+            "reviewed_fingerprint": self.reviewed_fingerprint,
+            "current_fingerprint": self.current_fingerprint,
+            "message": (
+                f"{self.playbook_id}: {self.kind} {self.dependency!r} "
+                f"{self.change} since the artifact was reviewed; rebuild and re-review"
+            ),
+        }
+
+
+def _reviewed_fixture_artifacts(fixture_root: Path) -> dict[str, Any]:
+    """Every *approved* fixture artifact under *fixture_root*, by playbook id.
+
+    A fixture whose ``review.md`` does not record ``decision: approved`` is not
+    read: it is a recorded negative, no activation may reference it, and
+    holding it to the live contract surface would report drift in something
+    nothing runs.
+    """
+    from src.playbooks.definition import load_definition_json
+
+    artifacts: dict[str, Any] = {}
+    if not fixture_root.is_dir():
+        return artifacts
+    for directory in sorted(p for p in fixture_root.iterdir() if p.is_dir()):
+        artifact_path = directory / "artifact.json"
+        review_path = directory / "review.md"
+        if not artifact_path.is_file() or not review_path.is_file():
+            continue
+        frontmatter = _review_frontmatter(review_path)
+        if frontmatter.get("decision") != "approved":
+            continue
+        try:
+            artifacts[directory.name] = load_definition_json(
+                artifact_path.read_text(encoding="utf-8")
+            )
+        except Exception as exc:  # pragma: no cover - a malformed fixture is a test failure
+            logger.warning("release check: unreadable fixture %s: %s", artifact_path, exc)
+    return artifacts
+
+
+def _review_frontmatter(path: Path) -> dict[str, Any]:
+    text = path.read_text(encoding="utf-8")
+    if not text.startswith("---\n"):
+        return {}
+    end = text.find("\n---\n", 3)
+    if end == -1:
+        return {}
+    parsed = yaml.safe_load(text[4:end])
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _compare_fingerprints(
+    playbook_id: str,
+    origin: str,
+    kind: str,
+    reviewed: Mapping[str, str],
+    current: Mapping[str, str],
+) -> list[StaleArtifact]:
+    stale: list[StaleArtifact] = []
+    for dependency, reviewed_fingerprint in sorted(reviewed.items()):
+        current_fingerprint = current.get(dependency)
+        if current_fingerprint == reviewed_fingerprint:
+            continue
+        stale.append(
+            StaleArtifact(
+                playbook_id=playbook_id,
+                origin=origin,
+                kind=kind,
+                dependency=dependency,
+                reviewed_fingerprint=str(reviewed_fingerprint),
+                current_fingerprint=(
+                    None if current_fingerprint is None else str(current_fingerprint)
+                ),
+            )
+        )
+    return stale
+
+
+def current_command_fingerprints(contract_registry: Any) -> dict[str, str]:
+    """``{command: execution fingerprint}`` for everything the registry serves."""
+    fingerprints: dict[str, str] = {}
+    for name in sorted(contract_registry.names()):
+        registration = contract_registry.get(name)
+        if registration is None:  # pragma: no cover - names() and get() disagree
+            continue
+        fingerprints[name] = str(registration.contract.fingerprint())
+    return fingerprints
+
+
+def release_check(
+    *,
+    contract_registry: Any,
+    fixture_root: Path | str = REVIEWED_FIXTURE_ROOT,
+    profile_fingerprints: Mapping[str, str] | None = None,
+    activations: Sequence[Mapping[str, Any]] = (),
+) -> dict[str, Any]:
+    """Do the reviewed artifacts still match the surface they were compiled against?
+
+    §5.5's release gate, and deliberately **offline**: it performs no network
+    call, no LLM call and no compile.  It reads the checked-in fixtures and,
+    when given them, the enabled activation rows, and compares each artifact's
+    ``compiled_against`` against the in-process registries.
+
+    A changed *execution* fingerprint is drift; a presentation-only label change
+    is not, because the fingerprint is taken over the execution contract alone
+    (``src/commands/contracts/models.py::execution_fingerprint``).
+
+    *activations* are mappings shaped like the rows
+    ``playbook_migration_queries`` returns.  A row that is disabled,
+    acknowledged, or carries no artifact does not block: an operator has
+    already decided about it, and a decision made on purpose is not a
+    regression.
+    """
+    fixture_root = Path(fixture_root)
+    current_commands = current_command_fingerprints(contract_registry)
+    current_profiles = dict(profile_fingerprints or {})
+    stale: list[StaleArtifact] = []
+    checked: list[str] = []
+
+    for playbook_id, definition in _reviewed_fixture_artifacts(fixture_root).items():
+        checked.append(playbook_id)
+        compiled = definition.compiled_against
+        stale += _compare_fingerprints(
+            playbook_id, "fixture", "command", compiled.commands, current_commands
+        )
+        if profile_fingerprints is not None:
+            stale += _compare_fingerprints(
+                playbook_id, "fixture", "profile", compiled.profiles, current_profiles
+            )
+
+    for row in activations:
+        if not row.get("enabled", True) or row.get("acknowledged_by"):
+            continue
+        playbook_id = str(row.get("playbook_id") or "")
+        commands = row.get("artifact_commands") or {}
+        if not playbook_id or not commands:
+            continue
+        checked.append(playbook_id)
+        stale += _compare_fingerprints(
+            playbook_id, "activation", "command", commands, current_commands
+        )
+        profiles = row.get("artifact_profiles")
+        if profile_fingerprints is not None and profiles:
+            stale += _compare_fingerprints(
+                playbook_id, "activation", "profile", profiles, current_profiles
+            )
+
+    return {
+        "success": not stale,
+        "checked": sorted(set(checked)),
+        "registry_fingerprint": str(contract_registry.registry_fingerprint()),
+        "stale": [entry.to_dict() for entry in stale],
+    }
+
+
 __all__ = [
     "REASON_CODES",
+    "REVIEWED_FIXTURE_ROOT",
     "SHA256_RE",
     "CapabilityFinding",
     "InventoryEntry",
@@ -930,8 +1117,11 @@ __all__ = [
     "MigrationReasonError",
     "PlaybookDisposition",
     "SourceRef",
+    "StaleArtifact",
     "audit_capabilities",
     "build_inventory",
+    "current_command_fingerprints",
     "find_embedded_action_block",
+    "release_check",
     "required_capabilities",
 ]

@@ -148,6 +148,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     # playbook V1->V2 migration readiness -- Package 6
     "playbook_migration_inventory": "playbook",
     "playbook_migration_acknowledge": "playbook",
+    "playbook_release_check": "playbook",
     "playbook_migration_unacknowledge": "playbook",
     # plugin — installation, configuration, lifecycle
     "plugin_list": "plugin",
@@ -5319,6 +5320,18 @@ _ALL_TOOL_DEFINITIONS = [
                 }
             },
         },
+    },
+    {
+        "name": "playbook_release_check",
+        "description": (
+            "Check that every reviewed V2 artifact still matches the command "
+            "contracts it was compiled against. Compares the checked-in reviewed "
+            "fixtures and every enabled activation against the live registry, and "
+            "names each command whose execution fingerprint moved. Offline and "
+            "read-only: no network, no LLM, no compile. A presentation-only label "
+            "change does not trip it."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
     },
     {
         "name": "playbook_migration_acknowledge",
