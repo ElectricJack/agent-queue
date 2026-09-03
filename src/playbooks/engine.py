@@ -558,25 +558,29 @@ class PlaybookEngine:
 
         current_step = artifact.steps.get(snapshot.current_step_id or "")
         if snapshot.lifecycle is RunLifecycle.RUNNING and isinstance(current_step, LlmStep):
-            iteration = snapshot.loop.index if snapshot.loop else -1
+            step_id = snapshot.current_step_id or ""
+            iteration = self._iteration_of(snapshot, step_id)
+            attempt_number = self._next_attempt(snapshot, step_id, iteration)
             relevant = [
                 int(turn.get("turn_index", -1))
                 for turn in snapshot.llm_turns
-                if turn.get("step_id") == snapshot.current_step_id
+                if turn.get("step_id") == step_id
                 and int(turn.get("iteration", -1)) == iteration
-                and int(turn.get("attempt", 1)) == 1
+                and int(turn.get("attempt", 1)) == attempt_number
             ]
             attempt = _Attempt(
                 snapshot=snapshot,
-                step_id=snapshot.current_step_id or "",
+                step_id=step_id,
                 step=current_step,
                 started_at=self.services.clock(),
                 principal=principal,
+                iteration=iteration,
+                attempt=attempt_number,
                 idempotency_key=idempotency_key(
                     snapshot.run_id,
-                    snapshot.current_step_id or "",
-                    snapshot.loop.index if snapshot.loop else -1,
-                    1,
+                    step_id,
+                    iteration,
+                    attempt_number,
                 ),
             )
             await self._commit_llm_turn(
@@ -967,15 +971,21 @@ class PlaybookEngine:
         control = self._live.get(snapshot.run_id)
         settled = self._settled_cancellation(control)
         if settled is not None:
-            return settled
+            committed, receipt, boundary_outcome = settled
+            receipts = list(attempt.boundary_receipts)
+            if receipt is not None:
+                receipts.append(receipt)
+            return committed, tuple(receipts), boundary_outcome
         cancelled = self._pending_cancellation(snapshot, control)
         if cancelled is not None:
-            return await self._commit_cancellation(
-                self._cancellation_attempt(cancelled, step, step_id, principal),
-                artifact_ref,
-                repository,
-                control,
-                cancellation=CANCELLATION_ACKNOWLEDGED,
+            return await finish(
+                self._commit_cancellation(
+                    self._cancellation_attempt(cancelled, step, step_id, principal),
+                    artifact_ref,
+                    repository,
+                    control,
+                    cancellation=CANCELLATION_ACKNOWLEDGED,
+                )
             )
 
         # 3. Deadline.
@@ -991,7 +1001,9 @@ class PlaybookEngine:
         # second wait for one suspension.  The resumption is durable state
         # on the snapshot, so this branch is identical after a restart.
         if isinstance(step, WaitStep) and snapshot.wait is not None:
-            return await self._resume_wait(attempt, step, artifact, artifact_ref, repository)
+            return await finish(
+                self._resume_wait(attempt, step, artifact, artifact_ref, repository)
+            )
 
         scope = self._scope(snapshot, artifact)
 
@@ -1098,15 +1110,21 @@ class PlaybookEngine:
             async with control.lock:
                 settled = self._settled_cancellation(control)
                 if settled is not None:
-                    return settled
+                    committed, receipt, boundary_outcome = settled
+                    receipts = list(attempt.boundary_receipts)
+                    if receipt is not None:
+                        receipts.append(receipt)
+                    return committed, tuple(receipts), boundary_outcome
                 cancelled = self._pending_cancellation(snapshot, control)
                 if cancelled is not None:
-                    return await self._commit_cancellation(
-                        self._cancellation_attempt(cancelled, step, step_id, principal),
-                        artifact_ref,
-                        repository,
-                        control,
-                        cancellation=CANCELLATION_ACKNOWLEDGED,
+                    return await finish(
+                        self._commit_cancellation(
+                            self._cancellation_attempt(cancelled, step, step_id, principal),
+                            artifact_ref,
+                            repository,
+                            control,
+                            cancellation=CANCELLATION_ACKNOWLEDGED,
+                        )
                     )
 
         attempt.receipt_inputs = result.receipt_inputs
@@ -1206,7 +1224,7 @@ class PlaybookEngine:
         """Persist one awaited client turn before provider execution continues."""
         snapshot = attempt.snapshot
         now = self.services.clock()
-        iteration = snapshot.loop.index if snapshot.loop else -1
+        iteration = attempt.iteration
         decision_id: str | None = None
         llm_turns = snapshot.llm_turns
         lifecycle = RunLifecycle.RUNNING
@@ -1219,7 +1237,7 @@ class PlaybookEngine:
                 "kind": turn.kind,
                 "step_id": attempt.step_id,
                 "iteration": iteration,
-                "attempt": 1,
+                "attempt": attempt.attempt,
                 "turn_index": turn.turn_index,
                 "tool_call_ids": list(turn.tool_call_ids),
                 "results_digest": turn.results_digest,
@@ -1236,7 +1254,7 @@ class PlaybookEngine:
             lifecycle = RunLifecycle.PAUSED
             operator_decision = OperatorDecision(
                 step_id=attempt.step_id,
-                attempt=1,
+                attempt=attempt.attempt,
                 reason="LLM provider or tool call interrupted",
                 raised_at=now,
                 decision_id=decision_id,
@@ -1275,7 +1293,7 @@ class PlaybookEngine:
             started_at=attempt.started_at,
             snapshot_version=snapshot.version + 1,
             iteration=iteration,
-            attempt=1,
+            attempt=attempt.attempt,
             idempotency_key=attempt.idempotency_key,
             principal=self._principal_projection(turn.principal or attempt.principal),
             result={
