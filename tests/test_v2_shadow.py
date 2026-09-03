@@ -8,8 +8,21 @@ from src.commands.principal import TRUSTED_LOCAL
 from src.playbooks.engine import PlaybookEngine
 from src.playbooks.executors import EXECUTORS
 from src.playbooks.executors.base import EngineServices, ExecutionMode
-from tests.fixtures.contracts.engine_contracts import GATE_CREATE, ENSURE_TASK, LIST_TASKS, ScriptedAdapter, registry_with
-from tests.playbook_v2_engine_helpers import InMemoryArtifactStore, RecordingRunRepository, artifact_ref_for, event, load_artifact
+from src.playbooks.run_state import RunLifecycle
+from tests.fixtures.contracts.engine_contracts import (
+    ENSURE_TASK,
+    GATE_CREATE,
+    LIST_TASKS,
+    ScriptedAdapter,
+    registry_with,
+)
+from tests.playbook_v2_engine_helpers import (
+    InMemoryArtifactStore,
+    RecordingRunRepository,
+    artifact_ref_for,
+    event,
+    load_artifact,
+)
 
 
 class RaisingBus:
@@ -145,3 +158,190 @@ async def test_shadow_matches_live_rule_selection_for_fixture_corpus(event_name:
     live_result = await live.dispatch_event(event(event_name), TRUSTED_LOCAL)
 
     assert shadow_result.rules_selected == live_result.rules_selected
+
+
+# --------------------------------------------------------------------------
+# Shadow traverses beyond an unresolved effect (wise-apex-40)
+# --------------------------------------------------------------------------
+#
+# ``run_rule(mode=SHADOW)`` used to drive the live cursor, so the first
+# ``UNRESOLVED`` command paused the run at that very step and no downstream
+# decision was ever compared.  Shadow now walks the same bounded symbolic
+# work list dry-run does, with the shadow executor table.
+
+
+def _nodes(tree):
+    return [node for path in tree.paths for node in path.nodes]
+
+
+@pytest.mark.asyncio
+async def test_shadow_run_traverses_past_the_first_unresolved_command() -> None:
+    engine, adapter = build()
+    artifact = load_artifact("review-pipeline.artifact.json")
+
+    outcome = await engine.run_rule(
+        artifact_ref_for(artifact),
+        "review-on-task-completed",
+        event("task-completed-code"),
+        TRUSTED_LOCAL,
+        mode=ExecutionMode.SHADOW,
+    )
+
+    assert outcome.lifecycle is RunLifecycle.COMPLETED
+    assert outcome.outcome in {"unresolved", "truncated"}
+    assert outcome.snapshot is not None and outcome.snapshot.mode == "shadow"
+    assert outcome.traversal is not None
+    visited = {node.step_id for node in _nodes(outcome.traversal)}
+    assert {
+        "ensure-review-task",
+        "classify-risk",
+        "escalate",
+        "await-approval",
+        "done",
+        "review-unavailable",
+    } <= visited
+    assert adapter.calls == [] and adapter.preview_calls == []
+
+
+@pytest.mark.asyncio
+async def test_shadow_command_node_reports_its_possible_outcomes_and_targets() -> None:
+    engine, _adapter = build()
+    artifact = load_artifact("review-pipeline.artifact.json")
+
+    outcome = await engine.run_rule(
+        artifact_ref_for(artifact),
+        "review-on-task-completed",
+        event("task-completed-code"),
+        TRUSTED_LOCAL,
+        mode=ExecutionMode.SHADOW,
+    )
+
+    first = [node for node in _nodes(outcome.traversal) if node.step_id == "ensure-review-task"]
+    assert first
+    assert all(node.status == "unresolved" for node in first)
+    assert all(node.possible_outcomes == ("created", "rejected", "reused") for node in first)
+    assert {(node.outcome, node.target) for node in first} >= {
+        ("created", "classify-risk"),
+        ("reused", "classify-risk"),
+        ("rejected", "review-unavailable"),
+    }
+    # A forked path never pretends it finished.
+    assert all(path.completed is False for path in outcome.traversal.paths)
+
+
+@pytest.mark.asyncio
+async def test_shadow_records_each_intended_command_once_across_forks() -> None:
+    engine, _adapter = build()
+
+    result = await engine.dispatch_event(
+        event("task-completed-code"), TRUSTED_LOCAL, mode=ExecutionMode.SHADOW
+    )
+
+    # ``await-approval: revise`` routes back to ``ensure-review-task``, so the
+    # bounded traversal visits it again with identical arguments.  Parity
+    # compares intended calls, and the live run would issue that call once
+    # per pass; the record is deduplicated by its canonical triple so a fork
+    # count does not multiply it.
+    assert len(result.commands) == 1
+    assert result.commands[0][:2] == ("ensure-review-task", "ensure_task")
+    assert len(result.traversals) == 1
+    assert result.traversals[0].rules_selected == ("review-on-task-completed",)
+
+
+@pytest.mark.asyncio
+async def test_shadow_traversal_is_bounded() -> None:
+    engine, _adapter = build()
+    engine.max_symbolic_paths = 4
+    artifact = load_artifact("review-pipeline.artifact.json")
+
+    outcome = await engine.run_rule(
+        artifact_ref_for(artifact),
+        "review-on-task-completed",
+        event("task-completed-code"),
+        TRUSTED_LOCAL,
+        mode=ExecutionMode.SHADOW,
+    )
+
+    assert outcome.outcome == "truncated"
+    assert outcome.traversal.truncated is True
+    assert len(outcome.traversal.paths) <= 4
+    assert all(path.completed is False for path in outcome.traversal.paths)
+
+
+@pytest.mark.asyncio
+async def test_shadow_and_dry_run_take_the_same_edges_for_the_same_unresolved_boundaries() -> None:
+    """Mode selects executors, not a graph: with no preview adapter the two
+    symbolic modes must fork identically."""
+    shadow, _ = build()
+    dry, _ = build()
+    artifact = load_artifact("review-pipeline.artifact.json")
+    ref = artifact_ref_for(artifact)
+
+    shadow_outcome = await shadow.run_rule(
+        ref, "review-on-task-completed", event("task-completed-code"), TRUSTED_LOCAL,
+        mode=ExecutionMode.SHADOW,
+    )
+    dry_tree = await dry.dry_run(ref, event("task-completed-code"), TRUSTED_LOCAL)
+
+    def edges(tree):
+        return [
+            tuple((node.step_id, node.outcome, node.target) for node in path.nodes)
+            for path in tree.paths
+        ]
+
+    assert edges(shadow_outcome.traversal) == edges(dry_tree)
+
+
+@pytest.mark.asyncio
+async def test_shadow_routes_an_authorization_denial_like_live() -> None:
+    """Package 6 compares authorization decisions too, so shadow asks the
+    same resolver live asks and takes the same edge."""
+    from src.commands.principal import ExecutionPrincipal, PrincipalKind
+    from src.playbooks.executors.base import EngineServices as _Services
+    from src.profiles.capabilities import CapabilityPolicy
+
+    engine, adapter = build()
+    denied = ExecutionPrincipal(
+        kind=PrincipalKind.SESSION,
+        policy=CapabilityPolicy.from_namespaces(aq_commands=["list_tasks"]),
+    )
+
+    class DenyAll:
+        def is_builtin(self, _name: str) -> bool:
+            return True
+
+        def is_plugin(self, _name: str) -> bool:
+            return False
+
+        def plugin_command_names(self) -> frozenset[str]:
+            return frozenset()
+
+    engine.services = _Services(
+        contracts=engine.services.contracts,
+        clock=engine.services.clock,
+        artifact_store=engine.services.artifact_store,
+        bus=RaisingBus(),
+        resolver=DenyAll(),
+        authorization_mode="enforce",
+    )
+    artifact = load_artifact("review-pipeline.artifact.json")
+
+    outcome = await engine.run_rule(
+        artifact_ref_for(artifact),
+        "review-on-task-completed",
+        event("task-completed-code"),
+        denied,
+        mode=ExecutionMode.SHADOW,
+    )
+
+    first = [node for node in _nodes(outcome.traversal) if node.step_id == "ensure-review-task"]
+    assert first
+    # ``unauthorized`` is reserved, so it takes the artifact's ``runtime_error``
+    # edge exactly as ``_advance_on_outcome`` would live.
+    assert all(
+        (node.status, node.outcome, node.target)
+        == ("resolved", "unauthorized", "review-unavailable")
+        for node in first
+    )
+    assert outcome.commands == ()
+    assert adapter.calls == [] and adapter.preview_calls == []

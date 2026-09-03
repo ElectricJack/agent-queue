@@ -25,7 +25,7 @@ import hashlib
 import logging
 import time
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -89,6 +89,9 @@ from src.playbooks.waits import EMPTY_WAIT_CHANGES, WaitChangeSet, WaitClaim, Wa
 
 logger = logging.getLogger(__name__)
 
+#: §4.10's ``max_paths`` — the hard bound on returned symbolic paths for one
+#: dry-run or shadow traversal.
+DEFAULT_MAX_SYMBOLIC_PATHS = 32
 #: The roadmap's default bound for symbolic dry-run traversal.  Live walks use
 #: an artifact-derived ceiling instead: a dry-run option must never change the
 #: semantics of a real run.
@@ -195,6 +198,10 @@ class DispatchResult:
     #: Ordered ``(step_id, command_name, canonical_args)`` records for
     #: shadow parity.  They are in-memory observations, never invocations.
     commands: tuple[tuple[str, str, str], ...] = ()
+    #: Shadow only: one bounded symbolic tree per selected rule, in rule
+    #: order, carrying every decision the walk could compare — the edges a
+    #: live run would take and the outcomes it forked across.
+    traversals: tuple[DryRunTree, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -210,6 +217,9 @@ class RunOutcome:
     error: str | None = None
     #: Whether cancellation was acknowledged or its grace period expired.
     cancellation: str | None = None
+    #: Shadow only: the bounded symbolic traversal that stands in for the
+    #: cursor walk (§4.10).  ``None`` for a live run.
+    traversal: DryRunTree | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -275,8 +285,16 @@ class InMemoryRunRecorder:
         self.commands: list[tuple[str, str, str]] = []
 
     def record_command(self, step_id: str, command: str, args: Mapping[str, Any]) -> None:
-        """Remember a shadow command without making an external call."""
-        self.commands.append((step_id, command, canonical_json(args).decode("utf-8")))
+        """Remember a shadow command without making an external call.
+
+        Deduplicated by its canonical triple: the symbolic walk forks, and a
+        step reached again on another branch — or again through an edge
+        that routes back to it — with identical arguments is one intended
+        call, not one per fork.  Parity compares intended calls.
+        """
+        record = (step_id, command, canonical_json(args).decode("utf-8"))
+        if record not in self.commands:
+            self.commands.append(record)
 
     async def create_run(self, snapshot: RunSnapshot) -> RunSnapshot:
         self.snapshots[snapshot.run_id] = snapshot
@@ -400,12 +418,19 @@ class PlaybookEngine:
         runs: Any | None = None,
         waits: Any | None = None,
         activations: Any | None = None,
+        max_symbolic_paths: int = DEFAULT_MAX_SYMBOLIC_PATHS,
+        max_symbolic_step_visits: int = DEFAULT_DRY_RUN_MAX_STEP_VISITS,
         cancellation_grace_seconds: float = DEFAULT_CANCELLATION_GRACE_SECONDS,
     ) -> None:
         self.services = services
         self.runs = runs
         self.waits = waits
         self.activations = activations
+        #: The path bound a shadow run's symbolic traversal is held to.
+        self.max_symbolic_paths = max_symbolic_paths
+        #: The visit bound for shadow's symbolic traversal. Live execution
+        #: derives its own ceiling from the artifact's authored loop bounds.
+        self.max_symbolic_step_visits = max_symbolic_step_visits
         self.cancellation_grace_seconds = cancellation_grace_seconds
         #: Live walks in *this* process, keyed by run id.  See :class:`_RunControl`.
         self._live: dict[str, _RunControl] = {}
@@ -439,6 +464,7 @@ class PlaybookEngine:
         run_ids: list[str] = []
         deduplicated: list[str] = []
         commands: list[tuple[str, str, str]] = []
+        traversals: list[DryRunTree] = []
         coroutines: list[Any] = []
         rule_order: list[tuple[ArtifactRef, str]] = []
 
@@ -474,6 +500,8 @@ class PlaybookEngine:
             if outcome.outcome == "deduplicated":
                 deduplicated.append(rule_id)
             commands.extend(outcome.commands)
+            if outcome.traversal is not None:
+                traversals.append(outcome.traversal)
 
         return DispatchResult(
             dispatch_id=dispatch_id,
@@ -482,6 +510,7 @@ class PlaybookEngine:
             pending=tuple(pending),
             deduplicated=tuple(deduplicated),
             commands=tuple(commands),
+            traversals=tuple(traversals),
         )
 
     async def dry_run(
@@ -491,7 +520,7 @@ class PlaybookEngine:
         principal: Any,
         *,
         invoke_ai: bool = False,
-        max_paths: int = 32,
+        max_paths: int = DEFAULT_MAX_SYMBOLIC_PATHS,
         max_step_visits: int = DEFAULT_DRY_RUN_MAX_STEP_VISITS,
     ) -> DryRunTree:
         """Traverse the executable artifact with a bounded symbolic work list.
@@ -502,22 +531,68 @@ class PlaybookEngine:
         uses the same artifact, trigger selection, value resolution,
         deterministic executors and transition fields as live execution.
         """
-        if max_paths < 1 or max_step_visits < 1:
-            raise ValueError("dry-run bounds must be >= 1")
         artifact = self._load(artifact_ref)
         hydrated = await self._hydrate_event(event)
         event_type = self._event_type(hydrated)
         rules = tuple(
             rule for rule in artifact.rules if self._trigger_matches(rule, event_type, hydrated)
         )
+        dispatch_id = self._dispatch_id(hydrated)
+        return await self._traverse_symbolic(
+            artifact,
+            artifact_ref,
+            hydrated,
+            principal,
+            rules,
+            mode=ExecutionMode.DRY_RUN,
+            dispatch_id=dispatch_id,
+            run_id_for=lambda rule_id: f"dry-run:{dispatch_id}:{rule_id}",
+            invoke_ai=invoke_ai,
+            max_paths=max_paths,
+            max_step_visits=max_step_visits,
+        )
+
+    async def _traverse_symbolic(
+        self,
+        artifact: PlaybookDefinition,
+        artifact_ref: ArtifactRef,
+        event: Mapping[str, Any],
+        principal: Any,
+        rules: Sequence[Rule],
+        *,
+        mode: ExecutionMode,
+        dispatch_id: str,
+        run_id_for: Callable[[str], str],
+        invoke_ai: bool = False,
+        max_paths: int,
+        max_step_visits: int,
+        recorder: InMemoryRunRecorder | None = None,
+    ) -> DryRunTree:
+        """The one bounded symbolic walk shared by dry-run and shadow (§4.10).
+
+        *mode* selects the executor table and nothing else: the trigger
+        selection, value resolution, authorization routing, deterministic
+        executors and transition fields are the live walk's.  A
+        ``control=UNRESOLVED`` result forks the work list across the step's
+        ``possible_outcomes`` instead of pausing a cursor, which is what lets
+        shadow compare every downstream decision rather than stopping at the
+        first external effect.
+
+        In :attr:`ExecutionMode.SHADOW` every command the walk *would* have
+        invoked is handed to *recorder* — the in-memory stand-in, never the
+        repository — as its canonical ``(step_id, command, args)`` triple.
+        """
+        if mode is ExecutionMode.LIVE:
+            raise ValueError("a symbolic traversal is dry-run or shadow, never live")
+        if max_paths < 1 or max_step_visits < 1:
+            raise ValueError("dry-run bounds must be >= 1")
         work: list[_DryRunCursor] = []
         paths: list[DryRunPath] = []
         omitted_frontiers: list[DryRunNode] = []
         truncated = False
-        dispatch_id = self._dispatch_id(hydrated)
         for rule in rules:
             scope = ResolutionScope(
-                event=dict(hydrated),
+                event=dict(event),
                 context=self._context(artifact, rule, dispatch_id),
                 bindings={},
                 loop={},
@@ -575,41 +650,40 @@ class PlaybookEngine:
                 )
                 continue
 
-            executor_mode = (
-                ExecutionMode.LIVE if invoke_ai and step.type == "llm" else ExecutionMode.DRY_RUN
-            )
-            ctx = StepContext(
-                run_id=f"dry-run:{dispatch_id}:{cursor.rule_id}",
-                dispatch_id=dispatch_id,
-                artifact_ref=artifact_ref,
-                artifact=artifact,
-                rule_id=cursor.rule_id,
-                step_id=cursor.step_id,
-                principal=principal,
-                scope=cursor.scope,
-                services=self.services,
-                mode=ExecutionMode.DRY_RUN,
-                iteration_index=None if cursor.loop is None else cursor.loop.index,
-                inputs=inputs,
-                loop_frame=cursor.loop,
-            )
-            try:
-                result = await executor_for(step.type, executor_mode).execute(step, ctx)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # a preview/provider error is an honest boundary
+            denied = isinstance(step, CommandStep) and not self._authorized(step, principal)
+            if denied:
+                # The live walk's stage 5.  Package 0 owns the decision and the
+                # engine only routes it, so a denial is a resolved outcome the
+                # artifact may declare an edge for — and the parity harness
+                # must see the same edge live would take.
                 result = ExecutorResult(
-                    control=StepControl.UNRESOLVED,
-                    outcome="runtime_error",
-                    diagnostics=(type(exc).__name__,),
-                    possible_outcomes=tuple(sorted(getattr(step, "transitions", {}))),
+                    control=StepControl.ADVANCE,
+                    outcome="unauthorized",
+                    operation=f"command:{step.command}",
+                    diagnostics=(f"capability denied: {step.command}",),
                 )
+            else:
+                result = await self._execute_symbolic(
+                    step, cursor, artifact, artifact_ref, principal, inputs,
+                    mode=mode,
+                    dispatch_id=dispatch_id,
+                    run_id=run_id_for(cursor.rule_id),
+                    invoke_ai=invoke_ai,
+                )
+
+            if (
+                mode is ExecutionMode.SHADOW
+                and recorder is not None
+                and isinstance(step, CommandStep)
+                and result.recorded_command_args is not None
+            ):
+                recorder.record_command(cursor.step_id, step.command, result.recorded_command_args)
 
             # A foreach collection supplied by a symbolic upstream result has
             # no items to expand.  The live executor reports an input failure
-            # because a concrete run cannot continue; dry-run instead reports
-            # the honest unresolved loop boundary and never invents an empty
-            # collection or takes the failure edge.
+            # because a concrete run cannot continue; the symbolic walk
+            # instead reports the honest unresolved loop boundary and never
+            # invents an empty collection or takes the failure edge.
             if isinstance(step, ForEachStep) and result.outcome == "input_resolution_failed":
                 result = ExecutorResult(
                     control=StepControl.UNRESOLVED,
@@ -681,7 +755,9 @@ class PlaybookEngine:
                         )
                 continue
 
-            status = "simulated" if step.type == "command" else "resolved"
+            # A command node is ``simulated`` only when an adapter actually
+            # answered for it; a routed denial is a deterministic decision.
+            status = "simulated" if step.type == "command" and not denied else "resolved"
             node = DryRunNode(cursor.step_id, status, outcome=result.outcome)
             next_scope = cursor.scope
             if result.value is not None and getattr(step, "save_result_as", None):
@@ -708,12 +784,18 @@ class PlaybookEngine:
                     )
                 )
                 continue
-            target = (
-                result.goto_step_id
-                if result.control is StepControl.GOTO
-                else getattr(step, "transitions", {}).get(result.outcome)
-            )
+            transitions: Mapping[str, str] = getattr(step, "transitions", {})
+            if result.control is StepControl.GOTO:
+                target = result.goto_step_id
+            else:
+                target = transitions.get(result.outcome)
+                if target is None and result.outcome in ENGINE_RESERVED_OUTCOMES:
+                    # The live walk's ``_advance_on_outcome`` fallback: only a
+                    # reserved outcome may take the ``runtime_error`` edge.
+                    target = transitions.get("runtime_error")
             if target is None:
+                # The outcome is kept on the node: a parity reader needs to
+                # see *which* decision had no edge (live fails the run there).
                 paths.append(
                     DryRunPath(
                         cursor.rule_id,
@@ -722,6 +804,7 @@ class PlaybookEngine:
                             DryRunNode(
                                 cursor.step_id,
                                 "unresolved",
+                                outcome=result.outcome,
                                 reason="outcome has no transition",
                             ),
                         ),
@@ -754,6 +837,53 @@ class PlaybookEngine:
             truncated=truncated,
             step_visits=visits,
         )
+
+    async def _execute_symbolic(
+        self,
+        step: Any,
+        cursor: _DryRunCursor,
+        artifact: PlaybookDefinition,
+        artifact_ref: ArtifactRef,
+        principal: Any,
+        inputs: Mapping[str, Any],
+        *,
+        mode: ExecutionMode,
+        dispatch_id: str,
+        run_id: str,
+        invoke_ai: bool,
+    ) -> ExecutorResult:
+        """One symbolic step attempt.  An executor error is an honest boundary."""
+        executor_mode = (
+            ExecutionMode.LIVE
+            if invoke_ai and mode is ExecutionMode.DRY_RUN and step.type == "llm"
+            else mode
+        )
+        ctx = StepContext(
+            run_id=run_id,
+            dispatch_id=dispatch_id,
+            artifact_ref=artifact_ref,
+            artifact=artifact,
+            rule_id=cursor.rule_id,
+            step_id=cursor.step_id,
+            principal=principal,
+            scope=cursor.scope,
+            services=self.services,
+            mode=mode,
+            iteration_index=None if cursor.loop is None else cursor.loop.index,
+            inputs=inputs,
+            loop_frame=cursor.loop,
+        )
+        try:
+            return await executor_for(step.type, executor_mode).execute(step, ctx)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - a preview/provider error is an honest boundary
+            return ExecutorResult(
+                control=StepControl.UNRESOLVED,
+                outcome="runtime_error",
+                diagnostics=(type(exc).__name__,),
+                possible_outcomes=tuple(sorted(getattr(step, "transitions", {}))),
+            )
 
     # ------------------------------------------------------------------
     # §3.5 — one rule, one run
@@ -838,10 +968,76 @@ class PlaybookEngine:
         await self._emit(EVENT_RUN_STARTED, snapshot)
         if pause_before_start:
             return RunOutcome(snapshot.run_id, snapshot.lifecycle, "paused", snapshot)
-        outcome = await self._walk(snapshot, artifact, artifact_ref, principal, mode, repository)
-        if isinstance(repository, InMemoryRunRecorder):
-            return replace(outcome, commands=tuple(repository.commands))
-        return outcome
+        if mode is ExecutionMode.SHADOW:
+            return await self._shadow_rule(snapshot, rule, artifact, artifact_ref, principal, repository)
+        return await self._walk(snapshot, artifact, artifact_ref, principal, mode, repository)
+
+    async def _shadow_rule(
+        self,
+        snapshot: RunSnapshot,
+        rule: Rule,
+        artifact: PlaybookDefinition,
+        artifact_ref: ArtifactRef,
+        principal: Any,
+        recorder: InMemoryRunRecorder,
+    ) -> RunOutcome:
+        """A shadow run is a bounded symbolic traversal, not a cursor walk.
+
+        Every shadow executor answers an external boundary with
+        ``UNRESOLVED``; driving that through the live cursor pauses the run at
+        its first command and compares nothing downstream.  Shadow therefore
+        walks the same work list dry-run does — the same graph, the same
+        resolution, the same transition fields — with the shadow executor
+        table, forking across each boundary's possible outcomes and
+        recording every command it would have issued.  Nothing here reaches
+        a repository, a command, a preview adapter, a provider, a task, a
+        gate or the bus: the recorder is in memory and ``_emit`` is a no-op
+        outside live.
+
+        The run finishes as soon as the traversal does.  Its outcome is
+        ``completed`` only when every path reached a terminal without a
+        symbolic fork on the way, ``truncated`` when a bound cut the tree,
+        and ``unresolved`` otherwise — which is the honest answer for any
+        graph with an external effect in it.
+        """
+        tree = await self._traverse_symbolic(
+            artifact,
+            artifact_ref,
+            snapshot.event,
+            principal,
+            (rule,),
+            mode=ExecutionMode.SHADOW,
+            dispatch_id=snapshot.dispatch_id or "",
+            run_id_for=lambda _rule_id: snapshot.run_id,
+            max_paths=self.max_symbolic_paths,
+            max_step_visits=self.max_symbolic_step_visits,
+            recorder=recorder,
+        )
+        if tree.truncated:
+            outcome = "truncated"
+        elif tree.paths and all(path.completed for path in tree.paths):
+            outcome = "completed"
+        else:
+            outcome = "unresolved"
+        now = self.services.clock()
+        final = replace(
+            snapshot,
+            lifecycle=RunLifecycle.COMPLETED,
+            current_step_id=None,
+            version=snapshot.version + 1,
+            summary=f"shadow traversal: {outcome}",
+            updated_at=now,
+            completed_at=now,
+        )
+        recorder.snapshots[final.run_id] = final
+        return RunOutcome(
+            final.run_id,
+            final.lifecycle,
+            outcome,
+            final,
+            commands=tuple(recorder.commands),
+            traversal=tree,
+        )
 
     # ------------------------------------------------------------------
     # §3.5 — resume
@@ -2135,14 +2331,6 @@ class PlaybookEngine:
                             cancellation=CANCELLATION_ACKNOWLEDGED,
                         )
                     )
-
-        if (
-            mode is ExecutionMode.SHADOW
-            and isinstance(step, CommandStep)
-            and result.recorded_command_args is not None
-            and isinstance(repository, InMemoryRunRecorder)
-        ):
-            repository.record_command(step_id, step.command, result.recorded_command_args)
 
         attempt.receipt_inputs = result.receipt_inputs
         attempt.receipt_result = dict(result.receipt_result)
