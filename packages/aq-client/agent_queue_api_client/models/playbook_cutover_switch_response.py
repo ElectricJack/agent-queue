@@ -10,7 +10,9 @@ from ..models.playbook_cutover_switch_response_runtime_type_0 import PlaybookCut
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
+    from ..models.cutover_authorization_dto import CutoverAuthorizationDTO
     from ..models.cutover_event_dto import CutoverEventDTO
+    from ..models.playbook_cutover_switch_response_checks_item import PlaybookCutoverSwitchResponseChecksItem
     from ..models.v1_run_summary_dto import V1RunSummaryDTO
 
 
@@ -25,6 +27,9 @@ class PlaybookCutoverSwitchResponse:
         runtime (None | PlaybookCutoverSwitchResponseRuntimeType0 | Unset):
         event (CutoverEventDTO | None | Unset):
         error (None | str | Unset):
+        checks (list[PlaybookCutoverSwitchResponseChecksItem] | Unset):
+        blocking_reasons (list[str] | Unset):
+        authorizations (list[CutoverAuthorizationDTO] | Unset):
         generated_at (float | None | Unset):
         admission (None | PlaybookCutoverSwitchResponseAdmissionType0 | Unset):
         active (list[V1RunSummaryDTO] | Unset):
@@ -40,6 +45,9 @@ class PlaybookCutoverSwitchResponse:
     runtime: None | PlaybookCutoverSwitchResponseRuntimeType0 | Unset = UNSET
     event: CutoverEventDTO | None | Unset = UNSET
     error: None | str | Unset = UNSET
+    checks: list[PlaybookCutoverSwitchResponseChecksItem] | Unset = UNSET
+    blocking_reasons: list[str] | Unset = UNSET
+    authorizations: list[CutoverAuthorizationDTO] | Unset = UNSET
     generated_at: float | None | Unset = UNSET
     admission: None | PlaybookCutoverSwitchResponseAdmissionType0 | Unset = UNSET
     active: list[V1RunSummaryDTO] | Unset = UNSET
@@ -76,6 +84,24 @@ class PlaybookCutoverSwitchResponse:
             error = UNSET
         else:
             error = self.error
+
+        checks: list[dict[str, Any]] | Unset = UNSET
+        if not isinstance(self.checks, Unset):
+            checks = []
+            for checks_item_data in self.checks:
+                checks_item = checks_item_data.to_dict()
+                checks.append(checks_item)
+
+        blocking_reasons: list[str] | Unset = UNSET
+        if not isinstance(self.blocking_reasons, Unset):
+            blocking_reasons = self.blocking_reasons
+
+        authorizations: list[dict[str, Any]] | Unset = UNSET
+        if not isinstance(self.authorizations, Unset):
+            authorizations = []
+            for authorizations_item_data in self.authorizations:
+                authorizations_item = authorizations_item_data.to_dict()
+                authorizations.append(authorizations_item)
 
         generated_at: float | None | Unset
         if isinstance(self.generated_at, Unset):
@@ -147,6 +173,12 @@ class PlaybookCutoverSwitchResponse:
             field_dict["event"] = event
         if error is not UNSET:
             field_dict["error"] = error
+        if checks is not UNSET:
+            field_dict["checks"] = checks
+        if blocking_reasons is not UNSET:
+            field_dict["blocking_reasons"] = blocking_reasons
+        if authorizations is not UNSET:
+            field_dict["authorizations"] = authorizations
         if generated_at is not UNSET:
             field_dict["generated_at"] = generated_at
         if admission is not UNSET:
@@ -170,7 +202,9 @@ class PlaybookCutoverSwitchResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.cutover_authorization_dto import CutoverAuthorizationDTO
         from ..models.cutover_event_dto import CutoverEventDTO
+        from ..models.playbook_cutover_switch_response_checks_item import PlaybookCutoverSwitchResponseChecksItem
         from ..models.v1_run_summary_dto import V1RunSummaryDTO
 
         d = dict(src_dict)
@@ -218,6 +252,26 @@ class PlaybookCutoverSwitchResponse:
             return cast(None | str | Unset, data)
 
         error = _parse_error(d.pop("error", UNSET))
+
+        _checks = d.pop("checks", UNSET)
+        checks: list[PlaybookCutoverSwitchResponseChecksItem] | Unset = UNSET
+        if _checks is not UNSET:
+            checks = []
+            for checks_item_data in _checks:
+                checks_item = PlaybookCutoverSwitchResponseChecksItem.from_dict(checks_item_data)
+
+                checks.append(checks_item)
+
+        blocking_reasons = cast(list[str], d.pop("blocking_reasons", UNSET))
+
+        _authorizations = d.pop("authorizations", UNSET)
+        authorizations: list[CutoverAuthorizationDTO] | Unset = UNSET
+        if _authorizations is not UNSET:
+            authorizations = []
+            for authorizations_item_data in _authorizations:
+                authorizations_item = CutoverAuthorizationDTO.from_dict(authorizations_item_data)
+
+                authorizations.append(authorizations_item)
 
         def _parse_generated_at(data: object) -> float | None | Unset:
             if data is None:
@@ -313,6 +367,9 @@ class PlaybookCutoverSwitchResponse:
             runtime=runtime,
             event=event,
             error=error,
+            checks=checks,
+            blocking_reasons=blocking_reasons,
+            authorizations=authorizations,
             generated_at=generated_at,
             admission=admission,
             active=active,

@@ -112,6 +112,8 @@ from .create_task_request import CreateTaskRequest
 from .create_task_response import CreateTaskResponse
 from .create_task_response_422 import CreateTaskResponse422
 from .create_task_response_depends_on_item import CreateTaskResponseDependsOnItem
+from .cutover_authorization_dto import CutoverAuthorizationDTO
+from .cutover_authorization_dto_role_type_0 import CutoverAuthorizationDTORoleType0
 from .cutover_event_dto import CutoverEventDTO
 from .cutover_event_dto_detail import CutoverEventDTODetail
 from .cutover_window_dto import CutoverWindowDTO
@@ -590,6 +592,18 @@ from .playbook_artifact_diff_response_422 import PlaybookArtifactDiffResponse422
 from .playbook_artifact_summary_dto import PlaybookArtifactSummaryDTO
 from .playbook_artifacts_request import PlaybookArtifactsRequest
 from .playbook_artifacts_response_422 import PlaybookArtifactsResponse422
+from .playbook_cutover_authorize_request import PlaybookCutoverAuthorizeRequest
+from .playbook_cutover_authorize_response import PlaybookCutoverAuthorizeResponse
+from .playbook_cutover_authorize_response_422 import PlaybookCutoverAuthorizeResponse422
+from .playbook_cutover_drain_signoff_request import PlaybookCutoverDrainSignoffRequest
+from .playbook_cutover_drain_signoff_response import PlaybookCutoverDrainSignoffResponse
+from .playbook_cutover_drain_signoff_response_422 import PlaybookCutoverDrainSignoffResponse422
+from .playbook_cutover_drain_signoff_response_checks_item import PlaybookCutoverDrainSignoffResponseChecksItem
+from .playbook_cutover_gate_status_request import PlaybookCutoverGateStatusRequest
+from .playbook_cutover_gate_status_response import PlaybookCutoverGateStatusResponse
+from .playbook_cutover_gate_status_response_422 import PlaybookCutoverGateStatusResponse422
+from .playbook_cutover_gate_status_response_checks_item import PlaybookCutoverGateStatusResponseChecksItem
+from .playbook_cutover_gate_status_response_runtime_type_0 import PlaybookCutoverGateStatusResponseRuntimeType0
 from .playbook_cutover_report_request import PlaybookCutoverReportRequest
 from .playbook_cutover_report_response import PlaybookCutoverReportResponse
 from .playbook_cutover_report_response_422 import PlaybookCutoverReportResponse422
@@ -606,6 +620,7 @@ from .playbook_cutover_switch_request import PlaybookCutoverSwitchRequest
 from .playbook_cutover_switch_response import PlaybookCutoverSwitchResponse
 from .playbook_cutover_switch_response_422 import PlaybookCutoverSwitchResponse422
 from .playbook_cutover_switch_response_admission_type_0 import PlaybookCutoverSwitchResponseAdmissionType0
+from .playbook_cutover_switch_response_checks_item import PlaybookCutoverSwitchResponseChecksItem
 from .playbook_cutover_switch_response_runtime_type_0 import PlaybookCutoverSwitchResponseRuntimeType0
 from .playbook_cutover_window_close_request import PlaybookCutoverWindowCloseRequest
 from .playbook_cutover_window_close_response import PlaybookCutoverWindowCloseResponse
@@ -1247,6 +1262,8 @@ __all__ = (
     "CreateTaskResponse",
     "CreateTaskResponse422",
     "CreateTaskResponseDependsOnItem",
+    "CutoverAuthorizationDTO",
+    "CutoverAuthorizationDTORoleType0",
     "CutoverEventDTO",
     "CutoverEventDTODetail",
     "CutoverWindowDTO",
@@ -1719,6 +1736,18 @@ __all__ = (
     "PlaybookArtifactsRequest",
     "PlaybookArtifactsResponse422",
     "PlaybookArtifactSummaryDTO",
+    "PlaybookCutoverAuthorizeRequest",
+    "PlaybookCutoverAuthorizeResponse",
+    "PlaybookCutoverAuthorizeResponse422",
+    "PlaybookCutoverDrainSignoffRequest",
+    "PlaybookCutoverDrainSignoffResponse",
+    "PlaybookCutoverDrainSignoffResponse422",
+    "PlaybookCutoverDrainSignoffResponseChecksItem",
+    "PlaybookCutoverGateStatusRequest",
+    "PlaybookCutoverGateStatusResponse",
+    "PlaybookCutoverGateStatusResponse422",
+    "PlaybookCutoverGateStatusResponseChecksItem",
+    "PlaybookCutoverGateStatusResponseRuntimeType0",
     "PlaybookCutoverReportRequest",
     "PlaybookCutoverReportResponse",
     "PlaybookCutoverReportResponse422",
@@ -1733,6 +1762,7 @@ __all__ = (
     "PlaybookCutoverSwitchResponse",
     "PlaybookCutoverSwitchResponse422",
     "PlaybookCutoverSwitchResponseAdmissionType0",
+    "PlaybookCutoverSwitchResponseChecksItem",
     "PlaybookCutoverSwitchResponseRuntimeType0",
     "PlaybookCutoverWindowCloseRequest",
     "PlaybookCutoverWindowCloseResponse",

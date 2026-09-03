@@ -3,12 +3,34 @@
 Playbook V2 Package 7 §3.3
 (``docs/superpowers/plans/2026-09-01-playbook-v2-cutover-cleanup.md``).
 
-Seven commands, all operator-only and all exempt from
+Ten commands, all operator-only and all exempt from
 ``PAUSED_PLAYBOOK_COMMANDS``.  That exemption is the one place this package
 widens a surface, and it is deliberate: ``playbooks.enabled`` defaults to
 ``False``, and a fleet that paused the subsystem with runs still ``running``
 must still be able to see and clear them.  Draining is exactly the operation
 you need when the subsystem is off.
+
+Seven of them are the §3.3 drain, switch and window commands.  The other three
+are the §3.9 human gates the switch refuses without:
+
+* ``playbook_cutover_gate_status`` — read-only: the readiness table, the
+  current G1 sign-off and the G2 authorizations, and what still blocks;
+* ``playbook_cutover_drain_signoff`` — **G1**: a named human attests that the
+  drain is complete *after* the command has re-verified every readiness check
+  itself, recorded as ``drain_completed``;
+* ``playbook_cutover_authorize`` — **G2**: one named human authorizes the
+  switch in one role (``author`` or ``release_operator``), recorded as
+  ``cutover_authorized`` and bound to the G1 row it authorizes.  The switch
+  needs both roles, signed by two different people.
+
+The human's name is an explicit ``signed_by`` attestation, stored in the
+event's ``detail``, alongside — not instead of — the server-derived ``actor``.
+The loopback CLI carries no user identity, so the two-person rule is enforced
+on the attested names; the audit row records both what the server knew and
+what the human declared.  A sign-off is scoped to one cutover attempt: a
+rollback, a re-opened admission or a completed switch each start a new attempt
+and the paperwork from the last one does not carry over
+(:data:`~src.playbooks.cutover.CYCLE_BOUNDARY_EVENT_KINDS`).
 
 Three compensations make the widening safe, each asserted in
 ``tests/test_playbook_cutover.py``:
@@ -31,9 +53,17 @@ from typing import Any
 
 from src.playbooks.cutover import (
     CANCEL_JOIN_TIMEOUT,
+    CUTOVER_AUTHORIZATION_ROLES,
     MIN_CUTOVER_REASON_LENGTH,
+    MIN_SIGNER_LENGTH,
+    DrainStatus,
+    authorization_status,
+    current_drain_signoff,
+    display_signer,
     drain_status,
+    normalize_signer,
     playbook_runtime,
+    readiness_check,
     v1_admission_closed,
     v1_latency_baseline,
 )
@@ -45,6 +75,16 @@ REASON_TOO_SHORT_ERROR = (
     f"a cutover reason must be at least {MIN_CUTOVER_REASON_LENGTH} characters — "
     "an unexplained cutover write is not auditable"
 )
+
+#: Exact operator-facing error text for a gate write with no attested human.
+SIGNER_REQUIRED_ERROR = (
+    f"signed_by is required — the name of the human attesting to this gate, at least "
+    f"{MIN_SIGNER_LENGTH} characters; a gate nobody signed is not a gate"
+)
+
+#: How many audit rows the gate evaluation reads.  A cutover leaves a handful;
+#: the bound exists so a pathological table cannot stall the switch.
+_GATE_EVENT_LIMIT: int = 10_000
 
 #: Wall-clock floor for the rollback observation window (§3.5).
 WINDOW_MIN_SECONDS: float = 72 * 3600.0
@@ -135,6 +175,19 @@ class PlaybookCutoverCommandsMixin:
         if not isinstance(reason, str) or len(reason.strip()) < MIN_CUTOVER_REASON_LENGTH:
             return "", {"success": False, "error": REASON_TOO_SHORT_ERROR}
         return reason.strip(), None
+
+    @staticmethod
+    def _cutover_signer(args: dict) -> tuple[str, dict | None]:
+        """``(signed_by, error)`` — the attesting human's name, validated.
+
+        This is the one request-body field a gate write records about
+        identity, and it is recorded *as an attestation*, next to the
+        server-derived ``actor`` — never in its place.
+        """
+        raw = args.get("signed_by")
+        if not normalize_signer(raw):
+            return "", {"success": False, "error": SIGNER_REQUIRED_ERROR}
+        return display_signer(raw), None
 
     def _cutover_manager(self) -> Any:
         """The live ``PlaybookManager``, or ``None``.
@@ -402,6 +455,364 @@ class PlaybookCutoverCommandsMixin:
             logger.debug("Could not publish PlaybookRunCancelledEvent", exc_info=True)
 
     # ------------------------------------------------------------------
+    # Readiness — the G1 preconditions, each re-verified from source
+    # ------------------------------------------------------------------
+    #
+    # Four checks, one row each, all fail-closed: an evidence source that
+    # cannot be read blocks, it is never treated as satisfied.  The three
+    # non-drain checks are methods so a unit test without a vault can stub
+    # them at the seam the real handler uses; the drain check reads the same
+    # rows the drain command does.
+
+    @staticmethod
+    def _cutover_drain_check(status: DrainStatus) -> dict[str, Any]:
+        return readiness_check(
+            "drain",
+            observed={
+                "admission": status.admission,
+                "live_count": status.live_count,
+                "orphaned_count": status.orphaned_count,
+            },
+            passed=status.drained,
+            blocking=(
+                f"the v1 drain is not complete: admission={status.admission}, "
+                f"{status.live_count} live and {status.orphaned_count} orphaned v1 run(s) remain"
+            ),
+        )
+
+    async def _cutover_check_report(self) -> dict[str, Any]:
+        """Package 6's ``playbook_cutover_report``: no blockers, rollback ready."""
+        report_cmd = getattr(self, "_cmd_playbook_cutover_report", None)
+        if report_cmd is None:
+            return readiness_check(
+                "cutover_report",
+                observed=None,
+                passed=False,
+                blocking="playbook_cutover_report is not available on this handler",
+            )
+        try:
+            report = await report_cmd({})
+        except Exception as exc:
+            logger.warning("cutover gate: playbook_cutover_report failed", exc_info=True)
+            return readiness_check(
+                "cutover_report",
+                observed=None,
+                passed=False,
+                blocking=f"playbook_cutover_report failed: {exc}",
+            )
+        reasons = [str(r) for r in (report.get("blocking_reasons") or [])]
+        rollback_ready = report.get("rollback_ready") is True
+        succeeded = report.get("success") is True
+        observed = {
+            "cutover_eligible": report.get("cutover_eligible") is True,
+            "rollback_ready": rollback_ready,
+            "contract_fingerprint": report.get("contract_fingerprint"),
+            "blocking_reasons": reasons,
+        }
+        if not succeeded:
+            blocking = str(report.get("error") or "playbook_cutover_report did not succeed")
+        elif reasons:
+            blocking = "; ".join(reasons)
+        elif not rollback_ready:
+            blocking = "rollback artifacts are incomplete"
+        else:
+            blocking = None
+        return readiness_check(
+            "cutover_report",
+            observed=observed,
+            passed=succeeded and not reasons and rollback_ready,
+            blocking=blocking,
+        )
+
+    async def _cutover_check_activations(self) -> dict[str, Any]:
+        """Every enabled activation is ``ready`` against the live contracts.
+
+        ``ready`` is computed by :func:`~src.playbooks.activation.load_activation_health`
+        from the stored artifact and the *current* command and profile
+        registries, so it already subsumes "carries the current contract
+        fingerprint" — a drifted fingerprint reports ``stale_contract``.
+        """
+        storage_ready = getattr(self, "_v2_activation_storage_ready", None)
+        if storage_ready is not None and not storage_ready():
+            return readiness_check(
+                "activations",
+                observed=None,
+                passed=False,
+                blocking="playbook V2 activation storage is not enabled on this daemon",
+            )
+        lookups = getattr(self, "_v2_lookups", None)
+        if lookups is None or not hasattr(self.db, "list_playbook_activations"):
+            return readiness_check(
+                "activations",
+                observed=None,
+                passed=False,
+                blocking="activation health cannot be read on this handler",
+            )
+        try:
+            from src.playbooks.activation import ActivationHealth, load_activation_health
+
+            contracts, profiles, _events = await lookups()
+            records = await load_activation_health(
+                self.db, contracts=contracts, profiles=profiles, enabled_only=True
+            )
+        except Exception as exc:
+            logger.warning("cutover gate: activation health unavailable", exc_info=True)
+            return readiness_check(
+                "activations",
+                observed=None,
+                passed=False,
+                blocking=f"activation health unavailable: {exc}",
+            )
+        not_ready = [
+            f"{r.playbook_id}[{r.scope}:{r.scope_identifier}]={r.health.value}"
+            for r in records
+            if r.health is not ActivationHealth.READY
+        ]
+        observed = {
+            "enabled": len(records),
+            "ready": len(records) - len(not_ready),
+            "not_ready": not_ready,
+        }
+        if not records:
+            blocking = "no enabled activation — a v2 fleet with nothing activated runs nothing"
+        elif not_ready:
+            blocking = (
+                f"{len(not_ready)} enabled activation(s) are not ready against the current "
+                f"contract: {', '.join(not_ready)}"
+            )
+        else:
+            blocking = None
+        return readiness_check(
+            "activations",
+            observed=observed,
+            passed=bool(records) and not not_ready,
+            blocking=blocking,
+        )
+
+    async def _cutover_check_pending_events(self) -> dict[str, Any]:
+        """Zero unresolved pending V2 events (§3.5 measure 14 at the switch)."""
+        lister = getattr(self.db, "list_pending_events", None)
+        if lister is None:
+            return readiness_check(
+                "pending_events",
+                observed=None,
+                passed=False,
+                blocking="pending events cannot be read on this handler",
+            )
+        try:
+            rows = await lister(limit=_GATE_EVENT_LIMIT)
+        except Exception as exc:
+            logger.warning("cutover gate: pending events unavailable", exc_info=True)
+            return readiness_check(
+                "pending_events",
+                observed=None,
+                passed=False,
+                blocking=f"pending events unavailable: {exc}",
+            )
+        count = len(rows)
+        return readiness_check(
+            "pending_events",
+            observed={"unresolved": count},
+            passed=count == 0,
+            blocking=f"{count} unresolved pending event(s) require an operator decision",
+        )
+
+    async def _cutover_readiness(self) -> tuple[list[dict[str, Any]], list[str], DrainStatus]:
+        """``(checks, blocking_reasons, drain)`` — the whole table, from source."""
+        drain = await self._cutover_drain()
+        checks = [
+            self._cutover_drain_check(drain),
+            await self._cutover_check_report(),
+            await self._cutover_check_activations(),
+            await self._cutover_check_pending_events(),
+        ]
+        blocking = [f"{row['check']}: {row['blocking']}" for row in checks if not row["pass"]]
+        return checks, blocking, drain
+
+    async def _cutover_gate_events(self) -> list[dict[str, Any]]:
+        return await self.db.list_playbook_cutover_events(limit=_GATE_EVENT_LIMIT)
+
+    # ------------------------------------------------------------------
+    # Gates G1 and G2 (§3.9)
+    # ------------------------------------------------------------------
+
+    async def _cmd_playbook_cutover_gate_status(self, args: dict) -> dict:
+        """Where the switch stands: readiness, the G1 sign-off, the G2 signatures.
+
+        Read-only and recomputed from source on every call, like the window
+        status — a gate that trusts a stored verdict is not a gate.
+        ``can_switch`` is true only when every readiness check passes, a
+        current drain sign-off exists and both authorization roles are signed
+        by two different people.
+        """
+        now = time.time()
+        checks, blocking, _drain = await self._cutover_readiness()
+        events = await self._cutover_gate_events()
+        signoff = current_drain_signoff(events)
+        auth = authorization_status(signoff, events)
+        reasons = list(blocking) + list(auth.blocking_reasons)
+        runtime = playbook_runtime(self.config)
+        return {
+            "success": True,
+            "generated_at": now,
+            "runtime": runtime,
+            "ready": not blocking,
+            "checks": checks,
+            "drain_signoff": signoff,
+            "authorizations": [dict(a) for a in auth.authorizations],
+            "blocking_reasons": reasons,
+            "can_switch": not reasons and runtime == "v1",
+        }
+
+    async def _cmd_playbook_cutover_drain_signoff(self, args: dict) -> dict:
+        """Gate G1: a named human signs off the drain — after the command checks it.
+
+        Refuses while any readiness check blocks, naming each one; refuses a
+        second sign-off for the same attempt, because a fresh sign-off would
+        orphan every authorization bound to the first.  Records
+        ``drain_completed`` with the attested name, the readiness table it
+        verified and the V1 latency baseline the §3.5 gates are anchored to.
+
+        Args:
+            reason: Required — at least 10 chars.
+            signed_by: Required — the attesting human's name.
+        """
+        reason, error = self._cutover_reason(args)
+        if error:
+            return error
+        signer, error = self._cutover_signer(args)
+        if error:
+            return error
+
+        checks, blocking, _drain = await self._cutover_readiness()
+        if blocking:
+            return {
+                "success": False,
+                "error": (
+                    f"refusing to sign off the drain: {len(blocking)} readiness check(s) block"
+                ),
+                "checks": checks,
+                "blocking_reasons": blocking,
+            }
+
+        existing = current_drain_signoff(await self._cutover_gate_events())
+        if existing is not None:
+            signed_by = (existing.get("detail") or {}).get("signed_by") or existing["actor"]
+            return {
+                "success": False,
+                "error": (
+                    f"the drain was already signed off at {existing['at']} by {signed_by} "
+                    f"(event {existing['event_id']}); authorize the switch with "
+                    "playbook_cutover_authorize"
+                ),
+                "checks": checks,
+                "blocking_reasons": [],
+            }
+
+        runs = await self.db.list_playbook_runs(limit=1000)
+        event = await self.db.append_playbook_cutover_event(
+            kind="drain_completed",
+            actor=self._cutover_actor(),
+            reason=reason,
+            detail={
+                "signed_by": signer,
+                "checks": checks,
+                "v1_baseline": v1_latency_baseline(runs),
+            },
+        )
+        logger.warning(
+            "Playbook V1 drain signed off (G1) by %s, attested by %s: %s",
+            event["actor"],
+            signer,
+            reason,
+        )
+        return {"success": True, "event": event, "checks": checks, "blocking_reasons": []}
+
+    async def _cmd_playbook_cutover_authorize(self, args: dict) -> dict:
+        """Gate G2: one named human authorizes the switch in one role.
+
+        Bound to the current G1 sign-off; refused without one.  One signature
+        per role and one role per person: the change author and the release
+        operator must be two different people, compared on their normalised
+        names.  Records ``cutover_authorized``.
+
+        Args:
+            reason: Required — at least 10 chars.
+            signed_by: Required — the authorizing human's name.
+            role: Required — ``author`` or ``release_operator``.
+        """
+        reason, error = self._cutover_reason(args)
+        if error:
+            return error
+        signer, error = self._cutover_signer(args)
+        if error:
+            return error
+        role = str(args.get("role") or "").strip()
+        if role not in CUTOVER_AUTHORIZATION_ROLES:
+            return {
+                "success": False,
+                "error": "role must be one of " + ", ".join(CUTOVER_AUTHORIZATION_ROLES),
+            }
+
+        events = await self._cutover_gate_events()
+        signoff = current_drain_signoff(events)
+        if signoff is None:
+            return {
+                "success": False,
+                "error": (
+                    "no current drain sign-off (G1) to authorize; run "
+                    "playbook_cutover_drain_signoff first"
+                ),
+            }
+        before = authorization_status(signoff, events)
+        for existing in before.authorizations:
+            if existing.get("role") == role:
+                return {
+                    "success": False,
+                    "error": (
+                        f"{role} already authorized by {existing['signed_by']} for drain "
+                        f"sign-off {signoff['event_id']} (event {existing['event_id']})"
+                    ),
+                }
+            if normalize_signer(existing.get("signed_by")) == normalize_signer(signer):
+                return {
+                    "success": False,
+                    "error": (
+                        f"G2 requires two distinct people: {existing['signed_by']} already "
+                        f"authorized this sign-off as {existing['role']}"
+                    ),
+                }
+
+        event = await self.db.append_playbook_cutover_event(
+            kind="cutover_authorized",
+            actor=self._cutover_actor(),
+            reason=reason,
+            detail={
+                "role": role,
+                "signed_by": signer,
+                "drain_signoff_event_id": signoff["event_id"],
+            },
+        )
+        logger.warning(
+            "Playbook cutover authorized (G2, %s) by %s, attested by %s: %s",
+            role,
+            event["actor"],
+            signer,
+            reason,
+        )
+        after = authorization_status(signoff, events + [event])
+        _checks, blocking, _drain = await self._cutover_readiness()
+        reasons = list(blocking) + list(after.blocking_reasons)
+        return {
+            "success": True,
+            "event": event,
+            "drain_signoff_event_id": signoff["event_id"],
+            "authorizations": [dict(a) for a in after.authorizations],
+            "blocking_reasons": reasons,
+            "can_switch": not reasons and playbook_runtime(self.config) == "v1",
+        }
+
+    # ------------------------------------------------------------------
     # Switch and rollback window
     # ------------------------------------------------------------------
 
@@ -409,11 +820,19 @@ class PlaybookCutoverCommandsMixin:
         """Move the fleet between the V1 and V2 runtimes.
 
         The highest-privilege operation in the package.  Switching to ``v2``
-        requires a completed drain, because a V1 run still executing when the
-        switch lands is a run the switch strands.  Switching back to ``v1`` is
-        the rollback, and it is legal only until the rollback window is closed:
-        after that a ``rollback_window_closed`` row exists and recovery is a
-        forward change, matching the roadmap's rollback boundary.
+        requires, re-verified at the moment of the switch: every readiness
+        check passing (the drain complete, the cutover report clean and
+        rollback-ready, every enabled activation ``ready``, zero pending
+        events), a current G1 drain sign-off, and G2 authorizations from both
+        roles by two different people (§3.9).  The sign-off is evidence about
+        the past; the switch checks the present, because a V1 run or a pending
+        event that appeared after G1 is one the switch would strand.
+
+        Switching back to ``v1`` is the rollback, and it needs no gate: an
+        operator must be able to roll back at 3am.  It is legal only until the
+        rollback window is closed: after that a ``rollback_window_closed`` row
+        exists and recovery is a forward change, matching the roadmap's
+        rollback boundary.
 
         Args:
             to: Required — ``v1`` or ``v2``.
@@ -440,8 +859,9 @@ class PlaybookCutoverCommandsMixin:
                 ),
             }
 
+        detail: dict[str, Any] = {"from": current, "to": target}
         if target == "v2":
-            status = await self._cutover_drain()
+            checks, blocking, status = await self._cutover_readiness()
             if not status.drained:
                 return {
                     "success": False,
@@ -451,8 +871,54 @@ class PlaybookCutoverCommandsMixin:
                         f"{status.live_count} live and {status.orphaned_count} "
                         "orphaned v1 run(s) remain"
                     ),
+                    "checks": checks,
+                    "blocking_reasons": blocking,
                     **status.to_dict(),
                 }
+            if blocking:
+                return {
+                    "success": False,
+                    "error": (
+                        f"refusing to switch to v2: {len(blocking)} readiness check(s) block"
+                    ),
+                    "checks": checks,
+                    "blocking_reasons": blocking,
+                    **status.to_dict(),
+                }
+
+            events = await self._cutover_gate_events()
+            signoff = current_drain_signoff(events)
+            auth = authorization_status(signoff, events)
+            if signoff is None:
+                return {
+                    "success": False,
+                    "error": (
+                        "refusing to switch to v2: no current drain sign-off (G1) — "
+                        "run playbook_cutover_drain_signoff"
+                    ),
+                    "checks": checks,
+                    "blocking_reasons": list(auth.blocking_reasons),
+                    **status.to_dict(),
+                }
+            if not auth.satisfied:
+                return {
+                    "success": False,
+                    "error": (
+                        "refusing to switch to v2: G2 authorization is incomplete — "
+                        + "; ".join(auth.blocking_reasons)
+                    ),
+                    "checks": checks,
+                    "blocking_reasons": list(auth.blocking_reasons),
+                    "authorizations": [dict(a) for a in auth.authorizations],
+                    **status.to_dict(),
+                }
+            detail.update(
+                {
+                    "drain_signoff_event_id": signoff["event_id"],
+                    "authorizations": [dict(a) for a in auth.authorizations],
+                    "checks": checks,
+                }
+            )
 
         failure = await self._cutover_write_playbooks_field("v2_engine", target == "v2")
         if failure:
@@ -462,7 +928,7 @@ class PlaybookCutoverCommandsMixin:
             kind="switched_to_v2" if target == "v2" else "rolled_back_to_v1",
             actor=self._cutover_actor(),
             reason=reason,
-            detail={"from": current, "to": target},
+            detail=detail,
         )
         logger.warning(
             "Playbook runtime switched %s -> %s by %s: %s", current, target, event["actor"], reason
@@ -596,23 +1062,3 @@ class PlaybookCutoverCommandsMixin:
         )
         logger.warning("Playbook rollback window closed by %s: %s", event["actor"], reason)
         return {"success": True, "event": event}
-
-    # ------------------------------------------------------------------
-    # Baseline
-    # ------------------------------------------------------------------
-
-    async def _cutover_record_drain_completed(self, reason: str) -> dict[str, Any]:
-        """Record ``drain_completed`` with the V1 latency baseline.
-
-        Called once the drain reaches zero.  The baseline is what every §3.5
-        latency gate is expressed as a multiple of — there is no production V2
-        baseline to compare against, so the honest anchor is what V1 actually
-        did on this fleet.
-        """
-        runs = await self.db.list_playbook_runs(limit=1000)
-        return await self.db.append_playbook_cutover_event(
-            kind="drain_completed",
-            actor=self._cutover_actor(),
-            reason=reason,
-            detail={"v1_baseline": v1_latency_baseline(runs)},
-        )

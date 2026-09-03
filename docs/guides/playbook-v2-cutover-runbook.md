@@ -30,10 +30,11 @@ during a drain; it joins the cancelled task *before* writing the terminal row.
 
 ## The commands
 
-All seven work while `playbooks.enabled=false`. That is deliberate: a fleet
+All ten work while `playbooks.enabled=false`. That is deliberate: a fleet
 that paused the subsystem with runs still `running` is exactly the one that
-needs draining. All seven are operator-only and take a mandatory `--reason` of
-at least 10 characters, stored verbatim in an append-only audit table.
+needs draining. All ten are operator-only, and every write takes a mandatory
+`--reason` of at least 10 characters, stored verbatim in an append-only audit
+table.
 
 | Command | What it does |
 |---|---|
@@ -41,7 +42,10 @@ at least 10 characters, stored verbatim in an append-only audit table.
 | `aq playbook v1-admission-close --reason TEXT` | Refuse new V1 runs. Paused runs stay resumable |
 | `aq playbook v1-admission-open --reason TEXT` | The inverse. Refused while the fleet is on V2 |
 | `aq playbook v1-run-cancel --run-id ID --reason TEXT` | Cancel one run, live or orphaned |
-| `aq playbook cutover-switch --to v1\|v2 --reason TEXT` | Move the fleet between runtimes |
+| `aq playbook cutover-gate-status` | Readiness table, the G1 sign-off and the G2 signatures on record, and what still blocks the switch |
+| `aq playbook cutover-drain-signoff --signed-by NAME --reason TEXT` | **Gate G1.** A named human signs off the drain, after the command re-verifies readiness |
+| `aq playbook cutover-authorize --role author\|release_operator --signed-by NAME --reason TEXT` | **Gate G2.** One named human authorizes the switch in one role; two different people are needed |
+| `aq playbook cutover-switch --to v1\|v2 --reason TEXT` | Move the fleet between runtimes. `--to v2` is refused without G1, G2 and a clean readiness table |
 | `aq playbook cutover-window-status` | The acceptance table and the observation window |
 | `aq playbook cutover-window-close --reason TEXT` | Close the rollback window. Not yet usable — see below |
 
@@ -94,20 +98,85 @@ still unanswered. `v1-drain-status` reports `waiting_for_event` and
 
 Re-read until `drained: true`.
 
-### 4. Switch
+### 4. Check readiness
+
+```bash
+aq playbook cutover-gate-status --json
+```
+
+Four checks, each recomputed from source on every call and each fail-closed
+(an evidence source that cannot be read blocks; it is never treated as fine):
+
+| Check | Passes when |
+|---|---|
+| `drain` | `v1-drain-status` reports `drained: true` — admission closed and no active run |
+| `cutover_report` | `playbook cutover-report` has `blocking_reasons: []` and `rollback_ready: true` |
+| `activations` | every enabled activation's health is `ready` against the live command and profile contracts (a drifted contract fingerprint reports `stale_contract` and blocks) |
+| `pending_events` | zero unresolved pending V2 events |
+
+`ready: true` means the table is clean. `can_switch` also needs the two human
+gates below.
+
+### 5. Gate G1 — sign off the drain
+
+```bash
+aq playbook cutover-drain-signoff --signed-by "Alice Example" \
+    --reason "drain reviewed against the gate status of <date>"
+```
+
+The named release operator attests that the drain is complete. The command
+re-runs every readiness check itself and refuses while any one blocks, naming
+it; it does not trust the status you just read. It records a `drain_completed`
+event carrying the name, the readiness table it verified and the V1 latency
+baseline the acceptance gates are anchored to.
+
+`--signed-by` is an attestation, recorded next to — not instead of — the
+server-derived `actor`. The loopback CLI has no user identity, so the name is
+what the audit trail has to say who signed.
+
+A second sign-off for the same attempt is refused: authorizations are bound to
+the sign-off they authorize, and a fresh one would orphan them.
+
+### 6. Gate G2 — two people authorize the switch
+
+```bash
+aq playbook cutover-authorize --role author --signed-by "Alice Example" \
+    --reason "I wrote the switch change and reviewed the gate status"
+aq playbook cutover-authorize --role release_operator --signed-by "Bob Example" \
+    --reason "release operator for the <date> cutover"
+```
+
+One signature per role, one role per person. The same name under both roles
+(compared case-insensitively, whitespace-collapsed) is refused. Each
+signature is a `cutover_authorized` event naming the `drain_completed` row it
+authorizes; a signature for an earlier sign-off does not count.
+
+### 7. Switch
 
 ```bash
 aq playbook cutover-switch --to v2 --reason "cutting over after a clean drain"
 ```
 
-Refused unless the drain completed. Equivalent to setting
-`playbooks.v2_engine: true`, plus an audit row recording who did it and why.
+Refused unless, **re-verified at that moment**: every readiness check passes,
+a current G1 sign-off exists, and both G2 roles are signed by two different
+people. The sign-off is evidence about the past; the switch checks the
+present, so a V1 run or a pending event that appeared after G1 blocks it. On
+success it sets `playbooks.v2_engine: true` and records `switched_to_v2` with
+the sign-off id, both authorizations and the readiness table it verified.
+
+A sign-off and its authorizations cover **one attempt**. `switched_to_v2`,
+`rolled_back_to_v1` and `v1_admission_reopened` each end the attempt: to
+switch again after a rollback, sign off and authorize again. The rollback
+happened for a reason.
 
 ## Rollback
 
 ```bash
 aq playbook cutover-switch --to v1 --reason "<what went wrong>"
 ```
+
+Rollback needs no gate — no sign-off, no authorization, no readiness check.
+An operator must be able to roll back at 3am.
 
 Rolling back does **not** reopen V1 admission. `v2_engine=false` with
 `v1_admission=closed` is the supported rollback state: existing runs resume, no
@@ -143,7 +212,12 @@ not use the gate.
 
 Every write appends to `playbook_cutover_events` before returning success. The
 table is append-only — no delete command, no update path — and the `actor` comes
-from the server-side execution principal, never from the request body.
+from the server-side execution principal, never from the request body. The
+gate rows (`drain_completed`, `cutover_authorized`) additionally carry the
+human's attested `signed_by` in `detail`, so an auditor reads both what the
+server knew and what the human declared. Read the whole trail with
+`aq playbook cutover-gate-status --json` (current attempt) or straight from the
+table (every attempt).
 
 It outlives the commands: the deletion commit removes the drain surface but
 keeps this table, because the record of who switched the fleet and when is

@@ -66,12 +66,16 @@ def sync_detailed(
     body: PlaybookCutoverSwitchRequest,
 ) -> Response[PlaybookCutoverSwitchResponse | PlaybookCutoverSwitchResponse422]:
     """Move the fleet between the V1 and V2 playbook runtimes. Operator-only, and the highest-privilege
-    operation in the subsystem. Switching to v2 is refused until the drain completes; switching back to
-    v1 is the rollback and is refused once the rollback window has been closed.
+    operation in the subsystem. Switching to v2 is refused unless, re-verified at that moment, every
+    readiness check passes, a current G1 drain sign-off exists and both G2 roles are authorized by two
+    different people; switching back to v1 is the rollback, needs no gate, and is refused once the
+    rollback window has been closed.
 
      Move the fleet between the V1 and V2 playbook runtimes. Operator-only, and the highest-privilege
-    operation in the subsystem. Switching to v2 is refused until the drain completes; switching back to
-    v1 is the rollback and is refused once the rollback window has been closed.
+    operation in the subsystem. Switching to v2 is refused unless, re-verified at that moment, every
+    readiness check passes, a current G1 drain sign-off exists and both G2 roles are authorized by two
+    different people; switching back to v1 is the rollback, needs no gate, and is refused once the
+    rollback window has been closed.
 
     Args:
         body (PlaybookCutoverSwitchRequest):
@@ -101,12 +105,16 @@ def sync(
     body: PlaybookCutoverSwitchRequest,
 ) -> PlaybookCutoverSwitchResponse | PlaybookCutoverSwitchResponse422 | None:
     """Move the fleet between the V1 and V2 playbook runtimes. Operator-only, and the highest-privilege
-    operation in the subsystem. Switching to v2 is refused until the drain completes; switching back to
-    v1 is the rollback and is refused once the rollback window has been closed.
+    operation in the subsystem. Switching to v2 is refused unless, re-verified at that moment, every
+    readiness check passes, a current G1 drain sign-off exists and both G2 roles are authorized by two
+    different people; switching back to v1 is the rollback, needs no gate, and is refused once the
+    rollback window has been closed.
 
      Move the fleet between the V1 and V2 playbook runtimes. Operator-only, and the highest-privilege
-    operation in the subsystem. Switching to v2 is refused until the drain completes; switching back to
-    v1 is the rollback and is refused once the rollback window has been closed.
+    operation in the subsystem. Switching to v2 is refused unless, re-verified at that moment, every
+    readiness check passes, a current G1 drain sign-off exists and both G2 roles are authorized by two
+    different people; switching back to v1 is the rollback, needs no gate, and is refused once the
+    rollback window has been closed.
 
     Args:
         body (PlaybookCutoverSwitchRequest):
@@ -131,12 +139,16 @@ async def asyncio_detailed(
     body: PlaybookCutoverSwitchRequest,
 ) -> Response[PlaybookCutoverSwitchResponse | PlaybookCutoverSwitchResponse422]:
     """Move the fleet between the V1 and V2 playbook runtimes. Operator-only, and the highest-privilege
-    operation in the subsystem. Switching to v2 is refused until the drain completes; switching back to
-    v1 is the rollback and is refused once the rollback window has been closed.
+    operation in the subsystem. Switching to v2 is refused unless, re-verified at that moment, every
+    readiness check passes, a current G1 drain sign-off exists and both G2 roles are authorized by two
+    different people; switching back to v1 is the rollback, needs no gate, and is refused once the
+    rollback window has been closed.
 
      Move the fleet between the V1 and V2 playbook runtimes. Operator-only, and the highest-privilege
-    operation in the subsystem. Switching to v2 is refused until the drain completes; switching back to
-    v1 is the rollback and is refused once the rollback window has been closed.
+    operation in the subsystem. Switching to v2 is refused unless, re-verified at that moment, every
+    readiness check passes, a current G1 drain sign-off exists and both G2 roles are authorized by two
+    different people; switching back to v1 is the rollback, needs no gate, and is refused once the
+    rollback window has been closed.
 
     Args:
         body (PlaybookCutoverSwitchRequest):
@@ -164,12 +176,16 @@ async def asyncio(
     body: PlaybookCutoverSwitchRequest,
 ) -> PlaybookCutoverSwitchResponse | PlaybookCutoverSwitchResponse422 | None:
     """Move the fleet between the V1 and V2 playbook runtimes. Operator-only, and the highest-privilege
-    operation in the subsystem. Switching to v2 is refused until the drain completes; switching back to
-    v1 is the rollback and is refused once the rollback window has been closed.
+    operation in the subsystem. Switching to v2 is refused unless, re-verified at that moment, every
+    readiness check passes, a current G1 drain sign-off exists and both G2 roles are authorized by two
+    different people; switching back to v1 is the rollback, needs no gate, and is refused once the
+    rollback window has been closed.
 
      Move the fleet between the V1 and V2 playbook runtimes. Operator-only, and the highest-privilege
-    operation in the subsystem. Switching to v2 is refused until the drain completes; switching back to
-    v1 is the rollback and is refused once the rollback window has been closed.
+    operation in the subsystem. Switching to v2 is refused unless, re-verified at that moment, every
+    readiness check passes, a current G1 drain sign-off exists and both G2 roles are authorized by two
+    different people; switching back to v1 is the rollback, needs no gate, and is refused once the
+    rollback window has been closed.
 
     Args:
         body (PlaybookCutoverSwitchRequest):

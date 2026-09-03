@@ -103,13 +103,66 @@ class PlaybookV1RunCancelResponse(V2Model):
     error: str | None = None
 
 
+class CutoverAuthorizationDTO(V2Model):
+    """One G2 signature: who the server saw (``actor``) and who the human
+    declared themselves to be (``signed_by``), in one of the two roles."""
+
+    event_id: str | None = None
+    at: float | None = None
+    actor: str | None = None
+    role: Literal["author", "release_operator"] | None = None
+    signed_by: str | None = None
+
+
+class PlaybookCutoverGateStatusResponse(V2Model):
+    """Readiness, the current G1 sign-off and the G2 signatures, recomputed
+    from source on every call.  ``can_switch`` is the conjunction."""
+
+    success: bool = True
+    generated_at: float | None = None
+    runtime: Literal["v1", "v2"] | None = None
+    ready: bool = False
+    #: One ``{check, observed, pass, blocking?}`` row per readiness check.
+    #: Untyped for the same reason the window measures are: ``pass`` is a
+    #: Python keyword and an aliased field would round-trip under the wrong key.
+    checks: list[dict[str, Any]] = []
+    drain_signoff: CutoverEventDTO | None = None
+    authorizations: list[CutoverAuthorizationDTO] = []
+    blocking_reasons: list[str] = []
+    can_switch: bool = False
+    error: str | None = None
+
+
+class PlaybookCutoverDrainSignoffResponse(V2Model):
+    success: bool
+    event: CutoverEventDTO | None = None
+    checks: list[dict[str, Any]] = []
+    blocking_reasons: list[str] = []
+    error: str | None = None
+
+
+class PlaybookCutoverAuthorizeResponse(V2Model):
+    success: bool
+    event: CutoverEventDTO | None = None
+    drain_signoff_event_id: str | None = None
+    authorizations: list[CutoverAuthorizationDTO] = []
+    blocking_reasons: list[str] = []
+    can_switch: bool = False
+    error: str | None = None
+
+
 class PlaybookCutoverSwitchResponse(V2Model):
     success: bool
     runtime: Literal["v1", "v2"] | None = None
     event: CutoverEventDTO | None = None
     error: str | None = None
-    #: Present when the switch was refused for an incomplete drain, so the
-    #: operator sees what is still holding it without a second call.
+    #: Present when a switch to v2 was refused: the readiness table and the
+    #: gate reasons, so the operator sees what is still holding it without a
+    #: second call.
+    checks: list[dict[str, Any]] = []
+    blocking_reasons: list[str] = []
+    authorizations: list[CutoverAuthorizationDTO] = []
+    #: The drain snapshot, present on the same refusals.
     generated_at: float | None = None
     admission: Literal["open", "closed"] | None = None
     active: list[V1RunSummaryDTO] = []
@@ -161,6 +214,9 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "playbook_v1_admission_close": PlaybookV1AdmissionResponse,
     "playbook_v1_admission_open": PlaybookV1AdmissionResponse,
     "playbook_v1_run_cancel": PlaybookV1RunCancelResponse,
+    "playbook_cutover_gate_status": PlaybookCutoverGateStatusResponse,
+    "playbook_cutover_drain_signoff": PlaybookCutoverDrainSignoffResponse,
+    "playbook_cutover_authorize": PlaybookCutoverAuthorizeResponse,
     "playbook_cutover_switch": PlaybookCutoverSwitchResponse,
     "playbook_cutover_window_status": PlaybookCutoverWindowStatusResponse,
     "playbook_cutover_window_close": PlaybookCutoverWindowCloseResponse,

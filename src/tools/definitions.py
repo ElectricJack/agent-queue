@@ -156,6 +156,9 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "playbook_v1_admission_close": "playbook",
     "playbook_v1_admission_open": "playbook",
     "playbook_v1_run_cancel": "playbook",
+    "playbook_cutover_gate_status": "playbook",
+    "playbook_cutover_drain_signoff": "playbook",
+    "playbook_cutover_authorize": "playbook",
     "playbook_cutover_switch": "playbook",
     "playbook_cutover_window_status": "playbook",
     "playbook_cutover_window_close": "playbook",
@@ -5471,13 +5474,63 @@ _ALL_TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "playbook_cutover_gate_status",
+        "description": (
+            "Where the V2 switch stands: the readiness table (drain complete, "
+            "cutover report clean and rollback-ready, every enabled activation "
+            "ready, zero pending events), the current G1 drain sign-off, the G2 "
+            "authorizations on record, and everything that still blocks. "
+            "Read-only and recomputed from source on every call."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "playbook_cutover_drain_signoff",
+        "description": (
+            "Gate G1: a named human signs off the V1 drain. Operator-only. The "
+            "command re-verifies every readiness check itself and refuses while "
+            "any one blocks, naming it; a second sign-off for the same attempt is "
+            "refused. Appends a drain_completed audit row carrying the attested "
+            "name, the readiness table it verified and the V1 latency baseline."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "reason": {"type": "string", "description": "Why, at least 10 characters. Stored verbatim in the append-only cutover audit."},
+                "signed_by": {"type": "string", "description": "The attesting human's name, at least 2 characters. Recorded alongside the server-derived actor."},
+            },
+            "required": ["reason", "signed_by"],
+        },
+    },
+    {
+        "name": "playbook_cutover_authorize",
+        "description": (
+            "Gate G2: one named human authorizes the switch to v2 in one role, "
+            "author or release_operator. Operator-only. Bound to the current G1 "
+            "drain sign-off and refused without one; one signature per role and "
+            "one role per person, so the switch needs two different people. "
+            "Appends a cutover_authorized audit row."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "reason": {"type": "string", "description": "Why, at least 10 characters. Stored verbatim in the append-only cutover audit."},
+                "signed_by": {"type": "string", "description": "The authorizing human's name, at least 2 characters."},
+                "role": {"type": "string", "enum": ["author", "release_operator"], "description": "Which of the two required signatures this is."},
+            },
+            "required": ["reason", "signed_by", "role"],
+        },
+    },
+    {
         "name": "playbook_cutover_switch",
         "description": (
             "Move the fleet between the V1 and V2 playbook runtimes. "
             "Operator-only, and the highest-privilege operation in the "
-            "subsystem. Switching to v2 is refused until the drain completes; "
-            "switching back to v1 is the rollback and is refused once the "
-            "rollback window has been closed."
+            "subsystem. Switching to v2 is refused unless, re-verified at that "
+            "moment, every readiness check passes, a current G1 drain sign-off "
+            "exists and both G2 roles are authorized by two different people; "
+            "switching back to v1 is the rollback, needs no gate, and is refused "
+            "once the rollback window has been closed."
         ),
         "input_schema": {
             "type": "object",
