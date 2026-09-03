@@ -70,6 +70,7 @@ async def orch(tmp_path):
     mock_git.ais_ancestor = AsyncMock(return_value=False)
     # Default: the task branch carries work, so the PR gate applies.
     mock_git.acount_commits_ahead = AsyncMock(return_value=1)
+    mock_git.abranch_exists = AsyncMock(return_value=True)
     mock_git.areserved_paths_in_diff = AsyncMock(return_value=[])
     mock_git._arun = AsyncMock(return_value="0")
     mock_git.acommit_all = AsyncMock(return_value=True)
@@ -882,7 +883,7 @@ class TestEmptyBranchSkipsThePrGate:
         assert any("No open PR" in msg for msg in ctx.verification_issues)
 
     async def test_unknown_assigned_branch_probe_keeps_the_pr_gate(self, orch):
-        """A Git error must not look like an absent task branch."""
+        """An unreadable branch cannot reach PR acceptance or a fixable retry."""
         task, ctx = await self._empty_branch_ctx(orch, "t-unknown", "aq/t-unknown")
         orch.git.aget_current_branch = AsyncMock(return_value="main")
         orch.git.acount_commits_ahead = AsyncMock(return_value=None)
@@ -891,7 +892,8 @@ class TestEmptyBranchSkipsThePrGate:
         orch.git.ais_ancestor = AsyncMock(return_value=False)
 
         assert await orch._phase_verify(ctx) == PhaseResult.STOP
-        assert any("No open PR" in msg for msg in ctx.verification_issues)
+        assert ctx.verification_retry_in_session is False
+        orch.git.afind_open_pr.assert_not_awaited()
 
     async def test_status_failure_cannot_prove_an_absent_branch_is_clean(self, orch):
         """A status error must keep the PR gate armed for an absent task branch."""

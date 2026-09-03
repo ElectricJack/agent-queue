@@ -721,7 +721,7 @@ class GitOpsMixin:
             candidate_delivery_ref: str | None = None
             if current_branch and current_branch != default_branch:
                 candidate_delivery_ref = current_branch
-            elif not pr_mode and current_branch == default_branch:
+            elif current_branch == default_branch:
                 candidate_delivery_ref = default_branch
             if candidate_delivery_ref and candidate_delivery_ref != delivery_guard_ref:
                 delivery_guard_ref = candidate_delivery_ref
@@ -1004,15 +1004,30 @@ class GitOpsMixin:
             if pr_delivery_branch:
                 ctx.delivery_branch = pr_delivery_branch
                 if pr_delivery_branch != delivery_guard_ref:
-                    delivery_failure = await self._reserved_delivery_failure(
-                        workspace,
-                        default_branch,
-                        pr_delivery_branch,
-                        has_remote=has_remote,
-                    )
-                    if delivery_failure:
-                        failures.append(delivery_failure)
+                    branch_exists: bool | None = True
+                    if current_branch == default_branch:
+                        branch_exists = await self.git.abranch_exists(
+                            workspace, pr_delivery_branch
+                        )
+                    if branch_exists is None:
+                        failures.append(
+                            (
+                                f"Could not verify whether delivery branch "
+                                f"`{pr_delivery_branch}` exists.",
+                                False,
+                            )
+                        )
                         delivery_guard_blocked = True
+                    elif branch_exists:
+                        delivery_failure = await self._reserved_delivery_failure(
+                            workspace,
+                            default_branch,
+                            pr_delivery_branch,
+                            has_remote=has_remote,
+                        )
+                        if delivery_failure:
+                            failures.append(delivery_failure)
+                            delivery_guard_blocked = True
                 if has_remote and not delivery_guard_blocked:
                     pr_url = await self.git.afind_open_pr(
                         workspace,
