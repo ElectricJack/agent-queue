@@ -23,7 +23,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -288,6 +288,7 @@ async def load_activation_health(
     contracts: Any,
     profiles: Any,
     enabled_only: bool = False,
+    activation_rows: Sequence[Mapping[str, Any]] | None = None,
 ) -> list[ActivationHealthRecord]:
     """Health for every activation, computed from storage and the registries.
 
@@ -296,11 +297,20 @@ async def load_activation_health(
     so this function stays testable without a vault and so the daemon has one
     construction site for both (``CommandHandler._v2_lookups``).
 
-    Read-only.  Persisting what it returns is the caller's decision; the
-    retention sweep's one-directional downgrade (§12.2) stays the only writer.
+    *activation_rows* pins evaluation to a caller-owned activation snapshot.
+    When absent, the rows are read from *db* as usual.  Read-only.  Persisting
+    what this returns is the caller's decision; the retention sweep's
+    one-directional downgrade (§12.2) stays the only writer.
     """
     records: list[ActivationHealthRecord] = []
-    for row in await db.list_playbook_activations(enabled_only=enabled_only):
+    rows = (
+        await db.list_playbook_activations(enabled_only=enabled_only)
+        if activation_rows is None
+        else activation_rows
+    )
+    for row in rows:
+        if enabled_only and not bool(row.get("enabled")):
+            continue
         sha = row.get("active_artifact_sha256")
         artifact_row = await db.get_playbook_artifact_row(sha) if sha else None
         ref = ArtifactRef.from_row(artifact_row) if artifact_row else None

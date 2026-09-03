@@ -337,6 +337,18 @@ class _EvidenceHandler(PlaybookMigrationCommandsMixin):
     async def _migration_inventory(self):
         return SimpleNamespace(entries=(), blocking=lambda: ())
 
+    async def _cutover_live_health(self, _activation_rows):
+        return {("default-pipeline", "system", ""): "ready"}
+
+    async def _cutover_release_evidence(self, _activation_rows):
+        return {
+            "success": True,
+            "stale": [],
+            "unverified": [],
+            "evidence_errors": [],
+            "blocking_reasons": [],
+        }
+
     def _migration_store(self):
         def _list_all():
             if self._store_raises is not None:
