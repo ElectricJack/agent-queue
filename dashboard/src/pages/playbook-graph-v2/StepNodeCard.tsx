@@ -3,9 +3,12 @@ import type { GraphNodeDTO, OutcomeExplanationDTO } from "../../api/client";
 import { secondaryLine } from "./IntentSections";
 import {
   NODE_HEIGHT,
+  NODE_RUN_STATE_LABELS,
+  NODE_RUN_STATE_RINGS,
   NODE_WIDTH,
   STEP_KIND_LABELS,
   STEP_KIND_TONES,
+  UNVISITED_NODE_CLASS,
   type SemanticGraphNodeData,
 } from "./types";
 
@@ -29,7 +32,7 @@ interface CardProps {
  *  never from `advanced.typed_step`. A card that reconstructed meaning from
  *  the canonical step would be a second interpretation of the artifact. */
 export function StepNodeCard({ data, selected = false }: CardProps) {
-  const { node, onSelect } = data;
+  const { node, onSelect, overlay, overlayApplied = false } = data;
   const tone = STEP_KIND_TONES[node.step_kind] ?? STEP_KIND_TONES.command;
   const kindLabel = STEP_KIND_LABELS[node.step_kind] ?? node.step_kind;
   const secondary = secondaryLine(node);
@@ -37,15 +40,30 @@ export function StepNodeCard({ data, selected = false }: CardProps) {
   const badges = node.badges ?? [];
   const diagnostics = node.diagnostics ?? [];
 
+  // With a run overlaid, a step the run never reached is still drawn — the
+  // graph is the artifact, not the run — but it recedes behind the path that
+  // actually executed.
+  const runState = overlayApplied ? (overlay?.state ?? "not_visited") : undefined;
+  const visits = overlay?.visit_count ?? 0;
+  const iterations = overlay?.iterations ?? [];
+  const visited = runState !== undefined && runState !== "not_visited";
+  const runLabel = runState ? (NODE_RUN_STATE_LABELS[runState] ?? runState) : undefined;
+  const runClass = runState
+    ? visited
+      ? (NODE_RUN_STATE_RINGS[runState] ?? "")
+      : UNVISITED_NODE_CLASS
+    : "";
+
   return (
     <button
       type="button"
-      aria-label={`Inspect step ${node.title} (${kindLabel})`}
+      aria-label={`Inspect step ${node.title} (${kindLabel})${runLabel ? `, run state ${runLabel}` : ""}`}
       aria-pressed={selected}
       data-step-id={node.id}
       data-step-kind={node.step_kind}
+      {...(runState ? { "data-run-state": runState, "data-visit-count": String(visits) } : {})}
       style={{ width: NODE_WIDTH, height: NODE_HEIGHT }}
-      className={`nodrag nopan flex cursor-pointer flex-col gap-1 overflow-hidden rounded-md border p-2 text-left text-xs shadow ${tone} ${selected ? "outline outline-2 outline-white" : ""} focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-300`}
+      className={`nodrag nopan flex cursor-pointer flex-col gap-1 overflow-hidden rounded-md border p-2 text-left text-xs shadow ${tone} ${runClass} ${selected ? "outline outline-2 outline-white" : ""} focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-300`}
       onClick={(event) => {
         event.stopPropagation();
         onSelect?.(node.id);
@@ -70,6 +88,35 @@ export function StepNodeCard({ data, selected = false }: CardProps) {
       {secondary && (
         <span className="line-clamp-2 w-full text-[10px] leading-4 opacity-90" title={secondary}>
           {secondary}
+        </span>
+      )}
+
+      {runLabel && (
+        <span className="flex w-full flex-wrap items-center gap-1" aria-label="Run state">
+          <span className="rounded bg-black/50 px-1 text-[9px] uppercase tracking-wide">
+            {runLabel}
+          </span>
+          {visits > 0 && (
+            <span className="rounded bg-black/40 px-1 text-[9px]">
+              {visits} visit{visits === 1 ? "" : "s"}
+            </span>
+          )}
+          {iterations.length > 0 && (
+            // The count only says how many iterations there were; each one keeps
+            // its own outcome in the tooltip and its own receipts in the run
+            // panel, so a loop is never collapsed into one status.
+            <span
+              className="rounded bg-black/40 px-1 text-[9px]"
+              title={iterations
+                .map((it) => `${it.index}: ${it.item_display} → ${it.outcome ?? "pending"}`)
+                .join("\n")}
+            >
+              {iterations.length} iteration{iterations.length === 1 ? "" : "s"}
+            </span>
+          )}
+          {overlay?.last_outcome && (
+            <span className="rounded bg-black/40 px-1 text-[9px]">→ {overlay.last_outcome}</span>
+          )}
         </span>
       )}
 

@@ -5,6 +5,7 @@ import {
   NEUTRAL_EDGE_STYLE,
   STEP_KIND_LABELS,
   STEP_KIND_TONES,
+  UNTRAVERSED_EDGE_OPACITY,
   selectedEdgeStyle,
   type SemanticEdgeKind,
   type SemanticStepKind,
@@ -53,6 +54,16 @@ describe("semantic graph style maps", () => {
       expect(selected.stroke).toBe(base.stroke);
       expect(String(selected.filter)).toContain(String(base.stroke));
     }
+  });
+
+  it("un-dims a selected edge the run overlay had faded", () => {
+    const untraversed = { ...EDGE_KIND_STYLES.success, strokeOpacity: UNTRAVERSED_EDGE_OPACITY };
+    const selected = selectedEdgeStyle(untraversed);
+    // The overlay fades an edge this run never took; selecting it has to be
+    // visible anyway, and the dashes and colour still carry "not traversed".
+    expect(selected.strokeOpacity).toBe(1);
+    expect(selected.strokeDasharray).toBe(untraversed.strokeDasharray);
+    expect(selected.stroke).toBe(untraversed.stroke);
   });
 
   it("labels every edge kind and every step kind", () => {

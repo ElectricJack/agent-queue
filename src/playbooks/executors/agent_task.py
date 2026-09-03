@@ -28,11 +28,15 @@ Two live-tree deviations from the plan, both recorded in the child plan §2.1:
    T-8 added it to ``src/playbooks/definition.py`` as an additive optional
    field, because the roadmap's "intersection of parent, child profile and
    explicit per-step narrowing" is not implementable without it.
-2. There is no *contracted* task-cancellation command.  ``cancel_child``
-   therefore dispatches :data:`CHILD_CANCEL_COMMAND` through the contract
-   registry when it is contracted, and otherwise leaves the child running
-   with a diagnostic.  Leaving it running is the fail-safe direction, and it
-   is what ``cancel_child=False`` — the default — does anyway.
+2. When the child plan was written there was no *contracted*
+   task-cancellation command.  ``src/commands/contracts/builtin.py`` now
+   registers and adapts ``stop_task`` (outcomes ``stopped`` /
+   ``not_running`` / ``rejected``), so ``cancel_child`` dispatches
+   :data:`CHILD_CANCEL_COMMAND` through the contract registry on the normal
+   path.  The ``UnknownContract`` branch is kept as a fail-safe for a
+   registry that does not carry it: the child is left running with a
+   diagnostic, which is the fail-safe direction and what
+   ``cancel_child=False`` — the default — does anyway.
 """
 
 from __future__ import annotations

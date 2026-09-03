@@ -55,7 +55,7 @@ The roadmap's file list was written from the module map, not from the tree. Thes
 | Modify `src/playbooks/run_task.py` | `sync_playbook_run_task` (`run_task.py:33`) + `playbook_status_to_task_status` (`:25`) — maps a run status onto its projection task. | **Kept.** §4.9: the V2 lifecycle adds `cancelling`, which needs a mapping. |
 | Modify `src/playbooks/services.py` | `PlaybookServices` (`services.py:20`) is `llm` + `node_tools()`; `for_tests(llm)` at `:48`. | **Kept**, but §3.8: the `LlmExecutor` takes an `LLMClient` directly and does **not** grow a second services object. `services.py` gains only the usage-aware call path. |
 | §4.5 step 1 needs `step.capability_narrowing` | **Package 2 shipped `AgentTaskStep` without it** (`src/playbooks/definition.py:235`): the model carries `profile_id`, `objective`, `inputs`, `wait_for_completion`, `cancel_child`, `timeout_seconds`, `retry`, `save_result_as` and `transitions`, and nothing else. | **T-8 added it** as an additive optional `CapabilityNarrowing` (three `list \| None` namespaces, `None` = narrow nothing, `[]` = none) plus a regenerated `src/playbook_v2_schema.json`. Roadmap §2's "delegated agent-task permissions are the intersection of parent permissions, child profile permissions, and explicit per-step narrowing" is not implementable without the third term. Package 6's compiler owes the authoring surface for it. |
-| §4.5 step 6 / §7.4 assume a contracted way to cancel a child | **There is no contracted task-cancellation command.** `src/commands/contracts/builtin.py` registers `create_task`, `ensure_task`, `edit_task`, `add_dependency`, `gate_create`, `gate_resolve`, `list_tasks`, `get_downstream_tasks`, `task_batch_commit`, `task_route` — `stop_task` (`task_commands.py:2546`) is uncontracted. | `cancel_child` dispatches `CHILD_CANCEL_COMMAND` (`stop_task`) **through the contract registry** when it is contracted and otherwise logs and leaves the child running. Reaching `CommandHandler` directly would skip the dispatch-boundary authorization that makes the narrowed principal mean anything, and a surviving child is the fail-safe direction — which is what `cancel_child=False`, the default, does anyway. |
+| §4.5 step 6 / §7.4 assume a contracted way to cancel a child | **Resolved in the live tree.** When this plan was written `src/commands/contracts/builtin.py` contracted only `create_task`, `ensure_task`, `edit_task`, `add_dependency`, `gate_create`, `gate_resolve`, `list_tasks`, `get_downstream_tasks`, `task_batch_commit` and `task_route`; `stop_task` was uncontracted. `af6e3eb1` registers and adapts it (`stopped` / `not_running` / `rejected`, `SideEffectClass.UPDATE`, natural idempotency), so the assumption now holds. | `cancel_child` dispatches `CHILD_CANCEL_COMMAND` (`stop_task`) **through the contract registry**. Reaching `CommandHandler` directly would skip the dispatch-boundary authorization that makes the narrowed principal mean anything. The `UnknownContract` branch is kept as a fail-safe — a registry without `stop_task` logs a diagnostic and leaves the child running, which is what `cancel_child=False`, the default, does anyway. |
 | — | **`src/workflow_stage_resume_handler.py:195`** `WorkflowStageResumeHandler._resume_run` → `PlaybookRunner.resume_from_event` (`:290`) | **Added to the Modify list.** It is a live resume site the roadmap omits. Package 7 §1.4 already records it as site 5; if Package 4 leaves it un-abstracted, Package 7's switch strands workflow-stage runs. |
 | — | `src/orchestrator/core.py:1782` constructs the **`TimerService`** (`src/timer_service.py:185`) | §4.6: the spec forbids synthesising TimerService triggers for per-run waits. The wait scheduler is a new owner; §4.6 states the boundary. |
 | Modify "AI-provider and task lifecycle seams" | `src/llm/types.py::ChatResponse` carries **content blocks only**; `src/llm/providers/anthropic.py:147` builds `ChatResponse(content=content)` and discards `resp.usage`; `openai.py` and `google.py` do the same; `grep -n usage src/llm/**` returns nothing. `src/playbooks/token_tracker.py:36::_estimate_tokens` is `chars // 4`. | This is the **largest single deviation in the package** and is scoped as its own commit (§4.11, T-13/T-14). The spec is unambiguous: "Token accounting uses provider-reported input and output usage. A provider adapter that cannot report usage cannot run a step with a hard total-token budget." Package 4 adds the usage channel **and** the fail-closed rule. |
@@ -990,7 +990,7 @@ ruff check src/playbooks/engine.py src/playbooks/executors tests/test_v2_engine.
 
 #### T-6 — the wait race is closed in one transaction
 
-*Red:* `tests/test_v2_waits.py` (new). The three orderings, each ending with **exactly one** resume receipt:
+*Red:* `tests/test_v2_engine.py`, classes `TestDurableWaits` and `TestWaitScheduler` (§2.6 item 12 — the roadmap's Package 4 file list creates no `tests/test_v2_waits.py`, so the test names below are kept verbatim in `test_v2_engine.py`, and `tests/test_v2_engine_repository.py` carries the same assertions against the real repository). The three orderings, each ending with **exactly one** resume receipt:
 
 - `test_event_before_registration_resumes_immediately` — write the matching event to the pending-event inbox first, then reach the wait; assert `register` returns `matched_immediately` and the run never enters `paused`.
 - `test_event_during_registration_resumes_exactly_once` — a `WaitRepository` double whose `register` awaits a barrier that the test releases only after injecting the event; assert one resume and one receipt.
@@ -1002,7 +1002,7 @@ ruff check src/playbooks/engine.py src/playbooks/executors tests/test_v2_engine.
 
 #### T-7 — loops are scoped and resumable
 
-*Red:* `tests/test_v2_foreach.py` (new).
+*Red:* `tests/test_v2_engine.py`, class `TestSequentialLoops` (§2.6 item 12 — there is no `tests/test_v2_foreach.py`; the test names below are kept verbatim in `test_v2_engine.py`).
 
 - `test_loop_item_lives_in_its_own_namespace` — a step inside the body binds `save_result_as: "task"` while the item binding is also `task`; assert `scope.loop["task"]` and `scope.bindings["task"]` are both readable and distinct. Against the live `pipeline_runner` shape this is impossible; the assertion is the point.
 - `test_loop_item_is_not_visible_after_the_loop` — a `ResultRef` to the item on the continuation path is `input_resolution_failed`.
@@ -1016,7 +1016,7 @@ ruff check src/playbooks/engine.py src/playbooks/executors tests/test_v2_engine.
 
 #### T-9 — cancellation is real
 
-*Red:* `tests/test_v2_cancellation.py` (new).
+*Red:* `tests/test_v2_engine.py`, class `TestCancellation` (§2.6 item 18 — there is no `tests/test_v2_cancellation.py`; the test names below are kept verbatim in `test_v2_engine.py`, and `tests/test_v2_engine_repository.py` carries the paused-run assertion against the real repository).
 
 - `test_cancel_a_paused_run_is_immediate` — one boundary, wait deregistered, status `cancelled`.
 - `test_cancel_during_a_live_command_does_not_get_overwritten` — a scripted command that blocks on a barrier; call `cancel`; release; assert the final status is `cancelled` and **not** overwritten to `running`/`completed`. This is the regression test for `playbook_commands.py:511-519`'s own docstring.
@@ -1029,7 +1029,7 @@ ruff check src/playbooks/engine.py src/playbooks/executors tests/test_v2_engine.
 
 *Commit C2 verify:*
 ```bash
-aq test tests/test_v2_waits.py tests/test_v2_foreach.py tests/test_v2_cancellation.py \
+aq test tests/test_v2_engine.py tests/test_v2_engine_repository.py \
         tests/test_playbook_state_machine.py -q
 ruff check src/playbooks/executors src/playbooks/engine.py src/playbooks/state_machine.py src/playbooks/run_task.py
 ```
@@ -1459,7 +1459,7 @@ Whether it is a CHECK constraint or an application-level enum is Package 3's dec
 - **Every DDL above is additive and uses `batch_alter_table`**, which is the project's existing pattern for SQLite's lack of `ALTER COLUMN`. `server_default=sa.text("0")` for booleans matches the codebase's existing boolean-default convention (`tests/test_migration_boolean_defaults.py` exists precisely to police it).
 - **No enum types.** Lifecycle and outcome are `Text`, matching every existing status column. A PostgreSQL `CREATE TYPE`/`DROP TYPE` pair would need separate up/down handling and would make the downgrade lossy.
 - **The engine's atomicity requirement is `commit_boundary`'s, not the engine's own.** Package 4 opens no transaction; it calls one repository method. On SQLite that is `db.immediate()` (the pattern at `assignment_routing.py:519`); on PostgreSQL it is an ordinary transaction with `SELECT … FOR UPDATE` on the snapshot row. Both satisfy §3.3.1's version check.
-- **Postgres is production** (project convention; local instance on `:5533`). The restart tests in T-15 use a shared **SQLite file** because they need a `SIGKILL`-able child process with a trivially shareable database; the *concurrency* assertions (`SnapshotVersionConflict`, the wait race) additionally run against PostgreSQL, where they are meaningful — SQLite's single-writer locking can mask a lost-update bug that PostgreSQL's `READ COMMITTED` exposes. Concretely, `tests/test_v2_waits.py` and `tests/test_v2_restart_resume.py` are parameterised over the project's existing database fixture so CI's PostgreSQL job covers both.
+- **Postgres is production** (project convention; local instance on `:5533`). The restart tests in T-15 use a shared **SQLite file** because they need a `SIGKILL`-able child process with a trivially shareable database; the *concurrency* assertions (`SnapshotVersionConflict`, the wait race) additionally run against PostgreSQL, where they are meaningful — SQLite's single-writer locking can mask a lost-update bug that PostgreSQL's `READ COMMITTED` exposes. Concretely, the wait suites in `tests/test_v2_engine.py` / `tests/test_v2_engine_repository.py` and `tests/test_v2_restart_resume.py` are parameterised over the project's existing database fixture so CI's PostgreSQL job covers both.
 - **`asyncio.timeout` and `SIGKILL` are POSIX-shaped.** The integration-marked restart tests are skipped on non-POSIX platforms with an explicit `pytest.mark.skipif`, not silently.
 
 ---
@@ -1474,8 +1474,8 @@ Each task's *Verify* block in §5. Iterate with `-x` on the single file being ch
 
 ```bash
 # New suites
-aq test tests/test_v2_engine.py tests/test_command_executor.py tests/test_v2_receipts.py \
-        tests/test_v2_waits.py tests/test_v2_foreach.py tests/test_v2_cancellation.py \
+aq test tests/test_v2_engine.py tests/test_v2_engine_repository.py \
+        tests/test_command_executor.py tests/test_v2_receipts.py \
         tests/test_llm_usage.py tests/test_llm_executor.py tests/test_agent_task_executor.py \
         tests/test_v2_dry_run.py tests/test_v2_shadow.py tests/test_v2_restart_resume.py \
         tests/test_v2_entry_points.py tests/test_assignment_routing_v2.py -q

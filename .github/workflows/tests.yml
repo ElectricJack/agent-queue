@@ -4,10 +4,11 @@ on:
   push:
   pull_request:
 
-# One run per ref; a new push supersedes an in-flight run.
+# Keep main's in-progress runs visible; newer PR pushes may still supersede
+# their own stale checks.
 concurrency:
   group: tests-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read

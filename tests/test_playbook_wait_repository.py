@@ -185,6 +185,20 @@ def make_wait(**overrides) -> WaitSpec:
     return WaitSpec(**base)
 
 
+async def pause_run_on_waits(database, *waits: WaitSpec) -> RunSnapshot:
+    """Persist waits at the exact paused snapshot version that owns them."""
+    snapshot = await database.create_run(make_snapshot())
+    return await database.commit_boundary(
+        replace(
+            snapshot,
+            lifecycle=RunLifecycle.PAUSED,
+            current_step_id=waits[0].step_id,
+        ),
+        make_receipt(snapshot, step_id=waits[0].step_id),
+        WaitChangeSet(register=tuple(waits)),
+    )
+
+
 async def count_rows(database, table) -> int:
     async with database._engine.connect() as conn:
         return len((await conn.execute(select(table))).fetchall())
@@ -313,9 +327,9 @@ async def test_an_event_cannot_claim_a_non_event_wait(db):
 
 async def test_a_non_event_wait_still_expires_at_its_deadline(db):
     """Gating event claims must not strand a timer wait: expiry still ends it."""
-    await db.create_run(make_snapshot())
-    await db.register(
-        make_wait(kind="timer", event_type="", match={}, deadline_at=NOW + HOUR), 1
+    await pause_run_on_waits(
+        db,
+        make_wait(kind="timer", event_type="", match={}, deadline_at=NOW + HOUR),
     )
 
     assert await db.claim_for_event(Event("pr.merged", "evt-1", {}), now=NOW) == []
@@ -712,10 +726,12 @@ async def test_wait_survives_a_process_restart(db_factory):
 
 
 async def test_expire_due_claims_only_past_deadlines(db):
-    await db.create_run(make_snapshot())
-    await db.register(make_wait(wait_id="due", step_id="a", deadline_at=NOW - 1), 1)
-    await db.register(make_wait(wait_id="later", step_id="b", deadline_at=NOW + DAY), 1)
-    await db.register(make_wait(wait_id="never", step_id="c", deadline_at=None), 1)
+    await pause_run_on_waits(
+        db,
+        make_wait(wait_id="due", step_id="a", deadline_at=NOW - 1),
+        make_wait(wait_id="later", step_id="b", deadline_at=NOW + DAY),
+        make_wait(wait_id="never", step_id="c", deadline_at=None),
+    )
 
     expired = await db.expire_due(NOW)
     assert [c.wait_id for c in expired] == ["due"]
@@ -723,14 +739,25 @@ async def test_expire_due_claims_only_past_deadlines(db):
     assert expired[0].claimed_event_id is None
     assert expired[0].claimed_at == NOW
     assert sorted(w.wait_id for w in await db.list_active("run-1")) == ["later", "never"]
-    assert await db.expire_due(NOW) == []
+    # Until resume advances the paused snapshot, expiry claims are replayed
+    # so a scheduler crash after the state transition cannot strand the run.
+    [recovered] = await db.expire_due(NOW)
+    assert recovered == expired[0]
 
 
-async def test_expire_is_exactly_once_under_concurrency(db):
-    await db.create_run(make_snapshot())
-    await db.register(make_wait(deadline_at=NOW - 1), 1)
-    results = await asyncio.gather(*(db.expire_due(NOW) for _ in range(20)))
-    assert sum(len(batch) for batch in results) == 1
+async def test_expire_persists_one_claim_under_concurrency(db):
+    await pause_run_on_waits(db, make_wait(deadline_at=NOW - 1))
+    results = await asyncio.gather(*(db.expire_due(NOW + offset) for offset in range(20)))
+    claims = [claim for batch in results for claim in batch]
+
+    # Calls that observe the already-expired row recover the first claim;
+    # contenders whose active-row CAS loses may return no claim.  No caller
+    # may replace the winning claim timestamp with its own.
+    assert claims
+    assert {claim.wait_id for claim in claims} == {"wait-1"}
+    assert len({claim.claimed_at for claim in claims}) == 1
+    [recovered] = await db.expire_due(NOW + DAY)
+    assert recovered == claims[0]
 
 
 async def test_clear_for_run_deactivates_every_wait(db):
