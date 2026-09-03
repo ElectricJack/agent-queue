@@ -90,6 +90,49 @@ describe("Package 5 review panels", () => {
     expect(screen.getByText("Activation is disabled")).toBeInTheDocument();
   });
 
+  it("itemises a rule's own field changes instead of only counting them", () => {
+    // The regression this pins: a rule's trigger filter or condition moving
+    // raises `semantic_change_count` and forces an acknowledgement, so the row
+    // has to name the field and both values.
+    render(
+      <ArtifactDiffPanel
+        diff={{
+          base: artifact,
+          target: artifact,
+          executable_change: true,
+          semantic_change_count: 1,
+          presentation_change_count: 1,
+          rules: [
+            {
+              rule_id: "review",
+              change: "modified",
+              event_type_before: "task.completed",
+              event_type_after: "task.completed",
+              field_changes: [
+                { path: "/trigger/filter/review_task", executable: true, before: { kind: "literal", display: "false" }, after: { kind: "literal", display: "true" } },
+                { path: "/description", executable: false, before: { kind: "literal", display: "old prose" }, after: { kind: "literal", display: "new prose" } },
+              ],
+            },
+          ],
+        }}
+      />,
+    );
+
+    const executable = within(screen.getByRole("list", { name: "Executable changes" }));
+    expect(executable.getByText("review/trigger/filter/review_task")).toBeInTheDocument();
+    expect(executable.getByText("false")).toBeInTheDocument();
+    expect(executable.getByText("true")).toBeInTheDocument();
+    // The rule summary row stays for identity and step notes, but it no longer
+    // repeats a value the field rows already print.
+    expect(executable.getAllByRole("listitem")).toHaveLength(2);
+    expect(executable.queryByText("task.completed")).toBeNull();
+    expect(screen.queryByText(/does not itemize/)).toBeNull();
+
+    const presentation = within(screen.getByRole("list", { name: "Presentation-only changes" }));
+    expect(presentation.getByText("review/description")).toBeInTheDocument();
+    expect(presentation.getByText("new prose")).toBeInTheDocument();
+  });
+
   it("never reports no executable changes against a non-zero semantic count", () => {
     render(
       <ArtifactDiffPanel
