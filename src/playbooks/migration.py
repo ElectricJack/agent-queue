@@ -98,8 +98,9 @@ _HEALTH_REASONS: Mapping[ActivationHealth, tuple[str, str]] = {
         "the active artifact has unresolved compiler questions",
     ),
     ActivationHealth.DISABLED: (
-        "operator_disabled",
-        "the V2 activation is disabled",
+        "compile_question",
+        "the V2 activation is disabled without 'enabled: false' in source or a "
+        "source-matched operator acknowledgement",
     ),
     ActivationHealth.STALE_CONTRACT: (
         "stale_contract",
@@ -962,7 +963,9 @@ def _disposition(
     codes = {reason.code for reason in reasons}
     if codes & _FATAL_CODES:
         return "invalid", None, None
-    if frontmatter_disabled or "operator_disabled" in codes:
+    # Runtime activation health is not operator evidence.  Only authoring
+    # frontmatter or a source-scoped acknowledgement can satisfy this rule.
+    if frontmatter_disabled:
         return "disabled", None, None
     if ack is not None:
         return (
