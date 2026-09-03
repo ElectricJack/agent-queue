@@ -259,6 +259,54 @@ async def test_a_replayed_event_is_refused_by_the_database_index(db):
 
 
 @pytest.mark.asyncio
+async def test_same_dispatch_and_rule_id_create_one_run_per_playbook(db):
+    artifact = load_artifact("two-rules-one-event.artifact.json")
+    artifacts = [
+        artifact.model_copy(update={"id": playbook_id})
+        for playbook_id in ("playbook-a", "playbook-b")
+    ]
+    refs = [artifact_ref_for(definition) for definition in artifacts]
+    for ref in refs:
+        await seed_artifact(db, ref)
+
+    registry, adapter = registry_with(ENSURE_TASK, LIST_TASKS)
+    adapter.queue.extend([ok(), ok()])
+    store = InMemoryArtifactStore()
+    for definition in artifacts:
+        store.put(definition)
+    engine = PlaybookEngine(
+        services=EngineServices(
+            contracts=registry, clock=lambda: NOW, artifact_store=store, bus=RecordingBus()
+        ),
+        runs=db,
+        waits=None,
+        activations=StubActivations(refs),
+    )
+
+    outcomes = [
+        await engine.run_rule(
+            ref,
+            "review",
+            event("task-completed-code"),
+            TRUSTED_LOCAL,
+            dispatch_id="same-event",
+        )
+        for ref in refs
+    ]
+
+    assert len({outcome.run_id for outcome in outcomes}) == 2
+    assert [outcome.snapshot.playbook_id for outcome in outcomes] == [
+        "playbook-a",
+        "playbook-b",
+    ]
+    rows = [run for ref in refs for run in await db.list_runs(playbook_id=ref.playbook_id)]
+    assert {(row.playbook_id, row.rule_id) for row in rows} == {
+        ("playbook-a", "review"),
+        ("playbook-b", "review"),
+    }
+
+
+@pytest.mark.asyncio
 async def test_two_concurrent_dispatches_of_one_event_still_create_two_runs(db):
     """The fence, not the pre-read: both dispatches race the same index."""
     engine, adapter, _ref, _bus = await build(db)

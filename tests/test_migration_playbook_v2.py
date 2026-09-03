@@ -35,6 +35,7 @@ POSTGRES_DSN = ensure_worker_postgres_dsn()
 #: documented rollback target (§19).
 BASE_REVISION = "d3e7b1c9a204"
 PRE_TURN_RECEIPTS_REVISION = "c52f1a4fb6ba"
+PRE_RUN_DEDUP_SCOPE_REVISION = "d3f2c0de0005"
 
 #: Every table the three revisions create, in creation order.
 V2_TABLES = (
@@ -410,6 +411,84 @@ def test_partial_indexes_are_created_on_sqlite(tmp_path):
         engine.dispose()
 
 
+def test_run_dedup_index_includes_playbook_identity(tmp_path):
+    engine = _sqlite_engine(tmp_path, name="run-dedup.db")
+    try:
+        migrate(engine, "head")
+        indexes = {
+            index["name"]: tuple(index["column_names"])
+            for index in _inspect(engine).get_indexes("playbook_v2_runs")
+        }
+        assert indexes["uq_playbook_v2_runs_dispatch_rule"] == (
+            "playbook_id",
+            "dispatch_id",
+            "rule_id",
+        )
+    finally:
+        engine.dispose()
+
+
+def test_run_dedup_downgrade_restores_the_previous_key(tmp_path):
+    engine = _sqlite_engine(tmp_path, name="run-dedup-downgrade.db")
+    try:
+        migrate(engine, "head")
+        migrate(engine, PRE_RUN_DEDUP_SCOPE_REVISION, downgrade=True)
+        indexes = {
+            index["name"]: tuple(index["column_names"])
+            for index in _inspect(engine).get_indexes("playbook_v2_runs")
+        }
+        assert indexes["uq_playbook_v2_runs_dispatch_rule"] == (
+            "dispatch_id",
+            "rule_id",
+        )
+    finally:
+        engine.dispose()
+
+
+def test_run_dedup_downgrade_refuses_cross_playbook_collisions(tmp_path):
+    engine = _sqlite_engine(tmp_path, name="run-dedup-collisions.db")
+    try:
+        migrate(engine, "head")
+        with engine.begin() as conn:
+            for suffix in ("a", "b"):
+                sha = "sha256:" + suffix * 64
+                conn.execute(
+                    sa.text(
+                        "INSERT INTO playbook_artifacts "
+                        "(artifact_sha256, playbook_id, scope, scope_identifier, "
+                        "schema_generation, version, source_digest, contract_fingerprint, "
+                        "profile_fingerprint, compiler_build, path, size_bytes, validation, "
+                        "created_at) VALUES (:sha,:playbook,'system','',2,1,:sha,:sha,'',"
+                        "'build',:path,2,'{}',1.0)"
+                    ),
+                    {
+                        "sha": sha,
+                        "playbook": f"playbook-{suffix}",
+                        "path": f"/tmp/{suffix}.json",
+                    },
+                )
+                conn.execute(
+                    sa.text(
+                        "INSERT INTO playbook_v2_runs "
+                        "(run_id, playbook_id, artifact_sha256, rule_id, lifecycle, mode, "
+                        "snapshot_version, snapshot, snapshot_bytes, event_type, dispatch_id, "
+                        "summary, started_at, updated_at) VALUES "
+                        "(:run_id,:playbook,:sha,'review','completed','live',0,'{}',2,'event',"
+                        "'same-event','',1.0,1.0)"
+                    ),
+                    {
+                        "run_id": f"run-{suffix}",
+                        "playbook": f"playbook-{suffix}",
+                        "sha": sha,
+                    },
+                )
+
+        with pytest.raises(RuntimeError, match="cross-playbook run dedup keys exist"):
+            migrate(engine, PRE_RUN_DEDUP_SCOPE_REVISION, downgrade=True)
+    finally:
+        engine.dispose()
+
+
 @pytest.mark.integration
 async def test_partial_indexes_are_created_on_postgres():
     """Same three predicates, read back out of ``pg_indexes.indexdef``."""
@@ -436,6 +515,9 @@ async def test_partial_indexes_are_created_on_postgres():
     for name in PARTIAL_INDEXES:
         assert name in defs, f"{name} was not created on PostgreSQL"
         assert "WHERE" in defs[name].upper(), f"{name} lost its predicate: {defs[name]}"
+    assert "(playbook_id, dispatch_id, rule_id)" in defs[
+        "uq_playbook_v2_runs_dispatch_rule"
+    ]
 
 
 # -- J-4 ---------------------------------------------------------------------

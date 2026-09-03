@@ -118,13 +118,13 @@ class DuplicateAttempt(PlaybookStorageError):
 
 
 class DuplicateRun(PlaybookStorageError):
-    """A run already exists for this dispatch and rule.
+    """A run already exists for this playbook, dispatch, and rule.
 
     ``uq_playbook_v2_runs_dispatch_rule`` is what makes "one matching event
-    creates at most one run per rule" a database property rather than a
-    convention.  It is named here so the engine can act on the collision —
-    reporting the existing run as deduplicated — instead of pattern-matching
-    a driver-specific ``IntegrityError`` message.
+    creates at most one run per playbook rule" a database property rather
+    than a convention.  It is named here so the engine can act on the
+    collision — reporting the existing run as deduplicated — instead of
+    pattern-matching a driver-specific ``IntegrityError`` message.
     """
 
     code = "duplicate_run"
@@ -695,7 +695,7 @@ class RunRepository(Protocol):
     async def load_run(self, run_id: str) -> RunSnapshot | None: ...
 
     async def find_run_for_dispatch(
-        self, dispatch_id: str, rule_id: str
+        self, playbook_id: str, dispatch_id: str, rule_id: str
     ) -> RunSnapshot | None: ...
 
     async def commit_boundary(
