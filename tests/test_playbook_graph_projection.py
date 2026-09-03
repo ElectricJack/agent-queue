@@ -252,6 +252,55 @@ def test_agent_task_step_explains_its_objective_and_its_delegation():
     assert [item["kind"] for item in explanation["effects"]] == ["delegates", "binds"]
 
 
+def test_agent_task_step_badges_whether_a_cancel_takes_the_child_with_it():
+    """§6.2 puts ``cancel_child`` on an agent-task card.  A rule that leaves a
+    child agent running after it is cancelled is a fleet an operator has to go
+    and clean up, so the card says which it is either way."""
+    node = _node(_project(), "escalate")
+    assert {"kind": "wait", "label": "On cancel", "value": "leaves the child running"} in node[
+        "badges"
+    ]
+
+
+def test_command_cards_badge_the_idempotency_their_contract_declares():
+    """§6.2's command row: an operator re-dispatching an event needs to know
+    from the card whether running the step twice runs it twice.
+
+    Projected against the **real** contract registry rather than the suite's
+    stub, because the mode lives on the registered contract and a stub that
+    knows no commands cannot exercise it — which is how the missing chip
+    survived the exit gate (``solid-harbor.49`` pass 2).
+    """
+    from src.playbooks.validation import RegistryContractLookup
+
+    graph = _project(contracts=RegistryContractLookup())
+    badges = {
+        step_id: [badge for badge in _node(graph, step_id)["badges"] if badge["kind"] == "idempotency"]
+        for step_id in ("ensure-review-task", "list-downstream", "open-gate")
+    }
+    assert badges == {
+        # ``ensure_task`` dedups on an argument, ``list_tasks`` is a read and is
+        # naturally idempotent, ``gate_create`` dedups on its await id.
+        "ensure-review-task": [
+            {"kind": "idempotency", "label": "Idempotent", "value": "keyed on dedup_key"}
+        ],
+        "list-downstream": [{"kind": "idempotency", "label": "Idempotent", "value": "natural"}],
+        "open-gate": [
+            {"kind": "idempotency", "label": "Idempotent", "value": "keyed on await_id"}
+        ],
+    }
+
+
+def test_an_unregistered_command_claims_no_idempotency():
+    """The stub registry knows none of the artifact's commands.  A card that
+    said "Idempotent none" there would be asserting something the projection
+    cannot know; the ``unknown_command`` diagnostic is the honest answer."""
+    graph = _project()
+    for step_id in ("ensure-review-task", "list-downstream", "open-gate"):
+        node = _node(graph, step_id)
+        assert [badge["kind"] for badge in node["badges"]] == ["diagnostic"], step_id
+
+
 def test_wait_step_explains_what_it_awaits_and_how_it_correlates():
     graph = _project()
     node = _node(graph, "await-approval")
