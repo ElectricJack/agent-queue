@@ -27,11 +27,14 @@ from src.api.scope import _FINAL_REVIEWER_COMMANDS, _TRIAGE_COMMANDS
 from src.commands.handler import CommandHandler
 from src.config import AppConfig, DiscordConfig
 from src.database import Database
+from src.git.manager import PullRequestIdentity
 from src.models import Agent, AgentProfile, AgentState, Project, SessionRecord, Task, TaskStatus
 from src.orchestrator import Orchestrator
 from src.vault import ensure_default_intelligence_classes
 
 pytestmark = pytest.mark.asyncio
+
+_PR_IDENTITY = PullRequestIdentity("org/repo", 1, "main", "a" * 40, "feature", "b" * 40)
 
 
 @pytest.fixture(scope="module")
@@ -125,6 +128,13 @@ async def api(tmp_path, monkeypatch, request, generated_routers):
     }
     merge_pr = AsyncMock(return_value={"success": True, "sha": "merged"})
     monkeypatch.setattr(orch.git, "amerge_pr", merge_pr)
+    # ``pr_merge`` resolves the PR's immutable identity through ``gh``
+    # before merging; this test is about the token scope, not GitHub.
+    monkeypatch.setattr(
+        orch.git,
+        "avalidate_pr_for_merge",
+        AsyncMock(return_value=_PR_IDENTITY),
+    )
     monkeypatch.setattr(deps, "_command_handler", handler)
     monkeypatch.setattr(deps, "_orchestrator", orch)
     monkeypatch.setattr(deps, "_token_store", store)
@@ -254,7 +264,11 @@ async def test_final_reviewer_can_merge_its_review_branch_pr(api):
     assert result["sha"] == "merged"
     api.merge_pr.assert_awaited_once()
     assert api.merge_pr.await_args.args[1] == "https://example.invalid/pr/1"
-    assert api.merge_pr.await_args.kwargs == {"method": "squash"}
+    assert api.merge_pr.await_args.kwargs == {
+        "method": "squash",
+        "expected_head_oid": _PR_IDENTITY.head_oid,
+        "expected_base_oid": _PR_IDENTITY.base_oid,
+    }
 
 
 async def test_final_reviewer_can_call_git_diff(api):

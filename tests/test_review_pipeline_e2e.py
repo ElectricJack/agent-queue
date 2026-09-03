@@ -27,6 +27,7 @@ import pytest
 from src.commands.handler import CommandHandler
 from src.config import AppConfig, DiscordConfig
 from src.database import Database
+from src.git.manager import PullRequestIdentity
 from src.models import AgentProfile, Project, TaskStatus
 from src.orchestrator import Orchestrator
 
@@ -57,6 +58,13 @@ def orchestrator_factory(tmp_path):
         o.db = db
         o.git = MagicMock()
         o.git.arev_parse = AsyncMock(return_value="")
+        # ``pr_merge`` validates the PR's immutable identity before it
+        # merges; a bare MagicMock is not awaitable, so stub it.
+        o.git.avalidate_pr_for_merge = AsyncMock(
+            return_value=PullRequestIdentity(
+                "org/repo", 1, "main", "a" * 40, "feature", "b" * 40
+            )
+        )
         o.bus = MagicMock()
         o.bus.emit = AsyncMock()
         o.command_handler = CommandHandler(o, cfg)
