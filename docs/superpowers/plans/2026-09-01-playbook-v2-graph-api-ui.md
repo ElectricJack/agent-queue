@@ -964,6 +964,8 @@ One mixin, seven `_cmd_*` coroutines, added to `CommandHandler`'s bases immediat
 
 Every card shows its outcome ports as labelled anchors on the card edge, and every port is the `source_port` of exactly one edge. `out_degree` mismatching the rendered port count is a test failure, not a visual glitch.
 
+`explanation.title` is the **authored step title** for every kind, commands included — the card and the canvas node name one step, so they must not disagree. A command contract's `presentation.title` names the *command* ("Ensure a task exists"), not this use of it ("Ensure a review task"), and is only the fallback for a step that declares no title of its own (`calm-lantern-83`).
+
 ### 6.3 Layout and cluster rendering
 
 `layout.ts` scales `GridPositionDTO` to pixels exactly as V1 does (`playbook-graph/layout.ts:29` `toPixels`), then adds, for each `ClusterBoundsDTO`, an xyflow node of `type: "ruleCluster"` sized to the bounds plus padding, with `zIndex` below the step nodes and `selectable: false`. Step nodes set `parentId` to their cluster and use cluster-relative positions — xyflow's built-in parenting keeps a cluster visually cohesive without a second layout engine. **Do not introduce dagre here**: the backend owns rank and order (V1's stated invariant, `playbook-graph/layout.ts:38`), and a client-side re-layout would make the rendered graph a second interpretation of the artifact.

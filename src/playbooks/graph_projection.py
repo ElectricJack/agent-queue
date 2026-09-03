@@ -286,8 +286,15 @@ def _command_explanation(
             "required": True,
             "description": None,
         }
+    # The compact card and the canvas node name *one* step, so the card takes
+    # the authored step title — the more specific of the two names ("Ensure a
+    # review task", not the command's generic "Ensure a task exists").  A
+    # contract's ``presentation.title`` names the command, not this use of it,
+    # so it is only the fallback for a step that declares no title of its own.
+    authored_title = step.title if isinstance(step.title, str) and step.title.strip() else ""
     return {
-        "title": presentation.title if presentation is not None else step.title,
+        "title": authored_title
+        or (presentation.title if presentation is not None else step.command),
         "effect_summary": (
             presentation.summary if presentation is not None else f"Invoke {step.command}"
         ),

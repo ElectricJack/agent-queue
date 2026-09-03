@@ -147,6 +147,53 @@ def test_missing_contract_yields_canonical_renderer_and_error_diagnostic():
     )
 
 
+def test_the_card_title_is_the_authored_step_title_not_the_command_title():
+    """One step, one name (§6.2): the card and the canvas node agree.
+
+    ``RegistryContractLookup`` is what the daemon projects with, so every
+    command in the artifact takes the contract path.  A contract's
+    ``presentation.title`` names the *command* — "Ensure a task exists" — while
+    the authored step title names this *use* of it, and it is the more specific
+    of the two.  The card takes the authored title.
+    """
+    from src.commands.contracts import CONTRACTS
+    from src.playbooks.validation import RegistryContractLookup
+
+    graph = _project(contracts=RegistryContractLookup())
+    node = _node(graph, "ensure-review-task")
+    assert node["explanation"]["renderer"] == "contract"
+    assert node["title"] == "Ensure a review task"
+    assert node["explanation"]["title"] == "Ensure a review task"
+    # The contract does carry a title of its own; it just does not win here.
+    assert CONTRACTS.require("ensure_task").contract.presentation.title != node["title"]
+    # And it is not one node: the invariant holds down both renderer paths.
+    assert all(item["explanation"]["title"] == item["title"] for item in graph["nodes"])
+    assert all(item["explanation"]["title"] == item["title"] for item in _project()["nodes"])
+
+
+def test_a_step_with_no_title_of_its_own_falls_back_to_the_contract_title():
+    """``presentation.title`` is the fallback, not the preference.
+
+    A step that declares no title has nothing more specific to show, so the
+    contract's name for the command is better than an empty card heading.
+    """
+    from src.playbooks.validation import RegistryContractLookup
+
+    def untitled(step_id):
+        definition = _definition()
+        step = definition.steps[step_id].model_copy(update={"title": "  "})
+        return definition.model_copy(update={"steps": {**definition.steps, step_id: step}})
+
+    graph = _project(untitled("ensure-review-task"), contracts=RegistryContractLookup())
+    assert _node(graph, "ensure-review-task")["explanation"]["title"] == "Ensure a task exists"
+    # With no contract to fall back to either, the command name is the last
+    # honest heading — ``list_tasks`` is the artifact's unregistered command.
+    graph = _project(untitled("list-downstream"), contracts=StubContracts())
+    node = _node(graph, "list-downstream")
+    assert node["explanation"]["renderer"] == "canonical"
+    assert node["explanation"]["title"] == "list_tasks"
+
+
 def test_projection_is_deterministic():
     first = json.dumps(_project(), sort_keys=True, separators=(",", ":"))
     second = json.dumps(_project(), sort_keys=True, separators=(",", ":"))
