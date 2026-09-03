@@ -159,6 +159,12 @@ def _sha(text: str) -> str:
     return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _source_digest(text: str) -> str:
+    from src.playbooks.definition import source_digest
+
+    return source_digest(text)
+
+
 async def _inventory(vault_root, **kwargs) -> MigrationInventory:
     kwargs.setdefault("store", ExplodingStore())
     kwargs.setdefault("contract_registry", StubContractRegistry())
@@ -546,7 +552,7 @@ async def test_ready_when_activation_matches_registry(tmp_path):
     _write_playbook(vault_root, "system/playbooks", "migrated.md", body)
     registry = StubContractRegistry()
     activation = _ready_activation("migrated", registry.registry_fingerprint())
-    activation["source_digest"] = _sha(body)
+    activation["source_digest"] = _source_digest(body)
     inv = await _inventory(
         vault_root,
         contract_registry=registry,
@@ -563,17 +569,39 @@ async def test_ready_when_activation_matches_registry(tmp_path):
 @pytest.mark.asyncio
 async def test_stale_contract_is_question_required(tmp_path):
     vault_root = _vault_root(tmp_path)
-    body = _source("drifted")
-    _write_playbook(vault_root, "system/playbooks", "drifted.md", body)
-    registry = StubContractRegistry()
-    activation = _ready_activation("drifted", "sha256:" + "d" * 64)
-    activation["source_digest"] = _sha(body)
+    from src.commands.contracts import CONTRACTS
+    from src.playbooks.artifact_store import ArtifactStore
+    from src.playbooks.definition import load_definition_json
+
+    fixture = (
+        Path(__file__).resolve().parent
+        / "fixtures"
+        / "playbooks"
+        / "v2"
+        / "default-pipeline"
+        / "artifact.json"
+    )
+    definition = load_definition_json(fixture.read_text(encoding="utf-8"))
+    artifact_store = ArtifactStore(str(tmp_path / "compiled"))
+    ref = artifact_store.put(
+        definition,
+        source_digest=definition.source_hash,
+        contract_fingerprint="sha256:" + "d" * 64,
+        profile_fingerprint="",
+        compiler_build=definition.compiler_build or "test",
+        version=definition.version,
+    )
+    activation = {
+        **_ready_activation(definition.id, ref.contract_fingerprint),
+        **ref.as_dict(),
+    }
     inv = await _inventory(
         vault_root,
-        contract_registry=registry,
+        artifact_store=artifact_store,
+        contract_registry=CONTRACTS,
         activation_repo=StubActivationRepo([activation]),
     )
-    entry = _entry(inv, "drifted")
+    entry = _entry(inv, definition.id)
     assert entry.disposition == "question_required"
     assert "stale_contract" in _codes(entry)
     _seen("stale_contract")
@@ -597,7 +625,7 @@ async def test_unhealthy_activation_reasons(tmp_path):
         body = _source(playbook_id)
         _write_playbook(vault_root, "system/playbooks", f"{playbook_id}.md", body)
         row = _ready_activation(playbook_id, registry.registry_fingerprint(), health=health)
-        row["source_digest"] = _sha(body)
+        row["source_digest"] = _source_digest(body)
         rows.append(row)
     inv = await _inventory(
         vault_root,

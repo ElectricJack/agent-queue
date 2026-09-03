@@ -34,6 +34,7 @@ import yaml
 
 from src.playbooks.activation import ActivationHealth
 from src.playbooks.artifact_ref import SHA256_RE, ArtifactRef, ArtifactRefError
+from src.playbooks.definition import source_digest
 from src.playbooks.handler import PLAYBOOK_PATTERNS, derive_playbook_scope
 from src.playbooks.routing import is_deprecated_default_assignment_entry
 
@@ -517,6 +518,10 @@ class _SourceScan:
     def source_sha256(self) -> str:
         return "sha256:" + hashlib.sha256(self.raw).hexdigest()
 
+    @property
+    def source_digest(self) -> str:
+        return source_digest(self.raw.decode("utf-8"))
+
 
 def _sha256_text(text: str) -> str:
     return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -745,6 +750,25 @@ def _artifact_ref(row: Mapping[str, Any]) -> ArtifactRef | None:
         return None
 
 
+def _current_artifact_contract_fingerprint(
+    artifact: ArtifactRef, artifact_store: Any, contract_registry: Any
+) -> str:
+    """Fingerprint the current contracts over the artifact's command set."""
+    definition = artifact_store.load(artifact.artifact_sha256)
+    current_commands: dict[str, str] = {}
+    for name in definition.compiled_against.commands:
+        try:
+            current_commands[name] = str(contract_registry.fingerprint(name))
+        except Exception:  # a removed command must produce a different aggregate
+            current_commands[name] = ""
+    compiled_against = definition.compiled_against.model_copy(
+        update={"commands": current_commands}
+    )
+    return definition.model_copy(
+        update={"compiled_against": compiled_against}
+    ).contract_fingerprint()
+
+
 # ---------------------------------------------------------------------------
 # Classification
 # ---------------------------------------------------------------------------
@@ -757,7 +781,8 @@ def _classify(
     activations: Mapping[tuple[str, str, str], Mapping[str, Any]],
     acks: Mapping[tuple[str, str, str], Mapping[str, Any]],
     pending: Mapping[str, int],
-    contract_fingerprint: str,
+    contract_registry: Any,
+    artifact_store: Any,
 ) -> InventoryEntry:
     """Build one entry from every source claiming the same playbook id.
 
@@ -870,27 +895,56 @@ def _classify(
             )
         elif (mapped := _HEALTH_REASONS.get(activation_health)) is not None:
             reasons.append(MigrationReason(code=mapped[0], message=mapped[1]))
-        elif artifact.contract_fingerprint != contract_fingerprint:
-            reasons.append(
-                MigrationReason(
-                    code="stale_contract",
-                    message=(
-                        "the active artifact was compiled against contract fingerprint "
-                        f"{artifact.contract_fingerprint[:19]}…, but this build serves "
-                        f"{contract_fingerprint[:19]}…; recompile and re-review"
-                    ),
+        else:
+            current_fingerprint = None
+            fingerprint_unavailable = False
+            if artifact_store is not None and contract_registry is not None:
+                try:
+                    current_fingerprint = _current_artifact_contract_fingerprint(
+                        artifact, artifact_store, contract_registry
+                    )
+                except Exception:  # inventory reports unread evidence instead of aborting
+                    logger.warning(
+                        "migration inventory: active artifact %s unavailable",
+                        artifact.artifact_sha256,
+                        exc_info=True,
+                    )
+                    fingerprint_unavailable = True
+            if fingerprint_unavailable:
+                reasons.append(
+                    MigrationReason(
+                        code="compile_question",
+                        message=(
+                            "the active artifact cannot be read to compare command contracts; "
+                            "restore or recompile it before cutover"
+                        ),
+                    )
                 )
-            )
-        elif artifact.source_digest != primary.source_sha256:
-            reasons.append(
-                MigrationReason(
-                    code="compile_question",
-                    message=(
-                        "the authoring Markdown changed after the active artifact was "
-                        "reviewed; recompile and re-review before cutover"
-                    ),
+            elif (
+                current_fingerprint is not None
+                and artifact.contract_fingerprint != current_fingerprint
+            ):
+                reasons.append(
+                    MigrationReason(
+                        code="stale_contract",
+                        message=(
+                            "the active artifact was compiled against contract fingerprint "
+                            f"{artifact.contract_fingerprint[:19]}…, but this build serves "
+                            f"{current_fingerprint[:19]}… for the same commands; "
+                            "recompile and re-review"
+                        ),
+                    )
                 )
-            )
+            elif artifact.source_digest != primary.source_digest:
+                reasons.append(
+                    MigrationReason(
+                        code="compile_question",
+                        message=(
+                            "the authoring Markdown changed after the active artifact was "
+                            "reviewed; recompile and re-review before cutover"
+                        ),
+                    )
+                )
     elif not primary.parse_error and len(scans) == 1:
         reasons.append(
             MigrationReason(
@@ -984,6 +1038,7 @@ async def build_inventory(
     *,
     vault_root: str,
     store: Any = None,
+    artifact_store: Any = None,
     contract_registry: Any = None,
     activation_repo: Any = None,
     ack_repo: Any = None,
@@ -1000,9 +1055,12 @@ async def build_inventory(
     store:
         A :class:`~src.playbooks.store.CompiledPlaybookStore`.  Only
         ``list_all()`` is called; ``save``/``delete`` never are.
+    artifact_store:
+        A :class:`~src.playbooks.artifact_store.ArtifactStore`, used read-only
+        to recover each active artifact's command set.
     contract_registry:
-        Package 1's ``ContractRegistry`` — read for its registry-wide
-        fingerprint, which every entry's artifact is compared against.
+        Package 1's ``ContractRegistry`` — read for its registry-wide report
+        fingerprint and the current fingerprints of each artifact's commands.
     activation_repo, ack_repo, pending_repo:
         Optional read-only repositories.  ``None`` (or a repository that
         raises) degrades the corresponding fields rather than the whole report.
@@ -1065,7 +1123,8 @@ async def build_inventory(
             activations=activations,
             acks=acks,
             pending=pending,
-            contract_fingerprint=fingerprint,
+            contract_registry=contract_registry,
+            artifact_store=artifact_store,
         )
         for scan_group in by_id.values()
     ]

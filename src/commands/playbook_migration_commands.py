@@ -105,10 +105,12 @@ class PlaybookMigrationCommandsMixin:
 
     async def _migration_inventory(self):
         from src.commands.contracts import CONTRACTS
+        from src.playbooks.artifact_store import ArtifactStore
 
         return await build_inventory(
             vault_root=self._migration_vault_root(),
             store=self._migration_store(),
+            artifact_store=ArtifactStore(self.config.compiled_root),
             contract_registry=CONTRACTS,
             activation_repo=self.db,
             ack_repo=self.db,
