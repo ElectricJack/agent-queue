@@ -1202,6 +1202,7 @@ class TestAllPlaybookCommandsRegistered:
         "playbook_migration_unacknowledge",
         # The release gate: reviewed artifacts versus the live contract surface.
         "playbook_release_check",
+        "playbook_cutover_report",
     ]
 
     def test_all_cmd_methods_exist(self):

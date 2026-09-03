@@ -585,6 +585,17 @@ from .playbook_artifact_diff_response_422 import PlaybookArtifactDiffResponse422
 from .playbook_artifact_summary_dto import PlaybookArtifactSummaryDTO
 from .playbook_artifacts_request import PlaybookArtifactsRequest
 from .playbook_artifacts_response_422 import PlaybookArtifactsResponse422
+from .playbook_cutover_report_request import PlaybookCutoverReportRequest
+from .playbook_cutover_report_response import PlaybookCutoverReportResponse
+from .playbook_cutover_report_response_422 import PlaybookCutoverReportResponse422
+from .playbook_cutover_report_response_acknowledged_disabled_item import (
+    PlaybookCutoverReportResponseAcknowledgedDisabledItem,
+)
+from .playbook_cutover_report_response_active_v1_runs import PlaybookCutoverReportResponseActiveV1Runs
+from .playbook_cutover_report_response_artifacts_item import PlaybookCutoverReportResponseArtifactsItem
+from .playbook_cutover_report_response_parity import PlaybookCutoverReportResponseParity
+from .playbook_cutover_report_response_pending_events import PlaybookCutoverReportResponsePendingEvents
+from .playbook_cutover_report_response_unresolved_item import PlaybookCutoverReportResponseUnresolvedItem
 from .playbook_graph_edge import PlaybookGraphEdge
 from .playbook_graph_edge_edge_type import PlaybookGraphEdgeEdgeType
 from .playbook_graph_identity import PlaybookGraphIdentity
@@ -1662,6 +1673,15 @@ __all__ = (
     "PlaybookArtifactsRequest",
     "PlaybookArtifactsResponse422",
     "PlaybookArtifactSummaryDTO",
+    "PlaybookCutoverReportRequest",
+    "PlaybookCutoverReportResponse",
+    "PlaybookCutoverReportResponse422",
+    "PlaybookCutoverReportResponseAcknowledgedDisabledItem",
+    "PlaybookCutoverReportResponseActiveV1Runs",
+    "PlaybookCutoverReportResponseArtifactsItem",
+    "PlaybookCutoverReportResponseParity",
+    "PlaybookCutoverReportResponsePendingEvents",
+    "PlaybookCutoverReportResponseUnresolvedItem",
     "PlaybookGraphEdge",
     "PlaybookGraphEdgeEdgeType",
     "PlaybookGraphIdentity",

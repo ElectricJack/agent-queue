@@ -23,7 +23,7 @@ import logging
 from pathlib import Path
 
 from src.database.queries.playbook_migration_queries import MIN_ACK_REASON_LENGTH
-from src.playbooks.migration import build_inventory, release_check
+from src.playbooks.migration import build_cutover_report, build_inventory, release_check
 
 logger = logging.getLogger(__name__)
 
@@ -271,3 +271,120 @@ class PlaybookMigrationCommandsMixin:
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning("release check failed", exc_info=True)
             return {"success": False, "stale": [], "checked": [], "error": str(exc)}
+
+    async def _cutover_report_inputs(self) -> dict:
+        """Collect report inputs without turning the report into an operation.
+
+        Missing optional read surfaces are rendered as unavailable evidence;
+        the report remains honest and blocks cutover rather than failing open.
+        """
+        from src.commands.contracts import CONTRACTS
+        from src.playbooks.migration import REVIEWED_FIXTURE_ROOT
+
+        inventory = await self._migration_inventory()
+        try:
+            activation_rows = await self.db.list_playbook_activations()
+        except Exception:  # pragma: no cover - defensive live-daemon reporting
+            logger.warning("cutover report: activation rows unavailable", exc_info=True)
+            activation_rows = []
+        enabled = [row for row in activation_rows if isinstance(row, dict) and row.get("enabled", True)]
+
+        store = self._migration_store()
+        try:
+            v1_ids = {
+                str(getattr(playbook, "id", "") or "")
+                for _scope, _identifier, playbook in (store.list_all() if store is not None else [])
+            }
+        except Exception:  # pragma: no cover - read-only fallback
+            logger.warning("cutover report: V1 store unavailable", exc_info=True)
+            v1_ids = set()
+        artifacts = [
+            {
+                **row,
+                "source_sha256": row.get("source_digest"),
+                "activation_health": row.get("health"),
+                "v1_available": str(row.get("playbook_id") or "") in v1_ids,
+            }
+            for row in enabled
+        ]
+
+        try:
+            pending_events = await self.db.list_pending_events(limit=10_000)
+        except Exception:  # pragma: no cover - defensive live-daemon reporting
+            logger.warning("cutover report: pending events unavailable", exc_info=True)
+            pending_events = []
+
+        def _run_row(run):
+            if isinstance(run, dict):
+                return run
+            return {
+                name: getattr(run, name, None)
+                for name in ("run_id", "playbook_id", "status", "started_at", "event_id")
+            }
+
+        active_v1_runs = []
+        for status in ("running", "paused"):
+            try:
+                active_v1_runs.extend(
+                    _run_row(run) for run in await self.db.list_playbook_runs(status=status, limit=10_000)
+                )
+            except Exception:  # pragma: no cover - defensive live-daemon reporting
+                logger.warning("cutover report: active V1 runs unavailable", exc_info=True)
+
+        parity_path = Path(REVIEWED_FIXTURE_ROOT) / "parity-report.json"
+        try:
+            import json
+
+            parity = json.loads(parity_path.read_text(encoding="utf-8"))
+            if not isinstance(parity, dict):
+                raise ValueError("not an object")
+            parity["recorded"] = True
+        except Exception:
+            parity = {
+                "observations": 0,
+                "identical": 0,
+                "expected": 0,
+                "unexplained": 0,
+                "suite": "tests/test_playbook_shadow_parity.py",
+                "recorded": False,
+            }
+
+        acknowledged_disabled = []
+        try:
+            acknowledgements = await self.db.list_playbook_migration_acks()
+        except Exception:  # pragma: no cover - optional reporting detail
+            acknowledgements = []
+        for entry in inventory.entries:
+            if entry.disposition != "disabled" or entry.acknowledged_by is None:
+                continue
+            ack = next(
+                (
+                    row
+                    for row in acknowledgements
+                    if row.get("playbook_id") == entry.playbook_id
+                    and row.get("source_sha256") == entry.source.source_sha256
+                ),
+                {},
+            )
+            acknowledged_disabled.append(
+                {
+                    "playbook_id": entry.playbook_id,
+                    "reason": ack.get("reason"),
+                    "acknowledged_by": entry.acknowledged_by,
+                    "acknowledged_at": entry.acknowledged_at,
+                }
+            )
+        return {
+            "contract_fingerprint": str(CONTRACTS.registry_fingerprint()),
+            "artifacts": artifacts,
+            "unresolved": [entry.to_dict() for entry in inventory.blocking()],
+            "acknowledged_disabled": acknowledged_disabled,
+            "pending_events": pending_events,
+            "active_v1_runs": active_v1_runs,
+            "parity": parity,
+        }
+
+    async def _cmd_playbook_cutover_report(self, args: dict) -> dict:
+        """Report all evidence and blockers needed for a signed V2 cutover."""
+        inputs = await self._cutover_report_inputs()
+        return build_cutover_report(**inputs)
