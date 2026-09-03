@@ -78,6 +78,13 @@ import {
   uploadAttachmentApiTasksTaskIdAttachmentsPost,
   poolStatus,
   poolScale,
+  playbookActivate,
+  playbookActivationHealth,
+  playbookArtifactDiff,
+  playbookPendingEventAction,
+  playbookPendingEvents,
+  playbookRunOverlay,
+  playbookV2Graph,
 } from "./client";
 import type {
   AgentSummary,
@@ -149,6 +156,11 @@ import type {
   PoolStatusRow,
   PoolScaleRequest,
   PoolScaleResponse,
+  PlaybookV2GraphResponse,
+  PlaybookActivationHealthResponse,
+  PlaybookArtifactDiffResponse,
+  PlaybookRunOverlayResponse,
+  ListPlaybookPendingEventsResponse,
 } from "./client";
 import {
   fetchChatMessages,
@@ -834,6 +846,19 @@ export function usePlaybookGraph(playbookId?: string) {
     enabled: !!playbookId,
   });
 }
+
+export const playbookV2GraphKey = (playbookId: string, artifactSha?: string, eventType?: string) =>
+  ["playbook-v2-graph", playbookId, artifactSha ?? "active", eventType ?? "all"] as const;
+
+export function usePlaybookV2Graph(playbookId?: string, opts: { artifactSha?: string; eventType?: string } = {}) {
+  return useQuery({ queryKey: playbookV2GraphKey(playbookId ?? "", opts.artifactSha, opts.eventType), queryFn: async () => (await playbookV2Graph({ body: { playbook_id: playbookId!, artifact_sha256: opts.artifactSha, event_type: opts.eventType, direction: "TD" }, throwOnError: true })).data as PlaybookV2GraphResponse, enabled: !!playbookId });
+}
+export function usePlaybookActivationHealth(playbookId?: string) { return useQuery({ queryKey: ["playbook-activation-health", playbookId ?? "all"], queryFn: async () => (await playbookActivationHealth({ body: { playbook_id: playbookId }, throwOnError: true })).data as PlaybookActivationHealthResponse, enabled: !!playbookId, refetchInterval: 30_000 }); }
+export function usePlaybookArtifactDiff(playbookId?: string, targetSha?: string, baseSha?: string) { return useQuery({ queryKey: ["playbook-artifact-diff", playbookId, targetSha, baseSha], queryFn: async () => (await playbookArtifactDiff({ body: { playbook_id: playbookId!, target_sha256: targetSha!, base_sha256: baseSha }, throwOnError: true })).data as PlaybookArtifactDiffResponse, enabled: !!playbookId && !!targetSha }); }
+export function usePlaybookPendingEvents(playbookId?: string) { return useQuery({ queryKey: ["playbook-pending-events", playbookId ?? "all"], queryFn: async () => (await playbookPendingEvents({ body: { playbook_id: playbookId }, throwOnError: true })).data as ListPlaybookPendingEventsResponse, enabled: !!playbookId, refetchInterval: 30_000 }); }
+export function useSetPlaybookActivation() { const client = useQueryClient(); return useMutation({ mutationFn: async (input: { playbook_id: string; artifact_sha256: string; acknowledge_diff?: string }) => (await playbookActivate({ body: input, throwOnError: true })).data, onSettled: (_data, _error, input) => { void client.invalidateQueries({ queryKey: ["playbook-v2-graph", input?.playbook_id] }); void client.invalidateQueries({ queryKey: ["playbook-activation-health"] }); void client.invalidateQueries({ queryKey: ["playbook-pending-events", input?.playbook_id] }); } }); }
+export function usePlaybookPendingEventAction() { const client = useQueryClient(); return useMutation({ mutationFn: async (input: { action: "dispatch" | "discard"; pending_event_ids: string[] }) => (await playbookPendingEventAction({ body: input, throwOnError: true })).data, onSettled: () => { void client.invalidateQueries({ queryKey: ["playbook-pending-events"] }); void client.invalidateQueries({ queryKey: ["playbook-activation-health"] }); } }); }
+export function usePlaybookRunOverlay(runId?: string, opts: { live?: boolean } = {}) { return useQuery({ queryKey: ["playbook-run-overlay", runId ?? ""], queryFn: async () => (await playbookRunOverlay({ body: { run_id: runId! }, throwOnError: true })).data as PlaybookRunOverlayResponse, enabled: !!runId, refetchInterval: opts.live ? 5_000 : false }); }
 
 export function usePlaybookRuns(playbookId?: string, status?: string, limit = 20) {
   return useQuery({
