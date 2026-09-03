@@ -12,14 +12,8 @@ recorded rather than silently substituted):
 
 * `PlaybookDefinition` has **`source_hash`**, not `compiled_from.source_digest`.
   T-7 assertion 4 is asserted against `source_hash`.
-* `decision` keeps its locked two-value vocabulary (`approved` | `rejected`).
-  Three of the four shipped playbooks cannot be made activatable without a
-  change that belongs to another package, so they are recorded as `rejected`
-  with an added `blocked_on` key — "recorded, and no activation may reference
-  it" is exactly §3.4's stated meaning of `rejected`.  T-7 assertion 3 ("all
-  four approved") therefore becomes: every fixture carries a locked decision,
-  an approved one carries a validating artifact, and a non-approved one carries
-  `blocked_on` and no artifact at all.
+* Every enabled shipped source is approved. A rejected fixture remains excluded
+  from activation, but no shipped source uses that escape hatch.
 """
 
 from __future__ import annotations
@@ -44,6 +38,7 @@ from src.playbooks.definition import (
 from src.playbooks.validation import (
     RegisteredEventLookup,
     RegistryContractLookup,
+    VaultProfileLookup,
     validate_definition,
 )
 
@@ -86,7 +81,6 @@ REQUIRED_REVIEW_SECTIONS = (
     "## Accepted behaviour differences",
 )
 
-LOCKED_DECISIONS = frozenset({"approved", "rejected"})
 
 #: The rule ids `tests/test_default_pipeline.py` pins.
 PIPELINE_RULE_IDS = frozenset(
@@ -131,15 +125,25 @@ def _artifact(playbook_id: str) -> PlaybookDefinition:
     return load_definition_json(path.read_text(encoding="utf-8"))
 
 
-def _approved_ids() -> list[str]:
-    return [pid for pid in PLAYBOOK_IDS if _read_review(pid)[0].get("decision") == "approved"]
-
-
-APPROVED_IDS = _approved_ids()
+APPROVED_IDS = PLAYBOOK_IDS
 
 
 def _shipped_profile_ids() -> set[str]:
     return {directory.name for directory in PROFILE_DEFAULTS.iterdir() if directory.is_dir()}
+
+
+def _shipped_profile_lookup() -> VaultProfileLookup:
+    from types import SimpleNamespace
+
+    from src.profiles.parser import parse_profile, parsed_profile_to_agent_profile
+
+    profiles = {}
+    for path in PROFILE_DEFAULTS.glob("*/profile.md"):
+        parsed = parse_profile(path.read_text(encoding="utf-8"))
+        assert parsed.is_valid, parsed.errors
+        fields = parsed_profile_to_agent_profile(parsed)
+        profiles[fields["id"]] = SimpleNamespace(**fields)
+    return VaultProfileLookup(profiles)
 
 
 def _inputs(step: Any) -> dict[str, Any]:
@@ -166,11 +170,17 @@ def _referenced_profile_ids(definition: PlaybookDefinition) -> set[str]:
 
 
 def _command_names(definition: PlaybookDefinition) -> set[str]:
-    return {
+    names = {
         step.command
         for step in definition.steps.values()
         if getattr(step, "command", None)
     }
+    for step in definition.steps.values():
+        tool_use = getattr(step, "tool_use", None)
+        if tool_use is not None:
+            names.update(tool_use.aq_commands)
+            names.update(tool_use.plugin_tools)
+    return names
 
 
 # ---------------------------------------------------------------------------
@@ -182,18 +192,8 @@ def _command_names(definition: PlaybookDefinition) -> set[str]:
 def test_fixture_directory_complete(playbook_id: str) -> None:
     directory = _fixture(playbook_id)
     assert directory.is_dir(), f"no reviewed fixture directory for {playbook_id}"
-    for name in ("source.md", "review.md", "diagnostics.json"):
+    for name in ("source.md", "artifact.json", "artifact.sha256", "review.md", "diagnostics.json"):
         assert (directory / name).is_file(), f"{playbook_id}/{name} is missing"
-    review, _ = _read_review(playbook_id)
-    if review.get("decision") == "approved":
-        for name in ("artifact.json", "artifact.sha256"):
-            assert (directory / name).is_file(), f"{playbook_id}/{name} is missing"
-    else:
-        for name in ("artifact.json", "artifact.sha256"):
-            assert not (directory / name).exists(), (
-                f"{playbook_id} is not approved but ships {name}; a non-activatable "
-                "proposal must not leave an artifact behind for something to load"
-            )
 
 
 @pytest.mark.parametrize("playbook_id", APPROVED_IDS)
@@ -242,25 +242,16 @@ def test_review_record_complete(playbook_id: str) -> None:
     missing = REQUIRED_REVIEW_KEYS - set(review)
     assert not missing, f"{playbook_id}/review.md is missing keys: {sorted(missing)}"
     assert review["playbook_id"] == playbook_id
-    assert review["decision"] in LOCKED_DECISIONS, (
-        f"{playbook_id}: decision {review['decision']!r} is outside the locked "
-        f"vocabulary {sorted(LOCKED_DECISIONS)}"
-    )
+    assert review["decision"] == "approved", f"{playbook_id} is enabled but not approved"
     for heading in REQUIRED_REVIEW_SECTIONS:
         assert f"\n{heading}\n" in f"\n{body}", f"{playbook_id}/review.md lacks {heading!r}"
     assert isinstance(review["reviewed_by"], str) and review["reviewed_by"].strip()
     assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(review["reviewed_at"]))
     source = (_fixture(playbook_id) / "source.md").read_text(encoding="utf-8")
     assert review["source_sha256"] == source_digest(source)
-    if review["decision"] == "approved":
-        recorded = (_fixture(playbook_id) / "artifact.sha256").read_text().strip()
-        assert review["artifact_sha256"] == recorded
-        assert review["contract_fingerprint"] == contract_fingerprint(_artifact(playbook_id))
-    else:
-        assert review["artifact_sha256"] is None
-        assert review["blocked_on"], (
-            f"{playbook_id} is not approved and must say what it is blocked on"
-        )
+    recorded = (_fixture(playbook_id) / "artifact.sha256").read_text().strip()
+    assert review["artifact_sha256"] == recorded
+    assert review["contract_fingerprint"] == contract_fingerprint(_artifact(playbook_id))
 
 
 @pytest.mark.parametrize("playbook_id", APPROVED_IDS)
@@ -323,7 +314,7 @@ def test_artifact_validates_against_the_live_registries() -> None:
             _artifact(playbook_id),
             inventory=None,
             contracts=RegistryContractLookup(),
-            profiles=None,
+            profiles=_shipped_profile_lookup(),
             events=RegisteredEventLookup(),
         )
         blocking = [d for d in diagnostics if d.severity in {"error", "question"}]
@@ -337,7 +328,7 @@ def test_no_rejected_fixture_is_activatable(tmp_path: Path) -> None:
     from tests.playbook_fixture_activation import activatable_fixture_ids
 
     # The shipped tree: only approved fixtures are activatable.
-    assert set(activatable_fixture_ids(FIXTURE_ROOT)) == set(APPROVED_IDS)
+    assert set(activatable_fixture_ids(FIXTURE_ROOT)) == set(PLAYBOOK_IDS)
 
     # A synthetic rejected fixture that *does* carry an artifact is still
     # excluded — the decision, not the presence of bytes, is what gates it.
@@ -402,16 +393,9 @@ def test_capabilities_granted_unused_by_src() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_rebuilding_reproduces_the_approved_artifact() -> None:
-    """A fresh build of `default-pipeline` equals the fixture except `compiled_at`.
-
-    Child plan §5.3 warns that compilation is LLM-driven and not reproducible.
-    That is true of the two LLM playbooks; it is *not* true here, because this
-    artifact is the deterministic lowering of the frozen V1 graph. Pinning that
-    is what turns "the reviewed artifact behaves like V1" from a claim in
-    `review.md` into something CI re-derives — if `lower_pipeline`, the frozen
-    graph, or the prose ever stop agreeing, this fails with the field named.
-    """
+@pytest.mark.parametrize("playbook_id", PLAYBOOK_IDS)
+def test_rebuilding_reproduces_the_approved_artifact(playbook_id: str) -> None:
+    """A fresh build equals each reviewed fixture except `compiled_at`."""
     import importlib.util
 
     from src.playbooks.definition import canonical_bytes
@@ -423,12 +407,12 @@ def test_rebuilding_reproduces_the_approved_artifact() -> None:
     builder = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(builder)
 
-    rebuilt = builder.build("default-pipeline")["artifact"]
+    rebuilt = builder.build(playbook_id)["artifact"]
     assert rebuilt is not None, "the frozen V1 graph no longer compiles cleanly"
 
     fresh = json.loads(canonical_bytes(rebuilt))
     recorded = json.loads(
-        (_fixture("default-pipeline") / "artifact.json").read_text(encoding="utf-8")
+        (_fixture(playbook_id) / "artifact.json").read_text(encoding="utf-8")
     )
     for field in builder.NON_DETERMINISTIC_FIELDS:
         fresh.pop(field, None)

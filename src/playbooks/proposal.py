@@ -135,10 +135,15 @@ def _snapshots(
     profiles_out: dict[str, str] = {}
     for step in artifact.steps.values():
         command = getattr(step, "command", None)
-        if command:
-            contract = contracts.get(command)
+        command_names = [command] if command else []
+        tool_use = getattr(step, "tool_use", None)
+        if tool_use is not None:
+            command_names.extend(tool_use.aq_commands)
+            command_names.extend(tool_use.plugin_tools)
+        for command_name in command_names:
+            contract = contracts.get(command_name)
             if contract is not None:
-                commands[command] = contract.execution_fingerprint
+                commands[command_name] = contract.execution_fingerprint
         profile_id = getattr(step, "profile_id", None)
         if profile_id:
             policy = profiles.policy(profile_id)

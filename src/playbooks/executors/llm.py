@@ -12,7 +12,7 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
 from src.commands.authorization import authorize_command, denial_result
-from src.commands.principal import check_delegation
+from src.commands.principal import PrincipalKind, check_delegation
 from src.llm.client import LLMToolTurn, LLMToolTurnBoundaryError
 from src.llm.spec import LLMCallSpec
 from src.llm.types import TokenUsage
@@ -175,7 +175,9 @@ def _published_tools(step: LlmStep, ctx: StepContext) -> list[dict[str, Any]]:
     if not step.tool_use.enabled:
         return []
     tools: list[dict[str, Any]] = []
-    for name in step.tool_use.aq_commands:
+    # Namespace separation is an authorization property, not a reason to hide
+    # contracted plugin tools from the provider catalogue.
+    for name in (*step.tool_use.aq_commands, *step.tool_use.plugin_tools):
         registration = ctx.services.contracts.get(name)
         resolver = ctx.services.resolver
         if registration is None or resolver is None:
@@ -254,7 +256,9 @@ async def resolve_profile_principal(
         )
         policy = capability_policy_for(profile, plugin_command_names=plugin_command_names)
         parent_policy = invoking_principal.policy
-        widening = check_delegation(parent_policy, policy)
+        widening = "" if not invoking_principal.enforced else check_delegation(
+            parent_policy, policy
+        )
     except Exception:  # noqa: BLE001 - an unprovable policy fails closed
         # The profile was read; only its policy could not be established.  A
         # subset that cannot be proven is refused, not reported as absent.
@@ -263,11 +267,19 @@ async def resolve_profile_principal(
         return ProfileResolution(
             diagnostics=("named profile exceeds invoking principal",)
         )
+    effective = (
+        invoking_principal.narrow(policy, reason=f"llm-profile:{step.profile_id}")
+        if invoking_principal.enforced
+        else replace(
+            invoking_principal,
+            kind=PrincipalKind.PLAYBOOK,
+            policy=policy,
+            provenance=invoking_principal.provenance
+            + (f"llm-profile:{step.profile_id}",),
+        )
+    )
     return ProfileResolution(
-        principal=replace(
-            invoking_principal.narrow(policy, reason=f"llm-profile:{step.profile_id}"),
-            profile_id=step.profile_id,
-        ),
+        principal=replace(effective, profile_id=step.profile_id),
         intelligence_class=str(getattr(profile, "default_class", "") or "").strip() or None,
     )
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from pydantic import ValidationError
+from pydantic import Field, ValidationError
 
 from src.commands.contracts.models import (
     ClausePredicate,
@@ -184,6 +184,106 @@ class ListTasksValue(CommandValue):
     hidden_completed: int
 
 
+class ListProjectsArgs(CommandArgs):
+    pass
+
+
+class ListProjectsValue(CommandValue):
+    projects: list[dict[str, Any]]
+
+
+class GetTaskArgs(CommandArgs):
+    task_id: str
+
+
+class GetTaskValue(CommandValue):
+    id: str
+    project_id: str
+    title: str
+    description: str
+    status: str
+    branch_name: str | None = None
+    pr_url: str | None = None
+    completion: dict[str, Any] | None = None
+
+
+class RenderPromptArgs(CommandArgs):
+    project_id: str | None = None
+    name: str | None = None
+    path: str | None = None
+    variables: dict[str, Any] | None = None
+
+
+class RenderPromptValue(CommandValue):
+    rendered: str
+    name: str | None = None
+    path: str | None = None
+    variables_used: dict[str, Any] = Field(default_factory=dict)
+
+
+class ReadProjectMemoryFileArgs(CommandArgs):
+    project_id: str
+    path: str
+
+
+class ReadProjectMemoryFileValue(CommandValue):
+    project_id: str | None = None
+    path: str | None = None
+    content: str | None = None
+    missing: bool = False
+
+
+class CountProjectMemoryFilesArgs(CommandArgs):
+    project_id: str
+    path: str
+    newer_than: str | None = None
+
+
+class CountProjectMemoryFilesValue(CommandValue):
+    project_id: str
+    path: str
+    count: int
+    total: int
+    missing: bool = False
+    newer_than: str | None = None
+
+
+class GitDiffArgs(CommandArgs):
+    project_id: str
+    base_branch: str | None = None
+    workspace: str | None = None
+
+
+class GitDiffValue(CommandValue):
+    project_id: str
+    base_branch: str
+    diff: str
+
+
+class MemorySaveArgs(CommandArgs):
+    project_id: str
+    content: str
+    scope: str | None = None
+
+
+class MemorySaveValue(CommandValue):
+    success: bool
+    action: str | None = None
+    chunk_hash: str | None = None
+
+
+class MemorySearchArgs(CommandArgs):
+    project_id: str
+    query: str
+    scope: str | None = None
+
+
+class MemorySearchValue(CommandValue):
+    success: bool
+    count: int
+    results: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class GetDownstreamTasksArgs(CommandArgs):
     task_id: str
 
@@ -257,6 +357,8 @@ def _handler() -> Any:
 def _outcome_of(name: str, raw: dict[str, Any]) -> str:
     """Map each legacy return shape to a declared business outcome."""
     if raw.get("error") or raw.get("success") is False:
+        if name == "read_project_memory_file" and raw.get("missing"):
+            return "missing"
         if name == "add_dependency" and "already exists" in str(raw.get("error", "")).lower():
             return "already_linked"
         if name == "gate_resolve" and "routing" in str(raw.get("error", "")).lower():
@@ -280,6 +382,14 @@ def _outcome_of(name: str, raw: dict[str, Any]) -> str:
         "add_dependency": "linked",
         "gate_resolve": "resolved",
         "list_tasks": "listed",
+        "list_projects": "listed",
+        "get_task": "read",
+        "render_prompt": "rendered",
+        "read_project_memory_file": "missing" if raw.get("missing") else "read",
+        "count_project_memory_files": "counted",
+        "git_diff": "read",
+        "memory_save": "saved",
+        "memory_search": "searched",
         "get_downstream_tasks": "listed",
         "task_batch_commit": "committed",
         "task_route": "routed",
@@ -339,6 +449,74 @@ def _outcomes(*successes: str) -> tuple[OutcomeSpec, ...]:
 # effect clauses use; ``test_presentation_labels_name_real_fields`` pins that.
 
 PRESENTATIONS: dict[str, CommandPresentation] = {
+    "list_projects": CommandPresentation(
+        title="List projects",
+        summary="Read the configured projects without changing them.",
+        outcome_labels={"listed": "Listed", "rejected": "Rejected"},
+        result_labels={"projects": "Projects"},
+    ),
+    "get_task": CommandPresentation(
+        title="Read a task",
+        summary="Read one task and its completion record.",
+        arg_labels={"task_id": "Task"},
+        outcome_labels={"read": "Read", "rejected": "Rejected"},
+        result_labels={"id": "Task", "status": "Status"},
+    ),
+    "render_prompt": CommandPresentation(
+        title="Render a prompt",
+        summary="Render a bundled or project prompt with explicit variables.",
+        arg_labels={
+            "project_id": "Project",
+            "name": "Prompt name",
+            "path": "Prompt path",
+            "variables": "Variables",
+        },
+        outcome_labels={"rendered": "Rendered", "rejected": "Rejected"},
+        result_labels={"rendered": "Rendered prompt"},
+    ),
+    "read_project_memory_file": CommandPresentation(
+        title="Read project memory",
+        summary="Read one file from a project's memory directory.",
+        arg_labels={"project_id": "Project", "path": "Path"},
+        outcome_labels={"read": "Read", "missing": "Missing", "rejected": "Rejected"},
+        result_labels={"content": "Content", "missing": "Missing"},
+    ),
+    "count_project_memory_files": CommandPresentation(
+        title="Count project memory files",
+        summary="Count project-memory files, optionally newer than a timestamp.",
+        arg_labels={
+            "project_id": "Project",
+            "path": "Path",
+            "newer_than": "Newer than",
+        },
+        outcome_labels={"counted": "Counted", "rejected": "Rejected"},
+        result_labels={"count": "Count", "total": "Total"},
+    ),
+    "git_diff": CommandPresentation(
+        title="Read a Git diff",
+        summary="Read a project's working-tree or branch diff.",
+        arg_labels={
+            "project_id": "Project",
+            "base_branch": "Base branch",
+            "workspace": "Workspace",
+        },
+        outcome_labels={"read": "Read", "rejected": "Rejected"},
+        result_labels={"diff": "Diff"},
+    ),
+    "memory_save": CommandPresentation(
+        title="Save memory",
+        summary="Save one reusable insight to memory.",
+        arg_labels={"project_id": "Project", "content": "Content", "scope": "Scope"},
+        outcome_labels={"saved": "Saved", "rejected": "Rejected"},
+        result_labels={"success": "Saved", "action": "Action", "chunk_hash": "Memory hash"},
+    ),
+    "memory_search": CommandPresentation(
+        title="Search memory",
+        summary="Search for related reusable insights.",
+        arg_labels={"query": "Query", "project_id": "Project", "scope": "Scope"},
+        outcome_labels={"searched": "Searched", "rejected": "Rejected"},
+        result_labels={"results": "Results"},
+    ),
     "create_task": CommandPresentation(
         title="Create a task",
         summary="Create a new task, without checking whether a similar one exists.",
@@ -553,6 +731,40 @@ def _contract(
 
 def register_builtin_contracts(registry: ContractRegistry) -> None:
     definitions = (
+        (
+            "list_projects", ListProjectsArgs, ListProjectsValue, _outcomes("listed"),
+            SideEffectClass.READ, (), IdempotencySpec(mode="natural"), True,
+        ),
+        (
+            "get_task", GetTaskArgs, GetTaskValue, _outcomes("read"),
+            SideEffectClass.READ, (), IdempotencySpec(mode="natural"), True,
+        ),
+        (
+            "render_prompt", RenderPromptArgs, RenderPromptValue, _outcomes("rendered"),
+            SideEffectClass.READ, (), IdempotencySpec(mode="natural"), True,
+        ),
+        (
+            "read_project_memory_file", ReadProjectMemoryFileArgs,
+            ReadProjectMemoryFileValue, _outcomes("read", "missing"),
+            SideEffectClass.READ, (), IdempotencySpec(mode="natural"), True,
+        ),
+        (
+            "count_project_memory_files", CountProjectMemoryFilesArgs,
+            CountProjectMemoryFilesValue, _outcomes("counted"),
+            SideEffectClass.READ, (), IdempotencySpec(mode="natural"), True,
+        ),
+        (
+            "git_diff", GitDiffArgs, GitDiffValue, _outcomes("read"),
+            SideEffectClass.READ, (), IdempotencySpec(mode="natural"), True,
+        ),
+        (
+            "memory_save", MemorySaveArgs, MemorySaveValue, _outcomes("saved"),
+            SideEffectClass.CREATE, (), IdempotencySpec(mode="none"), False,
+        ),
+        (
+            "memory_search", MemorySearchArgs, MemorySearchValue, _outcomes("searched"),
+            SideEffectClass.READ, (), IdempotencySpec(mode="natural"), True,
+        ),
         (
             "create_task",
             CreateTaskArgs,

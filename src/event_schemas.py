@@ -197,6 +197,45 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
     },
 }
 
+# ---------------------------------------------------------------------------
+# Assignment-routing events
+# ---------------------------------------------------------------------------
+
+_ASSIGNMENT_SCHEMAS: dict[str, EventSchema] = {
+    "assignment.route.requested": {
+        "required": [
+            "project_id",
+            "tasks",
+            "options",
+            "options_hash",
+            "catalog_hash",
+        ],
+        "optional": [],
+        "types": {
+            "project_id": str,
+            "tasks": list,
+            "options": list,
+            "options_hash": str,
+            "catalog_hash": str,
+        },
+        "fields": {
+            "project_id": {"type": "string", "description": "project"},
+            "tasks": {
+                "type": "array",
+                "description": "tasks awaiting routes",
+                "item": {"type": "object", "description": "task routing input"},
+            },
+            "options": {
+                "type": "array",
+                "description": "available routing options",
+                "item": {"type": "object", "description": "routing option"},
+            },
+            "options_hash": {"type": "string", "description": "routing-options hash"},
+            "catalog_hash": {"type": "string", "description": "catalog hash"},
+        },
+    }
+}
+
 CONTRACTED_EVENT_TYPES: frozenset[str] = frozenset({
     "task.completed", "spec.approved", "proposal.ready", "gate.resolved"
 })
@@ -1032,6 +1071,7 @@ EVENT_SCHEMAS: dict[str, EventSchema] = {
     "agent.updated": {"required": ["agent_id"], "optional": ["event_type"]},
     "agent.deleted": {"required": ["agent_id"], "optional": ["event_type"]},
     **_TASK_SCHEMAS,
+    **_ASSIGNMENT_SCHEMAS,
     **_WORK_GRAPH_SCHEMAS,
     **_NOTE_SCHEMAS,
     **_FILE_SCHEMAS,

@@ -74,6 +74,7 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
     "get_schema",
     "get_task",
     "list_intelligence_classes",
+    "list_projects",
     "list_profiles",
     "list_tasks",
     "message_inbox",
@@ -82,6 +83,7 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
     "message_status",
     "prime",
     "project_ready",
+    "render_prompt",
     "session_drain_ack",
     "task_close",
     "task_comment",
@@ -94,8 +96,10 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
     "task_show"
   ],
   "plugin_tools": [
+    "count_project_memory_files",
     "memory_save",
-    "memory_search"
+    "memory_search",
+    "read_project_memory_file"
   ]
 }
 ```

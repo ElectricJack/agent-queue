@@ -389,26 +389,18 @@ As with §3.8.1 the drafted text above is left intact so the delta stays legible
 |---|---|---|
 | §2 and §5.2 T-6 give dispositions to `src/prompts/example_playbooks/` (10 files) and `src/prompts/default_rules/` (6 files) | **Neither directory exists.** `src/prompts/` holds `default_playbooks/`, `default_agent_type_playbooks/`, `default_intelligence_classes/` and four loose `.md` prompts | `EXCLUDED_SAMPLE_ROOTS` in `tests/test_shipped_playbook_sources.py` is the empty tuple, kept so a reintroduced sample root is *classified* rather than swept into the installed corpus. No READMEs were written for directories that are gone, and no follow-up task was filed for content that no longer exists |
 | §5.3 T-7 assertion 4 reads `definition.compiled_from.source_digest` | `PlaybookDefinition` has **`source_hash`**; there is no `compiled_from` field | Asserted against `source_hash` |
-| §3.4 locks `decision: approved \| rejected`, and T-7 assertion 3 asserts `approved` for all four | Only `default-pipeline` can be made activatable today (see below) | The vocabulary is **not** extended. The other three are recorded `rejected` — §3.4's own words for it are "a recorded negative — no activation may reference it" — with an added `blocked_on` key naming the prerequisite. T-7 assertion 3 becomes: every fixture carries a locked decision; an approved one carries a validating artifact; a non-approved one carries `blocked_on` and **no** artifact at all |
+| §3.4 locks `decision: approved \| rejected`, and T-7 assertion 3 asserts `approved` for all four | The first fixture pass exposed missing event, profile, and LLM-tool contracts | The prerequisites now ship: `assignment.route.requested` has the emitter's exact schema; prose sources name resolvable profiles; LLM tool commands have typed contracts and profile ceilings. All four enabled shipped fixtures are `approved`; the synthetic rejected-fixture test keeps the negative path locked |
 | §5.2 T-5's "the V1 pipeline compiler stops being able to compile the shipped source" leaves nothing for the V1 arm of §3.5's shadow harness, nor for Package 2's deterministic lowering tests | Both still need a machine graph, and so does the reviewed artifact | The pre-rewrite source is frozen byte-for-byte at `tests/fixtures/playbooks/v1/default-pipeline.md`. The reviewed V2 artifact is `lower_pipeline` applied to it, which makes V1-equivalence true by construction; every V1 assertion that read the shipped Markdown was repointed there rather than deleted |
 | §5.5 T-14's `release_check` compares "`compiled_against.commands` **and** `compiled_against.profiles`" | Activation rows carry an aggregate `contract_fingerprint`, not per-command values; a per-command comparison needs the artifact loaded from `ArtifactStore` | `release_check(profile_fingerprints=...)` is optional and the command does not pass it yet: `playbooks.activation_stale` (Package 3) already owns the profile-fingerprint comparison against live policies, and duplicating it here with a *fixture's* view of the profile set would report drift an operator cannot act on |
 
-**Two compiler questions this slice could not resolve inside Package 6**, both
-recorded in `tests/fixtures/playbooks/v2/default-assignment-routing/review.md`
-and escalated to the roadmap owner on the task thread:
-
-- `assignment.route.requested` is dispatched for real at
-  `src/orchestrator/assignment_routing.py:458` but is **absent from
-  `src/event_schemas.py`**, so `validate_definition` raises `unknown_event`.
-  Registering it is Package 1's surface, and would newly subject a live
-  dispatch path to schema validation — a behaviour change needing its own test
-  and review, not a side effect of a fixture commit.
-- The source's `role: assignment-routing` names a profile
-  `src/profiles/defaults/` does not ship, and V2 requires every `llm` step to
-  name a resolvable one. Under V1 `role` was a label and the model came from
-  `llm_config.intelligence_class`, so nothing ever needed it to exist.
-  Authoring one from Package 6 would be a capability grant written by a
-  fixture, which §4.1 forbids.
+**Compiler-question resolution (`agile-impact-36`).** Assignment routing keeps
+its V1 `role` discriminator and independently names `playbook-compiler`, whose
+`default_class: fast-low` matches the old direct-call configuration. The event
+registry now describes the payload the coordinator already emits. The two
+prose-only LLM playbooks retain their complete prose as schema-bound prompts;
+their review records name every accepted structural difference, tool contract,
+profile, budget, and output schema. LLM tool contracts participate in
+`compiled_against.commands`, so release checks cannot overlook their drift.
 
 **Operational note that outlives this slice.** After Commit 2 the shipped
 `default-pipeline.md` compiles under neither runtime. No *running* fleet loses

@@ -8,9 +8,8 @@ and only then checks the output in beside a hand-written ``review.md``.  The
 fixtures are the approved recording; the suites validate them and never
 regenerate them (child plan §5.3, "Determinism note").
 
-Two of the four shipped playbooks compile deterministically here, because
-their V1 predecessors carried machine graphs that
-``src/playbooks/pipeline_lowering.py`` lowers without an LLM:
+Two of the four shipped playbooks are mechanically lowered from V1 sources
+here, without an LLM:
 
 * ``default-pipeline`` — lowered from the **frozen** V1 graph at
   ``tests/fixtures/playbooks/v1/default-pipeline.md``, which is what makes the
@@ -23,10 +22,10 @@ their V1 predecessors carried machine graphs that
   frontmatter and prose.
 
 The two LLM playbooks (``memory-consolidation``, ``coding-reflection``) have no
-V1 machine graph at all.  Their bodies live in
-``tests/fixtures/playbooks/v2/<id>/semantic-body.json`` as the reviewed compiler
-proposal, exactly as a compiler agent would have emitted it; this script loads
-and re-validates them rather than inventing them.
+V1 machine graph at all. Their deterministic, reviewer-authored semantic bodies
+preserve the prose as the LLM prompt and add only the typed V2 envelope:
+triggers, profiles, budgets, tool ceilings, output schemas, and terminal
+transitions.
 
 Usage::
 
@@ -47,11 +46,11 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from src.playbooks.authoring import PlaybookSource
-from src.playbooks.definition import canonical_bytes
-from src.playbooks.pipeline_lowering import lower_assignment, lower_pipeline
-from src.playbooks.proposal import propose
-from src.playbooks.validation import (
+from src.playbooks.authoring import PlaybookSource  # noqa: E402
+from src.playbooks.definition import canonical_bytes  # noqa: E402
+from src.playbooks.pipeline_lowering import lower_assignment, lower_pipeline  # noqa: E402
+from src.playbooks.proposal import propose  # noqa: E402
+from src.playbooks.validation import (  # noqa: E402
     RegisteredEventLookup,
     RegistryContractLookup,
     VaultProfileLookup,
@@ -202,7 +201,168 @@ def semantic_body(playbook_id: str, source: PlaybookSource) -> dict[str, Any]:
         if diagnostics:
             raise SystemExit(f"{playbook_id}: {diagnostics}")
         return json.loads(json.dumps(body))
+    if playbook_id == "memory-consolidation":
+        return _memory_consolidation_body(source)
+    if playbook_id == "coding-reflection":
+        return _coding_reflection_body(source)
     return {}
+
+
+def _source_ref_for_heading(source: PlaybookSource, heading: str) -> dict[str, Any]:
+    for line_no, line in enumerate(source.raw.splitlines(), start=1):
+        if line.strip() == heading:
+            return {
+                "path": source.vault_path,
+                "start_line": line_no,
+                "end_line": line_no,
+                "heading": heading.lstrip("# "),
+                "excerpt": line,
+            }
+    raise ValueError(f"{source.vault_path}: missing heading {heading!r}")
+
+
+def _llm_transitions(done: str, failed: str) -> dict[str, str]:
+    return {"completed": done, "runtime_error": failed}
+
+
+def _terminal(rule: str, outcome: str, source_ref: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "type": "terminal",
+        "rule": rule,
+        "title": outcome.title(),
+        "source": source_ref,
+        "outcome": outcome,
+    }
+
+
+def _memory_consolidation_body(source: PlaybookSource) -> dict[str, Any]:
+    rule = "memory-consolidation"
+    run = "memory-consolidation--run"
+    done = "memory-consolidation--done"
+    failed = "memory-consolidation--failed"
+    source_ref = _source_ref_for_heading(source, "# Memory Consolidation")
+    terminal_ref = _source_ref_for_heading(source, "## Step 3 — No-op terminal")
+    return {
+        "rules": [
+            {
+                "id": rule,
+                "name": "Consolidate project memories",
+                "trigger": {"event_type": "timer.24h"},
+                "entry_step": run,
+                "source": source_ref,
+            }
+        ],
+        "steps": {
+            run: {
+                "type": "llm",
+                "rule": rule,
+                "title": "Select projects and create consolidation tasks",
+                "source": source_ref,
+                "profile_id": "supervisor",
+                "prompt": {"type": "literal", "value": source.body.strip()},
+                "inputs": {
+                    "tick_time": {"type": "event_ref", "path": "tick_time"},
+                    "interval": {"type": "event_ref", "path": "interval"},
+                },
+                "output_schema": {
+                    "type": "object",
+                    "properties": {
+                        "tasks_created": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "project_id": {"type": "string"},
+                                    "task_id": {"type": "string"},
+                                },
+                                "required": ["project_id", "task_id"],
+                                "additionalProperties": False,
+                            },
+                        }
+                    },
+                    "required": ["tasks_created"],
+                    "additionalProperties": False,
+                },
+                "budget": {
+                    "max_calls": 50,
+                    "max_output_tokens": 4096,
+                    "max_total_tokens": 65536,
+                    "timeout_seconds": 900,
+                },
+                "tool_use": {
+                    "enabled": True,
+                    "aq_commands": ["list_projects", "render_prompt", "create_task"],
+                    "plugin_tools": [
+                        "read_project_memory_file",
+                        "count_project_memory_files",
+                    ],
+                },
+                "transitions": _llm_transitions(done, failed),
+            },
+            done: _terminal(rule, "completed", terminal_ref),
+            failed: _terminal(rule, "failed", terminal_ref),
+        },
+    }
+
+
+def _coding_reflection_body(source: PlaybookSource) -> dict[str, Any]:
+    source_ref = _source_ref_for_heading(source, "# Coding Agent Reflection")
+    terminal_ref = _source_ref_for_heading(source, "## Skip conditions")
+    steps: dict[str, Any] = {}
+    rules: list[dict[str, Any]] = []
+    for suffix, event_type in (("completed", "task.completed"), ("failed", "task.failed")):
+        rule = f"reflect-{suffix}"
+        run = f"{rule}--run"
+        done = f"{rule}--done"
+        failed = f"{rule}--failed"
+        rules.append(
+            {
+                "id": rule,
+                "name": f"Reflect on {suffix} coding tasks",
+                "trigger": {"event_type": event_type},
+                "entry_step": run,
+                "source": source_ref,
+            }
+        )
+        steps[run] = {
+            "type": "llm",
+            "rule": rule,
+            "title": "Extract and save reusable coding insights",
+            "source": source_ref,
+            "profile_id": "worker-deep-high-claude",
+            "prompt": {"type": "literal", "value": source.body.strip()},
+            "inputs": {
+                "task_id": {"type": "event_ref", "path": "task_id"},
+                "project_id": {"type": "event_ref", "path": "project_id"},
+                "title": {"type": "event_ref", "path": "title"},
+                "task_outcome": {"type": "literal", "value": suffix},
+            },
+            "output_schema": {
+                "type": "object",
+                "properties": {
+                    "insights_saved": {"type": "integer", "minimum": 0},
+                    "skipped": {"type": "boolean"},
+                    "summary": {"type": "string"},
+                },
+                "required": ["insights_saved", "skipped", "summary"],
+                "additionalProperties": False,
+            },
+            "budget": {
+                "max_calls": 20,
+                "max_output_tokens": 4096,
+                "max_total_tokens": 32768,
+                "timeout_seconds": 600,
+            },
+            "tool_use": {
+                "enabled": True,
+                "aq_commands": ["get_task"],
+                "plugin_tools": ["git_diff", "memory_search", "memory_save"],
+            },
+            "transitions": _llm_transitions(done, failed),
+        }
+        steps[done] = _terminal(rule, "completed", terminal_ref)
+        steps[failed] = _terminal(rule, "failed", terminal_ref)
+    return {"rules": rules, "steps": steps}
 
 
 def build(playbook_id: str) -> dict[str, Any]:
@@ -211,8 +371,6 @@ def build(playbook_id: str) -> dict[str, Any]:
     source = _load(rel_path)
     body = semantic_body(playbook_id, source)
     if not body:
-        # No V1 machine graph exists to lower, and this script does not run a
-        # compiler agent.  Record the question rather than inventing a body.
         return {
             "id": playbook_id,
             "rel_path": rel_path,

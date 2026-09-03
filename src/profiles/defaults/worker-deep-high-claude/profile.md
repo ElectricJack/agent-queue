@@ -58,6 +58,7 @@ profile's harness would make its id stop describing what actually runs.
     "formula_list",
     "formula_show",
     "get_schema",
+    "get_task",
     "message_inbox",
     "message_reply",
     "message_send",
@@ -75,6 +76,7 @@ profile's harness would make its id stop describing what actually runs.
     "task_show"
   ],
   "plugin_tools": [
+    "git_diff",
     "memory_save",
     "memory_search"
   ]

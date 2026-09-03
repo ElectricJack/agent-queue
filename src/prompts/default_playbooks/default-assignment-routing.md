@@ -2,6 +2,7 @@
 id: default-assignment-routing
 kind: assignment-routing
 role: assignment-routing
+profile_id: playbook-compiler
 scope: system
 triggers:
   - assignment.route.requested
