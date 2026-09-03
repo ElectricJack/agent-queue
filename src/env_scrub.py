@@ -61,7 +61,7 @@ from __future__ import annotations
 import fnmatch
 import os
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, MutableMapping
 from dataclasses import dataclass, field
 
 # Substring patterns that mark a variable as sensitive.  Matched against the
@@ -164,8 +164,49 @@ HARNESS_CREDENTIAL_ALLOWLIST: tuple[str, ...] = (
 )
 
 # Stripped regardless of the sensitivity patterns: these make the Claude CLI /
-# SDK believe it is running inside an existing Claude Code session.
+# SDK believe it is running inside an existing Claude Code session.  The
+# broader :func:`is_harness_session_marker` policy below covers the current
+# Claude Code and Codex marker families; this tuple remains a public,
+# backwards-compatible list of the original exact-name policy.
 STRIP_ALWAYS: tuple[str, ...] = ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")
+
+
+def is_harness_session_marker(key: str) -> bool:
+    """Whether *key* controls or identifies an enclosing agent harness.
+
+    These markers must never cross from an operator/supervisor harness into
+    the daemon or a session it launches: both Claude Code and Codex change
+    their nested-session behaviour when they see them.  Provider API keys are
+    deliberately not markers and remain available through the normal harness
+    credential allowlist.
+    """
+    upper = _normalize(key)
+    if upper in {"CLAUDECODE", "CLAUDE_PID", "CLAUDE_EFFORT"}:
+        return True
+    if upper.startswith("CLAUDE_CODE_"):
+        return True
+    if upper.startswith("ANTHROPIC_"):
+        return upper != "ANTHROPIC_API_KEY"
+    if upper.startswith("CODEX_"):
+        return upper != "CODEX_API_KEY"
+    return False
+
+
+def harness_session_markers(env: Mapping[str, str]) -> list[str]:
+    """Return sorted harness-control names present in *env*, never values."""
+    return sorted(key for key in env if is_harness_session_marker(key))
+
+
+def strip_harness_session_markers(env: MutableMapping[str, str]) -> list[str]:
+    """Remove harness-control variables from *env* and return their names.
+
+    This intentionally mutates its argument for daemon startup, where
+    ``os.environ`` itself must be clean before any child or service is built.
+    """
+    dropped = harness_session_markers(env)
+    for key in dropped:
+        env.pop(key, None)
+    return dropped
 
 
 @dataclass
@@ -252,7 +293,7 @@ def scrub_env(
     dropped: list[str] = []
 
     for key, value in source.items():
-        if key in STRIP_ALWAYS:
+        if is_harness_session_marker(key):
             dropped.append(key)
             continue
         if enabled and is_sensitive(key, value) and not _is_exempt(key, allow):
