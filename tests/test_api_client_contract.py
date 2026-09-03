@@ -333,3 +333,34 @@ def test_committed_openapi_json_matches_the_live_app_surface():
         f"stale schemas in openapi.json: {sorted(committed_schemas - live_schemas)}\n"
         f"schemas whose definition changed: {changed_schemas}"
     )
+
+
+def test_generator_version_pin_agrees_between_the_script_and_the_dev_extra():
+    """The client generator is pinned exactly, in both places that install it.
+
+    Every file under ``packages/aq-client/`` — the boilerplate ``README.md``
+    the generator writes included — is a function of the
+    ``openapi-python-client`` version, not just of ``openapi.json``.  With the
+    version floating, a box on a different release rewrote files nobody
+    touched and the ``git diff --exit-code`` idempotence check in the Package 5
+    verification section failed for a reason unrelated to the spec.  So the
+    version is pinned in ``scripts/regenerate-api-client.sh`` (which refuses to
+    run against anything else) and in the ``dev`` extra (which installs it);
+    this pins the two together.
+    """
+    script = (REPO_ROOT / "scripts" / "regenerate-api-client.sh").read_text(encoding="utf-8")
+    pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+    script_pin = re.search(r'^GENERATOR_VERSION="([^"]+)"', script, re.MULTILINE)
+    assert script_pin, (
+        "scripts/regenerate-api-client.sh no longer pins GENERATOR_VERSION — "
+        "without it, regeneration is not idempotent across machines."
+    )
+    extra_pin = re.search(r'"openapi-python-client==([^"]+)"', pyproject)
+    assert extra_pin, (
+        'pyproject.toml no longer pins "openapi-python-client==<version>" in the dev extra.'
+    )
+    assert script_pin.group(1) == extra_pin.group(1), (
+        f"generator version pins disagree: the script wants {script_pin.group(1)}, "
+        f"the dev extra installs {extra_pin.group(1)}."
+    )
