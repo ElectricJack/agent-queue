@@ -57,7 +57,7 @@ and commit clean, working code.
 ## Config
 ```json
 {
-  "model": "claude-sonnet-4-6",
+  "default_class": "standard-medium",
   "permission_mode": "auto",
   "max_tokens_per_task": 100000
 }
@@ -381,7 +381,7 @@ class TestParseProfile:
         assert result.frontmatter.tags == ["profile", "agent-type"]
 
         # Config
-        assert result.config["model"] == "claude-sonnet-4-6"
+        assert result.config["default_class"] == "standard-medium"
         assert result.config["permission_mode"] == "auto"
         assert result.config["max_tokens_per_task"] == 100000
 
@@ -420,10 +420,10 @@ class TestParseProfile:
         assert result.is_valid
 
     def test_config_only(self):
-        text = '## Config\n```json\n{"model": "opus"}\n```\n'
+        text = '## Config\n```json\n{"default_class": "deep-high"}\n```\n'
         result = parse_profile(text)
         assert result.is_valid
-        assert result.config == {"model": "opus"}
+        assert result.config == {"default_class": "deep-high"}
 
     def test_tools_only(self):
         text = '## Tools\n```json\n{"allowed": ["Read"], "denied": ["Write"]}\n```\n'
@@ -506,10 +506,10 @@ class TestParseProfile:
 
     def test_sections_case_insensitive(self):
         """Section headings should match case-insensitively."""
-        text = '## config\n```json\n{"model": "opus"}\n```\n'
+        text = '## config\n```json\n{"default_class": "deep-high"}\n```\n'
         result = parse_profile(text)
         assert result.is_valid
-        assert result.config == {"model": "opus"}
+        assert result.config == {"default_class": "deep-high"}
 
     def test_all_sections_stored(self):
         result = parse_profile(SPEC_EXAMPLE)
@@ -551,7 +551,7 @@ class TestParsedProfileToAgentProfile:
         d = parsed_profile_to_agent_profile(result)
         assert d["id"] == "coding"
         assert d["name"] == "Coding Agent"
-        assert d["model"] == "claude-sonnet-4-6"
+        assert d["default_class"] == "standard-medium"
         assert d["permission_mode"] == "auto"
         assert "shell" in d["allowed_tools"]
         assert "github" in d["mcp_servers"]
@@ -585,12 +585,12 @@ class TestParsedProfileToAgentProfile:
     def test_config_only_conversion(self):
         text = (
             "---\nid: test\nname: Test\n---\n"
-            '## Config\n```json\n{"model": "opus", "permission_mode": "plan"}\n```\n'
+            '## Config\n```json\n{"default_class": "deep-high", "permission_mode": "plan"}\n```\n'
         )
         result = parse_profile(text)
         d = parsed_profile_to_agent_profile(result)
         assert d["id"] == "test"
-        assert d["model"] == "opus"
+        assert d["default_class"] == "deep-high"
         assert d["permission_mode"] == "plan"
         assert "allowed_tools" not in d
         assert "mcp_servers" not in d
@@ -990,10 +990,13 @@ class TestEdgeCases:
 
     def test_multiple_json_blocks_takes_first(self):
         """If a section has multiple JSON blocks, only the first is parsed."""
-        text = '## Config\n```json\n{"model": "first"}\n```\n```json\n{"model": "second"}\n```\n'
+        text = (
+            '## Config\n```json\n{"default_class": "first"}\n```\n'
+            '```json\n{"default_class": "second"}\n```\n'
+        )
         result = parse_profile(text)
         assert result.is_valid
-        assert result.config["model"] == "first"
+        assert result.config["default_class"] == "first"
 
     def test_deeply_nested_json(self):
         """Deeply nested env values are parsed but flagged as validation errors."""
@@ -1457,15 +1460,16 @@ class TestValidateConfig:
         pool-only sizing fields (``min_active``, ``max_active``,
         ``max_claims_per_session``) from swarm-work-model §9.
 
-        Note: neither ``agent_name`` nor ``runtime`` is a known key.
-        ``agent_name`` retired with the ``acpx`` runtime and ``runtime``
-        with the in-process Supervisor; the parser rejects both outright
-        (see ``test_config_agent_name_rejected`` and
+        Note: none of ``model``, ``agent_name`` or ``runtime`` is a known
+        key.  ``model`` was replaced by ``default_class`` (the class and the
+        harness resolve the launch model), ``agent_name`` retired with the
+        ``acpx`` runtime and ``runtime`` with the in-process Supervisor; the
+        parser rejects all three outright (see ``test_config_model_rejected``,
+        ``test_config_agent_name_rejected`` and
         ``tests/test_profile_parser_runtime.py``) and agent selection
         happens through ``harness``.
         """
         assert CONFIG_KNOWN_KEYS == {
-            "model",
             "permission_mode",
             "max_tokens_per_task",
             "harness",
@@ -1483,6 +1487,13 @@ class TestValidateConfig:
             "max_active",
             "max_claims_per_session",
         }
+
+    def test_config_model_rejected(self):
+        """``model`` is rejected: the class and harness resolve the model."""
+        errors = _validate_config({"model": "claude-sonnet-4-6"})
+        assert errors
+        assert "'model' was removed" in errors[0]
+        assert "default_class" in errors[0]
 
     def test_config_agent_name_rejected(self):
         """``agent_name`` is rejected: it retired with the ``acpx`` runtime."""
@@ -1507,16 +1518,16 @@ class TestValidateConfig:
     def test_valid_full_config(self):
         """A complete config with all three fields passes."""
         config = {
-            "model": "claude-sonnet-4-6",
+            "default_class": "standard-medium",
             "permission_mode": "auto",
             "max_tokens_per_task": 100000,
         }
         errors = _validate_config(config)
         assert errors == []
 
-    def test_valid_model_only(self):
-        """A config with only model passes."""
-        config = {"model": "claude-sonnet-4-6"}
+    def test_valid_default_class_only(self):
+        """A config with only default_class passes."""
+        config = {"default_class": "standard-medium"}
         errors = _validate_config(config)
         assert errors == []
 
@@ -1546,7 +1557,7 @@ class TestValidateConfig:
     def test_valid_unknown_keys_allowed(self):
         """Unknown config keys are silently accepted for forward-compatibility."""
         config = {
-            "model": "claude-sonnet-4-6",
+            "default_class": "standard-medium",
             "custom_setting": "value",
             "future_field": 42,
         }
@@ -1563,64 +1574,31 @@ class TestValidateConfig:
         errors = _validate_config({"max_tokens_per_task": 10_000_000})
         assert errors == []
 
-    def test_valid_model_various_formats(self):
-        """Various model string formats pass."""
-        for model in [
+    # -- Invalid: model (removed key) --
+
+    def test_model_rejected_for_every_value_shape(self):
+        """``model`` is rejected whatever it holds — the key itself is gone.
+
+        It was removed by "derive launch model from intelligence class": the
+        profile's ``default_class`` and ``harness`` resolve the launch model,
+        so a pin is never honoured.  Rejecting rather than ignoring it gives a
+        hand-edited legacy profile an actionable error.
+        """
+        for value in [
             "claude-sonnet-4-6",
-            "claude-opus-4-20250514",
             "gpt-4o",
-            "my-custom-model",
+            42,
+            True,
+            ["claude-sonnet-4-6"],
+            None,
+            {"name": "opus"},
+            "",
+            "   ",
         ]:
-            errors = _validate_config({"model": model})
-            assert errors == [], f"Model '{model}' should be valid, got: {errors}"
-
-    # -- Invalid: model --
-
-    def test_model_is_number(self):
-        """Model must be a string, not a number."""
-        errors = _validate_config({"model": 42})
-        assert len(errors) == 1
-        assert "'model' must be a string" in errors[0]
-        assert "int" in errors[0]
-
-    def test_model_is_bool(self):
-        """Model must be a string, not a boolean."""
-        errors = _validate_config({"model": True})
-        assert len(errors) == 1
-        assert "'model' must be a string" in errors[0]
-        assert "bool" in errors[0]
-
-    def test_model_is_list(self):
-        """Model must be a string, not a list."""
-        errors = _validate_config({"model": ["claude-sonnet-4-6"]})
-        assert len(errors) == 1
-        assert "'model' must be a string" in errors[0]
-        assert "list" in errors[0]
-
-    def test_model_is_null(self):
-        """Model must be a string, not null."""
-        errors = _validate_config({"model": None})
-        assert len(errors) == 1
-        assert "'model' must be a string" in errors[0]
-
-    def test_model_is_dict(self):
-        """Model must be a string, not a dict."""
-        errors = _validate_config({"model": {"name": "opus"}})
-        assert len(errors) == 1
-        assert "'model' must be a string" in errors[0]
-        assert "dict" in errors[0]
-
-    def test_model_empty_string(self):
-        """Model must not be empty when explicitly provided."""
-        errors = _validate_config({"model": ""})
-        assert len(errors) == 1
-        assert "'model' must not be empty" in errors[0]
-
-    def test_model_whitespace_only(self):
-        """Model must not be whitespace-only."""
-        errors = _validate_config({"model": "   "})
-        assert len(errors) == 1
-        assert "'model' must not be empty" in errors[0]
+            errors = _validate_config({"model": value})
+            assert len(errors) == 1, f"model={value!r} should be rejected, got: {errors}"
+            assert "'model' was removed" in errors[0]
+            assert "default_class" in errors[0]
 
     # -- Invalid: permission_mode --
 
@@ -1745,7 +1723,7 @@ class TestValidateConfig:
     def test_two_fields_invalid(self):
         """Only invalid fields produce errors; valid fields pass."""
         config = {
-            "model": "claude-sonnet-4-6",
+            "default_class": "standard-medium",
             "permission_mode": "not-valid",
             "max_tokens_per_task": -1,
         }
@@ -1760,23 +1738,23 @@ class TestValidateConfig:
         """Valid config block passes parse_profile without errors."""
         text = (
             "## Config\n```json\n"
-            '{"model": "claude-sonnet-4-6", "permission_mode": "auto", '
+            '{"default_class": "standard-medium", "permission_mode": "auto", '
             '"max_tokens_per_task": 100000}\n```\n'
         )
         result = parse_profile(text)
         assert result.is_valid, f"Unexpected errors: {result.errors}"
-        assert result.config["model"] == "claude-sonnet-4-6"
+        assert result.config["default_class"] == "standard-medium"
         assert result.config["permission_mode"] == "auto"
         assert result.config["max_tokens_per_task"] == 100000
 
-    def test_integration_invalid_model_type(self):
-        """parse_profile reports non-string model."""
-        text = '## Config\n```json\n{"model": 42}\n```\n'
+    def test_integration_removed_model_key(self):
+        """parse_profile reports the removed ``model`` key."""
+        text = '## Config\n```json\n{"model": "claude-sonnet-4-6"}\n```\n'
         result = parse_profile(text)
         assert not result.is_valid
-        assert any("'model' must be a string" in e for e in result.errors)
+        assert any("'model' was removed" in e for e in result.errors)
         # Data is still stored (parse first, validate second)
-        assert result.config == {"model": 42}
+        assert result.config == {"model": "claude-sonnet-4-6"}
 
     def test_integration_invalid_permission_mode(self):
         """parse_profile reports unknown permission mode."""
@@ -1803,7 +1781,7 @@ class TestValidateConfig:
         """The spec example config block passes validation."""
         result = parse_profile(SPEC_EXAMPLE)
         assert result.is_valid, f"Unexpected errors: {result.errors}"
-        assert result.config["model"] == "claude-sonnet-4-6"
+        assert result.config["default_class"] == "standard-medium"
         assert result.config["permission_mode"] == "auto"
         assert result.config["max_tokens_per_task"] == 100000
 
@@ -1815,7 +1793,7 @@ class TestValidateConfig:
 
     def test_integration_config_with_extras(self):
         """Unknown config keys don't trigger errors."""
-        text = '## Config\n```json\n{"model": "opus", "custom_field": true}\n```\n'
+        text = '## Config\n```json\n{"default_class": "deep-high", "custom_field": true}\n```\n'
         result = parse_profile(text)
         assert result.is_valid
 

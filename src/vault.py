@@ -283,7 +283,7 @@ system prompt as-is.
 ## Config
 ```json
 {
-  "model": "claude-sonnet-4-6",
+  "default_class": "standard-medium",
   "permission_mode": "auto"
 }
 ```
@@ -1003,7 +1003,7 @@ broad rewrites unless the task explicitly calls for refactoring.
 ## Config
 ```json
 {
-  "model": "claude-sonnet-4-6",
+  "default_class": "standard-medium",
   "permission_mode": "auto"
 }
 ```
@@ -1077,7 +1077,7 @@ route mechanical or pattern-following work to `claude-sonnet` or
 ## Config
 ```json
 {
-  "model": "claude-opus-4-7",
+  "default_class": "deep-high",
   "permission_mode": "auto"
 }
 ```
@@ -1142,7 +1142,7 @@ to Opus only when the work genuinely requires deeper reasoning.
 ## Config
 ```json
 {
-  "model": "claude-sonnet-4-6",
+  "default_class": "standard-medium",
   "permission_mode": "auto"
 }
 ```

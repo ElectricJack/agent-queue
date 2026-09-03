@@ -902,6 +902,7 @@ _PLAYBOOK_COMMANDS = [
     "playbook_pending_events",
     "playbook_pending_event_action",
     "playbook_run_overlay",
+    "playbook_artifacts",
     # Playbook V2 review-only compiler (Package 2).
     "playbook_v2_validate",
     "playbook_v2_propose",
@@ -995,7 +996,7 @@ class TestPlaybookToolRegistration:
         assert "playbook" in cat_names
 
     def test_playbook_category_has_correct_count(self):
-        """The 'playbook' category reports exactly 7 tools."""
+        """The 'playbook' category reports exactly ``_PLAYBOOK_COMMANDS`` tools."""
         reg = _real_registry()
         categories = reg.get_categories()
         playbook_cat = next(c for c in categories if c["name"] == "playbook")

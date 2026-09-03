@@ -112,7 +112,7 @@ async def test_explicit_legacy_selection_survives_reload_and_updates_shared_buil
     fresh = load_intelligence_classes(handler.config.data_dir)["fast-low"]
     assert fresh.mapping == args["mapping"]
     assert builder._intelligence_classes["fast-low"].mapping == args["mapping"]
-    profile = SimpleNamespace(id="worker", model="fallback", default_class="fast-low")
+    profile = SimpleNamespace(id="worker", default_class="fast-low")
     assert (
         builder._resolve_model(profile, Harness(id="claude", command="claude"), None)
         == "claude-haiku-4-5"
@@ -387,7 +387,7 @@ async def test_cancelled_save_finishes_cache_publication(handler, monkeypatch):
 
 
 @pytest.mark.parametrize("existing_model", [True, False])
-async def test_missing_model_preserves_options_and_uses_profile_fallback(handler, existing_model):
+async def test_missing_model_preserves_options_and_resolves_no_model(handler, existing_model):
     path = class_path(handler, "custom")
     options = {"thinking": "low", "future": {"keep": [None, "value"]}}
     original = {"anthropic": {"model": "claude-sonnet-5", **options}} if existing_model else {}
@@ -402,11 +402,10 @@ async def test_missing_model_preserves_options_and_uses_profile_fallback(handler
     fresh = load_intelligence_classes(handler.config.data_dir)["custom"]
     assert fresh.mapping == {"anthropic": options}
     builder = handler.orchestrator.session_spec_builder
-    profile = SimpleNamespace(id="worker", model="profile-fallback", default_class="custom")
-    assert (
-        builder._resolve_model(profile, Harness(id="claude", command="claude"), None)
-        == "profile-fallback"
-    )
+    # A class slice with no ``model`` resolves to no launch model at all: the
+    # per-profile ``model`` pin was removed, so there is nothing to fall back to.
+    profile = SimpleNamespace(id="worker", default_class="custom")
+    assert builder._resolve_model(profile, Harness(id="claude", command="claude"), None) == ""
 
 
 @pytest.mark.parametrize("model", [" claude-sonnet-5", "claude-sonnet-5 "])

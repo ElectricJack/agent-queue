@@ -1813,6 +1813,12 @@ class TestRegistryCompleteness:
     #: been argued for, not drift that was missed.
     UNSCHEMAED_EMITS: frozenset[str] = frozenset()
 
+    #: Modules whose ``.emit(...)`` is not the event bus.  ``_Context.emit`` in
+    #: the playbook validator appends a compiler :class:`Diagnostic` (its first
+    #: argument is a diagnostic *code*, e.g. ``"duplicate_rule_id"``), so those
+    #: sites must not be read as event types needing a schema.
+    NON_BUS_EMITTERS: frozenset[str] = frozenset({"playbooks/validation.py"})
+
     @staticmethod
     def _literal_emit_sites() -> dict[str, set[str]]:
         """Map ``event_type -> {source files}`` for every literal ``.emit("x")``."""
@@ -1822,6 +1828,10 @@ class TestRegistryCompleteness:
         pattern = re.compile(r"""\.emit\(\s*["']([a-z][a-z0-9_.]*)["']""")
         found: dict[str, set[str]] = {}
         for path in src.rglob("*.py"):
+            if path.relative_to(src).as_posix() in (
+                TestRegistryCompleteness.NON_BUS_EMITTERS
+            ):
+                continue
             text = path.read_text(encoding="utf-8", errors="replace")
             for match in pattern.finditer(text):
                 found.setdefault(match.group(1), set()).add(

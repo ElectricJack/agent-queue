@@ -510,7 +510,14 @@ async def test_append_race_with_task_removal_is_lossless_or_clean(env, monkeypat
             # Pending-pause deletion safety locks the task before FK cleanup.
             match = statement.startswith("SELECT tasks.id") and "FOR UPDATE" in statement
         else:
-            match = statement.startswith("UPDATE tasks SET id=tasks.id")
+            # On SQLite the delete path's first write is the layout dirty-mark,
+            # which takes the file's write lock ahead of the task-lock UPDATE
+            # in ``_assert_pause_cleanup_complete`` — so the UPDATE is never
+            # reached while the append holds BEGIN IMMEDIATE.  Either statement
+            # means the removal has started and is blocked behind the append.
+            match = statement.startswith(
+                ("UPDATE tasks SET id=tasks.id", "INSERT INTO layout_dirty")
+            )
         if match:
             removal_started.set()
 

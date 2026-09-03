@@ -56,30 +56,25 @@ and commit clean, working code.
 ## Config
 ```json
 {
-  "model": "claude-sonnet-4-6",
+  "default_class": "standard-medium",
   "permission_mode": "auto",
   "max_tokens_per_task": 100000,
-  "runtime": "claude_sdk"
+  "harness": "claude"
 }
 ```
 
-The ``runtime`` field selects which Runtime implementation executes
-tasks for this profile.  Supported values:
+The ``harness`` field selects which agent CLI runs the profile's sessions
+(``"claude"`` / ``"codex"`` / ``"gemini"`` — see
+``src/sessions/default_harnesses/``).  Every agent runs as a tmux session and
+``harness`` is the only selector; the retired ``runtime`` and ``agent_name``
+keys are rejected by the parser with a pointer to it.
 
-- ``"claude_sdk"`` (default; matches ``config.default_runtime``) —
-  spawns a Claude Code subprocess via the Agent SDK.  Owns a per-task
-  workspace.  The escape hatch when ACP doesn't expose a needed feature
-  (SDK-internals reach for ``_resilient_query``, bespoke error
-  classification, etc.).
-- ``"acpx"`` — fans out to any ACP-compatible coding agent via the
-  ``acpx`` CLI.  ``profile.agent_name`` selects the underlying agent
-  (``"claude"`` / ``"codex"`` / ``"gemini"`` / ``"opencode"`` /
-  ``"cursor"`` / etc. — see [[runtimes/acpx]]).  Workspace-based.
-- ``"supervisor"`` — runs in-process via the daemon-wide
-  :class:`Supervisor` singleton.  Tool-call-only, no workspace.
-  Suitable for triage / classify / summarise / route / send-message
-  work where the profile's ``allowed_tools`` defines a bounded surface.
-  See ``vault/templates/example-supervisor-runtime-profile.md``.
+The ``default_class`` field names the profile's intelligence class
+(``vault/intelligence-classes/<id>.md``).  The class and the harness together
+resolve the launch model, so a profile never pins one directly — the
+``model`` Config key was removed and is likewise rejected by the parser with a
+pointer to ``default_class``.  ``src/profiles/model_pin_migration.py`` strips
+legacy pins from vault profiles on startup.
 
 ## Tools
 ```json
@@ -114,7 +109,7 @@ After completing a task, consider:
 ````
 
 **What gets parsed deterministically (JSON blocks):**
-- `## Config` → model, permission mode, token limits → DB fields
+- `## Config` → intelligence class, harness, permission mode, token limits → DB fields
 - `## Tools` → allowed/denied tool lists → DB fields
 - `## MCP Servers` → list of registry names → DB field (`mcp_servers: list[str]`)
 
@@ -242,7 +237,7 @@ forever.
   fields, and missing/extra section headings.
 
 Only the four fields above and *missing* sections count as drift. A changed
-`description`, `model` or `default_class`, and sections the operator added,
+`description`, `default_class` or `harness`, and sections the operator added,
 are the operator's business and are reported for context but never flagged.
 
 **Repair** is explicit and per-profile:
