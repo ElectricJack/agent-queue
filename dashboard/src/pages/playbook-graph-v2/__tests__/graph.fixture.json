@@ -1,53 +1,2928 @@
 {
+  "success": true,
+  "artifact": {
+    "playbook_id": "default-pipeline",
+    "artifact_sha256": "sha256:c2f96f3fa308d465b0902014cc996ffbea623fd01ef1a0f7e722a03db742ccf9",
+    "schema_generation": 2,
+    "contract_fingerprint": "sha256:af1467721bd2f9a0febccfa63f2881a5aef07c7eae14fb1a2be9ee2965a8c835",
+    "source_digest": "sha256:6f1c0d2b9a4e7f38c5b1de20a7f4c8931ee5b0a6d2c74f9138ab5e0c7d41928f",
+    "compiler_build": "fixture",
+    "compiled_at": "2026-09-01T00:00:00+00:00",
+    "version": 5
+  },
+  "activation": {
+    "playbook_id": "default-pipeline",
+    "scope": "system",
+    "scope_identifier": null,
+    "enabled": false,
+    "active_artifact_sha256": null,
+    "health": "disabled",
+    "reasons": [],
+    "activated_at": null,
+    "activated_by": null,
+    "pending_event_count": 0,
+    "running_count": 0
+  },
+  "purpose": "routine",
+  "event_groups": [
+    {
+      "event_type": "task.completed",
+      "rule_ids": [
+        "review-on-task-completed"
+      ],
+      "node_count": 7,
+      "edge_count": 21
+    },
+    {
+      "event_type": "spec.approved",
+      "rule_ids": [
+        "sweep-on-spec-approved"
+      ],
+      "node_count": 6,
+      "edge_count": 13
+    }
+  ],
+  "rules": [
+    {
+      "rule_id": "review-on-task-completed",
+      "name": "Open review for a completed task",
+      "event_type": "task.completed",
+      "trigger_filter": {
+        "review_task": false
+      },
+      "entry_step_id": "ensure-review-task",
+      "step_ids": [
+        "ensure-review-task",
+        "classify-risk",
+        "escalate",
+        "await-approval",
+        "review-unavailable",
+        "cancelled-end",
+        "done"
+      ],
+      "source": {
+        "path": "system/playbooks/default-pipeline.md",
+        "start_line": 18,
+        "end_line": 46,
+        "heading": "Open review for a completed task",
+        "excerpt": null
+      },
+      "diagnostics": []
+    },
+    {
+      "rule_id": "sweep-on-spec-approved",
+      "name": "Sweep downstream tasks for an approved spec",
+      "event_type": "spec.approved",
+      "trigger_filter": null,
+      "entry_step_id": "list-downstream",
+      "step_ids": [
+        "list-downstream",
+        "for-each-task",
+        "open-gate",
+        "check-gate",
+        "sweep-done",
+        "sweep-failed"
+      ],
+      "source": {
+        "path": "system/playbooks/default-pipeline.md",
+        "start_line": 48,
+        "end_line": 71,
+        "heading": "Sweep downstream tasks for an approved spec",
+        "excerpt": null
+      },
+      "diagnostics": []
+    }
+  ],
   "nodes": [
-    ["ensure-review-task", "command"],
-    ["classify-risk", "llm"],
-    ["escalate", "agent_task"],
-    ["await-approval", "wait"],
-    ["review-unavailable", "terminal"],
-    ["cancelled-end", "terminal"],
-    ["done", "terminal"],
-    ["list-downstream", "command"],
-    ["for-each-task", "foreach"],
-    ["open-gate", "command"],
-    ["check-gate", "decision"],
-    ["sweep-done", "terminal"],
-    ["sweep-failed", "terminal"]
+    {
+      "id": "ensure-review-task",
+      "rule_id": "review-on-task-completed",
+      "step_kind": "command",
+      "title": "Ensure a review task",
+      "description": null,
+      "entry": true,
+      "terminal_outcome": null,
+      "explanation": {
+        "title": "Ensure a review task",
+        "effect_summary": "Invoke ensure_task",
+        "effects": [],
+        "inputs": [
+          {
+            "label": "Project Id",
+            "value": {
+              "kind": "unresolved",
+              "display": "(unresolved)",
+              "canonical": null,
+              "redacted": false,
+              "type_name": null
+            },
+            "source": "event",
+            "required": true,
+            "description": null
+          },
+          {
+            "label": "Title",
+            "value": {
+              "kind": "unresolved",
+              "display": "(unresolved)",
+              "canonical": null,
+              "redacted": false,
+              "type_name": null
+            },
+            "source": "template",
+            "required": true,
+            "description": null
+          },
+          {
+            "label": "Dedup Key",
+            "value": {
+              "kind": "unresolved",
+              "display": "(unresolved)",
+              "canonical": null,
+              "redacted": false,
+              "type_name": null
+            },
+            "source": "template",
+            "required": true,
+            "description": null
+          }
+        ],
+        "result": {
+          "label": "review",
+          "value": {
+            "kind": "binding_ref",
+            "display": "review",
+            "canonical": {
+              "type": "binding_ref",
+              "binding": "review"
+            },
+            "redacted": false,
+            "type_name": "object"
+          },
+          "source": "derived",
+          "required": true,
+          "description": null
+        },
+        "outcomes": [
+          {
+            "outcome": "created",
+            "label": "Created",
+            "target_step_id": "classify-risk",
+            "target_title": "Classify review risk",
+            "reserved": false,
+            "terminal_outcome": null
+          },
+          {
+            "outcome": "reused",
+            "label": "Reused",
+            "target_step_id": "classify-risk",
+            "target_title": "Classify review risk",
+            "reserved": false,
+            "terminal_outcome": null
+          },
+          {
+            "outcome": "rejected",
+            "label": "Rejected",
+            "target_step_id": "review-unavailable",
+            "target_title": "Review unavailable",
+            "reserved": false,
+            "terminal_outcome": "failed"
+          },
+          {
+            "outcome": "runtime_error",
+            "label": "Runtime Error",
+            "target_step_id": "review-unavailable",
+            "target_title": "Review unavailable",
+            "reserved": true,
+            "terminal_outcome": "failed"
+          }
+        ],
+        "contract_fingerprint": null,
+        "renderer": "canonical"
+      },
+      "badges": [
+        {
+          "kind": "diagnostic",
+          "label": "Errors",
+          "value": "1"
+        }
+      ],
+      "ai": null,
+      "loop": null,
+      "wait": null,
+      "source": {
+        "path": "system/playbooks/default-pipeline.md",
+        "start_line": 20,
+        "end_line": 27,
+        "heading": null,
+        "excerpt": null
+      },
+      "advanced": {
+        "typed_step": {
+          "rule": "review-on-task-completed",
+          "title": "Ensure a review task",
+          "description": null,
+          "source": {
+            "path": "system/playbooks/default-pipeline.md",
+            "start_line": 20,
+            "end_line": 27,
+            "heading": null,
+            "excerpt": null
+          },
+          "type": "command",
+          "command": "ensure_task",
+          "inputs": {
+            "project_id": {
+              "type": "unresolved"
+            },
+            "title": {
+              "type": "unresolved"
+            },
+            "dedup_key": {
+              "type": "unresolved"
+            }
+          },
+          "idempotency_key": null,
+          "retry": null,
+          "save_result_as": "review",
+          "transitions": {
+            "created": "classify-risk",
+            "reused": "classify-risk",
+            "rejected": "review-unavailable",
+            "runtime_error": "review-unavailable"
+          }
+        },
+        "resolved_inputs": [
+          {
+            "label": "Project Id",
+            "value": {
+              "kind": "unresolved",
+              "display": "(unresolved)",
+              "canonical": null,
+              "redacted": false,
+              "type_name": null
+            },
+            "source": "event",
+            "required": true,
+            "description": null
+          },
+          {
+            "label": "Title",
+            "value": {
+              "kind": "unresolved",
+              "display": "(unresolved)",
+              "canonical": null,
+              "redacted": false,
+              "type_name": null
+            },
+            "source": "template",
+            "required": true,
+            "description": null
+          },
+          {
+            "label": "Dedup Key",
+            "value": {
+              "kind": "unresolved",
+              "display": "(unresolved)",
+              "canonical": null,
+              "redacted": false,
+              "type_name": null
+            },
+            "source": "template",
+            "required": true,
+            "description": null
+          }
+        ],
+        "result_schema": null,
+        "retry": null,
+        "idempotency": {
+          "supported": false,
+          "key_template": null,
+          "retry_safe": false
+        },
+        "redaction": [
+          {
+            "field": "dedup_key",
+            "policy": "safe"
+          },
+          {
+            "field": "project_id",
+            "policy": "safe"
+          },
+          {
+            "field": "title",
+            "policy": "safe"
+          }
+        ],
+        "execution_fingerprint": null
+      },
+      "diagnostics": [
+        {
+          "severity": "error",
+          "code": "unknown_command",
+          "message": "Command 'ensure_task' is not registered",
+          "rule_id": "review-on-task-completed",
+          "step_id": "ensure-review-task",
+          "source": {
+            "path": "system/playbooks/default-pipeline.md",
+            "start_line": 20,
+            "end_line": 27,
+            "heading": null,
+            "excerpt": null
+          }
+        }
+      ],
+      "out_degree": 4,
+      "position": {
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
+      "id": "classify-risk",
+      "rule_id": "review-on-task-completed",
+      "step_kind": "llm",
+      "title": "Classify review risk",
+      "description": null,
+      "entry": false,
+      "terminal_outcome": null,
+      "explanation": {
+        "title": "Classify review risk",
+        "effect_summary": "Ask the reviewer profile for a structured answer and branch on its risk",
+        "effects": [
+          {
+            "kind": "invokes_ai",
+            "subject": "reviewer",
+            "detail": "Invokes the reviewer profile with a structured-output prompt, capped at 2 call(s) and 8000 total tokens",
+            "arguments": [],
+            "conditional_on": null
+          },
+          {
+            "kind": "binds",
+            "subject": "risk",
+            "detail": "Binds this step's result as risk",
+            "arguments": [],
+            "conditional_on": null
+          }
+        ],
+        "inputs": [
+          {
+            "label": "Prompt",
+            "value": {
+              "kind": "template",
+              "display": "Assess the review risk of task this event's title",
+              "canonical": {
+                "type": "template",
+                "parts": [
+                  {
+                    "type": "literal",
+                    "value": "Assess the review risk of task "
+                  },
+                  {
+                    "type": "event_ref",
+                    "path": "title"
+                  }
+                ]
+              },
+              "redacted": false,
+              "type_name": "string"
+            },
+            "source": "template",
+            "required": true,
+            "description": null
+          }
+        ],
+        "result": {
+          "label": "risk",
+          "value": {
+            "kind": "binding_ref",
+            "display": "risk",
+            "canonical": {
+              "type": "binding_ref",
+              "binding": "risk"
+            },
+            "redacted": false,
+            "type_name": "object"
+          },
+          "source": "derived",
+          "required": true,
+          "description": "The model's structured output, bound for later steps to read."
+        },
+        "outcomes": [
+          {
+            "outcome": "low",
+            "label": "Low",
+            "target_step_id": "await-approval",
+            "target_title": "Wait for human approval",
+            "reserved": false,
+            "terminal_outcome": null
+          },
+          {
+            "outcome": "high",
+            "label": "High",
+            "target_step_id": "escalate",
+            "target_title": "Escalate to a senior reviewer",
+            "reserved": false,
+            "terminal_outcome": null
+          },
+          {
+            "outcome": "invalid_output",
+            "label": "Invalid Output",
+            "target_step_id": "review-unavailable",
+            "target_title": "Review unavailable",
+            "reserved": true,
+            "terminal_outcome": "failed"
+          },
+          {
+            "outcome": "budget_exceeded",
+            "label": "Budget Exceeded",
+            "target_step_id": "review-unavailable",
+            "target_title": "Review unavailable",
+            "reserved": true,
+            "terminal_outcome": "failed"
+          },
+          {
+            "outcome": "provider_error",
+            "label": "Provider Error",
+            "target_step_id": "review-unavailable",
+            "target_title": "Review unavailable",
+            "reserved": true,
+            "terminal_outcome": "failed"
+          },
+          {
+            "outcome": "timed_out",
+            "label": "Timed Out",
+            "target_step_id": "review-unavailable",
+            "target_title": "Review unavailable",
+            "reserved": true,
+            "terminal_outcome": "failed"
+          },
+          {
+            "outcome": "cancelled",
+            "label": "Cancelled",
+            "target_step_id": "cancelled-end",
+            "target_title": "Cancelled",
+            "reserved": true,
+            "terminal_outcome": "cancelled"
+          },
+          {
+            "outcome": "runtime_error",
+            "label": "Runtime Error",
+            "target_step_id": "review-unavailable",
+            "target_title": "Review unavailable",
+            "reserved": true,
+            "terminal_outcome": "failed"
+          }
+        ],
+        "contract_fingerprint": null,
+        "renderer": "canonical"
+      },
+      "badges": [
+        {
+          "kind": "profile",
+          "label": "Profile",
+          "value": "reviewer"
+        },
+        {
+          "kind": "budget",
+          "label": "Budget",
+          "value": "2 call(s), 8000 tokens"
+        }
+      ],
+      "ai": {
+        "profile_id": "reviewer",
+        "intelligence_class": "deep-high",
+        "provider": "anthropic",
+        "model": "claude-opus-5",
+        "capabilities": {
+          "harness_tools": [],
+          "aq_commands": [
+            "demo_command"
+          ],
+          "plugin_tools": []
+        },
+        "capability_fingerprint": "sha256:e6a5745b78333c080c2b1e3acb1f0fdc5224a455642192a5c9b5ad6c3f556d90",
+        "budget": {
+          "max_calls": 2,
+          "max_output_tokens": 1024,
+          "max_total_tokens": 8000,
+          "timeout_seconds": 120
+        },
+        "output_schema": {
+          "type": "object",
+          "properties": {
+            "risk": {
+              "enum": [
+                "low",
+                "high"
+              ]
+            }
+          },
+          "required": [
+            "risk"
+          ]
+        },
+        "tool_use_enabled": false,
+        "delegation": null
+      },
+      "loop": null,
+      "wait": null,
+      "source": {
+        "path": "system/playbooks/default-pipeline.md",
+        "start_line": 29,
+        "end_line": 34,
+        "heading": null,
+        "excerpt": null
+      },
+      "advanced": {
+        "typed_step": {
+          "rule": "review-on-task-completed",
+          "title": "Classify review risk",
+          "description": null,
+          "source": {
+            "path": "system/playbooks/default-pipeline.md",
+            "start_line": 29,
+            "end_line": 34,
+            "heading": null,
+            "excerpt": null
+          },
+          "type": "llm",
+          "profile_id": "reviewer",
+          "prompt": {
+            "type": "template",
+            "parts": [
+              {
+                "type": "literal",
+                "value": "Assess the review risk of task "
+              },
+              {
+                "type": "event_ref",
+                "path": "title"
+              }
+            ]
+          },
+          "inputs": {},
+          "output_schema": {
+            "type": "object",
+            "properties": {
+              "risk": {
+                "enum": [
+                  "low",
+                  "high"
+                ]
+              }
+            },
+            "required": [
+              "risk"
+            ]
+          },
+          "outcome_field": "risk",
+          "budget": {
+            "max_calls": 2,
+            "max_output_tokens": 1024,
+            "max_total_tokens": 8000,
+            "timeout_seconds": 120
+          },
+          "tool_use": {
+            "enabled": false,
+            "aq_commands": [],
+            "plugin_tools": []
+          },
+          "retry": null,
+          "save_result_as": "risk",
+          "transitions": {
+            "low": "await-approval",
+            "high": "escalate",
+            "invalid_output": "review-unavailable",
+            "budget_exceeded": "review-unavailable",
+            "provider_error": "review-unavailable",
+            "timed_out": "review-unavailable",
+            "cancelled": "cancelled-end",
+            "runtime_error": "review-unavailable"
+          }
+        },
+        "resolved_inputs": [
+          {
+            "label": "Prompt",
+            "value": {
+              "kind": "template",
+              "display": "Assess the review risk of task this event's title",
+              "canonical": {
+                "type": "template",
+                "parts": [
+                  {
+                    "type": "literal",
+                    "value": "Assess the review risk of task "
+                  },
+                  {
+                    "type": "event_ref",
+                    "path": "title"
+                  }
+                ]
+              },
+              "redacted": false,
+              "type_name": "string"
+            },
+            "source": "template",
+            "required": true,
+            "description": null
+          }
+        ],
+        "result_schema": {
+          "type": "object",
+          "properties": {
+            "risk": {
+              "enum": [
+                "low",
+                "high"
+              ]
+            }
+          },
+          "required": [
+            "risk"
+          ]
+        },
+        "retry": null,
+        "idempotency": null,
+        "redaction": [],
+        "execution_fingerprint": null
+      },
+      "diagnostics": [],
+      "out_degree": 8,
+      "position": {
+        "x": 0,
+        "y": 1
+      }
+    },
+    {
+      "id": "escalate",
+      "rule_id": "review-on-task-completed",
+      "step_kind": "agent_task",
+      "title": "Escalate to a senior reviewer",
+      "description": null,
+      "entry": false,
+      "terminal_outcome": null,
+      "explanation": {
+        "title": "Escalate to a senior reviewer",
+        "effect_summary": "Delegate a task to the reviewer profile and wait for it",
+        "effects": [
+          {
+            "kind": "delegates",
+            "subject": "reviewer",
+            "detail": "Delegates a child agent task to the reviewer profile",
+            "arguments": [],
+            "conditional_on": null
+          },
+          {
+            "kind": "binds",
+            "subject": "escalation",
+            "detail": "Binds this step's result as escalation",
+            "arguments": [],
+            "conditional_on": null
+          }
+        ],
+        "inputs": [
+          {
+            "label": "Objective",
+            "value": {
+              "kind": "literal",
+              "display": "Re-review the change and record the riskiest line",
+              "canonical": {
+                "type": "literal",
+                "value": "Re-review the change and record the riskiest line"
+              },
+              "redacted": false,
+              "type_name": "string"
+            },
+            "source": "literal",
+            "required": true,
+            "description": null
+          }
+        ],
+        "result": {
+          "label": "escalation",
+          "value": {
+            "kind": "binding_ref",
+            "display": "escalation",
+            "canonical": {
+              "type": "binding_ref",
+              "binding": "escalation"
+            },
+            "redacted": false,
+            "type_name": "object"
+          },
+          "source": "derived",
+          "required": true,
+          "description": "The delegated task's result, bound for later steps to read."
+        },
+        "outcomes": [
+          {
+            "outcome": "completed",
+            "label": "Completed",
+            "target_step_id": "await-approval",
+            "target_title": "Wait for human approval",
+            "reserved": false,
+            "terminal_outcome": null
+          },
+          {
+            "outcome": "failed",
+            "label": "Failed",
+            "target_step_id": "review-unavailable",
+            "target_title": "Review unavailable",
+            "reserved": false,
+            "terminal_outcome": "failed"
+          },
+          {
+            "outcome": "timed_out",
+            "label": "Timed Out",
+            "target_step_id": "review-unavailable",
+            "target_title": "Review unavailable",
+            "reserved": true,
+            "terminal_outcome": "failed"
+          },
+          {
+            "outcome": "cancelled",
+            "label": "Cancelled",
+            "target_step_id": "cancelled-end",
+            "target_title": "Cancelled",
+            "reserved": true,
+            "terminal_outcome": "cancelled"
+          },
+          {
+            "outcome": "runtime_error",
+            "label": "Runtime Error",
+            "target_step_id": "review-unavailable",
+            "target_title": "Review unavailable",
+            "reserved": true,
+            "terminal_outcome": "failed"
+          }
+        ],
+        "contract_fingerprint": null,
+        "renderer": "canonical"
+      },
+      "badges": [
+        {
+          "kind": "profile",
+          "label": "Profile",
+          "value": "reviewer"
+        },
+        {
+          "kind": "wait",
+          "label": "Waits",
+          "value": "for completion"
+        },
+        {
+          "kind": "timeout",
+          "label": "Timeout",
+          "value": "3600s"
+        }
+      ],
+      "ai": {
+        "profile_id": "reviewer",
+        "intelligence_class": "deep-high",
+        "provider": "anthropic",
+        "model": "claude-opus-5",
+        "capabilities": {
+          "harness_tools": [],
+          "aq_commands": [
+            "demo_command"
+          ],
+          "plugin_tools": []
+        },
+        "capability_fingerprint": "sha256:e6a5745b78333c080c2b1e3acb1f0fdc5224a455642192a5c9b5ad6c3f556d90",
+        "budget": {
+          "max_calls": null,
+          "max_output_tokens": null,
+          "max_total_tokens": null,
+          "timeout_seconds": null
+        },
+        "output_schema": null,
+        "tool_use_enabled": false,
+        "delegation": {
+          "child_profile_id": "reviewer",
+          "wait_for_completion": true,
+          "cancel_child": false,
+          "narrowed_from": null,
+          "capability_narrowing": null
+        }
+      },
+      "loop": null,
+      "wait": null,
+      "source": {
+        "path": "system/playbooks/default-pipeline.md",
+        "start_line": 36,
+        "end_line": 39,
+        "heading": null,
+        "excerpt": null
+      },
+      "advanced": {
+        "typed_step": {
+          "rule": "review-on-task-completed",
+          "title": "Escalate to a senior reviewer",
+          "description": null,
+          "source": {
+            "path": "system/playbooks/default-pipeline.md",
+            "start_line": 36,
+            "end_line": 39,
+            "heading": null,
+            "excerpt": null
+          },
+          "type": "agent_task",
+          "profile_id": "reviewer",
+          "objective": {
+            "type": "literal",
+            "value": "Re-review the change and record the riskiest line"
+          },
+          "inputs": {},
+          "wait_for_completion": true,
+          "cancel_child": false,
+          "capability_narrowing": null,
+          "timeout_seconds": 3600,
+          "retry": null,
+          "save_result_as": "escalation",
+          "transitions": {
+            "completed": "await-approval",
+            "failed": "review-unavailable",
+            "timed_out": "review-unavailable",
+            "cancelled": "cancelled-end",
+            "runtime_error": "review-unavailable"
+          }
+        },
+        "resolved_inputs": [
+          {
+            "label": "Objective",
+            "value": {
+              "kind": "literal",
+              "display": "Re-review the change and record the riskiest line",
+              "canonical": {
+                "type": "literal",
+                "value": "Re-review the change and record the riskiest line"
+              },
+              "redacted": false,
+              "type_name": "string"
+            },
+            "source": "literal",
+            "required": true,
+            "description": null
+          }
+        ],
+        "result_schema": {
+          "type": "object",
+          "required": [
+            "task_id",
+            "status"
+          ],
+          "properties": {
+            "task_id": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string"
+            },
+            "outcome": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "summary": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        "retry": null,
+        "idempotency": null,
+        "redaction": [],
+        "execution_fingerprint": null
+      },
+      "diagnostics": [],
+      "out_degree": 5,
+      "position": {
+        "x": 0,
+        "y": 2
+      }
+    },
+    {
+      "id": "await-approval",
+      "rule_id": "review-on-task-completed",
+      "step_kind": "wait",
+      "title": "Wait for human approval",
+      "description": null,
+      "entry": false,
+      "terminal_outcome": null,
+      "explanation": {
+        "title": "Wait for human approval",
+        "effect_summary": "Pause until a human resolves the gate",
+        "effects": [
+          {
+            "kind": "waits",
+            "subject": "human",
+            "detail": "Pause until a human resolves the gate: Approve the review (resolutions: approve, revise); times out after 86400s",
+            "arguments": [],
+            "conditional_on": null
+          },
+          {
+            "kind": "binds",
+            "subject": "approval",
+            "detail": "Binds this step's result as approval",
+            "arguments": [],
+            "conditional_on": null
+          }
+        ],
+        "inputs": [
+          {
+            "label": "Awaited",
+            "value": {
+              "kind": "literal",
+              "display": "Approve the review",
+              "canonical": {
+                "type": "literal",
+                "value": "Approve the review"
+              },
+              "redacted": false,
+              "type_name": "string"
+            },
+            "source": "literal",
+            "required": true,
+            "description": null
+          },
+          {
+            "label": "Correlation key",
+            "value": {
+              "kind": "binding_ref",
+              "display": "review.task_id",
+              "canonical": {
+                "type": "binding_ref",
+                "binding": "review",
+                "path": "task_id"
+              },
+              "redacted": false,
+              "type_name": "string"
+            },
+            "source": "binding",
+            "required": true,
+            "description": null
+          }
+        ],
+        "result": {
+          "label": "approval",
+          "value": {
+            "kind": "binding_ref",
+            "display": "approval",
+            "canonical": {
+              "type": "binding_ref",
+              "binding": "approval"
+            },
+            "redacted": false,
+            "type_name": "object"
+          },
+          "source": "derived",
+          "required": true,
+          "description": "What the wait resolved to, bound for later steps to read."
+        },
+        "outcomes": [
+          {
+            "outcome": "approve",
+            "label": "Approve",
+            "target_step_id": "done",
+            "target_title": "Review complete",
+            "reserved": false,
+            "terminal_outcome": "completed"
+          },
+          {
+            "outcome": "revise",
+            "label": "Revise",
+            "target_step_id": "ensure-review-task",
+            "target_title": "Ensure a review task",
+            "reserved": false,
+            "terminal_outcome": null
+          },
+          {
+            "outcome": "timed_out",
+            "label": "Timed Out",
+            "target_step_id": "review-unavailable",
+            "target_title": "Review unavailable",
+            "reserved": true,
+            "terminal_outcome": "failed"
+          },
+          {
+            "outcome": "runtime_error",
+            "label": "Runtime Error",
+            "target_step_id": "review-unavailable",
+            "target_title": "Review unavailable",
+            "reserved": true,
+            "terminal_outcome": "failed"
+          }
+        ],
+        "contract_fingerprint": null,
+        "renderer": "canonical"
+      },
+      "badges": [
+        {
+          "kind": "wait",
+          "label": "Waits for",
+          "value": "human"
+        },
+        {
+          "kind": "timeout",
+          "label": "Timeout",
+          "value": "86400s"
+        }
+      ],
+      "ai": null,
+      "loop": null,
+      "wait": {
+        "wait_kind": "human",
+        "awaited": "Approve the review",
+        "correlation_key": {
+          "kind": "binding_ref",
+          "display": "review.task_id",
+          "canonical": {
+            "type": "binding_ref",
+            "binding": "review",
+            "path": "task_id"
+          },
+          "redacted": false,
+          "type_name": null
+        },
+        "timeout_seconds": 86400,
+        "timeout_step_id": "review-unavailable"
+      },
+      "source": {
+        "path": "system/playbooks/default-pipeline.md",
+        "start_line": 41,
+        "end_line": 44,
+        "heading": null,
+        "excerpt": null
+      },
+      "advanced": {
+        "typed_step": {
+          "rule": "review-on-task-completed",
+          "title": "Wait for human approval",
+          "description": null,
+          "source": {
+            "path": "system/playbooks/default-pipeline.md",
+            "start_line": 41,
+            "end_line": 44,
+            "heading": null,
+            "excerpt": null
+          },
+          "type": "wait",
+          "wait_kind": "human",
+          "awaited": {
+            "type": "literal",
+            "value": "Approve the review"
+          },
+          "correlation_key": {
+            "type": "binding_ref",
+            "binding": "review",
+            "path": "task_id"
+          },
+          "outcomes": [
+            "approve",
+            "revise"
+          ],
+          "timeout_seconds": 86400,
+          "save_result_as": "approval",
+          "transitions": {
+            "approve": "done",
+            "revise": "ensure-review-task",
+            "timed_out": "review-unavailable",
+            "runtime_error": "review-unavailable"
+          }
+        },
+        "resolved_inputs": [
+          {
+            "label": "Awaited",
+            "value": {
+              "kind": "literal",
+              "display": "Approve the review",
+              "canonical": {
+                "type": "literal",
+                "value": "Approve the review"
+              },
+              "redacted": false,
+              "type_name": "string"
+            },
+            "source": "literal",
+            "required": true,
+            "description": null
+          },
+          {
+            "label": "Correlation key",
+            "value": {
+              "kind": "binding_ref",
+              "display": "review.task_id",
+              "canonical": {
+                "type": "binding_ref",
+                "binding": "review",
+                "path": "task_id"
+              },
+              "redacted": false,
+              "type_name": "string"
+            },
+            "source": "binding",
+            "required": true,
+            "description": null
+          }
+        ],
+        "result_schema": {
+          "type": "object",
+          "required": [
+            "resolution"
+          ],
+          "properties": {
+            "resolution": {
+              "type": "string"
+            },
+            "note": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "resolved_by": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        "retry": null,
+        "idempotency": null,
+        "redaction": [],
+        "execution_fingerprint": null
+      },
+      "diagnostics": [],
+      "out_degree": 4,
+      "position": {
+        "x": 1,
+        "y": 2
+      }
+    },
+    {
+      "id": "review-unavailable",
+      "rule_id": "review-on-task-completed",
+      "step_kind": "terminal",
+      "title": "Review unavailable",
+      "description": null,
+      "entry": false,
+      "terminal_outcome": "failed",
+      "explanation": {
+        "title": "Review unavailable",
+        "effect_summary": "End the rule as failed",
+        "effects": [
+          {
+            "kind": "noop",
+            "subject": "rule",
+            "detail": "End the rule as failed",
+            "arguments": [],
+            "conditional_on": null
+          }
+        ],
+        "inputs": [],
+        "result": null,
+        "outcomes": [
+          {
+            "outcome": "failed",
+            "label": "Failed",
+            "target_step_id": null,
+            "target_title": null,
+            "reserved": false,
+            "terminal_outcome": "failed"
+          }
+        ],
+        "contract_fingerprint": null,
+        "renderer": "canonical"
+      },
+      "badges": [],
+      "ai": null,
+      "loop": null,
+      "wait": null,
+      "source": {
+        "path": "system/playbooks/default-pipeline.md",
+        "start_line": 45,
+        "end_line": 45,
+        "heading": null,
+        "excerpt": null
+      },
+      "advanced": {
+        "typed_step": {
+          "rule": "review-on-task-completed",
+          "title": "Review unavailable",
+          "description": null,
+          "source": {
+            "path": "system/playbooks/default-pipeline.md",
+            "start_line": 45,
+            "end_line": 45,
+            "heading": null,
+            "excerpt": null
+          },
+          "type": "terminal",
+          "outcome": "failed",
+          "result": null
+        },
+        "resolved_inputs": [],
+        "result_schema": null,
+        "retry": null,
+        "idempotency": null,
+        "redaction": [],
+        "execution_fingerprint": null
+      },
+      "diagnostics": [],
+      "out_degree": 0,
+      "position": {
+        "x": 1,
+        "y": 1
+      }
+    },
+    {
+      "id": "cancelled-end",
+      "rule_id": "review-on-task-completed",
+      "step_kind": "terminal",
+      "title": "Cancelled",
+      "description": null,
+      "entry": false,
+      "terminal_outcome": "cancelled",
+      "explanation": {
+        "title": "Cancelled",
+        "effect_summary": "End the rule as cancelled",
+        "effects": [
+          {
+            "kind": "noop",
+            "subject": "rule",
+            "detail": "End the rule as cancelled",
+            "arguments": [],
+            "conditional_on": null
+          }
+        ],
+        "inputs": [],
+        "result": null,
+        "outcomes": [
+          {
+            "outcome": "cancelled",
+            "label": "Cancelled",
+            "target_step_id": null,
+            "target_title": null,
+            "reserved": false,
+            "terminal_outcome": "cancelled"
+          }
+        ],
+        "contract_fingerprint": null,
+        "renderer": "canonical"
+      },
+      "badges": [],
+      "ai": null,
+      "loop": null,
+      "wait": null,
+      "source": {
+        "path": "system/playbooks/default-pipeline.md",
+        "start_line": 46,
+        "end_line": 46,
+        "heading": null,
+        "excerpt": null
+      },
+      "advanced": {
+        "typed_step": {
+          "rule": "review-on-task-completed",
+          "title": "Cancelled",
+          "description": null,
+          "source": {
+            "path": "system/playbooks/default-pipeline.md",
+            "start_line": 46,
+            "end_line": 46,
+            "heading": null,
+            "excerpt": null
+          },
+          "type": "terminal",
+          "outcome": "cancelled",
+          "result": null
+        },
+        "resolved_inputs": [],
+        "result_schema": null,
+        "retry": null,
+        "idempotency": null,
+        "redaction": [],
+        "execution_fingerprint": null
+      },
+      "diagnostics": [],
+      "out_degree": 0,
+      "position": {
+        "x": 2,
+        "y": 2
+      }
+    },
+    {
+      "id": "done",
+      "rule_id": "review-on-task-completed",
+      "step_kind": "terminal",
+      "title": "Review complete",
+      "description": null,
+      "entry": false,
+      "terminal_outcome": "completed",
+      "explanation": {
+        "title": "Review complete",
+        "effect_summary": "End the rule as completed",
+        "effects": [
+          {
+            "kind": "noop",
+            "subject": "rule",
+            "detail": "End the rule as completed",
+            "arguments": [],
+            "conditional_on": null
+          }
+        ],
+        "inputs": [],
+        "result": null,
+        "outcomes": [
+          {
+            "outcome": "completed",
+            "label": "Completed",
+            "target_step_id": null,
+            "target_title": null,
+            "reserved": false,
+            "terminal_outcome": "completed"
+          }
+        ],
+        "contract_fingerprint": null,
+        "renderer": "canonical"
+      },
+      "badges": [],
+      "ai": null,
+      "loop": null,
+      "wait": null,
+      "source": {
+        "path": "system/playbooks/default-pipeline.md",
+        "start_line": 46,
+        "end_line": 46,
+        "heading": null,
+        "excerpt": null
+      },
+      "advanced": {
+        "typed_step": {
+          "rule": "review-on-task-completed",
+          "title": "Review complete",
+          "description": null,
+          "source": {
+            "path": "system/playbooks/default-pipeline.md",
+            "start_line": 46,
+            "end_line": 46,
+            "heading": null,
+            "excerpt": null
+          },
+          "type": "terminal",
+          "outcome": "completed",
+          "result": null
+        },
+        "resolved_inputs": [],
+        "result_schema": null,
+        "retry": null,
+        "idempotency": null,
+        "redaction": [],
+        "execution_fingerprint": null
+      },
+      "diagnostics": [],
+      "out_degree": 0,
+      "position": {
+        "x": 0,
+        "y": 3
+      }
+    },
+    {
+      "id": "list-downstream",
+      "rule_id": "sweep-on-spec-approved",
+      "step_kind": "command",
+      "title": "List downstream tasks",
+      "description": null,
+      "entry": true,
+      "terminal_outcome": null,
+      "explanation": {
+        "title": "List downstream tasks",
+        "effect_summary": "Invoke list_tasks",
+        "effects": [],
+        "inputs": [
+          {
+            "label": "Project Id",
+            "value": {
+              "kind": "unresolved",
+              "display": "(unresolved)",
+              "canonical": null,
+              "redacted": false,
+              "type_name": null
+            },
+            "source": "event",
+            "required": true,
+            "description": null
+          },
+          {
+            "label": "Status",
+            "value": {
+              "kind": "unresolved",
+              "display": "(unresolved)",
+              "canonical": null,
+              "redacted": false,
+              "type_name": null
+            },
+            "source": "literal",
+            "required": true,
+            "description": null
+          }
+        ],
+        "result": {
+          "label": "downstream",
+          "value": {
+            "kind": "binding_ref",
+            "display": "downstream",
+            "canonical": {
+              "type": "binding_ref",
+              "binding": "downstream"
+            },
+            "redacted": false,
+            "type_name": "object"
+          },
+          "source": "derived",
+          "required": true,
+          "description": null
+        },
+        "outcomes": [
+          {
+            "outcome": "listed",
+            "label": "Listed",
+            "target_step_id": "for-each-task",
+            "target_title": "For each downstream task",
+            "reserved": false,
+            "terminal_outcome": null
+          },
+          {
+            "outcome": "runtime_error",
+            "label": "Runtime Error",
+            "target_step_id": "sweep-failed",
+            "target_title": "Sweep failed",
+            "reserved": true,
+            "terminal_outcome": "failed"
+          }
+        ],
+        "contract_fingerprint": null,
+        "renderer": "canonical"
+      },
+      "badges": [
+        {
+          "kind": "diagnostic",
+          "label": "Errors",
+          "value": "1"
+        }
+      ],
+      "ai": null,
+      "loop": null,
+      "wait": null,
+      "source": {
+        "path": "system/playbooks/default-pipeline.md",
+        "start_line": 50,
+        "end_line": 55,
+        "heading": null,
+        "excerpt": null
+      },
+      "advanced": {
+        "typed_step": {
+          "rule": "sweep-on-spec-approved",
+          "title": "List downstream tasks",
+          "description": null,
+          "source": {
+            "path": "system/playbooks/default-pipeline.md",
+            "start_line": 50,
+            "end_line": 55,
+            "heading": null,
+            "excerpt": null
+          },
+          "type": "command",
+          "command": "list_tasks",
+          "inputs": {
+            "project_id": {
+              "type": "unresolved"
+            },
+            "status": {
+              "type": "unresolved"
+            }
+          },
+          "idempotency_key": null,
+          "retry": null,
+          "save_result_as": "downstream",
+          "transitions": {
+            "listed": "for-each-task",
+            "runtime_error": "sweep-failed"
+          }
+        },
+        "resolved_inputs": [
+          {
+            "label": "Project Id",
+            "value": {
+              "kind": "unresolved",
+              "display": "(unresolved)",
+              "canonical": null,
+              "redacted": false,
+              "type_name": null
+            },
+            "source": "event",
+            "required": true,
+            "description": null
+          },
+          {
+            "label": "Status",
+            "value": {
+              "kind": "unresolved",
+              "display": "(unresolved)",
+              "canonical": null,
+              "redacted": false,
+              "type_name": null
+            },
+            "source": "literal",
+            "required": true,
+            "description": null
+          }
+        ],
+        "result_schema": null,
+        "retry": null,
+        "idempotency": {
+          "supported": false,
+          "key_template": null,
+          "retry_safe": false
+        },
+        "redaction": [
+          {
+            "field": "project_id",
+            "policy": "safe"
+          },
+          {
+            "field": "status",
+            "policy": "safe"
+          }
+        ],
+        "execution_fingerprint": null
+      },
+      "diagnostics": [
+        {
+          "severity": "error",
+          "code": "unknown_command",
+          "message": "Command 'list_tasks' is not registered",
+          "rule_id": "sweep-on-spec-approved",
+          "step_id": "list-downstream",
+          "source": {
+            "path": "system/playbooks/default-pipeline.md",
+            "start_line": 50,
+            "end_line": 55,
+            "heading": null,
+            "excerpt": null
+          }
+        }
+      ],
+      "out_degree": 2,
+      "position": {
+        "x": 0,
+        "y": 5
+      }
+    },
+    {
+      "id": "for-each-task",
+      "rule_id": "sweep-on-spec-approved",
+      "step_kind": "foreach",
+      "title": "For each downstream task",
+      "description": null,
+      "entry": false,
+      "terminal_outcome": null,
+      "explanation": {
+        "title": "For each downstream task",
+        "effect_summary": "Run Open a spec-ingest gate once per item in downstream.tasks",
+        "effects": [
+          {
+            "kind": "branches",
+            "subject": "task",
+            "detail": "Iterates downstream.tasks at most 500 times; collects every failing item and reports them at the end",
+            "arguments": [],
+            "conditional_on": null
+          },
+          {
+            "kind": "binds",
+            "subject": "task",
+            "detail": "Binds each item as task",
+            "arguments": [],
+            "conditional_on": null
+          }
+        ],
+        "inputs": [
+          {
+            "label": "Collection",
+            "value": {
+              "kind": "binding_ref",
+              "display": "downstream.tasks",
+              "canonical": {
+                "type": "binding_ref",
+                "binding": "downstream",
+                "path": "tasks"
+              },
+              "redacted": false,
+              "type_name": "array"
+            },
+            "source": "binding",
+            "required": true,
+            "description": null
+          }
+        ],
+        "result": null,
+        "outcomes": [
+          {
+            "outcome": "body",
+            "label": "Each item",
+            "target_step_id": "open-gate",
+            "target_title": "Open a spec-ingest gate",
+            "reserved": false,
+            "terminal_outcome": null
+          },
+          {
+            "outcome": "completed",
+            "label": "Completed",
+            "target_step_id": "sweep-done",
+            "target_title": "Sweep complete",
+            "reserved": false,
+            "terminal_outcome": "completed"
+          },
+          {
+            "outcome": "failed",
+            "label": "Failed",
+            "target_step_id": "sweep-failed",
+            "target_title": "Sweep failed",
+            "reserved": false,
+            "terminal_outcome": "failed"
+          },
+          {
+            "outcome": "runtime_error",
+            "label": "Runtime Error",
+            "target_step_id": "sweep-failed",
+            "target_title": "Sweep failed",
+            "reserved": true,
+            "terminal_outcome": "failed"
+          }
+        ],
+        "contract_fingerprint": null,
+        "renderer": "canonical"
+      },
+      "badges": [
+        {
+          "kind": "loop",
+          "label": "Failure policy",
+          "value": "collect"
+        }
+      ],
+      "ai": null,
+      "loop": {
+        "collection": {
+          "kind": "binding_ref",
+          "display": "downstream.tasks",
+          "canonical": {
+            "type": "binding_ref",
+            "binding": "downstream",
+            "path": "tasks"
+          },
+          "redacted": false,
+          "type_name": null
+        },
+        "item_binding": "task",
+        "failure_policy": "collect",
+        "body_entry_step_id": "open-gate",
+        "continuation_step_id": "sweep-done"
+      },
+      "wait": null,
+      "source": {
+        "path": "system/playbooks/default-pipeline.md",
+        "start_line": 57,
+        "end_line": 62,
+        "heading": null,
+        "excerpt": null
+      },
+      "advanced": {
+        "typed_step": {
+          "rule": "sweep-on-spec-approved",
+          "title": "For each downstream task",
+          "description": null,
+          "source": {
+            "path": "system/playbooks/default-pipeline.md",
+            "start_line": 57,
+            "end_line": 62,
+            "heading": null,
+            "excerpt": null
+          },
+          "type": "foreach",
+          "collection": {
+            "type": "binding_ref",
+            "binding": "downstream",
+            "path": "tasks"
+          },
+          "item_binding": "task",
+          "failure_policy": "collect",
+          "body_entry": "open-gate",
+          "continuation": "sweep-done",
+          "max_iterations": 500,
+          "save_result_as": null,
+          "transitions": {
+            "completed": "sweep-done",
+            "failed": "sweep-failed",
+            "runtime_error": "sweep-failed"
+          }
+        },
+        "resolved_inputs": [
+          {
+            "label": "Collection",
+            "value": {
+              "kind": "binding_ref",
+              "display": "downstream.tasks",
+              "canonical": {
+                "type": "binding_ref",
+                "binding": "downstream",
+                "path": "tasks"
+              },
+              "redacted": false,
+              "type_name": "array"
+            },
+            "source": "binding",
+            "required": true,
+            "description": null
+          }
+        ],
+        "result_schema": {
+          "type": "object",
+          "required": [
+            "total",
+            "succeeded",
+            "failed",
+            "items"
+          ],
+          "properties": {
+            "total": {
+              "type": "integer"
+            },
+            "succeeded": {
+              "type": "integer"
+            },
+            "failed": {
+              "type": "integer"
+            },
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "index",
+                  "outcome"
+                ],
+                "properties": {
+                  "index": {
+                    "type": "integer"
+                  },
+                  "outcome": {
+                    "type": "string"
+                  },
+                  "value": {},
+                  "error": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "retry": null,
+        "idempotency": null,
+        "redaction": [],
+        "execution_fingerprint": null
+      },
+      "diagnostics": [],
+      "out_degree": 4,
+      "position": {
+        "x": 0,
+        "y": 6
+      }
+    },
+    {
+      "id": "open-gate",
+      "rule_id": "sweep-on-spec-approved",
+      "step_kind": "command",
+      "title": "Open a spec-ingest gate",
+      "description": null,
+      "entry": false,
+      "terminal_outcome": null,
+      "explanation": {
+        "title": "Open a spec-ingest gate",
+        "effect_summary": "Invoke gate_create",
+        "effects": [],
+        "inputs": [
+          {
+            "label": "Project Id",
+            "value": {
+              "kind": "unresolved",
+              "display": "(unresolved)",
+              "canonical": null,
+              "redacted": false,
+              "type_name": null
+            },
+            "source": "event",
+            "required": true,
+            "description": null
+          },
+          {
+            "label": "Gate Type",
+            "value": {
+              "kind": "unresolved",
+              "display": "(unresolved)",
+              "canonical": null,
+              "redacted": false,
+              "type_name": null
+            },
+            "source": "literal",
+            "required": true,
+            "description": null
+          },
+          {
+            "label": "Title",
+            "value": {
+              "kind": "unresolved",
+              "display": "(unresolved)",
+              "canonical": null,
+              "redacted": false,
+              "type_name": null
+            },
+            "source": "template",
+            "required": true,
+            "description": null
+          }
+        ],
+        "result": {
+          "label": "gate",
+          "value": {
+            "kind": "binding_ref",
+            "display": "gate",
+            "canonical": {
+              "type": "binding_ref",
+              "binding": "gate"
+            },
+            "redacted": false,
+            "type_name": "object"
+          },
+          "source": "derived",
+          "required": true,
+          "description": null
+        },
+        "outcomes": [
+          {
+            "outcome": "created",
+            "label": "Created",
+            "target_step_id": "check-gate",
+            "target_title": "Was the gate already open?",
+            "reserved": false,
+            "terminal_outcome": null
+          },
+          {
+            "outcome": "reused",
+            "label": "Reused",
+            "target_step_id": "check-gate",
+            "target_title": "Was the gate already open?",
+            "reserved": false,
+            "terminal_outcome": null
+          },
+          {
+            "outcome": "skipped",
+            "label": "Skipped",
+            "target_step_id": "check-gate",
+            "target_title": "Was the gate already open?",
+            "reserved": false,
+            "terminal_outcome": null
+          },
+          {
+            "outcome": "rejected",
+            "label": "Rejected",
+            "target_step_id": "sweep-failed",
+            "target_title": "Sweep failed",
+            "reserved": false,
+            "terminal_outcome": "failed"
+          },
+          {
+            "outcome": "runtime_error",
+            "label": "Runtime Error",
+            "target_step_id": "sweep-failed",
+            "target_title": "Sweep failed",
+            "reserved": true,
+            "terminal_outcome": "failed"
+          }
+        ],
+        "contract_fingerprint": null,
+        "renderer": "canonical"
+      },
+      "badges": [
+        {
+          "kind": "diagnostic",
+          "label": "Errors",
+          "value": "1"
+        }
+      ],
+      "ai": null,
+      "loop": null,
+      "wait": null,
+      "source": {
+        "path": "system/playbooks/default-pipeline.md",
+        "start_line": 63,
+        "end_line": 66,
+        "heading": null,
+        "excerpt": null
+      },
+      "advanced": {
+        "typed_step": {
+          "rule": "sweep-on-spec-approved",
+          "title": "Open a spec-ingest gate",
+          "description": null,
+          "source": {
+            "path": "system/playbooks/default-pipeline.md",
+            "start_line": 63,
+            "end_line": 66,
+            "heading": null,
+            "excerpt": null
+          },
+          "type": "command",
+          "command": "gate_create",
+          "inputs": {
+            "project_id": {
+              "type": "unresolved"
+            },
+            "gate_type": {
+              "type": "unresolved"
+            },
+            "title": {
+              "type": "unresolved"
+            }
+          },
+          "idempotency_key": null,
+          "retry": null,
+          "save_result_as": "gate",
+          "transitions": {
+            "created": "check-gate",
+            "reused": "check-gate",
+            "skipped": "check-gate",
+            "rejected": "sweep-failed",
+            "runtime_error": "sweep-failed"
+          }
+        },
+        "resolved_inputs": [
+          {
+            "label": "Project Id",
+            "value": {
+              "kind": "unresolved",
+              "display": "(unresolved)",
+              "canonical": null,
+              "redacted": false,
+              "type_name": null
+            },
+            "source": "event",
+            "required": true,
+            "description": null
+          },
+          {
+            "label": "Gate Type",
+            "value": {
+              "kind": "unresolved",
+              "display": "(unresolved)",
+              "canonical": null,
+              "redacted": false,
+              "type_name": null
+            },
+            "source": "literal",
+            "required": true,
+            "description": null
+          },
+          {
+            "label": "Title",
+            "value": {
+              "kind": "unresolved",
+              "display": "(unresolved)",
+              "canonical": null,
+              "redacted": false,
+              "type_name": null
+            },
+            "source": "template",
+            "required": true,
+            "description": null
+          }
+        ],
+        "result_schema": null,
+        "retry": null,
+        "idempotency": {
+          "supported": false,
+          "key_template": null,
+          "retry_safe": false
+        },
+        "redaction": [
+          {
+            "field": "gate_type",
+            "policy": "safe"
+          },
+          {
+            "field": "project_id",
+            "policy": "safe"
+          },
+          {
+            "field": "title",
+            "policy": "safe"
+          }
+        ],
+        "execution_fingerprint": null
+      },
+      "diagnostics": [
+        {
+          "severity": "error",
+          "code": "unknown_command",
+          "message": "Command 'gate_create' is not registered",
+          "rule_id": "sweep-on-spec-approved",
+          "step_id": "open-gate",
+          "source": {
+            "path": "system/playbooks/default-pipeline.md",
+            "start_line": 63,
+            "end_line": 66,
+            "heading": null,
+            "excerpt": null
+          }
+        }
+      ],
+      "out_degree": 5,
+      "position": {
+        "x": 0,
+        "y": 7
+      }
+    },
+    {
+      "id": "check-gate",
+      "rule_id": "sweep-on-spec-approved",
+      "step_kind": "decision",
+      "title": "Was the gate already open?",
+      "description": null,
+      "entry": false,
+      "terminal_outcome": null,
+      "explanation": {
+        "title": "Was the gate already open?",
+        "effect_summary": "Take the first of 1 matching branch(es), otherwise For each downstream task",
+        "effects": [
+          {
+            "kind": "branches",
+            "subject": "for-each-task",
+            "detail": "Goes to For each downstream task",
+            "arguments": [],
+            "conditional_on": "gate.created == false"
+          },
+          {
+            "kind": "branches",
+            "subject": "for-each-task",
+            "detail": "Goes to For each downstream task when no case matches",
+            "arguments": [],
+            "conditional_on": null
+          }
+        ],
+        "inputs": [
+          {
+            "label": "already open",
+            "value": {
+              "kind": "expression",
+              "display": "gate.created == false",
+              "canonical": {
+                "type": "comparison",
+                "op": "eq",
+                "left": {
+                  "type": "binding_ref",
+                  "binding": "gate",
+                  "path": "created"
+                },
+                "right": {
+                  "type": "literal",
+                  "value": false
+                }
+              },
+              "redacted": false,
+              "type_name": "boolean"
+            },
+            "source": "binding",
+            "required": true,
+            "description": null
+          }
+        ],
+        "result": null,
+        "outcomes": [
+          {
+            "outcome": "case:0",
+            "label": "already open",
+            "target_step_id": "for-each-task",
+            "target_title": "For each downstream task",
+            "reserved": false,
+            "terminal_outcome": null
+          },
+          {
+            "outcome": "default",
+            "label": "Default",
+            "target_step_id": "for-each-task",
+            "target_title": "For each downstream task",
+            "reserved": false,
+            "terminal_outcome": null
+          }
+        ],
+        "contract_fingerprint": null,
+        "renderer": "canonical"
+      },
+      "badges": [],
+      "ai": null,
+      "loop": null,
+      "wait": null,
+      "source": {
+        "path": "system/playbooks/default-pipeline.md",
+        "start_line": 67,
+        "end_line": 69,
+        "heading": null,
+        "excerpt": null
+      },
+      "advanced": {
+        "typed_step": {
+          "rule": "sweep-on-spec-approved",
+          "title": "Was the gate already open?",
+          "description": null,
+          "source": {
+            "path": "system/playbooks/default-pipeline.md",
+            "start_line": 67,
+            "end_line": 69,
+            "heading": null,
+            "excerpt": null
+          },
+          "type": "decision",
+          "cases": [
+            {
+              "when": {
+                "type": "comparison",
+                "op": "eq",
+                "left": {
+                  "type": "binding_ref",
+                  "binding": "gate",
+                  "path": "created"
+                },
+                "right": {
+                  "type": "literal",
+                  "value": false
+                }
+              },
+              "goto": "for-each-task",
+              "label": "already open"
+            }
+          ],
+          "default": "for-each-task"
+        },
+        "resolved_inputs": [
+          {
+            "label": "already open",
+            "value": {
+              "kind": "expression",
+              "display": "gate.created == false",
+              "canonical": {
+                "type": "comparison",
+                "op": "eq",
+                "left": {
+                  "type": "binding_ref",
+                  "binding": "gate",
+                  "path": "created"
+                },
+                "right": {
+                  "type": "literal",
+                  "value": false
+                }
+              },
+              "redacted": false,
+              "type_name": "boolean"
+            },
+            "source": "binding",
+            "required": true,
+            "description": null
+          }
+        ],
+        "result_schema": null,
+        "retry": null,
+        "idempotency": null,
+        "redaction": [],
+        "execution_fingerprint": null
+      },
+      "diagnostics": [],
+      "out_degree": 2,
+      "position": {
+        "x": 0,
+        "y": 8
+      }
+    },
+    {
+      "id": "sweep-done",
+      "rule_id": "sweep-on-spec-approved",
+      "step_kind": "terminal",
+      "title": "Sweep complete",
+      "description": null,
+      "entry": false,
+      "terminal_outcome": "completed",
+      "explanation": {
+        "title": "Sweep complete",
+        "effect_summary": "End the rule as completed",
+        "effects": [
+          {
+            "kind": "noop",
+            "subject": "rule",
+            "detail": "End the rule as completed",
+            "arguments": [],
+            "conditional_on": null
+          }
+        ],
+        "inputs": [],
+        "result": null,
+        "outcomes": [
+          {
+            "outcome": "completed",
+            "label": "Completed",
+            "target_step_id": null,
+            "target_title": null,
+            "reserved": false,
+            "terminal_outcome": "completed"
+          }
+        ],
+        "contract_fingerprint": null,
+        "renderer": "canonical"
+      },
+      "badges": [],
+      "ai": null,
+      "loop": null,
+      "wait": null,
+      "source": {
+        "path": "system/playbooks/default-pipeline.md",
+        "start_line": 70,
+        "end_line": 70,
+        "heading": null,
+        "excerpt": null
+      },
+      "advanced": {
+        "typed_step": {
+          "rule": "sweep-on-spec-approved",
+          "title": "Sweep complete",
+          "description": null,
+          "source": {
+            "path": "system/playbooks/default-pipeline.md",
+            "start_line": 70,
+            "end_line": 70,
+            "heading": null,
+            "excerpt": null
+          },
+          "type": "terminal",
+          "outcome": "completed",
+          "result": null
+        },
+        "resolved_inputs": [],
+        "result_schema": null,
+        "retry": null,
+        "idempotency": null,
+        "redaction": [],
+        "execution_fingerprint": null
+      },
+      "diagnostics": [],
+      "out_degree": 0,
+      "position": {
+        "x": 1,
+        "y": 7
+      }
+    },
+    {
+      "id": "sweep-failed",
+      "rule_id": "sweep-on-spec-approved",
+      "step_kind": "terminal",
+      "title": "Sweep failed",
+      "description": null,
+      "entry": false,
+      "terminal_outcome": "failed",
+      "explanation": {
+        "title": "Sweep failed",
+        "effect_summary": "End the rule as failed",
+        "effects": [
+          {
+            "kind": "noop",
+            "subject": "rule",
+            "detail": "End the rule as failed",
+            "arguments": [],
+            "conditional_on": null
+          }
+        ],
+        "inputs": [],
+        "result": null,
+        "outcomes": [
+          {
+            "outcome": "failed",
+            "label": "Failed",
+            "target_step_id": null,
+            "target_title": null,
+            "reserved": false,
+            "terminal_outcome": "failed"
+          }
+        ],
+        "contract_fingerprint": null,
+        "renderer": "canonical"
+      },
+      "badges": [],
+      "ai": null,
+      "loop": null,
+      "wait": null,
+      "source": {
+        "path": "system/playbooks/default-pipeline.md",
+        "start_line": 71,
+        "end_line": 71,
+        "heading": null,
+        "excerpt": null
+      },
+      "advanced": {
+        "typed_step": {
+          "rule": "sweep-on-spec-approved",
+          "title": "Sweep failed",
+          "description": null,
+          "source": {
+            "path": "system/playbooks/default-pipeline.md",
+            "start_line": 71,
+            "end_line": 71,
+            "heading": null,
+            "excerpt": null
+          },
+          "type": "terminal",
+          "outcome": "failed",
+          "result": null
+        },
+        "resolved_inputs": [],
+        "result_schema": null,
+        "retry": null,
+        "idempotency": null,
+        "redaction": [],
+        "execution_fingerprint": null
+      },
+      "diagnostics": [],
+      "out_degree": 0,
+      "position": {
+        "x": 1,
+        "y": 6
+      }
+    }
   ],
   "edges": [
-    ["review-on-task-completed::ensure-review-task::created", "success"],
-    ["review-on-task-completed::ensure-review-task::reused", "success"],
-    ["review-on-task-completed::ensure-review-task::rejected", "failure"],
-    ["review-on-task-completed::ensure-review-task::runtime_error", "runtime_error"],
-    ["review-on-task-completed::classify-risk::low", "success"],
-    ["review-on-task-completed::classify-risk::high", "success"],
-    ["review-on-task-completed::classify-risk::invalid_output", "runtime_error"],
-    ["review-on-task-completed::classify-risk::budget_exceeded", "runtime_error"],
-    ["review-on-task-completed::classify-risk::provider_error", "runtime_error"],
-    ["review-on-task-completed::classify-risk::timed_out", "timeout"],
-    ["review-on-task-completed::classify-risk::cancelled", "cancelled"],
-    ["review-on-task-completed::classify-risk::runtime_error", "runtime_error"],
-    ["review-on-task-completed::escalate::completed", "success"],
-    ["review-on-task-completed::escalate::failed", "failure"],
-    ["review-on-task-completed::escalate::timed_out", "timeout"],
-    ["review-on-task-completed::escalate::cancelled", "cancelled"],
-    ["review-on-task-completed::escalate::runtime_error", "runtime_error"],
-    ["review-on-task-completed::await-approval::approve", "wait_matched"],
-    ["review-on-task-completed::await-approval::revise", "wait_matched"],
-    ["review-on-task-completed::await-approval::timed_out", "timeout"],
-    ["review-on-task-completed::await-approval::runtime_error", "runtime_error"],
-    ["sweep-on-spec-approved::list-downstream::listed", "success"],
-    ["sweep-on-spec-approved::list-downstream::runtime_error", "runtime_error"],
-    ["sweep-on-spec-approved::for-each-task::body", "loop_body"],
-    ["sweep-on-spec-approved::for-each-task::completed", "loop_exit"],
-    ["sweep-on-spec-approved::for-each-task::failed", "failure"],
-    ["sweep-on-spec-approved::for-each-task::runtime_error", "runtime_error"],
-    ["sweep-on-spec-approved::open-gate::created", "success"],
-    ["sweep-on-spec-approved::open-gate::reused", "success"],
-    ["sweep-on-spec-approved::open-gate::skipped", "success"],
-    ["sweep-on-spec-approved::open-gate::rejected", "failure"],
-    ["sweep-on-spec-approved::open-gate::runtime_error", "runtime_error"],
-    ["sweep-on-spec-approved::check-gate::case:0", "decision_case"],
-    ["sweep-on-spec-approved::check-gate::default", "decision_default"]
-  ]
+    {
+      "id": "review-on-task-completed::ensure-review-task::created",
+      "rule_id": "review-on-task-completed",
+      "source": "ensure-review-task",
+      "source_port": "created",
+      "target": "classify-risk",
+      "outcome": "created",
+      "label": "Created",
+      "kind": "success",
+      "reserved": false,
+      "condition": null
+    },
+    {
+      "id": "review-on-task-completed::ensure-review-task::reused",
+      "rule_id": "review-on-task-completed",
+      "source": "ensure-review-task",
+      "source_port": "reused",
+      "target": "classify-risk",
+      "outcome": "reused",
+      "label": "Reused",
+      "kind": "success",
+      "reserved": false,
+      "condition": null
+    },
+    {
+      "id": "review-on-task-completed::ensure-review-task::rejected",
+      "rule_id": "review-on-task-completed",
+      "source": "ensure-review-task",
+      "source_port": "rejected",
+      "target": "review-unavailable",
+      "outcome": "rejected",
+      "label": "Rejected",
+      "kind": "failure",
+      "reserved": false,
+      "condition": null
+    },
+    {
+      "id": "review-on-task-completed::ensure-review-task::runtime_error",
+      "rule_id": "review-on-task-completed",
+      "source": "ensure-review-task",
+      "source_port": "runtime_error",
+      "target": "review-unavailable",
+      "outcome": "runtime_error",
+      "label": "Runtime Error",
+      "kind": "runtime_error",
+      "reserved": true,
+      "condition": null
+    },
+    {
+      "id": "review-on-task-completed::classify-risk::low",
+      "rule_id": "review-on-task-completed",
+      "source": "classify-risk",
+      "source_port": "low",
+      "target": "await-approval",
+      "outcome": "low",
+      "label": "Low",
+      "kind": "success",
+      "reserved": false,
+      "condition": null
+    },
+    {
+      "id": "review-on-task-completed::classify-risk::high",
+      "rule_id": "review-on-task-completed",
+      "source": "classify-risk",
+      "source_port": "high",
+      "target": "escalate",
+      "outcome": "high",
+      "label": "High",
+      "kind": "success",
+      "reserved": false,
+      "condition": null
+    },
+    {
+      "id": "review-on-task-completed::classify-risk::invalid_output",
+      "rule_id": "review-on-task-completed",
+      "source": "classify-risk",
+      "source_port": "invalid_output",
+      "target": "review-unavailable",
+      "outcome": "invalid_output",
+      "label": "Invalid Output",
+      "kind": "runtime_error",
+      "reserved": true,
+      "condition": null
+    },
+    {
+      "id": "review-on-task-completed::classify-risk::budget_exceeded",
+      "rule_id": "review-on-task-completed",
+      "source": "classify-risk",
+      "source_port": "budget_exceeded",
+      "target": "review-unavailable",
+      "outcome": "budget_exceeded",
+      "label": "Budget Exceeded",
+      "kind": "runtime_error",
+      "reserved": true,
+      "condition": null
+    },
+    {
+      "id": "review-on-task-completed::classify-risk::provider_error",
+      "rule_id": "review-on-task-completed",
+      "source": "classify-risk",
+      "source_port": "provider_error",
+      "target": "review-unavailable",
+      "outcome": "provider_error",
+      "label": "Provider Error",
+      "kind": "runtime_error",
+      "reserved": true,
+      "condition": null
+    },
+    {
+      "id": "review-on-task-completed::classify-risk::timed_out",
+      "rule_id": "review-on-task-completed",
+      "source": "classify-risk",
+      "source_port": "timed_out",
+      "target": "review-unavailable",
+      "outcome": "timed_out",
+      "label": "Timed Out",
+      "kind": "timeout",
+      "reserved": true,
+      "condition": null
+    },
+    {
+      "id": "review-on-task-completed::classify-risk::cancelled",
+      "rule_id": "review-on-task-completed",
+      "source": "classify-risk",
+      "source_port": "cancelled",
+      "target": "cancelled-end",
+      "outcome": "cancelled",
+      "label": "Cancelled",
+      "kind": "cancelled",
+      "reserved": true,
+      "condition": null
+    },
+    {
+      "id": "review-on-task-completed::classify-risk::runtime_error",
+      "rule_id": "review-on-task-completed",
+      "source": "classify-risk",
+      "source_port": "runtime_error",
+      "target": "review-unavailable",
+      "outcome": "runtime_error",
+      "label": "Runtime Error",
+      "kind": "runtime_error",
+      "reserved": true,
+      "condition": null
+    },
+    {
+      "id": "review-on-task-completed::escalate::completed",
+      "rule_id": "review-on-task-completed",
+      "source": "escalate",
+      "source_port": "completed",
+      "target": "await-approval",
+      "outcome": "completed",
+      "label": "Completed",
+      "kind": "success",
+      "reserved": false,
+      "condition": null
+    },
+    {
+      "id": "review-on-task-completed::escalate::failed",
+      "rule_id": "review-on-task-completed",
+      "source": "escalate",
+      "source_port": "failed",
+      "target": "review-unavailable",
+      "outcome": "failed",
+      "label": "Failed",
+      "kind": "failure",
+      "reserved": false,
+      "condition": null
+    },
+    {
+      "id": "review-on-task-completed::escalate::timed_out",
+      "rule_id": "review-on-task-completed",
+      "source": "escalate",
+      "source_port": "timed_out",
+      "target": "review-unavailable",
+      "outcome": "timed_out",
+      "label": "Timed Out",
+      "kind": "timeout",
+      "reserved": true,
+      "condition": null
+    },
+    {
+      "id": "review-on-task-completed::escalate::cancelled",
+      "rule_id": "review-on-task-completed",
+      "source": "escalate",
+      "source_port": "cancelled",
+      "target": "cancelled-end",
+      "outcome": "cancelled",
+      "label": "Cancelled",
+      "kind": "cancelled",
+      "reserved": true,
+      "condition": null
+    },
+    {
+      "id": "review-on-task-completed::escalate::runtime_error",
+      "rule_id": "review-on-task-completed",
+      "source": "escalate",
+      "source_port": "runtime_error",
+      "target": "review-unavailable",
+      "outcome": "runtime_error",
+      "label": "Runtime Error",
+      "kind": "runtime_error",
+      "reserved": true,
+      "condition": null
+    },
+    {
+      "id": "review-on-task-completed::await-approval::approve",
+      "rule_id": "review-on-task-completed",
+      "source": "await-approval",
+      "source_port": "approve",
+      "target": "done",
+      "outcome": "approve",
+      "label": "Approve",
+      "kind": "wait_matched",
+      "reserved": false,
+      "condition": null
+    },
+    {
+      "id": "review-on-task-completed::await-approval::revise",
+      "rule_id": "review-on-task-completed",
+      "source": "await-approval",
+      "source_port": "revise",
+      "target": "ensure-review-task",
+      "outcome": "revise",
+      "label": "Revise",
+      "kind": "wait_matched",
+      "reserved": false,
+      "condition": null
+    },
+    {
+      "id": "review-on-task-completed::await-approval::timed_out",
+      "rule_id": "review-on-task-completed",
+      "source": "await-approval",
+      "source_port": "timed_out",
+      "target": "review-unavailable",
+      "outcome": "timed_out",
+      "label": "Timed Out",
+      "kind": "timeout",
+      "reserved": true,
+      "condition": null
+    },
+    {
+      "id": "review-on-task-completed::await-approval::runtime_error",
+      "rule_id": "review-on-task-completed",
+      "source": "await-approval",
+      "source_port": "runtime_error",
+      "target": "review-unavailable",
+      "outcome": "runtime_error",
+      "label": "Runtime Error",
+      "kind": "runtime_error",
+      "reserved": true,
+      "condition": null
+    },
+    {
+      "id": "sweep-on-spec-approved::list-downstream::listed",
+      "rule_id": "sweep-on-spec-approved",
+      "source": "list-downstream",
+      "source_port": "listed",
+      "target": "for-each-task",
+      "outcome": "listed",
+      "label": "Listed",
+      "kind": "success",
+      "reserved": false,
+      "condition": null
+    },
+    {
+      "id": "sweep-on-spec-approved::list-downstream::runtime_error",
+      "rule_id": "sweep-on-spec-approved",
+      "source": "list-downstream",
+      "source_port": "runtime_error",
+      "target": "sweep-failed",
+      "outcome": "runtime_error",
+      "label": "Runtime Error",
+      "kind": "runtime_error",
+      "reserved": true,
+      "condition": null
+    },
+    {
+      "id": "sweep-on-spec-approved::for-each-task::body",
+      "rule_id": "sweep-on-spec-approved",
+      "source": "for-each-task",
+      "source_port": "body",
+      "target": "open-gate",
+      "outcome": "body",
+      "label": "Each item",
+      "kind": "loop_body",
+      "reserved": false,
+      "condition": null
+    },
+    {
+      "id": "sweep-on-spec-approved::for-each-task::completed",
+      "rule_id": "sweep-on-spec-approved",
+      "source": "for-each-task",
+      "source_port": "completed",
+      "target": "sweep-done",
+      "outcome": "completed",
+      "label": "Completed",
+      "kind": "loop_exit",
+      "reserved": false,
+      "condition": null
+    },
+    {
+      "id": "sweep-on-spec-approved::for-each-task::failed",
+      "rule_id": "sweep-on-spec-approved",
+      "source": "for-each-task",
+      "source_port": "failed",
+      "target": "sweep-failed",
+      "outcome": "failed",
+      "label": "Failed",
+      "kind": "failure",
+      "reserved": false,
+      "condition": null
+    },
+    {
+      "id": "sweep-on-spec-approved::for-each-task::runtime_error",
+      "rule_id": "sweep-on-spec-approved",
+      "source": "for-each-task",
+      "source_port": "runtime_error",
+      "target": "sweep-failed",
+      "outcome": "runtime_error",
+      "label": "Runtime Error",
+      "kind": "runtime_error",
+      "reserved": true,
+      "condition": null
+    },
+    {
+      "id": "sweep-on-spec-approved::open-gate::created",
+      "rule_id": "sweep-on-spec-approved",
+      "source": "open-gate",
+      "source_port": "created",
+      "target": "check-gate",
+      "outcome": "created",
+      "label": "Created",
+      "kind": "success",
+      "reserved": false,
+      "condition": null
+    },
+    {
+      "id": "sweep-on-spec-approved::open-gate::reused",
+      "rule_id": "sweep-on-spec-approved",
+      "source": "open-gate",
+      "source_port": "reused",
+      "target": "check-gate",
+      "outcome": "reused",
+      "label": "Reused",
+      "kind": "success",
+      "reserved": false,
+      "condition": null
+    },
+    {
+      "id": "sweep-on-spec-approved::open-gate::skipped",
+      "rule_id": "sweep-on-spec-approved",
+      "source": "open-gate",
+      "source_port": "skipped",
+      "target": "check-gate",
+      "outcome": "skipped",
+      "label": "Skipped",
+      "kind": "success",
+      "reserved": false,
+      "condition": null
+    },
+    {
+      "id": "sweep-on-spec-approved::open-gate::rejected",
+      "rule_id": "sweep-on-spec-approved",
+      "source": "open-gate",
+      "source_port": "rejected",
+      "target": "sweep-failed",
+      "outcome": "rejected",
+      "label": "Rejected",
+      "kind": "failure",
+      "reserved": false,
+      "condition": null
+    },
+    {
+      "id": "sweep-on-spec-approved::open-gate::runtime_error",
+      "rule_id": "sweep-on-spec-approved",
+      "source": "open-gate",
+      "source_port": "runtime_error",
+      "target": "sweep-failed",
+      "outcome": "runtime_error",
+      "label": "Runtime Error",
+      "kind": "runtime_error",
+      "reserved": true,
+      "condition": null
+    },
+    {
+      "id": "sweep-on-spec-approved::check-gate::case:0",
+      "rule_id": "sweep-on-spec-approved",
+      "source": "check-gate",
+      "source_port": "case:0",
+      "target": "for-each-task",
+      "outcome": "case:0",
+      "label": "already open",
+      "kind": "decision_case",
+      "reserved": false,
+      "condition": "gate.created == false"
+    },
+    {
+      "id": "sweep-on-spec-approved::check-gate::default",
+      "rule_id": "sweep-on-spec-approved",
+      "source": "check-gate",
+      "source_port": "default",
+      "target": "for-each-task",
+      "outcome": "default",
+      "label": "Default",
+      "kind": "decision_default",
+      "reserved": false,
+      "condition": null
+    }
+  ],
+  "layout": {
+    "direction": "TD",
+    "grid_positions": {
+      "ensure-review-task": {
+        "x": 0,
+        "y": 0
+      },
+      "classify-risk": {
+        "x": 0,
+        "y": 1
+      },
+      "review-unavailable": {
+        "x": 1,
+        "y": 1
+      },
+      "escalate": {
+        "x": 0,
+        "y": 2
+      },
+      "await-approval": {
+        "x": 1,
+        "y": 2
+      },
+      "cancelled-end": {
+        "x": 2,
+        "y": 2
+      },
+      "done": {
+        "x": 0,
+        "y": 3
+      },
+      "list-downstream": {
+        "x": 0,
+        "y": 5
+      },
+      "for-each-task": {
+        "x": 0,
+        "y": 6
+      },
+      "sweep-failed": {
+        "x": 1,
+        "y": 6
+      },
+      "open-gate": {
+        "x": 0,
+        "y": 7
+      },
+      "sweep-done": {
+        "x": 1,
+        "y": 7
+      },
+      "check-gate": {
+        "x": 0,
+        "y": 8
+      }
+    },
+    "cluster_bounds": {
+      "review-on-task-completed": {
+        "x": 0,
+        "y": 0,
+        "width": 3,
+        "height": 4
+      },
+      "sweep-on-spec-approved": {
+        "x": 0,
+        "y": 5,
+        "width": 2,
+        "height": 4
+      }
+    }
+  },
+  "diagnostics": [
+    {
+      "severity": "error",
+      "code": "unknown_command",
+      "message": "Command 'ensure_task' is not registered",
+      "rule_id": "review-on-task-completed",
+      "step_id": "ensure-review-task",
+      "source": {
+        "path": "system/playbooks/default-pipeline.md",
+        "start_line": 20,
+        "end_line": 27,
+        "heading": null,
+        "excerpt": null
+      }
+    },
+    {
+      "severity": "error",
+      "code": "unknown_command",
+      "message": "Command 'list_tasks' is not registered",
+      "rule_id": "sweep-on-spec-approved",
+      "step_id": "list-downstream",
+      "source": {
+        "path": "system/playbooks/default-pipeline.md",
+        "start_line": 50,
+        "end_line": 55,
+        "heading": null,
+        "excerpt": null
+      }
+    },
+    {
+      "severity": "error",
+      "code": "unknown_command",
+      "message": "Command 'gate_create' is not registered",
+      "rule_id": "sweep-on-spec-approved",
+      "step_id": "open-gate",
+      "source": {
+        "path": "system/playbooks/default-pipeline.md",
+        "start_line": 63,
+        "end_line": 66,
+        "heading": null,
+        "excerpt": null
+      }
+    }
+  ],
+  "legend": {
+    "step_kinds": {
+      "command": "Command",
+      "llm": "AI",
+      "agent_task": "Delegated task",
+      "decision": "Decision",
+      "wait": "Wait",
+      "foreach": "For each",
+      "terminal": "Terminal"
+    },
+    "edge_kinds": {
+      "success": "Success",
+      "failure": "Failure",
+      "decision_case": "Case",
+      "decision_default": "Default",
+      "loop_body": "Loop body",
+      "loop_exit": "Loop exit",
+      "loop_back": "Next iteration",
+      "timeout": "Timed out",
+      "wait_matched": "Matched",
+      "runtime_error": "Runtime error",
+      "cancelled": "Cancelled",
+      "terminal": "Terminal"
+    }
+  }
 }

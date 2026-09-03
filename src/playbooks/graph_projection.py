@@ -22,6 +22,7 @@ from src.playbooks.definition import (
     result_schema_for,
 )
 from src.playbooks.explanation import render_node_explanation
+from src.playbooks.expressions import condition_values
 
 
 class GraphProjectionError(ValueError):
@@ -128,6 +129,28 @@ def project_value(value: Any, *, redacted: bool = False, type_name: str | None =
         parts = getattr(value, "parts", raw.get("parts", ()))
         display = "".join(project_value(part)["display"] for part in parts)
         dto_kind = "template"
+    elif kind == "context_ref":
+        path = getattr(value, "path", raw.get("path"))
+        display = f"this run's {str(path).replace('.', ' ')}"
+        dto_kind = "expression"
+    elif kind == "coalesce":
+        options = getattr(value, "options", raw.get("options", ()))
+        display = " or else ".join(project_value(option)["display"] for option in options)
+        dto_kind = "expression"
+    elif kind == "list":
+        items = raw.get("items", ()) if isinstance(raw, Mapping) else value.items
+        display = "[" + ", ".join(project_value(item)["display"] for item in items) + "]"
+        dto_kind = "expression"
+    elif kind == "object":
+        fields = getattr(value, "fields", raw.get("fields", {})) or {}
+        display = (
+            "{"
+            + ", ".join(
+                f"{name}: {project_value(field)['display']}" for name, field in fields.items()
+            )
+            + "}"
+        )
+        dto_kind = "expression"
     else:
         display = _json(raw)
         dto_kind = "expression" if kind else "unresolved"
@@ -313,8 +336,65 @@ def _outcome_explanations(
     return rows
 
 
+#: §4.3's comparison vocabulary, rendered the way an operator reads it.
+COMPARISON_TEXT = {
+    "eq": "==",
+    "ne": "!=",
+    "lt": "<",
+    "lte": "<=",
+    "gt": ">",
+    "gte": ">=",
+    "in": "in",
+    "not_in": "not in",
+    "contains": "contains",
+}
+
+
 def _condition_text(condition: Any) -> str:
-    return _json(_plain(condition))
+    """Render a §4.3 condition as readable text rather than canonical JSON.
+
+    The decision edge label and the decision card's input rows both show this;
+    the canonical form stays available in ``advanced.typed_step``.
+    """
+    raw = _plain(condition)
+    kind = getattr(condition, "type", None) or (
+        raw.get("type") if isinstance(raw, Mapping) else None
+    )
+
+    def _field(name: str, default: Any = None) -> Any:
+        found = getattr(condition, name, None)
+        if found is not None:
+            return found
+        return raw.get(name, default) if isinstance(raw, Mapping) else default
+
+    if kind == "comparison":
+        op = str(_field("op", ""))
+        left = project_value(_field("left"))["display"]
+        right = project_value(_field("right"))["display"]
+        return f"{left} {COMPARISON_TEXT.get(op, op)} {right}"
+    if kind == "bool":
+        op = str(_field("op", ""))
+        operands = list(_field("operands", ()) or ())
+        if op == "not":
+            return f"not ({_condition_text(operands[0])})" if operands else "not ()"
+        return f" {op} ".join(f"({_condition_text(item)})" for item in operands)
+    if kind == "exists":
+        display = project_value(_field("value"))["display"]
+        return f"{display} is truthy" if _field("mode") == "truthy" else f"{display} is present"
+    return _json(raw)
+
+
+def _condition_source(condition: Any) -> str:
+    """The strongest data source a condition reads, for its input row.
+
+    ``condition_values`` yields nothing for anything but a typed condition, so
+    an unrecognised shape degrades to ``"derived"`` rather than raising.
+    """
+    sources = {_value_source(value) for value in condition_values(condition)}
+    for name in ("loop", "binding", "event", "template", "derived", "literal"):
+        if name in sources:
+            return name
+    return "derived"
 
 
 def _edge_kind(step: Any, outcome: str, target: Any) -> str:
@@ -407,29 +487,267 @@ def project_edges(definition: PlaybookDefinition) -> list[dict[str, Any]]:
     return edges
 
 
+def _row(
+    label: str,
+    value: Any,
+    *,
+    source: str | None = None,
+    required: bool = True,
+    description: str | None = None,
+    type_name: str | None = None,
+) -> dict:
+    """One labelled input/output row projected from a typed expression."""
+    return {
+        "label": label,
+        "value": project_value(value, type_name=type_name),
+        "source": _value_source(value) if source is None else source,
+        "required": required,
+        "description": description,
+    }
+
+
+def _effect(
+    kind: str,
+    subject: str,
+    detail: str,
+    *,
+    arguments: list[dict] | None = None,
+    conditional_on: str | None = None,
+) -> dict:
+    return {
+        "kind": kind,
+        "subject": subject,
+        "detail": detail,
+        "arguments": arguments or [],
+        "conditional_on": conditional_on,
+    }
+
+
+def _input_label(name: str) -> str:
+    return name.replace("_", " ").capitalize()
+
+
+def _named_input_rows(step: Any) -> list[dict]:
+    """The step's declared ``inputs`` mapping, in declaration order."""
+    return [_row(_input_label(name), value) for name, value in getattr(step, "inputs", {}).items()]
+
+
+#: What a family's ``save_result_as`` binding actually holds, for the row's
+#: description.  Every family that can bind one has an entry.
+_RESULT_DESCRIPTIONS = {
+    "llm": "The model's structured output, bound for later steps to read.",
+    "agent_task": "The delegated task's result, bound for later steps to read.",
+    "wait": "What the wait resolved to, bound for later steps to read.",
+    "foreach": "The loop's collected per-item results, bound for later steps to read.",
+}
+
+
+def _result_row(step: Any) -> dict | None:
+    """The binding this step writes, or ``None`` when it writes nothing."""
+    binding = getattr(step, "save_result_as", None)
+    if not binding:
+        return None
+    schema = result_schema_for(step)
+    type_name = schema.get("type") if isinstance(schema, Mapping) else None
+    return {
+        "label": str(binding),
+        "value": project_value(
+            {"type": "binding_ref", "binding": str(binding)},
+            type_name=type_name or "object",
+        ),
+        "source": "derived",
+        "required": True,
+        "description": _RESULT_DESCRIPTIONS.get(step.type),
+    }
+
+
+def _binds_effect(step: Any) -> list[dict]:
+    binding = getattr(step, "save_result_as", None)
+    if not binding:
+        return []
+    return [_effect("binds", str(binding), f"Binds this step's result as {binding}")]
+
+
+def _llm_explanation(step: LlmStep) -> tuple[str, list[dict], list[dict]]:
+    summary = f"Ask the {step.profile_id} profile for a structured answer"
+    if step.outcome_field:
+        summary += f" and branch on its {step.outcome_field}"
+    effects = [
+        _effect(
+            "invokes_ai",
+            step.profile_id,
+            f"Invokes the {step.profile_id} profile with a structured-output prompt, "
+            f"capped at {step.budget.max_calls} call(s) and "
+            f"{step.budget.max_total_tokens} total tokens",
+        )
+    ]
+    if step.tool_use.enabled:
+        effects.append(
+            _effect(
+                "invokes_ai",
+                step.profile_id,
+                "The model may call tools: "
+                + (
+                    ", ".join(sorted(step.tool_use.aq_commands + step.tool_use.plugin_tools))
+                    or "none granted"
+                ),
+            )
+        )
+    effects.extend(_binds_effect(step))
+    inputs = [_row("Prompt", step.prompt, type_name="string"), *_named_input_rows(step)]
+    return summary, effects, inputs
+
+
+def _agent_task_explanation(step: AgentTaskStep) -> tuple[str, list[dict], list[dict]]:
+    waiting = "and wait for it" if step.wait_for_completion else "without waiting for it"
+    summary = f"Delegate a task to the {step.profile_id} profile {waiting}"
+    detail = f"Delegates a child agent task to the {step.profile_id} profile"
+    if step.cancel_child:
+        detail += "; the child is cancelled when this step is"
+    effects = [_effect("delegates", step.profile_id, detail)]
+    narrowing = step.capability_narrowing
+    if narrowing is not None:
+        narrowed = sorted(
+            f"{namespace} ({len(granted)})"
+            for namespace, granted in _plain(narrowing).items()
+            if granted is not None
+        )
+        if narrowed:
+            effects.append(
+                _effect(
+                    "delegates",
+                    step.profile_id,
+                    "Narrows the child's capabilities in " + ", ".join(narrowed),
+                )
+            )
+    effects.extend(_binds_effect(step))
+    inputs = [_row("Objective", step.objective, type_name="string"), *_named_input_rows(step)]
+    return summary, effects, inputs
+
+
+def _decision_explanation(step: DecisionStep, definition: PlaybookDefinition) -> tuple:
+    default_title = getattr(definition.steps.get(step.default), "title", step.default)
+    summary = (
+        f"Take the first of {len(step.cases)} matching branch(es), "
+        f"otherwise {default_title}"
+    )
+    effects = []
+    inputs = []
+    for index, case in enumerate(step.cases):
+        label = case.label or f"Case {index + 1}"
+        text = _condition_text(case.when)
+        target = getattr(definition.steps.get(case.goto), "title", case.goto)
+        effects.append(
+            _effect("branches", case.goto, f"Goes to {target}", conditional_on=text)
+        )
+        inputs.append(
+            {
+                "label": label,
+                "value": {
+                    "kind": "expression",
+                    "display": text,
+                    "canonical": _plain(case.when),
+                    "redacted": False,
+                    "type_name": "boolean",
+                },
+                "source": _condition_source(case.when),
+                "required": True,
+                "description": None,
+            }
+        )
+    effects.append(
+        _effect("branches", step.default, f"Goes to {default_title} when no case matches")
+    )
+    return summary, effects, inputs
+
+
+_WAIT_SUMMARIES = {
+    "event": "Pause until a matching event arrives",
+    "human": "Pause until a human resolves the gate",
+    "task": "Pause until the awaited task finishes",
+    "timer": "Pause for a fixed duration",
+}
+
+
+def _wait_explanation(step: WaitStep) -> tuple[str, list[dict], list[dict]]:
+    summary = _WAIT_SUMMARIES[step.wait_kind]
+    awaited = project_value(step.awaited)["display"] if step.awaited is not None else None
+    detail = summary if awaited is None else f"{summary}: {awaited}"
+    if step.wait_kind == "human" and step.outcomes:
+        detail += f" (resolutions: {', '.join(step.outcomes)})"
+    if step.timeout_seconds is not None:
+        detail += f"; times out after {step.timeout_seconds}s"
+    effects = [_effect("waits", step.wait_kind, detail)]
+    effects.extend(_binds_effect(step))
+    inputs = []
+    if step.awaited is not None:
+        inputs.append(_row("Awaited", step.awaited, type_name="string"))
+    if step.correlation_key is not None:
+        inputs.append(_row("Correlation key", step.correlation_key, type_name="string"))
+    return summary, effects, inputs
+
+
+def _foreach_explanation(step: ForEachStep, definition: PlaybookDefinition) -> tuple:
+    collection = project_value(step.collection)["display"]
+    body_title = getattr(definition.steps.get(step.body_entry), "title", step.body_entry)
+    summary = f"Run {body_title} once per item in {collection}"
+    policies = {
+        "halt": "stops the loop at the first failing item",
+        "continue": "skips a failing item and keeps going",
+        "collect": "collects every failing item and reports them at the end",
+    }
+    effects = [
+        _effect(
+            "branches",
+            step.item_binding,
+            f"Iterates {collection} at most {step.max_iterations} times; "
+            f"{policies[step.failure_policy]}",
+        ),
+        _effect("binds", step.item_binding, f"Binds each item as {step.item_binding}"),
+    ]
+    effects.extend(_binds_effect(step))
+    inputs = [_row("Collection", step.collection, type_name="array")]
+    return summary, effects, inputs
+
+
+def _terminal_explanation(step: TerminalStep) -> tuple[str, list[dict], list[dict]]:
+    summary = f"End the rule as {step.outcome}"
+    detail = summary
+    if step.result is not None:
+        detail += f", returning {project_value(step.result)['display']}"
+    return summary, [_effect("noop", "rule", detail)], []
+
+
 def _canonical_explanation(step_id: str, step: Any, definition: PlaybookDefinition) -> dict:
-    effect = {
-        "llm": ("invokes_ai", "Invoke AI"),
-        "agent_task": ("delegates", "Delegate a task"),
-        "decision": ("branches", "Choose a branch"),
-        "wait": ("waits", "Wait for a condition"),
-        "foreach": ("branches", "Iterate a collection"),
-        "terminal": ("noop", "End the rule"),
-    }[step.type]
+    """The typed explanation of a non-command step.
+
+    ``renderer="canonical"`` because no command contract supplies presentation
+    metadata here — but the card is not therefore empty: every family projects
+    the values it reads, the binding it writes, and what it does with them.
+    """
+    if isinstance(step, LlmStep):
+        summary, effects, inputs = _llm_explanation(step)
+    elif isinstance(step, AgentTaskStep):
+        summary, effects, inputs = _agent_task_explanation(step)
+    elif isinstance(step, DecisionStep):
+        summary, effects, inputs = _decision_explanation(step, definition)
+    elif isinstance(step, WaitStep):
+        summary, effects, inputs = _wait_explanation(step)
+    elif isinstance(step, ForEachStep):
+        summary, effects, inputs = _foreach_explanation(step, definition)
+    elif isinstance(step, TerminalStep):
+        summary, effects, inputs = _terminal_explanation(step)
+    else:  # pragma: no cover - the seven families are closed by the model
+        raise GraphProjectionError(f"no explanation for step kind {step.type!r}")
+    result = _result_row(step)
+    if isinstance(step, TerminalStep) and step.result is not None:
+        result = _row("Result", step.result, description="The rule's returned result.")
     return {
         "title": step.title,
-        "effect_summary": effect[1],
-        "effects": [
-            {
-                "kind": effect[0],
-                "subject": step.type,
-                "detail": effect[1],
-                "arguments": [],
-                "conditional_on": None,
-            }
-        ],
-        "inputs": [],
-        "result": None,
+        "effect_summary": summary,
+        "effects": effects,
+        "inputs": inputs,
+        "result": result,
         "outcomes": _outcome_explanations(step_id, step, definition),
         "contract_fingerprint": None,
         "renderer": "canonical",
@@ -576,6 +894,37 @@ def _node(
     badges = []
     if isinstance(step, (LlmStep, AgentTaskStep)):
         badges.append({"kind": "profile", "label": "Profile", "value": step.profile_id})
+    if isinstance(step, LlmStep):
+        badges.append(
+            {
+                "kind": "budget",
+                "label": "Budget",
+                "value": f"{step.budget.max_calls} call(s), "
+                f"{step.budget.max_total_tokens} tokens",
+            }
+        )
+        if step.tool_use.enabled:
+            badges.append(
+                {
+                    "kind": "capability",
+                    "label": "Tools",
+                    "value": str(len(step.tool_use.aq_commands) + len(step.tool_use.plugin_tools)),
+                }
+            )
+    if isinstance(step, AgentTaskStep):
+        badges.append(
+            {
+                "kind": "wait",
+                "label": "Waits",
+                "value": "for completion" if step.wait_for_completion else "no",
+            }
+        )
+    if isinstance(step, WaitStep):
+        badges.append({"kind": "wait", "label": "Waits for", "value": step.wait_kind})
+    if isinstance(step, ForEachStep):
+        badges.append(
+            {"kind": "loop", "label": "Failure policy", "value": step.failure_policy}
+        )
     if getattr(step, "timeout_seconds", None):
         badges.append(
             {"kind": "timeout", "label": "Timeout", "value": f"{step.timeout_seconds}s"}

@@ -1,7 +1,7 @@
 """Shared scaffolding for the Playbook V2 model, expression and validation suites.
 
 Child plan ``docs/superpowers/plans/2026-09-01-playbook-v2-typed-model-compiler.md``
-§9.  Two things live here:
+§9.  Three things live here:
 
 * the stub ``ContractLookup`` / ``ProfileLookup`` / ``EventSchemaLookup`` /
   ``IdentifierInventory`` implementations §3.3 calls for — they are the same
@@ -9,7 +9,13 @@ Child plan ``docs/superpowers/plans/2026-09-01-playbook-v2-typed-model-compiler.
   table so a suite can build a capability lattice without touching the vault;
 * the valid twin and the one-defect mutations behind
   ``tests/fixtures/playbooks/v2/invalid/<code>.json`` (§9.3), kept next to the
-  suite that reads them so a fixture and its intent cannot drift apart.
+  suite that reads them so a fixture and its intent cannot drift apart;
+* the one definition of the projected §10.1 graph (:func:`project_golden_graph`)
+  that both the backend suites and the dashboard's ``graph.fixture.json``
+  assert against, so the two cannot drift apart either.
+
+Run ``python -m tests.playbook_v2_helpers`` to regenerate every fixture this
+module owns.
 """
 
 from __future__ import annotations
@@ -30,6 +36,14 @@ FIXTURE_DIR = Path(__file__).parent / "fixtures" / "playbooks" / "v2"
 INVALID_DIR = FIXTURE_DIR / "invalid"
 GOLDEN = FIXTURE_DIR / "review-pipeline.artifact.json"
 GOLDEN_V6 = FIXTURE_DIR / "review-pipeline.v6.artifact.json"
+
+#: The dashboard's copy of the §10.1 graph, exported from ``project_graph``
+#: rather than hand-authored (child plan §12.6 T-44, and §16.10 deviation 1,
+#: which asked for exactly this replacement once ``project_graph`` landed).
+GRAPH_FIXTURE = (
+    Path(__file__).parent.parent
+    / "dashboard/src/pages/playbook-graph-v2/__tests__/graph.fixture.json"
+)
 
 STRING = ValueType("string")
 INTEGER = ValueType("integer")
@@ -774,5 +788,42 @@ def write_invalid_fixtures() -> None:
             path.unlink()
 
 
+def project_golden_graph() -> dict[str, Any]:
+    """The §10.1 ``review-pipeline`` artifact as ``project_graph`` renders it.
+
+    One definition of the graph the dashboard fixture and the backend suites
+    both assert against, so the two cannot drift apart silently.
+    """
+    from src.playbooks.artifact_ref import ArtifactRef
+    from src.playbooks.definition import load_definition_json
+    from src.playbooks.graph_projection import project_graph
+
+    definition = load_definition_json(GOLDEN.read_text())
+    ref = ArtifactRef(
+        playbook_id=definition.id,
+        artifact_sha256=definition.artifact_sha256(),
+        schema_generation=definition.schema_version,
+        contract_fingerprint=definition.contract_fingerprint(),
+        source_digest=definition.source_hash,
+        compiler_build=definition.compiler_build or "fixture",
+        compiled_at=definition.compiled_at.isoformat(),
+        version=definition.version,
+    )
+    return project_graph(
+        definition, ref, None, contracts=StubContracts(), profiles=StubProfiles()
+    )
+
+
+def expected_graph_fixture() -> str:
+    """The exact bytes that belong in :data:`GRAPH_FIXTURE`."""
+    return json.dumps(project_golden_graph(), indent=2, ensure_ascii=False) + "\n"
+
+
+def write_graph_fixture() -> None:
+    """Regenerate the dashboard's semantic-graph fixture from the projection."""
+    GRAPH_FIXTURE.write_text(expected_graph_fixture())
+
+
 if __name__ == "__main__":  # pragma: no cover - regeneration entry point
     write_invalid_fixtures()
+    write_graph_fixture()
