@@ -48,6 +48,7 @@ import {
   reopenWithFeedback,
   restartTask,
   playbookGraphView,
+  playbookV2Graph,
   resumePlaybook,
   runPlaybook,
   inspectPlaybookRun,
@@ -84,7 +85,6 @@ import {
   playbookPendingEventAction,
   playbookPendingEvents,
   playbookRunOverlay,
-  playbookV2Graph,
 } from "./client";
 import type {
   AgentSummary,
@@ -114,6 +114,7 @@ import type {
   ListPlaybookRunsResponse,
   ListPlaybooksResponse,
   PlaybookGraphViewResponse,
+  PlaybookV2GraphResponse,
   ListProfilesResponse2 as ListProfilesResponse,
   ListProjectsResponse2 as ListProjectsResponse,
   ListTasksResponse2 as ListTasksResponse,
@@ -156,7 +157,6 @@ import type {
   PoolStatusRow,
   PoolScaleRequest,
   PoolScaleResponse,
-  PlaybookV2GraphResponse,
   PlaybookActivationHealthResponse,
   PlaybookArtifactDiffResponse,
   PlaybookRunOverlayResponse,
@@ -847,11 +847,43 @@ export function usePlaybookGraph(playbookId?: string) {
   });
 }
 
+/** Query key for one playbook artifact's semantic graph.
+ *
+ *  The artifact hash is part of the key because an artifact is immutable: two
+ *  hashes are two different graphs, and the active one changing is a different
+ *  key rather than a stale entry. */
 export const playbookV2GraphKey = (playbookId: string, artifactSha?: string, eventType?: string) =>
   ["playbook-v2-graph", playbookId, artifactSha ?? "active", eventType ?? "all"] as const;
 
-export function usePlaybookV2Graph(playbookId?: string, opts: { artifactSha?: string; eventType?: string } = {}) {
-  return useQuery({ queryKey: playbookV2GraphKey(playbookId ?? "", opts.artifactSha, opts.eventType), queryFn: async () => (await playbookV2Graph({ body: { playbook_id: playbookId!, artifact_sha256: opts.artifactSha, event_type: opts.eventType, direction: "TD" }, throwOnError: true })).data as PlaybookV2GraphResponse, enabled: !!playbookId });
+export interface PlaybookV2GraphOptions {
+  /** Project this exact artifact instead of whichever is active. */
+  artifactSha?: string;
+  /** Narrow to the rules one event triggers. `event_groups` still lists them all. */
+  eventType?: string;
+}
+
+/** The semantic graph of one playbook artifact, for the Semantic graph tab.
+ *
+ *  Deliberately not polled: an artifact is immutable, so the only thing that
+ *  can change is which one is active, and that changes through a mutation this
+ *  session made or the 30s activation-health refetch. */
+export function usePlaybookV2Graph(playbookId?: string, opts: PlaybookV2GraphOptions = {}) {
+  const { artifactSha, eventType } = opts;
+  return useQuery({
+    queryKey: playbookV2GraphKey(playbookId ?? "", artifactSha, eventType),
+    queryFn: async () =>
+      (await playbookV2Graph({
+        body: {
+          playbook_id: playbookId!,
+          ...(artifactSha ? { artifact_sha256: artifactSha } : {}),
+          ...(eventType ? { event_type: eventType } : {}),
+          direction: "TD",
+          include_advanced: true,
+        },
+        throwOnError: true,
+      })).data as PlaybookV2GraphResponse,
+    enabled: !!playbookId,
+  });
 }
 export function usePlaybookActivationHealth(playbookId?: string) { return useQuery({ queryKey: ["playbook-activation-health", playbookId ?? "all"], queryFn: async () => (await playbookActivationHealth({ body: { playbook_id: playbookId }, throwOnError: true })).data as PlaybookActivationHealthResponse, enabled: !!playbookId, refetchInterval: 30_000 }); }
 export function usePlaybookArtifactDiff(playbookId?: string, targetSha?: string, baseSha?: string) { return useQuery({ queryKey: ["playbook-artifact-diff", playbookId, targetSha, baseSha], queryFn: async () => (await playbookArtifactDiff({ body: { playbook_id: playbookId!, target_sha256: targetSha!, base_sha256: baseSha }, throwOnError: true })).data as PlaybookArtifactDiffResponse, enabled: !!playbookId && !!targetSha }); }

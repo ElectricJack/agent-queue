@@ -1948,3 +1948,46 @@ migration here.
 Human action, unchanged: add `blocks` edges `solid-harbor.46.1 ->
 solid-harbor.26 / .30 / .39` (or pause this task), and merge PR #198 so a
 hard close stops being re-promoted within the minute.
+
+### 16.10 Dashboard slice on 2026-09-02 at `75d015ff` (task solid-harbor.47)
+
+The card/canvas/inspector half of Package 5 — §12.2 (C2) and §12.3 (C3) —
+shipped on `feature/playbook-v2-pkg5-ui-cards`. §4 was already checked in by
+solid-harbor.46, so this slice consumed it as frozen and touched no backend
+file. Three deviations, each forced by what is and is not on `origin/main`:
+
+1. **The `__tests__/fixtures.ts` graph is hand-authored, not exported from
+   `project_graph`.** T-44 wants the dashboard fixture to be the backend
+   projection's output, but `src/playbooks/graph_projection.py` binds to
+   Package 2's `PlaybookDefinition`, which §16.9 confirms is still absent.
+   The fixture is instead the §10.1 `review-pipeline` artifact projected by
+   hand — same thirteen steps, same two rules, same `check-gate` case/default
+   pair — with every object typed against the generated client, so a DTO
+   change breaks `npm run typecheck` rather than a runtime assertion. When
+   `project_graph` lands, T-44 should replace this file's contents with its
+   output and keep the same exported names.
+
+2. **The Semantic graph tab is not gated on an activation.** §6.5 renders the
+   tab "only when the activation-health query reports an activation". That
+   query is `usePlaybookActivationHealth`, which belongs to the activation /
+   diff / overlay slice (task solid-harbor.48); declaring it here would have
+   put two conflicting definitions of the same hook in `hooks.ts`. The tab is
+   therefore always present, and `PlaybookSemanticGraphView` renders the
+   command's own error with a Retry when there is no activation to project.
+   T-47's gating assertion moves to the PR that lands the health hook.
+
+3. **`layoutSemanticGraph` takes the response, not `(nodes, layout)`.** §6.1
+   describes the signature as "`GraphLayoutDTO` + nodes/edges → xyflow". The
+   implementation takes one `SemanticGraphInput` (`nodes`, `edges`, `rules`,
+   `layout`, `diagnostics`) because a cluster group node needs the rule's name,
+   event type and diagnostic count, and threading four positional arguments
+   through the canvas obscured which of them the layout is allowed to read.
+   It stays pure, and `PlaybookV2GraphResponse` is assignable to it.
+
+Two invariants §12.2 states as prose are asserted directly rather than left to
+review: `layout.test.ts` pins that the flow edge ids are the DTO's ids
+verbatim and survive reordering the edge list (V1's positional ids did not),
+and `StepNodeCard.test.tsx` pins `out_degree == rendered port count` for every
+step kind. `RunOverlayPanel`, `ArtifactDiffPanel`, `ActivationPanel` and
+`PendingEventsPanel` (§12.4, §12.5) are the sibling slice's and are not in
+this branch.
