@@ -226,7 +226,15 @@ def _policy(**namespaces: frozenset[str]) -> Any:
 
 
 def stub_policies() -> dict[str, Any]:
-    """A two-profile capability lattice: ``wide`` strictly contains ``worker``."""
+    """A two-profile capability lattice: ``wide`` strictly contains ``worker``.
+
+    ``reviewer``'s fingerprint is recorded in the golden artifacts'
+    ``compiled_against.profiles``, exactly as their command fingerprints are
+    recorded from the live registry.  Changing what ``reviewer`` grants here
+    therefore stales the golden artifacts and must be paired with re-recording
+    that map — which is the same demand the validator makes of a real artifact
+    when a real profile's capabilities move.
+    """
     return {
         "worker": _policy(aq_commands=frozenset({"demo_command"})),
         "wide": _policy(aq_commands=frozenset({"demo_command", "other_command"})),

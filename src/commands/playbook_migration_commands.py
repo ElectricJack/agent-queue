@@ -277,9 +277,31 @@ class PlaybookMigrationCommandsMixin:
         its condition is already `unavailable` in the activation health surface,
         and reporting it a second time here as contract drift would name the
         wrong cause.
+
+        Each row also carries `current_profiles`, resolved from this daemon's
+        *live* profile registry rather than from the shipped defaults.  An
+        activated artifact was compiled against the profiles in this database,
+        operator edits included, so holding it to `src/profiles/defaults/`
+        would report a legitimately customised profile as drift.
+
+        `acknowledged_by` comes from the waiver table: `release_check` skips an
+        acknowledged playbook because an operator has already decided about it,
+        and activation rows carry no such column of their own.
         """
         rows: list[dict] = []
         activations = await self._enabled_activations()
+        try:
+            acknowledged = {
+                (
+                    str(ack.get("playbook_id") or ""),
+                    str(ack.get("scope") or ""),
+                    str(ack.get("scope_identifier") or ""),
+                ): ack.get("acknowledged_by")
+                for ack in await self.db.list_playbook_migration_acks()
+            }
+        except Exception:  # pragma: no cover - defensive
+            logger.warning("release check: acknowledgements unavailable", exc_info=True)
+            acknowledged = {}
         try:
             from src.playbooks.artifact_store import ArtifactStore
 
@@ -290,6 +312,11 @@ class PlaybookMigrationCommandsMixin:
         except Exception:  # pragma: no cover - defensive
             logger.debug("release check: artifact store unavailable", exc_info=True)
             return rows
+        try:
+            _contracts, profile_lookup, _events = await self._v2_lookups()
+        except Exception:  # pragma: no cover - defensive
+            logger.warning("release check: profile registry unavailable", exc_info=True)
+            profile_lookup = None
         for row in activations:
             sha = _active_sha(row)
             if not sha:
@@ -299,19 +326,28 @@ class PlaybookMigrationCommandsMixin:
             except Exception:
                 logger.debug("release check: artifact %s unreadable", sha, exc_info=True)
                 continue
-            rows.append(
-                {
-                    "playbook_id": str(row.get("playbook_id") or ""),
-                    "enabled": True,
-                    # Never joined from the waiver table on purpose: a waiver
-                    # records that a playbook is *not* migrating, so an
-                    # activation that is still enabled and drifting is a
-                    # contradiction the release check must keep reporting.
-                    "acknowledged_by": row.get("acknowledged_by"),
-                    "artifact_commands": dict(definition.compiled_against.commands),
-                    "artifact_profiles": dict(definition.compiled_against.profiles),
-                }
-            )
+            playbook_id = str(row.get("playbook_id") or "")
+            artifact_profiles = dict(definition.compiled_against.profiles)
+            entry = {
+                "playbook_id": playbook_id,
+                "enabled": True,
+                "acknowledged_by": acknowledged.get(
+                    (
+                        playbook_id,
+                        str(row.get("scope") or ""),
+                        str(row.get("scope_identifier") or ""),
+                    )
+                ),
+                "artifact_commands": dict(definition.compiled_against.commands),
+                "artifact_profiles": artifact_profiles,
+            }
+            if profile_lookup is not None:
+                from src.playbooks.migration import profile_fingerprints_for
+
+                entry["current_profiles"] = profile_fingerprints_for(
+                    profile_lookup, artifact_profiles
+                )
+            rows.append(entry)
         return rows
 
     async def _cmd_playbook_release_check(self, args: dict) -> dict:

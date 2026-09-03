@@ -39,6 +39,7 @@ from src.playbooks.definition import (
     business_outcomes,
     reserved_outcomes_for,
     result_schema_for,
+    step_profile_ids,
     step_targets,
     step_values,
 )
@@ -1693,9 +1694,50 @@ def _check_llm_outcomes(context: _Context, step_id: str, step: LlmStep) -> None:
 # --------------------------------------------------------------------------
 
 
+def _profile_snapshots(context: _Context) -> None:
+    """The profile half of the ``stale_contract`` check ``_contracts_and_outcomes`` makes.
+
+    ``compiled_against.profiles`` is server-computed provenance, so the useful
+    question is not whether the artifact is self-consistent but whether it
+    still agrees with the registry this process serves.  A step's *delegated*
+    profile counts here exactly as its own does: ``ensure_task`` handing work
+    to ``reviewer`` depends on that profile's capabilities as surely as an
+    ``LlmStep`` running as it.
+
+    Only a profile the lookup resolves is compared.  An unresolvable one is
+    ``unknown_profile``'s business where the step declares it, and a
+    ``NullProfileLookup`` — what a caller passes when it has no registry to
+    resolve against — must not turn every artifact into a stale one.
+    """
+    definition = context.definition
+    reported: set[str] = set()
+    for step_id, step in sorted(definition.steps.items()):
+        for profile_id in step_profile_ids(step):
+            if profile_id in reported:
+                continue
+            policy = context.profiles.policy(profile_id)
+            if policy is None:
+                continue
+            recorded = definition.compiled_against.profiles.get(profile_id)
+            current = policy.fingerprint()
+            if recorded == current:
+                continue
+            reported.add(profile_id)
+            context.emit(
+                "stale_contract",
+                f"the artifact was compiled against {recorded or 'no'} fingerprint "
+                f"for profile {profile_id!r}; the registry now serves {current}",
+                rule_id=step.rule,
+                step_id=step_id,
+                field="/compiled_against/profiles",
+            )
+
+
 def _profiles_and_capabilities(context: _Context) -> None:
     definition = context.definition
     policies: dict[str, Any] = {}
+
+    _profile_snapshots(context)
 
     for step_id, step in sorted(definition.steps.items()):
         if not isinstance(step, (LlmStep, AgentTaskStep)):

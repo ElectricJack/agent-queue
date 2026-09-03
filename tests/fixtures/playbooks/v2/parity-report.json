@@ -1,5 +1,5 @@
 {
-  "artifact_sha256": "sha256:f67886029326628848cb7b171b5a14c78713e9a6d6f5c64b0edb8b891868974d",
+  "artifact_sha256": "sha256:7c3c162f2bc084618d8778579cfd3f2e44311eabc0fdf8ff427810f19334d7bd",
   "canonicalisation": [
     "sensitive arguments are replaced with the contract's redaction marker, key retained",
     "ids the oracle mints during an observation become <gen:N> in first-appearance order, per arm",

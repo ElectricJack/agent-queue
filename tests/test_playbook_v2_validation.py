@@ -611,6 +611,58 @@ class TestContracts:
 
         assert "stale_contract" in codes(check(build(mutate)))
 
+    def test_an_unrecorded_delegated_profile_is_stale_contract(self):
+        """The profile half of the same question (`solid-harbor.54`).
+
+        A literal `profile_id` argument is a capability dependency, so an
+        artifact that names one without recording its fingerprint is stale for
+        the same reason an unrecorded command contract is.
+        """
+
+        def mutate(artifact):
+            artifact["steps"]["act"]["inputs"]["profile_id"] = {
+                "type": "literal",
+                "value": "reviewer",
+            }
+
+        found = check(build(mutate))
+        stale = [d for d in found if d.code == "stale_contract"]
+        assert stale, [d.code for d in found]
+        assert stale[0].field == "/compiled_against/profiles"
+        assert "reviewer" in stale[0].message
+
+    def test_a_recorded_delegated_profile_is_not_stale(self):
+        from tests.playbook_v2_helpers import stub_policies
+
+        def mutate(artifact):
+            artifact["steps"]["act"]["inputs"]["profile_id"] = {
+                "type": "literal",
+                "value": "reviewer",
+            }
+            artifact["compiled_against"]["profiles"] = {
+                "reviewer": stub_policies()["reviewer"].fingerprint()
+            }
+
+        assert "stale_contract" not in codes(check(build(mutate)))
+
+    def test_an_unresolvable_profile_is_not_reported_as_stale(self):
+        """A lookup with no registry must not turn every artifact stale.
+
+        `NullProfileLookup` is what a caller passes when it cannot resolve
+        profiles at all; reading "cannot resolve" as "drifted" would make every
+        such validation fail on a fault it has no evidence for.
+        """
+        from src.playbooks.validation import NullProfileLookup
+
+        def mutate(artifact):
+            artifact["steps"]["act"]["inputs"]["profile_id"] = {
+                "type": "literal",
+                "value": "reviewer",
+            }
+
+        found = check(build(mutate), profiles=NullProfileLookup())
+        assert "stale_contract" not in codes(found)
+
 
 class TestOutputSchemaBounds:
     """§10.3 — author-supplied JSON Schema is bounded."""

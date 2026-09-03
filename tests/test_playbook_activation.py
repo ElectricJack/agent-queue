@@ -839,6 +839,150 @@ async def test_read_path_reports_ready_then_stale_when_a_profile_changes(db, tmp
     assert stale[0].active_artifact_sha256 is not None
 
 
+class _OverriddenProfiles:
+    """The shipped profile lookup with one profile's policy replaced.
+
+    Standing in for an operator who widened or narrowed a capability profile
+    after the artifact was reviewed — the change `evaluate_health` exists to
+    notice.  Passing ``None`` for a profile removes it, which is how a deleted
+    profile reads.
+    """
+
+    def __init__(self, overrides):
+        from src.playbooks.migration import shipped_profile_lookup
+
+        self._shipped = shipped_profile_lookup()
+        self._overrides = overrides
+
+    def policy(self, profile_id):
+        if profile_id in self._overrides:
+            return self._overrides[profile_id]
+        return self._shipped.policy(profile_id)
+
+    def routing(self, profile_id):
+        return self._shipped.routing(profile_id)
+
+    def direct_routing(self, profile_id):
+        return self._shipped.direct_routing(profile_id)
+
+
+async def _activate_the_shipped_pipeline(db, tmp_path):
+    """Store and activate the reviewed `default-pipeline` fixture, as shipped.
+
+    Not a synthetic twin: the point of this pair of tests is the artifact the
+    fleet actually runs, whose three capability-profile dependencies exist
+    *only* as `ensure_task` arguments.
+    """
+    from pathlib import Path
+
+    from src.playbooks.activation import profile_fingerprint
+    from src.playbooks.artifact_store import ArtifactStore
+    from src.playbooks.definition import load_definition_json
+
+    fixture = (
+        Path(__file__).resolve().parent
+        / "fixtures"
+        / "playbooks"
+        / "v2"
+        / "default-pipeline"
+        / "artifact.json"
+    )
+    definition = load_definition_json(fixture.read_text(encoding="utf-8"))
+    profiles = dict(definition.compiled_against.profiles)
+    assert profiles, "the shipped artifact records no profile fingerprints"
+    aggregate = profile_fingerprint(profiles)
+    store = ArtifactStore(str(tmp_path))
+    ref = store.put(
+        definition,
+        source_digest=definition.source_hash,
+        contract_fingerprint=definition.contract_fingerprint(),
+        profile_fingerprint=aggregate,
+        compiler_build=definition.compiler_build or "test-build",
+        version=definition.version,
+    )
+    await db.upsert_playbook_artifact(
+        ref,
+        scope="system",
+        profile_fingerprint=aggregate,
+        path=store.path_for(ref.artifact_sha256),
+        size_bytes=len(store.canonical_bytes(definition)),
+    )
+    await db.set_playbook_activation(
+        playbook_id=ref.playbook_id,
+        scope="system",
+        scope_identifier="",
+        artifact_sha256=ref.artifact_sha256,
+        enabled=True,
+        activated_by="operator",
+        health="ready",
+        reasons="[]",
+    )
+    return ref, definition
+
+
+@pytest.mark.asyncio
+async def test_the_shipped_pipeline_stales_when_a_delegated_profile_widens(db, tmp_path):
+    """`solid-harbor.54`, end to end on the artifact the fleet runs.
+
+    `default-pipeline` has no AI step: `reviewer`, `final-reviewer` and
+    `spec-ingest` reach it only as literal `profile_id` arguments to
+    `ensure_task`.  While `compiled_against.profiles` was empty, widening any
+    of them left this activation `ready` forever, because health can only
+    compare what the artifact recorded.
+    """
+    from src.playbooks.activation import ActivationHealth, load_activation_health
+    from src.playbooks.validation import RegistryContractLookup
+    from src.profiles.capabilities import CapabilityPolicy
+
+    _ref, _definition = await _activate_the_shipped_pipeline(db, tmp_path)
+    # The real registry: the fixture's command fingerprints are the live ones,
+    # so any drift this test reports is a profile, never a command.
+    contracts = RegistryContractLookup()
+
+    ready = await load_activation_health(
+        db, contracts=contracts, profiles=_OverriddenProfiles({}), enabled_only=True
+    )
+    assert [record.health for record in ready] == [ActivationHealth.READY]
+
+    widened = _OverriddenProfiles(
+        {
+            "reviewer": CapabilityPolicy.from_namespaces(
+                aq_commands=frozenset({"task_close", "pr_merge"})
+            )
+        }
+    )
+    stale = await load_activation_health(
+        db, contracts=contracts, profiles=widened, enabled_only=True
+    )
+
+    assert [record.health for record in stale] == [ActivationHealth.STALE_CONTRACT]
+    reasons = {reason.subject: reason.code for reason in stale[0].reasons}
+    assert reasons["reviewer"] == "profile_capabilities_changed"
+    assert set(reasons) & {"final-reviewer", "spec-ingest"} == set(), (
+        "only the profile that moved may be named"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_shipped_pipeline_stales_when_a_delegated_profile_is_removed(db, tmp_path):
+    from src.playbooks.activation import ActivationHealth, load_activation_health
+    from src.playbooks.validation import RegistryContractLookup
+
+    _ref, _definition = await _activate_the_shipped_pipeline(db, tmp_path)
+    contracts = RegistryContractLookup()
+
+    removed = await load_activation_health(
+        db,
+        contracts=contracts,
+        profiles=_OverriddenProfiles({"spec-ingest": None}),
+        enabled_only=True,
+    )
+
+    assert [record.health for record in removed] == [ActivationHealth.STALE_CONTRACT]
+    reasons = {reason.subject: reason.code for reason in removed[0].reasons}
+    assert reasons["spec-ingest"] == "profile_removed"
+
+
 @pytest.mark.asyncio
 async def test_read_path_reports_unavailable_when_the_artifact_file_is_gone(db, tmp_path):
     from src.playbooks.activation import ActivationHealth, load_activation_health
