@@ -22,7 +22,10 @@
 #
 # The pin is only a declaration; what checks it against the committed tree is
 # tests/test_api_client_contract.py::
-# test_generated_client_boilerplate_matches_what_the_pinned_generator_writes.
+# test_generated_client_boilerplate_matches_what_the_pinned_generator_writes,
+# which needs the generator installed.  Where it is not, the digests this
+# script records in scripts/aq-client-boilerplate.sha256 check the same files
+# from the checkout alone.
 #
 # The generated client lives in packages/aq-client/ and should be committed.
 # After regenerating, reinstall it:
@@ -101,6 +104,24 @@ openapi-python-client generate \
     --config "$SCRIPT_DIR/openapi-python-client.yaml"
 echo "Generated client at $CLIENT_DIR"
 
+# Record the digests of the generator-only boilerplate.  The tree check in
+# tests/test_api_client_contract.py can only run where the pinned generator is
+# installed and skips everywhere else, so on a box carrying just the `cli`
+# extra it is silently a no-op -- which is how a hand-edited README.md once
+# landed with both the pin and that check already in place.  These digests let
+# the same files be verified from the checkout alone, on every box.  Keep the
+# list in step with _GENERATOR_BOILERPLATE in that test; it asserts they agree.
+DIGEST_FILE="$SCRIPT_DIR/aq-client-boilerplate.sha256"
+(cd "$CLIENT_DIR" && sha256sum \
+    README.md \
+    pyproject.toml \
+    agent_queue_api_client/__init__.py \
+    agent_queue_api_client/client.py \
+    agent_queue_api_client/errors.py \
+    agent_queue_api_client/types.py \
+    agent_queue_api_client/py.typed) > "$DIGEST_FILE"
+echo "Recorded boilerplate digests at $DIGEST_FILE"
+
 # Reinstall.  PEP 668 marks some interpreters externally managed; the client
 # is a dev artifact, so fall back rather than failing the regeneration.
 pip install -e "$CLIENT_DIR" --quiet \
@@ -108,4 +129,4 @@ pip install -e "$CLIENT_DIR" --quiet \
     || echo "WARNING: could not pip install $CLIENT_DIR — install it manually" >&2
 echo "Installed agent-queue-api-client"
 
-echo "Done. Don't forget to commit packages/aq-client/ and openapi.json"
+echo "Done. Don't forget to commit packages/aq-client/, openapi.json and $DIGEST_FILE"
