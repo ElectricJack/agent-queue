@@ -103,7 +103,7 @@
       "entry": true,
       "terminal_outcome": null,
       "explanation": {
-        "title": "Ensure a task exists",
+        "title": "Ensure a review task",
         "effect_summary": "Create the task, or reuse the one already keyed by this deduplication key.",
         "effects": [
           {
@@ -1903,7 +1903,7 @@
       "entry": false,
       "terminal_outcome": null,
       "explanation": {
-        "title": "Open a gate",
+        "title": "Open a spec-ingest gate",
         "effect_summary": "Open a gate, and block the tasks waiting on it until it resolves.",
         "effects": [
           {
