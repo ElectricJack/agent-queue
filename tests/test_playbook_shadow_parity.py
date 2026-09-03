@@ -55,6 +55,54 @@ from tests.playbook_shadow_parity_harness import (
 #: The artifact hash the cutover-report unit tests pretend is live.
 _LIVE_ARTIFACT = "sha256:" + "b" * 64
 
+#: The checked-in corpus identity the cutover gate is expected to bind to.
+#: Kept literal here so these tests do not derive their expectations from the
+#: production validator they are meant to protect.
+_CORPUS_EVENT_TYPES = {
+    "evt-parity-0001": "task.completed",
+    "evt-parity-0002": "task.completed",
+    "evt-parity-0003": "task.completed",
+    "evt-parity-0004": "task.completed",
+    "evt-parity-0005": "task.completed",
+    "evt-parity-0006": "task.completed",
+    "evt-parity-0007": "spec.approved",
+    "evt-parity-0008": "proposal.ready",
+    "evt-parity-0009": "gate.resolved",
+    "evt-parity-0010": "gate.resolved",
+    "evt-parity-0011": "task.completed",
+    "evt-parity-0012": "task.completed",
+    "evt-parity-0013": "assignment.route.requested",
+    "evt-parity-0014": "timer.24h",
+    "evt-parity-0015": "task.failed",
+}
+_EXPECTED_EVENT_IDS = {
+    "evt-parity-0001",
+    "evt-parity-0004",
+    "evt-parity-0005",
+    "evt-parity-0006",
+}
+
+
+def _canonical_events() -> list[dict]:
+    return [
+        {
+            "event_id": event_id,
+            "event_type": event_type,
+            "findings": (
+                [
+                    {
+                        "field": "commands",
+                        "classification": "expected_v2_semantics",
+                        "rationale_id": "null-template-part-rendered",
+                    }
+                ]
+                if event_id in _EXPECTED_EVENT_IDS
+                else []
+            ),
+        }
+        for event_id, event_type in _CORPUS_EVENT_TYPES.items()
+    ]
+
 
 def _parity(**overrides: object) -> dict:
     """A complete committed parity record, shaped as the harness writes one.
@@ -67,12 +115,12 @@ def _parity(**overrides: object) -> dict:
         "artifact_sha256": _LIVE_ARTIFACT,
         "v1_source": "tests/fixtures/playbooks/v1/default-pipeline.md",
         "corpus": "tests/fixtures/playbooks/v2/events/",
-        "observations": 1,
-        "identical": 1,
-        "expected": 0,
+        "observations": 15,
+        "identical": 11,
+        "expected": 4,
         "unexplained": 0,
         "deterministic_playbooks": ["default-pipeline"],
-        "events": [{"event_id": "evt-parity-0001", "event_type": "task.completed"}],
+        "events": _canonical_events(),
         "recorded": True,
     }
     record.update(overrides)
@@ -316,6 +364,80 @@ def test_a_complete_parity_record_still_certifies() -> None:
     assert report["cutover_eligible"] is True
 
 
+def test_event_level_unexplained_authorization_cannot_hide_behind_clean_counters() -> None:
+    """The gate derives the claim from events instead of trusting its summary."""
+    events = _canonical_events()
+    events[0]["findings"] = [
+        {"field": "authorization", "classification": "unexplained", "rationale_id": None}
+    ]
+
+    report = _certifiable(events=events)
+
+    assert report["cutover_eligible"] is False
+    assert any("1 unexplained shadow-parity findings" in reason for reason in report["blocking_reasons"])
+    assert any("event classifications do not match" in reason for reason in report["blocking_reasons"])
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("suite", "tests/not-the-parity-suite.py"),
+        ("v1_source", "tests/fixtures/playbooks/v1/not-the-reviewed-source.md"),
+        ("corpus", "tests/fixtures/playbooks/v2/not-the-reviewed-corpus/"),
+    ],
+)
+def test_cutover_report_rejects_unexpected_parity_provenance(field: str, value: str) -> None:
+    report = _certifiable(**{field: value})
+
+    assert report["cutover_eligible"] is False
+    assert any(f"unexpected {field}" in reason for reason in report["blocking_reasons"])
+
+
+@pytest.mark.parametrize("mutation", ["duplicate", "unknown"])
+def test_cutover_report_rejects_events_outside_the_canonical_corpus(mutation: str) -> None:
+    events = _canonical_events()
+    if mutation == "duplicate":
+        events[-1] = deepcopy(events[0])
+    else:
+        events[-1]["event_id"] = "made-up-event"
+
+    report = _certifiable(events=events)
+
+    assert report["cutover_eligible"] is False
+    assert any(
+        ("duplicate event id" in reason if mutation == "duplicate" else "unknown event id" in reason)
+        for reason in report["blocking_reasons"]
+    )
+
+
+def test_cutover_report_rejects_an_unknown_event_finding_classification() -> None:
+    events = _canonical_events()
+    events[0]["findings"] = [
+        {"field": "commands", "classification": "reviewed_exception", "rationale_id": None}
+    ]
+
+    report = _certifiable(events=events)
+
+    assert report["cutover_eligible"] is False
+    assert any("unknown finding classification" in reason for reason in report["blocking_reasons"])
+
+
+def test_cutover_report_rejects_expected_authorization_findings() -> None:
+    events = _canonical_events()
+    events[0]["findings"] = [
+        {
+            "field": "authorization",
+            "classification": "expected_v2_semantics",
+            "rationale_id": "null-template-part-rendered",
+        }
+    ]
+
+    report = _certifiable(events=events, identical=10, expected=5)
+
+    assert report["cutover_eligible"] is False
+    assert any("authorization differences are never waivable" in reason for reason in report["blocking_reasons"])
+
+
 def test_cutover_report_rejects_parity_evidence_that_only_claims_to_exist() -> None:
     """``{"recorded": true}`` used to be a complete pass for this gate.
 
@@ -366,7 +488,7 @@ def test_cutover_report_rejects_parity_evidence_that_only_claims_to_exist() -> N
         ({"identical": -1}, "identical is not a whole count"),
         ({"events": []}, "carries no per-event evidence"),
         ({"events": [{"event_type": "task.completed"}]}, "name no event"),
-        ({"events": _events(3)}, "lists 3 events for 1 observations"),
+        ({"events": _events(3)}, "lists 3 events for 15 observations"),
     ],
 )
 def test_cutover_report_rejects_a_malformed_parity_field(
