@@ -63,7 +63,7 @@ def perf_strict() -> None:
 
     To run the budgets, do it deliberately and serially on a quiet box::
 
-        AQ_PERF_STRICT=1 aq test --aq-all-markers -p no:xdist -s tests/perf
+        AQ_PERF_STRICT=1 aq test -m perf -p no:xdist -s tests/perf
     """
     if os.environ.get("AQ_PERF_STRICT") != "1":
         pytest.skip("AQ_PERF_STRICT not set — wall-clock budgets need a quiet box")

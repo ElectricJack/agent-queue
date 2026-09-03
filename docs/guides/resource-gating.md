@@ -137,11 +137,15 @@ on a regression. Run them on purpose, serially, when the box is idle:
 
 ```bash
 POSTGRES_TEST_DSN=postgresql+asyncpg://agent_queue:agent_queue_dev@localhost:5533/aq_perf \
-AQ_PERF_STRICT=1 aq test --aq-all-markers -p no:xdist -s tests/perf
+AQ_PERF_STRICT=1 aq test -m perf -p no:xdist -s tests/perf
 ```
 
-`-s` matters: each latency test prints its p95, median and max, so a passing
-run still records the margin.
+`-m perf` matters as much as `AQ_PERF_STRICT`: `--aq-all-markers` only stops
+`aq test` from adding its *own* `-m`, and pyproject's `addopts` still carries
+`-m "not perf and ..."`, so without an explicit `-m` the run deselects
+everything and reports "no tests were collected". `-s` matters too: each
+latency test prints its p95, median and max, so a passing run records the
+margin rather than only the verdict.
 
 While it waits, it prints a line per poll naming the current holders. That
 is deliberate: the daemon reads terminal silence as a stall, so an agent
