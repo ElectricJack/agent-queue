@@ -909,12 +909,13 @@ class TestPhaseIntegratePushFailureRecordsReason:
             # default-branch push block.  ``apush_validated_ref`` pushes an
             # exact OID as ``<oid>:refs/heads/<branch>``.
             orig_arun = o.git._arun
+            default_refspec_suffix = ":refs/heads/main"
 
             async def arun_boom(args, cwd=None, **kw):
                 if (
                     args
                     and args[0] == "push"
-                    and any(str(a).endswith(":refs/heads/main") for a in args)
+                    and any(str(a).endswith(default_refspec_suffix) for a in args)
                 ):
                     raise RuntimeError("simulated network failure on default push")
                 return await orig_arun(args, cwd=cwd, **kw)

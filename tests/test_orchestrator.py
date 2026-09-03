@@ -1040,6 +1040,12 @@ class TestPrepareWorkspaceCleanDefault:
         workspace = setup["workspace"]
 
         mock_git = MagicMock()
+        # ``_prepare_workspace`` installs the managed ``info/exclude``
+        # block and fails closed when Git's path for it cannot be
+        # resolved, so an awaitable answer is mandatory here.
+        mock_git.aget_git_path = AsyncMock(
+            side_effect=lambda cwd, path: os.path.join(cwd, ".git", path)
+        )
         mock_git.avalidate_checkout = AsyncMock(return_value=True)
         mock_git.ahas_remote = AsyncMock(return_value=True)
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
@@ -1070,6 +1076,12 @@ class TestPrepareWorkspaceCleanDefault:
         agent = setup["agent"]
 
         mock_git = MagicMock()
+        # ``_prepare_workspace`` installs the managed ``info/exclude``
+        # block and fails closed when Git's path for it cannot be
+        # resolved, so an awaitable answer is mandatory here.
+        mock_git.aget_git_path = AsyncMock(
+            side_effect=lambda cwd, path: os.path.join(cwd, ".git", path)
+        )
         mock_git.avalidate_checkout = AsyncMock(return_value=True)
         mock_git.ahas_remote = AsyncMock(return_value=True)
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
@@ -1094,6 +1106,12 @@ class TestPrepareWorkspaceCleanDefault:
         workspace = setup["workspace"]
 
         mock_git = MagicMock()
+        # ``_prepare_workspace`` installs the managed ``info/exclude``
+        # block and fails closed when Git's path for it cannot be
+        # resolved, so an awaitable answer is mandatory here.
+        mock_git.aget_git_path = AsyncMock(
+            side_effect=lambda cwd, path: os.path.join(cwd, ".git", path)
+        )
         mock_git.avalidate_checkout = AsyncMock(return_value=True)
         mock_git.ahas_remote = AsyncMock(return_value=True)
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
@@ -1468,7 +1486,14 @@ class TestPhaseVerifyNormalTask:
 
         result = await orch._phase_verify(ctx)
         assert result == PhaseResult.CONTINUE
+        # The auto-push goes through the delivery guard, which inspects the
+        # tip against origin/<default> before pushing that exact OID.
         orch.git.apush_validated_delivery.assert_awaited_once()
+        assert orch.git.apush_validated_delivery.await_args.args[1:] == (
+            "origin/main",
+            "HEAD",
+            "main",
+        )
 
     async def test_fails_when_ahead_and_auto_push_fails(self, pipeline_orch):
         """Falls back to failure when auto-push raises an exception."""
@@ -1489,7 +1514,9 @@ class TestPhaseVerifyNormalTask:
         # Auto-push rev-list returns "3" (ahead) — triggers push
         # Push fails, so scenario behind check gets "0", ahead check gets "3"
         orch.git._arun = AsyncMock(side_effect=["3", "0", "3"])
-        orch.git.apush_validated_delivery = AsyncMock(side_effect=Exception("push failed"))
+        orch.git.apush_validated_delivery = AsyncMock(
+            side_effect=Exception("push failed")
+        )
 
         ws = await orch.db.get_workspace("ws-1")
         ctx = self._make_ctx(orch, task, ws.workspace_path)
@@ -2049,7 +2076,12 @@ class TestCompletionPipelineVerify:
         mock_git.acount_commits_ahead = AsyncMock(return_value=1)
         mock_git._arun = AsyncMock(return_value="0")
         mock_git.ahas_non_plan_changes = AsyncMock(return_value=False)
+        # The delivery guard runs before every merge and push in
+        # ``_phase_verify`` and fails closed.  Unstubbed, a spec'd
+        # AsyncMock answers with a truthy MagicMock, which the guard
+        # reads as "this delivery changes reserved daemon paths".
         mock_git.areserved_paths_in_diff = AsyncMock(return_value=[])
+        mock_git.apush_validated_delivery = AsyncMock(return_value="a" * 40)
         o.git = mock_git
 
         yield o
