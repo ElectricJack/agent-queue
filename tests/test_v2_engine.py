@@ -1251,7 +1251,11 @@ class TestModes:
         assert runs.commit_calls == 0
         assert runs.snapshots == {}
         assert adapter.calls == []
-        assert outcome.receipts
+        # A shadow run's record is its symbolic traversal, held in memory:
+        # every command it would have issued, and every edge it forked over.
+        assert outcome.traversal is not None and outcome.traversal.paths
+        assert outcome.commands and outcome.commands[0][1] == "ensure_task"
+        assert outcome.lifecycle is RunLifecycle.COMPLETED
 
 
 class TestResume:
@@ -1646,8 +1650,17 @@ class TestDurableWaits:
         )
         assert waits.registered == []
         assert runs.commit_calls == 0
-        assert outcome.lifecycle is RunLifecycle.PAUSED
-        assert outcome.receipts[-1].error == UNRESOLVED_REASON
+        # Shadow reports the wait as an unresolved boundary and forks over
+        # its declared outcomes instead of pausing a cursor on it (§4.10).
+        assert outcome.lifecycle is RunLifecycle.COMPLETED
+        wait_nodes = [
+            node
+            for path in outcome.traversal.paths
+            for node in path.nodes
+            if node.status == "unresolved" and node.reason == UNRESOLVED_REASON
+        ]
+        assert wait_nodes
+        assert all(path.completed is False for path in outcome.traversal.paths)
 
     @pytest.mark.asyncio
     async def test_the_reporting_wait_is_shared_by_dry_run_and_shadow(self):
