@@ -9,6 +9,45 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+_AUTONOMOUS_PERMISSION_HARNESSES = {
+    "codex_full_auto": "codex",
+    "claude_dangerously_skip_permissions": "claude",
+}
+
+
+def _autonomous_permission_error(values: dict) -> str | None:
+    """Validate provider-specific permission opt-ins before a vault write."""
+    harness = values.get("harness")
+    for key, required_harness in _AUTONOMOUS_PERMISSION_HARNESSES.items():
+        if key not in values:
+            continue
+        value = values[key]
+        if not isinstance(value, bool):
+            return f"{key} must be a boolean, got {type(value).__name__}"
+        if value and harness != required_harness:
+            return f"{key}=true requires harness '{required_harness}'"
+    return None
+
+
+def _canonical_permission_values(values: dict, explicitly_set: dict) -> dict:
+    """Return profile values with the legacy Claude alias normalized.
+
+    An explicitly authored canonical ``false`` wins over the legacy alias so
+    an edit can turn the dangerous mode off. Otherwise the alias becomes the
+    canonical enabled boolean. Codex keeps the legacy mode unchanged because
+    its permission flag has stronger sandbox-bypass semantics.
+    """
+    normalized = dict(values)
+    if (
+        normalized.get("harness") == "claude"
+        and normalized.get("permission_mode") == "bypassPermissions"
+    ):
+        normalized["permission_mode"] = ""
+        normalized["claude_dangerously_skip_permissions"] = (
+            explicitly_set.get("claude_dangerously_skip_permissions") is not False
+        )
+    return normalized
+
 
 def _mcp_server_names(value: Any) -> list[str]:
     """Normalize an ``mcp_servers`` argument to a list of registry names.
@@ -58,6 +97,10 @@ class ProfileCommandsMixin:
                     "name": p.name,
                     "description": p.description,
                     "harness": p.harness,
+                    "codex_full_auto": p.codex_full_auto,
+                    "claude_dangerously_skip_permissions": (
+                        p.claude_dangerously_skip_permissions
+                    ),
                     "default_class": p.default_class or "",
                     "allowed_tools": p.allowed_tools,
                     "mcp_servers": list(p.mcp_servers) if p.mcp_servers else [],
@@ -90,6 +133,11 @@ class ProfileCommandsMixin:
         if existing:
             return {"error": f"Profile '{profile_id}' already exists"}
 
+        validation_error = _autonomous_permission_error(args)
+        if validation_error:
+            return {"error": validation_error}
+        profile_values = _canonical_permission_values(args, args)
+
         # Create vault subdirectories for the new profile (vault spec §2).
         ensure_vault_profile_dirs(self.config.data_dir, profile_id)
 
@@ -102,7 +150,12 @@ class ProfileCommandsMixin:
             id=profile_id,
             name=name,
             description=args.get("description", ""),
-            permission_mode=args.get("permission_mode", ""),
+            permission_mode=profile_values.get("permission_mode", ""),
+            harness=profile_values.get("harness"),
+            codex_full_auto=profile_values.get("codex_full_auto", False),
+            claude_dangerously_skip_permissions=profile_values.get(
+                "claude_dangerously_skip_permissions", False
+            ),
             allowed_tools=args.get("allowed_tools", []),
             mcp_servers=_mcp_server_names(args.get("mcp_servers")),
             system_prompt_suffix=args.get("system_prompt_suffix", ""),
@@ -154,6 +207,10 @@ class ProfileCommandsMixin:
             "description": profile.description,
             "harness": profile.harness,
             "permission_mode": profile.permission_mode or "(default)",
+            "codex_full_auto": profile.codex_full_auto,
+            "claude_dangerously_skip_permissions": (
+                profile.claude_dangerously_skip_permissions
+            ),
             "allowed_tools": profile.allowed_tools,
             "mcp_servers": profile.mcp_servers,
             "system_prompt_suffix": profile.system_prompt_suffix or "(none)",
@@ -180,7 +237,10 @@ class ProfileCommandsMixin:
         for fld in (
             "name",
             "description",
+            "harness",
             "permission_mode",
+            "codex_full_auto",
+            "claude_dangerously_skip_permissions",
             "allowed_tools",
             "mcp_servers",
             "system_prompt_suffix",
@@ -193,7 +253,8 @@ class ProfileCommandsMixin:
             return {
                 "error": (
                     "No fields to update. Provide name, description, "
-                    "permission_mode, allowed_tools, mcp_servers, "
+                    "harness, permission_mode, codex_full_auto, "
+                    "claude_dangerously_skip_permissions, allowed_tools, mcp_servers, "
                     "system_prompt_suffix, default_class, or install."
                 )
             }
@@ -222,6 +283,11 @@ class ProfileCommandsMixin:
                 "name": profile.name,
                 "description": profile.description,
                 "permission_mode": profile.permission_mode,
+                "harness": profile.harness,
+                "codex_full_auto": profile.codex_full_auto,
+                "claude_dangerously_skip_permissions": (
+                    profile.claude_dangerously_skip_permissions
+                ),
                 "allowed_tools": profile.allowed_tools,
                 "mcp_servers": profile.mcp_servers,
                 "system_prompt_suffix": profile.system_prompt_suffix,
@@ -231,6 +297,11 @@ class ProfileCommandsMixin:
 
         # Apply updates on top of the current state.
         merged = {**current, **updates}
+
+        validation_error = _autonomous_permission_error(merged)
+        if validation_error:
+            return {"error": validation_error}
+        merged = _canonical_permission_values(merged, updates)
 
         # If the user is updating system_prompt_suffix, clear the
         # individual prompt section overrides so the new suffix is used.
@@ -248,6 +319,11 @@ class ProfileCommandsMixin:
             name=merged.get("name", profile_id),
             description=merged.get("description", ""),
             permission_mode=merged.get("permission_mode", ""),
+            harness=merged.get("harness"),
+            codex_full_auto=merged.get("codex_full_auto", False),
+            claude_dangerously_skip_permissions=merged.get(
+                "claude_dangerously_skip_permissions", False
+            ),
             allowed_tools=merged.get("allowed_tools", []),
             mcp_servers=_mcp_server_names(merged.get("mcp_servers")),
             system_prompt_suffix=merged.get("system_prompt_suffix", ""),
@@ -590,8 +666,17 @@ class ProfileCommandsMixin:
             data["description"] = profile.description
         if profile.default_class:
             data["default_class"] = profile.default_class
-        if profile.permission_mode:
+        if profile.harness:
+            data["harness"] = profile.harness
+        legacy_claude_skip = (
+            profile.harness == "claude" and profile.permission_mode == "bypassPermissions"
+        )
+        if profile.permission_mode and not legacy_claude_skip:
             data["permission_mode"] = profile.permission_mode
+        if profile.codex_full_auto:
+            data["codex_full_auto"] = True
+        if profile.claude_dangerously_skip_permissions or legacy_claude_skip:
+            data["claude_dangerously_skip_permissions"] = True
         if profile.allowed_tools:
             data["allowed_tools"] = profile.allowed_tools
         if profile.mcp_servers:
@@ -716,6 +801,11 @@ class ProfileCommandsMixin:
 
         profile_name = args.get("name") or pdata.get("name", profile_id)
 
+        validation_error = _autonomous_permission_error(pdata)
+        if validation_error:
+            return {"error": validation_error}
+        pdata = _canonical_permission_values(pdata, pdata)
+
         # Ensure vault directories.
         ensure_vault_profile_dirs(self.config.data_dir, profile_id)
 
@@ -725,6 +815,11 @@ class ProfileCommandsMixin:
             name=profile_name,
             description=pdata.get("description", ""),
             permission_mode=pdata.get("permission_mode", ""),
+            harness=pdata.get("harness"),
+            codex_full_auto=pdata.get("codex_full_auto", False),
+            claude_dangerously_skip_permissions=pdata.get(
+                "claude_dangerously_skip_permissions", False
+            ),
             allowed_tools=pdata.get("allowed_tools", []),
             mcp_servers=pdata.get("mcp_servers", {}),
             system_prompt_suffix=pdata.get("system_prompt_suffix", ""),

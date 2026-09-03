@@ -23,6 +23,8 @@ Agent Profiles are capability bundles that configure agents with specific tools,
 | `description` | str | "" | What this profile is for |
 | `model` | str | "" | Model override (empty = use adapter default) |
 | `permission_mode` | str | "" | Permission mode override (empty = use adapter default) |
+| `codex_full_auto` | bool | false | Codex-only opt-in to sandboxed `--full-auto` automation |
+| `claude_dangerously_skip_permissions` | bool | false | Claude-only opt-in to `--dangerously-skip-permissions` |
 | `allowed_tools` | list[str] | [] | Tool whitelist (empty = use adapter default). Stored as **bare** tool names — see [Tool Naming](#tool-naming) below. |
 | `mcp_servers` | list[str] | [] | Names of MCP servers from the [registry](#mcp-server-registry). Resolved at task launch (project scope first, system fallback). |
 | `system_prompt_suffix` | str | "" | Appended to agent's context as "Agent Role Instructions" |
@@ -66,6 +68,8 @@ CREATE TABLE IF NOT EXISTS agent_profiles (
     description TEXT NOT NULL DEFAULT '',
     model TEXT NOT NULL DEFAULT '',
     permission_mode TEXT NOT NULL DEFAULT '',
+    codex_full_auto BOOLEAN NOT NULL DEFAULT FALSE,
+    claude_dangerously_skip_permissions BOOLEAN NOT NULL DEFAULT FALSE,
     allowed_tools TEXT NOT NULL DEFAULT '[]',       -- JSON array of bare tool names
     mcp_servers TEXT NOT NULL DEFAULT '{}',          -- JSON; written as a list[str] of registry names. The literal default is '{}' for legacy reasons; the application coerces on read.
     system_prompt_suffix TEXT NOT NULL DEFAULT '',
@@ -105,6 +109,47 @@ into the `agent_profiles` table at startup and on file change.
 startup migration extracts any `agent_profiles:` section into vault markdown
 files (idempotent; never clobbers a hand-authored entry). New work should
 edit the markdown directly.
+
+### Autonomous harness permission modes
+
+`codex_full_auto` and `claude_dangerously_skip_permissions` are optional JSON
+booleans in the profile's `## Config` block. They default to `false` and are
+effective only when `harness` is `codex` and `claude`, respectively. Their
+types are always validated; a `true` value with the wrong harness fails profile
+parsing and leaves the previously synced row active. A `false` value is a
+harmless disabled default even when present on a profile for another harness.
+Create, edit, and import reject invalid values before changing the vault;
+quoted strings such as `"false"` are not treated as booleans.
+
+The legacy `permission_mode: "bypassPermissions"` value remains valid for all
+harnesses and continues to request each harness's configured
+`permission_flag`. For Codex, that legacy route bypasses approvals and the
+sandbox and is therefore distinct from `codex_full_auto`; for Claude, it is an
+alias for the same effective flag as
+`claude_dangerously_skip_permissions: true`. Launch argument assembly emits a
+flag at most once, including when it also appears in harness-level `args` or is
+enabled by the isolated-worktree policy. If `codex_full_auto` is enabled and
+Codex also qualifies for its stronger bypass flag, bypass wins and every
+`--full-auto` occurrence is suppressed.
+Harness `args` are operator policy, so an explicit profile `false` does not
+remove them.
+
+Managed writes canonicalize the one true alias: a Claude profile carrying
+legacy `permission_mode: "bypassPermissions"` is rewritten/exported with
+`claude_dangerously_skip_permissions: true` instead. Readers and imports accept
+both. The legacy value remains unchanged for Codex and other harnesses because
+it selects a different, harness-owned permission flag there. On a managed edit,
+an explicitly supplied `claude_dangerously_skip_permissions: false` removes the
+legacy Claude alias too; otherwise the old value would immediately re-enable
+the same mode.
+
+These are security-sensitive opt-ins. `--full-auto` removes routine Codex
+approval prompts while retaining its workspace sandbox.
+`--dangerously-skip-permissions` removes Claude's permission checks and does not
+confine the process. Neither option turns a git worktree into a filesystem or
+network sandbox; restrict the session environment and tools accordingly. See
+[[design/profiles#harness-automation-and-permission-opt-ins]] and
+[[design/trust-and-ops#4-permission-posture-skip-permissions-inside-worktrees]].
 
 ### Tool Naming
 

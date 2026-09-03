@@ -668,7 +668,10 @@ class AgentProfileConfig:
     name: str = ""
     description: str = ""
     model: str = ""
+    harness: str | None = None
     permission_mode: str = ""
+    codex_full_auto: bool = False
+    claude_dangerously_skip_permissions: bool = False
     allowed_tools: list[str] = field(default_factory=list)
     # Normalized capability namespaces (Playbook V2 Package 0 §3.1).
     # ``None`` means "not authored — run the legacy ``allowed_tools``
@@ -710,6 +713,28 @@ class AgentProfileConfig:
                     f"{sorted(m for m in valid_permission_modes if m)}, got '{self.permission_mode}'",
                 )
             )
+        for field_name, required_harness in (
+            ("codex_full_auto", "codex"),
+            ("claude_dangerously_skip_permissions", "claude"),
+        ):
+            value = getattr(self, field_name)
+            if not isinstance(value, bool):
+                errors.append(
+                    ConfigError(
+                        "agent_profiles",
+                        field_name,
+                        f"profile '{self.id}': {field_name} must be a boolean",
+                    )
+                )
+            elif value and self.harness != required_harness:
+                errors.append(
+                    ConfigError(
+                        "agent_profiles",
+                        field_name,
+                        f"profile '{self.id}': {field_name}=true requires "
+                        f"harness '{required_harness}'",
+                    )
+                )
         # Wildcard capabilities are prohibited in every shape a profile can
         # take (Playbook V2 Package 0 §3.2) — YAML included, not just the
         # vault markdown.
@@ -3129,7 +3154,12 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
                     name=pdata.get("name", pid),
                     description=pdata.get("description", ""),
                     model=str(raw_profile_model) if raw_profile_model else "",
+                    harness=pdata.get("harness"),
                     permission_mode=pdata.get("permission_mode", ""),
+                    codex_full_auto=pdata.get("codex_full_auto", False),
+                    claude_dangerously_skip_permissions=pdata.get(
+                        "claude_dangerously_skip_permissions", False
+                    ),
                     allowed_tools=pdata.get("allowed_tools", []),
                     harness_tools=pdata.get("harness_tools"),
                     aq_commands=pdata.get("aq_commands"),

@@ -7,7 +7,8 @@ deterministically).
 
 **Structured sections** (JSON blocks extracted):
 
-- ``## Config`` → default_class, permission_mode, max_tokens_per_task
+- ``## Config`` → harness, default_class, permission_mode, provider-specific
+  autonomous permission opt-ins, max_tokens_per_task
 - ``## Tools`` → allowed / denied tool lists
 - ``## MCP Servers`` → server name → {command, args, env}
 
@@ -49,6 +50,8 @@ KNOWN_SECTIONS = STRUCTURED_SECTIONS | PROMPT_SECTIONS
 CONFIG_KNOWN_KEYS = frozenset(
     {
         "permission_mode",
+        "codex_full_auto",
+        "claude_dangerously_skip_permissions",
         "max_tokens_per_task",
         # Named-session fields (supervisor-agent spec §7).  ``workspaces``
         # is parsed and validated here but is *not* persisted on
@@ -465,6 +468,8 @@ def _validate_config(config: dict) -> list[str]:
 
     - **model** — retired; select an intelligence class instead.
     - **permission_mode** — must be a string from :data:`VALID_PERMISSION_MODES`.
+    - **codex_full_auto** / **claude_dangerously_skip_permissions** — strict
+      booleans whose enabled value requires the matching harness.
     - **max_tokens_per_task** — must be a positive integer.
 
     Unknown keys are silently allowed for forward-compatibility.
@@ -499,6 +504,22 @@ def _validate_config(config: dict) -> list[str]:
         elif pm not in VALID_PERMISSION_MODES:
             sorted_modes = sorted(VALID_PERMISSION_MODES)
             errors.append(f"Config 'permission_mode' must be one of {sorted_modes}, got '{pm}'")
+
+    # Provider-specific autonomous permission modes are explicit booleans.
+    # ``false`` is accepted with every harness so generated/default config can
+    # carry disabled values harmlessly; enabling one requires its matching
+    # harness so a typo cannot silently grant a different permission mode.
+    for key, required_harness in (
+        ("codex_full_auto", "codex"),
+        ("claude_dangerously_skip_permissions", "claude"),
+    ):
+        if key not in config:
+            continue
+        value = config[key]
+        if not isinstance(value, bool):
+            errors.append(f"Config '{key}' must be a boolean, got {type(value).__name__}")
+        elif value and config.get("harness") != required_harness:
+            errors.append(f"Config '{key}: true' requires harness '{required_harness}'")
 
     # --- max_tokens_per_task ---
     if "max_tokens_per_task" in config:
@@ -1058,6 +1079,9 @@ def parsed_profile_to_agent_profile(parsed: ParsedProfile) -> dict:
     # Config → permission_mode
     if parsed.config.get("permission_mode"):
         result["permission_mode"] = parsed.config["permission_mode"]
+    for key in ("codex_full_auto", "claude_dangerously_skip_permissions"):
+        if key in parsed.config:
+            result[key] = parsed.config[key]
 
     if "default_class" in parsed.config:
         result["default_class"] = parsed.config["default_class"]
@@ -1198,6 +1222,9 @@ def agent_profile_to_markdown(
     name: str,
     description: str = "",
     permission_mode: str = "",
+    harness: str | None = None,
+    codex_full_auto: bool = False,
+    claude_dangerously_skip_permissions: bool = False,
     allowed_tools: list[str] | None = None,
     mcp_servers: list[str] | dict[str, dict] | None = None,
     system_prompt_suffix: str = "",
@@ -1229,6 +1256,13 @@ def agent_profile_to_markdown(
         Optional description (stored in frontmatter).
     permission_mode:
         Permission mode override (empty = use default).
+    harness:
+        CLI harness id. Required when either provider-specific autonomous
+        permission opt-in is enabled.
+    codex_full_auto:
+        Whether Codex should run with its sandboxed ``--full-auto`` mode.
+    claude_dangerously_skip_permissions:
+        Whether Claude should skip permission prompts.
     allowed_tools:
         Tool whitelist.
     mcp_servers:
@@ -1252,6 +1286,13 @@ def agent_profile_to_markdown(
     str
         The rendered markdown profile.
     """
+    for key, value in (
+        ("codex_full_auto", codex_full_auto),
+        ("claude_dangerously_skip_permissions", claude_dangerously_skip_permissions),
+    ):
+        if not isinstance(value, bool):
+            raise ValueError(f"{key} must be a boolean, got {type(value).__name__}")
+
     lines: list[str] = []
 
     # --- Frontmatter ---
@@ -1280,8 +1321,22 @@ def agent_profile_to_markdown(
 
     # --- Config section ---
     config: dict = {}
+    # ``permission_mode: bypassPermissions`` remains accepted on input for
+    # every harness.  For Claude it names the same behavior as the canonical
+    # provider-specific boolean, so writers converge old profiles on one
+    # representation.  Codex keeps the legacy value because it selects the
+    # stronger approvals-and-sandbox bypass, not ``--full-auto``.
+    if harness == "claude" and permission_mode == "bypassPermissions":
+        permission_mode = ""
+        claude_dangerously_skip_permissions = True
+    if harness:
+        config["harness"] = harness
     if permission_mode:
         config["permission_mode"] = permission_mode
+    if codex_full_auto:
+        config["codex_full_auto"] = True
+    if claude_dangerously_skip_permissions:
+        config["claude_dangerously_skip_permissions"] = True
     if default_class:
         config["default_class"] = default_class
     if config:

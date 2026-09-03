@@ -380,6 +380,8 @@ permissions, and system prompt customization.
 | `description` | `str` | What this profile is for. |
 | `model` | `str` | LLM model to use. |
 | `permission_mode` | `str` | Permission level for the agent. |
+| `codex_full_auto` | `bool` | Explicit Codex `--full-auto` opt-in; disabled by default. |
+| `claude_dangerously_skip_permissions` | `bool` | Explicit Claude permission-bypass opt-in; disabled by default. |
 | `allowed_tools` | `list[str]` | Tools this profile grants access to. |
 | `mcp_servers` | `dict` | MCP server configurations. |
 | `system_prompt_suffix` | `str` | Additional system prompt text. |

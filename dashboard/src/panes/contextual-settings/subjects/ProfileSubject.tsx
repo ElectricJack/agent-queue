@@ -2,11 +2,16 @@ import { useEffect } from "react";
 import { CheckIcon, ArrowUturnLeftIcon, ArrowTopRightOnSquareIcon } from "@heroicons/react/24/outline";
 import { useNavigate } from "react-router-dom";
 import { useGetProfile, useEditProfile } from "../../../api/hooks";
-import { profileToForm, type ProfileFormState as FormState } from "../../../components/profile/profileForm";
+import {
+  profileEditPayload,
+  profileToForm,
+  type ProfileFormState as FormState,
+} from "../../../components/profile/profileForm";
 import { Section, Field } from "../../../components/profile/FormSection";
 import IntelligenceClassPicker from "../../../components/profile/IntelligenceClassPicker";
 import McpServerSelector from "../../../components/profile/McpServerSelector";
 import ToolPicker from "../../../components/profile/ToolPicker";
+import AutonomousPermissionFields from "../../../components/profile/AutonomousPermissionFields";
 import { useDirtyForm } from "../useDirtyForm";
 import { fullSettingsRoute } from "../fullSettingsRoute";
 import type { PaneViewProps } from "../../types";
@@ -41,19 +46,7 @@ export default function ProfileSubject({ args, setToolbar }: PaneViewProps<Args>
   };
 
   const save = async () => {
-    // Same stale-OpenAPI-shape cast as SystemProfileEditDrawer.onSave —
-    // mcp_servers is still typed as a dict on the generated request type;
-    // the daemon accepts a list[str] (see _cmd_edit_profile).
-    await edit.mutateAsync({
-      profile_id: args.subjectId,
-      name: form.name || null,
-      description: form.description || null,
-      default_class: form.default_class || "",
-      permission_mode: form.permission_mode || null,
-      system_prompt_suffix: form.system_prompt_suffix || null,
-      allowed_tools: form.allowed_tools,
-      mcp_servers: form.mcp_servers as unknown as Record<string, unknown>,
-    } as unknown as Parameters<typeof edit.mutateAsync>[0]);
+    await edit.mutateAsync(profileEditPayload(args.subjectId, form));
     resetBaseline(form);
   };
 
@@ -117,6 +110,7 @@ export default function ProfileSubject({ args, setToolbar }: PaneViewProps<Args>
             className="w-full rounded-md border border-gray-700 bg-gray-950 px-3 py-1.5 font-mono text-xs text-gray-200 focus:border-indigo-500 focus:outline-none"
           />
         </Field>
+        <AutonomousPermissionFields form={form} onChange={set} />
       </Section>
 
       <Section title="System prompt suffix">

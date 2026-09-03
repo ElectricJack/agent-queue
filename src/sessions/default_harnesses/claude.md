@@ -110,6 +110,26 @@ operator's real repo it is withheld. Remove the flag from this file to get
 interactive permission prompts back everywhere — the session is attachable,
 so a human *can* answer them.
 
+**The profile-level Claude opt-in is
+`claude_dangerously_skip_permissions: true`.** It defaults to `false`, is
+rejected when enabled on a non-Claude profile, and is the preferred explicit
+spelling for a Claude profile that must skip prompts outside the
+isolated-worktree default. A disabled `false` value is harmless on other
+harnesses.
+The legacy `permission_mode: bypassPermissions` spelling remains supported for
+backward compatibility and has the same effect here. If both are present, or
+if `--dangerously-skip-permissions` already appears in this harness's `args`,
+the launch command contains the flag only once. Setting the profile boolean to
+`false` through the managed editor also removes the legacy Claude alias, but it
+does not remove a flag deliberately configured in harness `args`.
+
+The word **dangerously** is accurate: this mode allows Claude to use tools
+without interactive approval and does not add filesystem or network
+confinement. A disposable worktree limits where normal repository writes land,
+but it does not prevent reads elsewhere on the host, writes through other
+tools, or network access. Use the opt-in only where the session environment,
+tool set, and task-scoped credentials supply the required boundary.
+
 **`settings_flag`** is what makes `hook_files` live. The hook JSON is
 written into the work_dir, and `--settings .aq/hooks/claude.json` is what
 tells the CLI to read it; without the flag the file is inert and

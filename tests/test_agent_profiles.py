@@ -12,6 +12,8 @@ Covers:
 - Export/import roundtrip (v2)
 """
 
+from pathlib import Path
+
 import pytest
 
 from src.config import AgentProfileConfig, AppConfig, load_config
@@ -24,6 +26,7 @@ from src.models import (
     TaskStatus,
 )
 from src.orchestrator import Orchestrator
+from src.profiles.parser import parse_profile
 from tests.session_dispatch_helpers import (
     create_session_profile,
     create_session_project,
@@ -414,6 +417,8 @@ agent_profiles:
   web-dev:
     name: "Web Developer"
     model: "claude-opus-4-20250514"
+    harness: claude
+    claude_dangerously_skip_permissions: true
     mcp_servers:
       playwright:
         command: npx
@@ -432,6 +437,8 @@ agent_profiles:
         webdev = next(p for p in config.agent_profiles if p.id == "web-dev")
         assert webdev.name == "Web Developer"
         assert webdev.model == "claude-opus-4-20250514"
+        assert webdev.harness == "claude"
+        assert webdev.claude_dangerously_skip_permissions is True
         assert "playwright" in webdev.mcp_servers
 
     def test_no_profiles_section(self, tmp_path):
@@ -460,6 +467,8 @@ class TestProfileSyncFromConfig:
                 AgentProfileConfig(
                     id="test-reviewer",
                     name="Reviewer",
+                    harness="codex",
+                    codex_full_auto=True,
                     allowed_tools=["Read", "Glob"],
                 ),
             ],
@@ -470,6 +479,8 @@ class TestProfileSyncFromConfig:
         profile = await orch.db.get_profile("test-reviewer")
         assert profile is not None
         assert profile.name == "Reviewer"
+        assert profile.harness == "codex"
+        assert profile.codex_full_auto is True
         assert profile.allowed_tools == ["Read", "Glob"]
         await orch.db.close()
 
@@ -551,6 +562,16 @@ class TestProfileCommands:
         assert "test-reviewer" in profile_ids
         assert result["count"] == len(result["profiles"])
 
+    def test_profile_mutation_tool_schemas_expose_autonomous_permission_opt_ins(self):
+        from src.tools.definitions import _ALL_TOOL_DEFINITIONS
+
+        definitions = {item["name"]: item for item in _ALL_TOOL_DEFINITIONS}
+        for command in ("create_profile", "edit_profile"):
+            properties = definitions[command]["input_schema"]["properties"]
+            assert properties["harness"]["type"] == "string"
+            assert properties["codex_full_auto"]["type"] == "boolean"
+            assert properties["claude_dangerously_skip_permissions"]["type"] == "boolean"
+
     async def test_get_profile(self, handler):
         await handler.execute(
             "create_profile",
@@ -582,6 +603,101 @@ class TestProfileCommands:
         assert result.get("updated") == "test-reviewer"
         assert "name" in result["fields"]
         assert "allowed_tools" in result["fields"]
+
+    async def test_create_edit_and_get_autonomous_permission_opt_ins(self, handler):
+        result = await handler.execute(
+            "create_profile",
+            {
+                "id": "autonomous-codex",
+                "name": "Autonomous Codex",
+                "harness": "codex",
+                "codex_full_auto": True,
+            },
+        )
+        assert result.get("created") == "autonomous-codex"
+
+        detail = await handler.execute(
+            "get_profile", {"profile_id": "autonomous-codex"}
+        )
+        assert detail["harness"] == "codex"
+        assert detail["codex_full_auto"] is True
+        assert detail["claude_dangerously_skip_permissions"] is False
+
+        result = await handler.execute(
+            "edit_profile",
+            {"profile_id": "autonomous-codex", "codex_full_auto": False},
+        )
+        assert result.get("updated") == "autonomous-codex"
+        detail = await handler.execute(
+            "get_profile", {"profile_id": "autonomous-codex"}
+        )
+        assert detail["codex_full_auto"] is False
+
+    async def test_edit_rejects_non_boolean_opt_in_without_mutating_vault(self, handler):
+        await handler.execute(
+            "create_profile",
+            {
+                "id": "safe-codex",
+                "name": "Safe Codex",
+                "harness": "codex",
+                "codex_full_auto": True,
+            },
+        )
+        vault_path = handler._vault_profile_path("safe-codex")
+        before = Path(vault_path).read_text(encoding="utf-8")
+
+        result = await handler.execute(
+            "edit_profile",
+            {"profile_id": "safe-codex", "codex_full_auto": "false"},
+        )
+
+        assert "error" in result
+        assert "must be a boolean" in result["error"]
+        assert Path(vault_path).read_text(encoding="utf-8") == before
+        profile = await handler.db.get_profile("safe-codex")
+        assert profile.codex_full_auto is True
+
+    async def test_edit_false_disables_legacy_claude_permission_alias(self, handler):
+        await handler.execute(
+            "create_profile",
+            {
+                "id": "legacy-claude",
+                "name": "Legacy Claude",
+                "harness": "claude",
+            },
+        )
+        vault_path = Path(handler._vault_profile_path("legacy-claude"))
+        vault_path.write_text(
+            "---\nid: legacy-claude\nname: Legacy Claude\n---\n"
+            "## Config\n```json\n"
+            '{"harness": "claude", "permission_mode": "bypassPermissions"}\n'
+            "```\n",
+            encoding="utf-8",
+        )
+        from src.profiles.sync import sync_profile_text_to_db
+
+        await sync_profile_text_to_db(
+            vault_path.read_text(encoding="utf-8"),
+            handler.db,
+            source_path=str(vault_path),
+            fallback_id="legacy-claude",
+        )
+
+        result = await handler.execute(
+            "edit_profile",
+            {
+                "profile_id": "legacy-claude",
+                "claude_dangerously_skip_permissions": False,
+            },
+        )
+
+        assert result.get("updated") == "legacy-claude"
+        parsed = parse_profile(vault_path.read_text(encoding="utf-8"))
+        assert "permission_mode" not in parsed.config
+        assert "claude_dangerously_skip_permissions" not in parsed.config
+        profile = await handler.db.get_profile("legacy-claude")
+        assert profile.permission_mode == ""
+        assert profile.claude_dangerously_skip_permissions is False
 
     async def test_delete_profile(self, handler):
         await handler.execute(
@@ -1102,6 +1218,75 @@ class TestExportImport:
         assert "Code Reviewer" in result["yaml"]
         await orch.db.close()
 
+    async def test_export_import_preserves_autonomous_permission_opt_ins(self, tmp_path):
+        from src.commands.handler import CommandHandler
+
+        config = AppConfig(
+            database_path=str(tmp_path / "test.db"),
+            workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
+        )
+        orch = Orchestrator(config)
+        await orch.initialize()
+        handler = CommandHandler(orch, config)
+        await handler.execute(
+            "create_profile",
+            {
+                "id": "claude-autonomous",
+                "name": "Claude Autonomous",
+                "harness": "claude",
+                "claude_dangerously_skip_permissions": True,
+            },
+        )
+
+        exported = await handler.execute(
+            "export_profile", {"profile_id": "claude-autonomous"}
+        )
+        assert "claude_dangerously_skip_permissions: true" in exported["yaml"]
+        assert "codex_full_auto" not in exported["yaml"]
+
+        imported = await handler.execute(
+            "import_profile",
+            {"source": exported["yaml"], "id": "claude-autonomous-copy"},
+        )
+        assert imported.get("imported") is True
+        profile = await orch.db.get_profile("claude-autonomous-copy")
+        assert profile.harness == "claude"
+        assert profile.claude_dangerously_skip_permissions is True
+        assert profile.codex_full_auto is False
+        await orch.db.close()
+
+    async def test_import_rejects_non_boolean_opt_in_before_writing(self, tmp_path):
+        from src.commands.handler import CommandHandler
+
+        config = AppConfig(
+            database_path=str(tmp_path / "test.db"),
+            workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
+        )
+        orch = Orchestrator(config)
+        await orch.initialize()
+        handler = CommandHandler(orch, config)
+
+        result = await handler.execute(
+            "import_profile",
+            {
+                "source": """
+agent_profile:
+  id: unsafe
+  name: Unsafe
+  harness: codex
+  codex_full_auto: "false"
+"""
+            },
+        )
+
+        assert "error" in result
+        assert "must be a boolean" in result["error"]
+        assert not (tmp_path / "data" / "vault" / "agent-types" / "unsafe").exists()
+        assert await orch.db.get_profile("unsafe") is None
+        await orch.db.close()
+
     async def test_import_profile_from_yaml(self, tmp_path):
         from src.commands.handler import CommandHandler
 
@@ -1415,4 +1600,3 @@ class TestProfileMcpServersShape:
         assert resp.status_code == 200, resp.text
         profile = await handler.db.get_profile("coder")
         assert profile.install == {"npm": ["eslint-mcp"]}
-

@@ -25,6 +25,8 @@ class ProfileDetail:
         harness (None | str | Unset):
         default_class (str | Unset):  Default: ''.
         permission_mode (str | Unset):  Default: ''.
+        codex_full_auto (bool | Unset):  Default: False.
+        claude_dangerously_skip_permissions (bool | Unset):  Default: False.
         allowed_tools (list[str] | Unset):
         mcp_servers (list[str] | Unset):
         system_prompt_suffix (str | Unset):  Default: ''.
@@ -37,6 +39,8 @@ class ProfileDetail:
     harness: None | str | Unset = UNSET
     default_class: str | Unset = ""
     permission_mode: str | Unset = ""
+    codex_full_auto: bool | Unset = False
+    claude_dangerously_skip_permissions: bool | Unset = False
     allowed_tools: list[str] | Unset = UNSET
     mcp_servers: list[str] | Unset = UNSET
     system_prompt_suffix: str | Unset = ""
@@ -59,6 +63,10 @@ class ProfileDetail:
         default_class = self.default_class
 
         permission_mode = self.permission_mode
+
+        codex_full_auto = self.codex_full_auto
+
+        claude_dangerously_skip_permissions = self.claude_dangerously_skip_permissions
 
         allowed_tools: list[str] | Unset = UNSET
         if not isinstance(self.allowed_tools, Unset):
@@ -90,6 +98,10 @@ class ProfileDetail:
             field_dict["default_class"] = default_class
         if permission_mode is not UNSET:
             field_dict["permission_mode"] = permission_mode
+        if codex_full_auto is not UNSET:
+            field_dict["codex_full_auto"] = codex_full_auto
+        if claude_dangerously_skip_permissions is not UNSET:
+            field_dict["claude_dangerously_skip_permissions"] = claude_dangerously_skip_permissions
         if allowed_tools is not UNSET:
             field_dict["allowed_tools"] = allowed_tools
         if mcp_servers is not UNSET:
@@ -125,6 +137,10 @@ class ProfileDetail:
 
         permission_mode = d.pop("permission_mode", UNSET)
 
+        codex_full_auto = d.pop("codex_full_auto", UNSET)
+
+        claude_dangerously_skip_permissions = d.pop("claude_dangerously_skip_permissions", UNSET)
+
         allowed_tools = cast(list[str], d.pop("allowed_tools", UNSET))
 
         mcp_servers = cast(list[str], d.pop("mcp_servers", UNSET))
@@ -145,6 +161,8 @@ class ProfileDetail:
             harness=harness,
             default_class=default_class,
             permission_mode=permission_mode,
+            codex_full_auto=codex_full_auto,
+            claude_dangerously_skip_permissions=claude_dangerously_skip_permissions,
             allowed_tools=allowed_tools,
             mcp_servers=mcp_servers,
             system_prompt_suffix=system_prompt_suffix,

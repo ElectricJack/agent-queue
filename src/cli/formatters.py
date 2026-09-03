@@ -699,7 +699,15 @@ def format_profile_list(data: dict) -> Table:
 def format_profile_detail(data: dict) -> Panel:
     """Format get_profile response as a panel."""
     lines: list[Text] = []
-    for key in ("id", "name", "description", "model", "permission_mode"):
+    for key in (
+        "id",
+        "name",
+        "description",
+        "model",
+        "permission_mode",
+        "codex_full_auto",
+        "claude_dangerously_skip_permissions",
+    ):
         val = data.get(key)
         if val:
             line = Text()

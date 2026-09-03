@@ -868,6 +868,10 @@ class AgentProfile:
     description: str = ""
     model: str = ""  # override model (empty = use default)
     permission_mode: str = ""  # override (empty = use default)
+    # Provider-specific autonomous permission modes.  Both are explicit,
+    # disabled-by-default opt-ins interpreted by the matching CLI harness.
+    codex_full_auto: bool = False
+    claude_dangerously_skip_permissions: bool = False
     allowed_tools: list[str] = field(default_factory=list)  # tool whitelist
     # -- Normalized capability namespaces (Playbook V2 Package 0 §3.1) -------
     # Authored in the profile markdown's ``## Capabilities`` block.  ``None``

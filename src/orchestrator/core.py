@@ -719,6 +719,11 @@ class Orchestrator(
                     description=pc.description,
                     model=pc.model,
                     permission_mode=pc.permission_mode,
+                    harness=pc.harness,
+                    codex_full_auto=pc.codex_full_auto,
+                    claude_dangerously_skip_permissions=(
+                        pc.claude_dangerously_skip_permissions
+                    ),
                     allowed_tools=pc.allowed_tools,
                     mcp_servers=_coerce_mcp_server_names(pc.mcp_servers),
                     system_prompt_suffix=pc.system_prompt_suffix,
@@ -732,6 +737,11 @@ class Orchestrator(
                         description=pc.description,
                         model=pc.model,
                         permission_mode=pc.permission_mode,
+                        harness=pc.harness,
+                        codex_full_auto=pc.codex_full_auto,
+                        claude_dangerously_skip_permissions=(
+                            pc.claude_dangerously_skip_permissions
+                        ),
                         allowed_tools=pc.allowed_tools,
                         mcp_servers=_coerce_mcp_server_names(pc.mcp_servers),
                         system_prompt_suffix=pc.system_prompt_suffix,

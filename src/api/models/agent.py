@@ -100,6 +100,8 @@ class ProfileSummary(BaseModel):
     description: str = ""
     harness: str | None = None
     default_class: str = ""
+    codex_full_auto: bool = False
+    claude_dangerously_skip_permissions: bool = False
     allowed_tools: list[str] = []
     mcp_servers: list[str] = []
     has_system_prompt: bool = False
@@ -177,6 +179,8 @@ class ProfileDetail(BaseModel):
     harness: str | None = None
     default_class: str = ""
     permission_mode: str = ""
+    codex_full_auto: bool = False
+    claude_dangerously_skip_permissions: bool = False
     allowed_tools: list[str] = []
     mcp_servers: list[str] = []
     system_prompt_suffix: str = ""

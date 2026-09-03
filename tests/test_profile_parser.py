@@ -15,6 +15,8 @@ Covers:
 
 from __future__ import annotations
 
+import pytest
+
 from src.profiles.parser import (
     CONFIG_KNOWN_KEYS,
     KNOWN_SECTIONS,
@@ -29,6 +31,7 @@ from src.profiles.parser import (
     _validate_config,
     _validate_mcp_servers,
     _validate_tools,
+    agent_profile_to_markdown,
     get_registry_tool_names,
     parse_frontmatter,
     parse_profile,
@@ -594,6 +597,45 @@ class TestParsedProfileToAgentProfile:
         assert d["permission_mode"] == "plan"
         assert "allowed_tools" not in d
         assert "mcp_servers" not in d
+
+    def test_autonomous_permission_opt_ins_convert_to_profile_fields(self):
+        text = (
+            "---\nid: autonomous\nname: Autonomous\n---\n"
+            "## Config\n```json\n"
+            '{"harness": "codex", "codex_full_auto": true, '
+            '"claude_dangerously_skip_permissions": false}\n'
+            "```\n"
+        )
+        result = parse_profile(text)
+        d = parsed_profile_to_agent_profile(result)
+
+        assert result.is_valid
+        assert d["codex_full_auto"] is True
+        assert d["claude_dangerously_skip_permissions"] is False
+
+    def test_renderer_does_not_coerce_invalid_autonomous_opt_in_values(self):
+        with pytest.raises(
+            ValueError, match="codex_full_auto must be a boolean, got str"
+        ):
+            agent_profile_to_markdown(
+                id="bad",
+                name="Bad",
+                harness="codex",
+                codex_full_auto="true",  # type: ignore[arg-type]
+            )
+
+    def test_renderer_canonicalizes_legacy_claude_permission_alias(self):
+        markdown = agent_profile_to_markdown(
+            id="legacy",
+            name="Legacy",
+            harness="claude",
+            permission_mode="bypassPermissions",
+        )
+
+        result = parse_profile(markdown)
+        assert result.is_valid
+        assert result.config["claude_dangerously_skip_permissions"] is True
+        assert "permission_mode" not in result.config
 
     def test_tools_only_conversion(self):
         text = '## Tools\n```json\n{"allowed": ["Read", "Grep"]}\n```\n'
@@ -1471,6 +1513,8 @@ class TestValidateConfig:
         """
         assert CONFIG_KNOWN_KEYS == {
             "permission_mode",
+            "codex_full_auto",
+            "claude_dangerously_skip_permissions",
             "max_tokens_per_task",
             "harness",
             "lifecycle",
@@ -1536,6 +1580,46 @@ class TestValidateConfig:
         config = {"permission_mode": "plan"}
         errors = _validate_config(config)
         assert errors == []
+
+    def test_enabled_autonomous_permission_opt_ins_require_matching_harness(self):
+        assert _validate_config({"harness": "codex", "codex_full_auto": True}) == []
+        assert (
+            _validate_config(
+                {"harness": "claude", "claude_dangerously_skip_permissions": True}
+            )
+            == []
+        )
+
+        codex_errors = _validate_config({"harness": "claude", "codex_full_auto": True})
+        claude_errors = _validate_config(
+            {"harness": "codex", "claude_dangerously_skip_permissions": True}
+        )
+        assert codex_errors == ["Config 'codex_full_auto: true' requires harness 'codex'"]
+        assert claude_errors == [
+            "Config 'claude_dangerously_skip_permissions: true' requires harness 'claude'"
+        ]
+
+    def test_disabled_autonomous_permission_opt_ins_are_harmless_defaults(self):
+        errors = _validate_config(
+            {
+                "harness": "gemini",
+                "codex_full_auto": False,
+                "claude_dangerously_skip_permissions": False,
+            }
+        )
+        assert errors == []
+
+    def test_autonomous_permission_opt_ins_are_strict_booleans(self):
+        for key, value in (
+            ("codex_full_auto", 1),
+            ("codex_full_auto", "true"),
+            ("claude_dangerously_skip_permissions", None),
+            ("claude_dangerously_skip_permissions", 0),
+        ):
+            errors = _validate_config({"harness": "codex", key: value})
+            assert errors == [
+                f"Config '{key}' must be a boolean, got {type(value).__name__}"
+            ]
 
     def test_valid_max_tokens_only(self):
         """A config with only max_tokens_per_task passes."""

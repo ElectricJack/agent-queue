@@ -59,7 +59,8 @@ and commit clean, working code.
   "default_class": "standard-medium",
   "permission_mode": "auto",
   "max_tokens_per_task": 100000,
-  "harness": "claude"
+  "harness": "claude",
+  "claude_dangerously_skip_permissions": false
 }
 ```
 
@@ -75,6 +76,79 @@ resolve the launch model, so a profile never pins one directly — the
 ``model`` Config key was removed and is likewise rejected by the parser with a
 pointer to ``default_class``.  ``src/profiles/model_pin_migration.py`` strips
 legacy pins from vault profiles on startup.
+
+### Harness automation and permission opt-ins
+
+Profiles have two provider-specific, boolean opt-ins. Both default to `false`
+when omitted:
+
+| Config key | Valid harness | CLI argument | Security posture |
+|---|---|---|---|
+| `codex_full_auto` | `codex` | `--full-auto` | Codex operates without routine approval prompts but retains its workspace sandbox. |
+| `claude_dangerously_skip_permissions` | `claude` | `--dangerously-skip-permissions` | Claude skips its permission checks; this does not create an OS-level sandbox. |
+
+For example:
+
+```json
+{
+  "harness": "codex",
+  "codex_full_auto": true
+}
+```
+
+```json
+{
+  "harness": "claude",
+  "claude_dangerously_skip_permissions": true
+}
+```
+
+Each key must be a JSON boolean. Enabling one with `true` requires the matching
+`harness`; an enabled harness mismatch is a profile parse error, so vault sync
+keeps the last valid database row rather than launching with an ambiguous
+permission posture. Omission is the preferred spelling of the disabled
+default. An explicit `false` has the same effect and is harmless on profiles
+for other harnesses, which keeps exported/default-filled data portable.
+Managed create, edit, and import commands perform the same checks before
+writing the vault file; in particular, string values such as `"false"` are
+rejected instead of being coerced to an enabled boolean.
+
+`permission_mode: "bypassPermissions"` remains supported for backward
+compatibility. It requests the selected harness's `permission_flag`, just as
+before. This is deliberately distinct from `codex_full_auto`: on Codex the
+legacy value selects `--dangerously-bypass-approvals-and-sandbox`, which is
+strictly more permissive than sandboxed `--full-auto`. On Claude, the legacy
+value and `claude_dangerously_skip_permissions: true` request the same flag and
+produce one argument, not two. If `codex_full_auto` is `true` and that Codex
+launch also qualifies for the stronger bypass mode, the bypass flag wins and
+all `--full-auto` occurrences are omitted rather than passing conflicting
+modes to the CLI.
+
+Managed profile writers use the new Claude boolean as the canonical spelling:
+editing, exporting/importing, or migrating a legacy Claude profile with
+`permission_mode: "bypassPermissions"` emits
+`claude_dangerously_skip_permissions: true` and omits the legacy value. Readers
+and imports continue to accept either spelling. Codex and other harness writers
+retain the legacy value because their `permission_flag` is not equivalent to
+Claude's new field. A managed edit that explicitly sets
+`claude_dangerously_skip_permissions: false` is the exception: it removes the
+legacy alias as well, so the dangerous mode can actually be turned off in one
+operation.
+
+Harness-level `args` also remain supported as an operator-wide customization.
+Argument composition preserves their order and removes an identical
+profile-derived argument if it is already present. A profile value of `false`
+does not remove an argument explicitly placed in the harness definition;
+profile booleans are opt-ins, not harness-policy overrides. The existing
+isolated-worktree policy may independently add a harness `permission_flag`, and
+that path is deduplicated in the same way.
+
+These options remove interactive safety stops from unattended sessions. A git
+worktree makes writes reviewable and disposable, but it does not prevent reads
+elsewhere on the host or network access. Operators should enable either option
+only for profiles whose workspace, environment, tools, and task-scoped daemon
+credentials provide an acceptable blast radius; see
+[[design/trust-and-ops#4-permission-posture-skip-permissions-inside-worktrees]].
 
 ## Tools
 ```json
@@ -109,7 +183,7 @@ After completing a task, consider:
 ````
 
 **What gets parsed deterministically (JSON blocks):**
-- `## Config` → intelligence class, harness, permission mode, token limits → DB fields
+- `## Config` → intelligence class, harness, permission and automation opt-ins, token limits → DB fields
 - `## Tools` → allowed/denied tool lists → DB fields
 - `## MCP Servers` → list of registry names → DB field (`mcp_servers: list[str]`)
 

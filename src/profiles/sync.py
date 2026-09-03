@@ -254,6 +254,10 @@ async def sync_profile_to_db(
         description=profile_dict.get("description", ""),
         model=profile_dict.get("model", ""),
         permission_mode=profile_dict.get("permission_mode", ""),
+        codex_full_auto=profile_dict.get("codex_full_auto", False),
+        claude_dangerously_skip_permissions=profile_dict.get(
+            "claude_dangerously_skip_permissions", False
+        ),
         allowed_tools=profile_dict.get("allowed_tools", []),
         harness_tools=profile_dict.get("harness_tools"),
         aq_commands=profile_dict.get("aq_commands"),

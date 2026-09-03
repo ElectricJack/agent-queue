@@ -338,10 +338,13 @@ block, mirroring `docs/specs/design/profiles.md`. Fields:
 `env`.
 
 Ship `claude` first; then `codex`, `gemini`, `opencode` (replacing the `acpx` fan-out).
-Agent-type profiles gain `harness: claude` plus `model`, `permission_mode`, `lifecycle`,
-`wake_mode`, `max_session_age`, `idle_timeout`. Files sync to an in-memory registry via the
-existing vault watcher, following the `src/profiles/parser.py` / `mcp_registry.py` pattern
-— the file is the source of truth (principle #1).
+Agent-type profiles gain `harness: claude` plus `model`, `permission_mode`,
+`codex_full_auto`, `claude_dangerously_skip_permissions`, `lifecycle`, `wake_mode`,
+`max_session_age`, and `idle_timeout`. The two provider-specific permission booleans
+default to `false` and may be enabled only with their matching harness. Files sync to an
+in-memory registry via the existing vault watcher, following the
+`src/profiles/parser.py` / `mcp_registry.py` pattern — the file is the source of truth
+(principle #1).
 
 **Seeding and upgrades.** `ensure_default_harnesses` copies
 `src/sessions/default_harnesses/*.md` into `vault/harnesses/` at startup. The vault copy
