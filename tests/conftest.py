@@ -50,6 +50,35 @@ def disable_schema_cache(monkeypatch):
     monkeypatch.setenv("AQ_SCHEMA_CACHE", "0")
 
 
+@pytest.fixture
+def perf_strict() -> None:
+    """Skip a wall-clock budget unless ``AQ_PERF_STRICT=1``.
+
+    Statement-count budgets are deterministic and always run.  Wall-clock
+    budgets are not: they measure the machine as much as the code, so under
+    ``pytest -n auto`` -- or on a developer box running several agents -- they
+    fail on load rather than on a regression.  pyproject's ``perf`` marker
+    description states the ruling; this fixture is where it is enforced, so
+    every wall-clock assertion opts in the same way instead of hand-rolling
+    the check.
+
+    It lives here rather than in ``tests/perf/conftest.py`` because wall-clock
+    budgets are not confined to that package: any suite asserting elapsed time
+    needs the same gate, and an ungated one turns CI's default arm red on load
+    (that is what it did for ``test_pathological_artifact_is_bounded``).
+
+    Take it as the *first* parameter of the test, ahead of any seeding
+    fixture, so an un-strict run skips before paying for the seed rather than
+    after.
+
+    To run the budgets, do it deliberately and serially on a quiet box::
+
+        AQ_PERF_STRICT=1 aq test -m perf -p no:xdist -s tests/perf
+    """
+    if os.environ.get("AQ_PERF_STRICT") != "1":
+        pytest.skip("AQ_PERF_STRICT not set -- wall-clock budgets need a quiet box")
+
+
 @pytest.fixture(scope="session")
 def claude_cli_path() -> str:
     """Resolve the ``claude`` CLI binary. Skip if missing."""

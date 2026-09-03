@@ -1194,9 +1194,14 @@ class TestReflectionPlaybookTemplate:
         """The playbook triggers on task.failed."""
         assert "task.failed" in playbook_source
 
-    def test_playbook_scope_is_agent_type_coding(self, playbook_source: str) -> None:
-        """The playbook scope targets agent-type:coding."""
-        assert "scope: agent-type:coding" in playbook_source
+    def test_playbook_scope_matches_its_agent_type_directory(self, playbook_source: str) -> None:
+        """The scope targets the agent type whose directory the template lives in.
+
+        The shipped agent type was renamed ``coding`` -> ``claude-opus`` when
+        the defaults moved to provider-explicit ids; the scope follows the
+        directory under ``src/prompts/default_agent_type_playbooks/``.
+        """
+        assert "scope: agent-type:claude-opus" in playbook_source
 
     def test_playbook_has_cooldown(self, playbook_source: str) -> None:
         """The playbook has a cooldown period configured."""
@@ -1209,9 +1214,14 @@ class TestReflectionPlaybookTemplate:
         lower = playbook_source.lower()
         assert "task record" in lower or "task description" in lower
 
-    def test_playbook_mentions_memory_store(self, playbook_source: str) -> None:
-        """The playbook template instructs saving insights via memory_store."""
-        assert "memory_store" in playbook_source
+    def test_playbook_mentions_memory_save(self, playbook_source: str) -> None:
+        """The playbook template instructs saving insights via memory_save.
+
+        ``memory_store``/``memory_recall``/``memory_delete`` are retired names;
+        prose playbooks use the supported ``memory_save``/``memory_search``
+        interface (tests/fixtures/playbooks/v2/coding-reflection/review.md).
+        """
+        assert "memory_save" in playbook_source
 
     def test_playbook_mentions_insight_extraction(self, playbook_source: str) -> None:
         """The playbook template describes extracting patterns/insights."""
