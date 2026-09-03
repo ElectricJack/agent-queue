@@ -5,12 +5,17 @@ surface.  Currently contains:
 
 - ``pr_merge`` — merge a PR via ``gh pr merge``.  Only callable by profiles
   that whitelist ``pr_merge`` in ``allowed_tools`` (final-reviewer only in
-  the shipped dv2-phase2 configuration).
+  the shipped dv2-phase2 configuration).  A merge is also where the daemon
+  learns *which branch* the work actually landed on — see
+  :meth:`GitCommandsMixin._record_pr_base`.
 """
 
 from __future__ import annotations
 
+import logging
 import os
+
+logger = logging.getLogger(__name__)
 
 
 class GitCommandsMixin:
@@ -73,4 +78,50 @@ class GitCommandsMixin:
         }
         if error := result.get("error"):
             response["error"] = error
+        if result["success"]:
+            # Best-effort: the merge has already happened, so a failure to
+            # annotate it must never be reported as a failed merge.
+            try:
+                response.update(await self._record_pr_base(project, pr_url, cwd))
+            except Exception:
+                logger.warning(
+                    "Could not record the base branch for %s", pr_url, exc_info=True
+                )
         return response
+
+    async def _record_pr_base(self, project, pr_url: str, cwd: str) -> dict:
+        """Record which branch a merged PR actually landed on.
+
+        "Merged" is not the same as "on the default branch".  Pkg 4's workers
+        stacked PRs #284/#288/#289 onto ``feature/playbook-v2-pkg4-core``; the
+        sweep merged all three, every task closed COMPLETED, and nothing ever
+        merged that feature branch into ``main`` — so ``main`` never grew
+        ``src/playbooks/executors/agent_task.py`` while every dependent task
+        believed its prerequisite had shipped.
+
+        The base branch therefore goes on the task as ``pr_base``, and a merge
+        to anything other than the project default branch is labelled as such
+        (``pr_merged_to_default``).  ``_sweep_resolve_pr_ci_gates`` reads the
+        same question from the PR itself before it lets a ``pr-merged`` gate
+        release dependents.  ``gh`` being unavailable is not an error — the
+        merge already happened; the annotation is best-effort.
+        """
+        base = await self.orchestrator.git.apr_base_ref(cwd, pr_url)
+        if not base:
+            return {}
+        default_branch = await self.orchestrator._get_default_branch(project)
+        on_default = base == default_branch
+        extra: dict = {"base": base, "merged_to_default": on_default}
+        if not on_default:
+            extra["note"] = f"merged to {base} (not {default_branch})"
+        try:
+            tasks = await self.db.list_tasks(project_id=project.id)
+        except Exception:
+            return extra
+        for task in tasks:
+            if task.pr_url and task.pr_url == pr_url:
+                await self.db.set_task_meta(task.id, "pr_base", base)
+                await self.db.set_task_meta(task.id, "pr_merged_to_default", on_default)
+                extra["task_id"] = task.id
+                break
+        return extra

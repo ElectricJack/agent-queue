@@ -11,12 +11,13 @@ import {
   usePlaybookSource,
   usePlaybookRuns,
   useUpdatePlaybookSource,
+  usePlaybookActivationHealth,
   type PlaybookUpdateResult,
 } from "../api/hooks";
 import StatusBadge from "../components/StatusBadge";
 import DeletePlaybookModal from "../components/DeletePlaybookModal";
 import PlaybookGraphView from "./playbook-graph/PlaybookGraphView";
-import PlaybookSemanticGraphView from "./playbook-graph-v2/PlaybookSemanticGraphView";
+import PlaybookSemanticReview from "./playbook-graph-v2/PlaybookSemanticReview";
 
 // `graph` is the V1 compiled-registry view and `semantic` the V2 artifact
 // view. They are deliberately two tabs rather than one branching component:
@@ -40,6 +41,7 @@ export default function PlaybookDetail() {
   const [deleteOpen, setDeleteOpen] = useState(false);
 
   const { data: playbooks } = usePlaybooks();
+  const activationHealth = usePlaybookActivationHealth(id);
   const meta = useMemo(() => playbooks?.find((p) => p.id === id), [playbooks, id]);
 
   return (
@@ -89,7 +91,7 @@ export default function PlaybookDetail() {
       />
 
       <div className="flex items-center gap-1 border-b border-gray-800">
-        {TABS.map((t) => (
+        {TABS.filter((t) => t.id !== "semantic" || Boolean(activationHealth.data?.activations?.length)).map((t) => (
           <button
             key={t.id}
             onClick={() => setTab(t.id)}
@@ -106,7 +108,7 @@ export default function PlaybookDetail() {
 
       {tab === "source" && <SourceTab playbookId={id} />}
       {tab === "graph" && <PlaybookGraphView playbookId={id} />}
-      {tab === "semantic" && <PlaybookSemanticGraphView playbookId={id} />}
+      {tab === "semantic" && <PlaybookSemanticReview playbookId={id} />}
       {tab === "runs" && <RunsTab playbookId={id} />}
     </div>
   );

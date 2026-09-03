@@ -39,6 +39,7 @@ vi.mock("@xyflow/react", () => ({
 const state = vi.hoisted(() => ({
   graph: {} as Record<string, unknown>,
   semanticGraph: {} as Record<string, unknown>,
+  activationHealth: {} as Record<string, unknown>,
 }));
 vi.mock("../../api/hooks", () => ({
   usePlaybooks: () => ({
@@ -54,6 +55,12 @@ vi.mock("../../api/hooks", () => ({
   useDeletePlaybook: () => ({ mutateAsync: vi.fn(), isPending: false }),
   usePlaybookGraph: () => ({ ...state.graph, refetch: vi.fn() }),
   usePlaybookV2Graph: () => ({ ...state.semanticGraph, refetch: vi.fn() }),
+  usePlaybookActivationHealth: () => state.activationHealth,
+  usePlaybookArtifactDiff: () => ({ data: undefined }),
+  usePlaybookPendingEvents: () => ({ data: { events: [] } }),
+  useSetPlaybookActivation: () => ({ mutate: vi.fn() }),
+  usePlaybookPendingEventAction: () => ({ mutate: vi.fn() }),
+  usePlaybookRunOverlay: () => ({ data: undefined }),
 }));
 
 function page() {
@@ -74,6 +81,10 @@ beforeEach(() => {
     error: null,
   };
   state.semanticGraph = { data: semanticGraph, isPending: false, isError: false, error: null };
+  state.activationHealth = {
+    data: { activations: [semanticGraph.activation] },
+    isPending: false,
+  };
 });
 afterEach(cleanup);
 
@@ -85,6 +96,12 @@ describe("PlaybookDetail tabs", () => {
     expect(screen.getByRole("button", { name: "Semantic graph" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Runs" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Compiled" })).not.toBeInTheDocument();
+  });
+
+  it("hides the Semantic graph tab until an activation exists", () => {
+    state.activationHealth = { data: { activations: [] }, isPending: false };
+    render(page());
+    expect(screen.queryByRole("button", { name: "Semantic graph" })).not.toBeInTheDocument();
   });
 
   it("renders the artifact graph on the Semantic graph tab and leaves the V1 tab intact", async () => {

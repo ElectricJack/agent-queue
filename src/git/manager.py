@@ -2074,6 +2074,192 @@ class GitManager:
                 break
         return {"success": True, "sha": sha, "error": None}
 
+    async def acount_commits_not_on_any_remote(self, checkout_path: str) -> int | None:
+        """How many commits reachable from ``HEAD`` no remote branch carries.
+
+        ``git rev-list --count HEAD --not --remotes`` is the question "would
+        deleting this worktree lose work?" asked exactly: it walks HEAD and
+        subtracts every remote-tracking ref, so it is true for a detached
+        HEAD, for a branch whose upstream was never set, and for a branch
+        pushed under a different name.  ``@{u}`` answers none of those.
+
+        ``None`` means the question could not be answered (no checkout, git
+        error) — callers must treat that as "unknown", never as zero.
+        """
+        try:
+            out = await self._arun(
+                ["rev-list", "--count", "HEAD", "--not", "--remotes"],
+                cwd=checkout_path,
+            )
+        except GitError:
+            return None
+        try:
+            return int(out.strip())
+        except ValueError:
+            return None
+
+    async def als_remote_sha(self, checkout_path: str, branch: str) -> str | None:
+        """SHA of ``origin/<branch>`` **as the remote has it right now**.
+
+        Asks the remote (``git ls-remote``) rather than a remote-tracking
+        ref: the caller is about to decide whether a push would clobber
+        somebody else's work, and a stale ``refs/remotes/origin/*`` is
+        exactly the wrong evidence for that.  ``None`` means "no such
+        branch on the remote", or the remote could not be reached.
+        """
+        _validate_ref(branch)
+        try:
+            out = await self._arun(
+                ["ls-remote", "--heads", "origin", f"refs/heads/{branch}"],
+                cwd=checkout_path,
+            )
+        except GitError:
+            return None
+        for line in out.splitlines():
+            sha, _, ref = line.partition("\t")
+            if ref.strip() == f"refs/heads/{branch}" and len(sha.strip()) == 40:
+                return sha.strip()
+        return None
+
+    async def apush_head_to(
+        self,
+        checkout_path: str,
+        branch: str,
+        *,
+        event_bus: EventBus | None = None,
+        project_id: str | None = None,
+    ) -> None:
+        """Push ``HEAD`` to ``origin/<branch>``, creating the branch if needed.
+
+        Distinct from :meth:`apush_branch`, which pushes a *named local*
+        branch and therefore cannot save a detached HEAD — the state a slot
+        worktree is routinely left in.  Never forced: a rejected push means
+        the remote branch has commits this HEAD does not, and the caller
+        picks a different name rather than overwriting them.
+        """
+        _validate_ref(branch)
+        await self._arun(
+            ["push", "origin", f"HEAD:refs/heads/{branch}"], cwd=checkout_path
+        )
+        if event_bus is not None:
+            try:
+                local_ref = await self._arun(["rev-parse", "HEAD"], cwd=checkout_path)
+                await event_bus.emit(
+                    "git.push",
+                    {
+                        "branch": branch,
+                        "remote": "origin",
+                        "commit_range": local_ref,
+                        "project_id": project_id,
+                    },
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to emit git.push event for %s", checkout_path, exc_info=True
+                )
+
+    async def alist_prs(
+        self,
+        checkout_path: str,
+        *,
+        state: str = "open",
+        base: str | None = None,
+        head: str | None = None,
+        limit: int = 30,
+    ) -> list[dict] | None:
+        """``gh pr list`` as data, or ``None`` when gh could not answer.
+
+        ``None`` and ``[]`` mean different things and callers must not
+        conflate them: no ``gh``, no auth and no network all give ``None``
+        ("unknown"), while ``[]`` is gh saying there are genuinely no such
+        pull requests.  A doctor check that read ``None`` as ``[]`` would
+        report every branch on an offline machine as stranded.
+        """
+        if state not in ("open", "closed", "merged", "all"):
+            return None
+        args = ["gh", "pr", "list", "--state", state, "--limit", str(max(1, int(limit)))]
+        if base is not None:
+            args += ["--base", _validate_ref(base, field="base branch")]
+        if head is not None:
+            args += ["--head", _validate_ref(head, field="head branch")]
+        args += ["--json", "number,url,title,baseRefName,headRefName,state"]
+        try:
+            result = await self._arun_subprocess(
+                args, cwd=checkout_path, timeout=self._GIT_TIMEOUT
+            )
+        except Exception:
+            return None
+        if result.returncode != 0:
+            return None
+        try:
+            data = json.loads(result.stdout or "[]")
+        except (ValueError, TypeError):
+            return None
+        return data if isinstance(data, list) else None
+
+    async def alist_remote_branches(
+        self, checkout_path: str, *, remote: str = "origin"
+    ) -> list[str] | None:
+        """Branch names on *remote*, from its remote-tracking refs.
+
+        Reads ``refs/remotes/<remote>`` rather than asking the network, so
+        the caller decides whether a ``fetch`` happened first.  ``<remote>/HEAD``
+        is skipped — it is a symbolic ref, not a branch.
+        """
+        try:
+            out = await self._arun(
+                [
+                    "for-each-ref",
+                    "--format=%(refname:short)",
+                    f"refs/remotes/{_validate_ref(remote, field='remote')}",
+                ],
+                cwd=checkout_path,
+            )
+        except GitError:
+            return None
+        prefix = f"{remote}/"
+        names = []
+        for line in out.splitlines():
+            name = line.strip()
+            if not name.startswith(prefix):
+                continue
+            short = name[len(prefix):]
+            if short and short != "HEAD":
+                names.append(short)
+        return names
+
+    async def apr_base_ref(self, checkout_path: str, pr_url: str) -> str | None:
+        """The branch a PR targets (``baseRefName``), or ``None`` if unknown.
+
+        A PR whose base is not the project default branch does not put its
+        commits on the default branch when it merges — that is the whole
+        stacked-PR failure this exists to detect.  ``None`` is a first-class
+        answer (no ``gh``, no auth, no network) and callers must not read it
+        as "targets the default branch".
+        """
+        try:
+            result = await self._arun_subprocess(
+                ["gh", "pr", "view", pr_url, "--json", "baseRefName"],
+                cwd=checkout_path,
+                timeout=self._GIT_TIMEOUT,
+            )
+        except Exception:
+            return None
+        if result.returncode != 0:
+            return None
+        try:
+            data = json.loads(result.stdout)
+        except (ValueError, TypeError):
+            return None
+        base = data.get("baseRefName")
+        if not base:
+            return None
+        try:
+            # gh's answer becomes a git ref argument downstream.
+            return _validate_ref(str(base), field="base branch")
+        except GitError:
+            return None
+
     async def arev_parse(self, checkout_path: str, ref: str) -> str | None:
         """Return the SHA for ``ref`` in ``checkout_path``, or None.
 
