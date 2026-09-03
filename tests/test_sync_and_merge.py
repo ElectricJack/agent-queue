@@ -497,8 +497,14 @@ class TestSyncAndMergeRetry:
 
         def mock_run(args, cwd=None):
             calls.append(args)
-            if args[:3] == ["push", "origin", "main"]:
-                if sum(1 for c in calls if c[:3] == ["push", "origin", "main"]) == 1:
+            if args[:2] == ["rev-parse", "--verify"]:
+                return "a" * 40
+            if args[0] == "merge-base":
+                return "b" * 40
+            if args[0] == "diff":
+                return ""
+            if args[0] == "push":
+                if sum(1 for c in calls if c[0] == "push") == 1:
                     raise GitError("rejected")
             # For all other commands (and second push), just record but don't execute
             return ""
@@ -509,9 +515,10 @@ class TestSyncAndMergeRetry:
 
         assert success is True
         assert err == ""
-        # Should have two push attempts
-        push_calls = [c for c in calls if c[:3] == ["push", "origin", "main"]]
+        # Should have two push attempts, each delivering the resolved OID.
+        push_calls = [c for c in calls if c[0] == "push"]
         assert len(push_calls) == 2
+        assert all(c[-1] == f"{'a' * 40}:refs/heads/main" for c in push_calls)
         # Should have a pull --rebase between them
         rebase_calls = [c for c in calls if "pull" in c and "--rebase" in c]
         assert len(rebase_calls) == 1
@@ -521,7 +528,13 @@ class TestSyncAndMergeRetry:
         mgr = GitManager()
 
         def mock_run(args, cwd=None):
-            if args[:3] == ["push", "origin", "main"]:
+            if args[:2] == ["rev-parse", "--verify"]:
+                return "a" * 40
+            if args[0] == "merge-base":
+                return "b" * 40
+            if args[0] == "diff":
+                return ""
+            if args[0] == "push":
                 raise GitError("rejected")
             return ""
 
