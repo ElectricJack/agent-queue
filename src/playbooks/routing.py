@@ -69,28 +69,6 @@ class _RoutingArtifactUnavailable(RuntimeError):
     """Admission cannot prove what the active routing policy would do."""
 
 
-def configured_routing_manager(orchestrator: Any) -> Any | None:
-    """Return the manager explicitly installed on *orchestrator*.
-
-    ``playbook_manager`` is optional until orchestrator initialization reaches
-    the playbook phase.  Reading it with permissive ``getattr`` is unsafe for
-    proxy and test-double orchestrators that fabricate missing attributes: the
-    fabricated object then looks like a real, uninitialized manager and every
-    task is conservatively gated.  Inspect the instance namespace so only the
-    manager the orchestrator actually installed participates in admission.
-
-    A real manager whose activation snapshot is not initialized is still
-    returned and therefore retains the fail-closed behavior below.
-    """
-
-    if orchestrator is None:
-        return None
-    try:
-        return vars(orchestrator).get("playbook_manager")
-    except TypeError:
-        return None
-
-
 def install_routing_activation_snapshot(
     manager: Any,
     rows: Iterable[Mapping[str, Any]],
@@ -311,10 +289,19 @@ def _artifact_command_effects(
 def _playbooks_enabled(manager: Any) -> bool:
     if manager is None:
         return False
-    return (
-        getattr(getattr(getattr(manager, "_config", None), "playbooks", None), "enabled", True)
-        is not False
-    )
+    # ``playbook_manager`` is optional during orchestrator startup.  Proxy and
+    # test-double orchestrators can fabricate a missing attribute on demand;
+    # that object is not a manager and must not make every task fail-closed.
+    # A real PlaybookManager always owns an explicit ``_config`` instance, even
+    # before its activation snapshot is initialized, so that state still takes
+    # the conservative routing-gate path below.
+    try:
+        config = vars(manager).get("_config")
+    except TypeError:
+        return False
+    if config is None:
+        return False
+    return getattr(getattr(config, "playbooks", None), "enabled", True) is not False
 
 
 def requires_routing_gate(manager, task, event_extra=None) -> bool:
