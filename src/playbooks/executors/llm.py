@@ -79,10 +79,8 @@ def _result(
     diagnostics: tuple[str, ...] = (),
 ) -> ExecutorResult:
     prompt_digest = hashlib.sha256(_prompt(step, ctx).encode()).hexdigest()
-    receipt_inputs, receipt_result = project_step_receipt(
-        {"prompt_digest": prompt_digest, "input_count": len(ctx.inputs)},
-        value or {},
-        run_id=ctx.run_id,
+    _ignored_inputs, receipt_result = project_step_receipt(
+        {}, value or {}, run_id=ctx.run_id
     )
     return ExecutorResult(
         control=StepControl.ADVANCE,
@@ -90,7 +88,7 @@ def _result(
         value=value if step.save_result_as else None,
         usage=usage,
         idempotency_key=_attempt_key(ctx),
-        receipt_inputs=receipt_inputs,
+        receipt_inputs={"prompt_digest": prompt_digest},
         receipt_result=receipt_result,
         operation=_operation(step, ctx),
         diagnostics=diagnostics,
@@ -114,7 +112,15 @@ def _published_tools(step: LlmStep, ctx: StepContext) -> list[dict[str, Any]]:
     tools: list[dict[str, Any]] = []
     for name in step.tool_use.aq_commands:
         registration = ctx.services.contracts.get(name)
-        if registration is None:
+        resolver = ctx.services.resolver
+        if registration is None or resolver is None:
+            continue
+        if not authorize_command(
+            name,
+            ctx.principal,
+            resolver=resolver,
+            mode=ctx.services.authorization_mode,
+        ).allowed:
             continue
         tools.append(
             {
@@ -205,6 +211,14 @@ class LiveLlmExecutor:
                 usage = call_usage if usage is None else usage + call_usage
                 if denied:
                     return _result(step, ctx, outcome="unauthorized", usage=usage)
+                if step.budget.max_total_tokens is not None and not usage.reported:
+                    return _result(
+                        step,
+                        ctx,
+                        outcome="budget_exceeded",
+                        usage=usage,
+                        diagnostics=("provider did not report usage",),
+                    )
                 if _usage_breaches(step, usage):
                     return _result(step, ctx, outcome="budget_exceeded", usage=usage)
                 try:

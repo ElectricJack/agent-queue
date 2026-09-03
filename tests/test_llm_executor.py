@@ -3,18 +3,25 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import hashlib
 from typing import Any
 
 from src.commands.contracts.registry import ContractRegistry
-from src.commands.principal import TRUSTED_LOCAL
+from src.commands.principal import ExecutionPrincipal, PrincipalKind, TRUSTED_LOCAL
 from src.config import LLMConfig
 from src.llm import LLMClient
 from src.llm.fake import FakeProvider
 from src.llm.types import TokenUsage
 from src.playbooks.definition import LlmStep
-from src.playbooks.executors.llm import LiveLlmExecutor, SymbolicLlmExecutor
+from src.playbooks.executors.llm import (
+    LiveLlmExecutor,
+    SymbolicLlmExecutor,
+    _published_tools,
+)
 from src.playbooks.executors.base import EngineServices, StepContext, StepControl
 from src.playbooks.expressions import ResolutionScope
+from src.profiles.capabilities import CapabilityPolicy
+from tests.fixtures.contracts.engine_contracts import ENSURE_TASK, LIST_TASKS, registry_with
 from tests.playbook_v2_engine_helpers import artifact_ref_for, minimal_artifact
 
 
@@ -131,6 +138,23 @@ async def test_usage_budget_limits_calls_and_output_tokens() -> None:
     assert result.usage == TokenUsage(10, 257, reported=True)
 
 
+async def test_hard_budget_rejects_missing_usage_from_usage_capable_provider() -> None:
+    """A capability claim cannot turn an absent response count into a trusted budget."""
+
+    class MetadataFreeProvider(FakeProvider):
+        @property
+        def reports_usage(self) -> bool:
+            return True
+
+    provider = MetadataFreeProvider()
+    provider.add_text('{"risk": "high"}')
+
+    result = await LiveLlmExecutor().execute(llm_step(), context(provider))
+
+    assert result.outcome == "budget_exceeded"
+    assert result.usage == TokenUsage(reported=False)
+
+
 async def test_prompt_inputs_are_rendered_but_not_exposed_in_receipts() -> None:
     """Raw prompt data must reach the model without being copied to durable receipts."""
     provider = FakeProvider()
@@ -142,6 +166,45 @@ async def test_prompt_inputs_are_rendered_but_not_exposed_in_receipts() -> None:
 
     assert "never-receipt-me" in provider.calls[0].messages[0]["content"]
     assert "never-receipt-me" not in str(result.receipt_inputs)
+    assert result.receipt_inputs == {
+        "prompt_digest": hashlib.sha256(provider.calls[0].messages[0]["content"].encode()).hexdigest()
+    }
+
+
+def test_published_tools_exclude_commands_denied_to_the_step_principal() -> None:
+    """Removing the publication gate would expose a tool the principal cannot dispatch."""
+
+    class Resolver:
+        def is_builtin(self, _name: str) -> bool:
+            return True
+
+        def is_plugin(self, _name: str) -> bool:
+            return False
+
+        def plugin_command_names(self) -> frozenset[str]:
+            return frozenset()
+
+    registry, _adapter = registry_with(ENSURE_TASK, LIST_TASKS)
+    provider = FakeProvider()
+    ctx = context(provider)
+    ctx = replace(
+        ctx,
+        principal=ExecutionPrincipal(
+            kind=PrincipalKind.SESSION,
+            policy=CapabilityPolicy.from_namespaces(aq_commands=["ensure_task"]),
+        ),
+        services=replace(
+            ctx.services,
+            contracts=registry,
+            resolver=Resolver(),
+            authorization_mode="enforce",
+        ),
+    )
+    step = llm_step(
+        tool_use={"enabled": True, "aq_commands": ["ensure_task", "list_tasks"]}
+    )
+
+    assert [tool["name"] for tool in _published_tools(step, ctx)] == ["ensure_task"]
 
 
 async def test_symbolic_executor_forks_across_typed_and_reserved_outcomes() -> None:
