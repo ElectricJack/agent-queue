@@ -2233,6 +2233,8 @@ class GitManager:
         self,
         checkout_path: str,
         branch_name: str,
+        *,
+        include_workspace_head: bool = True,
     ) -> str | None:
         """Return an open or merged PR URL delivering *branch_name*, or ``None``.
 
@@ -2242,8 +2244,9 @@ class GitManager:
         opened the PR from a second ref pointed at the same tip, publishes
         exactly these commits under another head name.  Treating that as "no
         PR" sends a correct, pushed task into a pointless retry, so any open
-        PR whose head commit is this branch's tip (or the workspace's
-        ``HEAD``, for when the agent never moved the task branch) counts.
+        PR whose head commit is this branch's tip (or, when
+        *include_workspace_head* is true, the workspace's ``HEAD`` for when
+        the agent never moved the task branch) counts.
 
         A merged pull request is evidence that the branch's work has already
         shipped. Closed-but-unmerged PRs deliberately remain a failure.
@@ -2253,14 +2256,10 @@ class GitManager:
         if url:
             return url
 
-        tips = {
-            sha
-            for sha in (
-                await self.arev_parse(checkout_path, branch_name),
-                await self.arev_parse(checkout_path, "HEAD"),
-            )
-            if sha
-        }
+        refs = [branch_name]
+        if include_workspace_head:
+            refs.append("HEAD")
+        tips = {sha for ref in refs if (sha := await self.arev_parse(checkout_path, ref))}
         if not tips:
             return None
         return await self._open_pr_url_by_head_commit(checkout_path, tips, branch_name)

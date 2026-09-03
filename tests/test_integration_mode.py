@@ -228,6 +228,43 @@ class TestPhaseVerifyByMode:
         assert ctx.verification_retry_in_session is True
         assert any("No open PR" in issue for issue in ctx.verification_issues)
 
+    async def test_pr_mode_rejects_a_pr_that_only_matches_default_head(self, orch):
+        """A main-head PR is not delivery evidence for the task branch."""
+        task = _pr_task("t-pr-main-head", branch_name="feature-2")
+        await orch.db.create_task(task)
+        orch.git.aget_current_branch = AsyncMock(return_value="main")
+        orch.git.ais_ancestor = AsyncMock(return_value=False)
+
+        async def find_open_pr(_workspace, _branch, *, include_workspace_head=True):
+            if include_workspace_head:
+                return "https://github.com/org/repo/pull/unrelated-main"
+            return None
+
+        orch.git.afind_open_pr = find_open_pr
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = _ctx(orch, task, ws.workspace_path)
+        ctx.close_session_live = True
+
+        assert await orch._phase_verify(ctx) == PhaseResult.STOP
+        assert ctx.verification_retry_in_session is True
+        assert any("No open PR" in issue for issue in ctx.verification_issues)
+
+    async def test_pr_mode_uses_alternate_delivery_branch_when_task_branch_is_empty(self, orch):
+        """Work committed on a delivery branch must still find its PR."""
+        task = _pr_task("t-pr-alt-delivery", branch_name="aq/t-pr-alt-delivery")
+        await orch.db.create_task(task)
+        orch.git.aget_current_branch = AsyncMock(return_value="feature/delivery")
+        orch.git.acount_commits_ahead = AsyncMock(side_effect=[0, 1])
+        orch.git.afind_open_pr = AsyncMock(return_value="https://github.com/org/repo/pull/alt")
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = _ctx(orch, task, ws.workspace_path)
+
+        assert await orch._phase_verify(ctx) == PhaseResult.CONTINUE
+        assert ctx.pr_url == "https://github.com/org/repo/pull/alt"
+        orch.git.afind_open_pr.assert_awaited_once_with(
+            ws.workspace_path, "feature/delivery", include_workspace_head=True
+        )
+
     async def test_direct_mode_auto_merges_to_default(self, orch):
         task = _direct_task()
         await orch.db.create_task(task)
