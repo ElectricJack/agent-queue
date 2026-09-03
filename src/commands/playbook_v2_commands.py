@@ -284,9 +284,27 @@ class PlaybookV2CommandsMixin:
             VaultProfileLookup(
                 profile_map,
                 plugin_command_names=self._plugin_command_names(),
+                intelligence_classes=self._v2_intelligence_classes(),
             ),
             RegisteredEventLookup(),
         )
+
+    def _v2_intelligence_classes(self):
+        """The class snapshot the AI cards resolve a model against.
+
+        Prefer the orchestrator's live registry so the graph and a session
+        launch agree even after a vault edit; fall back to a fresh vault scan
+        when no registry is mounted (tests, CLI-only handlers).
+        """
+        classes = self._live_intelligence_classes()
+        if classes is not None:
+            return classes
+        from src.intelligence_classes import load_intelligence_classes
+
+        try:
+            return load_intelligence_classes(self.config.data_dir)
+        except OSError:
+            return None
 
     def _v2_find_source(self, playbook_id: str) -> tuple[PlaybookSource | None, str | None]:
         matches: list[PlaybookSource] = []

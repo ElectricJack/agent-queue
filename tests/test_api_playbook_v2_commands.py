@@ -377,3 +377,58 @@ async def test_run_overlay_command_returns_pinned_artifact_ref():
     result = await handler._cmd_playbook_run_overlay({"run_id": "run-1"})
     assert result["artifact"]["artifact_sha256"] == ref.artifact_sha256
     assert result["artifact_is_active"] is False
+
+
+def _deep_high_class():
+    from src.intelligence_classes import IntelligenceClass
+
+    return IntelligenceClass(
+        id="deep-high",
+        name="Deep",
+        description="",
+        mapping={"anthropic": {"model": "claude-opus-5", "thinking": "high"}},
+    )
+
+
+def _reviewer_profile():
+    from src.models import AgentProfile
+
+    return AgentProfile(
+        id="reviewer", name="Reviewer", harness="claude", default_class="deep-high"
+    )
+
+
+async def test_v2_lookups_carry_the_live_intelligence_classes():
+    """The AI cards' provider/model policy is only resolvable with the snapshot."""
+    from src.profiles.intelligence import ProfileIntelligence
+
+    handler = _make_handler()
+    handler.db.list_profiles = AsyncMock(return_value=[_reviewer_profile()])
+    handler.orchestrator.intelligence_classes = {"deep-high": _deep_high_class()}
+    _contracts, profiles, _events = await handler._v2_lookups()
+    assert profiles.routing("reviewer") == ProfileIntelligence(
+        "deep-high", "anthropic", "claude-opus-5"
+    )
+
+
+async def test_v2_graph_ai_nodes_report_the_resolved_provider_and_model():
+    from src.playbooks.validation import RegistryContractLookup
+
+    definition, ref, activation = _backend_fixture()
+    handler = _backend_handler()[0]
+    handler.db.list_profiles = AsyncMock(return_value=[_reviewer_profile()])
+    handler.orchestrator.intelligence_classes = {"deep-high": _deep_high_class()}
+    _contracts, profiles, _events = await handler._v2_lookups()
+    handler._v2_health_records = AsyncMock(
+        return_value=([activation], RegistryContractLookup(), profiles)
+    )
+    result = await handler._cmd_playbook_v2_graph({"playbook_id": definition.id})
+    ai_nodes = [node["ai"] for node in result["nodes"] if node["ai"]]
+    assert ai_nodes
+    for ai in ai_nodes:
+        assert (ai["intelligence_class"], ai["provider"], ai["model"]) == (
+            "deep-high",
+            "anthropic",
+            "claude-opus-5",
+        )
+    assert ref.artifact_sha256 == result["artifact"]["artifact_sha256"]

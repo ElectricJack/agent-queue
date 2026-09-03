@@ -436,10 +436,22 @@ def _canonical_explanation(step_id: str, step: Any, definition: PlaybookDefiniti
     }
 
 
+def _routing(profiles: Any, profile_id: str) -> Any | None:
+    """The profile's resolved intelligence class / provider / model.
+
+    ``routing`` is part of the ``ProfileLookup`` protocol, but a caller may
+    still pass an older stub that only answers ``policy``; such a lookup
+    reports no routing rather than raising.
+    """
+    lookup = getattr(profiles, "routing", None)
+    return lookup(profile_id) if callable(lookup) else None
+
+
 def _ai_detail(step: Any, profiles: Any) -> dict | None:
     if not isinstance(step, (LlmStep, AgentTaskStep)):
         return None
     policy = profiles.policy(step.profile_id) if profiles is not None else None
+    routing = _routing(profiles, step.profile_id) if profiles is not None else None
     capabilities = {
         "harness_tools": sorted(getattr(policy, "harness_tools", ())),
         "aq_commands": sorted(getattr(policy, "aq_commands", ())),
@@ -458,9 +470,9 @@ def _ai_detail(step: Any, profiles: Any) -> dict | None:
         }
     return {
         "profile_id": step.profile_id,
-        "intelligence_class": None,
-        "provider": None,
-        "model": None,
+        "intelligence_class": getattr(routing, "intelligence_class", None),
+        "provider": getattr(routing, "provider", None),
+        "model": getattr(routing, "model", None),
         "capabilities": capabilities,
         "capability_fingerprint": policy.fingerprint() if policy is not None else "",
         "budget": budget,
