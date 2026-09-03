@@ -395,3 +395,48 @@ def test_capabilities_granted_unused_by_src() -> None:
         "capabilities_granted is read by production code; a reviewed fixture would "
         f"become an authority claim:\n{result.stdout}"
     )
+
+
+# ---------------------------------------------------------------------------
+# The recording is reproducible in everything but its timestamp
+# ---------------------------------------------------------------------------
+
+
+def test_rebuilding_reproduces_the_approved_artifact() -> None:
+    """A fresh build of `default-pipeline` equals the fixture except `compiled_at`.
+
+    Child plan §5.3 warns that compilation is LLM-driven and not reproducible.
+    That is true of the two LLM playbooks; it is *not* true here, because this
+    artifact is the deterministic lowering of the frozen V1 graph. Pinning that
+    is what turns "the reviewed artifact behaves like V1" from a claim in
+    `review.md` into something CI re-derives — if `lower_pipeline`, the frozen
+    graph, or the prose ever stop agreeing, this fails with the field named.
+    """
+    import importlib.util
+
+    from src.playbooks.definition import canonical_bytes
+
+    spec = importlib.util.spec_from_file_location(
+        "_pkg6_builder", REPO_ROOT / "scripts" / "rebuild-reviewed-playbook-artifacts.py"
+    )
+    assert spec is not None and spec.loader is not None
+    builder = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(builder)
+
+    rebuilt = builder.build("default-pipeline")["artifact"]
+    assert rebuilt is not None, "the frozen V1 graph no longer compiles cleanly"
+
+    fresh = json.loads(canonical_bytes(rebuilt))
+    recorded = json.loads(
+        (_fixture("default-pipeline") / "artifact.json").read_text(encoding="utf-8")
+    )
+    for field in builder.NON_DETERMINISTIC_FIELDS:
+        fresh.pop(field, None)
+        recorded.pop(field, None)
+    assert builder.NON_DETERMINISTIC_FIELDS == ("compiled_at",)
+
+    differing = sorted(k for k in set(fresh) | set(recorded) if fresh.get(k) != recorded.get(k))
+    assert not differing, (
+        "a fresh build differs from the approved recording in "
+        f"{differing}; rebuild the fixture and re-review it"
+    )

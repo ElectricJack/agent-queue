@@ -257,9 +257,28 @@ def build(playbook_id: str) -> dict[str, Any]:
     }
 
 
+#: The one field a rebuild is expected to change.  `compiled_at` records when
+#: the compile ran, so it differs on every rebuild by construction; comparing it
+#: would make `--check` say "drift" every time and mean nothing.  Every other
+#: byte of the artifact is deterministic, which is what `--check` verifies.
+NON_DETERMINISTIC_FIELDS = ("compiled_at",)
+
+
+def comparable(artifact_bytes: bytes) -> str:
+    """Artifact JSON with the non-deterministic fields removed, canonically ordered."""
+    payload = json.loads(artifact_bytes.decode("utf-8"))
+    for field in NON_DETERMINISTIC_FIELDS:
+        payload.pop(field, None)
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--check", action="store_true", help="report drift, write nothing")
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="report drift in the deterministic fields, write nothing",
+    )
     parser.add_argument("ids", nargs="*", default=None)
     args = parser.parse_args()
 
@@ -293,6 +312,17 @@ def main() -> int:
         for path, payload in files.items():
             existing = path.read_bytes() if path.exists() else None
             if existing == payload:
+                continue
+            if (
+                args.check
+                and path.name == "artifact.json"
+                and existing is not None
+                and comparable(existing) == comparable(payload)
+            ):
+                continue
+            if args.check and path.name == "artifact.sha256" and existing is not None:
+                # The hash covers `compiled_at`, so it moves whenever that does;
+                # `artifact.json` above is the assertion that matters.
                 continue
             drift += 1
             rel = path.relative_to(REPO_ROOT)
