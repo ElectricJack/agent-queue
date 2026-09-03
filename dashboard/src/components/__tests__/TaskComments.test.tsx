@@ -15,7 +15,7 @@ vi.mock("../../api/client", async (importOriginal) => ({
 }));
 vi.mock("../../api/hooks", () => ({
   useTask: (id: string) => ({ data: fixtures[id] }),
-  useProjectProfiles: () => ({ data: { agent_types: [] } }),
+  useProfiles: () => ({ data: [] }),
   useEditTask: () => ({}), useGates: () => ({ data: [] }),
   useResolveGate: () => ({}), useDeleteTask: () => ({}), useReopenWithFeedback: () => ({}),
   useTaskAttachments: () => ({ data: { success: true, attachments: [] } }),

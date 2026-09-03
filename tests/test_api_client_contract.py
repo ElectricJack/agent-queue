@@ -200,12 +200,16 @@ async def test_pool_scale_typed_route_preserves_explicit_null_max(live_app):
     ) as client:
         response = await client.post(
             "/api/pool/scale",
-            json={"project_id": "pool-api", "profile_id": "worker", "max": None},
+            json={"profile_id": "worker", "max": None},
         )
 
     assert response.status_code == 200, response.text
-    assert response.json()["max_active"] is None
-    assert response.json()["effective_max_active"] == 2
+    body = response.json()
+    assert body["max_active"] is None
+    # Bounds are global; each project's own cap is still reported per project.
+    assert body["project_caps"] == [
+        {"project_id": "pool-api", "max_concurrent_agents": 2, "effective_max_active": 2}
+    ]
 
 
 def test_codegen_routes_keep_execute_exclusions_off_every_live_router():

@@ -137,27 +137,15 @@ def validate_assignment_response(
     return decisions
 
 
-def _profile_slug(profile_id: str) -> str:
-    return profile_id.rsplit(":", 1)[-1]
-
-
 def _effective_profiles(project_id: str, profiles):
-    """Return system profiles with this project's overrides applied."""
+    """Profiles a project can route to.
 
-    scoped = {
-        _profile_slug(profile.id): profile
-        for profile in profiles
-        if profile.id.startswith(f"project:{project_id}:")
-    }
-    effective = []
-    for profile in profiles:
-        if profile.id.startswith("project:"):
-            if profile.id.startswith(f"project:{project_id}:"):
-                effective.append(profile)
-            continue
-        if profile.id not in scoped:
-            effective.append(profile)
-    return effective
+    Profiles are global: a durable worker is shared between projects, so the
+    whole registry is in play.  Rows still carrying the retired
+    ``project:<pid>:<type>`` id are skipped until the startup migration drops
+    them — they resolve nowhere.
+    """
+    return [profile for profile in profiles if ":" not in profile.id]
 
 
 def task_assignment_options(
@@ -169,14 +157,12 @@ def task_assignment_options(
 
     A task without a pinned profile, or a profile without ``default_class``,
     keeps the ordinary project-wide catalog.  Profile resolution mirrors the
-    scheduler, including project-scoped overrides.
+    scheduler.
     """
 
     if not task.profile_id:
         return tuple(options)
-    profile = resolve_profile(
-        {profile.id: profile for profile in profiles}, task.profile_id, task.project_id
-    )
+    profile = resolve_profile({profile.id: profile for profile in profiles}, task.profile_id)
     fixed_class = (getattr(profile, "default_class", "") or "").strip()
     if not fixed_class:
         return tuple(options)
@@ -216,7 +202,7 @@ def build_assignment_options(
     ]
     aggregate: dict[tuple[str, str], dict[str, int]] = {}
     for profile in effective_profiles:
-        slug = _profile_slug(profile.id)
+        slug = profile.id
         if (
             slug in _CONTROL_PROFILES
             or profile.runtime == "supervisor"

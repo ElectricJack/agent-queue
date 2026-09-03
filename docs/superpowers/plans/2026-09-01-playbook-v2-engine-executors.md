@@ -157,6 +157,46 @@ grep -rn "usage" src/llm/ || echo "no provider usage channel (expected before T-
 
 Amend §2.3 and every affected §3/§5 reference in the same commit, message `docs: reconcile package 4 plan against the live tree`. If a Package 0–3 symbol is *absent*, the correct move is to stop and escalate to the roadmap owner, not to define it here: Package 4 owning a Package 3 type is exactly the "two permanent APIs" outcome the roadmap forbids.
 
+### 2.5 Amendments applied — the C0 reconciliation, 2026-09-02
+
+§2.4's script and the greps were re-run against `origin/main` `a0e4e552`. Packages 0, 1, 2, 3 and 5 have all merged, so every "expected" row of §2.3 is now observed. The symbol check reports **one** miss and the shipped shapes differ from §3 in nine further places. Each is applied to this document below and implemented as written; nothing here is a local reimplementation of another package's type.
+
+1. **`resolve_value` and the condition evaluator do not exist.** Package 2 shipped `expressions.py` as the typed value/condition *models* plus `validation.py`'s static passes; there is no runtime resolver anywhere in `src/playbooks/`. Roadmap §3 assigns "typed values, templates, references, comparisons, and condition trees" to `src/playbooks/expressions.py`, so Package 4 adds `resolve_value(value, scope)` and `evaluate_condition(condition, scope)` **there**, not in the engine — an engine-local copy is exactly the "two permanent APIs" outcome §2.4 forbids. Package 2's §20 item 8 import discipline is preserved: the resolver needs only `typing` and the module's own models, so `test_expressions_module_has_no_intra_package_imports` still passes. A reference that cannot be resolved raises `ValueResolutionError`, which the engine maps to `input_resolution_failed` (§3.4 step 4) and `DecisionExecutor` maps likewise (§4.14).
+
+2. **`StepReceipt` is Package 3's shape, and its `outcome` is a different vocabulary from §3.6's.** §3.3.3's table was written against field names Package 3 did not ship. The live record (`src/playbooks/receipts.py`) is `receipt_id, run_id, artifact_sha256, rule_id, step_id, step_kind, outcome, started_at, snapshot_version, iteration, attempt, idempotency_key, contract_fingerprint, principal, inputs, result, selected_transition, error, error_code, tokens_in, tokens_out, cost_usd, wait_id, timed_out, cancelled_at, completed_at, duration_ms`, and `outcome` is constrained by `RECEIPT_OUTCOMES` to `success | failure | skipped | timeout | cancelled | operator_decision_required` — a *classification*, not a step outcome. §3.3.3 is therefore re-expressed as a mapping onto those columns:
+
+   | §3.3.3 wanted | Package 4 writes |
+   |---|---|
+   | `step_type` | `step_kind` |
+   | `mode` | not a receipt column; dry-run and shadow receipts are in-memory only (§3.3.5), so the mode is implied by which recorder holds them |
+   | `principal_kind`, `profile_id`, `capability_fingerprint` | the `principal` mapping, as `{"kind", "profile_id", "capability_fingerprint", "describe"}` |
+   | `outcome` (a §3.6 name) | `error_code` for a reserved outcome, and the outcome name is the tail of `selected_transition` (`transition_id(rule, step, outcome)`); `outcome` itself carries the `RECEIPT_OUTCOMES` classification |
+   | `selected_transition` as `(label, target)` | `transition_id(rule_id, step_id, outcome)`, which is what Package 5's overlay joins on |
+   | `usage` | `tokens_in` / `tokens_out` / `cost_usd` |
+   | `deadline_fired` | `timed_out` plus the `error` string naming which deadline |
+   | `cancellation` | `cancelled_at` plus `error` |
+   | `operation`, `child_task_id`, `diagnostics` | no columns exist; `operation` and the diagnostics go in `error` for a failure and are otherwise dropped, and `child_task_id` is carried on the snapshot's `agent_task_ids` (Package 3's field) rather than the receipt |
+
+   `iteration` defaults to `-1` outside a loop, not `None`, and `idempotency_key` is Package 3's four-part `run:step:iteration:attempt` (its §9.1 amendment 2), not §3.3.2's three-part key. §3.3.2's three-part form would collide across loop iterations, so the four-part key is authoritative and §3.3.2 is amended to it.
+
+3. **`project_for_receipt` is not added.** Package 3 already ships default-deny projection as `receipts.project_receipt(inputs, result, *, receipt_projection, sensitive_args, sensitive_result_fields, input_projection, run_id)`, whose no-classification default is total redaction. `base.py` exposes `project_step_receipt(...)`, a thin adapter that reads the projection off `ExecutionContract` and delegates; it holds no redaction logic of its own. §3.3.4's contract is unchanged — an unmarked field is still dropped rather than masked, and a sensitive field becomes Package 3's opaque `sensitive:<32hex>` handle rather than §3.3.4's `{"__redacted__": ...}` literal.
+
+4. **Steps have no `declared_targets()`.** `src/playbooks/definition.py:487` `step_targets(step) -> {field pointer: target step id}` is the live equivalent, and §3.1.3's `allowed` set is `frozenset(step_targets(step).values())`. It is empty for `CommandStep`… `TerminalStep` only in the sense that a terminal declares no transitions; a command *does* have transition targets, so §3.1.3's "a `GOTO` from a command is a `contract_violation` by construction" is enforced by an explicit `GOTO_CAPABLE_STEPS = {DecisionStep, ForEachStep}` check rather than by an empty target set. T-5's `test_command_executor_cannot_goto` asserts that check.
+
+5. **The golden fixture's second rule is `sweep-on-spec-approved` on `spec.approved`**, per Package 2's amendment 7 (`spec.created` was never a registered event). Every §5 and §6 reference to `sweep-on-spec-approved` / `spec-created.json` reads `sweep-on-spec-approved` / `spec-approved.json`.
+
+6. **`TerminalOutcome` is `completed | failed | cancelled`.** There is no `timed_out` terminal, so T-5's `test_terminal_outcome_maps_onto_the_run_lifecycle` is parameterised three ways. `timed_out` remains a *run* lifecycle, reached from §3.4 step 3, never from a terminal step.
+
+7. **`commit_boundary` takes a `WaitChangeSet`**, not §3.3.1's `Sequence[WaitChange]`, and its default is `EMPTY_WAIT_CHANGES`.
+
+8. **Bindings are keyed by `save_result_as`, and `bind_step_output`'s `step_id=` parameter is that binding name.** `validation.py:1090` builds its producer map from `save_result_as`, and `BindingRef.binding` reads it. §3.1.1's `BindingScope.bindings` and `RunSnapshot.bindings` are therefore the same namespace, keyed the same way; the engine calls `bind_step_output(snapshot, step_id=step.save_result_as, ...)`. The parameter name is Package 3's and is not renamed here.
+
+9. **Event/rule idempotency rides the shipped `(dispatch_id, rule_id)` unique index.** §14.1 item 3 anticipated a three-column `(playbook_id, rule_id, event_id)` index; Package 3 shipped `uq_playbook_v2_runs_dispatch_rule` on `(dispatch_id, rule_id)` instead. Rather than add a revision, `dispatch_id` is made **deterministic in the event id** — `sha256("v2-dispatch|" + event_id)[:12]` when the event carries one, `uuid4().hex[:12]` when it does not. Sibling rule runs still share it (§3.5), and a replay of the same event now collides on the database's own partial unique index, which is a stronger guarantee than the pre-read §4.2 step 4 describes. §10 therefore needs no conditional revision and §14.1 item 3 is closed. An event without an `event_id` is not deduplicated, and `DispatchResult` reports `deduplicated: tuple[str, ...]` naming the rules whose runs already existed.
+
+10. **The snapshot spells cancellation as `cancel_requested_at: float | None`**, not §10.1's `cancel_requested: bool` + `cancel_ack_state`. §3.4 step 2 and §4.9 read `snapshot.cancel_requested_at is not None`; the acknowledgement state is the lifecycle itself (`cancelling` vs `cancelled`) plus the receipt's `cancelled_at`. `RunLifecycle`, `TERMINAL_LIFECYCLES`, `LEGAL_TRANSITIONS` and `validate_transition` already ship in `run_state.py` with `cancelling` and the `paused -> cancelled` edge, so §4.9's "state_machine.py gains `cancelling`" is already satisfied and `src/playbooks/state_machine.py` (V1's) is **not** touched by Package 4.
+
+11. **`authorize_command` needs a `resolver` and a `mode`.** §3.4 step 5's two-argument call does not exist; the live signature is `authorize_command(name, principal, *, resolver, mode)` and it returns an `AuthzDecision`. `EngineServices` therefore carries the `CommandResolver` and the enforcement mode alongside the handler, and the engine passes both through. It still implements no capability check of its own (§7.1).
+
 ---
 
 ## 3. Locked interfaces — the parallelism contract
@@ -459,7 +499,7 @@ This is the contract that lets an executor author reason locally. `PlaybookEngin
 1. **Compatibility.** Compare `snapshot.artifact_ref.command_fingerprints` and `.profile_fingerprints` to the live registries. A mismatch → fail the run with `execution_contract_changed`, write an error receipt, **do not invoke the step** (spec: "An incompatible in-progress run fails before invoking the changed command"). A *transient* provider absence → pause with `dependency_unavailable` (§4.13).
 2. **Cancellation check.** If `snapshot.cancel_requested` and the run is `running`, transition to `cancelling`, call `request_cancel` on the in-flight executor if any, and commit a boundary with outcome `cancelled`.
 3. **Deadline check.** `min(run_deadline_at, step_deadline_at, wait_deadline_at)`; if passed → outcome `timed_out`, `deadline_fired` records which.
-4. **Resolve inputs.** `resolve_value` (Package 2) over `step.inputs` against `ctx.scope`. A missing or type-invalid reference → `input_resolution_failed` **before** the executor runs. The engine never injects an `UNRESOLVED` marker and never coerces to `""`.
+4. **Resolve inputs.** `resolve_value` (`expressions.py`; added by this package, §2.5 item 1) over `step.inputs` against `ctx.scope`. A missing or type-invalid reference → `input_resolution_failed` **before** the executor runs. The engine never injects an `UNRESOLVED` marker and never coerces to `""`.
 5. **Authorize.** For `CommandStep`, `authorize_command(name, ctx.principal)` (Package 0). A denial → `unauthorized`, error receipt, transition selection proceeds normally so an artifact can route a denial. The engine does **not** implement its own capability check.
 6. **Execute.** `await executor_for(step.type, ctx.mode).execute(step, ctx)`, wrapped so that an unexpected exception becomes `runtime_error` with the exception type (not its message — a message can carry an argument value) in `diagnostics`.
 7. **Validate the result.** `outcome ∈ declared ∪ ENGINE_RESERVED_OUTCOMES`; `control`/field coherence (`SUSPEND` requires `wait`; `GOTO` requires `goto_step_id ∈ step.declared_targets()`; `TERMINATE` requires `terminal_outcome`). Violation → `contract_violation`.
@@ -830,7 +870,7 @@ The roadmap names six commits. This plan uses **eight**, and both additions are 
 *Red:* `tests/test_v2_engine.py` (new).
 
 - `test_two_matching_rules_produce_two_runs` — dispatch `task.completed` (§6.2 event 1) against the §6.1 artifact, which has two rules; assert `len(result.run_ids) == 2`, ids distinct, `dispatch_id` shared. **Fails with `ModuleNotFoundError: src.playbooks.engine`.**
-- `test_sibling_failure_does_not_fail_the_other_run` — the scripted handler raises for `ensure_task` only; assert the `sweep-on-spec-created` run still reaches `sweep-done`.
+- `test_sibling_failure_does_not_fail_the_other_run` — the scripted handler raises for `ensure_task` only; assert the `sweep-on-spec-approved` run still reaches `sweep-done`.
 - `test_same_event_id_dispatched_twice_creates_no_new_runs`.
 - `test_unknown_step_type_raises_rather_than_terminating` — an artifact with `"type": "frobnicate"` raises `UnknownStepType`; it does not end the walk (§2.2 item 3's failure mode).
 - `test_business_outcome_without_an_edge_is_a_contract_violation` — a `CommandStep` whose contract declares `conflict` but whose `transitions` omits both `conflict` and `runtime_error`; assert the run fails with `contract_violation` and **not** `completed`. This is the direct replacement for `pipeline_runner.py:151-158`.
@@ -877,7 +917,7 @@ The roadmap names six commits. This plan uses **eight**, and both additions are 
 - `test_sensitive_field_is_hashed_not_masked_and_unallowed_is_dropped`.
 - `test_artifact_sha256_on_every_receipt_matches_the_pinned_ref`.
 
-*Green:* `project_for_receipt` in `base.py` and the receipt build in `_advance_one_step`.
+*Green:* `project_step_receipt` in `base.py` (§2.5 item 3, delegating to Package 3's `project_receipt`) and the receipt build in `_advance_one_step`.
 
 #### T-5 — decision and terminal
 
@@ -887,7 +927,7 @@ The roadmap names six commits. This plan uses **eight**, and both additions are 
 - `test_decision_makes_no_llm_call` — `ctx.services.llm` replaced by an object whose `__getattr__` raises; the step still resolves.
 - `test_decision_goto_outside_declared_targets_is_a_contract_violation` — a hand-built `ExecutorResult` with a foreign `goto_step_id` (§3.1.3).
 - `test_command_executor_cannot_goto` — a `GOTO` from a command step is `contract_violation`, because `CommandStep.declared_targets()` is empty.
-- `test_terminal_outcome_maps_onto_the_run_lifecycle` — parameterised over `completed`/`failed`/`cancelled`/`timed_out`.
+- `test_terminal_outcome_maps_onto_the_run_lifecycle` — parameterised over `completed`/`failed`/`cancelled` (§2.5 item 6: there is no `timed_out` terminal).
 
 *Green:* `decision.py`, `terminal.py`, and the shared-instance registration in `__init__.py`.
 
@@ -1133,7 +1173,7 @@ What it already gives this package, per step kind:
 
 | Package 4 needs | The fixture supplies |
 |---|---|
-| Two rules on two events | `review-on-task-completed` (`task.completed`), `sweep-on-spec-created` (`spec.created`) → T-1's multi-run dispatch |
+| Two rules on two events | `review-on-task-completed` (`task.completed`), `sweep-on-spec-approved` (`spec.created`) → T-1's multi-run dispatch |
 | `CommandStep` with a template input | `ensure-review-task` (`ensure_task`) → T-2 |
 | `LlmStep` with a budget and every reserved edge | `classify-risk`: `max_calls: 2`, `max_output_tokens: 1024`, `max_total_tokens: 8000`, `timeout_seconds: 120`; edges `low`, `high`, `invalid_output`, `budget_exceeded`, `provider_error`, `timed_out`, `cancelled` → T-13/T-14 and the 7-way dry-run fork |
 | `AgentTaskStep` with `cancel_child: false` | `escalate` (`wait_for_completion: true`, `timeout_seconds: 3600`) → T-8 |
@@ -1153,9 +1193,9 @@ Six realistic bus payloads, matching `src/event_schemas.py`'s declared required/
 |---|---|---|
 | `task-completed-code.json` | `task.completed` with `task_type: "code"` | Both fixture rules' guards: rule 1 matches |
 | `task-completed-docs.json` | `task.completed` with `task_type: "docs"` | Rule 1's filter rejects — the negative guard case |
-| `spec-created.json` | `spec.created` | Rule 2 matches |
+| `spec-approved.json` | `spec.approved` | Rule 2 matches |
 | `task-completed-and-spec-created.json` | a synthetic event carrying both types' fields | Not a real bus event; drives `test_two_matching_rules_produce_two_runs` deterministically without depending on two dispatches |
-| `spec-created-empty-downstream.json` | `spec.created` where `list_tasks` returns `[]` | T-7's empty-collection path |
+| `spec-approved-empty-downstream.json` | `spec.approved` where `list_tasks` returns `[]` | T-7's empty-collection path |
 | `task-completed-no-project.json` | `task.completed` with `project_id` absent | The `record_token_usage` skip path (§4.11) and the `sync_playbook_run_task` no-project branch |
 
 Each carries a stable `event_id` so idempotency assertions are reproducible.

@@ -59,24 +59,27 @@ Two commands, and **the order is not optional**: `pool scale` refuses a
 profile that is not already `lifecycle: pool`.
 
 ```bash
-aq pool set-lifecycle --project-id agent-queue \
-    --profile-id worker-standard-high-claude --lifecycle pool
+aq pool set-lifecycle --profile-id worker-standard-high-claude --lifecycle pool
 
-aq pool scale --project-id agent-queue \
-    --profile-id worker-standard-high-claude --min 0 --max 3
+aq pool scale --profile-id worker-standard-high-claude --min 0 --max 3
 ```
 
-Both write the **project-scoped** override, never the system profile:
+Both write the **system** profile:
 
 ```
-~/.agent-queue/vault/projects/<project>/agent-types/<profile>/profile.md
+~/.agent-queue/vault/agent-types/<profile>/profile.md
 ```
 
-If no override exists yet it is seeded from the system profile at
-`vault/agent-types/<profile>/profile.md`, with the frontmatter `id` rewritten
-to `project:<project>:<profile>` so the copy cannot upsert the system row.
-That scoping is why the same profile can be a pool in one project and stay on
-push in another.
+Agents are shared between projects, so a profile has exactly one definition
+and its lifecycle and bounds are global — the same pool serves every active
+project. **Sizing is still per project at runtime**: there is one pool per
+`(project, profile)`, each sized independently from that project's own demand
+and each still under that project's `max_concurrent_agents` (§3). What went
+away is per-project *configuration*, not per-project *behaviour*.
+
+Neither command needs `--project-id` any more. It is still accepted for one
+release and ignored, with a deprecation warning on the response, so existing
+scripts keep working.
 
 The write order inside the command is deliberate: the `agent_profiles` row is
 updated **first** so the very next tick honours the new value, then the vault
@@ -91,8 +94,8 @@ Both commands are admin surfaces. A worker session's task-scoped token gets
 
 ### The pool-only config keys
 
-These live in the profile's own `## Config` block, not in `config.yaml`, and
-the parser rejects them on a `task` or `named` profile:
+These live in the (system) profile's own `## Config` block, not in
+`config.yaml`, and the parser rejects them on a `task` or `named` profile:
 
 | Key | Meaning |
 |---|---|
@@ -314,28 +317,26 @@ Every repair writes a `pool.agent_repaired` event, so
 The rollback is one command per profile and needs no restart:
 
 ```bash
-aq pool set-lifecycle --project-id agent-queue \
-    --profile-id worker-standard-high-claude --lifecycle task
+aq pool set-lifecycle --profile-id worker-standard-high-claude --lifecycle task
 ```
 
 What it does, in order:
 
-1. Writes `lifecycle: task` into the project override *and* clears
-   `min_active`, `max_active` and `max_claims_per_session` — the parser rejects
-   those keys on a task profile, so leaving them behind would make the override
-   fail its next vault sync.
-2. Marks every live pool session for that profile `desired_state='stopped'`.
-   They are **not** killed: a session holding a task keeps it and releases it
-   through the normal close path; the next claim attempt returns
-   `drain_requested`.
+1. Writes `lifecycle: task` into the system profile *and* clears `min_active`,
+   `max_active` and `max_claims_per_session` — the parser rejects those keys on
+   a task profile, so leaving them behind would make the profile fail its next
+   vault sync.
+2. Marks every live pool session for that profile `desired_state='stopped'`,
+   **in every project**. They are **not** killed: a session holding a task keeps
+   it and releases it through the normal close path; the next claim attempt
+   returns `drain_requested`.
 3. Emits `pool.lifecycle_changed` and one `pool.session_drained` per session.
 
 From the next tick the push scheduler assigns that profile's tasks again.
 
-Note the asymmetry, because it is the mechanism that makes rollback per-project:
-a project-scoped row with a lifecycle *other than* `pool` does not merely fail
-to add a pool — it **removes** the system profile's pool for that project. The
-override is an explicit opt-out, not just an absence.
+The lifecycle is global, so rollback is fleet-wide: there is no way to keep a
+profile on pull in one project and push in another. If one project needs a
+different execution model, give it a different profile.
 
 To roll back everything at once, flip the master switch instead:
 
@@ -362,8 +363,13 @@ aq system get-recent-events --event-type 'pool.*' --since 10m
 
 ## 7. A cutover runbook
 
-For a project moving several worker profiles at once. Every step is an admin
+For a fleet moving several worker profiles at once. Every step is an admin
 surface; a task-scoped worker token cannot run any of them.
+
+Lifecycle and bounds are configured on the system profile and therefore apply
+to every project at once. The `--project-id` in the *inspection* commands
+below still matters — sizing and status stay per project (§3) — but the
+`set-lifecycle` / `scale` writes are fleet-wide.
 
 **1. Check the preconditions.**
 
@@ -378,8 +384,8 @@ least-loaded profile first and watch a full tick before continuing.
 
 ```bash
 P=agent-queue
-aq pool set-lifecycle --project-id $P --profile-id worker-standard-low-claude --lifecycle pool
-aq pool scale         --project-id $P --profile-id worker-standard-low-claude --min 0 --max 1
+aq pool set-lifecycle --profile-id worker-standard-low-claude --lifecycle pool
+aq pool scale         --profile-id worker-standard-low-claude --min 0 --max 1
 aq pool status --project-id $P
 ```
 
@@ -413,7 +419,8 @@ warning in §5.
 
 **5. Record it.** `pool.bounds_changed` and `pool.lifecycle_changed` are
 bus-only events and are gone once the daemon restarts. The durable record of a
-cutover is the vault override files and whatever you write down:
+cutover is the system profile markdown in the vault and whatever you write
+down:
 
 ```bash
 git -C ~/.agent-queue/vault status --short   # if the vault is version-controlled
@@ -442,15 +449,34 @@ for spec in worker-standard-low-claude:1  worker-standard-low-codex:1 \
             worker-standard-medium-claude:2 worker-deep-medium-codex:2 \
             worker-standard-high-codex:2   worker-standard-high-claude:3; do
   profile=${spec%:*}; max=${spec#*:}
-  aq pool set-lifecycle --project-id $P --profile-id "$profile" --lifecycle pool
-  aq pool scale         --project-id $P --profile-id "$profile" --min 0 --max "$max"
+  aq pool set-lifecycle --profile-id "$profile" --lifecycle pool
+  aq pool scale         --profile-id "$profile" --min 0 --max "$max"
 done
 aq pool status --project-id $P
 ```
 
 Ordered smallest-first on purpose: the first two lines are the cheap probe
-that the vault override, the harness and the claim loop all work, before the
+that the vault write, the harness and the claim loop all work, before the
 profiles that carry the real load are moved.
+
+### Upgrading a vault that still has project overrides
+
+Before profiles became global, these bounds lived in
+`vault/projects/<pid>/agent-types/<profile>/profile.md`. Those overrides no
+longer resolve. The daemon promotes each one into its system profile on the
+next startup — last writer wins on `## Config`, with the per-key diff logged —
+and you can run the same migration by hand:
+
+```bash
+aq doctor --check profiles.project_overrides            # what is left
+aq doctor --check profiles.project_overrides --fix      # promote and delete
+```
+
+Prose sections an override added (a custom `## Role`, say) are **not** merged;
+the check names them so you can hand-merge before or after. Two projects that
+overrode the same profile differently collapse into one definition — check the
+result with `aq agent get-profile <id>` and re-scale if the surviving numbers
+are not the ones you want.
 
 ---
 
@@ -490,14 +516,13 @@ aq task route --task-id <task-id> --profile-id worker-standard-medium-claude
 aq project set agent-queue default-profile worker-standard-medium-claude
 ```
 
-**3. Move pool bounds across.** Bounds live on the *project override*, not the
-system profile, so they do not follow a rename:
+**3. Move pool bounds across.** Bounds live on the profile itself, so they do
+not follow a rename — set them on the new id and stand the old one down:
 
 ```bash
-P=agent-queue
-aq pool set-lifecycle --project-id $P --profile-id worker-standard-medium-claude --lifecycle pool
-aq pool scale         --project-id $P --profile-id worker-standard-medium-claude --min 0 --max 2
-aq pool set-lifecycle --project-id $P --profile-id worker-standard --lifecycle task
+aq pool set-lifecycle --profile-id worker-standard-medium-claude --lifecycle pool
+aq pool scale         --profile-id worker-standard-medium-claude --min 0 --max 2
+aq pool set-lifecycle --profile-id worker-standard --lifecycle task
 ```
 
 **4. Delete the old profile.**

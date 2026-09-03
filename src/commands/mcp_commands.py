@@ -362,9 +362,10 @@ class McpCommandsMixin:
                 return {"error": (f"Cannot delete '{name}' — it's the embedded agent-queue server")}
 
         # Find profiles referencing this name (any scope).  We only
-        # block deletion when a project-scope deletion still has the
-        # project's own profiles using it, or system deletion has any
-        # profile (anywhere) using it.
+        # Block deletion while any profile still names the server.  Profiles
+        # are global — the same worker serves several projects — so a
+        # reference cannot be attributed to one project's copy of the server,
+        # and a project-scope delete is guarded the same way a system one is.
         referencing: list[str] = []
         try:
             profiles = await self.db.list_profiles()
@@ -374,12 +375,7 @@ class McpCommandsMixin:
             names = list(p.mcp_servers or [])
             if name not in names:
                 continue
-            if project_id is None:
-                referencing.append(p.id)
-            else:
-                # Project-scope: only count profiles in this project.
-                if p.id.startswith(f"project:{project_id}:"):
-                    referencing.append(p.id)
+            referencing.append(p.id)
         if referencing:
             return {
                 "error": (

@@ -93,7 +93,7 @@ beforeEach(() => {
   api.listIntelligenceClasses.mockResolvedValue({ data: { classes: [] } });
   api.poolStatus.mockResolvedValue({ data: { success: true, pools: [pool()] } });
   api.sessionList.mockResolvedValue({ data: { success: true, sessions: [instance("aaa"), instance("bbb", { task_id: "quick-torrent-39", started_at: 200 })], count: 2 } });
-  api.poolScale.mockResolvedValue({ data: { success: true, project_id: "agent-queue", profile_id: "worker-standard", min_active: 2, max_active: 6, terminated: [] } });
+  api.poolScale.mockResolvedValue({ data: { success: true, profile_id: "worker-standard", min_active: 2, max_active: 6, project_caps: [], terminated: [], warnings: [] } });
 });
 
 afterEach(() => {
@@ -211,9 +211,9 @@ describe("pool bounds validation", () => {
 
   it("sends an explicit null max so the API removes the profile limit", () => {
     expect(scaleRequest({ min: "2", max: "" }, pool({ max_active: null })))
-      .toEqual({ project_id: "agent-queue", profile_id: "worker-standard", min: 2, max: null });
+      .toEqual({ profile_id: "worker-standard", min: 2, max: null });
     expect(scaleRequest({ min: "2", max: "6" }, pool()))
-      .toEqual({ project_id: "agent-queue", profile_id: "worker-standard", min: 2, max: 6 });
+      .toEqual({ profile_id: "worker-standard", min: 2, max: 6 });
   });
 });
 
@@ -302,8 +302,9 @@ describe("pool settings", () => {
     fireEvent.click(within(window).getByRole("button", { name: "Save pool bounds" }));
 
     await waitFor(() => expect(api.poolScale).toHaveBeenCalledTimes(1), SLOW);
+    // Bounds are configured on the (global) system profile — no project_id.
     expect(api.poolScale.mock.calls[0]![0].body).toEqual({
-      project_id: "agent-queue", profile_id: "worker-standard", min: 2, max: 6,
+      profile_id: "worker-standard", min: 2, max: 6,
     });
     expect(await within(window).findByText("Pool bounds saved.")).toBeInTheDocument();
   });
@@ -333,13 +334,13 @@ describe("pool settings", () => {
 
     await waitFor(() => expect(api.poolScale).toHaveBeenCalledTimes(1), SLOW);
     expect(api.poolScale.mock.calls[0]![0].body).toEqual({
-      project_id: "agent-queue", profile_id: "worker-standard", min: 1, max: null,
+      profile_id: "worker-standard", min: 1, max: null,
     });
     expect(await within(window).findByText("Pool bounds saved.")).toBeInTheDocument();
   });
 
   it("surfaces an in-band pool_scale refusal", async () => {
-    api.poolScale.mockResolvedValue({ data: { success: false, error: "no pool profile 'worker-standard' for agent-queue" } });
+    api.poolScale.mockResolvedValue({ data: { success: false, error: "no pool profile 'worker-standard'" } });
     renderAgents("/");
     fireEvent.click(await screen.findByRole("button", { name: "Open worker-standard pool" }, SLOW));
     const window = await screen.findByRole("region", { name: "worker-standard pool agent window" }, SLOW);

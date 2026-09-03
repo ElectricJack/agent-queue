@@ -96,7 +96,7 @@ def profile_to_dict(profile: Any) -> dict[str, Any]:
         "id": profile.id,
         "name": profile.name,
         "description": profile.description,
-        "model": profile.model,
+        "default_class": profile.default_class,
         "permission_mode": profile.permission_mode,
         "allowed_tools": profile.allowed_tools,
         "mcp_servers": profile.mcp_servers,

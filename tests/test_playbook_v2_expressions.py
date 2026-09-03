@@ -250,7 +250,18 @@ def test_expressions_module_has_no_intra_package_imports():
         elif isinstance(node, ast.Import):
             imported.extend(alias.name for alias in node.names)
     assert [name for name in imported if name.startswith("src.")] == []
-    assert set(imported) <= {"__future__", "typing", "pydantic", "json", "re"}
+    # ``collections.abc`` joined the set with Package 4's runtime resolver
+    # (its child plan §2.5 item 1): ``ResolutionScope`` is typed over
+    # ``Mapping``.  Still stdlib-only, so the property the assertion exists
+    # for — no edge into ``src.playbooks`` — is untouched.
+    assert set(imported) <= {
+        "__future__",
+        "collections.abc",
+        "typing",
+        "pydantic",
+        "json",
+        "re",
+    }
 
 
 class TestTypeLattice:

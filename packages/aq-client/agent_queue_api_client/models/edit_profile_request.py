@@ -22,7 +22,6 @@ class EditProfileRequest:
         profile_id (str): Profile ID to edit
         name (None | str | Unset): New display name (optional)
         description (None | str | Unset): New description (optional)
-        model (None | str | Unset): New model override (optional)
         permission_mode (None | str | Unset): New permission mode (optional)
         allowed_tools (list[Any] | None | Unset): New tool whitelist (optional)
         mcp_servers (list[Any] | None | Unset): New MCP server names from the registry (optional). A legacy name ->
@@ -35,7 +34,6 @@ class EditProfileRequest:
     profile_id: str
     name: None | str | Unset = UNSET
     description: None | str | Unset = UNSET
-    model: None | str | Unset = UNSET
     permission_mode: None | str | Unset = UNSET
     allowed_tools: list[Any] | None | Unset = UNSET
     mcp_servers: list[Any] | None | Unset = UNSET
@@ -60,12 +58,6 @@ class EditProfileRequest:
             description = UNSET
         else:
             description = self.description
-
-        model: None | str | Unset
-        if isinstance(self.model, Unset):
-            model = UNSET
-        else:
-            model = self.model
 
         permission_mode: None | str | Unset
         if isinstance(self.permission_mode, Unset):
@@ -122,8 +114,6 @@ class EditProfileRequest:
             field_dict["name"] = name
         if description is not UNSET:
             field_dict["description"] = description
-        if model is not UNSET:
-            field_dict["model"] = model
         if permission_mode is not UNSET:
             field_dict["permission_mode"] = permission_mode
         if allowed_tools is not UNSET:
@@ -163,15 +153,6 @@ class EditProfileRequest:
             return cast(None | str | Unset, data)
 
         description = _parse_description(d.pop("description", UNSET))
-
-        def _parse_model(data: object) -> None | str | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            return cast(None | str | Unset, data)
-
-        model = _parse_model(d.pop("model", UNSET))
 
         def _parse_permission_mode(data: object) -> None | str | Unset:
             if data is None:
@@ -255,7 +236,6 @@ class EditProfileRequest:
             profile_id=profile_id,
             name=name,
             description=description,
-            model=model,
             permission_mode=permission_mode,
             allowed_tools=allowed_tools,
             mcp_servers=mcp_servers,

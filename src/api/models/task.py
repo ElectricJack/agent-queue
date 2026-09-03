@@ -625,23 +625,32 @@ class FormulaCookResponse(BaseModel):
     provenance: dict | None = None
 
 
+class PoolProjectCap(BaseModel):
+    """A project's runtime ceiling for a pool whose bounds are global."""
+
+    project_id: str
+    max_concurrent_agents: int | None = None
+    effective_max_active: int | None = None
+
+
 class PoolScaleResponse(BaseModel):
     success: bool
-    project_id: str | None = None
     profile_id: str | None = None
     min_active: int | None = None
     max_active: int | None = None
-    project_cap: int | None = None
-    effective_max_active: int | None = None
+    #: One row per project: bounds are configured globally, but each
+    #: project's ``max_concurrent_agents`` still caps its own pool.
+    project_caps: list[PoolProjectCap] = []
     terminated: list[str] = []
+    warnings: list[str] = []
     error: str | None = None
 
 
 class PoolSetLifecycleResponse(BaseModel):
     success: bool
-    project_id: str | None = None
     profile_id: str | None = None
     lifecycle: str | None = None
+    warnings: list[str] = []
     error: str | None = None
 
 

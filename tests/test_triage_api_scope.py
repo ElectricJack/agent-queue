@@ -49,9 +49,7 @@ async def api(tmp_path, monkeypatch, request, generated_routers):
     handler = CommandHandler(orch, config)
     for pid in ("p", "other"):
         await db.create_project(Project(id=pid, name=pid))
-    for profile_id in (
-        "triage", "coder", "reviewer", "final-reviewer", "project:p:coder", "project:other:coder",
-    ):
+    for profile_id in ("triage", "coder", "reviewer", "final-reviewer"):
         await db.upsert_profile(AgentProfile(
             id=profile_id, name=profile_id, harness="codex", needs_workspace=False,
             default_class="fast-low" if profile_id == "triage" else "deep-high",
@@ -228,11 +226,11 @@ async def test_triage_reads_only_open_routing_gates_in_its_project(api):
     assert result["waiters"] == ["target"]
 
 
-async def test_triage_reads_global_and_own_project_profiles(api):
+async def test_triage_reads_the_global_profiles(api):
     result = api.result(await api.post("list_profiles"))
     ids = {profile["id"] for profile in result["profiles"]}
-    assert ids == {"triage", "coder", "reviewer", "final-reviewer", "project:p:coder"}
-    assert result["count"] == 5
+    assert ids == {"triage", "coder", "reviewer", "final-reviewer"}
+    assert result["count"] == 4
 
 
 async def test_triage_reads_intelligence_classes(api):
@@ -244,7 +242,6 @@ async def test_triage_reads_intelligence_classes(api):
     ("get_task", {"task_id": "foreign"}),
     ("task_show", {"task_id": "foreign"}),
     ("task_route", {"task_id": "foreign", "profile_id": "coder"}),
-    ("task_route", {"task_id": "target", "profile_id": "project:other:coder"}),
     ("list_tasks", {"project_id": "other"}),
 ])
 async def test_triage_cannot_cross_project_boundary(api, command, args):

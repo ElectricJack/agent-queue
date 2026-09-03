@@ -8,7 +8,7 @@ import {
 } from "@heroicons/react/24/outline";
 import {
   useEditTask,
-  useProjectProfiles,
+  useProfiles,
   useTask,
   type TaskRef,
 } from "../api/hooks";
@@ -20,6 +20,7 @@ import TaskAttention from "../components/TaskAttention";
 import TaskDescription from "../components/TaskDescription";
 import TaskGraph, { TaskExplain } from "./task/TaskGraph";
 import { workspaceHref } from "../shell/projectNavigation";
+import { dedupeProfileOptions } from "./project/Config";
 
 interface FormState {
   title: string;
@@ -76,7 +77,7 @@ export default function TaskDetail() {
 function TaskDetailContent({ taskId }: { taskId: string }) {
   const location = useLocation();
   const { data: task, isLoading } = useTask(taskId ?? "");
-  const { data: profiles } = useProjectProfiles(task?.project_id ?? "");
+  const { data: profiles } = useProfiles();
   const editTask = useEditTask();
 
   const [editing, setEditing] = useState(false);
@@ -91,9 +92,7 @@ function TaskDetailContent({ taskId }: { taskId: string }) {
   const from = (location.state as { from?: string } | null)?.from ?? workspaceHref(task.project_id, "tasks");
   const backLabel = labelForBack(from);
   const agent = task.assigned_agent;
-  const profileOptions = (profiles?.agent_types ?? [])
-    .flatMap((row) => [row.scoped, row.global].filter(Boolean) as { id: string; name: string }[])
-    .filter((p, i, arr) => arr.findIndex((q) => q.id === p.id) === i);
+  const profileOptions = dedupeProfileOptions(profiles ?? []);
 
   const startEdit = () => {
     baseline.current = taskToForm(task);

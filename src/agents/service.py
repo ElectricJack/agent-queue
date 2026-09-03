@@ -90,10 +90,7 @@ async def list_agent_flock(orchestrator, *, project_id: str | None = None) -> li
 
         profile = profiles.get(agent.profile_id)
         if task is not None and task.profile_id:
-            profile = (
-                profiles.get(f"project:{task.project_id}:{task.profile_id}")
-                or profiles.get(task.profile_id) or profile
-            )
+            profile = profiles.get(task.profile_id) or profile
         effective = apply_agent_overrides(profile, agent)
         harness_id = (
             live.harness if live

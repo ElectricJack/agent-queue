@@ -1,0 +1,7 @@
+{
+  "event_id": "evt-spec-approved-empty",
+  "event_type": "spec.approved",
+  "project_id": "proj-empty",
+  "spec_id": "spec-3",
+  "title": "Empty sweep"
+}

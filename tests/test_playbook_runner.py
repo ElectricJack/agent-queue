@@ -523,19 +523,17 @@ class TestSandboxedPlaybook:
             "mcp__agent-queue__write_note",
         ]
 
-    async def test_relative_slug_resolved_against_project(
+    async def test_slug_is_looked_up_verbatim(
         self, mock_services, mock_db, simple_graph, event_data
     ):
-        """A bare slug (``email-triager``) is resolved against the event's
-        ``project_id`` — ``project:<pid>:email-triager`` is tried first."""
+        """Profiles are global: the declared slug is the only id tried."""
         graph = {**simple_graph, "profile_id": "email-triager"}
         mock_db.get_profile = AsyncMock(
-            return_value=self._make_profile("project:test-proj:email-triager", ["mcp__email__read"])
+            return_value=self._make_profile("email-triager", ["mcp__email__read"])
         )
         runner = PlaybookRunner(graph, event_data, mock_services, db=mock_db)
         await runner.run()
-        # Project-scoped id should have been tried first.
-        assert mock_db.get_profile.call_args_list[0].args[0] == "project:test-proj:email-triager"
+        assert [c.args[0] for c in mock_db.get_profile.call_args_list] == ["email-triager"]
 
     async def test_missing_profile_fails_closed(
         self, mock_services, mock_db, simple_graph, event_data

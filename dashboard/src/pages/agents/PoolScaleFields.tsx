@@ -32,7 +32,6 @@ export function validateBounds(draft: BoundsDraft): string | null {
 export function scaleRequest(draft: BoundsDraft, pool: PoolStatusRow) {
   const max = draft.max.trim();
   return {
-    project_id: pool.project_id,
     profile_id: pool.profile_id,
     min: Number(draft.min.trim()),
     max: max === "" ? null : Number(max),
@@ -40,10 +39,13 @@ export function scaleRequest(draft: BoundsDraft, pool: PoolStatusRow) {
 }
 
 /**
- * Edit one pool's ``min_active`` / ``max_active``.
+ * Edit one pool profile's ``min_active`` / ``max_active``.
  *
- * ``pool_scale`` writes the bounds into the project-scoped vault override, so
- * a save survives the next vault sync — unlike a direct profile-row edit.
+ * ``pool_scale`` writes the bounds into the **system** profile's vault
+ * markdown, so a save survives the next vault sync — unlike a direct
+ * profile-row edit. Profiles are global, so the bounds apply to every
+ * project's pool for this profile; each project's own concurrency cap still
+ * limits it at runtime.
  */
 export default function PoolScaleFields({ pool }: { pool: PoolStatusRow }) {
   const id = useId();
@@ -76,8 +78,8 @@ export default function PoolScaleFields({ pool }: { pool: PoolStatusRow }) {
       </div>
       <p className="text-xs text-gray-500">
         The daemon keeps at least the minimum alive and never exceeds the maximum; leave the
-        maximum empty for no upper bound. Saved bounds are written to this project's profile
-        override in the vault.
+        maximum empty for no upper bound. Bounds are saved on the system profile in the vault
+        and apply to every project that runs this pool.
       </p>
       {invalid && dirty && <p role="alert" className="text-xs text-amber-300">{invalid}</p>}
       {scale.error && <p role="alert" className="text-sm text-red-300">{scale.error.message}</p>}

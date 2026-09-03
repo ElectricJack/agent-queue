@@ -135,6 +135,109 @@ def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | 
     return None
 
 
+# Every worker profile's close protocol ends with "push the branch and open a
+# PR", so a task-scoped token has to be able to do exactly that -- and nothing
+# more.  These are capabilities of a live worker session that holds an
+# IN_PROGRESS task in this project; the grant reaches only that task's own
+# branch.  ``git_merge`` and ``pr_merge`` stay out: merging is the
+# final-reviewer's authority (see ``_FINAL_REVIEWER_COMMANDS``).
+_WORKER_GIT_READ_COMMANDS = frozenset({
+    "get_git_status", "git_diff", "git_log", "git_branch", "git_changed_files",
+})
+_WORKER_GIT_WRITE_COMMANDS = frozenset({"git_push", "git_create_pr"})
+_WORKER_GIT_COMMANDS = _WORKER_GIT_READ_COMMANDS | _WORKER_GIT_WRITE_COMMANDS
+
+
+async def worker_branches_for_session(db, scope: RequestScope) -> frozenset[str] | None:
+    """Return the branch names a live worker session may act on, else ``None``.
+
+    Authority comes from persisted state only: the session row, the task it
+    holds, and the agent that holds it.  Both lifecycles are covered --
+    ``task`` (pushed work) and ``pool`` (a claimed task) -- because both close
+    through the same protocol.  The branch set is the task's recorded
+    ``branch_name`` plus the conventional ``aq/<task_id>``; a client-supplied
+    branch outside it is refused.
+    """
+    from src.models import AgentState, TaskStatus
+
+    if db is None or not scope.session_id or not scope.project_id:
+        return None
+    session = await db.get_session(scope.session_id)
+    if (
+        session is None
+        or session.project_id != scope.project_id
+        or session.lifecycle not in {"task", "pool"}
+        or session.state not in {"starting", "running"}
+        or session.desired_state != "running"
+        or not session.task_id
+        or not session.agent_id
+        or (scope.task_id is not None and scope.task_id != session.task_id)
+        or (session.lifecycle == "task" and scope.task_id != session.task_id)
+    ):
+        return None
+    task = await db.get_task(session.task_id)
+    if (
+        task is None
+        or task.project_id != scope.project_id
+        or task.status != TaskStatus.IN_PROGRESS
+        or task.assigned_agent_id != session.agent_id
+        or (
+            session.last_claim_epoch is not None
+            and session.last_claim_epoch != task.claim_epoch
+        )
+    ):
+        return None
+    agent = await db.get_agent(session.agent_id)
+    if not (
+        agent is not None
+        and agent.enabled
+        and agent.deleted_at is None
+        and agent.state == AgentState.BUSY
+        and agent.current_task_id == task.id
+    ):
+        return None
+    branches = {f"aq/{task.id}"}
+    if task.branch_name:
+        branches.add(task.branch_name)
+    return frozenset(branches)
+
+
+async def _check_worker_git_scope(
+    command: str, args: dict, scope: RequestScope, *, db,
+) -> str | None:
+    """Gate the worker git carve-out to the session's own task branch."""
+    branches = await worker_branches_for_session(db, scope)
+    if branches is None:
+        return f"out of scope: {command}"
+    if args.get("project_id") not in (None, scope.project_id):
+        return "out of scope: project_id mismatch"
+    if args.get("session_id") not in (None, scope.session_id):
+        return "out of scope: session_id mismatch"
+    project = await db.get_project(scope.project_id)
+    default_branch = (getattr(project, "repo_default_branch", None) or "main") if project else "main"
+    # ``branch``/``name`` name the head a command would act on; ``None`` means
+    # "the branch this worktree is already on", which is the task's own.
+    # ``git_branch`` with a name creates and checks out -- only the task's own
+    # branch qualifies; without one it merely lists.
+    if (
+        command == "git_branch"
+        and args.get("name") is not None
+        and args["name"] not in branches
+    ):
+        return "out of scope: branch mismatch"
+    if command in {"git_push", "git_create_pr"}:
+        branch = args.get("branch")
+        if branch is not None and branch not in branches:
+            return "out of scope: branch mismatch"
+    if command == "git_create_pr":
+        base = args.get("base")
+        if base is not None and base != default_branch:
+            return "out of scope: branch mismatch"
+    args["project_id"] = scope.project_id
+    args["session_id"] = scope.session_id
+    return None
+
+
 # A triage task needs to inspect and route its project's queue. These are
 # capabilities of a saved, actively assigned triage session, never elevation
 # inferred from client arguments or the worker's model/name.
@@ -187,7 +290,7 @@ async def reviewed_task_for_reviewer(db, scope: RequestScope) -> str | None:
     if db is None or not scope.session_id or not scope.project_id:
         return None
     session = await db.get_session(scope.session_id)
-    reviewer_profiles = {"reviewer", f"project:{scope.project_id}:reviewer"}
+    reviewer_profiles = {"reviewer"}
     if (
         session is None
         or session.project_id != scope.project_id
@@ -250,7 +353,7 @@ async def reviewed_branch_for_final_reviewer(
     if db is None or not scope.session_id or not scope.project_id:
         return None
     session = await db.get_session(scope.session_id)
-    profiles = {"final-reviewer", f"project:{scope.project_id}:final-reviewer"}
+    profiles = {"final-reviewer"}
     if (
         session is None
         or session.task_id != scope.task_id
@@ -291,7 +394,7 @@ async def reviewed_branch_for_final_reviewer(
     worker_ids: set[str] = set()
     branches: set[str] = set()
     pr_urls: set[str] = set()
-    reviewer_profiles = {"reviewer", f"project:{scope.project_id}:reviewer"}
+    reviewer_profiles = {"reviewer"}
     for review_id in review_ids:
         review = await db.get_task(review_id)
         if (
@@ -367,7 +470,7 @@ async def _has_live_triage_assignment(db, scope: RequestScope) -> bool:
     if db is None or not scope.session_id or not scope.project_id:
         return False
     session = await db.get_session(scope.session_id)
-    triage_profiles = {"triage", f"project:{scope.project_id}:triage"}
+    triage_profiles = {"triage"}
     if (
         session is None
         or session.project_id != scope.project_id
@@ -427,6 +530,20 @@ async def check_request_scope(
             elif value != expected:
                 return f"out of scope: {key} mismatch"
         return None
+
+    if scope.kind == "session" and not scope.elevated and command in _WORKER_GIT_COMMANDS:
+        ordinary_args = dict(args)
+        error = check_command_scope(command, ordinary_args, scope)
+        if error is None:
+            args.update(ordinary_args)
+            return None
+        # ``git_diff`` is also a final-reviewer capability; let that carve-out
+        # answer for a final-review session rather than pre-empting it.
+        worker_error = await _check_worker_git_scope(command, args, scope, db=db)
+        if worker_error is None:
+            return None
+        if command not in _FINAL_REVIEWER_COMMANDS:
+            return worker_error
 
     if scope.kind == "session" and not scope.elevated and command in _REVIEWER_COMMANDS:
         # Ordinary scope first: a reviewer reading or commenting on its *own*
@@ -507,11 +624,6 @@ async def check_request_scope(
         if task is None or task.project_id != project_id:
             return "out of scope: task must belong to this triage project's queue"
         if command == "task_route":
-            profile_id = str(args.get("profile_id") or "")
-            if profile_id.startswith("project:") and not profile_id.startswith(
-                f"project:{project_id}:"
-            ):
-                return "out of scope: profile belongs to another project"
             gates = await db.get_gates_for_task(task.id)
             if not any(
                 gate["project_id"] == project_id

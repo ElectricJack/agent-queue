@@ -21,7 +21,7 @@ vi.mock("../../api/client", async (load) => ({
 vi.mock("../../api/hooks", async (load) => ({
   ...await load<typeof import("../../api/hooks")>(),
   useTask: () => ({ data: data.task }),
-  useProjectProfiles: () => ({ data: { agent_types: [] } }),
+  useProfiles: () => ({ data: [] }),
   useGates: () => ({ data: [] }),
 }));
 vi.mock("../../panes/store", () => ({ useShellPaneStore: () => ({ open: vi.fn(), close: vi.fn() }) }));

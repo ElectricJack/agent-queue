@@ -1751,8 +1751,8 @@
         "tags": [
           "agent"
         ],
-        "summary": "Create a new agent profile. Profiles configure agents with specific tools, MCP servers, model overrides, and system prompt additions. Assign profiles to tasks (profile_id) or set as project defaults (default_profile_id).",
-        "description": "Create a new agent profile. Profiles configure agents with specific tools, MCP servers, model overrides, and system prompt additions. Assign profiles to tasks (profile_id) or set as project defaults (default_profile_id).",
+        "summary": "Create a new agent profile. Profiles configure agents with specific tools, MCP servers, intelligence classes, and system prompt additions. Assign profiles to tasks (profile_id) or set as project defaults (default_profile_id).",
+        "description": "Create a new agent profile. Profiles configure agents with specific tools, MCP servers, intelligence classes, and system prompt additions. Assign profiles to tasks (profile_id) or set as project defaults (default_profile_id).",
         "operationId": "create_profile",
         "requestBody": {
           "content": {
@@ -1771,53 +1771,6 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/CreateProfileResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Command error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    }
-                  },
-                  "type": "object"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/agent/create-project-profile": {
-      "post": {
-        "tags": [
-          "agent"
-        ],
-        "summary": "Create a project-scoped agent profile.  Composes ``project:<project_id>:<agent_type>`` as the profile id and writes the vault markdown.  When ``seed_from_global`` is true (default), starts from the matching global ``<agent_type>`` profile so the override is a delta.",
-        "description": "Create a project-scoped agent profile.  Composes ``project:<project_id>:<agent_type>`` as the profile id and writes the vault markdown.  When ``seed_from_global`` is true (default), starts from the matching global ``<agent_type>`` profile so the override is a delta.",
-        "operationId": "create_project_profile",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreateProjectProfileRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CreateProjectProfileResponse"
                 }
               }
             }
@@ -1934,53 +1887,6 @@
         }
       }
     },
-    "/api/agent/delete-project-profile": {
-      "post": {
-        "tags": [
-          "agent"
-        ],
-        "summary": "Remove a project-scoped agent profile (vault file + DB row).",
-        "description": "Remove a project-scoped agent profile (vault file + DB row).",
-        "operationId": "delete_project_profile",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/DeleteProjectProfileRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DeleteProjectProfileResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Command error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    }
-                  },
-                  "type": "object"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/agent/edit": {
       "post": {
         "tags": [
@@ -2053,53 +1959,6 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/EditProfileResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Command error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    }
-                  },
-                  "type": "object"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/agent/edit-project-profile": {
-      "post": {
-        "tags": [
-          "agent"
-        ],
-        "summary": "Edit fields on a project-scoped agent profile.",
-        "description": "Edit fields on a project-scoped agent profile.",
-        "operationId": "edit_project_profile",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/EditProjectProfileRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/EditProjectProfileResponse"
                 }
               }
             }
@@ -2523,53 +2382,6 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ListProfilesResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Command error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    }
-                  },
-                  "type": "object"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/agent/list-project-profiles": {
-      "post": {
-        "tags": [
-          "agent"
-        ],
-        "summary": "List per-agent-type profile rows for a project, including the global, scoped, and effective views \u2014 plus the project-scoped MCP tool catalog snapshot in the same response.",
-        "description": "List per-agent-type profile rows for a project, including the global, scoped, and effective views \u2014 plus the project-scoped MCP tool catalog snapshot in the same response.",
-        "operationId": "list_project_profiles",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ListProjectProfilesRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ListProjectProfilesResponse"
                 }
               }
             }
@@ -7624,8 +7436,8 @@
         "tags": [
           "pool"
         ],
-        "summary": "Set a pool profile's min/max active-session bounds. Validates min >= 0, max >= 1, and max >= min; max may be null for no profile limit. With `now: true`, also terminates idle sessions above the new max, oldest first. Backs `aq pool scale`.",
-        "description": "Set a pool profile's min/max active-session bounds. Validates min >= 0, max >= 1, and max >= min; max may be null for no profile limit. With `now: true`, also terminates idle sessions above the new max, oldest first. Backs `aq pool scale`.",
+        "summary": "Set a pool profile's min/max active-session bounds on the system profile (they apply to every project; each project's max_concurrent_agents still caps its own pool). Validates min >= 0, max >= 1, and max >= min; max may be null for no profile limit. With `now: true`, also terminates idle sessions above the effective max, oldest first. Backs `aq pool scale`.",
+        "description": "Set a pool profile's min/max active-session bounds on the system profile (they apply to every project; each project's max_concurrent_agents still caps its own pool). Validates min >= 0, max >= 1, and max >= min; max may be null for no profile limit. With `now: true`, also terminates idle sessions above the effective max, oldest first. Backs `aq pool scale`.",
         "operationId": "pool_scale",
         "requestBody": {
           "content": {
@@ -7671,8 +7483,8 @@
         "tags": [
           "pool"
         ],
-        "summary": "Set one project's profile lifecycle to task or pool. Refuses pool when swarm.enabled is false. Backs `aq pool set-lifecycle`.",
-        "description": "Set one project's profile lifecycle to task or pool. Refuses pool when swarm.enabled is false. Backs `aq pool set-lifecycle`.",
+        "summary": "Set a profile's lifecycle to task or pool on the system profile (it applies to every project). Refuses pool when swarm.enabled is false. Backs `aq pool set-lifecycle`.",
+        "description": "Set a profile's lifecycle to task or pool on the system profile (it applies to every project). Refuses pool when swarm.enabled is false. Backs `aq pool set-lifecycle`.",
         "operationId": "pool_set_lifecycle",
         "requestBody": {
           "content": {
@@ -16203,7 +16015,7 @@
             "title": "Description",
             "description": "What this profile is for (optional)"
           },
-          "model": {
+          "default_class": {
             "anyOf": [
               {
                 "type": "string"
@@ -16212,8 +16024,8 @@
                 "type": "null"
               }
             ],
-            "title": "Model",
-            "description": "Model override (optional, empty = use default)"
+            "title": "Default Class",
+            "description": "Default intelligence class id (optional)"
           },
           "permission_mode": {
             "anyOf": [
@@ -16304,173 +16116,6 @@
           "name"
         ],
         "title": "CreateProfileResponse"
-      },
-      "CreateProjectProfileRequest": {
-        "properties": {
-          "project_id": {
-            "type": "string",
-            "title": "Project Id",
-            "description": ""
-          },
-          "agent_type": {
-            "type": "string",
-            "title": "Agent Type",
-            "description": ""
-          },
-          "seed_from_global": {
-            "type": "boolean",
-            "title": "Seed From Global",
-            "description": "",
-            "default": true
-          },
-          "name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Name",
-            "description": ""
-          },
-          "description": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Description",
-            "description": ""
-          },
-          "model": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Model",
-            "description": ""
-          },
-          "permission_mode": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Permission Mode",
-            "description": ""
-          },
-          "allowed_tools": {
-            "anyOf": [
-              {
-                "items": {},
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Allowed Tools",
-            "description": ""
-          },
-          "mcp_servers": {
-            "anyOf": [
-              {
-                "items": {},
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Mcp Servers",
-            "description": ""
-          },
-          "system_prompt_suffix": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "System Prompt Suffix",
-            "description": ""
-          },
-          "install": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Install",
-            "description": ""
-          }
-        },
-        "type": "object",
-        "required": [
-          "project_id",
-          "agent_type"
-        ],
-        "title": "CreateProjectProfileRequest"
-      },
-      "CreateProjectProfileResponse": {
-        "properties": {
-          "created": {
-            "type": "string",
-            "title": "Created"
-          },
-          "project_id": {
-            "type": "string",
-            "title": "Project Id"
-          },
-          "agent_type": {
-            "type": "string",
-            "title": "Agent Type"
-          },
-          "path": {
-            "type": "string",
-            "title": "Path"
-          },
-          "warnings": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Warnings"
-          }
-        },
-        "type": "object",
-        "required": [
-          "created",
-          "project_id",
-          "agent_type",
-          "path"
-        ],
-        "title": "CreateProjectProfileResponse"
       },
       "CreateProjectRequest": {
         "properties": {
@@ -17349,57 +16994,6 @@
           "name"
         ],
         "title": "DeleteProfileResponse"
-      },
-      "DeleteProjectProfileRequest": {
-        "properties": {
-          "project_id": {
-            "type": "string",
-            "title": "Project Id",
-            "description": ""
-          },
-          "agent_type": {
-            "type": "string",
-            "title": "Agent Type",
-            "description": ""
-          }
-        },
-        "type": "object",
-        "required": [
-          "project_id",
-          "agent_type"
-        ],
-        "title": "DeleteProjectProfileRequest"
-      },
-      "DeleteProjectProfileResponse": {
-        "properties": {
-          "deleted": {
-            "type": "string",
-            "title": "Deleted"
-          },
-          "project_id": {
-            "type": "string",
-            "title": "Project Id"
-          },
-          "agent_type": {
-            "type": "string",
-            "title": "Agent Type"
-          },
-          "removed_paths": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Removed Paths",
-            "default": []
-          }
-        },
-        "type": "object",
-        "required": [
-          "deleted",
-          "project_id",
-          "agent_type"
-        ],
-        "title": "DeleteProjectProfileResponse"
       },
       "DeleteProjectRequest": {
         "properties": {
@@ -18432,18 +18026,6 @@
             "title": "Description",
             "description": "New description (optional)"
           },
-          "model": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Model",
-            "description": "New model override (optional)"
-          },
           "permission_mode": {
             "anyOf": [
               {
@@ -18560,172 +18142,6 @@
           "updated"
         ],
         "title": "EditProfileResponse"
-      },
-      "EditProjectProfileRequest": {
-        "properties": {
-          "project_id": {
-            "type": "string",
-            "title": "Project Id",
-            "description": ""
-          },
-          "agent_type": {
-            "type": "string",
-            "title": "Agent Type",
-            "description": ""
-          },
-          "name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Name",
-            "description": ""
-          },
-          "description": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Description",
-            "description": ""
-          },
-          "model": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Model",
-            "description": ""
-          },
-          "permission_mode": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Permission Mode",
-            "description": ""
-          },
-          "allowed_tools": {
-            "anyOf": [
-              {
-                "items": {},
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Allowed Tools",
-            "description": ""
-          },
-          "mcp_servers": {
-            "anyOf": [
-              {
-                "items": {},
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Mcp Servers",
-            "description": ""
-          },
-          "system_prompt_suffix": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "System Prompt Suffix",
-            "description": ""
-          },
-          "install": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Install",
-            "description": ""
-          },
-          "default_class": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Default Class",
-            "description": ""
-          }
-        },
-        "type": "object",
-        "required": [
-          "project_id",
-          "agent_type"
-        ],
-        "title": "EditProjectProfileRequest"
-      },
-      "EditProjectProfileResponse": {
-        "properties": {
-          "updated": {
-            "type": "string",
-            "title": "Updated"
-          },
-          "fields": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Fields",
-            "default": []
-          },
-          "warnings": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Warnings"
-          }
-        },
-        "type": "object",
-        "required": [
-          "updated"
-        ],
-        "title": "EditProjectProfileResponse"
       },
       "EditProjectRequest": {
         "properties": {
@@ -21860,11 +21276,6 @@
           "description": {
             "type": "string",
             "title": "Description",
-            "default": ""
-          },
-          "model": {
-            "type": "string",
-            "title": "Model",
             "default": ""
           },
           "harness": {
@@ -25924,49 +25335,6 @@
         },
         "type": "object",
         "title": "ListProfilesResponse"
-      },
-      "ListProjectProfilesRequest": {
-        "properties": {
-          "project_id": {
-            "type": "string",
-            "title": "Project Id",
-            "description": ""
-          }
-        },
-        "type": "object",
-        "required": [
-          "project_id"
-        ],
-        "title": "ListProjectProfilesRequest"
-      },
-      "ListProjectProfilesResponse": {
-        "properties": {
-          "project_id": {
-            "type": "string",
-            "title": "Project Id"
-          },
-          "agent_types": {
-            "items": {
-              "$ref": "#/components/schemas/ProjectProfileRow"
-            },
-            "type": "array",
-            "title": "Agent Types",
-            "default": []
-          },
-          "tool_catalog": {
-            "additionalProperties": {
-              "$ref": "#/components/schemas/CatalogEntryModel"
-            },
-            "type": "object",
-            "title": "Tool Catalog",
-            "default": {}
-          }
-        },
-        "type": "object",
-        "required": [
-          "project_id"
-        ],
-        "title": "ListProjectProfilesResponse"
       },
       "ListProjectsRequest": {
         "properties": {},
@@ -30766,12 +30134,55 @@
         "title": "PoolInstanceStatus",
         "description": "One active or quarantined session belonging to a worker pool."
       },
-      "PoolScaleRequest": {
+      "PoolProjectCap": {
         "properties": {
           "project_id": {
             "type": "string",
+            "title": "Project Id"
+          },
+          "max_concurrent_agents": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Concurrent Agents"
+          },
+          "effective_max_active": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective Max Active"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id"
+        ],
+        "title": "PoolProjectCap",
+        "description": "A project's runtime ceiling for a pool whose bounds are global."
+      },
+      "PoolScaleRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Project Id",
-            "description": "Project ID."
+            "description": "Deprecated and ignored \u2014 bounds are global. Accepted for one release so existing scripts keep working."
           },
           "profile_id": {
             "type": "string",
@@ -30817,7 +30228,6 @@
         },
         "type": "object",
         "required": [
-          "project_id",
           "profile_id"
         ],
         "title": "PoolScaleRequest"
@@ -30827,17 +30237,6 @@
           "success": {
             "type": "boolean",
             "title": "Success"
-          },
-          "project_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Project Id"
           },
           "profile_id": {
             "anyOf": [
@@ -30872,27 +30271,13 @@
             ],
             "title": "Max Active"
           },
-          "project_cap": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Project Cap"
-          },
-          "effective_max_active": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Effective Max Active"
+          "project_caps": {
+            "items": {
+              "$ref": "#/components/schemas/PoolProjectCap"
+            },
+            "type": "array",
+            "title": "Project Caps",
+            "default": []
           },
           "terminated": {
             "items": {
@@ -30900,6 +30285,14 @@
             },
             "type": "array",
             "title": "Terminated",
+            "default": []
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings",
             "default": []
           },
           "error": {
@@ -30923,9 +30316,16 @@
       "PoolSetLifecycleRequest": {
         "properties": {
           "project_id": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Project Id",
-            "description": "Project ID."
+            "description": "Deprecated and ignored \u2014 lifecycle is global. Accepted for one release so existing scripts keep working."
           },
           "profile_id": {
             "type": "string",
@@ -30940,7 +30340,6 @@
         },
         "type": "object",
         "required": [
-          "project_id",
           "profile_id",
           "lifecycle"
         ],
@@ -30951,17 +30350,6 @@
           "success": {
             "type": "boolean",
             "title": "Success"
-          },
-          "project_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Project Id"
           },
           "profile_id": {
             "anyOf": [
@@ -30984,6 +30372,14 @@
               }
             ],
             "title": "Lifecycle"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings",
+            "default": []
           },
           "error": {
             "anyOf": [
@@ -31264,18 +30660,6 @@
       },
       "ProfileAuditRequest": {
         "properties": {
-          "project_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Project Id",
-            "description": "Only audit this project's profiles"
-          },
           "legacy_only": {
             "anyOf": [
               {
@@ -31414,11 +30798,6 @@
           "description": {
             "type": "string",
             "title": "Description",
-            "default": ""
-          },
-          "model": {
-            "type": "string",
-            "title": "Model",
             "default": ""
           },
           "harness": {
@@ -31731,11 +31110,6 @@
             "title": "Description",
             "default": ""
           },
-          "model": {
-            "type": "string",
-            "title": "Model",
-            "default": ""
-          },
           "harness": {
             "anyOf": [
               {
@@ -31818,54 +31192,6 @@
         },
         "type": "object",
         "title": "ProjectGraphResponse"
-      },
-      "ProjectProfileRow": {
-        "properties": {
-          "agent_type": {
-            "type": "string",
-            "title": "Agent Type"
-          },
-          "global": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/ProfileDetail"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "scoped": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/ProfileDetail"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "effective": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/ProfileDetail"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "has_override": {
-            "type": "boolean",
-            "title": "Has Override",
-            "default": false
-          }
-        },
-        "type": "object",
-        "required": [
-          "agent_type"
-        ],
-        "title": "ProjectProfileRow"
       },
       "ProjectReadyRequest": {
         "properties": {

@@ -146,8 +146,8 @@ async def _start_locked(orchestrator, agent_id, config):
     if agent.role != "worker":
         raise TerminalStartError("Only workers and the canonical supervisor have terminals")
     profile = await db.get_profile(agent.profile_id) if agent.profile_id else None
-    if profile is None or agent.profile_id.startswith("project:"):
-        raise TerminalStartError("Agent needs a valid global profile before starting")
+    if profile is None:
+        raise TerminalStartError("Agent needs a valid profile before starting")
     profile = apply_agent_overrides(profile, agent)
     harness = orchestrator.harness_registry.get(profile.harness or "claude", project_id=None)
     if harness is None:

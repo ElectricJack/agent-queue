@@ -382,7 +382,6 @@ def _rewrite_profile_md(parsed, mcp_server_names: list[str]) -> str:
         id=fm.id,
         name=fm.name or fm.id,
         description=str(fm.extra.get("description") or ""),
-        model=str(parsed.config.get("model") or ""),
         permission_mode=str(parsed.config.get("permission_mode") or ""),
         allowed_tools=list(parsed.tools.get("allowed") or []),
         mcp_servers=list(mcp_server_names) if mcp_server_names else None,
@@ -391,6 +390,7 @@ def _rewrite_profile_md(parsed, mcp_server_names: list[str]) -> str:
         rules=parsed.rules,
         reflection=parsed.reflection,
         tags=fm.tags or None,
+        default_class=str(parsed.config.get("default_class") or ""),
     )
 
 

@@ -1,0 +1,9 @@
+{
+  "event_id": "evt-task-completed-docs",
+  "event_type": "task.completed",
+  "project_id": "proj-1",
+  "review_task": true,
+  "task_id": "task-2",
+  "task_type": "docs",
+  "title": "Write the guide"
+}

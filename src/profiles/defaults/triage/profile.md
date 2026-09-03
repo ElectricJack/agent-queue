@@ -50,7 +50,6 @@ retrying the same gates or creating replacement triage tasks.
 ```json
 {
   "harness": "claude",
-  "model": "claude-sonnet-4-6",
   "default_class": "fast-low",
   "needs_workspace": false,
   "lifecycle": "task"
