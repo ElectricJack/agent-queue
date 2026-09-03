@@ -202,7 +202,8 @@ class TestRestartAtTheWaitBoundary:
 def interrupted_attempt(
     snapshot: RunSnapshot, *, step_id: str, step_kind: str = "command"
 ) -> StepReceipt:
-    """The durable half of an executor call that died before its boundary."""
+    """The durable half of an executor call that died before its boundary:
+    the ``attempt_start`` fence the engine commits before external work."""
     return StepReceipt(
         receipt_id=uuid4().hex,
         run_id=snapshot.run_id,
@@ -210,7 +211,9 @@ def interrupted_attempt(
         rule_id=snapshot.rule_id,
         step_id=step_id,
         step_kind=step_kind,
-        outcome="skipped",
+        receipt_kind="attempt_start",
+        turn_index=0,
+        outcome="started",
         started_at=1_000.0,
         snapshot_version=snapshot.version,
         attempt=1,
@@ -469,7 +472,10 @@ class TestRestartMidLoop:
         )
         assert replayed.attempt == 1
         assert replayed.idempotency_key == f"{snapshot.run_id}:open-gate:1:1"
-        keys = [(r.step_id, r.iteration, r.attempt) for r in runs.receipts]
+        keys = [
+            (r.step_id, r.iteration, r.attempt, r.turn_index, r.receipt_kind)
+            for r in runs.receipts
+        ]
         assert len(set(keys)) == len(keys)
 
     @pytest.mark.asyncio
@@ -512,7 +518,11 @@ class TestReceiptTrail:
         adapter.queue.extend([downstream("d-1", "d-2"), ok("t-1"), ok("t-2")])
         outcome = await engine.run_rule(ref, "sweep", event("spec-approved"), TRUSTED_LOCAL)
         assert outcome.lifecycle is RunLifecycle.COMPLETED
-        trail = [(r.step_id, r.iteration, r.attempt) for r in runs.receipts]
+        trail = [
+            (r.step_id, r.iteration, r.attempt)
+            for r in runs.receipts
+            if r.receipt_kind == "step"
+        ]
         assert trail == [
             ("list-downstream", -1, 1),
             ("for-each-task", -1, 1),

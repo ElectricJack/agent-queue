@@ -303,7 +303,13 @@ class TestStepBoundary:
         assert isinstance(outcome, RunOutcome)
         assert outcome.lifecycle is RunLifecycle.COMPLETED
         assert runs.snapshots[outcome.run_id].current_step_id == "review-done"
-        assert [r.step_id for r in runs.receipts] == ["ensure-review-task", "review-done"]
+        # The command attempt is fenced by a receipted start boundary before
+        # it runs; the transition step needs no fence.
+        assert [(r.step_id, r.receipt_kind) for r in runs.receipts] == [
+            ("ensure-review-task", "attempt_start"),
+            ("ensure-review-task", "step"),
+            ("review-done", "step"),
+        ]
 
     @pytest.mark.asyncio
     async def test_business_outcome_without_an_edge_is_a_contract_violation(self):
@@ -349,7 +355,11 @@ class TestStepBoundary:
             payload = dict(event("task-completed-code"))
             payload["event_id"] = f"evt-{name}"
             outcome = await engine.run_rule(ref, "probe", payload, TRUSTED_LOCAL)
-            step = next(r for r in runs.receipts if r.run_id == outcome.run_id)
+            step = next(
+                r
+                for r in runs.receipts
+                if r.run_id == outcome.run_id and r.receipt_kind == "step"
+            )
             selected.append(step.selected_transition)
         assert selected[0] != selected[1]
         assert selected[0] == transition_id("probe", "probe-step", "not_found")
@@ -414,16 +424,45 @@ class TestCommitBoundary:
         assert len(identities) == len(set(identities))
 
     @pytest.mark.asyncio
-    async def test_no_durable_write_happens_before_the_boundary(self):
-        """The side effect is real; the snapshot did not move and no bus event
-        was emitted.  Proves the §3.4 step-11 ordering."""
+    async def test_no_side_effect_happens_before_the_attempt_start_boundary(self):
+        """The fence is a boundary of its own: if it cannot be written, the
+        command never runs, so a side effect can never exist without the
+        durable record that its attempt began."""
         runs = RecordingRunRepository(fail_commit_with=RuntimeError("db down"))
         engine, adapter, runs, bus, ref = build(runs=runs)
         adapter.queue.append(ok())
         with pytest.raises(RuntimeError):
             await engine.run_rule(ref, "review", event("task-completed-code"), TRUSTED_LOCAL)
-        assert adapter.names == ["ensure_task"]
+        assert adapter.names == []
         assert runs.receipts == []
+        assert [name for name, _ in bus.events] == ["playbook.v2.run.started"]
+
+    @pytest.mark.asyncio
+    async def test_no_durable_write_happens_between_the_fence_and_the_boundary(self):
+        """The side effect is real; the snapshot did not move past the fence
+        and no step event was emitted.  Proves the §3.4 step-11 ordering."""
+
+        class FailAfterFence(RecordingRunRepository):
+            async def commit_boundary(self, snapshot, receipt, wait_changes=None):
+                if receipt.receipt_kind != "attempt_start":
+                    raise RuntimeError("db down")
+                return await super().commit_boundary(snapshot, receipt, wait_changes)
+
+        runs = FailAfterFence()
+        engine, adapter, runs, bus, ref = build(runs=runs)
+        adapter.queue.append(ok())
+        with pytest.raises(RuntimeError):
+            await engine.run_rule(ref, "review", event("task-completed-code"), TRUSTED_LOCAL)
+        assert adapter.names == ["ensure_task"]
+        # Exactly the fence landed: one version, one receipt, and the marker
+        # recovery reads is on the snapshot the fence wrote.
+        assert [r.receipt_kind for r in runs.receipts] == ["attempt_start"]
+        run_id = next(iter(runs.snapshots))
+        assert runs.snapshots[run_id].version == 1
+        assert runs.receipts[0].snapshot_version == 1
+        assert runs.snapshots[run_id].context["_in_flight_attempt"]["step_id"] == (
+            "ensure-review-task"
+        )
         # ``run.started`` marks the run row, which did land; no *step* event
         # may precede the boundary that would have made the step durable.
         assert [name for name, _ in bus.events] == ["playbook.v2.run.started"]
@@ -448,7 +487,11 @@ class TestCommitBoundary:
         adapter.queue.append(ok())
         await engine.run_rule(ref, "review", event("task-completed-code"), TRUSTED_LOCAL)
         kinds = [name for name, _ in bus.events]
-        assert kinds.count("playbook.v2.step.completed") == len(runs.receipts)
+        # One event per *completed* step; the attempt-start fence completes
+        # nothing and announces nothing.
+        assert kinds.count("playbook.v2.step.completed") == len(
+            [r for r in runs.receipts if r.receipt_kind == "step"]
+        )
         assert kinds[0] == "playbook.v2.run.started"
         assert kinds[-1] == "playbook.v2.run.finished"
 
@@ -475,15 +518,19 @@ class TestLlmToolTurnBoundaries:
         outcome = await engine.run_rule(ref, "r", {}, TOOL_PRINCIPAL)
 
         assert outcome.lifecycle is RunLifecycle.FAILED
-        assert [receipt.receipt_kind for receipt in runs.receipts] == ["step", "step"]
-        assert runs.receipts[0].error_code == "timed_out"
+        assert [receipt.receipt_kind for receipt in runs.receipts] == [
+            "attempt_start",
+            "step",
+            "step",
+        ]
+        assert runs.receipts[1].error_code == "timed_out"
         assert "interrupted" not in {receipt.receipt_kind for receipt in runs.receipts}
 
     @pytest.mark.asyncio
     async def test_turn_boundary_size_failure_is_not_a_provider_error(self):
         class RejectFirstBoundary(RecordingRunRepository):
             async def commit_boundary(self, snapshot, receipt, wait_changes=None):
-                if self.commit_calls == 0:
+                if receipt.receipt_kind == "tool_turn" and self.commit_calls == 1:
                     self.commit_calls += 1
                     raise StateLimitExceeded(
                         snapshot.run_id, receipt.step_id, "tool result", 300_000, 262_144
@@ -504,7 +551,11 @@ class TestLlmToolTurnBoundaries:
         outcome = await engine.run_rule(ref, "r", {}, TOOL_PRINCIPAL)
 
         assert outcome.lifecycle is RunLifecycle.FAILED
-        assert runs.receipts[0].error_code == "state_limit_exceeded"
+        assert [receipt.receipt_kind for receipt in runs.receipts][:2] == [
+            "attempt_start",
+            "step",
+        ]
+        assert runs.receipts[1].error_code == "state_limit_exceeded"
         assert "provider_error" not in {receipt.error_code for receipt in runs.receipts}
 
     @pytest.mark.asyncio
@@ -515,17 +566,18 @@ class TestLlmToolTurnBoundaries:
             {"project_id": "p", "title": "one"},
             usage=TokenUsage(10, 2, True),
         )
-        runs = RecordingRunRepository(conflict_on_commit=1)
+        # Commit 1 is the attempt-start fence; the tool turn is commit 2.
+        runs = RecordingRunRepository(conflict_on_commit=2)
         engine, adapter, _runs, ref = build_llm(provider, runs=runs)
         adapter.queue.append(ok())
 
         outcome = await engine.run_rule(ref, "r", {}, TOOL_PRINCIPAL)
 
         assert outcome.outcome == "interrupted"
-        assert outcome.snapshot is not None and outcome.snapshot.version == 1
+        assert outcome.snapshot is not None and outcome.snapshot.version == 2
         assert len(provider.calls) == 1
-        assert runs.commit_calls == 2
-        assert [receipt.error_code for receipt in runs.receipts] == ["interrupted"]
+        assert runs.commit_calls == 3
+        assert [receipt.error_code for receipt in runs.receipts] == [None, "interrupted"]
 
     @pytest.mark.asyncio
     async def test_cancellation_wins_a_race_with_a_tool_turn_boundary(self):
@@ -581,11 +633,12 @@ class TestLlmToolTurnBoundaries:
         assert cancelled.lifecycle is RunLifecycle.CANCELLED
         assert runs.snapshots[run_id].lifecycle is RunLifecycle.CANCELLED
         assert [receipt.receipt_kind for receipt in runs.receipts] == [
+            "attempt_start",
             "tool_turn",
             "step",
         ]
-        assert [receipt.error_code for receipt in runs.receipts] == [None, "cancelled"]
-        assert runs.receipts[1].result["cancellation"] == "acknowledged"
+        assert [receipt.error_code for receipt in runs.receipts] == [None, None, "cancelled"]
+        assert runs.receipts[2].result["cancellation"] == "acknowledged"
         assert runs.snapshots[run_id].budget.llm_calls == 1
 
     @pytest.mark.asyncio
@@ -626,7 +679,7 @@ class TestLlmToolTurnBoundaries:
 
         assert outcome.lifecycle is RunLifecycle.CANCELLED
         assert adapter.calls == []
-        assert [r.error_code for r in runs.receipts] == ["cancelled"]
+        assert [r.error_code for r in runs.receipts] == [None, "cancelled"]
 
     @pytest.mark.asyncio
     async def test_pending_cancel_is_committed_when_initial_read_loses_scheduler(self):
@@ -682,7 +735,7 @@ class TestLlmToolTurnBoundaries:
         assert outcome.lifecycle is RunLifecycle.CANCELLED
         assert cancelled.lifecycle is RunLifecycle.CANCELLED
         assert adapter.calls == []
-        assert [r.error_code for r in runs.receipts] == ["cancelled"]
+        assert [r.error_code for r in runs.receipts] == [None, "cancelled"]
 
     @pytest.mark.asyncio
     async def test_multi_turn_tool_loop_commits_one_receipt_per_completed_turn(self):
@@ -709,7 +762,8 @@ class TestLlmToolTurnBoundaries:
             (1, 11, 3),
         ]
         assert len({r.idempotency_key for r in turns}) == 1
-        assert [r.snapshot_version for r in turns] == [1, 2]
+        # Version 1 is the attempt-start fence.
+        assert [r.snapshot_version for r in turns] == [2, 3]
         assert {r.principal["profile_id"] for r in turns} == {"worker"}
         assert outcome.lifecycle is RunLifecycle.COMPLETED
         assert runs.snapshots[outcome.run_id].budget.llm_calls == 3
@@ -733,8 +787,13 @@ class TestLlmToolTurnBoundaries:
         outcome = await engine.run_rule(ref, "r", {}, TOOL_PRINCIPAL)
 
         assert outcome.lifecycle is RunLifecycle.FAILED
-        assert [r.receipt_kind for r in runs.receipts] == ["tool_turn", "step", "step"]
-        assert runs.receipts[1].error_code == "budget_exceeded"
+        assert [r.receipt_kind for r in runs.receipts] == [
+            "attempt_start",
+            "tool_turn",
+            "step",
+            "step",
+        ]
+        assert runs.receipts[2].error_code == "budget_exceeded"
         assert runs.snapshots[outcome.run_id].budget.llm_calls == 1
 
     @pytest.mark.asyncio
@@ -754,8 +813,8 @@ class TestLlmToolTurnBoundaries:
 
         assert outcome.lifecycle is RunLifecycle.PAUSED
         assert outcome.outcome == "operator_decision_required"
-        assert [r.receipt_kind for r in runs.receipts] == ["interrupted"]
-        receipt = runs.receipts[0]
+        assert [r.receipt_kind for r in runs.receipts] == ["attempt_start", "interrupted"]
+        receipt = runs.receipts[1]
         assert receipt.operator_decision_id
         assert receipt.selected_transition is None
         assert runs.snapshots[outcome.run_id].operator_decision is not None
@@ -787,7 +846,7 @@ class TestLlmToolTurnBoundaries:
             await engine.run_rule(ref, "r", {}, TOOL_PRINCIPAL)
         run_id = next(iter(runs.snapshots))
         assert runs.snapshots[run_id].lifecycle is RunLifecycle.RUNNING
-        assert [r.receipt_kind for r in runs.receipts] == ["tool_turn"]
+        assert [r.receipt_kind for r in runs.receipts] == ["attempt_start", "tool_turn"]
 
         resumed_provider = FakeProvider()
         resumed_provider.add_text('{"risk":"low"}', usage=TokenUsage(5, 1, True))
@@ -799,8 +858,14 @@ class TestLlmToolTurnBoundaries:
         )
         assert interrupted.lifecycle is RunLifecycle.PAUSED
         assert resumed_provider.calls == []
-        assert [r.receipt_kind for r in runs.receipts] == ["tool_turn", "interrupted"]
+        assert [r.receipt_kind for r in runs.receipts] == [
+            "attempt_start",
+            "tool_turn",
+            "interrupted",
+        ]
         assert runs.receipts[-1].principal["profile_id"] == "worker"
+        # The interruption closed the attempt the fence opened.
+        assert "_in_flight_attempt" not in runs.snapshots[run_id].context
 
         resumed = await restarted.resume(
             run_id,
@@ -813,10 +878,16 @@ class TestLlmToolTurnBoundaries:
         assert len(resumed_provider.calls) == 1
         messages = resumed_provider.calls[0].messages
         assert [message["role"] for message in messages[-2:]] == ["assistant", "user"]
-        assert [r.receipt_kind for r in runs.receipts[:3]] == [
-            "tool_turn",
-            "interrupted",
-            "operator_decision",
+        # The retry continues the *same* attempt, so its fence is the second
+        # start of attempt 1 — receipted at the next start ordinal rather
+        # than colliding with the first or inventing a new attempt.
+        assert [(r.receipt_kind, r.attempt, r.turn_index) for r in runs.receipts[:6]] == [
+            ("attempt_start", 1, 0),
+            ("tool_turn", 1, 0),
+            ("interrupted", 1, 1),
+            ("operator_decision", 1, 1),
+            ("attempt_start", 1, 1),
+            ("step", 1, -1),
         ]
 
     @pytest.mark.asyncio
@@ -997,8 +1068,8 @@ class TestLlmToolTurnBoundaries:
             (r.receipt_kind, r.turn_index)
             for r in runs.receipts
             if r.receipt_kind != "step"
-        ] == [("tool_turn", 0), ("llm_call", 1), ("tool_turn", 2)]
-        assert all(r.outcome == "success" for r in runs.receipts[:-1])
+        ] == [("attempt_start", 0), ("tool_turn", 0), ("llm_call", 1), ("tool_turn", 2)]
+        assert all(r.outcome == "success" for r in runs.receipts[1:-1])
         retry_messages = provider.calls[2].messages
         assert [message["role"] for message in retry_messages[-2:]] == [
             "assistant",
@@ -1032,6 +1103,7 @@ class TestLlmToolTurnBoundaries:
 
         assert paused.lifecycle is RunLifecycle.PAUSED
         assert [r.receipt_kind for r in runs.receipts] == [
+            "attempt_start",
             "tool_turn",
             "llm_call",
             "interrupted",
@@ -1089,7 +1161,7 @@ class TestLlmToolTurnBoundaries:
 
         run_id = next(iter(runs.snapshots))
         assert provider.attempts == 2
-        assert [r.receipt_kind for r in runs.receipts] == ["llm_call"]
+        assert [r.receipt_kind for r in runs.receipts] == ["attempt_start", "llm_call"]
         assert runs.snapshots[run_id].budget.llm_calls == 1
         assert runs.snapshots[run_id].budget.total_tokens == 3
 
@@ -1100,6 +1172,7 @@ class TestLlmToolTurnBoundaries:
             run_id, EventArrived(event_id="recovery"), TOOL_PRINCIPAL
         )
         assert [r.receipt_kind for r in runs.receipts] == [
+            "attempt_start",
             "llm_call",
             "interrupted",
         ]
@@ -1136,7 +1209,7 @@ class TestReceipts:
             )
         )
         await engine.run_rule(ref, "review", event("task-completed-code"), TRUSTED_LOCAL)
-        first = runs.receipts[0]
+        first = next(r for r in runs.receipts if r.receipt_kind == "step")
         assert first.outcome == "failure"
         assert first.selected_transition == transition_id(
             "review", "ensure-review-task", "rejected"
@@ -1292,7 +1365,10 @@ class TestResume:
             outcome.run_id, EventArrived(event_id="x", payload={}), TRUSTED_LOCAL
         )
         assert resumed.lifecycle is RunLifecycle.COMPLETED
-        assert [r.step_id for r in runs.receipts] == ["ensure-review-task", "review-done"]
+        assert [r.step_id for r in runs.receipts if r.receipt_kind == "step"] == [
+            "ensure-review-task",
+            "review-done",
+        ]
 
 
 def test_no_executor_module_imports_the_engine():
@@ -1863,9 +1939,12 @@ class TestSequentialLoops:
         # 1 enter + 3 returns.
         assert len(loop_receipts) == 4
         assert [r.iteration for r in loop_receipts] == [-1, 0, 1, 2]
-        # Every attempt identity is distinct, which is what the database's
-        # uq_playbook_step_receipts_attempt enforces independently.
-        keys = [(r.step_id, r.iteration, r.attempt) for r in runs.receipts]
+        # Every boundary identity is distinct, which is what the database's
+        # uq_playbook_step_receipts_boundary enforces independently.
+        keys = [
+            (r.step_id, r.iteration, r.attempt, r.turn_index, r.receipt_kind)
+            for r in runs.receipts
+        ]
         assert len(set(keys)) == len(keys)
 
     @pytest.mark.asyncio
@@ -2227,7 +2306,7 @@ class TestCancellation:
         assert runs.snapshots[run_id].lifecycle is RunLifecycle.CANCELLED
         # Not ``completed``, and no transition was selected off the step that
         # was in flight — the run stopped, it did not finish.
-        assert [r.outcome for r in runs.receipts] == ["cancelled"]
+        assert [r.outcome for r in runs.receipts] == ["started", "cancelled"]
         assert runs.receipts[-1].selected_transition is None
 
     @pytest.mark.asyncio
@@ -2251,7 +2330,7 @@ class TestCancellation:
         assert second.lifecycle is RunLifecycle.CANCELLED
         assert runs.receipts[-1].result["cancellation"] == "acknowledged"
         # Two callers, one boundary: cancelling twice does not receipt twice.
-        assert [r.outcome for r in runs.receipts] == ["cancelled"]
+        assert [r.outcome for r in runs.receipts] == ["started", "cancelled"]
 
     @pytest.mark.asyncio
     async def test_grace_expiry_still_reaches_cancelled(self, monkeypatch):
@@ -2277,7 +2356,7 @@ class TestCancellation:
         executor.gate.set()
         outcome = await asyncio.wait_for(walk, timeout=2)
         assert outcome.lifecycle is RunLifecycle.CANCELLED
-        assert [r.outcome for r in runs.receipts] == ["cancelled"]
+        assert [r.outcome for r in runs.receipts] == ["started", "cancelled"]
 
     @pytest.mark.asyncio
     async def test_cancel_a_terminal_run_is_refused(self):

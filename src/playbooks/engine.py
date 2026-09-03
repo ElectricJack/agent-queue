@@ -70,7 +70,12 @@ from src.playbooks.expressions import (
     ValueResolutionError,
     resolve_value,
 )
-from src.playbooks.receipts import StepReceipt, idempotency_key, transition_id
+from src.playbooks.receipts import (
+    ATTEMPT_SCOPED_RECEIPT_KINDS,
+    StepReceipt,
+    idempotency_key,
+    transition_id,
+)
 from src.playbooks.run_state import (
     DuplicateAttempt,
     DuplicateRun,
@@ -122,6 +127,10 @@ CANCELLATION_GRACE_EXPIRED = "grace_expired"
 #: Bus events.  Package 7 reads the two run-level ones by name.
 EVENT_RUN_STARTED = "playbook.v2.run.started"
 EVENT_STEP_COMPLETED = "playbook.v2.step.completed"
+
+#: The step types whose attempts reach outside the engine, and are therefore
+#: fenced by a receipted ``attempt_start`` boundary before they execute.
+EXTERNAL_STEP_TYPES = (CommandStep, LlmStep, AgentTaskStep)
 EVENT_RUN_FINISHED = "playbook.v2.run.finished"
 
 _TERMINAL_LIFECYCLE: dict[str, RunLifecycle] = {
@@ -1161,17 +1170,33 @@ class PlaybookEngine:
         """
         if snapshot.lifecycle is not RunLifecycle.RUNNING or snapshot.current_step_id is None:
             return snapshot, None
+        step = artifact.steps.get(snapshot.current_step_id)
+        if step is None:
+            return snapshot, None
+        if isinstance(step, LlmStep):
+            # ``resume`` resolves an in-flight LLM attempt itself, with an
+            # ``interrupted`` *turn* at the next turn index, so an operator
+            # retry continues the same attempt from its durable transcript.
+            return snapshot, None
         list_receipts = getattr(repository, "list_receipts", None)
         if not callable(list_receipts):
             return snapshot, None
         receipts = await list_receipts(snapshot.run_id)
         iteration = self._iteration_of(snapshot, snapshot.current_step_id)
+        # An attempt is open when the latest receipt that speaks for the whole
+        # attempt is still open: the ``attempt_start`` fence has no
+        # ``completed_at``, and the ``step``/``interrupted``/resolution receipt
+        # that closes it does.  Turn receipts neither open nor close one.
+        latest_by_attempt: dict[int, StepReceipt] = {}
+        for receipt in sorted(receipts, key=lambda item: item.snapshot_version):
+            if (
+                receipt.step_id == snapshot.current_step_id
+                and receipt.iteration == iteration
+                and receipt.receipt_kind in ATTEMPT_SCOPED_RECEIPT_KINDS
+            ):
+                latest_by_attempt[receipt.attempt] = receipt
         started = [
-            receipt
-            for receipt in receipts
-            if receipt.step_id == snapshot.current_step_id
-            and receipt.iteration == iteration
-            and receipt.completed_at is None
+            receipt for receipt in latest_by_attempt.values() if receipt.completed_at is None
         ]
         marker = snapshot.context.get("_in_flight_attempt")
         if started:
@@ -1194,11 +1219,10 @@ class PlaybookEngine:
             )
         else:
             return snapshot, None
-        step = artifact.steps.get(snapshot.current_step_id)
-        if step is None:
-            return snapshot, None
         now = self.services.clock()
         decision_id = uuid.uuid4().hex
+        # The next zero-based turn index.  Start receipts number starts, not
+        # turns, so they stay out of this.
         turn_index = max(
             (
                 item.turn_index
@@ -1206,6 +1230,7 @@ class PlaybookEngine:
                 if item.step_id == receipt.step_id
                 and item.iteration == iteration
                 and item.attempt == receipt.attempt
+                and item.receipt_kind != "attempt_start"
             ),
             default=-1,
         ) + 1
@@ -2123,15 +2148,23 @@ class PlaybookEngine:
         # 6. Execute.  An unexpected exception is runtime_error carrying the
         #    exception *type*; a message can carry an argument value.
         executor = executor_for(step.type, mode)
-        mark_started = getattr(repository, "mark_attempt_started", None)
-        marker = {
-            "step_id": step_id,
-            "step_kind": step.type,
-            "iteration": iteration,
-            "attempt": attempt.attempt,
-            "started_at": attempt.started_at,
-            "idempotency_key": attempt.idempotency_key,
-        }
+
+        async def fence() -> tuple[RunSnapshot, tuple[StepReceipt, ...], str] | None:
+            """Commit the receipted attempt-start boundary, or the failure."""
+            nonlocal snapshot
+            if not isinstance(step, EXTERNAL_STEP_TYPES):
+                return None
+            terminated = await self._commit_attempt_start(attempt, artifact_ref, repository)
+            if terminated is not None:
+                failed, error_receipt, boundary_outcome = terminated
+                return (
+                    failed,
+                    tuple(attempt.boundary_receipts) + (error_receipt,),
+                    boundary_outcome,
+                )
+            snapshot = attempt.snapshot
+            return None
+
         if control is not None:
             # Cancellation latches before waiting for this lock.  Publishing
             # the durable marker and the in-process executor handle under the
@@ -2158,19 +2191,14 @@ class PlaybookEngine:
                             cancellation=CANCELLATION_ACKNOWLEDGED,
                         )
                     )
-                if callable(mark_started) and isinstance(
-                    step, (CommandStep, LlmStep, AgentTaskStep)
-                ):
-                    marked = await mark_started(attempt.snapshot, marker)
-                    snapshot = marked
-                    attempt.snapshot = marked
+                fenced = await fence()
+                if fenced is not None:
+                    return fenced
                 control.in_flight = (executor, step, ctx)
-        elif callable(mark_started) and isinstance(
-            step, (CommandStep, LlmStep, AgentTaskStep)
-        ):
-            marked = await mark_started(attempt.snapshot, marker)
-            snapshot = marked
-            attempt.snapshot = marked
+        else:
+            fenced = await fence()
+            if fenced is not None:
+                return fenced
         try:
             result = await executor.execute(step, ctx)
         except asyncio.CancelledError:
@@ -2429,6 +2457,113 @@ class PlaybookEngine:
             self._advance_on_outcome(attempt, artifact, artifact_ref, repository)
         )
 
+    async def _commit_attempt_start(
+        self, attempt: _Attempt, artifact_ref: ArtifactRef, repository: Any
+    ) -> tuple[RunSnapshot, StepReceipt, str] | None:
+        """Fence external work behind a receipted boundary (§3.3.1).
+
+        A ``CommandStep``, ``LlmStep`` or ``AgentTaskStep`` must not reach its
+        first side effect without a durable record that the attempt began:
+        a process killed between the two would otherwise leave nothing for
+        recovery to see, and the attempt would replay as though it had never
+        run.  The fence is an ordinary boundary — ``commit_boundary``
+        advances the version and inserts one ``attempt_start`` receipt in the
+        same transaction — so the run's history keeps one receipt per
+        version.  The snapshot also carries the marker under
+        ``context["_in_flight_attempt"]`` so an operator can see the open
+        attempt without joining receipts; the attempt's next boundary clears
+        it.
+
+        Returns ``None`` when the attempt may proceed, or the terminal triple
+        when another writer owns the run.
+        """
+        snapshot = attempt.snapshot
+        marker = {
+            "step_id": attempt.step_id,
+            "step_kind": attempt.step.type,
+            "iteration": attempt.iteration,
+            "attempt": attempt.attempt,
+            "started_at": attempt.started_at,
+            "idempotency_key": attempt.idempotency_key,
+        }
+        next_snapshot = replace(
+            snapshot,
+            context=dict(snapshot.context) | {"_in_flight_attempt": marker},
+            updated_at=self.services.clock(),
+        )
+        receipt = self._attempt_start_receipt(attempt, artifact_ref, ordinal=0)
+        try:
+            try:
+                committed = await repository.commit_boundary(next_snapshot, receipt)
+            except DuplicateAttempt:
+                # This attempt identity has started before: a retry-safe
+                # replay or an operator ``retry`` deliberately reuses the
+                # attempt number so a keyed command sees the same key.  The
+                # start receipt's ``turn_index`` is the ordinal of the start,
+                # so the restart is receipted without inventing an attempt.
+                # The failed insert rolled its version advance back, so the
+                # same snapshot is still the right CAS expectation.
+                receipt = self._attempt_start_receipt(
+                    attempt,
+                    artifact_ref,
+                    ordinal=await self._next_start_ordinal(attempt, repository),
+                )
+                committed = await repository.commit_boundary(next_snapshot, receipt)
+        except SnapshotVersionConflict:
+            # As in ``_commit``: two writers at one boundary are two engines
+            # that both think they own the run, and the write is never
+            # retried.
+            failed, error_receipt = await self._terminate(
+                snapshot, repository, "interrupted", "another writer advanced this run"
+            )
+            return failed, error_receipt, "interrupted"
+        attempt.snapshot = committed
+        attempt.boundary_receipts.append(receipt)
+        return None
+
+    def _attempt_start_receipt(
+        self, attempt: _Attempt, artifact_ref: ArtifactRef, *, ordinal: int
+    ) -> StepReceipt:
+        return StepReceipt(
+            receipt_id=uuid.uuid4().hex,
+            run_id=attempt.snapshot.run_id,
+            artifact_sha256=artifact_ref.artifact_sha256,
+            rule_id=attempt.snapshot.rule_id,
+            step_id=attempt.step_id,
+            step_kind=attempt.step.type,
+            receipt_kind="attempt_start",
+            turn_index=ordinal,
+            outcome="started",
+            started_at=attempt.started_at,
+            # The version this boundary writes (see ``_commit``).
+            snapshot_version=attempt.snapshot.version + 1,
+            iteration=attempt.iteration,
+            attempt=attempt.attempt,
+            idempotency_key=attempt.idempotency_key,
+            contract_fingerprint=self._contract_fingerprint(attempt.step),
+            principal=self._principal_projection(attempt.principal),
+            completed_at=None,
+        )
+
+    @staticmethod
+    async def _next_start_ordinal(attempt: _Attempt, repository: Any) -> int:
+        list_receipts = getattr(repository, "list_receipts", None)
+        prior = await list_receipts(attempt.snapshot.run_id) if callable(list_receipts) else []
+        return (
+            max(
+                (
+                    receipt.turn_index
+                    for receipt in prior
+                    if receipt.receipt_kind == "attempt_start"
+                    and receipt.step_id == attempt.step_id
+                    and receipt.iteration == attempt.iteration
+                    and receipt.attempt == attempt.attempt
+                ),
+                default=-1,
+            )
+            + 1
+        )
+
     async def _commit_llm_turn(
         self,
         attempt: _Attempt,
@@ -2488,12 +2623,20 @@ class PlaybookEngine:
             max_total_tokens=snapshot.budget.max_total_tokens,
             cost_usd=snapshot.budget.cost_usd,
         )
+        context = snapshot.context
+        if turn.kind == "interrupted":
+            # The interruption closes the attempt the fence opened; the
+            # marker would otherwise outlive the ambiguity it exists to flag.
+            context = {
+                key: value for key, value in context.items() if key != "_in_flight_attempt"
+            }
         next_snapshot = replace(
             snapshot,
             lifecycle=lifecycle,
             llm_turns=llm_turns,
             operator_decision=operator_decision,
             budget=budget,
+            context=context,
             error=error,
             error_code=error_code,
             updated_at=now,

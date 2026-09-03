@@ -998,11 +998,17 @@ unforgeable — a retried dispatch cannot duplicate them.
 
 ### Table: `playbook_step_receipts`
 
-One immutable row per step *attempt*.  Attempt identity is four-part —
-`(run_id, step_id, iteration, attempt)` — and is enforced by
-`uq_playbook_step_receipts_attempt`, so a replayed attempt after an ambiguous
-interruption is rejected by the database rather than by an in-memory guard a
-restart would have forgotten.  `principal`, `inputs` and `result` hold the
+One immutable row per durable boundary of a step *attempt*.  Attempt identity
+is four-part — `(run_id, step_id, iteration, attempt)` — and receipt identity
+extends it with `(turn_index, receipt_kind)`, enforced by
+`uq_playbook_step_receipts_boundary`.  An attempt that reaches outside the
+engine (command, LLM, agent task) opens with an `attempt_start` receipt
+committed before its first external side effect and closes with a `step`
+(or `interrupted`) receipt; every `snapshot_version` the run ever had has
+exactly one receipt.  A replayed attempt after an ambiguous interruption
+keeps its attempt number and idempotency key and is fenced again at the next
+start ordinal, so a second fence at the same ordinal is rejected by the
+database rather than by an in-memory guard a restart would have forgotten.  `principal`, `inputs` and `result` hold the
 default-deny receipt projection, never raw values.
 
 | Column | Type | Constraints | Notes |
@@ -1021,7 +1027,10 @@ default-deny receipt projection, never raw values.
 | `principal` | TEXT | NOT NULL DEFAULT '{}' | JSON, redacted |
 | `inputs` | TEXT | NOT NULL DEFAULT '{}' | JSON, default-deny projection |
 | `result` | TEXT | NOT NULL DEFAULT '{}' | JSON, default-deny projection |
-| `outcome` | TEXT | NOT NULL | One of: success, failure, skipped, timeout, cancelled, operator_decision_required |
+| `receipt_kind` | TEXT | NOT NULL DEFAULT 'step' | One of: step, tool_turn, llm_call, interrupted, operator_decision, attempt_start |
+| `turn_index` | INTEGER | NOT NULL DEFAULT -1 | `-1` for `step`; zero-based turn index for LLM turn boundaries; zero-based start ordinal for `attempt_start` |
+| `operator_decision_id` | TEXT | nullable | Set only on `interrupted` and `operator_decision` receipts |
+| `outcome` | TEXT | NOT NULL | One of: success, failure, skipped, timeout, cancelled, operator_decision_required, started (`attempt_start` only) |
 | `selected_transition` | TEXT | nullable | `<rule>::<step>::<outcome>`; the graph overlay joins on it |
 | `error` | TEXT | nullable | Failure detail |
 | `error_code` | TEXT | nullable | Machine-readable failure code |

@@ -24,7 +24,9 @@ from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-#: The six-value ``ck_playbook_step_receipts_outcome`` CHECK, in its order.
+#: The ``ck_playbook_step_receipts_outcome`` CHECK, in its order.  ``started``
+#: belongs only to ``attempt_start`` receipts: the boundary records intent,
+#: not a result, so none of the completion outcomes would be honest.
 RECEIPT_OUTCOMES: tuple[str, ...] = (
     "success",
     "failure",
@@ -32,14 +34,31 @@ RECEIPT_OUTCOMES: tuple[str, ...] = (
     "timeout",
     "cancelled",
     "operator_decision_required",
+    "started",
 )
 
+#: The ``ck_playbook_step_receipts_kind`` CHECK.  ``attempt_start`` is the
+#: receipted fence the engine commits before a ``CommandStep``, ``LlmStep``
+#: or ``AgentTaskStep`` reaches its first external side effect; its
+#: ``turn_index`` is the zero-based *start ordinal* of the attempt identity
+#: (a replay or operator retry that deliberately reuses the attempt number
+#: starts it again at the next ordinal), not an LLM turn index.
 RECEIPT_KINDS: tuple[str, ...] = (
     "step",
     "tool_turn",
     "llm_call",
     "interrupted",
     "operator_decision",
+    "attempt_start",
+)
+
+#: Kinds whose receipt speaks for the whole attempt rather than one LLM turn.
+#: Recovery decides whether an attempt is still open from the *latest* of
+#: these: an ``attempt_start`` with no ``completed_at`` is an open fence; a
+#: ``step``, ``interrupted`` or ``operator_decision`` receipt after it has
+#: closed it.
+ATTEMPT_SCOPED_RECEIPT_KINDS: frozenset[str] = frozenset(
+    {"attempt_start", "step", "interrupted", "operator_decision"}
 )
 
 #: Key used when a mapping is redacted wholesale.
@@ -173,6 +192,10 @@ class StepReceipt:
             raise ValueError("turn_index must be >= -1")
         if (self.receipt_kind == "step") != (self.turn_index == -1):
             raise ValueError("step receipts use turn_index -1; turn boundaries use >= 0")
+        if (self.receipt_kind == "attempt_start") != (self.outcome == "started"):
+            raise ValueError("attempt_start receipts carry outcome 'started', and only they do")
+        if self.receipt_kind == "attempt_start" and self.completed_at is not None:
+            raise ValueError("attempt_start receipts are open boundaries and carry no completed_at")
         decision_boundary = self.receipt_kind in {"interrupted", "operator_decision"}
         if decision_boundary != bool(self.operator_decision_id):
             raise ValueError(

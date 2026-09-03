@@ -24,6 +24,7 @@ from src.playbooks.definition import (
 )
 from src.playbooks.receipts import StepReceipt
 from src.playbooks.run_state import (
+    DuplicateAttempt,
     DuplicateRun,
     IllegalLifecycleTransition,
     RunLifecycle,
@@ -188,6 +189,18 @@ class StubActivations:
         self.queued.append((playbook_id, dict(event)))
 
 
+def boundary_identity(receipt: StepReceipt) -> tuple[str, str, int, int, int, str]:
+    """The columns of ``uq_playbook_step_receipts_boundary``."""
+    return (
+        receipt.run_id,
+        receipt.step_id,
+        receipt.iteration,
+        receipt.attempt,
+        receipt.turn_index,
+        receipt.receipt_kind,
+    )
+
+
 class RecordingRunRepository:
     """An in-memory ``RunRepository`` that counts what the engine writes.
 
@@ -256,6 +269,14 @@ class RecordingRunRepository:
                 snapshot.run_id,
                 snapshot.version,
                 (stored.version + 5) if stored else None,
+            )
+        # ``uq_playbook_step_receipts_boundary``, expressed as the failure
+        # the engine has to handle: a replay that reuses an attempt number
+        # must re-fence it at the next start ordinal, not silently double up.
+        identity = boundary_identity(receipt)
+        if any(boundary_identity(existing) == identity for existing in self.receipts):
+            raise DuplicateAttempt(
+                receipt.run_id, receipt.step_id, receipt.iteration, receipt.attempt
             )
         stored = replace(snapshot, version=snapshot.version + 1)
         self.snapshots[snapshot.run_id] = stored
@@ -372,6 +393,14 @@ class SQLiteRunRepository:
             if current is None or int(current[0]) != snapshot.version:
                 raise SnapshotVersionConflict(
                     snapshot.run_id, snapshot.version, None if current is None else int(current[0])
+                )
+            identity = boundary_identity(receipt)
+            existing = connection.execute(
+                "SELECT receipt FROM test_v2_receipts WHERE run_id = ?", (snapshot.run_id,)
+            ).fetchall()
+            if any(boundary_identity(pickle.loads(payload)) == identity for (payload,) in existing):
+                raise DuplicateAttempt(
+                    receipt.run_id, receipt.step_id, receipt.iteration, receipt.attempt
                 )
             advanced = replace(snapshot, version=snapshot.version + 1)
             connection.execute(

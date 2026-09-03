@@ -1223,12 +1223,12 @@ playbook_step_receipts = Table(
     Column("duration_ms", Integer, nullable=False, server_default="0"),
     CheckConstraint(
         "outcome IN ('success', 'failure', 'skipped', 'timeout', 'cancelled', "
-        "'operator_decision_required')",
+        "'operator_decision_required', 'started')",
         name="ck_playbook_step_receipts_outcome",
     ),
     CheckConstraint(
         "receipt_kind IN ('step', 'tool_turn', 'llm_call', 'interrupted', "
-        "'operator_decision')",
+        "'operator_decision', 'attempt_start')",
         name="ck_playbook_step_receipts_kind",
     ),
     CheckConstraint(

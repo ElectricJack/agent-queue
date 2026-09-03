@@ -22,7 +22,13 @@ from src.commands.contracts.models import CommandResult
 from src.commands.principal import TRUSTED_LOCAL
 from src.database import Database
 from src.database.tables import playbook_artifacts
-from src.playbooks.engine import HumanDecision, PlaybookEngine, TimerFired, WaitScheduler
+from src.playbooks.engine import (
+    EventArrived,
+    HumanDecision,
+    PlaybookEngine,
+    TimerFired,
+    WaitScheduler,
+)
 from src.playbooks.executors.base import EngineServices
 from src.playbooks.run_state import RunLifecycle
 from tests.fixtures.contracts.engine_contracts import (
@@ -162,6 +168,80 @@ async def test_external_work_is_fenced_before_the_executor_returns(db):
     [stored] = await db.list_runs(playbook_id=ref.playbook_id)
     assert stored.context["_in_flight_attempt"]["step_id"] == "ensure-review-task"
     assert stored.version == 1
+    # The fence is a receipted boundary, not a bare version bump.
+    [fence] = await db.list_receipts(stored.run_id)
+    assert (fence.receipt_kind, fence.outcome, fence.turn_index) == (
+        "attempt_start",
+        "started",
+        0,
+    )
+    assert fence.snapshot_version == stored.version
+    assert fence.completed_at is None
+    assert fence.idempotency_key == f"{stored.run_id}:ensure-review-task:-:1"
+
+
+@pytest.mark.asyncio
+async def test_every_snapshot_advance_carries_exactly_one_receipt_across_start_and_completion(
+    db,
+):
+    """The locked ``RunRepository`` invariant: ``commit_boundary`` is the only
+    run-state write, and each version it writes has exactly one receipt —
+    the attempt-start fence included."""
+    engine, adapter, ref, _bus = await build(db)
+    adapter.queue.append(ok())
+    outcome = await engine.run_rule(ref, "review", event("task-completed-code"), TRUSTED_LOCAL)
+    assert outcome.lifecycle is RunLifecycle.COMPLETED
+
+    stored = await db.load_run(outcome.run_id)
+    receipts = await db.list_receipts(outcome.run_id)
+    assert [(r.step_id, r.receipt_kind) for r in receipts] == [
+        ("ensure-review-task", "attempt_start"),
+        ("ensure-review-task", "step"),
+        ("review-done", "step"),
+    ]
+    # Versions 1..N, one receipt each, in boundary order.
+    assert [r.snapshot_version for r in receipts] == list(range(1, stored.version + 1))
+    assert len(receipts) == stored.version
+    start, completion = receipts[0], receipts[1]
+    assert (start.iteration, start.attempt, start.idempotency_key) == (
+        completion.iteration,
+        completion.attempt,
+        completion.idempotency_key,
+    )
+    assert start.completed_at is None and completion.completed_at is not None
+    assert "_in_flight_attempt" not in stored.context
+
+
+@pytest.mark.asyncio
+async def test_a_replayed_attempt_is_fenced_again_at_the_next_start_ordinal(db):
+    """A retry-safe command interrupted after its fence replays as the *same*
+    attempt (same key).  ``uq_playbook_step_receipts_boundary`` refuses a
+    second ``attempt_start`` at ordinal 0, and the engine re-fences at
+    ordinal 1 instead of inventing an attempt or skipping the fence."""
+    engine, adapter, ref, _bus = await build(db)
+    adapter.queue.append(asyncio.CancelledError())
+    with pytest.raises(asyncio.CancelledError):
+        await engine.run_rule(ref, "review", event("task-completed-code"), TRUSTED_LOCAL)
+    [interrupted] = await db.list_runs(playbook_id=ref.playbook_id)
+
+    adapter.queue.append(ok())
+    resumed = await engine.resume(
+        interrupted.run_id, EventArrived(event_id="restart"), TRUSTED_LOCAL
+    )
+    assert resumed.lifecycle is RunLifecycle.COMPLETED
+
+    stored = await db.load_run(interrupted.run_id)
+    receipts = await db.list_receipts(interrupted.run_id)
+    assert [(r.step_id, r.receipt_kind, r.attempt, r.turn_index) for r in receipts] == [
+        ("ensure-review-task", "attempt_start", 1, 0),
+        ("ensure-review-task", "interrupted", 1, 0),
+        ("ensure-review-task", "attempt_start", 1, 1),
+        ("ensure-review-task", "step", 1, -1),
+        ("review-done", "step", 1, -1),
+    ]
+    assert [r.snapshot_version for r in receipts] == list(range(1, stored.version + 1))
+    assert len({r.idempotency_key for r in receipts}) == 2
+    assert stored.bindings["review"] == {"task_id": "t-1", "created": True}
 
 
 @pytest.mark.asyncio
@@ -319,10 +399,10 @@ async def test_a_loop_persists_one_receipt_per_iteration_boundary(db):
     outcome = await engine.run_rule(ref, "sweep", event("spec-approved"), TRUSTED_LOCAL)
     assert outcome.lifecycle is RunLifecycle.COMPLETED
     receipts = await db.list_receipts(outcome.run_id)
-    keys = [(r.step_id, r.iteration, r.attempt) for r in receipts]
+    keys = [(r.step_id, r.iteration, r.attempt, r.turn_index, r.receipt_kind) for r in receipts]
     assert len(keys) == len(set(keys))
-    assert ("open-gate", 0, 1) in keys
-    assert ("open-gate", 1, 1) in keys
+    assert ("open-gate", 0, 1, -1, "step") in keys
+    assert ("open-gate", 1, 1, -1, "step") in keys
     stored = await db.load_run(outcome.run_id)
     assert stored.loop is None
     assert stored.bindings["sweep_result"]["succeeded"] == 2

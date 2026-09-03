@@ -470,3 +470,63 @@ async def test_upgrade_head_on_postgres():
     finally:
         await conn.close()
     assert set(V2_TABLES) <= present, set(V2_TABLES) - present
+
+
+def test_attempt_start_receipts_are_admitted_after_the_fence_amendment(tmp_path):
+    """``d3f2c0de0005`` widens the kind and outcome CHECKs for the receipted
+    attempt-start fence and nothing else; an unknown kind is still refused."""
+    engine = _sqlite_engine(tmp_path, name="attempt-start-receipt.db")
+    sha = "sha256:" + "c" * 64
+    try:
+        migrate(engine, "head")
+        with engine.begin() as conn:
+            conn.execute(
+                sa.text(
+                    "INSERT INTO playbook_artifacts (artifact_sha256, playbook_id, scope, "
+                    "scope_identifier, schema_generation, version, source_digest, "
+                    "contract_fingerprint, profile_fingerprint, compiler_build, path, "
+                    "size_bytes, validation, created_at) VALUES (:sha,'p','system','',2,1,"
+                    ":sha,:sha,'','build','/tmp/a.json',2,'{}',1.0)"
+                ),
+                {"sha": sha},
+            )
+            conn.execute(
+                sa.text(
+                    "INSERT INTO playbook_v2_runs (run_id, playbook_id, artifact_sha256, "
+                    "rule_id, lifecycle, mode, snapshot_version, snapshot, snapshot_bytes, "
+                    "event_type, summary, started_at, updated_at) VALUES "
+                    "('r','p',:sha,'rule','running','live',1,'{}',2,'','',1.0,1.0)"
+                ),
+                {"sha": sha},
+            )
+            conn.execute(
+                sa.text(
+                    "INSERT INTO playbook_step_receipts "
+                    "(receipt_id, run_id, artifact_sha256, rule_id, step_id, step_kind, "
+                    "receipt_kind, turn_index, idempotency_key, outcome, started_at) VALUES "
+                    "('fence','r',:sha,'rule','step','command','attempt_start',0,:key,"
+                    "'started',1.0)"
+                ),
+                {"sha": sha, "key": "r:step:-:1"},
+            )
+        with engine.connect() as conn:
+            row = conn.execute(
+                sa.text(
+                    "SELECT receipt_kind, turn_index, outcome, completed_at "
+                    "FROM playbook_step_receipts WHERE receipt_id='fence'"
+                )
+            ).one()
+        assert tuple(row) == ("attempt_start", 0, "started", None)
+        with pytest.raises(sa.exc.IntegrityError), engine.begin() as conn:
+            conn.execute(
+                sa.text(
+                    "INSERT INTO playbook_step_receipts "
+                    "(receipt_id, run_id, artifact_sha256, rule_id, step_id, step_kind, "
+                    "receipt_kind, turn_index, idempotency_key, outcome, started_at) VALUES "
+                    "('bogus','r',:sha,'rule','step','command','attempt_begin',0,:key,"
+                    "'started',1.0)"
+                ),
+                {"sha": sha, "key": "r:step:-:1"},
+            )
+    finally:
+        engine.dispose()
