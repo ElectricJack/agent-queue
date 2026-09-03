@@ -25,7 +25,7 @@ import hashlib
 import logging
 import time
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -455,12 +455,23 @@ class PlaybookEngine:
         event: Mapping[str, Any],
         principal: Any,
         mode: ExecutionMode = ExecutionMode.LIVE,
+        *,
+        playbook_ids: Collection[str] | None = None,
     ) -> DispatchResult:
         """Start one run per matching rule, across every ready activation.
 
         Each run is independent: one rule failing does not fail its siblings,
         which is the direct fix for V1 forcing every per-rule runner onto one
         run row and thereby onto one failure.
+
+        ``playbook_ids`` narrows the ready activations to the playbooks the
+        caller has already admitted.  ``PlaybookManager`` applies role
+        shadowing, cooldown and the concurrency cap *per playbook* and then
+        invokes the trigger callback for that one playbook; without the
+        filter the callback would start every scope-matching activation and
+        silently overturn the sibling decisions the manager just made.
+        ``None`` keeps the unconstrained event-level dispatch for callers
+        that own admission themselves.
         """
         hydrated = await self._hydrate_event(event)
         dispatch_id = self._dispatch_id(hydrated)
@@ -470,6 +481,9 @@ class PlaybookEngine:
         pending: list[PendingEventRef] = []
         if self.activations is not None:
             refs = await self.activations.ready_activations(event_type, hydrated)
+        if playbook_ids is not None:
+            admitted = frozenset(playbook_ids)
+            refs = [ref for ref in refs if ref.playbook_id in admitted]
 
         selected: list[str] = []
         run_ids: list[str] = []
