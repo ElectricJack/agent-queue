@@ -1592,6 +1592,22 @@ Run against a daemon with `playbooks.enabled: true`, `playbooks.v2_api: true`, `
 
 Store them under `docs/superpowers/reports/2026-09-01-playbook-v2-pkg5-scenarios/` and link them from the Package 5 exit-gate evidence.
 
+> **Status (2026-09-02, `566ea8d6`) — not capturable yet; do not re-queue blind.**
+> The seven scenarios need a V2 review surface that renders. It does not:
+> `src/playbooks/graph_projection.py`, `artifact_diff.py` and `run_overlay.py`
+> (§5.1-§5.3) are absent from `main` and from all 409 `origin/*` refs, and all seven
+> §5.4 commands in `src/commands/playbook_v2_commands.py` still return
+> `PlaybookV2CommandsMixin._v2_storage_unavailable` (returns at lines
+> 472/514/573/607/638/687/726), so `dashboard/src/pages/playbook-graph-v2/`
+> renders the storage-unavailable error instead of a graph, diff or overlay.
+> `docs/superpowers/reports/2026-09-01-playbook-v2-pkg5-scenarios/` does not
+> exist. This is the second attempt to close the screenshot task
+> (`amber-rapids-37` item 3, then `fair-rapids-36`); both re-derived the same
+> result because the queue carries no dependency edge from the screenshot task
+> to the §16.2 successor. **One-line gate before the next attempt:**
+> `ls src/playbooks/graph_projection.py`. If it is still missing, stop — nothing
+> in §13.3 is capturable and no daemon needs to be started.
+
 ---
 
 ## 14. Mapping to the package exit gate
