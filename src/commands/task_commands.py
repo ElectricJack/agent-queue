@@ -1073,10 +1073,12 @@ class TaskCommandsMixin:
         async with self.db.immediate() as conn:
             # ---- scope re-check, under the lock -------------------------
             # ``_cmd_create_task``'s pre-check read the held task's parent
-            # and subtree before this transaction existed. Lock every row
-            # the answer depends on — the held task, plus any node the
-            # worker named, since ``set_parent`` writes the moved task's own
-            # row — and derive the scope again from the locked rows.
+            # and subtree before this transaction existed. On Postgres the
+            # scope helper takes the same project-row lock as ``set_parent``,
+            # because a named descendant can leave the subtree when any
+            # intermediate ancestor is moved; on SQLite ``immediate()``
+            # already excludes concurrent writers. Derive the scope again
+            # after that lock.
             locked = await self.db.lock_filing_scope(
                 conn,
                 [held_id]

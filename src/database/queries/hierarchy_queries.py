@@ -20,6 +20,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from src.database.queries.task_queries import TransitionResult
 from src.database.tables import (
     agents,
+    projects,
     sessions,
     task_dependencies,
     task_metadata,
@@ -227,6 +228,21 @@ class HierarchyQueryMixin:
 
     # -- the single writer ----------------------------------------------
 
+    async def lock_hierarchy_project(self, conn, project_id: str) -> None:
+        """Serialize hierarchy moves and worker-filing scope reads per project.
+
+        PostgreSQL row-locks the durable project row for the transaction.
+        SQLite filing transactions already use ``BEGIN IMMEDIATE``, so its
+        database-wide writer lock provides the same exclusion.
+        """
+        if conn.dialect.name != "postgresql":
+            return
+        await conn.execute(
+            select(projects.c.id)
+            .where(projects.c.id == project_id)
+            .with_for_update()
+        )
+
     async def set_parent(
         self,
         task_id: str,
@@ -247,6 +263,18 @@ class HierarchyQueryMixin:
         cover.  Returns a ``TransitionResult`` (``flipped``, ``settled``,
         ``ready``).
         """
+        task_row = (
+            await conn.execute(
+                select(tasks.c.id, tasks.c.project_id, tasks.c.parent_task_id).where(
+                    tasks.c.id == task_id
+                )
+            )
+        ).fetchone()
+        if task_row is None:
+            raise HierarchyError("not_found", task_id)
+        await self.lock_hierarchy_project(conn, task_row.project_id)
+        # The project lock may have waited behind another hierarchy move;
+        # re-read the row so all validation below sees that committed move.
         task_row = (
             await conn.execute(
                 select(tasks.c.id, tasks.c.project_id, tasks.c.parent_task_id).where(

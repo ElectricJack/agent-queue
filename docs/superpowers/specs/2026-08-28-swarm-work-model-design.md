@@ -760,11 +760,14 @@ close is skipped for pools; the token is revoked at drain.
   provenance edge to the work that surfaced it, and an idle session has none to give.
   Anything a worker wants to file it files before closing;
 - **the scope is resolved *and* re-enforced under a row lock, inside the creation
-  transaction.** `T`'s parent and subtree are read again as the first statement of that
-  transaction — `SELECT id, parent_task_id … FOR UPDATE` on Postgres over `T` plus any
-  node the worker named explicitly (ascending id order, one statement, so two filings
-  that name each other's held task cannot deadlock); on SQLite `immediate()`'s writer
-  lock already serialises the two transactions and the clause compiles away. Without it a
+  transaction.** `T`'s parent and subtree are read again at the start of that transaction.
+  On Postgres, the filing takes a `FOR UPDATE` lock on `T`'s durable project row — the
+  same lock every `set_parent` takes before validating or moving a subtree — and then
+  row-locks `T` plus any explicitly named nodes in ascending id order. A named
+  descendant's membership depends on every intermediate ancestor, so locking only `T`
+  and the named leaf would not exclude an intermediate-ancestor move; the shared project
+  lock does. On SQLite `immediate()`'s writer lock already serialises the two transactions.
+  Without this exclusion a
   `set_parent` committing between the pre-check and the write would file the task under a
   container `T` no longer authorises. Consequences: the **sibling default follows `T`** to
   wherever it now lives (and files a root if `T` became one); an **explicitly named parent

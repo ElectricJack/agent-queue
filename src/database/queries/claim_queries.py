@@ -674,30 +674,42 @@ class ClaimQueryMixin:
         """Lock the task rows a worker filing's scope is derived from.
 
         Returns ``{id: parent_task_id}`` for the rows that exist (a missing
-        id is simply absent).  On Postgres the rows are taken ``FOR UPDATE``
-        in ascending id order — one statement, canonical order — so a
-        concurrent ``set_parent`` on any of them blocks on its own
-        ``UPDATE tasks`` until the filing transaction commits, and two
-        filings that name each other's held task cannot deadlock.  The lock
-        covers exactly what ``set_parent`` writes for a move: the moved
-        task's own row.  On SQLite ``immediate()`` already holds the
-        database write lock and the clause compiles away, so behaviour there
-        is unchanged.
+        id is simply absent). On Postgres the filing first takes the same
+        durable project-row lock as ``set_parent``, serializing scope reads
+        with every hierarchy move. It then row-locks the requested tasks in
+        ascending id order so deletion cannot invalidate the result. The
+        shared project lock covers intermediate ancestors: moving one waits
+        even though it is not itself named by the filing. On SQLite
+        ``immediate()`` already holds the database write lock.
 
         Called first in the filing transaction, before ``reserve_filing``
         takes the same row lock on the held task by writing to it.
         """
+        anchor_id = task_ids[0] if task_ids else None
         ids = sorted(set(task_ids))
         if not ids:
             return {}
-        stmt = (
-            select(tasks.c.id, tasks.c.parent_task_id)
-            .where(tasks.c.id.in_(ids))
-            .order_by(tasks.c.id)
-        )
         if conn.dialect.name == "postgresql":
-            stmt = stmt.with_for_update()
-        return {r.id: r.parent_task_id for r in (await conn.execute(stmt)).fetchall()}
+            project_id = await conn.scalar(
+                select(tasks.c.project_id).where(tasks.c.id == anchor_id)
+            )
+            if project_id is None:
+                return {}
+            await self.lock_hierarchy_project(conn, project_id)
+            stmt = (
+                select(tasks.c.id, tasks.c.parent_task_id)
+                .where(tasks.c.id.in_(ids))
+                .order_by(tasks.c.id)
+                .with_for_update()
+            )
+        else:
+            stmt = (
+                select(tasks.c.id, tasks.c.parent_task_id)
+                .where(tasks.c.id.in_(ids))
+                .order_by(tasks.c.id)
+            )
+        rows = (await conn.execute(stmt)).fetchall()
+        return {r.id: r.parent_task_id for r in rows if r.id in ids}
 
     async def reserve_filing(self, conn, task_id: str, *, max_filings: int) -> bool:
         res = await conn.execute(

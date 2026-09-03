@@ -651,10 +651,36 @@ class TestFilingScopeRace:
         assert (await db.get_task("held")).filed_count == 0
 
 
+async def test_lock_filing_scope_shares_project_lock_with_hierarchy_writes(db):
+    """The PostgreSQL scope read and hierarchy writer use one project lock."""
+    from types import SimpleNamespace
+
+    from sqlalchemy.dialects import postgresql
+
+    conn = AsyncMock()
+    conn.dialect.name = "postgresql"
+    conn.scalar.return_value = PROJECT_ID
+    query_result = MagicMock()
+    query_result.fetchall.return_value = [
+        SimpleNamespace(id="held", parent_task_id=None),
+        SimpleNamespace(id="middle", parent_task_id="held"),
+        SimpleNamespace(id="named", parent_task_id="middle"),
+    ]
+    conn.execute.return_value = query_result
+
+    result = await db.lock_filing_scope(conn, ["held", "named"])
+
+    assert result == {"held": None, "named": "middle"}
+    project_lock, task_lock = [call.args[0] for call in conn.execute.await_args_list]
+    project_sql = str(project_lock.compile(dialect=postgresql.dialect()))
+    task_sql = str(task_lock.compile(dialect=postgresql.dialect()))
+    assert "FROM projects" in project_sql and "FOR UPDATE" in project_sql
+    assert "WHERE tasks.id IN" in task_sql and "FOR UPDATE" in task_sql
+
+
 @pytest.mark.skipif(POSTGRES_TEST_DSN is None, reason="POSTGRES_TEST_DSN not set")
 async def test_lock_filing_scope_blocks_a_concurrent_reparent_on_postgres():
-    """On Postgres the locked scope read holds the held task's row until the
-    filing transaction commits, so a reparent cannot slip in behind it."""
+    """The filing lock is acquired before the competing reparent starts."""
     import asyncio
 
     from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
@@ -670,24 +696,83 @@ async def test_lock_filing_scope_blocks_a_concurrent_reparent_on_postgres():
         async with db._engine.begin() as conn:
             await db.set_parent("epic.1", "epic", conn=conn)
 
+        started = asyncio.Event()
+
         async def reparent():
             async with db._engine.begin() as other:
+                started.set()
                 await db.set_parent("epic.1", "epic2", conn=other)
 
-        racer = asyncio.create_task(reparent())
-        try:
-            async with db.immediate() as conn:
-                assert await db.lock_filing_scope(conn, ["epic.1"]) == {"epic.1": "epic"}
+        async with db.immediate() as conn:
+            assert await db.lock_filing_scope(conn, ["epic.1"]) == {"epic.1": "epic"}
+            racer = asyncio.create_task(reparent())
+            try:
+                await asyncio.wait_for(started.wait(), timeout=5)
                 with pytest.raises(asyncio.TimeoutError):
                     await asyncio.wait_for(asyncio.shield(racer), timeout=0.5)
                 # Still the parent we locked, from inside the transaction.
                 assert (await db.lock_filing_scope(conn, ["epic.1"]))["epic.1"] == "epic"
-            await asyncio.wait_for(racer, timeout=5)
-        finally:
-            racer.cancel()
+            finally:
+                if racer.done():
+                    racer.result()
+        await asyncio.wait_for(racer, timeout=5)
         assert (await db.get_task("epic.1")).parent_task_id == "epic2"
     finally:
         await db.close()
+
+
+@pytest.mark.skipif(POSTGRES_TEST_DSN is None, reason="POSTGRES_TEST_DSN not set")
+async def test_lock_filing_scope_blocks_intermediate_ancestor_reparent_on_postgres():
+    """Moving an intermediate ancestor cannot invalidate descendant scope."""
+    import asyncio
+
+    from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
+
+    db = PostgreSQLDatabaseAdapter(POSTGRES_TEST_DSN)
+    await db.initialize()
+    await db.reset_for_tests()
+    try:
+        await db.create_project(Project(id=PROJECT_ID, name="p"))
+        for tid in ("held", "middle", "named", "elsewhere"):
+            await db.create_task(Task(
+                id=tid,
+                project_id=PROJECT_ID,
+                title=tid,
+                description=tid,
+                status=TaskStatus.IN_PROGRESS,
+            ))
+        async with db._engine.begin() as conn:
+            await db.set_parent("middle", "held", conn=conn)
+            await db.set_parent("named", "middle", conn=conn)
+
+        started = asyncio.Event()
+
+        async def move_intermediate_ancestor():
+            async with db._engine.begin() as other:
+                started.set()
+                await db.set_parent("middle", "elsewhere", conn=other)
+
+        async with db.immediate() as conn:
+            assert await db.lock_filing_scope(conn, ["held", "named"]) == {
+                "held": None,
+                "named": "middle",
+            }
+            racer = asyncio.create_task(move_intermediate_ancestor())
+            try:
+                await asyncio.wait_for(started.wait(), timeout=5)
+                with pytest.raises(asyncio.TimeoutError):
+                    await asyncio.wait_for(asyncio.shield(racer), timeout=0.5)
+                assert "named" in await db.subtree_ids("held", conn=conn)
+            finally:
+                if racer.done():
+                    racer.result()
+        await asyncio.wait_for(racer, timeout=5)
+        async with db._engine.begin() as conn:
+            assert "named" not in await db.subtree_ids("held", conn=conn)
+    finally:
+        await db.close()
+
+
 def _cli_client(captured_args: dict):
     client = AsyncMock()
     client.__aenter__ = AsyncMock(return_value=client)

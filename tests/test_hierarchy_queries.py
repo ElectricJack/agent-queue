@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from sqlalchemy import select
@@ -88,6 +88,18 @@ async def mktask(db, tid, status=TaskStatus.DEFINED, **kw):
         Task(id=tid, project_id=PROJECT_ID, title=tid, description=tid, status=status, **kw)
     )
     return tid
+
+
+async def test_set_parent_takes_project_hierarchy_lock(db, monkeypatch):
+    """Every hierarchy move must share the filing scope's project lock."""
+    await mktask(db, "parent", TaskStatus.IN_PROGRESS)
+    await mktask(db, "child", TaskStatus.IN_PROGRESS)
+    lock = AsyncMock()
+    monkeypatch.setattr(db, "lock_hierarchy_project", lock)
+
+    async with db._engine.begin() as conn:
+        await db.set_parent("child", "parent", conn=conn)
+        lock.assert_awaited_once_with(conn, PROJECT_ID)
 
 
 async def test_set_parent_rejects_blocking_dependency_cycle_on_both_backends(any_db):
