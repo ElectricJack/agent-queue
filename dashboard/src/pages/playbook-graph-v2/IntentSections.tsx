@@ -55,6 +55,21 @@ export function secondaryLine(node: GraphNodeDTO): string | null {
   }
 }
 
+/** A label/value grid. Shared by the inspector's detail blocks and the run
+ *  overlay's receipt detail so the two read as one surface. */
+export function Pairs({ pairs }: { pairs: [string, ReactNode][] }) {
+  return (
+    <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs">
+      {pairs.map(([label, value]) => (
+        <div key={label} className="contents">
+          <dt className="text-gray-500">{label}</dt>
+          <dd className="min-w-0 break-words text-gray-200">{value}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
 /** How many input rows a compact card shows before collapsing the rest into a
  *  "+N more" chip. Two rows plus the overflow chip is what fits on one line at
  *  `NODE_WIDTH` without pushing the outcome ports off the card. */

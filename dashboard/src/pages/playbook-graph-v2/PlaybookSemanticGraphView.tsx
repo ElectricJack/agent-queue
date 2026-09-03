@@ -4,6 +4,7 @@ import DiagnosticsBanner from "./DiagnosticsBanner";
 import EventScopeSelector, { ALL_EVENTS } from "./EventScopeSelector";
 import PlaybookSemanticGraphCanvas from "./PlaybookSemanticGraphCanvas";
 import SemanticNodeInspector from "./SemanticNodeInspector";
+import { overlayAppliesTo } from "./layout";
 import type { RunOverlayInput } from "./types";
 
 function Notice({ children }: { children: ReactNode }) {
@@ -70,6 +71,22 @@ export default function PlaybookSemanticGraphView({
   }, [nodes, selectedNodeId]);
 
   const onSelectNode = useCallback((nodeId: string | null) => setSelectedNodeId(nodeId), []);
+
+  // The inspector shows run facts under exactly the rule the canvas draws them
+  // under: only when the run pinned the artifact being projected. A run against
+  // another artifact is refused rather than mis-attributed to this step.
+  const overlayApplies = overlayAppliesTo(data, overlay);
+  const nodeOverlay = useMemo(
+    () =>
+      overlayApplies && selectedNodeId
+        ? ((overlay?.nodes ?? []).find((row) => row.step_id === selectedNodeId) ?? null)
+        : null,
+    [overlayApplies, overlay, selectedNodeId],
+  );
+  const receipts = useMemo(
+    () => (overlayApplies ? (overlay?.receipts ?? []) : []),
+    [overlayApplies, overlay],
+  );
 
   if (isPending) {
     return (
@@ -152,6 +169,9 @@ export default function PlaybookSemanticGraphView({
               node={selected}
               advanced={advanced}
               onAdvancedChange={setAdvanced}
+              overlay={nodeOverlay}
+              receipts={receipts}
+              runId={overlayApplies ? overlay?.run_id : undefined}
             />
           </div>
         )}
