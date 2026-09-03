@@ -1,0 +1,242 @@
+[
+ {
+  "measure": 1,
+  "name": "shadow rule-selection agreement",
+  "plant": {
+   "source": "parity",
+   "value": {
+    "field": "rules_selected"
+   }
+  },
+  "expect_refusal_contains": "measure 1 (shadow rule-selection agreement): 1 unexplained rules_selected finding(s)"
+ },
+ {
+  "measure": 2,
+  "name": "command-argument agreement after canonicalisation",
+  "plant": {
+   "source": "parity",
+   "value": {
+    "field": "commands"
+   }
+  },
+  "expect_refusal_contains": "measure 2 (command-argument agreement after canonicalisation): 1 unexplained commands finding(s)"
+ },
+ {
+  "measure": 3,
+  "name": "unexplained terminal-outcome differences",
+  "plant": {
+   "source": "parity",
+   "value": {
+    "field": "terminal"
+   }
+  },
+  "expect_refusal_contains": "measure 3 (unexplained terminal-outcome differences): 1 unexplained terminal finding(s)"
+ },
+ {
+  "measure": 4,
+  "name": "authorization denials by command and profile",
+  "plant": {
+   "source": "denials",
+   "value": [
+    {
+     "command": "ensure_task",
+     "profile_id": "reviewer",
+     "shadow": false
+    },
+    {
+     "command": "ensure_task",
+     "profile_id": "reviewer",
+     "shadow": false
+    }
+   ]
+  },
+  "expect_refusal_contains": "authorization denials: 2 (ensure_task/reviewer: 2)"
+ },
+ {
+  "measure": 5,
+  "name": "duplicate receipt / snapshot-version conflicts",
+  "plant": {
+   "source": "conflicts",
+   "value": [
+    {
+     "run_id": "r1"
+    },
+    {
+     "run_id": "r2"
+    }
+   ]
+  },
+  "expect_refusal_contains": "snapshot-version conflicts: 2 in 440 boundaries (gate <= 1 per 10,000)"
+ },
+ {
+  "measure": 6,
+  "name": "event->run dispatch latency p95",
+  "plant": {
+   "source": "dispatch_latencies_ms",
+   "value": [
+    2410.0,
+    2410.0,
+    2410.0
+   ]
+  },
+  "expect_refusal_contains": "dispatch latency p95 2410ms exceeds gate (<= 1.25 x baseline 640ms, <= 1000ms)"
+ },
+ {
+  "measure": 7,
+  "name": "wait-resume latency p95",
+  "plant": {
+   "source": "resume_latencies_ms",
+   "value": [
+    6200.0,
+    6200.0
+   ]
+  },
+  "expect_refusal_contains": "wait-resume latency p95 6200ms exceeds gate (<= 5000ms)"
+ },
+ {
+  "measure": 8,
+  "name": "LLM budget failures",
+  "plant": {
+   "source": "step_counts",
+   "value": [
+    {
+     "step_kind": "llm",
+     "receipt_kind": "step",
+     "outcome": "success",
+     "error_code": null,
+     "count": 97
+    },
+    {
+     "step_kind": "llm",
+     "receipt_kind": "step",
+     "outcome": "failure",
+     "error_code": "budget_exceeded",
+     "count": 3
+    },
+    {
+     "step_kind": "agent_task",
+     "receipt_kind": "step",
+     "outcome": "success",
+     "error_code": null,
+     "count": 40
+    }
+   ]
+  },
+  "expect_refusal_contains": "LLM budget failures: 3 of 100 LLM steps (3.0%; gate <= 1%)"
+ },
+ {
+  "measure": 9,
+  "name": "structured-output failures",
+  "plant": {
+   "source": "step_counts",
+   "value": [
+    {
+     "step_kind": "llm",
+     "receipt_kind": "step",
+     "outcome": "success",
+     "error_code": null,
+     "count": 98
+    },
+    {
+     "step_kind": "llm",
+     "receipt_kind": "step",
+     "outcome": "failure",
+     "error_code": "invalid_output",
+     "count": 2
+    },
+    {
+     "step_kind": "agent_task",
+     "receipt_kind": "step",
+     "outcome": "success",
+     "error_code": null,
+     "count": 40
+    }
+   ]
+  },
+  "expect_refusal_contains": "structured-output failures: 2 of 100 LLM steps (2.0%; gate <= 1%)"
+ },
+ {
+  "measure": 10,
+  "name": "agent-task orphan rate",
+  "plant": {
+   "source": "orphans",
+   "value": [
+    {
+     "run_id": "r9",
+     "step_id": "review",
+     "created_at": 1.0,
+     "deadline_at": 601.0
+    }
+   ]
+  },
+  "expect_refusal_contains": "agent-task orphans: 1 step(s) with no terminal receipt after 2x the step timeout (gate 0)"
+ },
+ {
+  "measure": 11,
+  "name": "agent-task cancellation rate",
+  "plant": {
+   "source": "cancellations",
+   "value": {
+    "error": "receipts table unreadable"
+   }
+  },
+  "expect_refusal_contains": "measure 11 (agent-task cancellation rate): evidence unreadable"
+ },
+ {
+  "measure": 12,
+  "name": "graph API latency p95",
+  "plant": {
+   "source": "graph_latencies_ms",
+   "value": [
+    412.0,
+    412.0,
+    412.0,
+    412.0,
+    412.0
+   ]
+  },
+  "expect_refusal_contains": "graph API latency p95 412ms exceeds gate (<= 300ms)"
+ },
+ {
+  "measure": 13,
+  "name": "dashboard semantic-tab time-to-interactive",
+  "plant": {
+   "source": "dashboard_tti_ms",
+   "value": null
+  },
+  "expect_refusal_contains": "dashboard semantic-tab time-to-interactive not recorded"
+ },
+ {
+  "measure": 14,
+  "name": "pending-event count",
+  "plant": {
+   "source": "pending",
+   "value": {
+    "count": 9,
+    "oldest_received_at": "recent"
+   }
+  },
+  "expect_refusal_contains": "pending events: 9 (gate <= 5)"
+ },
+ {
+  "measure": 15,
+  "name": "pending-event maximum age",
+  "plant": {
+   "source": "pending",
+   "value": {
+    "count": 1,
+    "oldest_received_at": "stale"
+   }
+  },
+  "expect_refusal_contains": "oldest pending event is 90000s old (gate < 86400s)"
+ },
+ {
+  "measure": 16,
+  "name": "active V1 runs",
+  "plant": {
+   "source": "active_v1_runs",
+   "value": 1
+  },
+  "expect_refusal_contains": "1 active v1 run(s) (gate 0)"
+ }
+]

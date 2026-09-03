@@ -9,6 +9,7 @@ from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.cutover_event_dto import CutoverEventDTO
+    from ..models.cutover_window_dto import CutoverWindowDTO
     from ..models.playbook_cutover_window_close_response_measures_item import (
         PlaybookCutoverWindowCloseResponseMeasuresItem,
     )
@@ -25,6 +26,8 @@ class PlaybookCutoverWindowCloseResponse:
         event (CutoverEventDTO | None | Unset):
         blocking_reasons (list[str] | Unset):
         measures (list[PlaybookCutoverWindowCloseResponseMeasuresItem] | Unset):
+        window (CutoverWindowDTO | None | Unset):
+        evidence_errors (list[str] | Unset):
         error (None | str | Unset):
     """
 
@@ -32,10 +35,13 @@ class PlaybookCutoverWindowCloseResponse:
     event: CutoverEventDTO | None | Unset = UNSET
     blocking_reasons: list[str] | Unset = UNSET
     measures: list[PlaybookCutoverWindowCloseResponseMeasuresItem] | Unset = UNSET
+    window: CutoverWindowDTO | None | Unset = UNSET
+    evidence_errors: list[str] | Unset = UNSET
     error: None | str | Unset = UNSET
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.cutover_event_dto import CutoverEventDTO
+        from ..models.cutover_window_dto import CutoverWindowDTO
 
         success = self.success
 
@@ -58,6 +64,18 @@ class PlaybookCutoverWindowCloseResponse:
                 measures_item = measures_item_data.to_dict()
                 measures.append(measures_item)
 
+        window: dict[str, Any] | None | Unset
+        if isinstance(self.window, Unset):
+            window = UNSET
+        elif isinstance(self.window, CutoverWindowDTO):
+            window = self.window.to_dict()
+        else:
+            window = self.window
+
+        evidence_errors: list[str] | Unset = UNSET
+        if not isinstance(self.evidence_errors, Unset):
+            evidence_errors = self.evidence_errors
+
         error: None | str | Unset
         if isinstance(self.error, Unset):
             error = UNSET
@@ -77,6 +95,10 @@ class PlaybookCutoverWindowCloseResponse:
             field_dict["blocking_reasons"] = blocking_reasons
         if measures is not UNSET:
             field_dict["measures"] = measures
+        if window is not UNSET:
+            field_dict["window"] = window
+        if evidence_errors is not UNSET:
+            field_dict["evidence_errors"] = evidence_errors
         if error is not UNSET:
             field_dict["error"] = error
 
@@ -85,6 +107,7 @@ class PlaybookCutoverWindowCloseResponse:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.cutover_event_dto import CutoverEventDTO
+        from ..models.cutover_window_dto import CutoverWindowDTO
         from ..models.playbook_cutover_window_close_response_measures_item import (
             PlaybookCutoverWindowCloseResponseMeasuresItem,
         )
@@ -120,6 +143,25 @@ class PlaybookCutoverWindowCloseResponse:
 
                 measures.append(measures_item)
 
+        def _parse_window(data: object) -> CutoverWindowDTO | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                window_type_0 = CutoverWindowDTO.from_dict(data)
+
+                return window_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(CutoverWindowDTO | None | Unset, data)
+
+        window = _parse_window(d.pop("window", UNSET))
+
+        evidence_errors = cast(list[str], d.pop("evidence_errors", UNSET))
+
         def _parse_error(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -134,6 +176,8 @@ class PlaybookCutoverWindowCloseResponse:
             event=event,
             blocking_reasons=blocking_reasons,
             measures=measures,
+            window=window,
+            evidence_errors=evidence_errors,
             error=error,
         )
 

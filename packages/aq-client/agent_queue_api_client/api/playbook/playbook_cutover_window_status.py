@@ -66,12 +66,16 @@ def sync_detailed(
     body: PlaybookCutoverWindowStatusRequest,
 ) -> Response[PlaybookCutoverWindowStatusResponse | PlaybookCutoverWindowStatusResponse422]:
     """Measure the rollback observation window and the cutover acceptance table. Read-only, and recomputed
-    from source on every call -- it never reads a cached verdict. A measure whose evidence source is not
-    yet wired is reported as not passing, never as fine.
+    from source on every call -- it never reads a cached verdict. Every measure names its evidence
+    source, what was observed and when; a source that cannot be read is reported as unreadable and fails
+    the measures it feeds, never as fine. The window needs 72h since the switch, one V2 run per enabled
+    playbook, and 200 V2 runs in total.
 
      Measure the rollback observation window and the cutover acceptance table. Read-only, and recomputed
-    from source on every call -- it never reads a cached verdict. A measure whose evidence source is not
-    yet wired is reported as not passing, never as fine.
+    from source on every call -- it never reads a cached verdict. Every measure names its evidence
+    source, what was observed and when; a source that cannot be read is reported as unreadable and fails
+    the measures it feeds, never as fine. The window needs 72h since the switch, one V2 run per enabled
+    playbook, and 200 V2 runs in total.
 
     Args:
         body (PlaybookCutoverWindowStatusRequest):
@@ -101,12 +105,16 @@ def sync(
     body: PlaybookCutoverWindowStatusRequest,
 ) -> PlaybookCutoverWindowStatusResponse | PlaybookCutoverWindowStatusResponse422 | None:
     """Measure the rollback observation window and the cutover acceptance table. Read-only, and recomputed
-    from source on every call -- it never reads a cached verdict. A measure whose evidence source is not
-    yet wired is reported as not passing, never as fine.
+    from source on every call -- it never reads a cached verdict. Every measure names its evidence
+    source, what was observed and when; a source that cannot be read is reported as unreadable and fails
+    the measures it feeds, never as fine. The window needs 72h since the switch, one V2 run per enabled
+    playbook, and 200 V2 runs in total.
 
      Measure the rollback observation window and the cutover acceptance table. Read-only, and recomputed
-    from source on every call -- it never reads a cached verdict. A measure whose evidence source is not
-    yet wired is reported as not passing, never as fine.
+    from source on every call -- it never reads a cached verdict. Every measure names its evidence
+    source, what was observed and when; a source that cannot be read is reported as unreadable and fails
+    the measures it feeds, never as fine. The window needs 72h since the switch, one V2 run per enabled
+    playbook, and 200 V2 runs in total.
 
     Args:
         body (PlaybookCutoverWindowStatusRequest):
@@ -131,12 +139,16 @@ async def asyncio_detailed(
     body: PlaybookCutoverWindowStatusRequest,
 ) -> Response[PlaybookCutoverWindowStatusResponse | PlaybookCutoverWindowStatusResponse422]:
     """Measure the rollback observation window and the cutover acceptance table. Read-only, and recomputed
-    from source on every call -- it never reads a cached verdict. A measure whose evidence source is not
-    yet wired is reported as not passing, never as fine.
+    from source on every call -- it never reads a cached verdict. Every measure names its evidence
+    source, what was observed and when; a source that cannot be read is reported as unreadable and fails
+    the measures it feeds, never as fine. The window needs 72h since the switch, one V2 run per enabled
+    playbook, and 200 V2 runs in total.
 
      Measure the rollback observation window and the cutover acceptance table. Read-only, and recomputed
-    from source on every call -- it never reads a cached verdict. A measure whose evidence source is not
-    yet wired is reported as not passing, never as fine.
+    from source on every call -- it never reads a cached verdict. Every measure names its evidence
+    source, what was observed and when; a source that cannot be read is reported as unreadable and fails
+    the measures it feeds, never as fine. The window needs 72h since the switch, one V2 run per enabled
+    playbook, and 200 V2 runs in total.
 
     Args:
         body (PlaybookCutoverWindowStatusRequest):
@@ -164,12 +176,16 @@ async def asyncio(
     body: PlaybookCutoverWindowStatusRequest,
 ) -> PlaybookCutoverWindowStatusResponse | PlaybookCutoverWindowStatusResponse422 | None:
     """Measure the rollback observation window and the cutover acceptance table. Read-only, and recomputed
-    from source on every call -- it never reads a cached verdict. A measure whose evidence source is not
-    yet wired is reported as not passing, never as fine.
+    from source on every call -- it never reads a cached verdict. Every measure names its evidence
+    source, what was observed and when; a source that cannot be read is reported as unreadable and fails
+    the measures it feeds, never as fine. The window needs 72h since the switch, one V2 run per enabled
+    playbook, and 200 V2 runs in total.
 
      Measure the rollback observation window and the cutover acceptance table. Read-only, and recomputed
-    from source on every call -- it never reads a cached verdict. A measure whose evidence source is not
-    yet wired is reported as not passing, never as fine.
+    from source on every call -- it never reads a cached verdict. Every measure names its evidence
+    source, what was observed and when; a source that cannot be read is reported as unreadable and fails
+    the measures it feeds, never as fine. The window needs 72h since the switch, one V2 run per enabled
+    playbook, and 200 V2 runs in total.
 
     Args:
         body (PlaybookCutoverWindowStatusRequest):

@@ -161,6 +161,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "playbook_cutover_authorize": "playbook",
     "playbook_cutover_switch": "playbook",
     "playbook_cutover_window_status": "playbook",
+    "playbook_cutover_window_rehearsal": "playbook",
     "playbook_cutover_window_close": "playbook",
     # plugin — installation, configuration, lifecycle
     "plugin_list": "plugin",
@@ -5550,10 +5551,39 @@ _ALL_TOOL_DEFINITIONS = [
         "description": (
             "Measure the rollback observation window and the cutover acceptance "
             "table. Read-only, and recomputed from source on every call -- it "
-            "never reads a cached verdict. A measure whose evidence source is "
-            "not yet wired is reported as not passing, never as fine."
+            "never reads a cached verdict. Every measure names its evidence "
+            "source, what was observed and when; a source that cannot be read "
+            "is reported as unreadable and fails the measures it feeds, never "
+            "as fine. The window needs 72h since the switch, one V2 run per "
+            "enabled playbook, and 200 V2 runs in total."
         ),
         "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "playbook_cutover_window_rehearsal",
+        "description": (
+            "Dispatch one synthetic live event per enabled playbook so an idle "
+            "fleet can satisfy the observation window's coverage condition. "
+            "Operator-only. Records a window_coverage_rehearsal audit row naming "
+            "every enabled playbook, the runs it started and any it could not; "
+            "a window later closed on this traffic says so. Also where the "
+            "manual dashboard time-to-interactive review (measure 13) is recorded."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "reason": {"type": "string", "description": "Why, at least 10 characters. Stored verbatim in the append-only cutover audit."},
+                "dashboard_tti_ms": {
+                    "type": "number",
+                    "description": (
+                        "The semantic-tab time-to-interactive measured in the manual "
+                        "scenario review, in milliseconds. Optional; the window cannot "
+                        "close until one rehearsal has recorded it."
+                    ),
+                },
+            },
+            "required": ["reason"],
+        },
     },
     {
         "name": "playbook_cutover_window_close",

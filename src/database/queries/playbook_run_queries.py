@@ -466,6 +466,56 @@ class PlaybookRunQueryMixin:
                 raise RunIdentityMismatch(snapshot.run_id, field, want, got)
         payload = serialize_snapshot(advanced, limits=limits)
 
+        try:
+            return await self._commit_boundary_txn(
+                snapshot, advanced, receipt, wait_changes, payload, limits
+            )
+        except SnapshotVersionConflict as exc:
+            # After the transaction has rolled back, so the audit row is a
+            # fresh write and never contends with the lock it just lost.
+            await self._record_snapshot_conflict(exc, snapshot)
+            raise
+
+    async def _record_snapshot_conflict(
+        self, conflict: SnapshotVersionConflict, snapshot: RunSnapshot
+    ) -> None:
+        """Leave a durable ``playbook.snapshot_conflict`` row (Package 7 §3.5 #5).
+
+        Best-effort: the conflict is the outcome that matters and it is
+        already being raised; a failure to record it must not turn into a
+        second error the caller cannot act on.
+        """
+        log_event = getattr(self, "log_event", None)
+        if log_event is None:
+            return
+        try:
+            await log_event(
+                "playbook.snapshot_conflict",
+                payload=json.dumps(
+                    {
+                        "run_id": conflict.run_id,
+                        "expected": conflict.expected,
+                        "actual": conflict.actual,
+                        "playbook_id": snapshot.playbook_id,
+                        "rule_id": snapshot.rule_id,
+                        "step_id": snapshot.current_step_id,
+                    },
+                    sort_keys=True,
+                ),
+            )
+        except Exception:
+            logger.debug("Could not record playbook.snapshot_conflict", exc_info=True)
+
+    async def _commit_boundary_txn(
+        self,
+        snapshot: RunSnapshot,
+        advanced: RunSnapshot,
+        receipt: StepReceipt,
+        wait_changes: WaitChangeSet,
+        payload: bytes,
+        limits: Any,
+    ) -> RunSnapshot:
+        expected = snapshot.version
         async with self.immediate() as conn:
             current = (
                 (
