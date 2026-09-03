@@ -25,6 +25,7 @@ proves the fence.
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -221,6 +222,197 @@ async def test_expiry_is_audited_with_a_reason(db):
     assert row["resolution"] == "expired"
     assert row["resolved_by"] == PENDING_EVENT_EXPIRY_ACTOR
     assert "expired" in row["resolution_reason"]
+
+
+async def test_duplicate_at_a_full_queue_evicts_nothing(db):
+    """A duplicate is not an arrival, so it may not cost a held event.
+
+    The regression: the quota was settled *before* the insert discovered the
+    dedup conflict, so a duplicate arriving at a full queue dropped the oldest
+    unrelated row and then returned ``None`` — the queue lost an event and
+    gained nothing, and the audit row claimed the drop had made room.
+    """
+    db.set_playbook_pending_event_quota(2)
+    db.set_playbook_pending_event_overflow("drop_oldest")
+    oldest, newest = await retain_n(db, 2)
+
+    duplicate = await retain(
+        db,
+        event={"task": {"id": "t-1"}},
+        event_id="evt-dup",
+        dedup_key="default-pipeline:t-1",
+        now=NOW + 9,
+    )
+
+    assert duplicate is None
+    rows = await db.list_pending_events(
+        playbook_id="default-pipeline", include_resolved=True
+    )
+    assert {row["pending_event_id"] for row in rows} == {oldest, newest}
+    assert all(row["resolution"] is None for row in rows)
+    assert all(row["resolved_at"] is None for row in rows)
+
+
+async def test_duplicate_at_a_full_queue_under_reject_new_is_a_duplicate(db):
+    """``reject_new`` refuses arrivals, and a duplicate is not one."""
+    db.set_playbook_pending_event_quota(2)
+    db.set_playbook_pending_event_overflow("reject_new")
+    held = await retain_n(db, 2)
+
+    duplicate = await retain(
+        db,
+        event={"task": {"id": "t-0"}},
+        event_id="evt-dup",
+        dedup_key="default-pipeline:t-0",
+        now=NOW + 9,
+    )
+
+    assert duplicate is None
+    rows = await db.list_pending_events(playbook_id="default-pipeline")
+    assert {row["pending_event_id"] for row in rows} == set(held)
+
+
+async def test_duplicate_of_a_claimed_event_at_a_full_queue_evicts_nothing(db):
+    """The dedup index covers claimed rows too, and still drops nothing.
+
+    Every held row being claimed is the case that raises rather than evicting,
+    so a duplicate that took the overflow path here would have raised a quota
+    error for an event the queue already holds.
+    """
+    db.set_playbook_pending_event_quota(1)
+    db.set_playbook_pending_event_overflow("drop_oldest")
+    [held] = await retain_n(db, 1)
+    assert await db.claim_pending_event_dispatch(
+        held, claimed_by="operator", now=NOW + 1, stale_before=NOW
+    )
+
+    duplicate = await retain(
+        db,
+        event={"task": {"id": "t-0"}},
+        event_id="evt-dup",
+        dedup_key="default-pipeline:t-0",
+        now=NOW + 9,
+    )
+
+    assert duplicate is None
+    [row] = await db.list_pending_events(
+        playbook_id="default-pipeline", include_resolved=True
+    )
+    assert row["pending_event_id"] == held
+    assert row["resolution"] is None
+
+
+async def test_overflow_never_evicts_the_arrival_it_makes_room_for(db):
+    """The new row is held out of its own sweep, not spared by the ordering.
+
+    The sweep takes the oldest unclaimed rows by ``received_at``, and an
+    arrival is not guaranteed to be the newest: an event held from a queue
+    that ran behind, or a replayed one carrying its original timestamp, sorts
+    ahead of everything already there.  Without an explicit exclusion such an
+    arrival evicts *itself*, returning an id whose row is already discarded.
+    """
+    db.set_playbook_pending_event_quota(2)
+    db.set_playbook_pending_event_overflow("drop_oldest")
+    # Both held rows are newer than the arrival, so the arrival is
+    # unambiguously the oldest candidate its own sweep can see.
+    older, newer = await retain_n(db, 2, start=10)
+
+    arrival = await retain(
+        db,
+        event={"task": {"id": "t-late"}},
+        event_id="evt-late",
+        dedup_key="default-pipeline:t-late",
+        now=NOW,
+    )
+
+    assert arrival is not None
+    unresolved = {
+        row["pending_event_id"]
+        for row in await db.list_pending_events(playbook_id="default-pipeline")
+    }
+    assert unresolved == {arrival, newer}
+    [dropped] = [
+        row
+        for row in await db.list_pending_events(
+            playbook_id="default-pipeline", include_resolved=True
+        )
+        if row["resolved_at"] is not None
+    ]
+    assert dropped["pending_event_id"] == older
+
+
+async def test_concurrent_duplicates_at_a_full_queue_lose_nothing(db):
+    """Two racing duplicates settle on the index, and evict nothing.
+
+    The insert-first ordering means the loser of the race blocks on the
+    index, finds the row committed and returns ``None`` — it never reaches
+    the overflow sweep.
+    """
+    db.set_playbook_pending_event_quota(2)
+    db.set_playbook_pending_event_overflow("drop_oldest")
+    oldest, newest = await retain_n(db, 2)
+
+    results = await asyncio.gather(
+        *[
+            retain(
+                db,
+                event={"task": {"id": "t-1"}},
+                event_id=f"evt-dup-{index}",
+                dedup_key="default-pipeline:t-1",
+                now=NOW + 20 + index,
+            )
+            for index in range(4)
+        ]
+    )
+
+    assert results == [None, None, None, None]
+    rows = await db.list_pending_events(
+        playbook_id="default-pipeline", include_resolved=True
+    )
+    assert {row["pending_event_id"] for row in rows} == {oldest, newest}
+    assert all(row["resolution"] is None for row in rows)
+
+
+async def test_concurrent_arrivals_at_a_full_queue_lose_nothing(db):
+    """Distinct arrivals race; every one of them is kept or audited.
+
+    The quota is a flood ceiling, not an invariant — under real concurrency a
+    loser may be refused outright — so what is asserted here is conservation:
+    an arrival that reported success is on the queue or carries a drop reason,
+    and a refused one left no trace at all.
+    """
+    db.set_playbook_pending_event_quota(2)
+    db.set_playbook_pending_event_overflow("drop_oldest")
+    held = set(await retain_n(db, 2))
+
+    results = await asyncio.gather(
+        *[
+            retain(
+                db,
+                event={"task": {"id": f"t-c{index}"}},
+                event_id=f"evt-c{index}",
+                dedup_key=f"default-pipeline:t-c{index}",
+                now=NOW + 30 + index,
+            )
+            for index in range(4)
+        ],
+        return_exceptions=True,
+    )
+    accepted = {result for result in results if isinstance(result, str)}
+    refused = [result for result in results if isinstance(result, BaseException)]
+    assert all(isinstance(error, PendingEventQuotaExceeded) for error in refused)
+    assert None not in results  # distinct dedup keys are never duplicates
+
+    everything = await db.list_pending_events(
+        playbook_id="default-pipeline", include_resolved=True
+    )
+    # Every row that was ever written is accounted for, and only those.
+    assert {row["pending_event_id"] for row in everything} == held | accepted
+    for row in everything:
+        if row["resolved_at"] is not None:
+            assert row["resolution"] == "discarded"
+            assert row["resolved_by"] == PENDING_EVENT_OVERFLOW_ACTOR
+            assert "drop_oldest" in row["resolution_reason"]
 
 
 # -- 7 and 8: replay ---------------------------------------------------------
