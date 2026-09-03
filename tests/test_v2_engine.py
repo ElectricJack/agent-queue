@@ -448,7 +448,9 @@ class TestCommitBoundary:
 
 class TestLlmToolTurnBoundaries:
     @pytest.mark.asyncio
-    async def test_tool_enabled_provider_deadline_is_timed_out_not_interrupted(self):
+    async def test_tool_enabled_provider_deadline_is_timed_out_not_interrupted(
+        self, monkeypatch
+    ):
         class BlockingProvider(FakeProvider):
             @property
             def reports_usage(self) -> bool:
@@ -457,13 +459,11 @@ class TestLlmToolTurnBoundaries:
             async def create_message(self, **_kwargs):
                 await asyncio.Event().wait()
 
-        step = _llm_step()
-        step = step.model_copy(
-            update={
-                "budget": step.budget.model_copy(update={"timeout_seconds": 0.01})
-            }
+        real_timeout = asyncio.timeout
+        monkeypatch.setattr(
+            "src.llm.client.asyncio.timeout", lambda _seconds: real_timeout(0.01)
         )
-        engine, _adapter, runs, ref = build_llm(BlockingProvider(), step=step)
+        engine, _adapter, runs, ref = build_llm(BlockingProvider())
 
         outcome = await engine.run_rule(ref, "r", {}, TOOL_PRINCIPAL)
 
