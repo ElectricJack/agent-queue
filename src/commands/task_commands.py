@@ -1000,16 +1000,22 @@ class TaskCommandsMixin:
 
         Order (swarm work model §12): ``reserve_filing`` first — ``False``
         raises :class:`_FilingQuota` with nothing written — then the task
-        row, then the parent-child or ``discovered-from`` edge, then (root
-        filings only) the routing gate, then the ``depends_on`` edges. Any
-        exception rolls the whole transaction back untouched.
+        row, then the parent-child edge (if any) and the ``discovered-from``
+        edge, then (root filings only) the routing gate, then the
+        ``depends_on`` edges. Any exception rolls the whole transaction back
+        untouched.
+
+        ``parent_id`` arrives already defaulted by ``_cmd_create_task``: a
+        worker holding a child task files a *sibling* (parent = the held
+        task's own parent) unless it named a parent itself.
 
         Returns ``(task_id, gate_id, discovered_from_origin, depth_cap_fallback)``.
-        ``gate_id`` is set for root filings and policy-gated child filings;
-        ``discovered_from_origin`` is set whenever a ``discovered-from`` edge
-        was written — root filings (origin = ``discovered_from`` or the held
-        task) and depth-cap-fallback child filings alike (origin = the
-        would-be container).
+        ``gate_id`` is set for root filings and policy-gated parented
+        filings. ``discovered_from_origin`` is the provenance origin for
+        every worker filing: ``discovered_from`` or the held task, except
+        for a depth-cap-fallback filing, where it is the would-be container.
+        A ``discovered-from`` edge to it is written unless the origin is the
+        parent itself (the parent-child edge already records that).
 
         The ``is_blocked`` flip set from every write below (task-row
         creation never flips anything; the edge, and the gate if any, can)
@@ -1018,7 +1024,10 @@ class TaskCommandsMixin:
         ``create_gate`` do for their own single-write callers.
         """
         gate_id: str | None = None
-        origin: str | None = None
+        # The provenance origin: the task the worker named, else the task it
+        # holds. Reported on ``task.created`` for every worker filing; the
+        # depth-cap branch below repoints it at the would-be container.
+        origin: str | None = discovered_from or held_id
         depth_cap_fallback = False
         flipped: set[str] = set()
         async with self.db.immediate() as conn:
@@ -1036,6 +1045,23 @@ class TaskCommandsMixin:
                     task.id, parent_id, conn=conn, description=reason
                 )
                 flipped |= result.flipped
+                # Sibling filing (parent = the held task's own parent) or a
+                # filing under a descendant: the parent-child edge places the
+                # task, the ``discovered-from`` edge keeps provenance to the
+                # work that surfaced it. When the parent *is* the origin the
+                # parent-child edge (carrying ``reason``) already says so — a
+                # second edge to the same task would only duplicate it.
+                if origin != parent_id:
+                    flipped |= (
+                        await self.db.add_dependency(
+                            task.id,
+                            origin,
+                            DepType.DISCOVERED_FROM.value,
+                            description=reason,
+                            conn=conn,
+                        )
+                        or set()
+                    )
             elif parent_id:
                 # Naming-depth cap: child_task_id already minted a root id;
                 # record provenance the same way create_task_under does,
@@ -1052,7 +1078,6 @@ class TaskCommandsMixin:
                     or set()
                 )
             else:
-                origin = discovered_from or held_id
                 flipped |= (
                     await self.db.add_dependency(
                         task.id,
@@ -1164,6 +1189,8 @@ class TaskCommandsMixin:
                 }
             args.pop("status", None)  # worker-filed work always starts DEFINED
             held_id = filing_session.task_id
+            held_task = await self.db.get_task(held_id)
+            held_parent_id = held_task.parent_task_id if held_task is not None else None
             async with self.db._engine.begin() as _conn:
                 allowed = {held_id} | set(await self.db.subtree_ids(held_id, conn=_conn))
             if args.get("discovered_from") and args["discovered_from"] not in allowed:
@@ -1171,10 +1198,22 @@ class TaskCommandsMixin:
                     "success": False,
                     "error": "discovered_from must be the held task or one of its descendants",
                 }
-            if args.get("parent_id") and args["parent_id"] not in allowed:
+            # §12: emergent work found while holding a *child* task T is
+            # organised as T's sibling — the new task defaults to T's own
+            # parent (the shared container/epic) and keeps a
+            # ``discovered-from`` edge back to T. The worker may name exactly
+            # that immediate parent explicitly; nothing further up or across
+            # the tree opens up. A root-held task keeps root filing.
+            if not args.get("parent_id") and held_parent_id:
+                args["parent_id"] = held_parent_id
+            allowed_parents = allowed | ({held_parent_id} if held_parent_id else set())
+            if args.get("parent_id") and args["parent_id"] not in allowed_parents:
                 return {
                     "success": False,
-                    "error": "parent must be the held task or one of its descendants",
+                    "error": (
+                        "parent must be the held task, one of its descendants, "
+                        "or the held task's own parent"
+                    ),
                 }
             if not str(args.get("reason") or "").strip():
                 return {

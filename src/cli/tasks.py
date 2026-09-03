@@ -199,7 +199,10 @@ def _create_task_graph(
     "--parent",
     "parent_id",
     default=None,
-    help="Create under this container (single task or graph)",
+    help=(
+        "Create under this container (single task or graph). Worker filings default "
+        "to the held task's own parent, so a sibling under the same epic needs no flag"
+    ),
 )
 @click.option(
     "--reason",

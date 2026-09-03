@@ -494,7 +494,10 @@ class TestStaticSections:
         assert "aq task create" in body
         assert "--reason" in body
         assert "discovered-from" in body
-        assert "--parent <container-id>" in body
+        # Sibling placement under the held task's parent is the server default;
+        # the guidance must say so rather than tell workers to pass the epic id.
+        assert "sibling under that same parent by default" in body
+        assert "--parent <your-task-id>" in body
 
     async def test_emergent_work_is_omitted_when_the_profile_denies_create_task(
         self, db, config, task
