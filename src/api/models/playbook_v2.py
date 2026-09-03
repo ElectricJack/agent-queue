@@ -773,6 +773,7 @@ class PlaybookRunOverlayResponse(V2Model):
     bindings: list[ExplanationRowDTO] = []
     operator_decision: OperatorDecisionDTO | None = None
     budget: RunBudgetDTO | None = None
+    diagnostics: list[GraphDiagnosticDTO] = []
     truncated: bool = False  # receipts capped (§5.4)
     receipt_total: int = 0
 

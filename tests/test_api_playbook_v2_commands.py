@@ -288,3 +288,92 @@ class TestScope:
         """§7.2: this package adds nothing to any server-owned allowlist, so a
         session token cannot reach the graph, the diff, or either write."""
         assert PLAYBOOK_V2_COMMANDS & AGENT_COMMAND_SET == frozenset()
+
+
+def _backend_fixture():
+    from pathlib import Path
+
+    from src.playbooks.activation import ActivationHealth, ActivationHealthRecord
+    from src.playbooks.artifact_ref import ArtifactRef
+    from src.playbooks.definition import load_definition_json
+
+    path = Path(__file__).parent / "fixtures/playbooks/v2/review-pipeline.artifact.json"
+    definition = load_definition_json(path.read_text())
+    ref = ArtifactRef(
+        definition.id,
+        definition.artifact_sha256(),
+        2,
+        definition.contract_fingerprint(),
+        definition.source_hash,
+        definition.compiler_build or "fixture",
+        definition.compiled_at.isoformat(),
+        definition.version,
+    )
+    activation = ActivationHealthRecord(
+        "activation-1",
+        definition.id,
+        "system",
+        "",
+        True,
+        ref.artifact_sha256,
+        ActivationHealth.READY,
+        (),
+    )
+    return definition, ref, activation
+
+
+def _backend_handler():
+    from types import SimpleNamespace
+
+    from src.config import PlaybooksConfig
+    from src.playbooks.validation import RegistryContractLookup
+    from tests.playbook_v2_helpers import StubProfiles
+
+    definition, ref, activation = _backend_fixture()
+    handler = _make_handler()
+    handler.config.playbooks = PlaybooksConfig(v2_api=True, v2_storage_enabled=True)
+    handler.db.get_playbook_artifact = AsyncMock(return_value=ref)
+    handler.db.count_pending_events = AsyncMock(return_value=0)
+    handler.db.count_active_runs = AsyncMock(return_value=0)
+    handler._v2_health_records = AsyncMock(
+        return_value=([activation], RegistryContractLookup(), StubProfiles())
+    )
+    store = MagicMock()
+    store.load.return_value = definition
+    handler._v2_engine = MagicMock(
+        return_value=SimpleNamespace(services=SimpleNamespace(artifact_store=store))
+    )
+    return handler, definition, ref
+
+
+async def test_v2_graph_returns_the_active_artifact():
+    handler, _definition, ref = _backend_handler()
+    result = await handler._cmd_playbook_v2_graph({"playbook_id": "default-pipeline"})
+    assert result["artifact"]["artifact_sha256"] == ref.artifact_sha256
+    assert len(result["nodes"]) == 13
+
+
+async def test_v2_graph_honours_artifact_sha256():
+    handler, _definition, ref = _backend_handler()
+    result = await handler._cmd_playbook_v2_graph(
+        {"playbook_id": "default-pipeline", "artifact_sha256": ref.artifact_sha256}
+    )
+    handler.db.get_playbook_artifact.assert_awaited_once_with(ref.artifact_sha256)
+    assert result["artifact"]["artifact_sha256"] == ref.artifact_sha256
+
+
+async def test_run_overlay_command_returns_pinned_artifact_ref():
+    from src.playbooks.run_state import RunSnapshot
+
+    handler, _definition, ref = _backend_handler()
+    handler.db.load_run = AsyncMock(
+        return_value=RunSnapshot(
+            "run-1", "default-pipeline", ref.artifact_sha256, "review-on-task-completed"
+        )
+    )
+    handler.db.count_receipts = AsyncMock(return_value=0)
+    handler.db.list_receipts = AsyncMock(return_value=[])
+    handler.db.list_playbook_activations = AsyncMock(return_value=[])
+    result = await handler._cmd_playbook_run_overlay({"run_id": "run-1"})
+    assert result["artifact"]["artifact_sha256"] == ref.artifact_sha256
+    assert result["artifact_is_active"] is False

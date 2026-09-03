@@ -22,7 +22,7 @@ import json
 import logging
 import time
 import uuid
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Collection, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from typing import Any
@@ -670,8 +670,24 @@ class PlaybookRunQueryMixin:
             for row in rows
         ]
 
+    async def count_active_runs(self, playbook_id: str) -> int:
+        """Non-terminal runs for one playbook, for activation-health summaries."""
+        terminal = [state.value for state in TERMINAL_LIFECYCLES]
+        stmt = select(func.count()).select_from(playbook_v2_runs).where(
+            playbook_v2_runs.c.playbook_id == playbook_id,
+            playbook_v2_runs.c.lifecycle.not_in(terminal),
+        )
+        async with self._engine.connect() as conn:
+            value = await conn.scalar(stmt)
+        return int(value or 0)
+
     async def list_receipts(
-        self, run_id: str, *, limit: int = 500, offset: int = 0
+        self,
+        run_id: str,
+        *,
+        limit: int = 500,
+        offset: int = 0,
+        receipt_kinds: Collection[str] | None = None,
     ) -> list[StepReceipt]:
         stmt = (
             select(playbook_step_receipts)
@@ -685,9 +701,24 @@ class PlaybookRunQueryMixin:
             .limit(limit)
             .offset(offset)
         )
+        if receipt_kinds is not None:
+            stmt = stmt.where(playbook_step_receipts.c.receipt_kind.in_(list(receipt_kinds)))
         async with self._engine.connect() as conn:
             rows = (await conn.execute(stmt)).mappings().fetchall()
         return [_row_to_receipt(row) for row in rows]
+
+    async def count_receipts(
+        self, run_id: str, *, receipt_kinds: Collection[str] | None = None
+    ) -> int:
+        """Number of durable receipt rows for one run."""
+        stmt = select(func.count()).select_from(playbook_step_receipts).where(
+            playbook_step_receipts.c.run_id == run_id
+        )
+        if receipt_kinds is not None:
+            stmt = stmt.where(playbook_step_receipts.c.receipt_kind.in_(list(receipt_kinds)))
+        async with self._engine.connect() as conn:
+            value = await conn.scalar(stmt)
+        return int(value or 0)
 
     # -- retention (§12.1) ---------------------------------------------------
 
@@ -1373,6 +1404,8 @@ class PlaybookRunQueryMixin:
         self,
         *,
         playbook_id: str | None = None,
+        reason: str | None = None,
+        reasons: Collection[str] | None = None,
         include_resolved: bool = False,
         limit: int = 100,
         offset: int = 0,
@@ -1381,6 +1414,10 @@ class PlaybookRunQueryMixin:
         stmt = select(playbook_pending_events)
         if playbook_id is not None:
             stmt = stmt.where(playbook_pending_events.c.playbook_id == playbook_id)
+        if reason is not None:
+            stmt = stmt.where(playbook_pending_events.c.reason == reason)
+        if reasons is not None:
+            stmt = stmt.where(playbook_pending_events.c.reason.in_(list(reasons)))
         if not include_resolved:
             stmt = stmt.where(playbook_pending_events.c.resolved_at.is_(None))
         stmt = (
@@ -1394,6 +1431,37 @@ class PlaybookRunQueryMixin:
         async with self._engine.connect() as conn:
             rows = (await conn.execute(stmt)).mappings().fetchall()
         return [_row_to_pending_event(row) for row in rows]
+
+    async def get_pending_events(self, pending_event_ids: list[str]) -> list[dict[str, Any]]:
+        """Unresolved pending rows selected by stable id, in caller order."""
+        wanted = list(dict.fromkeys(pending_event_ids))
+        if not wanted:
+            return []
+        async with self._engine.connect() as conn:
+            rows = (
+                await conn.execute(
+                    select(playbook_pending_events).where(
+                        playbook_pending_events.c.pending_event_id.in_(wanted),
+                        playbook_pending_events.c.resolved_at.is_(None),
+                    )
+                )
+            ).mappings().fetchall()
+        by_id = {row["pending_event_id"]: _row_to_pending_event(row) for row in rows}
+        return [by_id[event_id] for event_id in wanted if event_id in by_id]
+
+    async def count_pending_events(
+        self, playbook_id: str, *, reasons: Collection[str] | None = None
+    ) -> int:
+        """Unresolved operator-visible events for one playbook."""
+        stmt = select(func.count()).select_from(playbook_pending_events).where(
+            playbook_pending_events.c.playbook_id == playbook_id,
+            playbook_pending_events.c.resolved_at.is_(None),
+        )
+        if reasons is not None:
+            stmt = stmt.where(playbook_pending_events.c.reason.in_(list(reasons)))
+        async with self._engine.connect() as conn:
+            value = await conn.scalar(stmt)
+        return int(value or 0)
 
     async def purge_pending_events(
         self, now: float, *, resolved_before: float, limit: int = 1000

@@ -29070,6 +29070,14 @@
               }
             ]
           },
+          "diagnostics": {
+            "items": {
+              "$ref": "#/components/schemas/GraphDiagnosticDTO"
+            },
+            "type": "array",
+            "title": "Diagnostics",
+            "default": []
+          },
           "truncated": {
             "type": "boolean",
             "title": "Truncated",
