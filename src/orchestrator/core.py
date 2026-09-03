@@ -892,6 +892,20 @@ class Orchestrator(
                 )
                 return
 
+            # Package 7 §3.4: admission is read per dispatch, below the
+            # runtime branch and above every V1 import.  Closing admission
+            # stops *new* V1 runs without touching the paused ones already in
+            # flight -- stranding those would make a later ``drained: true``
+            # retroactively false.
+            from src.playbooks.cutover import v1_admission_closed
+
+            if v1_admission_closed(getattr(self, "config", None)):
+                logger.info(
+                    "v1 admission closed — refusing new run for playbook '%s'",
+                    playbook.id,
+                )
+                return
+
             from src.playbooks.runner import PlaybookRunner
             from src.models import PlaybookRun as PlaybookRunModel
 

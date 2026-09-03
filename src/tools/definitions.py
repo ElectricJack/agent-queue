@@ -151,6 +151,14 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "playbook_release_check": "playbook",
     "playbook_cutover_report": "playbook",
     "playbook_migration_unacknowledge": "playbook",
+    # playbook V1 drain / runtime cutover -- Package 7
+    "playbook_v1_drain_status": "playbook",
+    "playbook_v1_admission_close": "playbook",
+    "playbook_v1_admission_open": "playbook",
+    "playbook_v1_run_cancel": "playbook",
+    "playbook_cutover_switch": "playbook",
+    "playbook_cutover_window_status": "playbook",
+    "playbook_cutover_window_close": "playbook",
     # plugin — installation, configuration, lifecycle
     "plugin_list": "plugin",
     "plugin_info": "plugin",
@@ -5395,6 +5403,110 @@ _ALL_TOOL_DEFINITIONS = [
             "evidence_errors and blocks cutover; it is never shown as clean."
         ),
         "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "playbook_v1_drain_status",
+        "description": (
+            "List every non-terminal V1 playbook run, each classified live (a "
+            "coroutine owns it) or orphaned (the row outlived the process that "
+            "started it, so only an operator write can clear it), with the "
+            "options available for each. Read-only. Answers while playbooks are "
+            "paused, because a paused fleet with running rows is exactly the one "
+            "that needs draining. 'drained' requires admission closed AND zero "
+            "active runs -- a zero count alone is a snapshot, not a gate."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "playbook_v1_admission_close",
+        "description": (
+            "Refuse new V1 playbook runs. Operator-only. Already-paused V1 runs "
+            "stay resumable -- this closes the door, it does not strand what is "
+            "already inside. Appends a v1_admission_closed audit row."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"reason": {"type": "string", "description": "Why, at least 10 characters. Stored verbatim in the append-only cutover audit."}},
+            "required": ["reason"],
+        },
+    },
+    {
+        "name": "playbook_v1_admission_open",
+        "description": (
+            "Re-open V1 playbook admission. Operator-only. Refused while the "
+            "fleet is on the V2 runtime: admission open under V2 would let a "
+            "rollback silently start new V1 runs against unreviewed artifacts."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"reason": {"type": "string", "description": "Why, at least 10 characters. Stored verbatim in the append-only cutover audit."}},
+            "required": ["reason"],
+        },
+    },
+    {
+        "name": "playbook_v1_run_cancel",
+        "description": (
+            "Cancel one V1 playbook run during the drain -- a cancel that "
+            "actually cancels. Operator-only. Unlike cancel_playbook_run it "
+            "signals the running coroutine and waits for it to stop before "
+            "writing the terminal row, so the run cannot overwrite its own "
+            "cancellation on a later persistence write. A run that will not "
+            "stop within 30s leaves the row untouched and the command fails."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string", "description": "The V1 run to cancel."},
+                "reason": {"type": "string", "description": "Why, at least 10 characters. Stored verbatim in the append-only cutover audit."},
+            },
+            "required": ["run_id", "reason"],
+        },
+    },
+    {
+        "name": "playbook_cutover_switch",
+        "description": (
+            "Move the fleet between the V1 and V2 playbook runtimes. "
+            "Operator-only, and the highest-privilege operation in the "
+            "subsystem. Switching to v2 is refused until the drain completes; "
+            "switching back to v1 is the rollback and is refused once the "
+            "rollback window has been closed."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "to": {
+                    "type": "string",
+                    "enum": ["v1", "v2"],
+                    "description": "Which runtime the fleet should dispatch through.",
+                },
+                "reason": {"type": "string", "description": "Why, at least 10 characters. Stored verbatim in the append-only cutover audit."},
+            },
+            "required": ["to", "reason"],
+        },
+    },
+    {
+        "name": "playbook_cutover_window_status",
+        "description": (
+            "Measure the rollback observation window and the cutover acceptance "
+            "table. Read-only, and recomputed from source on every call -- it "
+            "never reads a cached verdict. A measure whose evidence source is "
+            "not yet wired is reported as not passing, never as fine."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "playbook_cutover_window_close",
+        "description": (
+            "Close the playbook rollback window, after which the V1 runtime may "
+            "be deleted and rollback is no longer available. Operator-only. "
+            "Recomputes every acceptance measure itself and refuses while any "
+            "one of them blocks, naming it. There is deliberately no force flag."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"reason": {"type": "string", "description": "Why, at least 10 characters. Stored verbatim in the append-only cutover audit."}},
+            "required": ["reason"],
+        },
     },
     {
         "name": "playbook_migration_acknowledge",

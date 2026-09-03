@@ -599,6 +599,12 @@ from .playbook_cutover_report_response_evidence_errors_item import PlaybookCutov
 from .playbook_cutover_report_response_parity import PlaybookCutoverReportResponseParity
 from .playbook_cutover_report_response_pending_events import PlaybookCutoverReportResponsePendingEvents
 from .playbook_cutover_report_response_unresolved_item import PlaybookCutoverReportResponseUnresolvedItem
+from .playbook_cutover_switch_request import PlaybookCutoverSwitchRequest
+from .playbook_cutover_switch_response_422 import PlaybookCutoverSwitchResponse422
+from .playbook_cutover_window_close_request import PlaybookCutoverWindowCloseRequest
+from .playbook_cutover_window_close_response_422 import PlaybookCutoverWindowCloseResponse422
+from .playbook_cutover_window_status_request import PlaybookCutoverWindowStatusRequest
+from .playbook_cutover_window_status_response_422 import PlaybookCutoverWindowStatusResponse422
 from .playbook_graph_edge import PlaybookGraphEdge
 from .playbook_graph_edge_edge_type import PlaybookGraphEdgeEdgeType
 from .playbook_graph_identity import PlaybookGraphIdentity
@@ -656,6 +662,14 @@ from .playbook_run_summary import PlaybookRunSummary
 from .playbook_summary import PlaybookSummary
 from .playbook_transition_detail import PlaybookTransitionDetail
 from .playbook_transition_detail_when_type_1 import PlaybookTransitionDetailWhenType1
+from .playbook_v1_admission_close_request import PlaybookV1AdmissionCloseRequest
+from .playbook_v1_admission_close_response_422 import PlaybookV1AdmissionCloseResponse422
+from .playbook_v1_admission_open_request import PlaybookV1AdmissionOpenRequest
+from .playbook_v1_admission_open_response_422 import PlaybookV1AdmissionOpenResponse422
+from .playbook_v1_drain_status_request import PlaybookV1DrainStatusRequest
+from .playbook_v1_drain_status_response_422 import PlaybookV1DrainStatusResponse422
+from .playbook_v1_run_cancel_request import PlaybookV1RunCancelRequest
+from .playbook_v1_run_cancel_response_422 import PlaybookV1RunCancelResponse422
 from .playbook_v2_graph_request import PlaybookV2GraphRequest
 from .playbook_v2_graph_response import PlaybookV2GraphResponse
 from .playbook_v2_graph_response_422 import PlaybookV2GraphResponse422
@@ -1691,6 +1705,12 @@ __all__ = (
     "PlaybookCutoverReportResponseParity",
     "PlaybookCutoverReportResponsePendingEvents",
     "PlaybookCutoverReportResponseUnresolvedItem",
+    "PlaybookCutoverSwitchRequest",
+    "PlaybookCutoverSwitchResponse422",
+    "PlaybookCutoverWindowCloseRequest",
+    "PlaybookCutoverWindowCloseResponse422",
+    "PlaybookCutoverWindowStatusRequest",
+    "PlaybookCutoverWindowStatusResponse422",
     "PlaybookGraphEdge",
     "PlaybookGraphEdgeEdgeType",
     "PlaybookGraphIdentity",
@@ -1748,6 +1768,14 @@ __all__ = (
     "PlaybookSummary",
     "PlaybookTransitionDetail",
     "PlaybookTransitionDetailWhenType1",
+    "PlaybookV1AdmissionCloseRequest",
+    "PlaybookV1AdmissionCloseResponse422",
+    "PlaybookV1AdmissionOpenRequest",
+    "PlaybookV1AdmissionOpenResponse422",
+    "PlaybookV1DrainStatusRequest",
+    "PlaybookV1DrainStatusResponse422",
+    "PlaybookV1RunCancelRequest",
+    "PlaybookV1RunCancelResponse422",
     "PlaybookV2GraphRequest",
     "PlaybookV2GraphResponse",
     "PlaybookV2GraphResponse422",

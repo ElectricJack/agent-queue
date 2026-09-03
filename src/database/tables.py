@@ -1074,6 +1074,45 @@ playbook_runs = Table(
 
 
 # ---------------------------------------------------------------------------
+# Playbook V2 cutover audit (docs/superpowers/plans/2026-09-01-playbook-v2-
+# cutover-cleanup.md §6).  One additive, append-only table recording who moved
+# the fleet between runtimes and why.  Package 7's *commands* are deleted at
+# the end of the cutover; this table is not — the audit of who switched the
+# fleet outlives the code that wrote it, and the rollback-window status reads
+# it to detect a runtime flipped outside the cutover command.
+# ---------------------------------------------------------------------------
+
+#: Closed set, matching the ``ck_playbook_cutover_events_kind`` constraint.
+#: Closed rather than free-form for the same reason the migration reason codes
+#: are: operator tooling switches on it.
+CUTOVER_EVENT_KINDS = (
+    "v1_admission_closed",
+    "v1_admission_reopened",
+    "drain_completed",
+    "switched_to_v2",
+    "rolled_back_to_v1",
+    "window_coverage_rehearsal",
+    "rollback_window_closed",
+)
+
+playbook_cutover_events = Table(
+    "playbook_cutover_events",
+    metadata,
+    Column("event_id", Text, primary_key=True),
+    Column("kind", Text, nullable=False),
+    Column("at", Float, nullable=False),
+    Column("actor", Text, nullable=False),
+    Column("reason", Text, nullable=False),
+    Column("detail", Text, nullable=False, server_default="{}"),
+    CheckConstraint(
+        "kind IN (" + ", ".join(f"'{_k}'" for _k in CUTOVER_EVENT_KINDS) + ")",
+        name="ck_playbook_cutover_events_kind",
+    ),
+    Index("idx_playbook_cutover_events_kind_at", "kind", "at"),
+)
+
+
+# ---------------------------------------------------------------------------
 # Playbook V2 storage (docs/superpowers/plans/2026-09-01-playbook-v2-durable-
 # state-storage.md §6).  V1's ``playbook_runs`` above is untouched and stays
 # readable after cutover; the V2 tables below are additive and inert until

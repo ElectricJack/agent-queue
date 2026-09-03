@@ -15,6 +15,12 @@ from src.playbooks.run_task import sync_playbook_run_task
 
 logger = logging.getLogger(__name__)
 
+#: Exact operator-facing text; the drain runbook matches on it.
+V1_ADMISSION_CLOSED_ERROR = (
+    "v1 playbook admission is closed (playbooks.v1_admission=closed) — "
+    "re-open it with playbook_v1_admission_open to start new V1 runs"
+)
+
 
 class PlaybookCommandsMixin:
     """Playbook command methods mixed into CommandHandler."""
@@ -1037,6 +1043,13 @@ class PlaybookCommandsMixin:
 
         if v2_engine_enabled(self.config):
             return await self._run_v2_artifact(playbook_id, event)
+
+        from src.playbooks.cutover import v1_admission_closed
+
+        if v1_admission_closed(self.config):
+            # Package 7 §3.4.  A drain that could be undone by an operator
+            # hand-running a playbook is not a drain.
+            return {"error": V1_ADMISSION_CLOSED_ERROR}
 
         graph = playbook.to_dict()
 

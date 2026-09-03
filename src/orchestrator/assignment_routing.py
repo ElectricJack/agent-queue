@@ -432,6 +432,19 @@ class AssignmentRoutingCoordinator:
         from src.playbooks.services import DatabaseActivationSource, v2_engine_enabled
 
         use_v2 = v2_engine_enabled(getattr(self.owner, "config", None))
+        if not use_v2:
+            from src.playbooks.cutover import v1_admission_closed
+
+            if v1_admission_closed(getattr(self.owner, "config", None)):
+                # Package 7 §3.4.  Assignment routing dispatches a *new* V1 run
+                # per batch, so a closed admission has to stop it here; the
+                # batch is simply left unrouted and retried once the fleet is
+                # on V2.
+                logger.info(
+                    "v1 admission closed — refusing assignment routing batch for project %s",
+                    project.id,
+                )
+                return {}
         artifact_ref = None
         if use_v2:
             artifact_ref = await DatabaseActivationSource(self.db).artifact_for(
