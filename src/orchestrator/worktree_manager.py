@@ -19,7 +19,9 @@ What lives here (P1 + P2)
   a ``task_context`` row rather than stashing it.  ``git stash`` is
   deliberately never used: the stash stack is shared by every worktree of a
   repository, so a pop in one slot can restore another slot's work.
-* :meth:`ensure_git_exclude` — the idempotent ``.git/info/exclude`` marker.
+* :meth:`ensure_git_exclude` — the idempotent ``.git/info/exclude`` marker,
+  resolved to the common git dir, serialised by an ``flock`` next to the
+  file and written by atomic same-directory replacement.
 * Sentinel I/O (``<slot>/.aq-worktree.json``).
 
 Deliberately **not** here yet: ``adopt_existing``, ``reap_slot`` and
@@ -32,13 +34,21 @@ but development happens on Windows, so no separator is ever assumed.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
 import shlex
+import tempfile
+import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
+
+try:  # POSIX only — the runtime target is WSL2; see ``_exclude_lock``.
+    import fcntl
+except ImportError:  # pragma: no cover - Windows dev boxes
+    fcntl = None  # type: ignore[assignment]
 
 from dataclasses import dataclass, field
 
@@ -106,6 +116,48 @@ EXCLUDE_BLOCK = f"{EXCLUDE_BEGIN}\n{EXCLUDE_BODY}\n{EXCLUDE_END}\n"
 #: every start instead of rewriting the first.
 _EXCLUDE_BEGIN_ASCII = "# >>> agent-queue managed"
 _EXCLUDE_END_ASCII = "# <<< agent-queue managed <<<"
+
+#: Sibling of ``info/exclude`` that serialises every managed rewrite of it.
+#: ``info/exclude`` lives in the *common* git dir, so slot provisioning,
+#: pool reconciliation, the clone/linked-checkout launch path, adoption and
+#: ``aq doctor`` — in the daemon and in operator CLIs — all converge on one
+#: file per repository.  The lock is an ``flock`` (cross-process, released by
+#: the kernel on crash) plus a per-path :class:`threading.Lock` so two
+#: threads of one process never share the file description's flock.
+_EXCLUDE_LOCK_NAME = "exclude.aq-lock"
+_exclude_thread_locks: dict[str, threading.Lock] = {}
+_exclude_thread_locks_guard = threading.Lock()
+
+
+@contextlib.contextmanager
+def _exclude_lock(lock_path: Path) -> Iterator[None]:
+    key = os.path.realpath(lock_path)
+    with _exclude_thread_locks_guard:
+        local = _exclude_thread_locks.setdefault(key, threading.Lock())
+    with local:
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            if fcntl is not None:
+                fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            # Closing the descriptor releases the flock.
+            os.close(fd)
+
+
+def _read_pointer_file(path: Path, key: str) -> Path | None:
+    """Read ``<key>: <path>`` from a git pointer file, resolved against *path*."""
+    text = path.read_text(encoding="utf-8", errors="surrogateescape").strip()
+    if key:
+        if not text.startswith(key + ":"):
+            return None
+        text = text[len(key) + 1 :].strip()
+    if not text:
+        return None
+    target = Path(text)
+    if not target.is_absolute():
+        target = (path.parent / target).resolve()
+    return target
 
 #: Branch prefix every task branch carries.  Fixed — no title slug — so the
 #: branch is derivable from the task id alone (design §3.2).
@@ -176,27 +228,72 @@ class WorktreeSlotManager:
     # ───────────────────────────── exclude block ─────────────────────────
 
     @staticmethod
-    def ensure_git_exclude(base_path: str | Path) -> bool:
+    def resolve_exclude_path(base_path: str | Path) -> Path:
+        """The ``info/exclude`` that governs *base_path*.
+
+        ``info/exclude`` lives in the **common** git dir.  For a plain clone
+        that is ``<base>/.git``; for a linked worktree ``<base>/.git`` is a
+        ``gitdir:`` pointer into ``<repo>/.git/worktrees/<name>``, whose
+        ``commondir`` file points back at the shared dir.  Resolving here —
+        rather than trusting the caller to pass the base — means every entry
+        point serialises on, and writes to, the same file.
+        """
+        dot_git = Path(base_path) / ".git"
+        git_dir = dot_git
+        if dot_git.is_file():
+            git_dir = _read_pointer_file(dot_git, "gitdir") or dot_git
+        commondir = git_dir / "commondir"
+        if commondir.is_file():
+            git_dir = _read_pointer_file(commondir, "") or git_dir
+        return git_dir / "info" / "exclude"
+
+    @classmethod
+    def exclude_lock_path(cls, base_path: str | Path) -> Path:
+        """The lock file every rewrite of *base_path*'s ``info/exclude`` takes."""
+        return cls.resolve_exclude_path(base_path).with_name(_EXCLUDE_LOCK_NAME)
+
+    @classmethod
+    def ensure_git_exclude(cls, base_path: str | Path) -> bool:
         """Idempotently maintain the ``.aq/`` block in ``.git/info/exclude``.
 
         Returns True when the file was written.  Foreign content outside the
         markers is preserved verbatim; a drifted block is rewritten in place.
         No commit is involved, so this works for repos we do not own
         (design §2.4).
+
+        The read → modify → write runs under :func:`_exclude_lock` and the
+        write is a same-directory temp file ``os.replace``d over the
+        original, so a concurrent reader (``git status`` in a slot, another
+        daemon cycle, an operator's ``aq doctor``) sees either the old file
+        or the new one and never an empty or half-written one.  After the
+        replace the file is re-read and compared with what was meant to land;
+        a mismatch is reported as a failed write rather than a success.
         """
-        info_dir = Path(base_path) / ".git" / "info"
-        exclude = info_dir / "exclude"
         try:
-            # git's shipped template is not guaranteed UTF-8 (it is cp1252 on
-            # some Windows installs) and an operator's own rules may be in any
-            # encoding.  ``surrogateescape`` round-trips undecodable bytes
-            # untouched instead of raising or corrupting them.
-            #
-            # ``newline=""`` on both read and write disables universal-newline
-            # translation, so an LF-terminated exclude file is not silently
-            # rewritten as CRLF on Windows (and vice versa) just because we
-            # appended one block to it.
+            exclude = cls.resolve_exclude_path(base_path)
+            info_dir = exclude.parent
+            info_dir.mkdir(parents=True, exist_ok=True)
+            with _exclude_lock(info_dir / _EXCLUDE_LOCK_NAME):
+                return cls._ensure_git_exclude_locked(exclude)
+        except OSError as e:
+            logger.warning("Cannot update %s: %s", base_path, e)
+            return False
+
+    @staticmethod
+    def _ensure_git_exclude_locked(exclude: Path) -> bool:
+        # git's shipped template is not guaranteed UTF-8 (it is cp1252 on
+        # some Windows installs) and an operator's own rules may be in any
+        # encoding.  ``surrogateescape`` round-trips undecodable bytes
+        # untouched instead of raising or corrupting them.
+        #
+        # ``newline=""`` on read disables universal-newline translation, so
+        # an LF-terminated exclude file is not silently rewritten as CRLF on
+        # Windows (and vice versa) just because we appended one block to it.
+        # The write goes through bytes, so nothing is translated there.
+        mode: int | None = None
+        try:
             if exclude.exists():
+                mode = exclude.stat().st_mode
                 with exclude.open(
                     encoding="utf-8", errors="surrogateescape", newline=""
                 ) as f:
@@ -222,13 +319,43 @@ class WorktreeSlotManager:
             prefix = existing if not existing or existing.endswith("\n") else existing + "\n"
             updated = prefix + EXCLUDE_BLOCK
 
+        payload = updated.encode("utf-8", errors="surrogateescape")
+        tmp_path: str | None = None
         try:
-            info_dir.mkdir(parents=True, exist_ok=True)
-            exclude.write_text(
-                updated, encoding="utf-8", errors="surrogateescape", newline=""
+            fd, tmp_path = tempfile.mkstemp(
+                prefix="exclude.", suffix=".tmp", dir=str(exclude.parent)
             )
+            with os.fdopen(fd, "wb") as f:
+                f.write(payload)
+                f.flush()
+                os.fsync(f.fileno())
+            if mode is not None:
+                with contextlib.suppress(OSError):
+                    os.chmod(tmp_path, mode & 0o7777)
+            os.replace(tmp_path, exclude)
+            tmp_path = None
         except OSError as e:
             logger.warning("Cannot write %s: %s", exclude, e)
+            return False
+        finally:
+            if tmp_path is not None:
+                with contextlib.suppress(OSError):
+                    os.remove(tmp_path)
+
+        # Verify: what is on disk now must be exactly what was meant to land.
+        try:
+            landed = exclude.read_bytes()
+        except OSError as e:
+            logger.warning("Cannot verify %s after replacement: %s", exclude, e)
+            return False
+        if landed != payload:
+            logger.warning(
+                "Verification of %s failed after replacement: managed block "
+                "did not land (%d bytes on disk, %d expected)",
+                exclude,
+                len(landed),
+                len(payload),
+            )
             return False
         return True
 
