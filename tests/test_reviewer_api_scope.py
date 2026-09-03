@@ -45,7 +45,6 @@ PR_IDENTITY = PullRequestIdentity(
 
 pytestmark = pytest.mark.asyncio
 
-
 @pytest.fixture(scope="module")
 def generated_routers():
     return build_category_routers()
