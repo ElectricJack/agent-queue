@@ -127,6 +127,7 @@ async def test_run_initializes_before_adapter_and_runs_degraded_after_login_fail
     degrades messaging instead of tearing the daemon down; shutdown closes
     the adapter and the orchestrator."""
     config = _sqlite_config(tmp_path)
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "parent-session")
     adapter = _FakeAdapter([])
     events_ref, state = _install_run_env(monkeypatch, config, adapter)
     adapter.events = events_ref  # share the recorder installed by the env
@@ -143,6 +144,7 @@ async def test_run_initializes_before_adapter_and_runs_degraded_after_login_fail
     assert state["cycles"] == 1
     assert events_ref.index("first_cycle") < events_ref.index("adapter.close")
     assert "orch.shutdown" in events_ref
+    assert "CLAUDE_CODE_SESSION_ID" not in os.environ
 
 
 async def test_run_uses_database_url_only_for_sqlite_directory_creation(monkeypatch, tmp_path):

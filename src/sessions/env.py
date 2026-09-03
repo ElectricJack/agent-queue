@@ -38,7 +38,7 @@ import logging
 import os
 from collections.abc import Mapping
 
-from src.env_scrub import STRIP_ALWAYS, scrub_env, scrub_env_from_config
+from src.env_scrub import is_harness_session_marker, scrub_env, scrub_env_from_config
 
 logger = logging.getLogger(__name__)
 
@@ -191,7 +191,20 @@ def build_session_env(
     explicit: dict[str, str] = {}
     explicit.update(session_db_isolation(work_dir))
     if harness_env:
-        explicit.update({str(k): str(v) for k, v in harness_env.items()})
+        harness_explicit = {str(k): str(v) for k, v in harness_env.items()}
+        # A harness file cannot restore a marker inherited from its enclosing
+        # CLI.  This guard deliberately applies only to harness-file input:
+        # the spec builder may itself set a provider's effort variable as an
+        # intentional setting for the freshly launched session.
+        for key in tuple(harness_explicit):
+            if is_harness_session_marker(key):
+                logger.warning(
+                    "Harness env sets %s — ignored (it makes a nested CLI think "
+                    "it is already inside a harness session)",
+                    key,
+                )
+                harness_explicit.pop(key, None)
+        explicit.update(harness_explicit)
     explicit.update(
         session_markers(
             session_id=session_id,
@@ -209,19 +222,6 @@ def build_session_env(
         explicit[STARTUP_PROMPT_DELIVERED] = "1"
     if extra_env:
         explicit.update({str(k): str(v) for k, v in extra_env.items()})
-
-    # A harness file naming a STRIP_ALWAYS key would defeat the nested-CLI
-    # guard, and no legitimate harness does.  Drop it with a warning rather
-    # than letting `explicit` win, because the failure mode (a Claude CLI
-    # that believes it is already inside a session) is silent and confusing.
-    for key in STRIP_ALWAYS:
-        if key in explicit:
-            logger.warning(
-                "Harness env sets %s — ignored (it makes a nested CLI think "
-                "it is already inside a Claude Code session)",
-                key,
-            )
-            explicit.pop(key, None)
 
     # A daemon can itself be running inside an AQ session (notably in tests
     # and when a supervisor launches a named child).  Never inherit that
