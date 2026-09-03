@@ -233,6 +233,13 @@ async def test_path_limit_is_hard_and_marks_every_path_not_completed() -> None:
     assert tree.truncated is True
     assert len(tree.paths) == 1
     assert all(path.completed is False for path in tree.paths)
+    frontier = tree.paths[0].omitted_frontiers[0]
+    assert (frontier.rule_id, frontier.step_id, frontier.status, frontier.reason) == (
+        "sweep",
+        "list-downstream",
+        "unresolved",
+        "path_limit",
+    )
 
 
 @pytest.mark.asyncio

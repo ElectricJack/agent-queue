@@ -185,6 +185,9 @@ class DryRunNode:
     target: str | None = None
     reason: str | None = None
     possible_outcomes: tuple[str, ...] = ()
+    #: Present for a selected rule omitted before traversal due to the global
+    #: path bound; regular nodes inherit their path's rule id.
+    rule_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,6 +198,9 @@ class DryRunPath:
     nodes: tuple[DryRunNode, ...]
     status: str
     completed: bool = False
+    #: Selected rules omitted by the global path bound.  A frontier belongs
+    #: inside a returned path so ``max_paths`` remains a hard result bound.
+    omitted_frontiers: tuple[DryRunNode, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -417,6 +423,7 @@ class PlaybookEngine:
         )
         work: list[_DryRunCursor] = []
         paths: list[DryRunPath] = []
+        omitted_frontiers: list[DryRunNode] = []
         truncated = False
         dispatch_id = self._dispatch_id(hydrated)
         for rule in rules:
@@ -427,9 +434,16 @@ class PlaybookEngine:
                 loop={},
             )
             if len(work) + len(paths) >= max_paths:
-                # The selected rule remains visible on the tree, but the
-                # bounded result may not manufacture an extra path just to
-                # describe the omitted frontier.
+                # Keep the selected rule visible without manufacturing an
+                # extra returned path beyond the global bound.
+                omitted_frontiers.append(
+                    DryRunNode(
+                        rule.entry_step,
+                        "unresolved",
+                        reason="path_limit",
+                        rule_id=rule.id,
+                    )
+                )
                 truncated = True
             else:
                 work.append(_DryRunCursor(rule.id, rule.entry_step, scope, None))
@@ -642,6 +656,8 @@ class PlaybookEngine:
             # happened to reach a terminal before another frontier hit a
             # bound must not be reported as a completed dry-run result.
             paths = [replace(path, status="truncated", completed=False) for path in paths]
+            if omitted_frontiers and paths:
+                paths[0] = replace(paths[0], omitted_frontiers=tuple(omitted_frontiers))
         return DryRunTree(
             artifact_sha256=artifact_ref.artifact_sha256,
             rules_selected=tuple(rule.id for rule in rules),

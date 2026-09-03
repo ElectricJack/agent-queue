@@ -8,7 +8,7 @@ from src.commands.principal import TRUSTED_LOCAL
 from src.playbooks.engine import PlaybookEngine
 from src.playbooks.executors import EXECUTORS
 from src.playbooks.executors.base import EngineServices, ExecutionMode
-from tests.fixtures.contracts.engine_contracts import ENSURE_TASK, LIST_TASKS, ScriptedAdapter, registry_with
+from tests.fixtures.contracts.engine_contracts import GATE_CREATE, ENSURE_TASK, LIST_TASKS, ScriptedAdapter, registry_with
 from tests.playbook_v2_engine_helpers import InMemoryArtifactStore, RecordingRunRepository, artifact_ref_for, event, load_artifact
 
 
@@ -21,7 +21,7 @@ def build() -> tuple[PlaybookEngine, ScriptedAdapter]:
     artifact = load_artifact("review-pipeline.artifact.json")
     store = InMemoryArtifactStore()
     store.put(artifact)
-    registry, adapter = registry_with(ENSURE_TASK, LIST_TASKS)
+    registry, adapter = registry_with(ENSURE_TASK, LIST_TASKS, GATE_CREATE)
     return (
         PlaybookEngine(
             services=EngineServices(
@@ -52,6 +52,38 @@ async def test_shadow_never_invokes_command_or_preview_or_bus() -> None:
     result = await engine.dispatch_event(
         event("task-completed-code"), TRUSTED_LOCAL, mode=ExecutionMode.SHADOW
     )
+
+    assert result.rules_selected == ("review-on-task-completed",)
+    assert adapter.calls == []
+    assert adapter.preview_calls == []
+
+
+class RaisingDependency:
+    def __getattr__(self, name: str):
+        raise AssertionError(f"shadow must not touch {name}")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entry_step", ["ensure-review-task", "classify-risk", "escalate", "open-gate"])
+async def test_shadow_never_touches_command_llm_task_gate_preview_or_bus(entry_step: str) -> None:
+    engine, adapter = build()
+    artifact = load_artifact("review-pipeline.artifact.json")
+    rule = artifact.rules[0].model_copy(update={"entry_step": entry_step})
+    artifact = artifact.model_copy(update={"rules": [rule, *artifact.rules[1:]]})
+    engine.services.artifact_store.put(artifact)
+    engine.services = EngineServices(
+        contracts=engine.services.contracts,
+        clock=engine.services.clock,
+        artifact_store=engine.services.artifact_store,
+        llm=RaisingDependency(),
+        handler=RaisingDependency(),
+        bus=RaisingBus(),
+    )
+    engine.activations = type(
+        "Activations", (), {"ready_activations": lambda _self, _event: _one(artifact_ref_for(artifact))}
+    )()
+
+    result = await engine.dispatch_event(event("task-completed-code"), TRUSTED_LOCAL, mode=ExecutionMode.SHADOW)
 
     assert result.rules_selected == ("review-on-task-completed",)
     assert adapter.calls == []
@@ -94,7 +126,17 @@ async def test_shadow_and_live_select_the_same_rules() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("event_name", ["task-completed-code", "task-completed-docs", "spec-approved"])
+@pytest.mark.parametrize(
+    "event_name",
+    [
+        "task-completed-code",
+        "task-completed-docs",
+        "task-completed-no-project",
+        "spec-approved",
+        "spec-approved-empty-downstream",
+        "task-created",
+    ],
+)
 async def test_shadow_matches_live_rule_selection_for_fixture_corpus(event_name: str) -> None:
     shadow, _ = build()
     live, _ = build()
