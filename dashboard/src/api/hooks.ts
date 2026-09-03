@@ -157,7 +157,6 @@ import type {
   PoolStatusRow,
   PoolScaleRequest,
   PoolScaleResponse,
-  PlaybookV2GraphResponse,
   PlaybookActivationHealthResponse,
   PlaybookArtifactDiffResponse,
   PlaybookRunOverlayResponse,
