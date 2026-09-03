@@ -15,14 +15,28 @@ from src.orchestrator import Orchestrator
 from src.playbooks.pipeline_compiler import compile_pipeline
 from src.vault import ensure_default_playbooks
 
-
 PID = "e2e-proj"
+
+FROZEN_V1_PIPELINE = (
+    Path(__file__).parent / "fixtures" / "playbooks" / "v1" / "default-pipeline.md"
+)
+
+
+def _install_frozen_v1_pipeline(data_dir: str) -> None:
+    target = Path(data_dir) / "vault" / "system" / "playbooks" / "default-pipeline.md"
+    target.write_text(FROZEN_V1_PIPELINE.read_text(encoding="utf-8"), encoding="utf-8")
 
 
 @pytest.fixture
 async def wired(tmp_path):
     data_dir = str(tmp_path / "data")
     ensure_default_playbooks(data_dir)
+    # The shipped `default-pipeline.md` is a prose authoring source since
+    # Package 6 and carries no machine graph.  These end-to-end cases are about
+    # V1 *dispatch*, so the vault copy is replaced with the frozen pre-rewrite
+    # graph — the same file every existing install still has, because
+    # `ensure_default_playbooks` never overwrites a vault copy.
+    _install_frozen_v1_pipeline(data_dir)
     db = Database(str(tmp_path / "e2e.db"))
     await db.initialize()
     await db.create_profile(
