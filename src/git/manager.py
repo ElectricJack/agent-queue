@@ -70,6 +70,7 @@ import os
 import re
 import subprocess
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -81,6 +82,18 @@ logger = logging.getLogger(__name__)
 
 class GitError(Exception):
     pass
+
+
+@dataclass(frozen=True)
+class PullRequestIdentity:
+    """Immutable PR facts that must agree from review through merge."""
+
+    repository: str
+    number: int
+    base_ref: str
+    base_oid: str
+    head_ref: str
+    head_oid: str
 
 
 # ---------------------------------------------------------------------------
@@ -1465,12 +1478,11 @@ class GitManager:
         _validate_ref(branch_name)
         _validate_ref(default_branch, field="default branch")
         try:
-            await self._arun(["push", "origin", branch_name], cwd=checkout_path)
+            await self.apush_validated_ref(checkout_path, branch_name, branch_name)
         except GitError:
             try:
-                await self._arun(
-                    ["push", "--force-with-lease", "origin", branch_name],
-                    cwd=checkout_path,
+                await self.apush_validated_ref(
+                    checkout_path, branch_name, branch_name, force_with_lease=True
                 )
             except GitError:
                 pass
@@ -1487,9 +1499,12 @@ class GitManager:
                 pass
             return False
         try:
-            await self._arun(
-                ["push", "--force-with-lease", "origin", branch_name],
-                cwd=checkout_path,
+            await self.apush_validated_delivery(
+                checkout_path,
+                f"origin/{default_branch}",
+                "HEAD",
+                branch_name,
+                force_with_lease=True,
             )
         except GitError:
             pass
@@ -1539,14 +1554,10 @@ class GitManager:
         # Emit git.push event on success
         if event_bus is not None:
             try:
-                local_ref = await self._arun(
-                    ["rev-parse", branch_name],
-                    cwd=checkout_path,
-                )
                 if remote_ref_before:
-                    commit_range = f"{remote_ref_before}..{local_ref}"
+                    commit_range = f"{remote_ref_before}..{tip}"
                 else:
-                    commit_range = local_ref
+                    commit_range = tip
                 await event_bus.emit(
                     "git.push",
                     {
@@ -1651,9 +1662,13 @@ class GitManager:
                 return (False, "merge_conflict")
         for attempt in range(max_retries + 1):
             try:
-                await self._arun(["push", "origin", default_branch], cwd=checkout_path)
+                await self.apush_validated_delivery(
+                    checkout_path, f"origin/{default_branch}", "HEAD", default_branch
+                )
                 return (True, "")
             except GitError as e:
+                if str(e).startswith("reserved delivery paths:"):
+                    return (False, f"delivery_guard_failed: {e}")
                 if attempt < max_retries:
                     await self._arun(
                         ["pull", "--rebase", "origin", default_branch],
@@ -2103,6 +2118,9 @@ class GitManager:
         checkout_path: str,
         pr_url: str,
         method: str = "squash",
+        *,
+        expected_head_oid: str | None = None,
+        expected_base_oid: str | None = None,
     ) -> dict:
         """Merge a PR via ``gh pr merge``.
 
@@ -2127,10 +2145,44 @@ class GitManager:
         """
         if method not in ("squash", "merge", "rebase"):
             return {"success": False, "sha": None, "error": f"invalid method: {method}"}
+        if expected_head_oid is not None:
+            expected_head_oid = expected_head_oid.lower()
+            if not _OID_RE.fullmatch(expected_head_oid):
+                return {
+                    "success": False,
+                    "sha": None,
+                    "error": "invalid expected PR head OID",
+                }
+        if expected_base_oid is not None:
+            expected_base_oid = expected_base_oid.lower()
+            if not _OID_RE.fullmatch(expected_base_oid):
+                return {
+                    "success": False,
+                    "sha": None,
+                    "error": "invalid expected PR base OID",
+                }
+        try:
+            current = await self.avalidate_pr_for_merge(checkout_path, pr_url)
+        except GitError as exc:
+            return {"success": False, "sha": None, "error": str(exc)}
+        if (
+            (expected_head_oid is not None and current.head_oid != expected_head_oid)
+            or (expected_base_oid is not None and current.base_oid != expected_base_oid)
+        ):
+            return {
+                "success": False,
+                "sha": None,
+                "error": "PR identity changed after validation; refusing merge",
+            }
+        expected_head_oid = current.head_oid
         flag = f"--{method}"
+        command = ["gh", "pr", "merge", pr_url, flag]
+        if expected_head_oid is not None:
+            command.extend(["--match-head-commit", expected_head_oid])
+        command.append("--delete-branch")
         try:
             result = await self._arun_subprocess(
-                ["gh", "pr", "merge", pr_url, flag, "--delete-branch"],
+                command,
                 cwd=checkout_path,
                 timeout=self._GIT_TIMEOUT,
             )
@@ -2215,19 +2267,15 @@ class GitManager:
         the remote branch has commits this HEAD does not, and the caller
         picks a different name rather than overwriting them.
         """
-        _validate_ref(branch)
-        await self._arun(
-            ["push", "origin", f"HEAD:refs/heads/{branch}"], cwd=checkout_path
-        )
+        tip = await self.apush_validated_ref(checkout_path, "HEAD", branch)
         if event_bus is not None:
             try:
-                local_ref = await self._arun(["rev-parse", "HEAD"], cwd=checkout_path)
                 await event_bus.emit(
                     "git.push",
                     {
                         "branch": branch,
                         "remote": "origin",
-                        "commit_range": local_ref,
+                        "commit_range": tip,
                         "project_id": project_id,
                     },
                 )
