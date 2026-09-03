@@ -2611,14 +2611,26 @@ class GitManager:
             head_oid=head_oid,
         )
 
+    # jq program for the PR-files endpoint: one path per line. GitHub reports
+    # a renamed or copied file under its new ``filename`` and keeps the old
+    # name in ``previous_filename``, so both are emitted; otherwise a rename
+    # out of ``.aq/`` would read as a clean addition of the destination.
+    _PR_FILES_JQ = ".[] | .filename, (.previous_filename // empty)"
+
     async def _apr_changed_paths(
         self, checkout_path: str, identity: PullRequestIdentity
     ) -> list[str]:
-        """Return every PR-file path from GitHub's paginated merge-base diff."""
+        """Return every PR-file path from GitHub's paginated merge-base diff.
+
+        Rename and copy sources (``previous_filename``) are included next to
+        their destinations so a reserved path leaving the tree is visible.
+        A copy source is unchanged by the copy itself, so listing it is
+        conservative: the guard fails closed rather than trusting the status.
+        """
         endpoint = f"repos/{identity.repository}/pulls/{identity.number}/files"
         try:
             result = await self._arun_subprocess(
-                ["gh", "api", "--paginate", endpoint, "--jq", ".[].filename"],
+                ["gh", "api", "--paginate", endpoint, "--jq", self._PR_FILES_JQ],
                 cwd=checkout_path,
                 timeout=self._GIT_TIMEOUT,
             )
@@ -2754,9 +2766,15 @@ class GitManager:
 
         The comparison starts at the merge-base so an unchanged reserved
         path already tracked by the target branch is harmless, while an
-        addition, deletion, or modification made by task commits is caught.
-        Unlike preview helpers, Git failures propagate: callers use this as
-        a fail-closed delivery gate before merge, push, or PR acceptance.
+        addition, deletion, modification, or rename made by task commits is
+        caught. Rename detection is disabled (``--no-renames``, overriding
+        any ``diff.renames`` setting) because git would otherwise report
+        ``git mv .aq/claim.json moved.json`` as the single path
+        ``moved.json`` and hide that a daemon-owned file was deleted; with
+        detection off both the source and the destination of a rename are
+        listed. Unlike preview helpers, Git failures propagate: callers use
+        this as a fail-closed delivery gate before merge, push, or PR
+        acceptance.
         """
         base_ref = _validate_rev(base_ref, field="delivery base")
         tip_ref = _validate_rev(tip_ref, field="delivery tip")
@@ -2764,7 +2782,7 @@ class GitManager:
             ["merge-base", base_ref, tip_ref], cwd=checkout_path
         )
         changed = await self._arun(
-            ["diff", "--name-only", "-z", merge_base, tip_ref, "--"],
+            ["diff", "--no-renames", "--name-only", "-z", merge_base, tip_ref, "--"],
             cwd=checkout_path,
         )
         return sorted(self._daemon_bookkeeping_paths(changed))
