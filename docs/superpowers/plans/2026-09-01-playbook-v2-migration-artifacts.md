@@ -681,6 +681,44 @@ ruff check tests/test_default_playbook_v2_artifacts.py src/playbooks/migration.p
 
 ### 5.4 Commit 4 — `test: compare v1 and v2 shadow decisions`
 
+> **Reconciliation, implementation commit (2026-09-03, task `fresh-harbor-83`).** §3.8
+> requires deviations found when the package is implemented to be recorded here rather
+> than substituted silently. Five, all forced by the live tree:
+>
+> 1. **The engine did not evaluate `rule.guard`.** `PlaybookEngine._trigger_matches`
+>    matched trigger type and the literal filter only, so V2 selected rules V1's
+>    `_eval_pipeline_when` rejected — assertion 2 could not hold. `_guard_admits` /
+>    `_rule_selected` now evaluate the guard at dispatch and in `dry_run`
+>    (`tests/test_v2_engine.py::TestRulePerRunDispatch::test_a_false_rule_guard_rejects_the_rule`).
+> 2. **The engine did not flag `review_task`.** `core.py` calls
+>    `flag_review_task_event` right after hydrating; `_hydrate_event` had lifted only
+>    the hydration, so a V2 review task's own completion re-entered the review rule.
+>    Fixed in `_hydrate_event`; the corpus event `task-completed-review-task` is the
+>    regression test.
+> 3. **The lowered `foreach` collection was a literal string.** V1 wrote
+>    `for_each.source` as a bare reference, which `pipeline_lowering._value` (a `{{ }}`
+>    parser) turned into `{"type": "literal", "value": "outputs.downstream.tasks"}` — a
+>    loop that iterates nothing. `_bare_ref` fixes it and the reviewed artifact fixture
+>    was re-recorded (see that fixture's `review.md` Q4).
+> 4. **Shadow stops at the binding frontier.** `ShadowCommandExecutor` records a step's
+>    arguments and returns `UNRESOLVED` with no value, so a step reading a
+>    `save_result_as` binding fails input resolution and the symbolic path ends. Shadow
+>    alone observes each rule's *first* event-derived command and cannot reach the loop
+>    iterations this section's corpus is written to exercise. Past that frontier the V2
+>    arm is **projected** from the artifact — the artifact's own typed steps,
+>    transitions, loop collection and item binding, resolved with the engine's own
+>    `resolve_value`/`ResolutionScope`, taking each boundary outcome from the same
+>    scripted oracle the V1 arm's recording handler answers with — and the projection is
+>    pinned to the engine by
+>    `test_projection_agrees_with_the_engine_at_the_shadow_frontier`. Assertion 3 is
+>    stated over that combined observation.
+> 5. **`EXPECTED_DIFFERENCES` gains a sixth entry, `null-template-part-rendered`**, and
+>    assertion 5 is stated as `RATIONALE_COVERAGE` — one named, executable demonstration
+>    per rationale — because three of the five original rationales are folded away by a
+>    declared canonicalisation or by V1's uniform failure handling and can never appear
+>    as a corpus *finding*. No contract marks an argument `free_text`, so §3.5.1 rule 3
+>    is a no-op here.
+
 #### T-10 — `tests/test_playbook_shadow_parity.py` (red)
 
 The harness. Both arms are driven from one event corpus (§8.3).

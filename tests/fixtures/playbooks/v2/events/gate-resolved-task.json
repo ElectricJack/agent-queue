@@ -1,0 +1,9 @@
+{
+  "_event_type": "gate.resolved",
+  "await_id": "solid-harbor.12",
+  "event_id": "evt-parity-0010",
+  "gate_id": "gate-442",
+  "gate_type": "task",
+  "project_id": "agent-queue",
+  "type": "gate.resolved"
+}

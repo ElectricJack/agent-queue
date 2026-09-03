@@ -334,6 +334,14 @@ EXPECTED_DIFFERENCES: Mapping[str, str] = {
     "terminal-vocabulary": (
         "V2 distinguishes timed_out and cancelled from V1's failed terminal vocabulary."
     ),
+    "null-template-part-rendered": (
+        "A template part that resolves to null renders as the literal 'null' in V2 and as an "
+        "empty string in V1. V1's ``_substitute`` blanked the hole silently "
+        "(src/playbooks/pipeline_runner.py:48-63); V2's ``_render`` states it, because "
+        "'a template can never silently render a hole' (src/playbooks/expressions.py:429-431). "
+        "It is admissible only when the two argument sets are otherwise identical key for key "
+        "and value for value, so it can never absorb a changed, added or dropped argument."
+    ),
 }
 
 
@@ -350,6 +358,56 @@ _PARITY_FIELDS: tuple[str, ...] = (
 def _terminal_difference_is_expected(v1: str, v2: str) -> bool:
     """Only V2's new non-completed terminals are a vocabulary difference."""
     return v1 != "completed" and v2 in {"timed_out", "cancelled"}
+
+
+def _null_rendering_only(left: str, right: str) -> bool:
+    """``right`` is ``left`` with one or more blanked holes rendered as ``null``.
+
+    Deliberately structural rather than textual: both sides are parsed, the key
+    sets must match exactly, and only ``(str, str)`` values may differ.  A
+    changed, added or dropped argument therefore cannot reach this rule.
+    """
+    try:
+        a = json.loads(left)
+        b = json.loads(right)
+    except ValueError:
+        return False
+    if not isinstance(a, dict) or not isinstance(b, dict) or a.keys() != b.keys():
+        return False
+    changed = False
+    for key, value in a.items():
+        other = b[key]
+        if value == other:
+            continue
+        if not isinstance(value, str) or not isinstance(other, str):
+            return False
+        if other.replace("null", "") != value:
+            return False
+        changed = True
+    return changed
+
+
+def _command_difference_is_expected(
+    v1: Sequence[CommandInvocation], v2: Sequence[CommandInvocation]
+) -> bool:
+    """The one command-level rationale: a null template part, and nothing else.
+
+    The comparison stays a projection everywhere else — a different command, a
+    different order, an extra or missing invocation, or any argument change
+    that is not exactly V1's blanked hole is ``unexplained``.
+    """
+    if len(v1) != len(v2):
+        return False
+    saw_difference = False
+    for left, right in zip(v1, v2, strict=True):
+        if (left.order, left.command) != (right.order, right.command):
+            return False
+        if left.args_canonical == right.args_canonical:
+            continue
+        if not _null_rendering_only(left.args_canonical, right.args_canonical):
+            return False
+        saw_difference = True
+    return saw_difference
 
 
 def compare(v1: ShadowObservation, v2: ShadowObservation) -> tuple[ParityFinding, ...]:
@@ -379,6 +437,16 @@ def compare(v1: ShadowObservation, v2: ShadowObservation) -> tuple[ParityFinding
                     v2=right,
                     classification="expected_v2_semantics",
                     rationale_id="terminal-vocabulary",
+                )
+            )
+        elif field == "commands" and _command_difference_is_expected(left, right):
+            findings.append(
+                ParityFinding(
+                    field="commands",
+                    v1=left,
+                    v2=right,
+                    classification="expected_v2_semantics",
+                    rationale_id="null-template-part-rendered",
                 )
             )
         else:

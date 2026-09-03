@@ -1,6 +1,6 @@
 ---
 playbook_id: default-pipeline
-artifact_sha256: "sha256:2fb6699afb64309f342d70ddfcea06105a6bf6d44f20bf4fea55da46b1719a18"
+artifact_sha256: "sha256:f67886029326628848cb7b171b5a14c78713e9a6d6f5c64b0edb8b891868974d"
 source_sha256: "sha256:4c5af240e58db3c4a3ce6012dd933305965054a6afeb59827952efd1ecdab123"
 contract_fingerprint: "sha256:64868157d0d987401d13d954e0bd3edc0c01fc427c626b2947d760a57cc855fe"
 reviewed_by: "aq task solid-harbor.52 (worker-standard-high-claude); operator sign-off is this fixture's PR review"
@@ -53,6 +53,19 @@ each one to the prose as a backticked identifier in the sentence that describes
 what it does**, rather than relaxing `enforce_inventory`. That is the whole
 point of the inventory rule (spec, "Metadata ownership"): the source, not the
 compiler, grants an executable name.
+
+**Q4 — the lowered `foreach` collection was a literal string, not a reference.**
+V1 wrote `for_each.source` as a *bare* reference (`outputs.downstream.tasks`,
+read directly by `pipeline_runner._resolve_ref`), and
+`pipeline_lowering._value` only recognises `{{ }}` interpolations, so the first
+recording of this artifact carried
+`"collection": {"type": "literal", "value": "outputs.downstream.tasks"}` — a
+loop that iterates a string instead of the downstream task list. Package 6's
+executable parity harness is what found it: the corpus's loop events emitted
+`gate_create` on the V1 arm and nothing on the V2 arm. **Decision: fix the
+lowering (`_bare_ref` in `src/playbooks/pipeline_lowering.py`) and re-record,
+rather than register an expected difference.** A gate the V2 pipeline would
+never raise is a behaviour change, not an intended V2 semantic.
 
 ## Semantic diff versus the V1 graph
 
