@@ -326,7 +326,7 @@ Same module split: protocol in `src/playbooks/waits.py`, implementation in the s
 class WaitRepository(Protocol):
     async def register(
         self, wait: WaitSpec, snapshot_version: int, *, conn: AsyncConnection | None = None
-    ) -> str: ...
+    ) -> WaitRegistration: ...
 
     async def claim_for_event(
         self, event: MatchableEvent, *, now: float, limit: int = 100
@@ -342,13 +342,13 @@ class WaitRepository(Protocol):
 ```
 
 - `conn` is the atomicity seam. When `commit_boundary` applies `wait_changes` it passes **its own** connection, so registration and the snapshot advance commit or roll back together. When `conn is None` the method opens its own `immediate()` block.
-- `register` requires `snapshot_version` to equal the version the boundary is *writing* (`snapshot.version + 1`). The row therefore records the exact snapshot that is suspended on it; a resume that finds `playbook_waits.snapshot_version != playbook_v2_runs.snapshot_version` refuses and reports `wait_version_mismatch` rather than resuming into a state that has moved on.
-- `claim_for_event` is one `immediate()` block: select active waits whose `event_type` matches and whose `match` predicate is satisfied, then CAS each with `UPDATE playbook_waits SET state='claimed', claimed_event_id=:eid, claimed_at=:now WHERE wait_id=:wid AND state='active'`. Only rows whose update affected one row are returned. Two concurrent dispatches of the same event therefore produce exactly one claim per wait.
+- `register` requires `snapshot_version` to equal the version the boundary is *writing* (`snapshot.version + 1`). The row therefore records the exact snapshot that is suspended on it; a resume that finds `playbook_waits.snapshot_version != playbook_v2_runs.snapshot_version` refuses and reports `wait_version_mismatch` rather than resuming into a state that has moved on. It returns a `WaitRegistration`; when an event won the delivery lock before the wait row existed, `matched_immediately` carries the durable inbox claim and `commit_boundary` persists it in `RunSnapshot.pending_wait_claims`.
+- `claim_for_event` is one `immediate()` block: serialize delivery by playbook/scope, persist the event in the durable inbox, select active waits whose `event_type` and scope match and whose inert predicate is satisfied, then CAS each with `UPDATE playbook_waits SET state='claimed', claimed_event_id=:eid, claimed_at=:now WHERE wait_id=:wid AND state='active'`. Only rows whose update affected one row are returned. Two concurrent dispatches of the same event therefore produce exactly one claim per wait.
 - `expire_due` is the same CAS with `state='expired'` for `deadline_at <= now`.
 - `clear_for_run` sets `state='cleared'` for every active wait of a run (used when a run terminates or a step advances past its wait).
 - A `WaitChangeSet` applied by `commit_boundary` is scoped to the boundary's own run: every `register` entry's `run_id` must be that run and `clear_wait_ids` only clears waits it owns, both refused with `WaitOwnershipViolation(run_id, wait_id, owner_run_id)`. The connection holds one run's CAS, so a cross-run change would move another run's suspension outside the fence that guards it.
 
-**The race the design spec names — "an event cannot be lost between registration and suspension" — is closed by construction:** there is no interval in which a run is suspended and its wait is not visible, because both are one transaction. The complementary direction (a wait visible while the run still shows `running`) is harmless: a claim only records `claimed_event_id`; resuming is Package 4's job and re-reads the snapshot under its own CAS.
+**The race the design spec names — "an event cannot be lost between registration and suspension" — is closed by construction:** snapshot suspension and wait registration share one transaction, while event ingestion first writes a durable inbox row. Registration and ingestion serialize per playbook/scope and each scans what the other persisted. If ingestion wins, registration claims the inbox event and the same boundary persists that claim; if registration wins, ingestion sees and claims the wait. Resuming is Package 4's job and re-reads the snapshot under its own CAS.
 
 ### 4.6 Field names Package 5 will project
 
@@ -859,6 +859,7 @@ class RunSnapshot:
     sensitive: Mapping[str, Any] = field(default_factory=dict) # handle -> value, never receipted
     loop: LoopFrame | None = None
     wait: WaitSpec | None = None
+    pending_wait_claims: tuple[WaitClaim, ...] = ()
     budget: RunBudget = field(default_factory=RunBudget)
     agent_task_ids: tuple[str, ...] = ()
     llm_turns: tuple[Mapping[str, Any], ...] = ()
@@ -1012,6 +1013,7 @@ class WaitSpec:
     event_type: str = ""
     match: Mapping[str, Any] = field(default_factory=dict)   # field -> required value
     deadline_at: float | None = None
+    created_at: float = field(default_factory=time.time)
 
     @property
     def correlation_key(self) -> str:
@@ -1034,6 +1036,14 @@ class WaitClaim:
     claimed_event_id: str | None      # None for an expiry claim
     claimed_at: float
     expired: bool = False
+    event_type: str = ""
+    event_fields: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class WaitRegistration:
+    wait_id: str
+    matched_immediately: WaitClaim | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1051,6 +1061,9 @@ EMPTY_WAIT_CHANGES = WaitChangeSet()
 class MatchableEvent(Protocol):
     """The only thing wait matching needs from Package 4's event object."""
 
+    playbook_id: str
+    scope: str
+    scope_identifier: str
     event_type: str
     event_id: str | None
     fields: Mapping[str, Any]
@@ -1367,13 +1380,14 @@ Six new tables, one new artifact directory, ten new config fields with safe defa
 
 ## 20. Interface amendments recorded by this plan
 
-Roadmap §7 requires that a change to a locked interface be propagated to every not-yet-completed child plan. Three changes are recorded here; all three are additions or refinements, none contradicts an executed package.
+Roadmap §7 requires that a change to a locked interface be propagated to every not-yet-completed child plan. The recorded changes below are additions or refinements, not parallel interfaces.
 
 1. **`ActivationHealth` has six values, not five.** `unavailable` is added for "the artifact row or file is gone", which is otherwise indistinguishable from `invalid` and is the only state a doctor check can act on. Package 5's plan already assumes six (`2026-09-01-playbook-v2-graph-api-ui.md` §4.4, §16); no other plan references the enum.
 2. **The attempt idempotency key is four-part, not three-part** (§9.1). The design spec's `<run_id>:<step_id>:<attempt>` collides across loop iterations; the roadmap's own Package 3 requirement names the iteration. Package 4's plan must construct keys with `receipts.idempotency_key(...)` rather than by hand.
 3. **Canonicalization is Package 2's, not this package's** (§5.1). An earlier draft of this plan proposed `exclude_none=False`; Package 2's landed plan specifies `exclude_none=True` backed by its absent-≡-null model invariant, and its version wins because the hash must be computed by exactly one function. This plan carries no second canonicalizer beyond the temporary, test-guarded fallback of §5.1.
 4. **The Package 3 migration chain is asserted by ancestry, not by a literal `down_revision`** — §4.3's approved deviation, recorded 2026-09-02. Rule 2 (one head) outranks the literal parent value, and `tests/test_migration_playbook_v2.py` pins both.
 5. **`ArtifactRef` lives in `src/playbooks/artifact_ref.py`**, not in `artifact_store.py` as the roadmap's module map implies (§4.2). The roadmap's map is a module *ownership* statement; splitting one dataclass out of it is what lets two branches build in parallel without one importing the other's file I/O. Package 5's reconciliation script imports `src.playbooks.artifact_store.ArtifactRef`, so `artifact_store.py` **re-exports** it (`from src.playbooks.artifact_ref import ArtifactRef  # re-exported for the roadmap's module map`) and both import paths work.
+6. **Wait delivery carries scoped durable-inbox identity and an immediate-match result.** Package 3 gate fix `solid-harbor.37.6` proved that making suspension and wait insertion atomic does not cover an event whose transaction commits just before the wait becomes visible. `MatchableEvent` therefore includes `playbook_id`, `scope`, and `scope_identifier`; `WaitSpec` records `created_at`; `WaitRepository.register` returns `WaitRegistration` with an optional matched inbox claim; and `RunSnapshot.pending_wait_claims` durably carries that claim to Package 4. The Package 4 child plan already consumes `matched_immediately`; this amendment reconciles Package 3's locked signature with that plan and the landed implementation.
 
 ---
 
