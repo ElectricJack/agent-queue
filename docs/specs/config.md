@@ -491,9 +491,24 @@ override → project policy `projects.integration_mode` → this).
 | YAML key | Type | Default | Description |
 |---|---|---|---|
 | `default_mode` | `str` | `"pull_request"` | Effective integration mode for tasks that inherit all the way down the chain. `"pull_request"`: the worker pushes its branch and opens a PR; the task completes unmerged and the default-pipeline playbook's review policy owns the merge. `"direct"`: the completion pipeline merges the task branch into the default branch on completion — set this only for deployments that explicitly run without a review policy. |
+| `merge_ci_policy` | `str` | `"warn"` | What `pr_merge` does when the PR's status-check rollup is not green. `"off"`: never asks (pre-2026-09-03 behaviour). `"warn"`: asks, merges regardless, and returns the verdict in the result's `ci` block and the daemon log. `"required"`: refuses to merge anything that is not green, including a rollup that cannot be read (fail closed). |
+| `merge_required_checks` | `list[str]` | `[]` | Check names that must be green, e.g. `["Tests (default)"]`. Empty means every check in the rollup — the strict reading. A required name the rollup never mentions is treated as not-yet-reported, which blocks under `required`. A bare string is accepted as a one-element list. |
 
 Validation (`IntegrationConfig.validate`): `default_mode` must be one of
-`INTEGRATION_MODES` (`direct`, `pull_request`).
+`INTEGRATION_MODES` (`direct`, `pull_request`); `merge_ci_policy` must be
+one of `MERGE_CI_POLICIES` (`off`, `warn`, `required`, defined in
+`src/git/ci_gate.py`); `merge_required_checks` must be a list of non-empty
+strings.
+
+`merge_ci_policy` exists because GitHub was never asked the question: `main`
+carries no required status check, so `gh pr merge` merged 29 of the last 30
+PRs with `Tests (default)` red — including #341, which landed the
+`packages/aq-client/README.md` regression its own CI run had caught. The
+shipped default is `warn` rather than `required` because enabling
+`required` while `main` is red stops every merge in the fleet at once, which
+is an operator's decision to make deliberately. See
+[the merge-gating guide](../guides/merge-gating.md) for the sequencing and
+for the branch-protection half of the fix, which config cannot supply.
 
 This section replaces the retired per-task `requires_approval` boolean
 (dropped by Alembic revision `c4d5e6f7a8b9`, which backfills it into

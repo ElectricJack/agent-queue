@@ -1501,11 +1501,39 @@ class IntegrationConfig:
     so a project running the default reviewer/final-reviewer pipeline never
     auto-merges worker output before review; set ``direct`` only for
     deployments that explicitly run without a review policy.
+
+    ``merge_ci_policy`` decides what the fleet's own merge path
+    (``pr_merge``) does when the PR's status checks are not green.  It
+    exists because GitHub was never asked the question: this repository
+    carries no required status check on ``main``, so ``gh pr merge``
+    happily merged 29 of the last 30 PRs with ``Tests (default)`` red —
+    including #341, which landed the ``packages/aq-client/README.md``
+    regression its own CI run had caught.
     """
 
     default_mode: str = "pull_request"
 
+    #: What ``pr_merge`` does with a non-green rollup.
+    #:
+    #: * ``off`` — do not even ask; historical behaviour.
+    #: * ``warn`` — ask, merge regardless, and put the verdict in the
+    #:   command result and the log so the final-reviewer and the operator
+    #:   can see what landed.  Shipped default: it costs one ``gh`` call,
+    #:   changes no outcome, and is safe to enable on a fleet whose
+    #:   ``main`` is currently red.
+    #: * ``required`` — refuse to merge unless the rollup is green.  A
+    #:   rollup that cannot be read refuses too (fail closed).  Turn this
+    #:   on once ``main`` is green, or every merge stops.
+    merge_ci_policy: str = "warn"
+
+    #: Check names that must be green, e.g. ``["Tests (default)"]``.
+    #: Empty means "every check in the rollup", the strict reading and the
+    #: shipped default.  Name checks explicitly when some arm of the matrix
+    #: is advisory.
+    merge_required_checks: list[str] = field(default_factory=list)
+
     def validate(self) -> list[ConfigError]:
+        from src.git.ci_gate import MERGE_CI_POLICIES
         from src.models import INTEGRATION_MODES
 
         errors: list[ConfigError] = []
@@ -1515,6 +1543,24 @@ class IntegrationConfig:
                     "integration",
                     "default_mode",
                     f"must be one of {sorted(INTEGRATION_MODES)}",
+                )
+            )
+        if self.merge_ci_policy not in MERGE_CI_POLICIES:
+            errors.append(
+                ConfigError(
+                    "integration",
+                    "merge_ci_policy",
+                    f"must be one of {sorted(MERGE_CI_POLICIES)}",
+                )
+            )
+        if not isinstance(self.merge_required_checks, list) or any(
+            not isinstance(c, str) or not c.strip() for c in self.merge_required_checks
+        ):
+            errors.append(
+                ConfigError(
+                    "integration",
+                    "merge_required_checks",
+                    "must be a list of non-empty check names",
                 )
             )
         return errors
@@ -2943,8 +2989,18 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
 
     if "integration" in raw and isinstance(raw["integration"], dict):
         integ = raw["integration"]
+        raw_checks = integ.get("merge_required_checks") or []
         config.integration = IntegrationConfig(
             default_mode=str(integ.get("default_mode", "pull_request")),
+            merge_ci_policy=str(integ.get("merge_ci_policy", "warn")),
+            # A single check name written as a bare string is the obvious
+            # thing to type; accept it rather than validating it into an
+            # error about list-ness.
+            # Anything that is neither is passed through as a one-element
+            # list so ``validate()`` reports it instead of crashing here.
+            merge_required_checks=(
+                list(raw_checks) if isinstance(raw_checks, list) else [raw_checks]
+            ),
         )
 
     if "swarm" in raw and isinstance(raw["swarm"], dict):

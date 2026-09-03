@@ -18,11 +18,15 @@ class PrMergeRequest:
         project_id (str): ID of the project whose workspace checkout will be used.
         pr_url (str): Full GitHub PR URL, e.g. ``https://github.com/org/repo/pull/42``.
         method (str | Unset): Merge strategy (default: squash). Default: 'squash'.
+        force (bool | Unset): Merge even when ``integration.merge_ci_policy: required`` would refuse because the PR's
+            checks are red, still running, or unreadable.  For a human who has looked at the failure and judged it unrelated
+            — the override is recorded in the result and the log. Default: False.
     """
 
     project_id: str
     pr_url: str
     method: str | Unset = "squash"
+    force: bool | Unset = False
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -31,6 +35,8 @@ class PrMergeRequest:
         pr_url = self.pr_url
 
         method = self.method
+
+        force = self.force
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -42,6 +48,8 @@ class PrMergeRequest:
         )
         if method is not UNSET:
             field_dict["method"] = method
+        if force is not UNSET:
+            field_dict["force"] = force
 
         return field_dict
 
@@ -54,10 +62,13 @@ class PrMergeRequest:
 
         method = d.pop("method", UNSET)
 
+        force = d.pop("force", UNSET)
+
         pr_merge_request = cls(
             project_id=project_id,
             pr_url=pr_url,
             method=method,
+            force=force,
         )
 
         pr_merge_request.additional_properties = d

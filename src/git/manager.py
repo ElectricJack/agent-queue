@@ -2260,6 +2260,45 @@ class GitManager:
         except GitError:
             return None
 
+    async def apr_check_rollup(self, checkout_path: str, pr_url: str) -> list[dict] | None:
+        """A PR head's status-check rollup, or ``None`` if it can't be read.
+
+        The raw ``statusCheckRollup`` entries, straight from
+        ``gh pr view --json`` — one per check run or commit status on the
+        PR's head commit.  Judging them is
+        :func:`src.git.ci_gate.classify_rollup`'s job; this method only
+        fetches, so the interesting decisions stay testable without gh.
+
+        ``None`` is a first-class answer (no ``gh``, no auth, no network,
+        malformed JSON) and means "CI status unknown".  Callers must not
+        read it as green: ``_cmd_pr_merge`` under
+        ``integration.merge_ci_policy: required`` refuses on ``None``,
+        because "could not check" is exactly the state in which merging
+        blind lands regressions.  An *empty list* is different — it means
+        the rollup was read and nothing has reported yet.
+        """
+        try:
+            result = await self._arun_subprocess(
+                ["gh", "pr", "view", pr_url, "--json", "statusCheckRollup"],
+                cwd=checkout_path,
+                timeout=self._GIT_TIMEOUT,
+            )
+        except Exception:
+            return None
+        if result.returncode != 0:
+            return None
+        try:
+            data = json.loads(result.stdout)
+        except (ValueError, TypeError):
+            return None
+        rollup = data.get("statusCheckRollup")
+        if rollup is None:
+            # gh reports ``null`` for a PR whose head has no checks at all.
+            return []
+        if not isinstance(rollup, list):
+            return None
+        return rollup
+
     async def arev_parse(self, checkout_path: str, ref: str) -> str | None:
         """Return the SHA for ``ref`` in ``checkout_path``, or None.
 
