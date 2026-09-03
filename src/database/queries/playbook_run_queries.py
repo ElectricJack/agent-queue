@@ -1346,7 +1346,14 @@ class PlaybookRunQueryMixin:
         self._playbook_pending_event_overflow = policy
 
     async def _drop_oldest_pending_events(
-        self, conn, *, playbook_id: str, quota: int, needed: int, now: float
+        self,
+        conn,
+        *,
+        playbook_id: str,
+        quota: int,
+        needed: int,
+        now: float,
+        exclude: str | None = None,
     ) -> int:
         """Evict the oldest unclaimed held events, auditably.
 
@@ -1354,17 +1361,23 @@ class PlaybookRunQueryMixin:
         makes room for either both happen or neither does.  A row with a live
         dispatch claim is never evicted: it belongs to an in-flight replay,
         and resolving it under that replay would both lose the event and
-        violate ``ck_playbook_pending_events_dispatch_claim``.
+        violate ``ck_playbook_pending_events_dispatch_claim``.  ``exclude`` is
+        the arrival that this eviction is making room for: it is already
+        inserted on this transaction, so it has to be held out of its own
+        overflow sweep rather than left to the ordering to spare.
         """
+        held_back = [
+            playbook_pending_events.c.playbook_id == playbook_id,
+            playbook_pending_events.c.resolved_at.is_(None),
+            playbook_pending_events.c.dispatch_claim_token.is_(None),
+        ]
+        if exclude is not None:
+            held_back.append(playbook_pending_events.c.pending_event_id != exclude)
         doomed = (
             (
                 await conn.execute(
                     select(playbook_pending_events.c.pending_event_id)
-                    .where(
-                        playbook_pending_events.c.playbook_id == playbook_id,
-                        playbook_pending_events.c.resolved_at.is_(None),
-                        playbook_pending_events.c.dispatch_claim_token.is_(None),
-                    )
+                    .where(*held_back)
                     .order_by(
                         playbook_pending_events.c.received_at,
                         playbook_pending_events.c.pending_event_id,
@@ -1424,9 +1437,9 @@ class PlaybookRunQueryMixin:
         Returns the new id, or ``None`` when ``uq_playbook_pending_events_dedup``
         rejects it as a duplicate of an unresolved event with the same
         ``dedup_key`` — deduplication is the index, never a pre-read, because
-        a pre-read races.  The quota *is* a pre-read, and is allowed to be
-        approximate under concurrency: it is a flood ceiling, not an
-        invariant.
+        a pre-read races.  The quota is a plain count taken alongside it, and
+        is allowed to be approximate under concurrency: it is a flood ceiling,
+        not an invariant.
 
         A full queue is resolved by ``playbooks.v2_pending_event_on_overflow``
         (Package 6 §5.5 T-16).  Under ``drop_oldest`` the oldest unclaimed
@@ -1435,35 +1448,21 @@ class PlaybookRunQueryMixin:
         an in-flight dispatch, the arrival is refused with
         :class:`PendingEventQuotaExceeded` as it always was.  Either way the
         loss is visible: nothing is dropped silently.
+
+        The insert therefore comes *first*, and the quota is settled after it:
+        a duplicate is not an arrival, so it may not cost an unrelated held
+        event its place.  Ordering the two the other way round made a
+        duplicate at a full queue evict the oldest row and then return
+        ``None``, so the queue lost an event while gaining nothing.  Deciding
+        it by the index rather than by a pre-read keeps the duplicate check
+        race-free; the arrival and any eviction it pays for still commit or
+        roll back together, because the refusal is raised on this transaction.
         """
         quota = self.playbook_pending_event_quota()
         overflow = self.playbook_pending_event_overflow()
         pending_event_id = uuid.uuid4().hex
         try:
             async with self.immediate() as conn:
-                unresolved = (
-                    await conn.execute(
-                        select(func.count())
-                        .select_from(playbook_pending_events)
-                        .where(
-                            playbook_pending_events.c.playbook_id == playbook_id,
-                            playbook_pending_events.c.resolved_at.is_(None),
-                        )
-                    )
-                ).scalar_one()
-                if int(unresolved) >= quota:
-                    dropped = 0
-                    if overflow == "drop_oldest":
-                        dropped = await self._drop_oldest_pending_events(
-                            conn,
-                            playbook_id=playbook_id,
-                            quota=quota,
-                            needed=int(unresolved) - quota + 1,
-                            now=now,
-                        )
-                    if int(unresolved) - dropped >= quota:
-                        _warn_pending_quota(playbook_id, quota, now)
-                        raise PendingEventQuotaExceeded(playbook_id, quota)
                 insert_fn = pg_insert if conn.dialect.name == "postgresql" else sqlite_insert
                 result = await conn.execute(
                     insert_fn(playbook_pending_events)
@@ -1498,6 +1497,30 @@ class PlaybookRunQueryMixin:
                 )
                 if result.rowcount == 0:
                     return None
+                unresolved = (
+                    await conn.execute(
+                        select(func.count())
+                        .select_from(playbook_pending_events)
+                        .where(
+                            playbook_pending_events.c.playbook_id == playbook_id,
+                            playbook_pending_events.c.resolved_at.is_(None),
+                        )
+                    )
+                ).scalar_one()
+                if int(unresolved) > quota:
+                    dropped = 0
+                    if overflow == "drop_oldest":
+                        dropped = await self._drop_oldest_pending_events(
+                            conn,
+                            playbook_id=playbook_id,
+                            quota=quota,
+                            needed=int(unresolved) - quota,
+                            now=now,
+                            exclude=pending_event_id,
+                        )
+                    if int(unresolved) - dropped > quota:
+                        _warn_pending_quota(playbook_id, quota, now)
+                        raise PendingEventQuotaExceeded(playbook_id, quota)
         except IntegrityError as exc:
             raise PendingEventIntegrityError(playbook_id) from exc
         return pending_event_id
