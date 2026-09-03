@@ -20,6 +20,15 @@
 # check in the child plan's verification section fails for a reason unrelated
 # to the spec.  Bump GENERATOR_VERSION and regenerate in the same commit.
 #
+# The generator version is not the only input: it runs post-generation hooks,
+# and the ambient `ruff` they invoke is the second one.  Those hooks are
+# declared explicitly in scripts/openapi-python-client.yaml and scoped to the
+# Python package, which keeps README.md out of the formatter's reach (recent
+# ruff reformats Python code blocks inside Markdown; older ruff, and a box
+# with no ruff at all, do not) -- see the note there.  The generated Python is
+# still formatted by whatever ruff is installed, so ruff is required below
+# rather than silently skipped.
+#
 # The pin is only a declaration; what checks it against the committed tree is
 # tests/test_api_client_contract.py::
 # test_generated_client_boilerplate_matches_what_the_pinned_generator_writes,
@@ -54,6 +63,16 @@ if [[ "$FOUND_VERSION" != "$GENERATOR_VERSION" ]]; then
     echo "       Regenerating with another version rewrites the whole client tree (README.md included)." >&2
     echo "       Run: pip install 'openapi-python-client==$GENERATOR_VERSION'" >&2
     echo "       (Deliberately upgrading? Bump GENERATOR_VERSION in this script and commit the regenerated client with it.)" >&2
+    exit 1
+fi
+
+# The generator only *warns* when a post hook's command is missing ("Skipping
+# Integration: ruff is not in PATH") and still exits 0, so a box without ruff
+# would quietly write an unformatted agent_queue_api_client/ and record its
+# digests as canonical.  Fail instead.
+if ! command -v ruff >/dev/null 2>&1; then
+    echo "Error: ruff is not installed, and the generator's post hooks format the generated Python with it." >&2
+    echo "       Without it the client would be regenerated unformatted. Run: pip install -e '.[dev]'" >&2
     exit 1
 fi
 
