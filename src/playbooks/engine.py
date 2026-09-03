@@ -201,6 +201,7 @@ class RunOutcome:
     snapshot: RunSnapshot | None = None
     receipts: tuple[StepReceipt, ...] = ()
     commands: tuple[tuple[str, str, str], ...] = ()
+    result_value: Any | None = None
     #: Operator-facing refusal text, when there is one.
     error: str | None = None
     #: Whether cancellation was acknowledged or its grace period expired.
@@ -767,6 +768,7 @@ class PlaybookEngine:
         dispatch_id: str | None = None,
         deadline_at: float | None = None,
         pause_before_start: bool = False,
+        project_task: bool = True,
     ) -> RunOutcome:
         """Create one run for *rule_id* and walk it.
 
@@ -776,6 +778,10 @@ class PlaybookEngine:
         for later resumption both need a durable, addressable run at its
         entry step rather than a promise to make one.
         """
+        # Projection tasks are not yet created by the V2 engine.  Keeping the
+        # caller-owned choice in the public contract makes assignment-routing
+        # explicit and prevents a future projection layer from changing it.
+        _ = project_task
         artifact = self._load(artifact_ref)
         rule = next((r for r in artifact.rules if r.id == rule_id), None)
         if rule is None:
@@ -1049,6 +1055,11 @@ class PlaybookEngine:
             return RunOutcome(snapshot.run_id, snapshot.lifecycle, "unauthorized", snapshot)
         decision = snapshot.operator_decision
         assert decision is not None  # narrowed by the caller
+        if cause.kind not in {"accept", "accept_outcome", "retry", "fail", "cancel"}:
+            return RunOutcome(
+                snapshot.run_id, snapshot.lifecycle, "contract_violation", snapshot
+            )
+        action = "accept" if cause.kind == "accept_outcome" else cause.kind
         step = artifact.steps.get(decision.step_id)
         if step is None:
             return RunOutcome(snapshot.run_id, snapshot.lifecycle, "contract_violation", snapshot)
@@ -1072,7 +1083,7 @@ class PlaybookEngine:
             receipt_kind="operator_decision",
             turn_index=decision.turn_index,
             operator_decision_id=decision.decision_id,
-            outcome="success" if cause.kind in {"accept", "retry"} else "failure",
+            outcome="success" if action in {"accept", "retry"} else "failure",
             started_at=now,
             snapshot_version=snapshot.version + 1,
             iteration=snapshot.loop.index if snapshot.loop else -1,
@@ -1082,7 +1093,7 @@ class PlaybookEngine:
             completed_at=now,
         )
         running = await repository.commit_boundary(running, resolution_receipt)
-        if cause.kind == "retry":
+        if action == "retry":
             walked = await self._walk(running, artifact, artifact_ref, principal, mode, repository)
             return replace(
                 walked,
@@ -1109,7 +1120,7 @@ class PlaybookEngine:
             running.run_id, decision.step_id, attempt.iteration, attempt.attempt
         )
         attempt.receipt_result = {"operator_resolution": cause.kind}
-        if cause.kind == "accept":
+        if action == "accept":
             attempt.outcome = str(cause.payload.get("outcome", ""))
             value = cause.payload.get("value")
             if value is not None and getattr(step, "save_result_as", None):
@@ -1126,15 +1137,13 @@ class PlaybookEngine:
             committed, receipt, outcome = await self._advance_on_outcome(
                 attempt, artifact, artifact_ref, repository
             )
-        elif cause.kind in {"fail", "cancel"}:
-            attempt.outcome = "cancelled" if cause.kind == "cancel" else "runtime_error"
+        elif action in {"fail", "cancel"}:
+            attempt.outcome = "cancelled" if action == "cancel" else "runtime_error"
             attempt.lifecycle = (
-                RunLifecycle.CANCELLED if cause.kind == "cancel" else RunLifecycle.FAILED
+                RunLifecycle.CANCELLED if action == "cancel" else RunLifecycle.FAILED
             )
             attempt.next_step_id = None
             committed, receipt, outcome = await self._commit(attempt, artifact_ref, repository)
-        else:
-            return RunOutcome(snapshot.run_id, snapshot.lifecycle, "contract_violation", snapshot)
         if receipt is not None:
             await self._emit(EVENT_STEP_COMPLETED, committed, step_id=receipt.step_id)
         if committed.is_terminal or committed.lifecycle is not RunLifecycle.RUNNING:
@@ -1654,7 +1663,22 @@ class PlaybookEngine:
                 # snapshot.  Sleeping on it would lose the only delivery.
                 snapshot = replace(snapshot, lifecycle=RunLifecycle.RUNNING)
         await self._emit(EVENT_RUN_FINISHED, snapshot, outcome=outcome)
-        return RunOutcome(snapshot.run_id, snapshot.lifecycle, outcome, snapshot, tuple(receipts))
+        result_value = next(
+            (
+                receipt.result["value"]
+                for receipt in reversed(receipts)
+                if "value" in receipt.result
+            ),
+            None,
+        )
+        return RunOutcome(
+            snapshot.run_id,
+            snapshot.lifecycle,
+            outcome,
+            snapshot,
+            tuple(receipts),
+            result_value=result_value,
+        )
 
     async def _advance_one_step(
         self,
@@ -2043,6 +2067,10 @@ class PlaybookEngine:
 
         # 9 and 10.
         if result.control is StepControl.TERMINATE:
+            if result.value is not None:
+                attempt.receipt_result = dict(attempt.receipt_result) | {
+                    "value": result.value
+                }
             attempt.lifecycle = _TERMINAL_LIFECYCLE.get(
                 result.terminal_outcome or "completed", RunLifecycle.COMPLETED
             )

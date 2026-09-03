@@ -194,6 +194,30 @@ class PlaybookResumeHandler:
         from src.playbooks.runner import PlaybookRunner
 
         try:
+            from src.commands.principal import ExecutionPrincipal
+            from src.playbooks.engine import HumanDecision
+            from src.playbooks.services import build_v2_engine, load_v2_snapshot
+
+            v2_snapshot = await load_v2_snapshot(self._db, run_id)
+            if v2_snapshot is not None:
+                command_handler = getattr(self._orchestrator, "_command_handler", None)
+                if command_handler is None:
+                    logger.error("Cannot resume V2 run '%s': command handler unavailable", run_id)
+                    return
+                engine = build_v2_engine(
+                    config=self._config,
+                    db=self._db,
+                    handler=command_handler,
+                    llm=getattr(self._orchestrator, "llm", None),
+                    bus=self._bus,
+                )
+                await engine.resume(
+                    run_id,
+                    HumanDecision(decision=decision, payload=dict(event_data)),
+                    ExecutionPrincipal.service("playbook-resume"),
+                )
+                return
+
             # 1. Fetch the paused run from the database
             db_run = await self._db.get_playbook_run(run_id)
             if not db_run:

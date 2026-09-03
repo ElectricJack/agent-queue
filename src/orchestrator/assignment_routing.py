@@ -271,6 +271,7 @@ class AssignmentRoutingCoordinator:
         self._catalog_hashes: dict[str, str] = {}
         self._running_task_ids: set[str] = set()
         self._task_retry: dict[str, tuple[float, str]] = {}
+        self._v2_cache: dict[str, tuple[str, str]] = {}
 
     @property
     def db(self):
@@ -372,11 +373,19 @@ class AssignmentRoutingCoordinator:
                 )
 
     @staticmethod
-    def _batch_key(project, playbook, tasks, catalog_hash: str) -> str:
+    def _batch_key(
+        project,
+        playbook,
+        tasks,
+        catalog_hash: str,
+        *,
+        artifact_sha256: str | None = None,
+    ) -> str:
         value = {
             "project_id": project.id,
             "playbook_id": playbook.id,
             "playbook_version": playbook.version,
+            "artifact_sha256": artifact_sha256,
             "tasks": sorted((task.id, assignment_input_hash(task)) for task in tasks),
             "options_hash": catalog_hash,
         }
@@ -420,16 +429,31 @@ class AssignmentRoutingCoordinator:
     async def _route_batch(self, project, tasks, options, catalog_hash):
         manager = self.owner.playbook_manager
         playbook = select_assignment_playbook(manager, project)
-        batch_key = self._batch_key(project, playbook, tasks, catalog_hash)
+        from src.playbooks.services import DatabaseActivationSource, v2_engine_enabled
+
+        use_v2 = v2_engine_enabled(getattr(self.owner, "config", None))
+        artifact_ref = None
+        if use_v2:
+            artifact_ref = await DatabaseActivationSource(self.db).artifact_for(
+                playbook.id, scope_identifier=project.id
+            )
+        batch_key = self._batch_key(
+            project,
+            playbook,
+            tasks,
+            catalog_hash,
+            artifact_sha256=(artifact_ref.artifact_sha256 if artifact_ref else None),
+        )
         retry = self._retry.get(batch_key)
         if retry and retry[1] > time.time():
             return {}
+        cached_v2 = self._v2_cache.get(batch_key) if use_v2 else None
         event_id, existing = await self._attempt_event_id(playbook.id, batch_key)
-        response = self._existing_response(existing) if existing else None
-        run_id = existing.run_id if existing else None
+        response = cached_v2[1] if cached_v2 else self._existing_response(existing) if existing else None
+        run_id = cached_v2[0] if cached_v2 else existing.run_id if existing else None
         if existing is not None and response is None:
             return {}
-        if existing is None:
+        if existing is None and cached_v2 is None:
             event = {
                 "type": "assignment.route.requested",
                 "event_id": event_id,
@@ -442,31 +466,89 @@ class AssignmentRoutingCoordinator:
                 "options_hash": options_hash(options),
                 "catalog_hash": catalog_hash,
             }
-            runner = PlaybookRunner(
-                graph=playbook.to_dict(),
-                event=event,
-                services=self.owner.playbook_services(),
-                db=self.db,
-                event_bus=getattr(self.owner, "bus", None),
-                sync_task_projection=False,
-                tool_overrides=[],
-            )
             self._running_task_ids.update(task.id for task in tasks)
             try:
-                try:
-                    result = await runner.run()
-                except IntegrityError:
-                    logger.info("assignment batch %s lost the playbook-run insert race", batch_key)
-                    return {}
+                if use_v2:
+                    if artifact_ref is None:
+                        self._note_failure(batch_key, "assignment artifact unavailable", tasks)
+                        return {}
+                    from src.commands.principal import ExecutionPrincipal
+                    from src.playbooks.services import build_v2_engine
+
+                    handler = getattr(self.owner, "_command_handler", None)
+                    if handler is None:
+                        self._note_failure(batch_key, "command handler unavailable", tasks)
+                        return {}
+                    engine = build_v2_engine(
+                        config=self.owner.config,
+                        db=self.db,
+                        handler=handler,
+                        llm=getattr(self.owner, "llm", None),
+                        bus=getattr(self.owner, "bus", None),
+                    )
+                    artifact = engine.services.artifact_store.load(
+                        artifact_ref.artifact_sha256
+                    )
+                    rule = next(
+                        (
+                            candidate
+                            for candidate in artifact.rules
+                            if engine._trigger_matches(
+                                candidate, "assignment.route.requested", event
+                            )
+                        ),
+                        None,
+                    )
+                    if rule is None:
+                        self._note_failure(batch_key, "assignment rule unavailable", tasks)
+                        return {}
+                    result = await engine.run_rule(
+                        artifact_ref,
+                        rule.id,
+                        event,
+                        ExecutionPrincipal.service("assignment-routing"),
+                        project_task=False,
+                    )
+                    run_id = result.run_id
+                    if result.lifecycle.value != "completed" or result.result_value is None:
+                        self._note_failure(
+                            batch_key,
+                            result.snapshot.error if result.snapshot else "assignment playbook failed",
+                            tasks,
+                        )
+                        return {}
+                    response = (
+                        result.result_value
+                        if isinstance(result.result_value, str)
+                        else json.dumps(result.result_value, sort_keys=True)
+                    )
+                    self._v2_cache[batch_key] = (run_id, response)
+                else:
+                    runner = PlaybookRunner(
+                        graph=playbook.to_dict(),
+                        event=event,
+                        services=self.owner.playbook_services(),
+                        db=self.db,
+                        event_bus=getattr(self.owner, "bus", None),
+                        sync_task_projection=False,
+                        tool_overrides=[],
+                    )
+                    try:
+                        result = await runner.run()
+                    except IntegrityError:
+                        logger.info(
+                            "assignment batch %s lost the playbook-run insert race", batch_key
+                        )
+                        return {}
+                    run_id = runner.run_id
+                    if result.status != "completed" or not result.final_response:
+                        self._note_failure(
+                            batch_key, result.error or "assignment playbook failed", tasks
+                        )
+                        return {}
+                    response = result.final_response
             finally:
                 self._running_task_ids.difference_update(task.id for task in tasks)
-            run_id = runner.run_id
-            if result.status != "completed" or not result.final_response:
-                self._note_failure(
-                    batch_key, result.error or "assignment playbook failed", tasks
-                )
-                return {}
-            response = result.final_response
         try:
             decisions = validate_assignment_response(response or "", tasks, options)
         except AssignmentRoutingValidationError as exc:

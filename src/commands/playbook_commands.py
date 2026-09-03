@@ -19,6 +19,80 @@ logger = logging.getLogger(__name__)
 class PlaybookCommandsMixin:
     """Playbook command methods mixed into CommandHandler."""
 
+    def _v2_engine(self):
+        from src.playbooks.services import build_v2_engine
+
+        return build_v2_engine(
+            config=self.config,
+            db=self.db,
+            handler=self,
+            llm=getattr(self.orchestrator, "llm", None),
+            bus=getattr(self.orchestrator, "bus", None),
+        )
+
+    async def _v2_artifact_for(self, playbook_id: str, project_id: str | None = None):
+        from src.playbooks.services import DatabaseActivationSource
+
+        return await DatabaseActivationSource(self.db).artifact_for(
+            playbook_id, scope_identifier=project_id
+        )
+
+    async def _run_v2_artifact(
+        self,
+        playbook_id: str,
+        event: dict,
+        *,
+        dry_run: bool = False,
+        invoke_ai: bool = False,
+    ) -> dict:
+        from dataclasses import asdict
+
+        from src.commands.principal import ExecutionPrincipal, current_principal
+
+        ref = await self._v2_artifact_for(playbook_id, event.get("project_id"))
+        if ref is None:
+            return {"error": f"No ready V2 artifact is active for '{playbook_id}'"}
+        engine = self._v2_engine()
+        principal = current_principal() or ExecutionPrincipal.service("playbook-command")
+        if dry_run:
+            playbooks = self.config.playbooks
+            tree = await engine.dry_run(
+                ref,
+                event,
+                principal,
+                invoke_ai=invoke_ai,
+                max_paths=playbooks.v2_dry_run_max_paths,
+                max_step_visits=playbooks.v2_dry_run_max_step_visits,
+            )
+            return {"dry_run": True, "playbook_id": playbook_id, **asdict(tree)}
+
+        artifact = engine.services.artifact_store.load(ref.artifact_sha256)
+        event_type = engine._event_type(event)
+        rules = [
+            rule for rule in artifact.rules if engine._trigger_matches(rule, event_type, event)
+        ]
+        if not rules:
+            return {"error": f"No rule in '{playbook_id}' matches event '{event_type}'"}
+        outcomes = [
+            await engine.run_rule(ref, rule.id, event, principal)
+            for rule in rules
+        ]
+        first = outcomes[0]
+        response = {
+            "run_id": first.run_id,
+            "run_ids": [outcome.run_id for outcome in outcomes],
+            "playbook_id": playbook_id,
+            "version": ref.version,
+            "status": (
+                "completed"
+                if all(outcome.lifecycle.value == "completed" for outcome in outcomes)
+                else first.lifecycle.value
+            ),
+        }
+        if first.result_value is not None:
+            response["final_response"] = first.result_value
+        return response
+
     # ------------------------------------------------------------------
     # Playbook commands (spec §15)
     # ------------------------------------------------------------------
@@ -350,6 +424,26 @@ class PlaybookCommandsMixin:
         if not human_input:
             return {"error": "human_input is required — provide your review decision or feedback"}
 
+        from src.playbooks.services import load_v2_snapshot
+
+        v2_snapshot = await load_v2_snapshot(self.db, run_id)
+        if v2_snapshot is not None:
+            from src.commands.principal import current_principal, ExecutionPrincipal
+            from src.playbooks.engine import HumanDecision
+
+            principal = current_principal() or ExecutionPrincipal.service("playbook-command")
+            result = await self._v2_engine().resume(
+                run_id,
+                HumanDecision(decision=human_input),
+                principal,
+            )
+            return {
+                "resumed": run_id,
+                "playbook_id": v2_snapshot.playbook_id,
+                "status": result.lifecycle.value,
+                **({"error": result.error} if result.error else {}),
+            }
+
         # Fetch the paused run
         db_run = await self.db.get_playbook_run(run_id)
         if not db_run:
@@ -530,6 +624,22 @@ class PlaybookCommandsMixin:
         run_id = args.get("run_id")
         if not run_id:
             return {"error": "run_id is required"}
+
+        from src.playbooks.services import load_v2_snapshot
+
+        v2_snapshot = await load_v2_snapshot(self.db, run_id)
+        if v2_snapshot is not None:
+            from src.commands.principal import current_principal, ExecutionPrincipal
+
+            principal = current_principal() or ExecutionPrincipal.service("playbook-command")
+            result = await self._v2_engine().cancel(run_id, principal)
+            if result.error:
+                return {"error": result.error}
+            return {
+                "cancelled": run_id,
+                "playbook_id": v2_snapshot.playbook_id,
+                "status": result.lifecycle.value,
+            }
 
         db_run = await self.db.get_playbook_run(run_id)
         if not db_run:
@@ -923,6 +1033,11 @@ class PlaybookCommandsMixin:
                 if ch:
                     event["notification_channel_id"] = str(ch.id)
 
+        from src.playbooks.services import v2_engine_enabled
+
+        if v2_engine_enabled(self.config):
+            return await self._run_v2_artifact(playbook_id, event)
+
         graph = playbook.to_dict()
 
         # Pipeline playbooks execute deterministically via PipelineRunner —
@@ -1083,6 +1198,16 @@ class PlaybookCommandsMixin:
         # Ensure a type field exists for seed message clarity
         if "type" not in event:
             event["type"] = "dry_run"
+
+        from src.playbooks.services import v2_engine_enabled
+
+        if v2_engine_enabled(self.config):
+            return await self._run_v2_artifact(
+                playbook_id,
+                event,
+                dry_run=True,
+                invoke_ai=bool(args.get("invoke_ai", False)),
+            )
 
         # Convert CompiledPlaybook to the dict format PlaybookRunner expects
         graph = playbook.to_dict()
@@ -1772,12 +1897,44 @@ class PlaybookCommandsMixin:
 
         Returns a list of result dicts for each timed-out run processed.
         """
-        paused_runs = await self.db.list_playbook_runs(status="paused", limit=100)
-        if not paused_runs:
-            return []
-
         results = []
         now = time.time()
+
+        list_v2_runs = getattr(self.db, "list_runs", None)
+        if callable(list_v2_runs):
+            from src.commands.principal import ExecutionPrincipal
+            from src.playbooks.engine import TimerFired
+            from src.playbooks.run_state import RunSnapshot
+
+            try:
+                v2_runs = await list_v2_runs(lifecycle="paused", limit=100)
+            except (AttributeError, TypeError):
+                v2_runs = []
+            engine = None
+            for snapshot in v2_runs:
+                if not isinstance(snapshot, RunSnapshot) or snapshot.deadline_at is None:
+                    continue
+                if snapshot.deadline_at > now:
+                    continue
+                engine = engine or self._v2_engine()
+                outcome = await engine.resume(
+                    snapshot.run_id,
+                    TimerFired(wait_id=snapshot.wait.wait_id if snapshot.wait else ""),
+                    ExecutionPrincipal.service("playbook-timeout"),
+                )
+                results.append(
+                    {
+                        "run_id": snapshot.run_id,
+                        "playbook_id": snapshot.playbook_id,
+                        "status": outcome.lifecycle.value,
+                        "timeout_seconds": max(0, int(now - snapshot.deadline_at)),
+                        "on_timeout": None,
+                    }
+                )
+
+        paused_runs = await self.db.list_playbook_runs(status="paused", limit=100)
+        if not paused_runs:
+            return results
 
         for db_run in paused_runs:
             # Resolve the effective graph

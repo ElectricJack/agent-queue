@@ -839,6 +839,44 @@ class Orchestrator(
         an LLM-driven graph walk.
         """
         try:
+            from src.playbooks.services import build_v2_engine, v2_engine_enabled
+
+            if v2_engine_enabled(getattr(self, "config", None)):
+                from src.commands.principal import ExecutionPrincipal
+
+                handler = self._command_handler
+                if handler is None:
+                    logger.error(
+                        "V2 playbook '%s' cannot run — no command handler wired",
+                        playbook.id,
+                    )
+                    return
+                engine = build_v2_engine(
+                    config=self.config,
+                    db=self.db,
+                    handler=handler,
+                    llm=self.llm,
+                    bus=self.bus,
+                )
+
+                async def _run_v2() -> None:
+                    try:
+                        await engine.dispatch_event(
+                            event_data,
+                            ExecutionPrincipal.service("playbook-dispatch"),
+                        )
+                    except Exception:
+                        logger.exception(
+                            "V2 playbook dispatch failed for event=%s",
+                            event_data.get("type") or event_data.get("_event_type"),
+                        )
+
+                asyncio.create_task(
+                    _run_v2(),
+                    name=f"playbook-v2:{playbook.id}:{event_data.get('type', 'trigger')}",
+                )
+                return
+
             from src.playbooks.runner import PlaybookRunner
             from src.models import PlaybookRun as PlaybookRunModel
 

@@ -281,6 +281,7 @@ class TestAmbiguousInterruption:
         ("kind", "payload"),
         [
             ("accept", {"outcome": "low", "value": {"risk": "low"}}),
+            ("accept_outcome", {"outcome": "low", "value": {"risk": "low"}}),
             ("retry", {}),
             ("fail", {}),
             ("cancel", {}),
@@ -297,6 +298,20 @@ class TestAmbiguousInterruption:
         assert any(
             receipt.result.get("operator_resolution") == kind for receipt in runs.receipts
         )
+
+    @pytest.mark.asyncio
+    async def test_invalid_operator_resolution_preserves_the_pending_decision(self):
+        engine, runs, ambiguous = await self._ambiguous_llm()
+        receipt_count = len(runs.receipts)
+
+        rejected = await engine.resume(
+            ambiguous.run_id, OperatorResolution(kind="skip"), TRUSTED_LOCAL
+        )
+
+        assert rejected.outcome == "contract_violation"
+        assert rejected.snapshot.operator_decision is not None
+        assert runs.snapshots[ambiguous.run_id].operator_decision is not None
+        assert len(runs.receipts) == receipt_count
 
     @pytest.mark.asyncio
     async def test_a_playbook_principal_cannot_resolve_its_own_run(self):

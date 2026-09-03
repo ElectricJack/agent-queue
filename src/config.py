@@ -880,6 +880,12 @@ class PlaybooksConfig:
     #: Package 7 removes the flag together with the V1 graph command.
     v2_api: bool = False
 
+    #: Reach the unified V2 executor from production entry points. Package 7
+    #: removes this rollback flag after the V1 runtime is drained.
+    v2_engine: bool = False
+    v2_dry_run_max_paths: int = 32
+    v2_dry_run_max_step_visits: int = 1000
+
     #: Playbook V2 operator *writes* (activate an artifact, resolve a pending
     #: event).  Deliberately separate from ``v2_api`` so the whole review
     #: surface stays readable with writes disabled — roadmap Package 5's
@@ -920,6 +926,17 @@ class PlaybooksConfig:
             )
         if self.v2_artifact_min_versions < 1:
             errors.append(ConfigError("playbooks", "v2_artifact_min_versions", "must be >= 1"))
+        for field_name in ("v2_dry_run_max_paths", "v2_dry_run_max_step_visits"):
+            if getattr(self, field_name) < 1:
+                errors.append(ConfigError("playbooks", field_name, "must be >= 1"))
+        if self.v2_engine and not self.enabled:
+            errors.append(
+                ConfigError(
+                    "playbooks",
+                    "v2_engine",
+                    "requires playbooks.enabled=true",
+                )
+            )
         if self.cancellation_grace_seconds < 0:
             errors.append(
                 ConfigError("playbooks", "cancellation_grace_seconds", "must be >= 0")
@@ -2524,6 +2541,9 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         pb = raw["playbooks"]
         config.playbooks = PlaybooksConfig(
             enabled=bool(pb.get("enabled", False)),
+            v2_engine=bool(pb.get("v2_engine", False)),
+            v2_dry_run_max_paths=int(pb.get("v2_dry_run_max_paths", 32)),
+            v2_dry_run_max_step_visits=int(pb.get("v2_dry_run_max_step_visits", 1000)),
             v2_storage_enabled=bool(pb.get("v2_storage_enabled", False)),
             v2_max_artifact_bytes=int(pb.get("v2_max_artifact_bytes", 1_048_576)),
             v2_max_result_bytes=int(pb.get("v2_max_result_bytes", 262_144)),
