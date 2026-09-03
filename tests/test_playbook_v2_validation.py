@@ -88,10 +88,14 @@ def load_invalid(code: str) -> PlaybookDefinition:
 
 
 class TestDiagnosticSet:
-    """§6.8 — the closed 47-code set."""
+    """§6.8 — the closed 48-code set.
+
+    47 in the child plan; ``narrowing_not_subset`` is the 48th, added with the
+    authoring surface for ``AgentTaskStep.capability_narrowing``.
+    """
 
     def test_the_set_is_closed_and_partitioned(self):
-        assert len(DIAGNOSTIC_CODES) == 47
+        assert len(DIAGNOSTIC_CODES) == 48
         assert VALIDATOR_CODES | MODEL_CODES | COMPILER_ONLY_CODES == DIAGNOSTIC_CODES
         assert not VALIDATOR_CODES & MODEL_CODES
         assert not VALIDATOR_CODES & COMPILER_ONLY_CODES
@@ -701,6 +705,39 @@ class TestProfilesAndCapabilities:
         found = check(PlaybookDefinition.model_validate(artifact))
         assert "capability_not_subset" not in codes(found)
 
+    def test_a_narrowing_naming_an_ungranted_capability_is_an_error(self):
+        """The executor intersects, so this would otherwise be a silent no-op."""
+        found = check(load_invalid("narrowing_not_subset"), inventory=TWIN_INVENTORY)
+        diagnostic = next(d for d in found if d.code == "narrowing_not_subset")
+        assert diagnostic.severity == "error"
+        assert diagnostic.step_id == "delegate"
+        assert diagnostic.field == "/capability_narrowing/aq_commands"
+        assert "other_command" in diagnostic.message
+
+    def test_a_narrowing_inside_the_child_profile_is_accepted(self):
+        artifact = json.loads((INVALID_DIR / "narrowing_not_subset.json").read_text())
+        artifact["steps"]["delegate"]["capability_narrowing"] = {
+            "aq_commands": ["demo_command"]
+        }
+        found = check(PlaybookDefinition.model_validate(artifact))
+        assert "narrowing_not_subset" not in codes(found)
+
+    def test_an_empty_narrowing_namespace_means_none_not_a_violation(self):
+        """``[]`` is deny-all for that namespace, which is always a subset."""
+        artifact = json.loads((INVALID_DIR / "narrowing_not_subset.json").read_text())
+        artifact["steps"]["delegate"]["capability_narrowing"] = {
+            "aq_commands": [],
+            "harness_tools": None,
+        }
+        found = check(PlaybookDefinition.model_validate(artifact))
+        assert "narrowing_not_subset" not in codes(found)
+
+    def test_no_narrowing_emits_nothing(self):
+        artifact = json.loads((INVALID_DIR / "narrowing_not_subset.json").read_text())
+        artifact["steps"]["delegate"].pop("capability_narrowing")
+        found = check(PlaybookDefinition.model_validate(artifact))
+        assert "narrowing_not_subset" not in codes(found)
+
     def test_a_deferred_delegation_is_visible_as_info(self):
         found = check(load_invalid("delegation_runtime_checked"))
         diagnostic = next(d for d in found if d.code == "delegation_runtime_checked")
@@ -709,6 +746,26 @@ class TestProfilesAndCapabilities:
 
 class TestIdentifierInventory:
     """§5.3 — the compiler may only wire together names a human wrote."""
+
+    def test_a_narrowing_capability_absent_from_the_source_is_rejected(self):
+        """§5.3 covers the third intersection term: a compiler may not invent a
+        restriction on a delegated child any more than it may invent a grant."""
+        inventory = StubInventory(TWIN_INVENTORY.names - {"other_command"})
+        found = check(load_invalid("narrowing_not_subset"), inventory=inventory)
+        diagnostic = next(
+            d
+            for d in found
+            if d.code == "unknown_identifier" and "other_command" in d.message
+        )
+        assert diagnostic.step_id == "delegate"
+
+    def test_a_narrowing_capability_present_in_the_source_is_accepted(self):
+        found = check(load_invalid("narrowing_not_subset"), inventory=TWIN_INVENTORY)
+        assert not [
+            d
+            for d in found
+            if d.code == "unknown_identifier" and "other_command" in d.message
+        ]
 
     def test_a_command_absent_from_the_source_is_rejected(self):
         """§10.1's load-bearing defense against an injected semantic body."""

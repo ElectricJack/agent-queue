@@ -45,6 +45,7 @@ from .cancel_playbook_run_response import CancelPlaybookRunResponse
 from .cancel_playbook_run_response_422 import CancelPlaybookRunResponse422
 from .cancellation_facts_dto import CancellationFactsDTO
 from .capability_namespaces_dto import CapabilityNamespacesDTO
+from .capability_narrowing_dto import CapabilityNarrowingDTO
 from .catalog_entry_model import CatalogEntryModel
 from .check_profile_request import CheckProfileRequest
 from .check_profile_response import CheckProfileResponse
@@ -1117,6 +1118,7 @@ __all__ = (
     "CancelPlaybookRunResponse",
     "CancelPlaybookRunResponse422",
     "CapabilityNamespacesDTO",
+    "CapabilityNarrowingDTO",
     "CatalogEntryModel",
     "CheckoutBranchRequest",
     "CheckoutBranchResponse",
