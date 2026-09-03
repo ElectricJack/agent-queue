@@ -48,6 +48,7 @@ import {
   reopenWithFeedback,
   restartTask,
   playbookGraphView,
+  playbookV2Graph,
   resumePlaybook,
   runPlaybook,
   inspectPlaybookRun,
@@ -107,6 +108,7 @@ import type {
   ListPlaybookRunsResponse,
   ListPlaybooksResponse,
   PlaybookGraphViewResponse,
+  PlaybookV2GraphResponse,
   ListProfilesResponse2 as ListProfilesResponse,
   ListProjectsResponse2 as ListProjectsResponse,
   ListTasksResponse2 as ListTasksResponse,
@@ -831,6 +833,45 @@ export function usePlaybookGraph(playbookId?: string) {
         },
         throwOnError: true,
       })).data as PlaybookGraphViewResponse,
+    enabled: !!playbookId,
+  });
+}
+
+/** Query key for one playbook artifact's semantic graph.
+ *
+ *  The artifact hash is part of the key because an artifact is immutable: two
+ *  hashes are two different graphs, and the active one changing is a different
+ *  key rather than a stale entry. */
+export const playbookV2GraphKey = (playbookId: string, artifactSha?: string, eventType?: string) =>
+  ["playbook-v2-graph", playbookId, artifactSha ?? "active", eventType ?? "all"] as const;
+
+export interface PlaybookV2GraphOptions {
+  /** Project this exact artifact instead of whichever is active. */
+  artifactSha?: string;
+  /** Narrow to the rules one event triggers. `event_groups` still lists them all. */
+  eventType?: string;
+}
+
+/** The semantic graph of one playbook artifact, for the Semantic graph tab.
+ *
+ *  Deliberately not polled: an artifact is immutable, so the only thing that
+ *  can change is which one is active, and that changes through a mutation this
+ *  session made or the 30s activation-health refetch. */
+export function usePlaybookV2Graph(playbookId?: string, opts: PlaybookV2GraphOptions = {}) {
+  const { artifactSha, eventType } = opts;
+  return useQuery({
+    queryKey: playbookV2GraphKey(playbookId ?? "", artifactSha, eventType),
+    queryFn: async () =>
+      (await playbookV2Graph({
+        body: {
+          playbook_id: playbookId!,
+          ...(artifactSha ? { artifact_sha256: artifactSha } : {}),
+          ...(eventType ? { event_type: eventType } : {}),
+          direction: "TD",
+          include_advanced: true,
+        },
+        throwOnError: true,
+      })).data as PlaybookV2GraphResponse,
     enabled: !!playbookId,
   });
 }
