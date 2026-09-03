@@ -67,13 +67,15 @@ def sync_detailed(
 ) -> Response[PlaybookPendingEventActionResponse | PlaybookPendingEventActionResponse422]:
     """Dispatch or discard held playbook pending events. 'dispatch' re-enters the engine's own event
     dispatch with the server-derived principal of this request -- it never re-implements matching and
-    never adopts a principal from the stored event. 'discard' records the resolution without
-    dispatching.
+    never adopts a principal from the stored event, and strips the server-owned keys from the held
+    payload before replaying it. 'discard' records the resolution, and the operator reason for it,
+    without dispatching.
 
      Dispatch or discard held playbook pending events. 'dispatch' re-enters the engine's own event
     dispatch with the server-derived principal of this request -- it never re-implements matching and
-    never adopts a principal from the stored event. 'discard' records the resolution without
-    dispatching.
+    never adopts a principal from the stored event, and strips the server-owned keys from the held
+    payload before replaying it. 'discard' records the resolution, and the operator reason for it,
+    without dispatching.
 
     Args:
         body (PlaybookPendingEventActionRequest):
@@ -104,13 +106,15 @@ def sync(
 ) -> PlaybookPendingEventActionResponse | PlaybookPendingEventActionResponse422 | None:
     """Dispatch or discard held playbook pending events. 'dispatch' re-enters the engine's own event
     dispatch with the server-derived principal of this request -- it never re-implements matching and
-    never adopts a principal from the stored event. 'discard' records the resolution without
-    dispatching.
+    never adopts a principal from the stored event, and strips the server-owned keys from the held
+    payload before replaying it. 'discard' records the resolution, and the operator reason for it,
+    without dispatching.
 
      Dispatch or discard held playbook pending events. 'dispatch' re-enters the engine's own event
     dispatch with the server-derived principal of this request -- it never re-implements matching and
-    never adopts a principal from the stored event. 'discard' records the resolution without
-    dispatching.
+    never adopts a principal from the stored event, and strips the server-owned keys from the held
+    payload before replaying it. 'discard' records the resolution, and the operator reason for it,
+    without dispatching.
 
     Args:
         body (PlaybookPendingEventActionRequest):
@@ -136,13 +140,15 @@ async def asyncio_detailed(
 ) -> Response[PlaybookPendingEventActionResponse | PlaybookPendingEventActionResponse422]:
     """Dispatch or discard held playbook pending events. 'dispatch' re-enters the engine's own event
     dispatch with the server-derived principal of this request -- it never re-implements matching and
-    never adopts a principal from the stored event. 'discard' records the resolution without
-    dispatching.
+    never adopts a principal from the stored event, and strips the server-owned keys from the held
+    payload before replaying it. 'discard' records the resolution, and the operator reason for it,
+    without dispatching.
 
      Dispatch or discard held playbook pending events. 'dispatch' re-enters the engine's own event
     dispatch with the server-derived principal of this request -- it never re-implements matching and
-    never adopts a principal from the stored event. 'discard' records the resolution without
-    dispatching.
+    never adopts a principal from the stored event, and strips the server-owned keys from the held
+    payload before replaying it. 'discard' records the resolution, and the operator reason for it,
+    without dispatching.
 
     Args:
         body (PlaybookPendingEventActionRequest):
@@ -171,13 +177,15 @@ async def asyncio(
 ) -> PlaybookPendingEventActionResponse | PlaybookPendingEventActionResponse422 | None:
     """Dispatch or discard held playbook pending events. 'dispatch' re-enters the engine's own event
     dispatch with the server-derived principal of this request -- it never re-implements matching and
-    never adopts a principal from the stored event. 'discard' records the resolution without
-    dispatching.
+    never adopts a principal from the stored event, and strips the server-owned keys from the held
+    payload before replaying it. 'discard' records the resolution, and the operator reason for it,
+    without dispatching.
 
      Dispatch or discard held playbook pending events. 'dispatch' re-enters the engine's own event
     dispatch with the server-derived principal of this request -- it never re-implements matching and
-    never adopts a principal from the stored event. 'discard' records the resolution without
-    dispatching.
+    never adopts a principal from the stored event, and strips the server-owned keys from the held
+    payload before replaying it. 'discard' records the resolution, and the operator reason for it,
+    without dispatching.
 
     Args:
         body (PlaybookPendingEventActionRequest):

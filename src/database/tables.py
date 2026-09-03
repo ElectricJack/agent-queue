@@ -1317,6 +1317,11 @@ playbook_pending_events = Table(
     Column("resolved_at", Float, nullable=True),
     Column("resolved_by", Text, nullable=True),
     Column("resolution", Text, nullable=True),
+    # Why the row was resolved, in the resolver's own words: an operator's
+    # discard justification, or the policy that dropped or expired it.  The
+    # resolution vocabulary says *what* happened; this says why, which is the
+    # difference between an audit trail and a counter.
+    Column("resolution_reason", Text, nullable=True),
     CheckConstraint(
         "reason IN ('stale_contract', 'invalid_artifact', 'disabled', "
         "'unavailable', 'question_required', 'wait_registration')",

@@ -33,6 +33,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from src.config import PENDING_EVENT_OVERFLOW_POLICIES
 from src.database.tables import (
     playbook_artifacts,
     playbook_pending_events,
@@ -119,9 +120,20 @@ def _receipt_row(receipt: StepReceipt) -> dict:
 #: ``playbooks.v2_max_pending_events_per_playbook`` when no config is bound.
 DEFAULT_PENDING_EVENT_QUOTA = 1000
 
+#: ``playbooks.v2_pending_event_on_overflow`` when no config is bound.
+DEFAULT_PENDING_EVENT_OVERFLOW = "drop_oldest"
+
 # ``resolved_by`` is an audit field, not an operator-only field: expiry is a
 # deterministic system decision and must identify the component that made it.
 PENDING_EVENT_EXPIRY_ACTOR = "retention_sweep"
+
+# The same reasoning for the other unattended drop: an overflow eviction is
+# the quota's decision, and the row has to say so rather than look like an
+# operator discard.
+PENDING_EVENT_OVERFLOW_ACTOR = "pending_event_overflow"
+PENDING_EVENT_EXPIRY_REASON = (
+    "expired unresolved after its pending-event retention TTL"
+)
 
 # Inbox rows are resolved immediately because they have already entered the
 # wait-delivery path.  They remain durable for the normal pending-event
@@ -234,6 +246,7 @@ def _row_to_pending_event(row) -> dict[str, Any]:
         "resolved_at": row["resolved_at"],
         "resolved_by": row["resolved_by"],
         "resolution": row["resolution"],
+        "resolution_reason": row["resolution_reason"],
     }
 
 
@@ -984,6 +997,11 @@ class PlaybookRunQueryMixin:
                 )
             )
         ).scalar_one()
+        # ``v2_pending_event_on_overflow`` deliberately does not reach here.
+        # An inbox row is the durable half of the wait-delivery race window
+        # (``_claim_registered_wait_from_inbox``), so evicting the oldest one
+        # to make room would lose a delivery a registered wait is still
+        # entitled to find.  A full inbox refuses the arrival instead.
         if int(retained) >= quota:
             _warn_pending_quota(event.playbook_id, quota, now)
             raise PendingEventQuotaExceeded(event.playbook_id, quota)
@@ -1314,6 +1332,79 @@ class PlaybookRunQueryMixin:
     def set_playbook_pending_event_quota(self, quota: int) -> None:
         self._playbook_pending_event_quota = int(quota)
 
+    def playbook_pending_event_overflow(self) -> str:
+        """``playbooks.v2_pending_event_on_overflow``, or the default."""
+        configured = getattr(self, "_playbook_pending_event_overflow", None)
+        return DEFAULT_PENDING_EVENT_OVERFLOW if configured is None else configured
+
+    def set_playbook_pending_event_overflow(self, policy: str) -> None:
+        if policy not in PENDING_EVENT_OVERFLOW_POLICIES:
+            raise ValueError(
+                f"unknown pending-event overflow policy {policy!r}; "
+                f"expected one of {', '.join(PENDING_EVENT_OVERFLOW_POLICIES)}"
+            )
+        self._playbook_pending_event_overflow = policy
+
+    async def _drop_oldest_pending_events(
+        self, conn, *, playbook_id: str, quota: int, needed: int, now: float
+    ) -> int:
+        """Evict the oldest unclaimed held events, auditably.
+
+        Runs on the caller's transaction so the eviction and the arrival it
+        makes room for either both happen or neither does.  A row with a live
+        dispatch claim is never evicted: it belongs to an in-flight replay,
+        and resolving it under that replay would both lose the event and
+        violate ``ck_playbook_pending_events_dispatch_claim``.
+        """
+        doomed = (
+            (
+                await conn.execute(
+                    select(playbook_pending_events.c.pending_event_id)
+                    .where(
+                        playbook_pending_events.c.playbook_id == playbook_id,
+                        playbook_pending_events.c.resolved_at.is_(None),
+                        playbook_pending_events.c.dispatch_claim_token.is_(None),
+                    )
+                    .order_by(
+                        playbook_pending_events.c.received_at,
+                        playbook_pending_events.c.pending_event_id,
+                    )
+                    .limit(needed)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if not doomed:
+            return 0
+        result = await conn.execute(
+            update(playbook_pending_events)
+            .where(
+                playbook_pending_events.c.pending_event_id.in_(list(doomed)),
+                playbook_pending_events.c.resolved_at.is_(None),
+                playbook_pending_events.c.dispatch_claim_token.is_(None),
+            )
+            .values(
+                resolved_at=now,
+                resolved_by=PENDING_EVENT_OVERFLOW_ACTOR,
+                resolution="discarded",
+                resolution_reason=(
+                    "dropped by playbooks.v2_pending_event_on_overflow=drop_oldest "
+                    f"at the {quota}-event quota for playbook {playbook_id}"
+                ),
+            )
+        )
+        dropped = int(result.rowcount)
+        if dropped:
+            logger.warning(
+                "playbook %s dropped %d of its oldest pending events to stay "
+                "within its %d-event quota; the dropped rows record the reason",
+                playbook_id,
+                dropped,
+                quota,
+            )
+        return dropped
+
     async def retain_pending_event(
         self,
         *,
@@ -1336,8 +1427,17 @@ class PlaybookRunQueryMixin:
         a pre-read races.  The quota *is* a pre-read, and is allowed to be
         approximate under concurrency: it is a flood ceiling, not an
         invariant.
+
+        A full queue is resolved by ``playbooks.v2_pending_event_on_overflow``
+        (Package 6 §5.5 T-16).  Under ``drop_oldest`` the oldest unclaimed
+        rows are evicted on this transaction, each recording the policy that
+        dropped it; under ``reject_new``, or when every held row is claimed by
+        an in-flight dispatch, the arrival is refused with
+        :class:`PendingEventQuotaExceeded` as it always was.  Either way the
+        loss is visible: nothing is dropped silently.
         """
         quota = self.playbook_pending_event_quota()
+        overflow = self.playbook_pending_event_overflow()
         pending_event_id = uuid.uuid4().hex
         try:
             async with self.immediate() as conn:
@@ -1352,8 +1452,18 @@ class PlaybookRunQueryMixin:
                     )
                 ).scalar_one()
                 if int(unresolved) >= quota:
-                    _warn_pending_quota(playbook_id, quota, now)
-                    raise PendingEventQuotaExceeded(playbook_id, quota)
+                    dropped = 0
+                    if overflow == "drop_oldest":
+                        dropped = await self._drop_oldest_pending_events(
+                            conn,
+                            playbook_id=playbook_id,
+                            quota=quota,
+                            needed=int(unresolved) - quota + 1,
+                            now=now,
+                        )
+                    if int(unresolved) - dropped >= quota:
+                        _warn_pending_quota(playbook_id, quota, now)
+                        raise PendingEventQuotaExceeded(playbook_id, quota)
                 insert_fn = pg_insert if conn.dialect.name == "postgresql" else sqlite_insert
                 result = await conn.execute(
                     insert_fn(playbook_pending_events)
@@ -1393,9 +1503,22 @@ class PlaybookRunQueryMixin:
         return pending_event_id
 
     async def resolve_pending_event(
-        self, pending_event_id: str, *, resolution: str, resolved_by: str, now: float
+        self,
+        pending_event_id: str,
+        *,
+        resolution: str,
+        resolved_by: str,
+        now: float,
+        resolution_reason: str | None = None,
     ) -> bool:
-        """Resolve an unclaimed pending event exactly once."""
+        """Resolve an unclaimed pending event exactly once.
+
+        ``resolution_reason`` is the resolver's justification — an operator's
+        discard reason, or the policy that dropped the row.  It is optional
+        here because the column is nullable for rows resolved before Package
+        6; the *command* boundary is where an operator discard without one is
+        refused.
+        """
         async with self.immediate() as conn:
             result = await conn.execute(
                 update(playbook_pending_events)
@@ -1404,7 +1527,12 @@ class PlaybookRunQueryMixin:
                     playbook_pending_events.c.resolved_at.is_(None),
                     playbook_pending_events.c.dispatch_claim_token.is_(None),
                 )
-                .values(resolved_at=now, resolved_by=resolved_by, resolution=resolution)
+                .values(
+                    resolved_at=now,
+                    resolved_by=resolved_by,
+                    resolution=resolution,
+                    resolution_reason=resolution_reason,
+                )
             )
         return int(result.rowcount) == 1
 
@@ -1619,6 +1747,7 @@ class PlaybookRunQueryMixin:
                         resolved_at=now,
                         resolved_by=PENDING_EVENT_EXPIRY_ACTOR,
                         resolution="expired",
+                        resolution_reason=PENDING_EVENT_EXPIRY_REASON,
                     )
                 )
                 expired = int(result.rowcount)

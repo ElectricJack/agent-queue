@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 import time
 from typing import TYPE_CHECKING, Any
@@ -95,6 +96,34 @@ class DatabaseActivationSource:
         return None
 
 
+def bind_pending_event_policy(db: Any, playbooks: Any) -> None:
+    """Push the configured pending-event quota and overflow policy onto *db*.
+
+    The repository carries its own defaults so a test adapter needs no
+    config, which also means an unbound adapter silently ignores the
+    operator's ``playbooks:`` section.  This is the one place the daemon
+    builds V2 storage, so it is where the two are joined.  Adapters that
+    predate the setters are left alone rather than failing the daemon.
+    """
+    quota = getattr(db, "set_playbook_pending_event_quota", None)
+    if callable(quota):
+        quota(playbooks.v2_max_pending_events_per_playbook)
+    overflow = getattr(db, "set_playbook_pending_event_overflow", None)
+    if callable(overflow):
+        try:
+            overflow(playbooks.v2_pending_event_on_overflow)
+        except ValueError:
+            # ``AppConfig.validate()`` already reports an unknown policy as a
+            # config error.  Refusing to build the engine over it would turn
+            # one bad string into a dead daemon, so keep the repository's
+            # default and let the validation report stand.
+            logging.getLogger(__name__).warning(
+                "ignoring unknown playbooks.v2_pending_event_on_overflow %r; "
+                "keeping the repository default",
+                playbooks.v2_pending_event_on_overflow,
+            )
+
+
 def build_v2_engine(
     *, config: Any, db: Any, handler: Any, llm: Any = None, bus: Any = None
 ) -> Any:
@@ -110,6 +139,7 @@ def build_v2_engine(
         return cached
 
     playbooks = config.playbooks
+    bind_pending_event_policy(db, playbooks)
     services = EngineServices(
         contracts=CONTRACTS,
         clock=time.time,
