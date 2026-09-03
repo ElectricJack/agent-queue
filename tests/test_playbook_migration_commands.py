@@ -46,24 +46,36 @@ async def db(request, tmp_path):
     await database.close()
 
 
+class _Playbooks:
+    v2_max_artifact_bytes = 1_048_576
+
+
 class _Config:
     def __init__(self, data_dir: str) -> None:
         self.data_dir = data_dir
         self.vault_root = os.path.join(data_dir, "vault")
         self.compiled_root = os.path.join(data_dir, "compiled")
+        self.playbooks = _Playbooks()
 
 
 class _Handler(PlaybookMigrationCommandsMixin):
     """Just the mixin — the surface under test owns no other collaborator."""
 
-    def __init__(self, config, db) -> None:
+    def __init__(self, config, db, reviewed_root: Path) -> None:
         self.config = config
         self.db = db
+        self.reviewed_root = reviewed_root
 
     def _migration_store(self):
         # The compiled V1 tree is irrelevant to the command surface; the
         # inventory's own suite covers it.
         return None
+
+    def _reviewed_fixture_root(self) -> Path:
+        # An empty directory unless a test writes a decision record into it,
+        # so "was this artifact reviewed?" is answered by the test rather than
+        # by whichever fixtures happen to be checked in.
+        return self.reviewed_root
 
 
 @pytest.fixture
@@ -72,7 +84,9 @@ def handler(tmp_path, db):
     os.makedirs(data_dir, exist_ok=True)
     ensure_default_playbooks(data_dir)
     ensure_default_agent_type_playbooks(data_dir)
-    return _Handler(_Config(data_dir), db)
+    reviewed_root = tmp_path / "reviewed"
+    reviewed_root.mkdir()
+    return _Handler(_Config(data_dir), db, reviewed_root)
 
 
 def _ack(handler, playbook_id: str, reason: str):
@@ -299,3 +313,257 @@ def test_response_models_are_registered():
         "playbook_cutover_report",
     ):
         assert name in RESPONSE_MODELS, name
+
+
+# ---------------------------------------------------------------------------
+# §5.5 — the two reports against real activation and artifact rows
+# ---------------------------------------------------------------------------
+#
+# An activation row names an artifact hash and nothing else, so both reports
+# have to join `playbook_artifacts` to say anything about the bytes that are
+# live.  Every regression these tests pin was invisible to a double: reading
+# `artifact_sha256` off an activation row returns `None` from a real database
+# and whatever the double was handed from a fake one.
+
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+PIPELINE_FIXTURE = REPO_ROOT / "tests" / "fixtures" / "playbooks" / "v2" / "default-pipeline"
+
+#: Not one of the checked-in fixture ids, so `checked` naming it can only mean
+#: the activation row itself was read.
+PROBE_ID = "live-activation-probe"
+
+
+def _probe_definition(*, commands: dict[str, str] | None = None):
+    """The reviewed pipeline artifact, re-identified as an activation-only probe."""
+    from src.playbooks.definition import load_definition_json
+
+    definition = load_definition_json(
+        (PIPELINE_FIXTURE / "artifact.json").read_text(encoding="utf-8")
+    )
+    compiled_against = definition.compiled_against
+    if commands is not None:
+        compiled_against = compiled_against.model_copy(update={"commands": dict(commands)})
+    return definition.model_copy(update={"id": PROBE_ID, "compiled_against": compiled_against})
+
+
+def _current_commands(definition) -> dict[str, str]:
+    """This build's execution fingerprints for the commands the artifact uses."""
+    from src.commands.contracts import CONTRACTS
+    from src.playbooks.migration import current_command_fingerprints
+
+    live = current_command_fingerprints(CONTRACTS)
+    return {name: live[name] for name in definition.compiled_against.commands if name in live}
+
+
+async def _activate(handler, definition, *, enabled: bool = True, health: str = "ready"):
+    """Store the artifact bytes and write the artifact + activation rows."""
+    from src.commands.contracts import CONTRACTS
+    from src.playbooks.artifact_store import ArtifactStore
+
+    store = ArtifactStore(
+        handler.config.compiled_root,
+        max_artifact_bytes=handler.config.playbooks.v2_max_artifact_bytes,
+    )
+    ref = store.put(
+        definition,
+        source_digest="sha256:" + "e" * 64,
+        contract_fingerprint=str(CONTRACTS.registry_fingerprint()),
+        profile_fingerprint="",
+        compiler_build="test-build",
+        version=1,
+    )
+    path = store.path_for(ref.artifact_sha256)
+    await handler.db.upsert_playbook_artifact(
+        ref,
+        scope="system",
+        scope_identifier="",
+        path=path,
+        size_bytes=os.path.getsize(path),
+    )
+    await handler.db.set_playbook_activation(
+        playbook_id=definition.id,
+        scope="system",
+        scope_identifier="",
+        artifact_sha256=ref.artifact_sha256,
+        enabled=enabled,
+        activated_by="operator",
+        health=health,
+        reasons="[]",
+    )
+    return ref
+
+
+def _write_review(handler, ref, *, decision: str = "approved") -> None:
+    directory = handler.reviewed_root / PROBE_ID
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "review.md").write_text(
+        "---\n"
+        f"playbook_id: {PROBE_ID}\n"
+        f'artifact_sha256: "{ref.artifact_sha256}"\n'
+        f'source_sha256: "{ref.source_digest}"\n'
+        f"decision: {decision}\n"
+        'reviewed_by: "Jack Kern <operator@example.invalid>"\n'
+        'reviewed_at: "2026-09-03"\n'
+        "---\n\nbody\n",
+        encoding="utf-8",
+    )
+
+
+def _artifact_row(report: dict) -> dict:
+    return next(row for row in report["artifacts"] if row["playbook_id"] == PROBE_ID)
+
+
+async def test_release_check_reads_the_artifact_a_live_activation_names(handler):
+    """The regression: `artifact_sha256` is not a column on an activation row.
+
+    Reading it there yielded `None` for every row, so every enabled activation
+    was skipped and the release check passed by checking nothing.
+    """
+    definition = _probe_definition()
+    await _activate(handler, definition)
+
+    report = await handler._cmd_playbook_release_check({})
+
+    assert PROBE_ID in report["checked"]
+
+
+async def test_release_check_reports_drift_in_a_live_activation(handler):
+    stale_command = min(_probe_definition().compiled_against.commands)
+    commands = _current_commands(_probe_definition())
+    commands[stale_command] = "sha256:" + "d" * 64
+    await _activate(handler, _probe_definition(commands=commands))
+
+    report = await handler._cmd_playbook_release_check({})
+
+    assert report["success"] is False
+    row = next(entry for entry in report["stale"] if entry["playbook_id"] == PROBE_ID)
+    assert row["origin"] == "activation"
+    assert row["dependency"] == stale_command
+
+
+async def test_release_check_passes_a_live_activation_compiled_against_this_build(handler):
+    definition = _probe_definition(commands=_current_commands(_probe_definition()))
+    await _activate(handler, definition)
+
+    report = await handler._cmd_playbook_release_check({})
+
+    assert PROBE_ID in report["checked"]
+    assert [row for row in report["stale"] if row["playbook_id"] == PROBE_ID] == []
+
+
+async def test_release_check_ignores_a_disabled_activation(handler):
+    commands = _current_commands(_probe_definition())
+    commands[min(commands)] = "sha256:" + "d" * 64
+    await _activate(handler, _probe_definition(commands=commands), enabled=False)
+
+    report = await handler._cmd_playbook_release_check({})
+
+    assert PROBE_ID not in report["checked"]
+
+
+async def test_cutover_report_carries_both_hashes_for_a_live_activation(handler):
+    """`source_digest` lives on the artifact row, never on the activation row."""
+    ref = await _activate(handler, _probe_definition())
+
+    report = await handler._cmd_playbook_cutover_report({})
+
+    row = _artifact_row(report)
+    assert row["artifact_sha256"] == ref.artifact_sha256
+    assert row["source_sha256"] == ref.source_digest
+    assert row["activation_health"] == "ready"
+    assert row["scope"] == "system"
+
+
+async def test_cutover_report_blocks_when_no_review_names_the_live_artifact(handler):
+    await _activate(handler, _probe_definition())
+
+    report = await handler._cmd_playbook_cutover_report({})
+
+    row = _artifact_row(report)
+    assert row["reviewed_by"] is None and row["reviewed_at"] is None
+    assert report["rollback_ready"] is False
+    assert report["cutover_eligible"] is False
+    assert any("no recorded review" in reason for reason in report["blocking_reasons"])
+
+
+async def test_cutover_report_joins_the_recorded_review_of_the_live_artifact(handler):
+    ref = await _activate(handler, _probe_definition())
+    _write_review(handler, ref)
+
+    report = await handler._cmd_playbook_cutover_report({})
+
+    row = _artifact_row(report)
+    assert row["reviewed_by"] == "Jack Kern <operator@example.invalid>"
+    assert row["reviewed_at"] == "2026-09-03"
+    assert not any("no recorded review" in reason for reason in report["blocking_reasons"])
+
+
+async def test_cutover_report_ignores_a_review_of_different_bytes(handler):
+    """A review is evidence about specific bytes, not about a playbook id."""
+    ref = await _activate(handler, _probe_definition())
+    _write_review(handler, ref)
+    directory = handler.reviewed_root / PROBE_ID
+    directory.joinpath("review.md").write_text(
+        directory.joinpath("review.md")
+        .read_text(encoding="utf-8")
+        .replace(ref.artifact_sha256, "sha256:" + "f" * 64),
+        encoding="utf-8",
+    )
+
+    report = await handler._cmd_playbook_cutover_report({})
+
+    assert _artifact_row(report)["reviewed_by"] is None
+    assert any("no recorded review" in reason for reason in report["blocking_reasons"])
+
+
+async def test_cutover_report_ignores_a_rejected_review(handler):
+    ref = await _activate(handler, _probe_definition())
+    _write_review(handler, ref, decision="rejected")
+
+    report = await handler._cmd_playbook_cutover_report({})
+
+    assert _artifact_row(report)["reviewed_by"] is None
+    assert any("no recorded review" in reason for reason in report["blocking_reasons"])
+
+
+async def test_inventory_sees_the_source_drift_the_activation_row_cannot_show(handler):
+    """The same join: without it the inventory's drift branches never ran.
+
+    The probe activates `default-pipeline`'s installed source under an artifact
+    whose `source_digest` is not that file's hash, which is exactly the
+    "recompile and re-review" condition §3.7 must not let through.
+    """
+    definition = _probe_definition().model_copy(update={"id": "default-pipeline"})
+    from src.commands.contracts import CONTRACTS
+    from src.playbooks.artifact_store import ArtifactStore
+
+    store = ArtifactStore(handler.config.compiled_root, max_artifact_bytes=1_048_576)
+    ref = store.put(
+        definition,
+        source_digest="sha256:" + "e" * 64,
+        contract_fingerprint=str(CONTRACTS.registry_fingerprint()),
+        profile_fingerprint="",
+        compiler_build="test-build",
+        version=1,
+    )
+    path = store.path_for(ref.artifact_sha256)
+    await handler.db.upsert_playbook_artifact(
+        ref, scope="system", scope_identifier="", path=path, size_bytes=os.path.getsize(path)
+    )
+    await handler.db.set_playbook_activation(
+        playbook_id="default-pipeline",
+        scope="system",
+        scope_identifier="",
+        artifact_sha256=ref.artifact_sha256,
+        enabled=True,
+        activated_by="operator",
+        health="ready",
+        reasons="[]",
+    )
+
+    result = await handler._cmd_playbook_migration_inventory({})
+
+    entry = next(e for e in result["entries"] if e["playbook_id"] == "default-pipeline")
+    assert entry["artifact"]["artifact_sha256"] == ref.artifact_sha256
+    assert any(reason["code"] == "compile_question" for reason in entry["reasons"])
