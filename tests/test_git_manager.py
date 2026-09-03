@@ -148,6 +148,79 @@ class TestGitManager:
 
 
 class TestCommitAll:
+    def test_clean_tree_does_not_invoke_hooks(self, git_repo):
+        clone = pathlib.Path(git_repo["clone"])
+        hook = clone / ".git" / "hooks" / "pre-commit"
+        hook.write_text("#!/bin/sh\necho invoked > hook-ran\n")
+        hook.chmod(0o755)
+
+        assert GitManager().commit_all(str(clone), "nothing") is False
+        assert not (clone / "hook-ran").exists()
+
+    def test_native_hooks_run_once_and_cannot_commit_reserved_staging(self, git_repo):
+        clone = pathlib.Path(git_repo["clone"])
+        (clone / "work.txt").write_text("real work\n")
+        reserved = clone / ".aq" / "claim.json"
+        reserved.parent.mkdir()
+        reserved.write_text("daemon state\n")
+        pre_commit = clone / ".git" / "hooks" / "pre-commit"
+        pre_commit.write_text(
+            "#!/bin/sh\necho pre-commit >> hook.log\ngit add -f .aq/claim.json\n"
+        )
+        pre_commit.chmod(0o755)
+        commit_msg = clone / ".git" / "hooks" / "commit-msg"
+        commit_msg.write_text("#!/bin/sh\necho commit-msg >> hook.log\n")
+        commit_msg.chmod(0o755)
+
+        assert GitManager().commit_all(str(clone), "task work", exclude_plans=False)
+
+        assert (clone / "hook.log").read_text().splitlines() == ["pre-commit", "commit-msg"]
+        assert _git(["show", "--pretty=", "--name-only", "HEAD"], cwd=str(clone)) == "work.txt"
+        assert _git(["diff", "--cached", "--name-only"], cwd=str(clone)) == ""
+
+    def test_commit_msg_rejection_aborts_commit_after_invocation(self, git_repo):
+        clone = pathlib.Path(git_repo["clone"])
+        before = _git(["rev-parse", "HEAD"], cwd=str(clone))
+        (clone / "work.txt").write_text("real work\n")
+        commit_msg = clone / ".git" / "hooks" / "commit-msg"
+        commit_msg.write_text("#!/bin/sh\necho rejected >> hook.log\nexit 19\n")
+        commit_msg.chmod(0o755)
+
+        with pytest.raises(GitError):
+            GitManager().commit_all(str(clone), "task work", exclude_plans=False)
+
+        assert (clone / "hook.log").read_text().splitlines() == ["rejected"]
+        assert _git(["rev-parse", "HEAD"], cwd=str(clone)) == before
+
+    def test_failing_pre_commit_cleans_reserved_staging_only(self, git_repo):
+        clone = pathlib.Path(git_repo["clone"])
+        (clone / "work.txt").write_text("real work\n")
+        reserved = clone / ".aq" / "claim.json"
+        reserved.parent.mkdir()
+        reserved.write_text("daemon state\n")
+        pre_commit = clone / ".git" / "hooks" / "pre-commit"
+        pre_commit.write_text("#!/bin/sh\ngit add -f .aq/claim.json\nexit 23\n")
+        pre_commit.chmod(0o755)
+
+        with pytest.raises(GitError):
+            GitManager().commit_all(str(clone), "task work", exclude_plans=False)
+
+        assert _git(["diff", "--cached", "--name-only"], cwd=str(clone)) == "work.txt"
+        assert reserved.read_text() == "daemon state\n"
+
+    def test_no_verify_disables_every_commit_hook(self, git_repo):
+        clone = pathlib.Path(git_repo["clone"])
+        (clone / "work.txt").write_text("real work\n")
+        for name in ("pre-commit", "prepare-commit-msg", "commit-msg", "post-commit"):
+            hook = clone / ".git" / "hooks" / name
+            hook.write_text(f"#!/bin/sh\necho {name} >> hook.log\n")
+            hook.chmod(0o755)
+
+        assert GitManager().commit_all(
+            str(clone), "auto remediation", exclude_plans=False, no_verify=True
+        )
+        assert not (clone / "hook.log").exists()
+
     def test_pre_commit_hook_cannot_stage_daemon_state_in_unborn_repo(self, tmp_path):
         """The initial commit is safe when a hook force-stages daemon state."""
         repo = tmp_path / "unborn-hook"

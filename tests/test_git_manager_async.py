@@ -258,6 +258,84 @@ class TestAsyncCreateBranch:
 
 class TestAsyncCommitAll:
     @pytest.mark.asyncio
+    async def test_clean_tree_does_not_invoke_hooks(self, clone, mgr):
+        repo = pathlib.Path(clone)
+        hook = repo / ".git" / "hooks" / "pre-commit"
+        hook.write_text("#!/bin/sh\necho invoked > hook-ran\n")
+        hook.chmod(0o755)
+
+        assert await mgr.acommit_all(clone, "nothing") is False
+        assert not (repo / "hook-ran").exists()
+
+    @pytest.mark.asyncio
+    async def test_native_hooks_run_once_and_cannot_commit_reserved_staging(self, clone, mgr):
+        repo = pathlib.Path(clone)
+        (repo / "work.txt").write_text("real work\n")
+        reserved = repo / ".aq" / "claim.json"
+        reserved.parent.mkdir()
+        reserved.write_text("daemon state\n")
+        pre_commit = repo / ".git" / "hooks" / "pre-commit"
+        pre_commit.write_text(
+            "#!/bin/sh\necho pre-commit >> hook.log\ngit add -f .aq/claim.json\n"
+        )
+        pre_commit.chmod(0o755)
+        commit_msg = repo / ".git" / "hooks" / "commit-msg"
+        commit_msg.write_text("#!/bin/sh\necho commit-msg >> hook.log\n")
+        commit_msg.chmod(0o755)
+
+        assert await mgr.acommit_all(clone, "task work", exclude_plans=False)
+
+        assert (repo / "hook.log").read_text().splitlines() == ["pre-commit", "commit-msg"]
+        assert _git(["show", "--pretty=", "--name-only", "HEAD"], cwd=clone) == "work.txt"
+        assert _git(["diff", "--cached", "--name-only"], cwd=clone) == ""
+
+    @pytest.mark.asyncio
+    async def test_commit_msg_rejection_aborts_commit_after_invocation(self, clone, mgr):
+        repo = pathlib.Path(clone)
+        before = _git(["rev-parse", "HEAD"], cwd=clone)
+        (repo / "work.txt").write_text("real work\n")
+        commit_msg = repo / ".git" / "hooks" / "commit-msg"
+        commit_msg.write_text("#!/bin/sh\necho rejected >> hook.log\nexit 19\n")
+        commit_msg.chmod(0o755)
+
+        with pytest.raises(GitError):
+            await mgr.acommit_all(clone, "task work", exclude_plans=False)
+
+        assert (repo / "hook.log").read_text().splitlines() == ["rejected"]
+        assert _git(["rev-parse", "HEAD"], cwd=clone) == before
+
+    @pytest.mark.asyncio
+    async def test_failing_pre_commit_cleans_reserved_staging_only(self, clone, mgr):
+        repo = pathlib.Path(clone)
+        (repo / "work.txt").write_text("real work\n")
+        reserved = repo / ".aq" / "claim.json"
+        reserved.parent.mkdir()
+        reserved.write_text("daemon state\n")
+        pre_commit = repo / ".git" / "hooks" / "pre-commit"
+        pre_commit.write_text("#!/bin/sh\ngit add -f .aq/claim.json\nexit 23\n")
+        pre_commit.chmod(0o755)
+
+        with pytest.raises(GitError):
+            await mgr.acommit_all(clone, "task work", exclude_plans=False)
+
+        assert _git(["diff", "--cached", "--name-only"], cwd=clone) == "work.txt"
+        assert reserved.read_text() == "daemon state\n"
+
+    @pytest.mark.asyncio
+    async def test_no_verify_disables_every_commit_hook(self, clone, mgr):
+        repo = pathlib.Path(clone)
+        (repo / "work.txt").write_text("real work\n")
+        for name in ("pre-commit", "prepare-commit-msg", "commit-msg", "post-commit"):
+            hook = repo / ".git" / "hooks" / name
+            hook.write_text(f"#!/bin/sh\necho {name} >> hook.log\n")
+            hook.chmod(0o755)
+
+        assert await mgr.acommit_all(
+            clone, "auto remediation", exclude_plans=False, no_verify=True
+        )
+        assert not (repo / "hook.log").exists()
+
+    @pytest.mark.asyncio
     async def test_pre_commit_hook_cannot_stage_daemon_state(self, clone, mgr):
         """The async final commit cannot include state staged by a hook."""
         reserved = pathlib.Path(clone, ".aq/claim.json")

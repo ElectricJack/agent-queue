@@ -68,8 +68,11 @@ import json
 import logging
 import os
 import re
+import shlex
 import subprocess
+import tempfile
 from collections.abc import Callable
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -884,6 +887,19 @@ class GitManager:
         except GitError:
             return ""
 
+    def get_git_path(self, checkout_path: str, path: str) -> str:
+        """Resolve a Git-internal *path* to an absolute filesystem path."""
+        try:
+            return self._run(
+                ["rev-parse", "--path-format=absolute", "--git-path", path],
+                cwd=checkout_path,
+            )
+        except GitError:
+            git_path = self._run(["rev-parse", "--git-path", path], cwd=checkout_path)
+            return git_path if os.path.isabs(git_path) else os.path.abspath(
+                os.path.join(checkout_path, git_path)
+            )
+
     def get_changed_files(self, checkout_path: str, base_branch: str = "main") -> list[str]:
         try:
             output = self._run(["diff", "--name-only", base_branch], cwd=checkout_path)
@@ -909,6 +925,7 @@ class GitManager:
         ":(exclude).aq-worktree.json",
         ":(exclude).codex/**",
     ]
+    _COMMIT_HOOKS = ("pre-commit", "prepare-commit-msg", "commit-msg", "post-commit")
 
     @classmethod
     def _daemon_bookkeeping_paths(cls, cached_output: str) -> list[str]:
@@ -942,18 +959,6 @@ class GitManager:
                 "refusing to commit reserved daemon bookkeeping paths: " + ", ".join(paths)
             )
 
-    def _run_pre_commit_and_resanitize(self, checkout_path: str, *, no_verify: bool) -> None:
-        """Run the ordinary pre-commit hook once, then seal the commit index.
-
-        A hook may legitimately stage generated task files, so run it before
-        the final reserved-path check. The actual ``git commit`` is then
-        ``--no-verify`` so the hook cannot mutate the index after that check.
-        """
-        if not no_verify:
-            self._run(["hook", "run", "--ignore-missing", "pre-commit"], cwd=checkout_path)
-        self._unstage_daemon_bookkeeping(checkout_path)
-        self._refuse_cached_daemon_bookkeeping(checkout_path)
-
     async def _aunstage_daemon_bookkeeping(self, checkout_path: str) -> None:
         """Async counterpart to :meth:`_unstage_daemon_bookkeeping`."""
         await self._arun(
@@ -972,14 +977,42 @@ class GitManager:
                 "refusing to commit reserved daemon bookkeeping paths: " + ", ".join(paths)
             )
 
-    async def _arun_pre_commit_and_resanitize(
-        self, checkout_path: str, *, no_verify: bool
-    ) -> None:
-        """Async counterpart to :meth:`_run_pre_commit_and_resanitize`."""
-        if not no_verify:
-            await self._arun(["hook", "run", "--ignore-missing", "pre-commit"], cwd=checkout_path)
-        await self._aunstage_daemon_bookkeeping(checkout_path)
-        await self._arefuse_cached_daemon_bookkeeping(checkout_path)
+    @classmethod
+    @contextmanager
+    def _commit_hooks_overlay(cls, hooks_path: str, *, no_verify: bool):
+        """Yield a temporary hooks path that seals reserved index entries.
+
+        ``git commit`` still drives its normal hook lifecycle.  Each installed
+        user hook is delegated exactly once, and the wrappers for hooks that
+        run before the commit is finalized restore daemon-owned paths in the
+        index to ``HEAD`` before returning to Git.  An empty overlay makes
+        ``no_verify=True`` genuinely hook-free, including hook types that
+        Git's own ``--no-verify`` flag does not suppress.
+        """
+        original_dir = Path(hooks_path)
+        with tempfile.TemporaryDirectory(prefix="aq-commit-hooks-") as temp_dir:
+            overlay = Path(temp_dir)
+            if not no_verify:
+                for hook_name in cls._COMMIT_HOOKS:
+                    original = original_dir / hook_name
+                    if hook_name != "pre-commit" and not os.access(original, os.X_OK):
+                        continue
+                    delegate = ""
+                    if os.access(original, os.X_OK):
+                        delegate = f"{shlex.quote(str(original))} \"$@\" || status=$?\n"
+                    wrapper = (
+                        "#!/bin/sh\n"
+                        "status=0\n"
+                        f"{delegate}"
+                        "git reset -q HEAD -- .aq/ .aq-worktree.json .codex/\n"
+                        "cleanup_status=$?\n"
+                        'if test "$status" -ne 0; then exit "$status"; fi\n'
+                        'exit "$cleanup_status"\n'
+                    )
+                    target = overlay / hook_name
+                    target.write_text(wrapper, encoding="utf-8")
+                    target.chmod(0o700)
+            yield str(overlay)
 
     def commit_all(
         self,
@@ -1004,11 +1037,12 @@ class GitManager:
         should pass ``exclude_plans=False`` to ensure all changes are
         committed.
 
-        Pass ``no_verify=True`` to skip the preliminary pre-commit hook.
+        Pass ``no_verify=True`` to skip all commit hooks.
         This is intended for system-level auto-remediation commits where hook
-        failures would prevent workspace cleanup. The final commit always
-        uses ``--no-verify`` after reserved paths are rechecked, preventing a
-        hook from staging daemon state between that check and commit.
+        failures would prevent workspace cleanup. Otherwise ``git commit``
+        runs the repository's native commit hook lifecycle exactly once; a
+        temporary hooks overlay removes daemon-owned paths after each hook
+        before Git can finalize the commit.
         """
         self._unstage_daemon_bookkeeping(checkout_path)
         self._run(
@@ -1022,7 +1056,7 @@ class GitManager:
                     self._run(["reset", "HEAD", "--", pattern], cwd=checkout_path)
                 except GitError:
                     pass  # Not staged or doesn't exist — fine
-        self._run_pre_commit_and_resanitize(checkout_path, no_verify=no_verify)
+        self._refuse_cached_daemon_bookkeeping(checkout_path)
         # git diff --cached --quiet exits 1 if there are staged changes
         result = subprocess.run(
             ["git", "diff", "--cached", "--quiet"],
@@ -1035,8 +1069,16 @@ class GitManager:
             return False  # Nothing to commit
         if result.returncode != 1:
             raise GitError(f"git diff --cached --quiet failed: {result.stderr.strip()}")
-        commit_args = ["commit", "--no-verify", "-m", message]
-        self._run(commit_args, cwd=checkout_path)
+        hooks_path = self.get_git_path(checkout_path, "hooks")
+        with self._commit_hooks_overlay(hooks_path, no_verify=no_verify) as overlay:
+            commit_args = ["-c", f"core.hooksPath={overlay}", "commit", "-m", message]
+            if no_verify:
+                commit_args.insert(-2, "--no-verify")
+            try:
+                self._run(commit_args, cwd=checkout_path)
+            finally:
+                self._unstage_daemon_bookkeeping(checkout_path)
+                self._refuse_cached_daemon_bookkeeping(checkout_path)
         return True
 
     def create_pr(
@@ -1980,11 +2022,11 @@ class GitManager:
         ``exclude_plans=False`` for system-level operations that need
         to commit all changes including plan files.
 
-        Pass ``no_verify=True`` to skip the preliminary pre-commit hook.
+        Pass ``no_verify=True`` to skip all commit hooks.
         This is intended for system-level auto-remediation commits where hook
-        failures would prevent workspace cleanup. The final commit always
-        uses ``--no-verify`` after reserved paths are rechecked, preventing a
-        hook from staging daemon state between that check and commit.
+        failures would prevent workspace cleanup. Otherwise ``git commit``
+        runs the repository's native commit hook lifecycle exactly once while
+        daemon-owned paths are removed after every hook boundary.
 
         When *event_bus* is provided, a ``git.commit`` event is emitted
         after a successful commit with the commit hash, branch, changed
@@ -2008,7 +2050,7 @@ class GitManager:
                     await self._arun(["reset", "HEAD", "--", pattern], cwd=checkout_path)
                 except GitError:
                     pass
-        await self._arun_pre_commit_and_resanitize(checkout_path, no_verify=no_verify)
+        await self._arefuse_cached_daemon_bookkeeping(checkout_path)
         result = await self._arun_subprocess(
             ["git", "diff", "--cached", "--quiet"],
             cwd=checkout_path,
@@ -2018,8 +2060,16 @@ class GitManager:
             return False
         if result.returncode != 1:
             raise GitError(f"git diff --cached --quiet failed: {result.stderr.strip()}")
-        commit_args = ["commit", "--no-verify", "-m", message]
-        await self._arun(commit_args, cwd=checkout_path)
+        hooks_path = await self.aget_git_path(checkout_path, "hooks")
+        with self._commit_hooks_overlay(hooks_path, no_verify=no_verify) as overlay:
+            commit_args = ["-c", f"core.hooksPath={overlay}", "commit", "-m", message]
+            if no_verify:
+                commit_args.insert(-2, "--no-verify")
+            try:
+                await self._arun(commit_args, cwd=checkout_path)
+            finally:
+                await self._aunstage_daemon_bookkeeping(checkout_path)
+                await self._arefuse_cached_daemon_bookkeeping(checkout_path)
 
         # Emit git.commit event on success
         if event_bus is not None:
