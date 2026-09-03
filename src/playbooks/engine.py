@@ -34,20 +34,24 @@ from src.commands.contracts.models import OutcomeClass
 from src.playbooks.artifact_ref import ArtifactRef
 from src.playbooks.definition import (
     CommandStep,
+    ForEachStep,
     PlaybookDefinition,
     Rule,
+    WaitStep,
     step_targets,
 )
 from src.playbooks.executors import executor_for
 from src.playbooks.executors.base import (
     ENGINE_RESERVED_OUTCOMES,
     GOTO_CAPABLE_STEP_KINDS,
+    Cancellable,
     EngineServices,
     ExecutionMode,
     ExecutorResult,
     StepContext,
     StepControl,
 )
+from src.playbooks.executors.wait import WaitResumption, resolve_wait_result
 from src.playbooks.expressions import (
     ResolutionScope,
     ValueResolutionError,
@@ -56,12 +60,15 @@ from src.playbooks.expressions import (
 from src.playbooks.receipts import StepReceipt, idempotency_key, transition_id
 from src.playbooks.run_state import (
     DuplicateRun,
+    IllegalLifecycleTransition,
+    LoopFrame,
     RunLifecycle,
     RunSnapshot,
     SnapshotVersionConflict,
     StateLimitExceeded,
     bind_step_output,
 )
+from src.playbooks.waits import EMPTY_WAIT_CHANGES, WaitChangeSet, WaitClaim, WaitSpec
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +76,24 @@ logger = logging.getLogger(__name__)
 #: catch.  It fails the run rather than spinning: an engine that never
 #: returns is indistinguishable from a hung daemon.
 MAX_STEP_VISITS = 1000
+
+#: How long ``cancel`` waits for an in-flight executor to give the run back
+#: before it ends the run itself (§4.9).  Mirrors
+#: ``playbooks.cancellation_grace_seconds``, whose default this is; the engine
+#: takes the number rather than the config object, because an executor sees
+#: only :class:`EngineServices` and neither does the walk.
+DEFAULT_CANCELLATION_GRACE_SECONDS = 30.0
+
+#: ``receipt.result`` key carrying §4.9's ``acknowledged`` / ``grace_expired``
+#: discriminator.  It rides the receipt's own JSON projection rather than a
+#: new column: Package 4 owns no tables (§10), and the pair
+#: ``(receipt.cancelled_at, receipt.result[CANCELLATION_KEY])`` already says
+#: when the run stopped and whether the executor gave it back.
+CANCELLATION_KEY = "cancellation"
+
+#: The two values under :data:`CANCELLATION_KEY`.
+CANCELLATION_ACKNOWLEDGED = "acknowledged"
+CANCELLATION_GRACE_EXPIRED = "grace_expired"
 
 #: Bus events.  Package 7 reads the two run-level ones by name.
 EVENT_RUN_STARTED = "playbook.v2.run.started"
@@ -157,6 +182,14 @@ class RunOutcome:
     outcome: str
     snapshot: RunSnapshot | None = None
     receipts: tuple[StepReceipt, ...] = ()
+    #: Operator-facing refusal text, when there is one.  ``cancel`` on a
+    #: finished run reports it in V1's shape (``playbook_commands.py:544``) so
+    #: the command surface can hand the same sentence back and an operator
+    #: does not have to learn a second vocabulary for the same refusal.
+    error: str | None = None
+    #: §4.9's ``acknowledged`` / ``grace_expired``, when this outcome ended a
+    #: run by cancelling it.  Mirrors the receipt's own projection.
+    cancellation: str | None = None
 
 
 class InMemoryRunRecorder:
@@ -213,7 +246,59 @@ class _Attempt:
     error: str | None = None
     timed_out: bool = False
     cancelled_at: float | None = None
+    #: §4.9 — set only on the boundary that ends a cancelled run.
+    cancellation: str | None = None
     idempotency_key: str = ""
+    attempt: int = 1
+    iteration: int = -1
+    #: The suspension this boundary opens, and the wait changes that travel
+    #: with it.  Both live on the attempt so ``_commit`` stays the single
+    #: place that talks to the repository.
+    wait: WaitSpec | None = None
+    wait_changes: WaitChangeSet = EMPTY_WAIT_CHANGES
+    wait_id: str | None = None
+    loop_frame: LoopFrame | None = None
+    clear_loop: bool = False
+
+
+@dataclass(slots=True)
+class _RunControl:
+    """The in-process handle :meth:`PlaybookEngine.cancel` reaches a walk by.
+
+    Cancellation is the one operation that has to reach *inside* a step.  The
+    durable intent alone is what stops a live run overwriting a cancellation
+    (§3.4 step 2), but it does not stop the executor that is already running:
+    without a handle, a thirty-minute LLM step keeps its side effects going
+    for thirty minutes after the operator said stop.
+
+    Nothing here is durable, and nothing here decides anything.  A restart
+    drops the whole registry and the run is still ``cancelling`` in the
+    database, so the next boundary — in whichever process picks the run up —
+    reads the intent off the snapshot and ends it.  The handle only buys
+    promptness within one process.
+    """
+
+    run_id: str
+    #: Serialises the two writers of the cancellation boundary: the walk, when
+    #: its executor gives the run back, and ``cancel`` itself, when the grace
+    #: window expires first.  Exactly one of them writes it.
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    #: Set once that boundary is durable, by whichever side wrote it.
+    settled: asyncio.Event = field(default_factory=asyncio.Event)
+    #: What ``request_cancel`` wrote.  The walk adopts its version, because
+    #: recording the intent advanced the run row underneath the walk and a
+    #: boundary written against the pre-cancel version is a lost cancellation
+    #: reported as ``interrupted``.
+    cancel_snapshot: RunSnapshot | None = None
+    #: ``(executor, step, ctx)`` while a step is inside ``execute``.
+    in_flight: tuple[Any, Any, StepContext] | None = None
+    #: ``request_cancel`` has been delivered to the executor.  §4.9 allows the
+    #: engine at most one signal per in-flight step, so a second ``cancel``
+    #: call joins the first one's grace window instead of signalling again.
+    signalled: bool = False
+    cancellation: str | None = None
+    final: RunSnapshot | None = None
+    receipt: StepReceipt | None = None
 
 
 class PlaybookEngine:
@@ -227,12 +312,16 @@ class PlaybookEngine:
         waits: Any | None = None,
         activations: Any | None = None,
         max_step_visits: int = MAX_STEP_VISITS,
+        cancellation_grace_seconds: float = DEFAULT_CANCELLATION_GRACE_SECONDS,
     ) -> None:
         self.services = services
         self.runs = runs
         self.waits = waits
         self.activations = activations
         self.max_step_visits = max_step_visits
+        self.cancellation_grace_seconds = cancellation_grace_seconds
+        #: Live walks in *this* process, keyed by run id.  See :class:`_RunControl`.
+        self._live: dict[str, _RunControl] = {}
 
     # ------------------------------------------------------------------
     # §4.2 — dispatch
@@ -402,16 +491,35 @@ class PlaybookEngine:
             context=dict(snapshot.context) | self._resume_context(cause),
             updated_at=self.services.clock(),
         )
+        claim = self._claim_for_cause(snapshot, cause)
+        if claim is not None:
+            snapshot = replace(
+                snapshot, pending_wait_claims=snapshot.pending_wait_claims + (claim,)
+            )
         return await self._walk(snapshot, artifact, artifact_ref, principal, mode, repository)
 
     async def cancel(self, run_id: str, principal: Any, *, reason: str = "operator") -> RunOutcome:
-        """Record a cancellation intent durably.
+        """End a run, and mean it (§4.9).
 
-        The intent is durable *before* the engine has done anything about it,
-        which is what stops a live run from overwriting it (the failure the
-        V1 command documents in its own docstring).  Acknowledging an
-        in-flight executor within the grace window is T-9's, not this
-        commit's.
+        Four cases, and the enum is what separates them:
+
+        * **terminal** — refused, in V1's own sentence, because "cancel a
+          finished run" is a mistake worth naming rather than a no-op;
+        * **paused** — immediate.  One boundary carries the ``cancelled``
+          snapshot, its receipt and ``clear_run_waits``, so a durable wait
+          cannot outlive the run it was suspending and claim it back after a
+          restart;
+        * **running with nothing in flight** — the intent is written and the
+          walk's next boundary (§3.4 step 2) ends the run.  This is the half
+          that stops a live run overwriting a cancellation, which is the
+          failure ``playbook_commands.py:511-519`` documents about itself;
+        * **running with an executor in flight** — ``cancelling``, exactly one
+          ``request_cancel`` to a :class:`~...base.Cancellable` executor, and
+          ``cancelled`` on acknowledgement or when the grace window expires,
+          whichever comes first.
+
+        The intent is durable *before* any of that, so every case survives a
+        restart in the middle of it.
         """
         repository = self.runs
         if repository is None:
@@ -420,14 +528,206 @@ class PlaybookEngine:
         if snapshot is None:
             return RunOutcome(run_id, RunLifecycle.FAILED, "unknown_run")
         if snapshot.is_terminal:
-            return RunOutcome(run_id, snapshot.lifecycle, "already_terminal", snapshot)
-        updated = await repository.request_cancel(
-            run_id,
+            return self._already_terminal(snapshot)
+
+        if snapshot.lifecycle is RunLifecycle.PAUSED:
+            return await self._cancel_paused(snapshot, repository, principal, reason)
+
+        control = self._live.get(run_id)
+        # Already ``cancelling`` means the intent is durable and some caller
+        # is already inside the grace window.  Recording it a second time
+        # would advance the run row underneath that caller's walk, and the
+        # walk's own boundary would then lose its CAS.
+        if snapshot.lifecycle is not RunLifecycle.CANCELLING:
+            try:
+                snapshot = await self._request_cancel(
+                    repository, snapshot, reason=reason, principal=principal
+                )
+            except IllegalLifecycleTransition:
+                refreshed = await repository.load_run(run_id)
+                return self._already_terminal(refreshed or snapshot)
+        if control is None:
+            # No walk here.  Whichever process owns the run reads the intent
+            # off the snapshot at its next boundary.
+            return RunOutcome(run_id, snapshot.lifecycle, "cancel_requested", snapshot)
+        control.cancel_snapshot = snapshot
+
+        in_flight = control.in_flight
+        if in_flight is None and not control.signalled:
+            return RunOutcome(run_id, snapshot.lifecycle, "cancel_requested", snapshot)
+        if in_flight is not None and not control.signalled:
+            control.signalled = True
+            executor, step, ctx = in_flight
+            if isinstance(executor, Cancellable):
+                await executor.request_cancel(step, ctx)
+        return await self._await_cancellation(control, principal, repository)
+
+    async def _await_cancellation(
+        self, control: _RunControl, principal: Any, repository: Any
+    ) -> RunOutcome:
+        """Wait out §4.9's grace window, then end the run either way.
+
+        "Whichever first" is the whole point: an executor that acknowledges
+        writes the boundary itself from inside the walk, and one that does not
+        gets the boundary written *around* it here.  Both land on
+        ``cancelled``; only the receipt says which happened.
+        """
+        try:
+            await asyncio.wait_for(
+                control.settled.wait(), timeout=self.cancellation_grace_seconds
+            )
+        except TimeoutError:
+            await self._expire_grace(control, principal, repository)
+        snapshot = control.final
+        if snapshot is None:  # pragma: no cover - the two writers both set it
+            snapshot = control.cancel_snapshot
+        return RunOutcome(
+            control.run_id,
+            snapshot.lifecycle if snapshot else RunLifecycle.CANCELLED,
+            "cancelled",
+            snapshot,
+            (control.receipt,) if control.receipt else (),
+            cancellation=control.cancellation,
+        )
+
+    async def _expire_grace(
+        self, control: _RunControl, principal: Any, repository: Any
+    ) -> None:
+        """End the run without the executor's cooperation.
+
+        The step keeps running — the engine has no authority to kill work it
+        did not start, and pretending otherwise is how a half-cancelled side
+        effect gets attributed to nobody.  What it does own is the run: the
+        boundary is written here, and the walk finds the run already settled
+        when its executor eventually returns and writes nothing.
+        """
+        async with control.lock:
+            if control.settled.is_set():
+                return
+            in_flight = control.in_flight
+            base = control.cancel_snapshot
+            if in_flight is None or base is None:  # pragma: no cover - defensive
+                return
+            _executor, step, ctx = in_flight
+            attempt = self._cancellation_attempt(base, step, ctx.step_id, principal)
+            await self._commit_cancellation(
+                attempt,
+                ctx.artifact_ref,
+                repository,
+                control,
+                cancellation=CANCELLATION_GRACE_EXPIRED,
+            )
+
+    async def _cancel_paused(
+        self, snapshot: RunSnapshot, repository: Any, principal: Any, reason: str
+    ) -> RunOutcome:
+        """§4.9's paused row: one boundary, one receipt, waits deregistered.
+
+        The wait has to go in the *same* transaction as the terminal snapshot.
+        A cancelled run whose ``playbook_waits`` row is still ``active`` is
+        claimable by a later event, and after a restart nothing remembers that
+        the run it points at is over.
+        """
+        try:
+            artifact_ref = await self._ref_for(snapshot)
+            artifact = self._load(artifact_ref)
+            step_id = snapshot.current_step_id or ""
+            step = artifact.steps[step_id]
+        except (RuntimeError, KeyError, FileNotFoundError):
+            # No artifact, no step kind, no receipt.  The run still has to
+            # stop, and the repository's own cancel clears the waits, so the
+            # degradation is the receipt rather than the cancellation.
+            logger.warning(
+                "V2 run %s cancelled without a receipt: its artifact is unreadable",
+                snapshot.run_id,
+            )
+            updated = await self._request_cancel(
+                repository, snapshot, reason=reason, principal=principal
+            )
+            return RunOutcome(snapshot.run_id, updated.lifecycle, "cancelled", updated)
+
+        attempt = self._cancellation_attempt(snapshot, step, step_id, principal)
+        attempt.wait_changes = WaitChangeSet(clear_run_waits=True)
+        attempt.error = f"cancelled: {reason}"
+        committed, receipt, _outcome = await self._commit_cancellation(
+            attempt,
+            artifact_ref,
+            repository,
+            None,
+            cancellation=CANCELLATION_ACKNOWLEDGED,
+        )
+        return RunOutcome(
+            snapshot.run_id,
+            committed.lifecycle,
+            "cancelled",
+            committed,
+            (receipt,) if receipt else (),
+            cancellation=CANCELLATION_ACKNOWLEDGED,
+        )
+
+    @staticmethod
+    async def _request_cancel(
+        repository: Any, snapshot: RunSnapshot, *, reason: str, principal: Any
+    ) -> RunSnapshot:
+        return await repository.request_cancel(
+            snapshot.run_id,
             expected_version=snapshot.version,
             reason=reason,
             requested_by=getattr(principal, "describe", lambda: "operator")(),
         )
-        return RunOutcome(run_id, updated.lifecycle, "cancel_requested", updated)
+
+    @staticmethod
+    def _already_terminal(snapshot: RunSnapshot) -> RunOutcome:
+        """V1's refusal, verbatim — ``playbook_commands.py:544``."""
+        return RunOutcome(
+            snapshot.run_id,
+            snapshot.lifecycle,
+            "already_terminal",
+            snapshot,
+            error=f"Run '{snapshot.run_id}' already {snapshot.lifecycle.value}",
+        )
+
+    def _cancellation_attempt(
+        self, snapshot: RunSnapshot, step: Any, step_id: str, principal: Any
+    ) -> _Attempt:
+        iteration = self._iteration_of(snapshot, step_id)
+        now = self.services.clock()
+        return _Attempt(
+            snapshot=replace(
+                snapshot, cancel_requested_at=snapshot.cancel_requested_at or now
+            ),
+            step_id=step_id,
+            step=step,
+            started_at=now,
+            principal=principal,
+            iteration=iteration,
+            attempt=self._next_attempt(snapshot, step_id, iteration),
+        )
+
+    async def _commit_cancellation(
+        self,
+        attempt: _Attempt,
+        artifact_ref: ArtifactRef,
+        repository: Any,
+        control: _RunControl | None,
+        *,
+        cancellation: str,
+    ) -> tuple[RunSnapshot, StepReceipt | None, str]:
+        """The one boundary that ends a cancelled run."""
+        attempt.outcome = "cancelled"
+        attempt.lifecycle = RunLifecycle.CANCELLED
+        attempt.cancelled_at = attempt.started_at
+        attempt.cancellation = cancellation
+        attempt.receipt_result = dict(attempt.receipt_result) | {
+            CANCELLATION_KEY: cancellation
+        }
+        committed, receipt, outcome = await self._commit(attempt, artifact_ref, repository)
+        if control is not None:
+            control.final = committed
+            control.receipt = receipt
+            control.cancellation = cancellation
+            control.settled.set()
+        return committed, receipt, outcome
 
     # ------------------------------------------------------------------
     # The walk
@@ -445,6 +745,41 @@ class PlaybookEngine:
         receipts: list[StepReceipt] = []
         visits = 0
         outcome = "completed"
+        control: _RunControl | None = None
+        if mode is ExecutionMode.LIVE:
+            # Only a live walk is cancellable: dry-run and shadow write
+            # nothing, so there is nothing to stop and no repository to stop
+            # it through.
+            control = _RunControl(snapshot.run_id)
+            self._live[snapshot.run_id] = control
+        try:
+            return await self._walk_steps(
+                snapshot,
+                artifact,
+                artifact_ref,
+                principal,
+                mode,
+                repository,
+                receipts,
+                visits,
+                outcome,
+            )
+        finally:
+            if control is not None and self._live.get(snapshot.run_id) is control:
+                del self._live[snapshot.run_id]
+
+    async def _walk_steps(
+        self,
+        snapshot: RunSnapshot,
+        artifact: PlaybookDefinition,
+        artifact_ref: ArtifactRef,
+        principal: Any,
+        mode: ExecutionMode,
+        repository: Any,
+        receipts: list[StepReceipt],
+        visits: int,
+        outcome: str,
+    ) -> RunOutcome:
         while not snapshot.is_terminal and snapshot.lifecycle is RunLifecycle.RUNNING:
             visits += 1
             if visits > self.max_step_visits:
@@ -460,6 +795,12 @@ class PlaybookEngine:
             if receipt is not None:
                 receipts.append(receipt)
                 await self._emit(EVENT_STEP_COMPLETED, snapshot, step_id=receipt.step_id)
+            if snapshot.lifecycle is RunLifecycle.PAUSED and snapshot.pending_wait_claims:
+                # Registration and inbox ingestion serialize per playbook, so
+                # an event that arrived first is consumed *inside* the same
+                # boundary that opened the wait and handed back on the
+                # snapshot.  Sleeping on it would lose the only delivery.
+                snapshot = replace(snapshot, lifecycle=RunLifecycle.RUNNING)
         await self._emit(EVENT_RUN_FINISHED, snapshot, outcome=outcome)
         return RunOutcome(snapshot.run_id, snapshot.lifecycle, outcome, snapshot, tuple(receipts))
 
@@ -484,22 +825,35 @@ class PlaybookEngine:
                 snapshot, repository, "contract_violation", f"step {step_id!r} is not in the artifact"
             )
         step = artifact.steps[step_id]
+        iteration = self._iteration_of(snapshot, step_id)
         attempt = _Attempt(
             snapshot=snapshot,
             step_id=step_id,
             step=step,
             started_at=self.services.clock(),
             principal=principal,
+            iteration=iteration,
+            attempt=self._next_attempt(snapshot, step_id, iteration),
         )
-        attempt.idempotency_key = idempotency_key(snapshot.run_id, step_id, -1, 1)
+        attempt.idempotency_key = idempotency_key(
+            snapshot.run_id, step_id, iteration, attempt.attempt
+        )
 
         # 2. Cancellation — read from the snapshot the engine is about to
         #    write, so a live run cannot overwrite a cancellation.
-        if snapshot.cancel_requested_at is not None:
-            attempt.outcome = "cancelled"
-            attempt.lifecycle = RunLifecycle.CANCELLED
-            attempt.cancelled_at = attempt.started_at
-            return await self._commit(attempt, artifact_ref, repository)
+        control = self._live.get(snapshot.run_id)
+        settled = self._settled_cancellation(control)
+        if settled is not None:
+            return settled
+        cancelled = self._pending_cancellation(snapshot, control)
+        if cancelled is not None:
+            return await self._commit_cancellation(
+                self._cancellation_attempt(cancelled, step, step_id, principal),
+                artifact_ref,
+                repository,
+                control,
+                cancellation=CANCELLATION_ACKNOWLEDGED,
+            )
 
         # 3. Deadline.
         if snapshot.deadline_at is not None and attempt.started_at >= snapshot.deadline_at:
@@ -509,7 +863,14 @@ class PlaybookEngine:
             attempt.error = "run deadline fired"
             return await self._commit(attempt, artifact_ref, repository)
 
-        scope = self._scope(snapshot)
+        # A suspended run resumes *without* re-running its wait executor:
+        # re-executing would compute a second correlation key and open a
+        # second wait for one suspension.  The resumption is durable state
+        # on the snapshot, so this branch is identical after a restart.
+        if isinstance(step, WaitStep) and snapshot.wait is not None:
+            return await self._resume_wait(attempt, step, artifact, artifact_ref, repository)
+
+        scope = self._scope(snapshot, artifact)
 
         # 4. Resolve inputs.  A miss is an outcome *before* the executor
         #    runs; the engine never injects a marker and never coerces to "".
@@ -541,16 +902,19 @@ class PlaybookEngine:
             scope=scope,
             services=self.services,
             mode=mode,
-            attempt=1,
-            iteration_index=snapshot.loop.index if snapshot.loop else None,
+            attempt=attempt.attempt,
+            iteration_index=None if iteration < 0 else iteration,
             run_deadline_at=snapshot.deadline_at,
             cancel_requested=snapshot.cancel_requested_at is not None,
             inputs=inputs,
+            loop_frame=snapshot.loop,
         )
 
         # 6. Execute.  An unexpected exception is runtime_error carrying the
         #    exception *type*; a message can carry an argument value.
         executor = executor_for(step.type, mode)
+        if control is not None:
+            control.in_flight = (executor, step, ctx)
         try:
             result = await executor.execute(step, ctx)
         except asyncio.CancelledError:
@@ -561,6 +925,29 @@ class PlaybookEngine:
                 outcome="runtime_error",
                 diagnostics=(type(exc).__name__,),
             )
+        finally:
+            if control is not None:
+                control.in_flight = None
+
+        # §4.9 — a cancellation that arrived while the step was in flight.
+        # The result is not routed: the executor gave the run back, and this
+        # boundary is the cancellation's rather than the step's.  Under the
+        # control's lock, because ``cancel`` writes the same boundary when its
+        # grace window expires first and exactly one of them may.
+        if control is not None and control.cancel_snapshot is not None:
+            async with control.lock:
+                settled = self._settled_cancellation(control)
+                if settled is not None:
+                    return settled
+                cancelled = self._pending_cancellation(snapshot, control)
+                if cancelled is not None:
+                    return await self._commit_cancellation(
+                        self._cancellation_attempt(cancelled, step, step_id, principal),
+                        artifact_ref,
+                        repository,
+                        control,
+                        cancellation=CANCELLATION_ACKNOWLEDGED,
+                    )
 
         attempt.receipt_inputs = result.receipt_inputs
         attempt.receipt_result = result.receipt_result
@@ -577,6 +964,8 @@ class PlaybookEngine:
 
         attempt.control = result.control
         attempt.outcome = result.outcome
+        attempt.loop_frame = result.loop_frame
+        attempt.clear_loop = result.clear_loop
 
         # 8. Bind, then the size checks.
         if result.value is not None and getattr(step, "save_result_as", None):
@@ -607,6 +996,19 @@ class PlaybookEngine:
                 snapshot.rule_id, step_id, result.outcome
             )
             return await self._commit(attempt, artifact_ref, repository)
+        if result.control is StepControl.SUSPEND:
+            # One transaction: the paused snapshot, the receipt, and the
+            # registration that scans the durable inbox for an event that
+            # already arrived.  Nothing between deciding to wait and being
+            # findable by an event is observable.
+            # ``validate_control`` already proved a SUSPEND carries one.
+            wait = result.wait
+            attempt.lifecycle = RunLifecycle.PAUSED
+            attempt.wait = wait
+            attempt.wait_id = wait.wait_id
+            attempt.wait_changes = WaitChangeSet(register=(wait,))
+            attempt.next_step_id = attempt.step_id
+            return await self._commit(attempt, artifact_ref, repository)
         if result.control is StepControl.UNRESOLVED:
             attempt.lifecycle = RunLifecycle.PAUSED
             attempt.error = attempt.error or "unresolved boundary"
@@ -616,6 +1018,45 @@ class PlaybookEngine:
             attempt.outcome = "operator_decision_required"
             return await self._commit(attempt, artifact_ref, repository)
         return await self._advance_on_outcome(attempt, artifact, artifact_ref, repository)
+
+    @staticmethod
+    def _pending_cancellation(
+        snapshot: RunSnapshot, control: _RunControl | None
+    ) -> RunSnapshot | None:
+        """The snapshot this boundary must end the run from, or ``None``.
+
+        Two sources, and the second is why ``cancel`` needs a handle at all.
+        The snapshot's own ``cancel_requested_at`` covers a run that was
+        already cancelled when the walk picked it up — after a restart, say.
+        ``control.cancel_snapshot`` covers the intent recorded *during* this
+        walk, and it is returned in preference because recording it advanced
+        the run row: a boundary written against the version the walk still
+        holds would lose the CAS and be reported as ``interrupted`` rather
+        than as the cancellation it is.
+        """
+        if control is not None and control.cancel_snapshot is not None:
+            fresh = control.cancel_snapshot
+            # The walk's in-memory context (a resume overlay, say) is never
+            # durable, so it is the version and the intent that are adopted,
+            # not the whole row.
+            return replace(
+                snapshot,
+                version=fresh.version,
+                lifecycle=fresh.lifecycle,
+                cancel_requested_at=fresh.cancel_requested_at,
+            )
+        if snapshot.cancel_requested_at is not None:
+            return snapshot
+        return None
+
+    @staticmethod
+    def _settled_cancellation(
+        control: _RunControl | None,
+    ) -> tuple[RunSnapshot, StepReceipt | None, str] | None:
+        """``cancel`` already ended this run; the walk writes nothing more."""
+        if control is None or not control.settled.is_set() or control.final is None:
+            return None
+        return control.final, None, "cancelled"
 
     def validate_control(self, step: Any, result: ExecutorResult) -> str | None:
         """§3.1.3 and §3.4 step 7 — control/field coherence.
@@ -690,10 +1131,15 @@ class PlaybookEngine:
             RunLifecycle.TIMED_OUT,
             RunLifecycle.CANCELLED,
         }
+        attempts = dict(snapshot.attempts)
+        attempts[f"{attempt.step_id}:{attempt.iteration}"] = attempt.attempt
         next_snapshot = replace(
             snapshot,
             lifecycle=attempt.lifecycle,
             current_step_id=attempt.next_step_id or attempt.step_id,
+            wait=self._next_wait(attempt),
+            loop=self._next_loop(attempt),
+            attempts=attempts,
             error=attempt.error,
             error_code=(
                 attempt.outcome if attempt.outcome in ENGINE_RESERVED_OUTCOMES else None
@@ -714,8 +1160,8 @@ class PlaybookEngine:
             # ``commit_boundary`` advances the snapshot itself, and a receipt
             # naming the pre-boundary version is a ``RunIdentityMismatch``.
             snapshot_version=snapshot.version + 1,
-            iteration=snapshot.loop.index if snapshot.loop else -1,
-            attempt=1,
+            iteration=attempt.iteration,
+            attempt=attempt.attempt,
             idempotency_key=attempt.idempotency_key,
             contract_fingerprint=self._contract_fingerprint(attempt.step),
             principal=self._principal_projection(attempt.principal),
@@ -726,13 +1172,16 @@ class PlaybookEngine:
             error_code=(
                 attempt.outcome if attempt.outcome in ENGINE_RESERVED_OUTCOMES else None
             ),
+            wait_id=attempt.wait_id,
             timed_out=attempt.timed_out,
             cancelled_at=attempt.cancelled_at,
             completed_at=now,
             duration_ms=max(0, int((now - attempt.started_at) * 1000)),
         )
         try:
-            committed = await repository.commit_boundary(next_snapshot, receipt)
+            committed = await repository.commit_boundary(
+                next_snapshot, receipt, attempt.wait_changes
+            )
         except SnapshotVersionConflict:
             # Two writers at one boundary means two engines think they own
             # the run.  The write is never retried: silently merging them is
@@ -789,8 +1238,193 @@ class PlaybookEngine:
         return failed, receipt, outcome
 
     # ------------------------------------------------------------------
+    # §4.6 — the suspension's other half
+    # ------------------------------------------------------------------
+
+    async def _resume_wait(
+        self,
+        attempt: _Attempt,
+        step: WaitStep,
+        artifact: PlaybookDefinition,
+        artifact_ref: ArtifactRef,
+        repository: Any,
+    ) -> tuple[RunSnapshot, StepReceipt | None, str]:
+        """Turn a claimed wait into an outcome, in one boundary.
+
+        The wait is deregistered in the *same* change set that advances the
+        run, so there is no window in which a run has moved on while its wait
+        is still claimable — which is what would let one suspension resume
+        twice.
+        """
+        snapshot = attempt.snapshot
+        wait = snapshot.wait
+        if wait is None:  # pragma: no cover - the caller checked
+            return replace(snapshot, lifecycle=RunLifecycle.PAUSED), None, "paused"
+        claim = next(
+            (c for c in snapshot.pending_wait_claims if c.wait_id == wait.wait_id), None
+        )
+        if claim is None:
+            # Resumed with nothing to resume on.  No boundary, no receipt:
+            # the durable row still says paused and must keep saying so.
+            return replace(snapshot, lifecycle=RunLifecycle.PAUSED), None, "paused"
+
+        remaining = tuple(c for c in snapshot.pending_wait_claims if c.wait_id != wait.wait_id)
+        attempt.snapshot = replace(snapshot, pending_wait_claims=remaining)
+        attempt.wait_id = wait.wait_id
+        attempt.wait_changes = WaitChangeSet(clear_wait_ids=(wait.wait_id,))
+
+        outcome, value = resolve_wait_result(
+            step,
+            WaitResumption(
+                expired=claim.expired,
+                event_type=claim.event_type,
+                payload=dict(claim.event_fields),
+                at=claim.claimed_at,
+            ),
+        )
+        attempt.outcome = outcome
+        if outcome == "timed_out":
+            attempt.timed_out = True
+            attempt.error = f"{self._deadline_that_fired(snapshot, step, wait)} deadline fired"
+        elif outcome == "contract_violation":
+            attempt.error = "the resolution is not one of the gate's declared outcomes"
+
+        if value is not None and step.save_result_as:
+            try:
+                attempt.snapshot = bind_step_output(
+                    attempt.snapshot,
+                    step_id=step.save_result_as,
+                    value=value,
+                    declared=value.keys(),
+                )
+            except StateLimitExceeded:
+                attempt.outcome = "state_limit_exceeded"
+                attempt.error = "the wait result exceeds the state limit"
+        return await self._advance_on_outcome(attempt, artifact, artifact_ref, repository)
+
+    def _deadline_that_fired(
+        self, snapshot: RunSnapshot, step: WaitStep, wait: WaitSpec
+    ) -> str:
+        """Which deadline expired — the wait's own, or the whole run's.
+
+        ``WaitSpec.deadline_at`` is already the earlier of the two, so the
+        answer is recovered by asking what the wait's own timeout would have
+        been.  There is no ``deadline_fired`` receipt column (§2.5 item 2), so
+        it lands in ``error`` beside ``timed_out``.
+        """
+        if snapshot.deadline_at is None:
+            return "wait"
+        if step.timeout_seconds is None:
+            return "run"
+        own = wait.created_at + step.timeout_seconds
+        return "run" if snapshot.deadline_at <= own else "wait"
+
+    @staticmethod
+    def _claim_for_cause(snapshot: RunSnapshot, cause: ResumeCause) -> WaitClaim | None:
+        """Express a resume cause as the claim the wait path already consumes.
+
+        One durable channel for all of them: an inbox match consumed inside
+        the registration transaction arrives as a ``WaitClaim`` on the
+        snapshot, and an externally delivered resume becomes the same shape
+        here.  Two channels would mean two resume paths and one of them
+        would eventually stop being restart-safe.
+        """
+        wait = snapshot.wait
+        if wait is None:
+            return None
+        payload: dict[str, Any] = {}
+        expired = False
+        event_type = ""
+        event_id: str | None = None
+        if isinstance(cause, EventArrived):
+            payload = dict(cause.payload)
+            event_type = str(payload.get("event_type") or wait.event_type)
+            event_id = cause.event_id
+        elif isinstance(cause, TimerFired):
+            if cause.wait_id and cause.wait_id != wait.wait_id:
+                return None
+            expired = True
+        elif isinstance(cause, HumanDecision):
+            payload = {"resolution": cause.decision, **dict(cause.payload)}
+        elif isinstance(cause, ChildTaskCompleted):
+            payload = {"task_id": cause.task_id, "status": cause.status}
+        else:
+            return None
+        return WaitClaim(
+            wait_id=wait.wait_id,
+            run_id=snapshot.run_id,
+            step_id=wait.step_id,
+            iteration=wait.iteration,
+            kind=wait.kind,
+            snapshot_version=snapshot.version,
+            claimed_event_id=event_id,
+            claimed_at=snapshot.updated_at,
+            expired=expired,
+            event_type=event_type,
+            event_fields=payload,
+        )
+
+    # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _iteration_of(snapshot: RunSnapshot, step_id: str) -> int:
+        """The loop iteration a step attempt belongs to.
+
+        The loop *node* itself is not inside its own body, but it is reached
+        once per iteration, so its receipts carry the index they closed —
+        which is also what keeps their four-part attempt keys distinct.
+        """
+        return -1 if snapshot.loop is None else snapshot.loop.index
+
+    @staticmethod
+    def _next_attempt(snapshot: RunSnapshot, step_id: str, iteration: int) -> int:
+        return int(snapshot.attempts.get(f"{step_id}:{iteration}", 0)) + 1
+
+    @staticmethod
+    def _next_wait(attempt: _Attempt) -> WaitSpec | None:
+        if attempt.wait is not None:
+            return attempt.wait
+        changes = attempt.wait_changes
+        if changes.clear_wait_ids or changes.clear_run_waits:
+            return None
+        return attempt.snapshot.wait
+
+    def _next_loop(self, attempt: _Attempt) -> LoopFrame | None:
+        """The loop frame this boundary persists (§4.7).
+
+        Three cases, in order: the loop ended, the loop executor computed the
+        next frame, or a body step transitioned *back into* the loop node —
+        which is how an author says "this outcome is per-item", and is where
+        the iteration's verdict is recorded so the loop executor never has to
+        re-derive it.
+        """
+        if attempt.clear_loop:
+            return None
+        if attempt.loop_frame is not None:
+            return attempt.loop_frame
+        frame = attempt.snapshot.loop
+        if frame is None or attempt.next_step_id != frame.step_id:
+            return frame
+        if attempt.step_id == frame.step_id:
+            return frame
+        return replace(
+            frame,
+            last_step_id=attempt.step_id,
+            last_outcome=attempt.outcome,
+            last_failed=self._is_iteration_failure(attempt),
+        )
+
+    def _is_iteration_failure(self, attempt: _Attempt) -> bool:
+        """§4.7's locked classification of the edge that re-entered the loop."""
+        if attempt.outcome in ENGINE_RESERVED_OUTCOMES:
+            return True
+        return (
+            self._declared_classification(attempt.step, attempt.outcome)
+            is OutcomeClass.FAILURE
+        )
+
 
     def _repository(self, mode: ExecutionMode) -> Any:
         """§3.3.5 — the real repository is passed only for LIVE."""
@@ -907,19 +1541,37 @@ class PlaybookEngine:
             return {"resume_resolution": cause.kind}
         return {}
 
-    @staticmethod
-    def _scope(snapshot: RunSnapshot) -> ResolutionScope:
-        loop: dict[str, Any] = {}
-        if snapshot.loop is not None:
-            frame = snapshot.loop
-            loop[frame.item_binding] = None
-            loop[f"{frame.item_binding}#index"] = frame.index
-        return ResolutionScope(
+    def _scope(
+        self, snapshot: RunSnapshot, artifact: PlaybookDefinition, attempt: int = 1
+    ) -> ResolutionScope:
+        """The four namespaces, with the live loop item in its own one.
+
+        The item is re-resolved from the pinned collection rather than stored
+        on the frame: the frame carries the collection's *digest*, so a
+        collection that changed under an active loop is a contract violation
+        the executor reports, not a stale copy the scope quietly serves.
+        """
+        scope = ResolutionScope(
             event=dict(snapshot.event),
-            context=dict(snapshot.context) | {"run_id": snapshot.run_id, "attempt": 1},
+            context=dict(snapshot.context) | {"run_id": snapshot.run_id, "attempt": attempt},
             bindings=dict(snapshot.bindings),
-            loop=loop,
+            loop={},
         )
+        frame = snapshot.loop
+        if frame is None:
+            return scope
+        loop_step = artifact.steps.get(frame.step_id)
+        if not isinstance(loop_step, ForEachStep):
+            return scope
+        try:
+            collection = resolve_value(loop_step.collection, scope)
+        except ValueResolutionError:
+            # The loop executor reports it as ``input_resolution_failed`` on
+            # its own next boundary; the scope's job is not to raise here.
+            return scope
+        if not isinstance(collection, list) or not 0 <= frame.index < len(collection):
+            return scope
+        return scope.with_loop_item(frame.item_binding, collection[frame.index], frame.index)
 
     def _authorized(self, step: CommandStep, principal: Any) -> bool:
         resolver = self.services.resolver
@@ -983,7 +1635,12 @@ class PlaybookEngine:
             return "timeout"
         if attempt.outcome == "cancelled":
             return "cancelled"
-        if attempt.control is StepControl.UNRESOLVED:
+        if attempt.control in (StepControl.UNRESOLVED, StepControl.SUSPEND):
+            # A suspension decided nothing: no edge was selected and no
+            # binding was written, and the resume boundary writes the receipt
+            # that carries the wait's real outcome.  ``RECEIPT_OUTCOMES`` has
+            # no "paused" member (§2.5 item 2), and calling a pause a success
+            # would make every open wait look like a finished step.
             return "skipped"
         if attempt.outcome in ENGINE_RESERVED_OUTCOMES:
             return "failure"
@@ -1047,6 +1704,47 @@ class PlaybookEngine:
         )
 
 
+class WaitScheduler:
+    """Owns per-run wait deadlines — Package 4 child plan §4.6.
+
+    Deliberately **not** ``TimerService``.  ``src/timer_service.py`` schedules
+    playbook *triggers*: its entries are cron-like, operator-visible and
+    survive as configuration.  A per-run wait is none of those — it belongs to
+    one suspended run and disappears with it — so synthesising a trigger for
+    each one would put run state into the operator's trigger surface and make
+    a cancelled run's timer somebody's to clean up.
+
+    ``expire_due`` claims each due wait with the same compare-and-set an
+    event claim uses, so a wait that an event claims in the same instant is
+    expired by nobody and resumes exactly once.
+    """
+
+    def __init__(self, engine: PlaybookEngine, waits: Any, principal: Any) -> None:
+        self._engine = engine
+        self._waits = waits
+        self._principal = principal
+
+    async def tick(self, now: float | None = None, *, limit: int = 100) -> tuple[str, ...]:
+        """Resume every run whose wait deadline has passed.  Returns the ids."""
+        if self._waits is None:
+            return ()
+        moment = self._engine.services.clock() if now is None else now
+        resumed: list[str] = []
+        for claim in await self._waits.expire_due(moment, limit=limit):
+            try:
+                await self._engine.resume(
+                    claim.run_id, TimerFired(claim.wait_id), self._principal
+                )
+            except Exception:
+                # One stuck run never stalls the sweep.
+                logger.exception(
+                    "V2 wait %s could not resume run %s", claim.wait_id, claim.run_id
+                )
+                continue
+            resumed.append(claim.run_id)
+        return tuple(resumed)
+
+
 __all__ = [
     "ChildTaskCompleted",
     "DispatchResult",
@@ -1059,4 +1757,5 @@ __all__ = [
     "ResumeCause",
     "RunOutcome",
     "TimerFired",
+    "WaitScheduler",
 ]

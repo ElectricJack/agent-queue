@@ -1,0 +1,89 @@
+{
+  "schema_version": 2,
+  "id": "sequential-loop",
+  "version": 1,
+  "scope": {"type": "system"},
+  "source_hash": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+  "compiled_at": "2026-09-01T00:00:00Z",
+  "purpose": "routine",
+  "rules": [
+    {
+      "id": "sweep",
+      "name": "Sweep every downstream task",
+      "trigger": {"event_type": "spec.approved"},
+      "entry_step": "list-downstream",
+      "source": {"path": "system/playbooks/loops.md", "start_line": 10, "end_line": 12}
+    }
+  ],
+  "steps": {
+    "list-downstream": {
+      "type": "command",
+      "rule": "sweep",
+      "title": "List the downstream tasks",
+      "command": "list_tasks",
+      "inputs": {"project_id": {"type": "event_ref", "path": "project_id"}},
+      "save_result_as": "downstream",
+      "transitions": {"listed": "for-each-task", "runtime_error": "sweep-failed"},
+      "source": {"path": "system/playbooks/loops.md", "start_line": 13, "end_line": 17}
+    },
+    "for-each-task": {
+      "type": "foreach",
+      "rule": "sweep",
+      "title": "For each downstream task",
+      "collection": {"type": "binding_ref", "binding": "downstream", "path": "tasks"},
+      "item_binding": "task",
+      "failure_policy": "collect",
+      "body_entry": "open-gate",
+      "continuation": "sweep-done",
+      "max_iterations": 500,
+      "save_result_as": "sweep_result",
+      "transitions": {
+        "completed": "sweep-done",
+        "failed": "sweep-failed",
+        "input_resolution_failed": "sweep-failed",
+        "contract_violation": "sweep-failed",
+        "state_limit_exceeded": "sweep-failed",
+        "runtime_error": "sweep-failed"
+      },
+      "source": {"path": "system/playbooks/loops.md", "start_line": 18, "end_line": 26}
+    },
+    "open-gate": {
+      "type": "command",
+      "rule": "sweep",
+      "title": "Open a gate for the item",
+      "command": "ensure_task",
+      "inputs": {
+        "project_id": {"type": "event_ref", "path": "project_id"},
+        "title": {
+          "type": "template",
+          "parts": [
+            {"type": "literal", "value": "Gate: "},
+            {"type": "loop_ref", "binding": "task", "path": "id"}
+          ]
+        }
+      },
+      "save_result_as": "gate",
+      "transitions": {
+        "created": "for-each-task",
+        "reused": "for-each-task",
+        "rejected": "for-each-task",
+        "runtime_error": "sweep-failed"
+      },
+      "source": {"path": "system/playbooks/loops.md", "start_line": 27, "end_line": 35}
+    },
+    "sweep-done": {
+      "type": "terminal",
+      "rule": "sweep",
+      "title": "Swept",
+      "outcome": "completed",
+      "source": {"path": "system/playbooks/loops.md", "start_line": 36, "end_line": 36}
+    },
+    "sweep-failed": {
+      "type": "terminal",
+      "rule": "sweep",
+      "title": "Sweep failed",
+      "outcome": "failed",
+      "source": {"path": "system/playbooks/loops.md", "start_line": 37, "end_line": 37}
+    }
+  }
+}
