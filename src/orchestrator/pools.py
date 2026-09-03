@@ -340,7 +340,8 @@ class PoolsMixin:
                 break
         if agent is None:
             agent = Agent(id=f"agent-{uuid.uuid4().hex[:12]}",
-                          name=f"{profile.id}-{uuid.uuid4().hex[:4]}", profile_id=profile.id)
+                          name=f"{profile.id}-{uuid.uuid4().hex[:4]}", profile_id=profile.id,
+                          origin="pool")
             worker_profile = resolve_agent_profile(agent, profiles) or profile
             mismatch = task_agent_mismatch(
                 requirement, agent, task_profile=profile, agent_profile=worker_profile,

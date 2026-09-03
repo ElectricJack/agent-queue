@@ -88,19 +88,28 @@ export function useDebouncedBusyPoolEntries(entries: PoolEntry[], delay = 1_000)
   return visible;
 }
 
-/** Profile IDs that run as pools anywhere. `pool_status` is the only source. */
+/**
+ * Profile IDs that run as pools anywhere. `pool_status` is the only source.
+ * This says how a *profile* is launched; it says nothing about whether one
+ * worker row is a pool instance — see `isPoolAgent`.
+ */
 export function poolProfileIds(pools: PoolStatusRow[]): Set<string> {
   return new Set(pools.map((pool) => pool.profile_id));
 }
 
 /**
- * A worker whose profile runs as a pool is a pool instance, not a fixed push
- * agent: `_launch_pool_session` mints (or reuses) an agent row per session, and
- * the push scheduler never routes work to a pool profile. Those rows are
- * reachable through their pool entry, so the flock lists them there instead.
+ * A pool instance is a row a pool minted (`origin: "pool"`, reused between
+ * sessions and idle in between) or any row a `lifecycle: pool` session
+ * currently owns — `_launch_pool_session` reserves an idle hand-made worker
+ * on a compatible profile just as readily. Either way the row is reachable
+ * through its pool entry, so the flock lists it there instead of beside the
+ * fixed workers. The profile id is not a signal: `pool_status` names every
+ * pool profile in every active project even at zero supply, and a worker
+ * someone added on that profile is a plain durable worker until a pool
+ * session takes it.
  */
-export function isPoolAgent(agent: FlockAgent, poolIds: Set<string>): boolean {
-  return poolIds.has(agent.profile_id);
+export function isPoolAgent(agent: FlockAgent): boolean {
+  return agent.origin === "pool" || agent.session_lifecycle === "pool";
 }
 
 export function poolQuarantineSeconds(pool: PoolStatusRow, now = Date.now() / 1000): number {
@@ -133,7 +142,6 @@ export function usePoolFlock() {
   const sessions = usePoolSessions();
   return {
     entries: poolEntries(pools.data ?? [], sessions.data ?? []),
-    poolIds: poolProfileIds(pools.data ?? []),
     isLoading: pools.isLoading,
     error: pools.error,
   };

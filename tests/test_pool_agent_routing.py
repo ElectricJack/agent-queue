@@ -139,3 +139,23 @@ async def test_pool_start_does_not_steal_an_interactive_sol_or_fall_back_to_tria
     assert await db.list_sessions(lifecycle="pool") == []
     assert (await db.get_session("interactive")).state == "running"
     assert (await db.get_workspace("ws")).locked_by_agent_id is None
+
+
+async def test_pool_start_marks_a_minted_worker_as_pool_origin_but_not_a_reused_one(pool_routing):
+    orch, db = pool_routing
+    await db.create_agent(Agent(id="sol", name="Deep Codex", profile_id="saved-codex"))
+    first = await launch(orch, db)
+    assert first is not None
+    assert (await db.get_session(first)).agent_id == "sol"
+    # The hand-made worker is a pool instance only while that session lives.
+    assert (await db.get_agent("sol")).origin == "manual"
+    # The first session holds the only workspace; give the pool room to grow.
+    await db.create_workspace(Workspace(
+        id="ws2", project_id="p", workspace_path=str(orch.config.workspace_dir) + "/ws2",
+        source_type=RepoSourceType.LINK, kind_id="project-repo",
+    ))
+    second = await launch(orch, db)
+    assert second is not None
+    minted = await db.get_agent((await db.get_session(second)).agent_id)
+    assert minted.id != "sol"
+    assert minted.origin == "pool"

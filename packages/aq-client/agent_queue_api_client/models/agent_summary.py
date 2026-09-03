@@ -39,6 +39,8 @@ class AgentSummary:
         session_id (None | str | Unset):
         session_state (None | str | Unset):
         session_provider (None | str | Unset):
+        origin (str | Unset):  Default: 'manual'.
+        session_lifecycle (None | str | Unset):
         waiting_question (AgentWaitingQuestion | None | Unset):
         active_subagent_count (int | None | Unset):
         subagent_count_complete (bool | Unset):  Default: False.
@@ -68,6 +70,8 @@ class AgentSummary:
     session_id: None | str | Unset = UNSET
     session_state: None | str | Unset = UNSET
     session_provider: None | str | Unset = UNSET
+    origin: str | Unset = "manual"
+    session_lifecycle: None | str | Unset = UNSET
     waiting_question: AgentWaitingQuestion | None | Unset = UNSET
     active_subagent_count: int | None | Unset = UNSET
     subagent_count_complete: bool | Unset = False
@@ -167,6 +171,14 @@ class AgentSummary:
         else:
             session_provider = self.session_provider
 
+        origin = self.origin
+
+        session_lifecycle: None | str | Unset
+        if isinstance(self.session_lifecycle, Unset):
+            session_lifecycle = UNSET
+        else:
+            session_lifecycle = self.session_lifecycle
+
         waiting_question: dict[str, Any] | None | Unset
         if isinstance(self.waiting_question, Unset):
             waiting_question = UNSET
@@ -241,6 +253,10 @@ class AgentSummary:
             field_dict["session_state"] = session_state
         if session_provider is not UNSET:
             field_dict["session_provider"] = session_provider
+        if origin is not UNSET:
+            field_dict["origin"] = origin
+        if session_lifecycle is not UNSET:
+            field_dict["session_lifecycle"] = session_lifecycle
         if waiting_question is not UNSET:
             field_dict["waiting_question"] = waiting_question
         if active_subagent_count is not UNSET:
@@ -388,6 +404,17 @@ class AgentSummary:
 
         session_provider = _parse_session_provider(d.pop("session_provider", UNSET))
 
+        origin = d.pop("origin", UNSET)
+
+        def _parse_session_lifecycle(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        session_lifecycle = _parse_session_lifecycle(d.pop("session_lifecycle", UNSET))
+
         def _parse_waiting_question(data: object) -> AgentWaitingQuestion | None | Unset:
             if data is None:
                 return data
@@ -460,6 +487,8 @@ class AgentSummary:
             session_id=session_id,
             session_state=session_state,
             session_provider=session_provider,
+            origin=origin,
+            session_lifecycle=session_lifecycle,
             waiting_question=waiting_question,
             active_subagent_count=active_subagent_count,
             subagent_count_complete=subagent_count_complete,

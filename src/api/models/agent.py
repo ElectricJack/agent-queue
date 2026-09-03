@@ -77,6 +77,15 @@ class AgentSummary(BaseModel):
     session_id: str | None = None
     session_state: str | None = None
     session_provider: str | None = None
+    #: ``manual`` | ``pool`` | ``reconciler`` — who defined the row.  With
+    #: ``session_lifecycle`` this is what makes a row a pool instance: a
+    #: ``pool``-origin row, or any row whose live session is ``lifecycle:
+    #: pool``.  Profile ids are not a signal — ``pool_status`` lists every
+    #: pool profile in every active project even at zero supply.
+    origin: str = "manual"
+    #: Lifecycle of the live session (``task`` | ``named`` | ``pool``), or
+    #: ``None`` when no session currently owns the agent.
+    session_lifecycle: str | None = None
     waiting_question: AgentWaitingQuestion | None = None
     #: AQ-delegated + native children currently running. ``None`` means a
     #: live session was launched without its harness hooks wired, so the

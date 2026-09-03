@@ -14550,6 +14550,22 @@
             ],
             "title": "Session Provider"
           },
+          "origin": {
+            "type": "string",
+            "title": "Origin",
+            "default": "manual"
+          },
+          "session_lifecycle": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Lifecycle"
+          },
           "waiting_question": {
             "anyOf": [
               {

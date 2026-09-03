@@ -167,6 +167,11 @@ async def list_agent_flock(orchestrator, *, project_id: str | None = None) -> li
             "current_project_id": current_project, "project_id": current_project,
             "workspace_id": None,
             "session_id": live.id if live else None,
+            # The rail's pool classification: a row is a pool instance when a
+            # pool minted it or a ``lifecycle: pool`` session currently owns
+            # it — never because its profile happens to run as a pool.
+            "origin": agent.origin,
+            "session_lifecycle": live.lifecycle if live else None,
             "waiting_question": waiting_question,
             "session_state": session.state if session else None,
             "session_provider": session.provider if session else None,

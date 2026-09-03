@@ -13,11 +13,11 @@ export default function AgentFlock() {
   const { data: roster = [], isLoading, error, refetch } = useAgentFlock();
   const { data: subagents } = useFlockSubagents();
   const selection = useAgentSelection();
-  const { entries: poolEntries, poolIds } = usePoolFlock();
+  const { entries: poolEntries } = usePoolFlock();
   const { busy: pools, hiddenCount } = useDebouncedBusyPoolEntries(poolEntries);
-  // Pool members are reachable through their pool entry; listing each
+  // Pool instances are reachable through their pool entry; listing each
   // ephemeral instance row here as well would double-count the flock.
-  const agents = roster.filter((agent) => !isPoolAgent(agent, poolIds));
+  const agents = roster.filter((agent) => !isPoolAgent(agent));
   const [collapsed, setCollapsed] = useState(() => {
     try { return localStorage.getItem(COLLAPSED_KEY) === "true"; }
     catch { return false; }

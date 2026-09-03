@@ -474,6 +474,8 @@ agents = Table(
     Column("session_tokens_used", Integer, nullable=False, server_default="0"),
     Column("role", Text, nullable=False, server_default="worker"),
     Column("enabled", Boolean, nullable=False, server_default=true()),
+    # "manual" | "pool" | "reconciler" — see ``models.Agent.origin``.
+    Column("origin", Text, nullable=False, server_default="manual"),
     Column("harness", Text, nullable=True),
     Column("model", Text, nullable=True),
     Column("intelligence_class", Text, nullable=True),

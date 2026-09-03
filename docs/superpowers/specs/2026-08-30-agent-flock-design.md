@@ -24,6 +24,12 @@ Route /agents with ordered repeated agent query parameters. Plain click replaces
 
 Each tile has Terminal (default), Settings, and Close. Close hides only the view and releases its stream; it never stops a worker. Last close shows an empty state. Reuse usePaneStream/LivePaneConsole. Idle/sleeping/no-session agents show an honest state; merely viewing does not launch an agent. Settings edit only this worker and show next-session semantics and save errors.
 
+## Pool instances in the rail
+
+A roster row is a **pool instance** when a pool minted it (`agents.origin = "pool"`, set by `_launch_pool_session` and kept while the row idles between sessions) or when a `lifecycle: pool` session currently owns it (`session_lifecycle = "pool"` on the roster row) — a pool reserves an idle hand-made worker on a compatible profile just as readily as it mints one. Pool instances are listed only beneath their pool entry (joined by the session's project and profile), never beside the fixed workers, and remain openable directly via `/agents?agent=<id>`.
+
+The profile id is not a signal. `pool_status` names every pool profile in every active project even at zero supply, so classifying by profile hid every worker an operator added by hand on a pool-backed profile. Such a worker is a plain durable worker until a pool session takes it, and again once that session ends. `origin` also records `reconciler` for the lazy capacity bootstrap; only `pool` affects the rail.
+
 ## Subagents and live updates
 
 Count distinct active direct AQ workers attributable to any session of this parent definition; exclude parent, queued/completed tasks, and non-worker task containers. Record authenticated creator session for elevated supervisors too, separately from worker-only quotas. Native harness counts require explicit child start/finish telemetry. Missing/unsupported telemetry is partial or unknown, never a fabricated zero.

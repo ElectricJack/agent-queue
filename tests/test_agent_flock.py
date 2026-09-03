@@ -361,3 +361,41 @@ async def test_typed_delete_requires_global_scope_and_returns_agent_identity(han
         deleted = await client.post("/api/agent/delete", json={"agent_id": "a"})
         assert deleted.status_code == 200
         assert deleted.json() == {"deleted": "a", "name": "Ada"}
+
+
+async def test_roster_reports_origin_and_live_session_lifecycle(handler):
+    """The rail classifies pool instances by origin/lifecycle, never by profile.
+
+    ``pool_status`` lists every pool profile in every active project even at
+    zero supply, so a profile id says nothing about whether one *row* is a
+    pool instance.  A worker added by hand on a pool-backed profile is a plain
+    durable worker until a pool session actually owns it.
+    """
+    from src.models import SessionRecord
+    await handler.db.create_project(Project(id="p", name="Project"))
+    await handler.db.create_agent(Agent(id="manual", name="Manual", profile_id="coder"))
+    await handler.db.create_agent(Agent(id="reused", name="Reused", profile_id="coder"))
+    await handler.db.create_agent(Agent(
+        id="minted", name="coder-9f2a", profile_id="coder", origin="pool",
+    ))
+    common = {
+        "project_id": "p", "profile_id": "coder", "harness": "claude", "provider": "tmux",
+        "lifecycle": "pool", "work_dir": "/tmp", "epoch": "e", "instance_token": "t",
+        "started_at": 1, "state": "running",
+    }
+    await handler.db.create_session(SessionRecord(id="s-reused", name="pool-a", agent_id="reused", **common))
+    await handler.db.create_session(SessionRecord(id="s-minted", name="pool-b", agent_id="minted", **common))
+    rows = {row["id"]: row for row in (await handler._cmd_list_agents({}))["agents"]}
+    assert (rows["manual"]["origin"], rows["manual"]["session_lifecycle"]) == ("manual", None)
+    assert (rows["reused"]["origin"], rows["reused"]["session_lifecycle"]) == ("manual", "pool")
+    assert (rows["minted"]["origin"], rows["minted"]["session_lifecycle"]) == ("pool", "pool")
+    assert rows["reused"]["session_id"] == "s-reused"
+
+
+async def test_created_agents_are_manual_and_origin_survives_the_round_trip(handler):
+    created = await handler._cmd_create_agent({"name": "Lin", "profile_id": "coder"})
+    assert created["origin"] == "manual"
+    assert (await handler.db.get_agent(created["id"])).origin == "manual"
+    await handler.db.create_agent(Agent(id="m", name="Minted", profile_id="coder", origin="pool"))
+    assert (await handler.db.get_agent("m")).origin == "pool"
+    assert (await handler._cmd_get_agent({"agent_id": "m"}))["origin"] == "pool"

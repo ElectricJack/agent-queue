@@ -169,6 +169,7 @@ class AgentReconciler:
                     name=f"{profile_id}-{len(agents) + 1}",
                     profile_id=profile_id,
                     intelligence_class=task_class or None,
+                    origin="reconciler",
                 )
                 mismatch = task_agent_mismatch(
                     requested, agent, task_profile=profile, agent_profile=profile,

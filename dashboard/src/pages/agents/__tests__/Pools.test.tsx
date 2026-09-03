@@ -44,17 +44,25 @@ function instance(suffix: string, over: Partial<SessionSummary> = {}): SessionSu
   };
 }
 
-function agent(id: string, name: string, profileId: string): FlockAgent {
+/** Mirrors one roster row (src/api/models/agent.py AgentSummary): a hand-made idle worker unless overridden. */
+function agent(id: string, name: string, profileId: string, over: Partial<FlockAgent> = {}): FlockAgent {
   return {
     id, name, profile_id: profileId, role: "worker", enabled: true, state: "idle",
     provider: "anthropic", harness: "claude", model: "claude-sonnet-4-6",
     intelligence_class: "standard-high", current_task_id: null, current_task_title: null,
     current_project_id: null, session_id: "session-" + id, session_state: "running",
     session_provider: "tmux", project_id: null, workspace_id: null,
+    origin: "manual", session_lifecycle: null,
     active_subagent_count: 0, subagent_count_complete: true,
     aq_subagent_count: 0, native_subagent_count: 0,
     settings: { name, profile_id: profileId, harness: null, model: null, intelligence_class: null, enabled: true },
+    ...over,
   };
+}
+
+/** A row `_launch_pool_session` minted, currently running one of the pool's sessions. */
+function pooledAgent(id: string, name: string, profileId: string, over: Partial<FlockAgent> = {}): FlockAgent {
+  return agent(id, name, profileId, { origin: "pool", session_lifecycle: "pool", ...over });
 }
 
 // The rail row for a pool needs two queries (pool_status + session_list) to
@@ -86,8 +94,10 @@ beforeEach(() => {
   vi.stubGlobal("EventSource", vi.fn());
   api.listAgents.mockResolvedValue({ data: { agents: [
     agent("fixed", "Builder", "implementer"),
-    agent("pooled", "worker-standard-9f2a", "worker-standard"),
-  ], count: 2 } });
+    pooledAgent("pooled", "worker-standard-9f2a", "worker-standard"),
+    // Added by hand on the pool's profile; a durable worker like Builder.
+    agent("handmade", "Spare", "worker-standard"),
+  ], count: 3 } });
   api.listProjects.mockResolvedValue({ data: { projects: [] } });
   api.listProfiles.mockResolvedValue({ data: { profiles: [{ id: "implementer", name: "Implementer" }, { id: "worker-standard", name: "Worker standard" }] } });
   api.listIntelligenceClasses.mockResolvedValue({ data: { classes: [] } });
@@ -122,10 +132,16 @@ describe("pool derivation", () => {
     expect(entries[0]!.instances.map((row) => row.id)).toEqual(["p-worker-standard--agent-queue--aaa"]);
   });
 
-  it("treats a worker on a pool profile as a pool instance, not a push agent", () => {
-    const ids = poolProfileIds([pool()]);
-    expect(isPoolAgent(agent("pooled", "worker-standard-9f2a", "worker-standard"), ids)).toBe(true);
-    expect(isPoolAgent(agent("fixed", "Builder", "implementer"), ids)).toBe(false);
+  it("classifies a pool instance by origin or live pool session, never by profile", () => {
+    expect(poolProfileIds([pool()])).toEqual(new Set(["worker-standard"]));
+    // Minted by a pool: an instance whether it is running or idle between sessions.
+    expect(isPoolAgent(pooledAgent("pooled", "worker-standard-9f2a", "worker-standard"))).toBe(true);
+    expect(isPoolAgent(agent("resting", "worker-standard-1c2d", "worker-standard", { origin: "pool" }))).toBe(true);
+    // Hand-made on the pool's profile: a durable worker until a pool session owns it.
+    expect(isPoolAgent(agent("handmade", "Spare", "worker-standard"))).toBe(false);
+    expect(isPoolAgent(agent("handmade", "Spare", "worker-standard", { session_lifecycle: "pool" }))).toBe(true);
+    expect(isPoolAgent(agent("fixed", "Builder", "implementer"))).toBe(false);
+    expect(isPoolAgent(agent("fixed", "Builder", "implementer", { session_lifecycle: "task" }))).toBe(false);
   });
 
   it("formats idle time in the largest whole unit", () => {
@@ -244,6 +260,57 @@ describe("pools in the agent flock", () => {
     expect(screen.getByRole("button", { name: "Open Builder" })).toBeInTheDocument();
     // The pool's own agent row is reachable through the pool, not beside it.
     expect(screen.queryByRole("button", { name: "Open worker-standard-9f2a" })).not.toBeInTheDocument();
+    // Sharing the pool's profile does not make a hand-made worker a pool instance.
+    expect(screen.getByRole("button", { name: "Open Spare" })).toBeInTheDocument();
+    const header = screen.getByRole("button", { name: /Agent flock/ });
+    expect(within(header).getByText("3")).toBeInTheDocument();
+  });
+
+  it("folds a hand-made worker under the pool only while a pool session owns it", async () => {
+    api.listAgents.mockResolvedValue({ data: { agents: [
+      agent("fixed", "Builder", "implementer"),
+      pooledAgent("pooled", "worker-standard-9f2a", "worker-standard"),
+      agent("handmade", "Spare", "worker-standard", {
+        state: "busy", session_lifecycle: "pool", session_id: "p-worker-standard--agent-queue--ccc",
+        current_task_id: "quick-torrent-40", current_project_id: "agent-queue", project_id: "agent-queue",
+      }),
+    ], count: 3 } });
+    api.sessionList.mockResolvedValue({ data: { success: true, sessions: [
+      instance("aaa"), instance("bbb", { task_id: "quick-torrent-39", started_at: 200 }),
+      instance("ccc", { agent_id: "handmade", task_id: "quick-torrent-40", started_at: 300 }),
+    ], count: 3 } });
+    renderAgents("/");
+    const row = await screen.findByRole("button", { name: "Open worker-standard pool" }, SLOW);
+    expect(await within(row).findByText("3 live instances", undefined, SLOW)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open Builder" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Open Spare" })).not.toBeInTheDocument();
+    expect(within(screen.getByRole("button", { name: /Agent flock/ })).getByText("2")).toBeInTheDocument();
+  });
+
+  it("keeps another project's pool instances out of this pool and off the rail", async () => {
+    api.listAgents.mockResolvedValue({ data: { agents: [
+      agent("fixed", "Builder", "implementer"),
+      pooledAgent("pooled", "worker-standard-9f2a", "worker-standard"),
+      pooledAgent("elsewhere", "worker-standard-77aa", "worker-standard", {
+        session_id: "p-worker-standard--elsewhere--ddd", current_project_id: "elsewhere", project_id: "elsewhere",
+      }),
+    ], count: 3 } });
+    api.sessionList.mockResolvedValue({ data: { success: true, sessions: [
+      instance("aaa"), instance("bbb", { task_id: "quick-torrent-39", started_at: 200 }),
+      instance("ddd", { project_id: "elsewhere", agent_id: "elsewhere" }),
+    ], count: 3 } });
+    renderAgents("/");
+    const row = await screen.findByRole("button", { name: "Open worker-standard pool" }, SLOW);
+    expect(await within(row).findByText("2 live instances", undefined, SLOW)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Open worker-standard-77aa" })).not.toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /pool$/ })).toHaveLength(1);
+  });
+
+  it("still opens a pool instance directly from /agents?agent=<id>", async () => {
+    renderAgents("/agents?agent=pooled");
+    expect(await screen.findByRole("region", { name: "worker-standard-9f2a agent window" }, SLOW)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Open worker-standard-9f2a" })).not.toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Open Spare" }, SLOW)).toBeInTheDocument();
   });
 
   it("shows the quarantine backoff when a launch has failed", async () => {

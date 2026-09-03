@@ -571,6 +571,13 @@ class Agent:
     model: str | None = None
     intelligence_class: str | None = None
     deleted_at: float | None = None
+    #: Who defined this row: ``manual`` (Add Agent / ``aq agent create``),
+    #: ``pool`` (minted by ``_launch_pool_session`` for one pool session and
+    #: reused between them), ``reconciler`` (lazy capacity bootstrap).  The
+    #: flock lists a ``pool``-origin row only through its pool entry, while a
+    #: manual worker on a pool-backed profile stays a visible durable worker
+    #: except while a ``lifecycle: pool`` session actually owns it.
+    origin: str = "manual"
 
 
 @dataclass
