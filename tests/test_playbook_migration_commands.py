@@ -19,6 +19,7 @@ from src.commands.playbook_migration_commands import (
     REASON_TOO_SHORT_ERROR,
     PlaybookMigrationCommandsMixin,
 )
+from src.commands.playbook_v2_commands import PlaybookV2CommandsMixin
 from src.database import Database
 from src.database.queries.playbook_migration_queries import MIN_ACK_REASON_LENGTH
 from src.vault import ensure_default_agent_type_playbooks, ensure_default_playbooks
@@ -86,6 +87,23 @@ class _Handler(PlaybookMigrationCommandsMixin):
         from src.playbooks.validation import RegisteredEventLookup, RegistryContractLookup
 
         return RegistryContractLookup(), shipped_profile_lookup(), RegisteredEventLookup()
+
+
+class _ActivationAndReportHandler(PlaybookV2CommandsMixin, _Handler):
+    """The public activation and report commands over one real database."""
+
+    async def _v2_lookups(self):
+        return await _Handler._v2_lookups(self)
+
+    async def _v2_load_artifact(self, sha: str, playbook_id: str | None = None):
+        from src.playbooks.artifact_store import ArtifactStore
+
+        ref = await self.db.get_playbook_artifact(sha)
+        if ref is None:
+            return None, None, f"Playbook artifact '{sha}' not found"
+        if playbook_id is not None and ref.playbook_id != playbook_id:
+            return None, None, f"Artifact '{sha}' does not belong to playbook '{playbook_id}'"
+        return ref, ArtifactStore(self.config.compiled_root).load(sha), None
 
 
 @pytest.fixture
@@ -442,6 +460,14 @@ def _probe_definition(*, commands: dict[str, str] | None = None):
     return definition.model_copy(update={"id": PROBE_ID, "compiled_against": compiled_against})
 
 
+def _project_probe_definition(*, commands: dict[str, str] | None = None):
+    from src.playbooks.definition import ProjectScope
+
+    return _probe_definition(commands=commands).model_copy(
+        update={"scope": ProjectScope(project_id="project-a")}
+    )
+
+
 def _current_commands(definition) -> dict[str, str]:
     """This build's execution fingerprints for the commands the artifact uses."""
     from src.commands.contracts import CONTRACTS
@@ -458,6 +484,9 @@ async def _activate(
     enabled: bool = True,
     health: str = "ready",
     source_digest: str = "sha256:" + "e" * 64,
+    scope: str = "system",
+    scope_identifier: str = "",
+    reviewed: bool = False,
 ):
     """Store the artifact bytes and write the artifact + activation rows."""
     from src.playbooks.artifact_store import ArtifactStore
@@ -477,20 +506,22 @@ async def _activate(
     path = store.path_for(ref.artifact_sha256)
     await handler.db.upsert_playbook_artifact(
         ref,
-        scope="system",
-        scope_identifier="",
+        scope=scope,
+        scope_identifier=scope_identifier,
         path=path,
         size_bytes=os.path.getsize(path),
     )
     await handler.db.set_playbook_activation(
         playbook_id=definition.id,
-        scope="system",
-        scope_identifier="",
+        scope=scope,
+        scope_identifier=scope_identifier,
         artifact_sha256=ref.artifact_sha256,
         enabled=enabled,
         activated_by="operator",
         health=health,
         reasons="[]",
+        reviewed_artifact_sha256=ref.artifact_sha256 if reviewed else None,
+        reviewed_by="project-reviewer" if reviewed else None,
     )
     return ref
 
@@ -598,6 +629,115 @@ async def test_cutover_report_joins_the_recorded_review_of_the_live_artifact(han
     assert row["reviewed_by"] == "Jack Kern <operator@example.invalid>"
     assert row["reviewed_at"] == "2026-09-03"
     assert not any("no recorded review" in reason for reason in report["blocking_reasons"])
+
+
+async def test_cutover_report_uses_persisted_project_review_evidence(handler):
+    """Project reviews live in the database, not the repository fixture tree."""
+    ref = await _activate(
+        handler,
+        _project_probe_definition(),
+        scope="project",
+        scope_identifier="project-a",
+        reviewed=True,
+    )
+
+    report = await handler._cmd_playbook_cutover_report({})
+
+    row = _artifact_row(report)
+    assert row["scope"] == "project"
+    assert row["scope_identifier"] == "project-a"
+    assert row["artifact_sha256"] == ref.artifact_sha256
+    assert row["reviewed_by"] == "project-reviewer"
+    assert row["reviewed_at"] is not None
+    assert not any("no recorded review" in reason for reason in report["blocking_reasons"])
+
+
+async def test_public_project_activation_persists_review_used_by_cutover_report(handler):
+    """Public activation -> database -> report is one exact-hash evidence path."""
+    from src.commands.contracts import CONTRACTS
+    from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
+    from src.config import PlaybooksConfig
+    from src.playbooks.artifact_store import ArtifactStore
+    from src.profiles.capabilities import DENY_ALL
+
+    handler = _ActivationAndReportHandler(handler.config, handler.db, handler.reviewed_root)
+    handler.config.playbooks = PlaybooksConfig(
+        v2_api=True,
+        v2_storage_enabled=True,
+        v2_activation_writes=True,
+    )
+    definition = _project_probe_definition(
+        commands=_current_commands(_project_probe_definition())
+    )
+    store = ArtifactStore(handler.config.compiled_root)
+    ref = store.put(
+        definition,
+        source_digest="sha256:" + "e" * 64,
+        contract_fingerprint=str(CONTRACTS.registry_fingerprint()),
+        profile_fingerprint="",
+        compiler_build="test-build",
+        version=1,
+    )
+    path = store.path_for(ref.artifact_sha256)
+    await handler.db.upsert_playbook_artifact(
+        ref,
+        scope="project",
+        scope_identifier="project-a",
+        path=path,
+        size_bytes=os.path.getsize(path),
+    )
+    principal = ExecutionPrincipal(
+        kind=PrincipalKind.SESSION,
+        policy=DENY_ALL,
+        session_id="supervisor-project-a",
+        project_id="project-a",
+        elevated=True,
+    )
+
+    with principal_context(principal):
+        activated = await handler._cmd_playbook_activate(
+            {
+                "playbook_id": definition.id,
+                "artifact_sha256": ref.artifact_sha256,
+                "acknowledge_diff": ref.artifact_sha256,
+            }
+        )
+    report = await handler._cmd_playbook_cutover_report({})
+
+    assert activated["blocked"] is False
+    row = _artifact_row(report)
+    assert row["artifact_sha256"] == ref.artifact_sha256
+    assert row["reviewed_by"] == "session:supervisor-project-a"
+    assert row["reviewed_at"] is not None
+
+
+async def test_project_review_is_invalidated_when_activation_bytes_change(handler):
+    """Re-activating different bytes without a review cannot reuse old evidence."""
+    definition = _project_probe_definition()
+    first = await _activate(
+        handler,
+        definition,
+        scope="project",
+        scope_identifier="project-a",
+        reviewed=True,
+    )
+    commands = dict(definition.compiled_against.commands)
+    commands[min(commands)] = "sha256:" + "f" * 64
+    second = await _activate(
+        handler,
+        _project_probe_definition(commands=commands),
+        scope="project",
+        scope_identifier="project-a",
+    )
+    assert second.artifact_sha256 != first.artifact_sha256
+
+    report = await handler._cmd_playbook_cutover_report({})
+
+    row = _artifact_row(report)
+    assert row["artifact_sha256"] == second.artifact_sha256
+    assert row["reviewed_by"] is None
+    assert row["reviewed_at"] is None
+    assert any("no recorded review" in reason for reason in report["blocking_reasons"])
 
 
 async def test_cutover_report_ignores_a_review_of_different_bytes(handler):

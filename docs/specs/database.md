@@ -933,7 +933,11 @@ payload.  See `docs/superpowers/specs/2026-09-01-playbook-v2-semantic-graph-desi
 ### Table: `playbook_activations`
 
 Operational activation metadata for a playbook in one scope: which artifact hash
-is live, whether an operator has enabled it, and its readiness health.  Kept
+is live, whether an operator has enabled it, and its readiness health. Project
+activations also persist the exact hash and server-derived attribution of the
+review decision; the all-or-none review constraint requires that hash to equal
+the active hash, so a later activation write cannot reuse approval of older
+bytes. Checked-in review fixtures remain authoritative for shipped scopes. Kept
 outside the artifact so pausing a playbook never rewrites immutable content.
 
 | Column | Type | Constraints | Notes |
@@ -948,6 +952,9 @@ outside the artifact so pausing a playbook never rewrites immutable content.
 | `reasons` | TEXT | NOT NULL DEFAULT '[]' | JSON list of health reason objects |
 | `activated_at` | REAL | nullable | When the current artifact was activated |
 | `activated_by` | TEXT | nullable | Server-derived principal that activated it |
+| `reviewed_artifact_sha256` | TEXT | nullable, CHECK | Exact project artifact hash approved by `reviewed_by`; must equal the active hash |
+| `reviewed_by` | TEXT | nullable, CHECK | Server-derived principal that reviewed a project artifact |
+| `reviewed_at` | REAL | nullable, CHECK | When the project artifact review decision was recorded |
 | `updated_at` | REAL | NOT NULL | Set on every write |
 
 ### Table: `playbook_v2_runs`

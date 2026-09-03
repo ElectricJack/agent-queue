@@ -1118,11 +1118,23 @@ playbook_activations = Table(
     Column("reasons", Text, nullable=False, server_default="[]"),
     Column("activated_at", Float, nullable=True),
     Column("activated_by", Text, nullable=True),
+    Column("reviewed_artifact_sha256", Text, nullable=True),
+    Column("reviewed_by", Text, nullable=True),
+    Column("reviewed_at", Float, nullable=True),
     Column("updated_at", Float, nullable=False),
     CheckConstraint(
         "health IN ('ready', 'question_required', 'invalid', 'disabled', "
         "'stale_contract', 'unavailable')",
         name="ck_playbook_activations_health",
+    ),
+    CheckConstraint(
+        "(reviewed_artifact_sha256 IS NULL AND reviewed_by IS NULL AND reviewed_at IS NULL) "
+        "OR (scope = 'project' AND active_artifact_sha256 IS NOT NULL "
+        "AND reviewed_artifact_sha256 IS NOT NULL AND reviewed_by IS NOT NULL "
+        "AND reviewed_at IS NOT NULL "
+        "AND reviewed_artifact_sha256 = active_artifact_sha256 "
+        "AND length(trim(reviewed_by)) > 0)",
+        name="ck_playbook_activations_review_evidence",
     ),
     UniqueConstraint(
         "playbook_id", "scope", "scope_identifier",

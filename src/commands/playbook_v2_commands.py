@@ -1069,6 +1069,9 @@ class PlaybookV2CommandsMixin:
         artifact carries no executable change or the caller passed
         ``acknowledge_diff`` equal to ``artifact_sha256`` — the literal hash, so
         an acknowledgement cannot be replayed against a different artifact.
+        A project-scoped artifact additionally requires the caller's
+        server-derived project to match and persists that principal as review
+        evidence for the exact activated hash.
 
         Args:
             playbook_id: Required — the playbook to activate against.
@@ -1112,6 +1115,21 @@ class PlaybookV2CommandsMixin:
         target_ref, target, error = await self._v2_load_artifact(artifact_sha256, playbook_id)
         if error:
             return {"error": error}
+        scope, scope_identifier = self._v2_scope(target)
+        from src.commands.principal import PrincipalKind, current_principal
+
+        principal = current_principal()
+        global_operator = principal is None or principal.kind is PrincipalKind.LOCAL or (
+            principal.kind is PrincipalKind.SESSION
+            and principal.elevated
+            and principal.project_id is None
+        )
+        if (
+            scope == "project"
+            and not global_operator
+            and principal.project_id != scope_identifier
+        ):
+            return {"error": "out of scope: project_id mismatch"}
         records, contracts, profiles = await self._v2_health_records()
         _contracts, _profiles, events = await self._v2_lookups()
         current = self._v2_activation_for(records, playbook_id)
@@ -1175,10 +1193,6 @@ class PlaybookV2CommandsMixin:
                     )
                 ),
             }
-        scope, scope_identifier = self._v2_scope(target)
-        from src.commands.principal import current_principal
-
-        principal = current_principal()
         actor = principal.describe() if principal is not None else "local"
         enabled = args.get("enabled", True)
         if not isinstance(enabled, bool):
@@ -1192,6 +1206,8 @@ class PlaybookV2CommandsMixin:
             activated_by=actor,
             health="ready" if enabled else "disabled",
             reasons="[]",
+            reviewed_artifact_sha256=(artifact_sha256 if scope == "project" else None),
+            reviewed_by=(actor if scope == "project" else None),
         )
         refreshed, _contracts, _profiles = await self._v2_health_records()
         activation = self._v2_activation_for(refreshed, playbook_id, artifact_sha256)

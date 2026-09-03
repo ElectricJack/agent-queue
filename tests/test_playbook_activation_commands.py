@@ -74,10 +74,66 @@ async def test_activate_records_activated_by():
             "playbook_id": definition.id,
             "artifact_sha256": ref.artifact_sha256,
             "acknowledge_diff": ref.artifact_sha256,
+            "reviewed_by": "spoofed-reviewer",
         }
     )
     assert result["blocked"] is False
     assert handler.db.set_playbook_activation.await_args.kwargs["activated_by"] == "local"
+
+
+async def test_project_activation_records_review_for_the_exact_artifact():
+    """A project activation is the durable, attributable human review decision."""
+    from src.playbooks.definition import ProjectScope
+
+    definition, ref, _activation = _backend_fixture()
+    definition = definition.model_copy(update={"scope": ProjectScope(project_id="project-a")})
+    handler = _Handler(definition, ref, [[], [_record(ref, actor="local")]])
+
+    result = await handler._cmd_playbook_activate(
+        {
+            "playbook_id": definition.id,
+            "artifact_sha256": ref.artifact_sha256,
+            "acknowledge_diff": ref.artifact_sha256,
+        }
+    )
+
+    assert result["blocked"] is False
+    write = handler.db.set_playbook_activation.await_args.kwargs
+    assert write["scope"] == "project"
+    assert write["scope_identifier"] == "project-a"
+    assert write["reviewed_artifact_sha256"] == ref.artifact_sha256
+    assert write["reviewed_by"] == "local"
+
+
+async def test_project_activation_refuses_a_different_project_principal():
+    """A project-scoped supervisor cannot approve another project's artifact."""
+    from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
+    from src.playbooks.definition import ProjectScope
+    from src.profiles.capabilities import DENY_ALL
+
+    definition, ref, _activation = _backend_fixture()
+    definition = definition.model_copy(update={"scope": ProjectScope(project_id="project-b")})
+    handler = _Handler(definition, ref, [[]])
+    principal = ExecutionPrincipal(
+        kind=PrincipalKind.SESSION,
+        policy=DENY_ALL,
+        session_id="supervisor-project-a",
+        project_id="project-a",
+        elevated=True,
+    )
+
+    with principal_context(principal):
+        result = await handler._cmd_playbook_activate(
+            {
+                "playbook_id": definition.id,
+                "artifact_sha256": ref.artifact_sha256,
+                "acknowledge_diff": ref.artifact_sha256,
+                "project_id": "project-a",
+            }
+        )
+
+    assert result == {"error": "out of scope: project_id mismatch"}
+    handler.db.set_playbook_activation.assert_not_awaited()
 
 
 async def test_activate_refuses_invalid_artifact():
