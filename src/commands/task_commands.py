@@ -1637,8 +1637,9 @@ class TaskCommandsMixin:
             created_by_kind="session" if creator_session_id else None,
             created_by_id=creator_session_id,
         )
-        from src.playbooks.routing import requires_routing_gate
-        manager = getattr(self.orchestrator, "playbook_manager", None)
+        from src.playbooks.routing import configured_routing_manager, requires_routing_gate
+
+        manager = configured_routing_manager(self.orchestrator)
         routing_policy = None
         if manager is not None and not profile_id and not args.get("_suppress_created_event"):
             def routing_policy(created_task: Task) -> bool:
