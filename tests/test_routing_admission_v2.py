@@ -8,6 +8,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import event as sqlalchemy_event
+from sqlalchemy import text
 
 from src.config import AppConfig
 from src.database import Database
@@ -216,11 +218,29 @@ async def test_requires_routing_gate_opens_no_second_connection(tmp_path):
     manager, store = _manager(_routing_artifact())
     db = Database(str(tmp_path / "open-write.db"))
     await db.initialize()
+    checkouts = 0
 
-    async with db._engine.begin():
-        assert requires_routing_gate(manager, _task()) is True
+    def record_checkout(*_args) -> None:
+        nonlocal checkouts
+        checkouts += 1
+
+    sqlalchemy_event.listen(db._engine.sync_engine, "checkout", record_checkout)
+    try:
+        async with db._engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO projects (id, name, created_at) "
+                    "VALUES ('write-lock', 'Write lock', 0)"
+                )
+            )
+            checkouts_before_admission = checkouts
+            assert requires_routing_gate(manager, _task()) is True
+            assert checkouts == checkouts_before_admission
+    finally:
+        sqlalchemy_event.remove(db._engine.sync_engine, "checkout", record_checkout)
+        await db.close()
+
     assert store.loads == [SHA]
-    await db.close()
 
 
 def test_unrelated_project_task_hook_does_not_shadow_system_routing_policy():
@@ -630,6 +650,10 @@ async def test_cancelled_refresh_finishes_publishing_committed_activation():
 def test_routing_admission_parity_with_v1_cases(
     case, manager_factory, task, extra, expected_gate, expected_triage
 ):
+    # Literal oracle transcribed from the 16 admission and two graph-routing
+    # cases that exercised the frozen V1 default pipeline. Package 6 removed
+    # assignment rules from the reviewed default-pipeline fixture, so positive
+    # rows use the equivalent typed V2 artifact built by _routing_artifact.
     manager = manager_factory()
 
     assert requires_routing_gate(manager, task, extra) is expected_gate, case
