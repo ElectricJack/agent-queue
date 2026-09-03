@@ -35,7 +35,10 @@ interface RawFrame {
 }
 
 const MAX_LINES = 5000;
-const MAX_RECONNECT_ATTEMPTS = 5;
+// Fallback only. The real budget is server-owned config
+// (`streams.client_reconnect_attempts`), fetched from the stream metadata
+// response below; this is what we use until that lands, or if it fails.
+const DEFAULT_MAX_RECONNECT_ATTEMPTS = 5;
 const BASE_BACKOFF_MS = 500;
 
 function apiBase(): string {
@@ -59,6 +62,7 @@ export function useConsoleStream(streamId: string | null | undefined): ConsoleSt
   const [state, setState] = useState<ConsoleStreamState>(INITIAL_STATE);
   const afterSeqRef = useRef(-1);
   const attemptRef = useRef(0);
+  const maxAttemptsRef = useRef(DEFAULT_MAX_RECONNECT_ATTEMPTS);
   const esRef = useRef<EventSource | null>(null);
   const closedRef = useRef(false);
 
@@ -89,7 +93,25 @@ export function useConsoleStream(streamId: string | null | undefined): ConsoleSt
     setState(INITIAL_STATE);
     afterSeqRef.current = -1;
     attemptRef.current = 0;
+    maxAttemptsRef.current = DEFAULT_MAX_RECONNECT_ATTEMPTS;
     if (!streamId) return;
+
+    // GET /api/streams/{id} carries the daemon's configured reconnect budget.
+    // Best-effort: a failure just leaves the default in place, and the value
+    // is only read once the first connection error fires.
+    if (typeof fetch === "function") {
+      void fetch(`${apiBase()}/api/streams/${encodeURIComponent(streamId)}`)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((meta) => {
+          const n = meta?.client_reconnect_attempts;
+          if (typeof n === "number" && Number.isFinite(n) && n >= 0) {
+            maxAttemptsRef.current = n;
+          }
+        })
+        .catch(() => {
+          /* keep DEFAULT_MAX_RECONNECT_ATTEMPTS */
+        });
+    }
 
     function connect() {
       const url = `${apiBase()}/api/streams/${encodeURIComponent(streamId!)}/subscribe?after_seq=${afterSeqRef.current}`;
@@ -130,7 +152,7 @@ export function useConsoleStream(streamId: string | null | undefined): ConsoleSt
         setState((prev) =>
           prev.status === "exited" || prev.status === "killed" ? prev : { ...prev, status: "error" },
         );
-        if (attemptRef.current >= MAX_RECONNECT_ATTEMPTS) {
+        if (attemptRef.current >= maxAttemptsRef.current) {
           setState((prev) => ({ ...prev, errorMessage: "connection lost" }));
           return;
         }

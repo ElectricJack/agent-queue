@@ -22,6 +22,9 @@ class _FakeStreamsConfig:
     retention_seconds = 300
     kill_grace_seconds = 3.0
     max_concurrent_per_session = 3
+    # Deliberately not the StreamsConfig default (5) so the metadata test
+    # proves the value is read from config rather than hard-coded.
+    client_reconnect_attempts = 7
 
 
 class _FakeAppConfig:
@@ -209,6 +212,41 @@ async def test_metadata_returns_running_status_then_exited(db, tmp_path):
         data = resp.json()
         assert data["status"] == "exited"
         assert data["exit_code"] == 0
+
+
+@pytest.mark.asyncio
+async def test_metadata_serves_configured_client_reconnect_attempts(db, tmp_path):
+    """The pane's SSE backoff budget (streams.client_reconnect_attempts,
+    design §7.2) has no other route into the browser."""
+    app = _app_with_scope(db, tmp_path, LOCAL_SCOPE)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        start = await client.post(
+            "/api/streams",
+            json={"command": ["echo", "hi"], "cwd": str(tmp_path), "session_id": "s1"},
+        )
+        resp = await client.get(f"/api/streams/{start.json()['stream_id']}")
+    assert resp.status_code == 200
+    assert resp.json()["client_reconnect_attempts"] == 7
+
+
+def test_registry_built_from_config_carries_both_buffer_caps(db, tmp_path, monkeypatch):
+    """The router factory's own registry must pick up buffer_max_bytes, not
+    just buffer_max_lines — otherwise the byte cap is dead config."""
+    seen: dict = {}
+
+    class _Recorder(StreamRegistry):
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+            super().__init__(**kwargs)
+
+    monkeypatch.setattr("src.api.streams.StreamRegistry", _Recorder)
+    build_streams_router(
+        db=db, config=_FakeAppConfig(), workspace_dir=str(tmp_path), registry=None,
+    )
+    assert seen == {
+        "buffer_max_lines": _FakeStreamsConfig.buffer_max_lines,
+        "buffer_max_bytes": _FakeStreamsConfig.buffer_max_bytes,
+    }
 
 
 @pytest.mark.asyncio

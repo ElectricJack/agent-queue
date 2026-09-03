@@ -68,7 +68,7 @@ beforeEach(() => {
   FakeEventSource.instances = [];
   // @ts-expect-error test stub
   global.EventSource = FakeEventSource;
-  vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true }));
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) }));
   Object.defineProperty(navigator, "clipboard", {
     value: { writeText: vi.fn().mockResolvedValue(undefined) },
     configurable: true,
@@ -199,7 +199,12 @@ describe("ConsoleStreamPane", () => {
 
     fireEvent.click(screen.getByText("Cancel"));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    expect(fetch).not.toHaveBeenCalled();
+    // The hook's own GET /api/streams/{id} (reconnect budget) also goes
+    // through fetch, so assert on the kill call specifically.
+    expect(fetch).not.toHaveBeenCalledWith(
+      expect.stringContaining("/kill"),
+      expect.anything(),
+    );
   });
 
   it("terminal frame freezes header, appends exit banner, force-disables follow-tail", async () => {
