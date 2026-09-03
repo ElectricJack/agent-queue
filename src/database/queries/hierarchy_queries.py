@@ -38,6 +38,24 @@ from src.task_names import MAX_STRUCTURAL_DEPTH, child_task_id
 CONTAINER_KEY = "container"
 CONTAINER_VALUE = "true"  # json.dumps(True); matches set_task_meta's encoding
 
+
+def container_flag_exists():
+    """``EXISTS`` clause: the correlated ``tasks`` row carries the container flag.
+
+    The §7 flag is the *only* thing that says a task is settle-only work
+    (``creator.PARENT_STATUS``, recovery and the claim frontier all key off
+    it, never off "has children"), so the predicate lives here once.
+    """
+    return exists(
+        select(literal(1)).where(
+            and_(
+                task_metadata.c.task_id == tasks.c.id,
+                task_metadata.c.key == CONTAINER_KEY,
+                task_metadata.c.value == CONTAINER_VALUE,
+            )
+        )
+    )
+
 #: Session states that still hold their task — a container in one of these
 #: cannot be settled out from under a live worker (spec §7).
 LIVE_SESSION_STATES = ("starting", "running", "draining")
