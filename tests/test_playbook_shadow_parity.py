@@ -226,7 +226,7 @@ def test_cutover_report_makes_every_gate_and_operational_backlog_visible() -> No
             {"run_id": "v1-running", "status": "running", "started_at": 80.0},
             {"run_id": "v1-paused", "status": "paused", "started_at": 85.0},
         ),
-        parity=_parity(observations=4, identical=3, expected=1, events=_events(4)),
+        parity=_parity(),
         now=100.0,
     )
 
@@ -246,6 +246,10 @@ def test_cutover_report_makes_every_gate_and_operational_backlog_visible() -> No
 
 
 def test_cutover_report_blocks_unresolved_parity_and_missing_rollback_artifact() -> None:
+    events = _canonical_events()
+    events[0]["findings"] = [
+        {"field": "authorization", "classification": "unexplained", "rationale_id": None}
+    ]
     report = build_cutover_report(
         contract_fingerprint="sha256:" + "a" * 64,
         artifacts=({"playbook_id": "default-pipeline", "activation_health": "ready"},),
@@ -253,7 +257,7 @@ def test_cutover_report_blocks_unresolved_parity_and_missing_rollback_artifact()
         acknowledged_disabled=(),
         pending_events=(),
         active_v1_runs=(),
-        parity=_parity(identical=0, unexplained=1),
+        parity=_parity(identical=10, unexplained=1, events=events),
         now=100.0,
     )
 
