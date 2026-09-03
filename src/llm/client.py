@@ -298,6 +298,11 @@ class LLMClient:
             transcript.append({"role": "assistant", "content": resp.tool_uses})
             results: list[dict] = []
             for call in resp.tool_uses:
+                if cancel_event is not None and cancel_event.is_set():
+                    await _progress("cancelled")
+                    return LLMRunResult(
+                        "", transcript, turns, "cancelled", made, usage, call_usage
+                    )
                 await _progress("tool_use", call.name)
                 made.append(call.name)
                 if call.name not in offered:

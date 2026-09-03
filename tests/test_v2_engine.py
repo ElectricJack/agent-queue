@@ -587,6 +587,46 @@ class TestLlmToolTurnBoundaries:
         assert runs.snapshots[run_id].budget.llm_calls == 1
 
     @pytest.mark.asyncio
+    async def test_grace_expiry_stops_new_tool_dispatch_after_provider_returns(self):
+        class HeldProvider(FakeProvider):
+            def __init__(self):
+                super().__init__()
+                self.entered = asyncio.Event()
+                self.release = asyncio.Event()
+
+            @property
+            def reports_usage(self) -> bool:
+                return True
+
+            async def create_message(self, **kwargs):
+                self.entered.set()
+                await self.release.wait()
+                return await super().create_message(**kwargs)
+
+        provider = HeldProvider()
+        provider.add_tool_call(
+            "ensure_task",
+            {"project_id": "p", "title": "must-not-run"},
+            usage=TokenUsage(10, 2, True),
+        )
+        engine, adapter, runs, ref = build_llm(provider)
+        engine.cancellation_grace_seconds = 0.01
+
+        walk = asyncio.create_task(engine.run_rule(ref, "r", {}, TOOL_PRINCIPAL))
+        await provider.entered.wait()
+        run_id = next(iter(runs.snapshots))
+        cancelled = await engine.cancel(run_id, TOOL_PRINCIPAL)
+
+        assert cancelled.lifecycle is RunLifecycle.CANCELLED
+        assert adapter.calls == []
+        provider.release.set()
+        outcome = await walk
+
+        assert outcome.lifecycle is RunLifecycle.CANCELLED
+        assert adapter.calls == []
+        assert [r.error_code for r in runs.receipts] == ["cancelled"]
+
+    @pytest.mark.asyncio
     async def test_multi_turn_tool_loop_commits_one_receipt_per_completed_turn(self):
         provider = FakeProvider()
         provider.add_tool_call(

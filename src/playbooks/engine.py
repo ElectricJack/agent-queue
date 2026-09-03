@@ -309,6 +309,7 @@ class _RunControl:
     #: that already owns the lock uses this request to persist cancellation
     #: itself rather than returning control for another provider call.
     pending_cancel: tuple[Any, str] | None = None
+    cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
     cancellation: str | None = None
     final: RunSnapshot | None = None
     receipt: StepReceipt | None = None
@@ -659,6 +660,7 @@ class PlaybookEngine:
         # the scheduler race with cancel's initial snapshot read.
         if control is not None and control.pending_cancel is None:
             control.pending_cancel = (principal, reason)
+            control.cancel_event.set()
         snapshot = await repository.load_run(run_id)
         if snapshot is None:
             return RunOutcome(run_id, RunLifecycle.FAILED, "unknown_run")
@@ -1125,6 +1127,7 @@ class PlaybookEngine:
             iteration_index=None if iteration < 0 else iteration,
             run_deadline_at=snapshot.deadline_at,
             cancel_requested=snapshot.cancel_requested_at is not None,
+            cancel_event=control.cancel_event if control is not None else None,
             inputs=inputs,
             loop_frame=snapshot.loop,
             llm_turns=snapshot.llm_turns,
@@ -1168,6 +1171,11 @@ class PlaybookEngine:
                             if settled is not None:
                                 committed, receipt, boundary_outcome = settled
                             else:
+                                cancellation_principal = (
+                                    control.pending_cancel[0]
+                                    if control.pending_cancel is not None
+                                    else principal
+                                )
                                 # The model/tool turn completed before the
                                 # cancellation request won the snapshot CAS.
                                 # Rebase that completed boundary on the fresh
@@ -1186,7 +1194,10 @@ class PlaybookEngine:
                                 committed, receipt, boundary_outcome = (
                                     await self._commit_cancellation(
                                         self._cancellation_attempt(
-                                            current, step, step_id, principal
+                                            current,
+                                            step,
+                                            step_id,
+                                            cancellation_principal,
                                         ),
                                         artifact_ref,
                                         repository,

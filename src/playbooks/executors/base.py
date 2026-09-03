@@ -16,6 +16,7 @@ Two properties are what the rest of the package is built on:
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable, Collection, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -191,6 +192,10 @@ class StepContext:
     run_deadline_at: float | None = None
     step_deadline_at: float | None = None
     cancel_requested: bool = False
+    #: Live signal checked again immediately before LLM tool dispatch.  The
+    #: snapshot boolean is only the value at executor entry and cannot stop a
+    #: new side effect after cancellation races provider I/O.
+    cancel_event: asyncio.Event | None = None
     #: Resolved ``step.inputs`` (§3.4 step 4).  The engine resolves them so a
     #: resolution failure is an outcome *before* any executor runs.
     inputs: Mapping[str, Any] = field(default_factory=dict)

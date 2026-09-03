@@ -292,6 +292,7 @@ class LiveLlmExecutor:
                         on_tool_turn=persist_turn,
                         initial_turn_index=next_turn_index,
                         timeout_seconds=step.budget.timeout_seconds,
+                        cancel_event=ctx.cancel_event,
                     )
                     response_text, call_usage = run.text, run.usage or TokenUsage()
                     calls += run.turns
@@ -311,6 +312,8 @@ class LiveLlmExecutor:
                         diagnostics=("LLM call interrupted",),
                         control=StepControl.OPERATOR_DECISION,
                     )
+                if tools and run.stopped_by == "cancelled":
+                    return _result(step, ctx, outcome="cancelled", usage=usage)
                 if tools and run.stopped_by == "max_turns":
                     return _result(step, ctx, outcome="budget_exceeded", usage=usage)
                 if denied:

@@ -230,7 +230,7 @@ Three disagreements between §4.9/§10.1 and what Packages 1 and 3 shipped. Each
 
 One further disagreement between C3 and Package 3's frozen receipt identity is applied below and implemented as written.
 
-22. **Per-tool-turn durability amends Package 3's receipt cardinality, not attempt identity.** `LLMClient.run_tools(..., on_tool_turn=...)` awaits a `ToolTurnReceipt` callback after tool results are appended and before another provider call. The payload is `kind`, zero-based `turn_index`, `tool_call_ids`, `results_digest`, per-call `usage`, and the serializable transcript delta. `StepContext` carries the resume deltas plus the engine-owned callback; executors still cannot import or invoke the engine directly. `StepReceipt` adds `receipt_kind`, `turn_index`, and `operator_decision_id`. Its database identity is `(run_id, step_id, iteration, attempt, turn_index, receipt_kind)`, while every receipt from the attempt retains the same four-part idempotency key. Existing rows are `step/-1/NULL`.
+22. **Per-tool-turn durability amends Package 3's receipt cardinality, not attempt identity.** `LLMClient.run_tools(..., on_tool_turn=...)` awaits a `ToolTurnReceipt` callback after tool results are appended and before another provider call. The payload is `kind`, zero-based `turn_index`, `tool_call_ids`, `results_digest`, per-call `usage`, and the serializable transcript delta. `StepContext` carries the resume deltas, the engine-owned callback, and a live cancellation event checked before tool dispatch; executors still cannot import or invoke the engine directly. `StepReceipt` adds `receipt_kind`, `turn_index`, and `operator_decision_id`. Its database identity is `(run_id, step_id, iteration, attempt, turn_index, receipt_kind)`, while every receipt from the attempt retains the same four-part idempotency key. Existing rows are `step/-1/NULL`.
 
 ---
 
@@ -368,6 +368,7 @@ class StepContext:
     run_deadline_at: float | None
     step_deadline_at: float | None
     cancel_requested: bool
+    cancel_event: asyncio.Event | None
     services: "EngineServices"
 ```
 
