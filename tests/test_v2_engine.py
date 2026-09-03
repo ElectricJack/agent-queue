@@ -677,6 +677,37 @@ class TestLlmToolTurnBoundaries:
         assert llm_receipts[-1].error_code == "budget_exceeded"
 
     @pytest.mark.asyncio
+    async def test_interrupted_usage_counts_against_the_restart_token_budget(self):
+        step = _llm_step()
+        step = step.model_copy(
+            update={"budget": step.budget.model_copy(update={"max_total_tokens": 10})}
+        )
+        first_provider = FakeProvider()
+        first_provider.add_tool_call(
+            "ensure_task",
+            {"project_id": "p", "title": "one"},
+            usage=TokenUsage(9, 2, True),
+        )
+        first_engine, adapter, runs, ref = build_llm(first_provider, step=step)
+        adapter.queue.append(asyncio.CancelledError())
+        paused = await first_engine.run_rule(ref, "r", {}, TOOL_PRINCIPAL)
+        assert paused.lifecycle is RunLifecycle.PAUSED
+
+        resumed_provider = FakeProvider()
+        resumed_provider.add_text('{"risk":"low"}', usage=TokenUsage(1, 1, True))
+        restarted, _adapter, _runs, _ref = build_llm(
+            resumed_provider, runs=runs, step=step
+        )
+        outcome = await restarted.resume(
+            paused.run_id, OperatorResolution(kind="retry"), TOOL_PRINCIPAL
+        )
+
+        assert outcome.lifecycle is RunLifecycle.FAILED
+        assert resumed_provider.calls == []
+        llm_receipts = [r for r in runs.receipts if r.step_kind == "llm"]
+        assert llm_receipts[-1].error_code == "budget_exceeded"
+
+    @pytest.mark.asyncio
     async def test_retry_can_be_interrupted_twice_without_reusing_turn_identity(self):
         class CancelProvider(FakeProvider):
             @property

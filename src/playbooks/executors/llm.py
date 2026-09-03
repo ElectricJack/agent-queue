@@ -242,7 +242,9 @@ class LiveLlmExecutor:
             messages, next_turn_index, usage = _resume_state(prompt, ctx)
             calls = next_turn_index
             for retry_index in range(retries + 1):
-                if calls >= step.budget.max_calls:
+                if calls >= step.budget.max_calls or (
+                    usage is not None and _usage_breaches(step, usage)
+                ):
                     return _result(step, ctx, outcome="budget_exceeded", usage=usage)
                 tools = _published_tools(step, ctx)
                 denied = False
