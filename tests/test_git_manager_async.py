@@ -281,12 +281,74 @@ class TestAsyncCommitAll:
 
         for path in reserved_paths:
             pathlib.Path(clone, path).write_text("after\n")
+        _git(["add", *reserved_paths], cwd=clone)
         pathlib.Path(clone, "work.txt").write_text("real work\n")
 
         assert await mgr.acommit_all(clone, "auto remediation", exclude_plans=False)
         committed_paths = _git(["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"], cwd=clone)
         assert committed_paths.splitlines() == ["work.txt"]
         assert set(_git(["diff", "--name-only"], cwd=clone).splitlines()) == set(reserved_paths)
+
+    @pytest.mark.asyncio
+    async def test_omits_pre_staged_daemon_paths_in_unborn_repo(self, tmp_path, mgr):
+        """Async commit-all cannot include bookkeeping in an initial commit."""
+        repo = tmp_path / "unborn"
+        _git(["init", "--initial-branch=main", str(repo)], cwd=str(tmp_path))
+        _git(["config", "user.name", "Test"], cwd=str(repo))
+        _git(["config", "user.email", "t@t.com"], cwd=str(repo))
+
+        reserved_paths = (".aq/claim.json", ".aq-worktree.json", ".codex/hooks.json")
+        for path in reserved_paths:
+            target = repo / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("daemon state\n")
+        _git(["add", *reserved_paths], cwd=str(repo))
+        (repo / "work.txt").write_text("real work\n")
+
+        assert await mgr.acommit_all(str(repo), "initial task work", exclude_plans=False)
+        committed_paths = _git(["show", "--pretty=", "--name-only", "HEAD"], cwd=str(repo))
+        assert committed_paths.splitlines() == ["work.txt"]
+        assert set(_git(["ls-files", "--others", "--exclude-standard"], cwd=str(repo)).splitlines()) == set(
+            reserved_paths
+        )
+
+    @pytest.mark.asyncio
+    async def test_refuses_commit_when_reserved_path_remains_cached(self, clone, mgr, monkeypatch):
+        """Async commit-all aborts if daemon state remains staged."""
+        reserved_path = ".aq-worktree.json"
+        pathlib.Path(clone, reserved_path).write_text("daemon state\n")
+        _git(["add", reserved_path], cwd=clone)
+        pathlib.Path(clone, "work.txt").write_text("real work\n")
+
+        original_arun = mgr._arun
+
+        async def leave_reserved_path_cached(args, **kwargs):
+            if args[:3] == ["reset", "HEAD", "--"]:
+                return ""
+            return await original_arun(args, **kwargs)
+
+        monkeypatch.setattr(mgr, "_arun", leave_reserved_path_cached)
+
+        with pytest.raises(GitError, match="reserved daemon bookkeeping"):
+            await mgr.acommit_all(clone, "task work", exclude_plans=False)
+
+    @pytest.mark.asyncio
+    async def test_propagates_reserved_path_unstage_failure(self, clone, mgr, monkeypatch):
+        """Async commit-all does not suppress a real unstage failure."""
+        pathlib.Path(clone, ".aq-worktree.json").write_text("daemon state\n")
+        pathlib.Path(clone, "work.txt").write_text("real work\n")
+
+        original_arun = mgr._arun
+
+        async def fail_reserved_path_unstage(args, **kwargs):
+            if args[:3] == ["reset", "HEAD", "--"]:
+                raise GitError("synthetic reset failure")
+            return await original_arun(args, **kwargs)
+
+        monkeypatch.setattr(mgr, "_arun", fail_reserved_path_unstage)
+
+        with pytest.raises(GitError, match="synthetic reset failure"):
+            await mgr.acommit_all(clone, "task work", exclude_plans=False)
 
     @pytest.mark.asyncio
     async def test_emits_git_commit_event(self, clone, mgr):

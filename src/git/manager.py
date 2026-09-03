@@ -904,6 +904,61 @@ class GitManager:
     # repository already tracks one of these paths and ignore rules cannot
     # suppress its staged change.
     _DAEMON_BOOKKEEPING_EXCLUDES = [".aq/", ".aq-worktree.json", ".codex/"]
+    _DAEMON_BOOKKEEPING_ADD_EXCLUDES = [
+        ":(exclude).aq/**",
+        ":(exclude).aq-worktree.json",
+        ":(exclude).codex/**",
+    ]
+
+    @classmethod
+    def _daemon_bookkeeping_paths(cls, cached_output: str) -> list[str]:
+        """Return daemon-owned paths from NUL-delimited cached file output."""
+        return [
+            path
+            for path in cached_output.split("\0")
+            if path
+            and (
+                path == ".aq-worktree.json"
+                or path.startswith(".aq/")
+                or path.startswith(".codex/")
+            )
+        ]
+
+    def _unstage_daemon_bookkeeping(self, checkout_path: str) -> None:
+        """Clear any daemon bookkeeping a caller staged before commit_all."""
+        self._run(
+            ["reset", "HEAD", "--", *self._DAEMON_BOOKKEEPING_EXCLUDES],
+            cwd=checkout_path,
+        )
+
+    def _refuse_cached_daemon_bookkeeping(self, checkout_path: str) -> None:
+        """Abort before commit if daemon-owned state remains in the index."""
+        cached = self._run(
+            ["diff", "--cached", "--name-only", "-z", "--"], cwd=checkout_path
+        )
+        paths = self._daemon_bookkeeping_paths(cached)
+        if paths:
+            raise GitError(
+                "refusing to commit reserved daemon bookkeeping paths: " + ", ".join(paths)
+            )
+
+    async def _aunstage_daemon_bookkeeping(self, checkout_path: str) -> None:
+        """Async counterpart to :meth:`_unstage_daemon_bookkeeping`."""
+        await self._arun(
+            ["reset", "HEAD", "--", *self._DAEMON_BOOKKEEPING_EXCLUDES],
+            cwd=checkout_path,
+        )
+
+    async def _arefuse_cached_daemon_bookkeeping(self, checkout_path: str) -> None:
+        """Async counterpart to :meth:`_refuse_cached_daemon_bookkeeping`."""
+        cached = await self._arun(
+            ["diff", "--cached", "--name-only", "-z", "--"], cwd=checkout_path
+        )
+        paths = self._daemon_bookkeeping_paths(cached)
+        if paths:
+            raise GitError(
+                "refusing to commit reserved daemon bookkeeping paths: " + ", ".join(paths)
+            )
 
     def commit_all(
         self,
@@ -915,11 +970,11 @@ class GitManager:
     ) -> bool:
         """Stage all changes and commit. Returns True if a commit was made, False if nothing to commit.
 
-        Uses add-all-then-check-staged pattern: ``git add -A`` stages
-        everything (including untracked files the agent created), then
-        ``git diff --cached --quiet`` checks whether anything is actually
-        staged.  This avoids the race condition of checking status before
-        staging.
+        Uses add-all-then-check-staged pattern, while excluding daemon-owned
+        bookkeeping from the initial add and clearing any such paths that
+        were already staged.  ``git diff --cached --quiet`` then checks
+        whether anything is actually staged.  This avoids the race condition
+        of checking status before staging.
 
         Plan files (``.claude/plan.md``, ``plan.md``, ``.claude/plans/``)
         are automatically unstaged to prevent them from being committed to
@@ -932,12 +987,11 @@ class GitManager:
         This is intended for system-level auto-remediation commits where
         hook failures would prevent workspace cleanup.
         """
-        self._run(["add", "-A"], cwd=checkout_path)
-        for pattern in self._DAEMON_BOOKKEEPING_EXCLUDES:
-            try:
-                self._run(["reset", "HEAD", "--", pattern], cwd=checkout_path)
-            except GitError:
-                pass
+        self._unstage_daemon_bookkeeping(checkout_path)
+        self._run(
+            ["add", "-A", "--", ".", *self._DAEMON_BOOKKEEPING_ADD_EXCLUDES],
+            cwd=checkout_path,
+        )
         # Unstage plan files so they never reach target repo history.
         if exclude_plans:
             for pattern in self._PLAN_FILE_EXCLUDES:
@@ -945,6 +999,7 @@ class GitManager:
                     self._run(["reset", "HEAD", "--", pattern], cwd=checkout_path)
                 except GitError:
                     pass  # Not staged or doesn't exist — fine
+        self._refuse_cached_daemon_bookkeeping(checkout_path)
         # git diff --cached --quiet exits 1 if there are staged changes
         result = subprocess.run(
             ["git", "diff", "--cached", "--quiet"],
@@ -955,6 +1010,8 @@ class GitManager:
         )
         if result.returncode == 0:
             return False  # Nothing to commit
+        if result.returncode != 1:
+            raise GitError(f"git diff --cached --quiet failed: {result.stderr.strip()}")
         commit_args = ["commit", "-m", message]
         if no_verify:
             commit_args.append("--no-verify")
@@ -1898,21 +1955,21 @@ class GitManager:
         and therefore untrusted, but it only ever reaches git as the value of
         the ``-m`` flag in an argv list — never interpolated into a shell
         string and never in a position git could read as an option.  The
-        ``["reset", "HEAD", "--", pattern]`` call below is the template for
+        ``["reset", "HEAD", "--", path]`` call below is the template for
         pathspec arguments.  See ``docs/specs/design/trust-and-ops.md`` §2.4.
         """
-        await self._arun(["add", "-A"], cwd=checkout_path)
-        for pattern in self._DAEMON_BOOKKEEPING_EXCLUDES:
-            try:
-                await self._arun(["reset", "HEAD", "--", pattern], cwd=checkout_path)
-            except GitError:
-                pass
+        await self._aunstage_daemon_bookkeeping(checkout_path)
+        await self._arun(
+            ["add", "-A", "--", ".", *self._DAEMON_BOOKKEEPING_ADD_EXCLUDES],
+            cwd=checkout_path,
+        )
         if exclude_plans:
             for pattern in self._PLAN_FILE_EXCLUDES:
                 try:
                     await self._arun(["reset", "HEAD", "--", pattern], cwd=checkout_path)
                 except GitError:
                     pass
+        await self._arefuse_cached_daemon_bookkeeping(checkout_path)
         result = await self._arun_subprocess(
             ["git", "diff", "--cached", "--quiet"],
             cwd=checkout_path,
@@ -1920,6 +1977,8 @@ class GitManager:
         )
         if result.returncode == 0:
             return False
+        if result.returncode != 1:
+            raise GitError(f"git diff --cached --quiet failed: {result.stderr.strip()}")
         commit_args = ["commit", "-m", message]
         if no_verify:
             commit_args.append("--no-verify")

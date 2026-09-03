@@ -147,6 +147,91 @@ class TestGitManager:
         assert result.stdout.strip() == "task-2/another-feature"
 
 
+class TestCommitAll:
+    def test_omits_pre_staged_daemon_paths_in_unborn_repo(self, tmp_path):
+        """Reserved runtime state cannot reach an initial commit either."""
+        repo = tmp_path / "unborn"
+        _git(["init", "--initial-branch=main", str(repo)], cwd=str(tmp_path))
+        _git(["config", "user.name", "Test"], cwd=str(repo))
+        _git(["config", "user.email", "t@t.com"], cwd=str(repo))
+
+        reserved_paths = (".aq/claim.json", ".aq-worktree.json", ".codex/hooks.json")
+        for path in reserved_paths:
+            target = repo / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("daemon state\n")
+        _git(["add", *reserved_paths], cwd=str(repo))
+        (repo / "work.txt").write_text("real work\n")
+
+        assert GitManager().commit_all(str(repo), "initial task work", exclude_plans=False)
+        committed_paths = _git(["show", "--pretty=", "--name-only", "HEAD"], cwd=str(repo))
+        assert committed_paths.splitlines() == ["work.txt"]
+        assert set(_git(["ls-files", "--others", "--exclude-standard"], cwd=str(repo)).splitlines()) == set(
+            reserved_paths
+        )
+
+    def test_omits_pre_staged_daemon_paths_with_existing_head(self, git_repo):
+        """Pre-existing staged bookkeeping is removed before a normal commit."""
+        clone = git_repo["clone"]
+        reserved_paths = (".aq/claim.json", ".aq-worktree.json", ".codex/hooks.json")
+        for path in reserved_paths:
+            target = pathlib.Path(clone, path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("before\n")
+        _git(["add", *reserved_paths], cwd=clone)
+        _git(["commit", "-m", "tracked daemon paths"], cwd=clone)
+
+        for path in reserved_paths:
+            pathlib.Path(clone, path).write_text("after\n")
+        _git(["add", *reserved_paths], cwd=clone)
+        pathlib.Path(clone, "work.txt").write_text("real work\n")
+
+        assert GitManager().commit_all(clone, "task work", exclude_plans=False)
+        committed_paths = _git(["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"], cwd=clone)
+        assert committed_paths.splitlines() == ["work.txt"]
+        assert set(_git(["diff", "--name-only"], cwd=clone).splitlines()) == set(reserved_paths)
+
+    def test_refuses_commit_when_reserved_path_remains_cached(self, git_repo, monkeypatch):
+        """A failed unstage must not turn daemon state into a task commit."""
+        clone = git_repo["clone"]
+        reserved_path = ".aq-worktree.json"
+        pathlib.Path(clone, reserved_path).write_text("daemon state\n")
+        _git(["add", reserved_path], cwd=clone)
+        pathlib.Path(clone, "work.txt").write_text("real work\n")
+
+        mgr = GitManager()
+        original_run = mgr._run
+
+        def leave_reserved_path_cached(args, **kwargs):
+            if args[:3] == ["reset", "HEAD", "--"]:
+                return ""
+            return original_run(args, **kwargs)
+
+        monkeypatch.setattr(mgr, "_run", leave_reserved_path_cached)
+
+        with pytest.raises(GitError, match="reserved daemon bookkeeping"):
+            mgr.commit_all(clone, "task work", exclude_plans=False)
+
+    def test_propagates_reserved_path_unstage_failure(self, git_repo, monkeypatch):
+        """Commit-all must surface an actual Git error while clearing daemon state."""
+        clone = git_repo["clone"]
+        pathlib.Path(clone, ".aq-worktree.json").write_text("daemon state\n")
+        pathlib.Path(clone, "work.txt").write_text("real work\n")
+
+        mgr = GitManager()
+        original_run = mgr._run
+
+        def fail_reserved_path_unstage(args, **kwargs):
+            if args[:3] == ["reset", "HEAD", "--"]:
+                raise GitError("synthetic reset failure")
+            return original_run(args, **kwargs)
+
+        monkeypatch.setattr(mgr, "_run", fail_reserved_path_unstage)
+
+        with pytest.raises(GitError, match="synthetic reset failure"):
+            mgr.commit_all(clone, "task work", exclude_plans=False)
+
+
 class TestPushBranchForceWithLease:
     """Tests for the force_with_lease parameter on push_branch (G5 fix)."""
 
