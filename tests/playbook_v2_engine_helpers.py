@@ -251,6 +251,14 @@ class RecordingRunRepository:
         self.snapshots[run_id] = updated
         return updated
 
+    async def list_receipts(
+        self, run_id: str, *, limit: int = 500, offset: int = 0
+    ) -> list[StepReceipt]:
+        """The restart boundary reads durable attempt receipts by run."""
+        return [receipt for receipt in self.receipts if receipt.run_id == run_id][
+            offset : offset + limit
+        ]
+
 
 def with_step(
     definition: PlaybookDefinition, step_id: str, step: Any

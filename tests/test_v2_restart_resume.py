@@ -20,20 +20,25 @@ saying the opposite.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
+from uuid import uuid4
 
 import pytest
 
 from src.commands.principal import TRUSTED_LOCAL
+from src.commands.principal import PrincipalKind
 from src.playbooks.engine import (
     EventArrived,
     HumanDecision,
+    OperatorResolution,
     PlaybookEngine,
 )
 from src.playbooks.executors.base import EngineServices, ExecutionMode
 from src.playbooks.executors.foreach import collection_digest
 from src.playbooks.executors.wait import wait_id_for
 from src.playbooks.run_state import LoopFrame, RunLifecycle, RunSnapshot
+from src.playbooks.receipts import StepReceipt
 from tests.fixtures.contracts.engine_contracts import (
     ENSURE_TASK,
     LIST_TASKS,
@@ -178,6 +183,120 @@ class TestRestartAtTheWaitBoundary:
         )
         assert again.outcome == "already_terminal"
         assert len(runs.receipts) == settled
+
+
+def interrupted_attempt(
+    snapshot: RunSnapshot, *, step_id: str, step_kind: str = "command"
+) -> StepReceipt:
+    """The durable half of an executor call that died before its boundary."""
+    return StepReceipt(
+        receipt_id=uuid4().hex,
+        run_id=snapshot.run_id,
+        artifact_sha256=snapshot.artifact_sha256,
+        rule_id=snapshot.rule_id,
+        step_id=step_id,
+        step_kind=step_kind,
+        outcome="skipped",
+        started_at=1_000.0,
+        snapshot_version=snapshot.version,
+        attempt=1,
+        idempotency_key=f"{snapshot.run_id}:{step_id}:-:1",
+        # No completion is deliberately the only signal of ambiguity.
+        completed_at=None,
+    )
+
+
+class TestAmbiguousInterruption:
+    async def _ambiguous_llm(self):
+        runs = RecordingRunRepository()
+        engine, _adapter, ref = fresh_engine("review-pipeline.artifact.json", runs=runs)
+        paused = await engine.run_rule(
+            ref, "review-on-task-completed", event("task-completed-code"), TRUSTED_LOCAL,
+            pause_before_start=True,
+        )
+        snapshot = replace(
+            paused.snapshot, lifecycle=RunLifecycle.RUNNING, current_step_id="classify-risk"
+        )
+        runs.snapshots[snapshot.run_id] = snapshot
+        runs.receipts.append(
+            interrupted_attempt(snapshot, step_id="classify-risk", step_kind="llm")
+        )
+        ambiguous = await engine.resume(
+            snapshot.run_id, EventArrived(event_id="restart"), TRUSTED_LOCAL
+        )
+        return engine, runs, ambiguous
+
+    @pytest.mark.asyncio
+    async def test_retry_safe_command_replays_with_the_same_attempt_key(self):
+        runs = RecordingRunRepository()
+        engine, adapter, ref = fresh_engine("review-pipeline.artifact.json", runs=runs)
+        paused = await engine.run_rule(
+            ref, "review-on-task-completed", event("task-completed-code"), TRUSTED_LOCAL,
+            pause_before_start=True,
+        )
+        snapshot = replace(paused.snapshot, lifecycle=RunLifecycle.RUNNING)
+        runs.snapshots[snapshot.run_id] = snapshot
+        runs.receipts.append(interrupted_attempt(snapshot, step_id="ensure-review-task"))
+        restarted, replay_adapter, _ref = fresh_engine(
+            "review-pipeline.artifact.json", runs=runs
+        )
+        replay_adapter.queue.append(ok("review-1"))
+        outcome = await restarted.resume(
+            snapshot.run_id, EventArrived(event_id="restart"), TRUSTED_LOCAL
+        )
+
+        replay = next(
+            receipt
+            for receipt in runs.receipts
+            if receipt.step_id == "ensure-review-task" and receipt.completed_at is not None
+        )
+        assert replay.idempotency_key == f"{snapshot.run_id}:ensure-review-task:-:1"
+        assert any(receipt.error_code == "interrupted" for receipt in runs.receipts)
+        assert outcome.snapshot.bindings["review"]["task_id"] == "review-1"
+
+    @pytest.mark.asyncio
+    async def test_non_retry_safe_llm_pauses_for_an_operator(self):
+        _engine, _runs, outcome = await self._ambiguous_llm()
+
+        assert outcome.lifecycle is RunLifecycle.PAUSED
+        assert outcome.outcome == "operator_decision_required"
+        assert outcome.snapshot.operator_decision is not None
+        assert outcome.snapshot.bindings == {}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("kind", "payload"),
+        [
+            ("accept", {"outcome": "low", "value": {"risk": "low"}}),
+            ("retry", {}),
+            ("fail", {}),
+            ("cancel", {}),
+        ],
+    )
+    async def test_each_operator_resolution_is_receipted(self, kind, payload):
+        engine, runs, ambiguous = await self._ambiguous_llm()
+
+        resolved = await engine.resume(
+            ambiguous.run_id, OperatorResolution(kind=kind, payload=payload), TRUSTED_LOCAL
+        )
+
+        assert resolved.snapshot.operator_decision is None
+        assert any(
+            receipt.result.get("operator_resolution") == kind for receipt in runs.receipts
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_playbook_principal_cannot_resolve_its_own_run(self):
+        engine, runs, ambiguous = await self._ambiguous_llm()
+        playbook = replace(TRUSTED_LOCAL, kind=PrincipalKind.PLAYBOOK)
+
+        denied = await engine.resume(
+            ambiguous.run_id, OperatorResolution(kind="fail"), playbook
+        )
+
+        assert denied.outcome == "unauthorized"
+        assert denied.snapshot.operator_decision is not None
+        assert runs.snapshots[ambiguous.run_id].operator_decision is not None
 
 
 def crashed_mid_loop(ref, *, index: int, items: list[str]) -> RunSnapshot:

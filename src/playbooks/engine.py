@@ -30,6 +30,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 from src.commands.authorization import authorize_command
+from src.commands.principal import PrincipalKind
 from src.commands.contracts.models import OutcomeClass
 from src.playbooks.artifact_ref import ArtifactRef
 from src.playbooks.definition import (
@@ -68,6 +69,7 @@ from src.playbooks.receipts import StepReceipt, idempotency_key, transition_id
 from src.playbooks.run_state import (
     DuplicateRun,
     LoopFrame,
+    OperatorDecision,
     RunLifecycle,
     RunSnapshot,
     SnapshotVersionConflict,
@@ -754,6 +756,19 @@ class PlaybookEngine:
         mode = ExecutionMode(snapshot.mode)
         artifact_ref = await self._ref_for(snapshot)
         artifact = self._load(artifact_ref)
+        if snapshot.operator_decision is not None:
+            return await self._resolve_operator_decision(
+                snapshot, cause, principal, artifact, artifact_ref, mode, repository
+            )
+        snapshot, interrupted = await self._recover_interrupted_attempt(
+            snapshot, artifact, artifact_ref, principal, repository
+        )
+        if interrupted is not None:
+            if snapshot.lifecycle is RunLifecycle.PAUSED:
+                return RunOutcome(snapshot.run_id, snapshot.lifecycle, interrupted, snapshot)
+            # The interrupted receipt is a boundary of its own.  Re-load the
+            # durable snapshot shape before replaying the identical attempt.
+            snapshot = await repository.load_run(run_id) or snapshot
         if isinstance(cause, ChildTaskCompleted):
             return await self._resume_child_task(
                 snapshot, cause, principal, artifact, artifact_ref, mode, repository
@@ -770,6 +785,192 @@ class PlaybookEngine:
                 snapshot, pending_wait_claims=snapshot.pending_wait_claims + (claim,)
             )
         return await self._walk(snapshot, artifact, artifact_ref, principal, mode, repository)
+
+    async def _recover_interrupted_attempt(
+        self,
+        snapshot: RunSnapshot,
+        artifact: PlaybookDefinition,
+        artifact_ref: ArtifactRef,
+        principal: Any,
+        repository: Any,
+    ) -> tuple[RunSnapshot, str | None]:
+        """Turn an incomplete durable attempt into a replay or an operator stop.
+
+        An executor can have reached an external provider while its step
+        boundary has not committed.  That is the only restart ambiguity the
+        engine is allowed to infer; every other running snapshot simply
+        resumes at its current step.
+        """
+        if snapshot.lifecycle is not RunLifecycle.RUNNING or snapshot.current_step_id is None:
+            return snapshot, None
+        list_receipts = getattr(repository, "list_receipts", None)
+        if not callable(list_receipts):
+            return snapshot, None
+        receipts = await list_receipts(snapshot.run_id)
+        iteration = self._iteration_of(snapshot, snapshot.current_step_id)
+        started = [
+            receipt
+            for receipt in receipts
+            if receipt.step_id == snapshot.current_step_id
+            and receipt.iteration == iteration
+            and receipt.completed_at is None
+        ]
+        if not started:
+            return snapshot, None
+        receipt = max(started, key=lambda item: item.attempt)
+        step = artifact.steps.get(snapshot.current_step_id)
+        if step is None:
+            return snapshot, None
+        now = self.services.clock()
+        if self._retry_safe_after_interruption(step):
+            attempts = dict(snapshot.attempts)
+            attempts[f"{receipt.step_id}:{iteration}"] = max(0, receipt.attempt - 1)
+            replayable = replace(snapshot, attempts=attempts, updated_at=now)
+            interrupted = replace(
+                receipt,
+                receipt_id=uuid.uuid4().hex,
+                outcome="failure",
+                error="attempt interrupted before its boundary committed",
+                error_code="interrupted",
+                completed_at=now,
+                duration_ms=max(0, int((now - receipt.started_at) * 1000)),
+                snapshot_version=snapshot.version + 1,
+            )
+            return await repository.commit_boundary(replayable, interrupted), "replay"
+
+        attempts = dict(snapshot.attempts)
+        attempts[f"{receipt.step_id}:{iteration}"] = receipt.attempt
+        decision = OperatorDecision(
+            step_id=receipt.step_id,
+            attempt=receipt.attempt,
+            reason="interrupted attempt may have reached an external side effect",
+            raised_at=now,
+        )
+        paused = replace(
+            snapshot,
+            lifecycle=RunLifecycle.PAUSED,
+            attempts=attempts,
+            operator_decision=decision,
+            error="operator_decision_required",
+            error_code="operator_decision_required",
+            updated_at=now,
+        )
+        operator_receipt = replace(
+            receipt,
+            receipt_id=uuid.uuid4().hex,
+            outcome="operator_decision_required",
+            error=decision.reason,
+            error_code="operator_decision_required",
+            completed_at=now,
+            duration_ms=max(0, int((now - receipt.started_at) * 1000)),
+            snapshot_version=snapshot.version + 1,
+        )
+        return await repository.commit_boundary(paused, operator_receipt), "operator_decision_required"
+
+    def _retry_safe_after_interruption(self, step: Any) -> bool:
+        if not isinstance(step, CommandStep):
+            return False
+        registration = self.services.contracts.get(step.command)
+        if registration is None:
+            return False
+        execution = registration.contract.execution
+        return execution.retry_safe or execution.idempotency.mode in {"natural", "keyed"}
+
+    async def _resolve_operator_decision(
+        self,
+        snapshot: RunSnapshot,
+        cause: ResumeCause,
+        principal: Any,
+        artifact: PlaybookDefinition,
+        artifact_ref: ArtifactRef,
+        mode: ExecutionMode,
+        repository: Any,
+    ) -> RunOutcome:
+        """Apply exactly one privileged, receipted ambiguity resolution (§4.8)."""
+        if not isinstance(cause, OperatorResolution):
+            return RunOutcome(snapshot.run_id, snapshot.lifecycle, "operator_decision_required", snapshot)
+        policy = getattr(principal, "policy", None)
+        authorized = (
+            getattr(principal, "kind", None) is not PrincipalKind.PLAYBOOK
+            and (
+                not getattr(principal, "enforced", False)
+                or (policy is not None and policy.allows("aq_commands", "playbook_admin"))
+            )
+        )
+        if not authorized:
+            return RunOutcome(snapshot.run_id, snapshot.lifecycle, "unauthorized", snapshot)
+        decision = snapshot.operator_decision
+        assert decision is not None  # narrowed by the caller
+        step = artifact.steps.get(decision.step_id)
+        if step is None:
+            return RunOutcome(snapshot.run_id, snapshot.lifecycle, "contract_violation", snapshot)
+        now = self.services.clock()
+        running = replace(
+            snapshot,
+            lifecycle=RunLifecycle.RUNNING,
+            operator_decision=None,
+            error=None,
+            error_code=None,
+            updated_at=now,
+            context=dict(snapshot.context) | {"_operator_resolution": cause.kind},
+        )
+        if cause.kind == "retry":
+            walked = await self._walk(running, artifact, artifact_ref, principal, mode, repository)
+            return walked
+        attempt = _Attempt(
+            snapshot=running,
+            step_id=decision.step_id,
+            step=step,
+            started_at=now,
+            principal=principal,
+            iteration=self._iteration_of(running, decision.step_id),
+            attempt=decision.attempt,
+        )
+        attempt.snapshot = replace(
+            running,
+            context={
+                key: value
+                for key, value in running.context.items()
+                if key != "_operator_resolution"
+            },
+        )
+        attempt.idempotency_key = idempotency_key(
+            running.run_id, decision.step_id, attempt.iteration, attempt.attempt
+        )
+        attempt.receipt_result = {"operator_resolution": cause.kind}
+        if cause.kind == "accept":
+            attempt.outcome = str(cause.payload.get("outcome", ""))
+            value = cause.payload.get("value")
+            if value is not None and getattr(step, "save_result_as", None):
+                try:
+                    attempt.snapshot = bind_step_output(
+                        attempt.snapshot,
+                        step_id=step.save_result_as,
+                        value=value,
+                        declared=value.keys(),
+                    )
+                except (AttributeError, StateLimitExceeded):
+                    attempt.outcome = "state_limit_exceeded"
+                    attempt.error = "operator value exceeds the state limit"
+            committed, receipt, outcome = await self._advance_on_outcome(
+                attempt, artifact, artifact_ref, repository
+            )
+        elif cause.kind in {"fail", "cancel"}:
+            attempt.outcome = "cancelled" if cause.kind == "cancel" else "runtime_error"
+            attempt.lifecycle = (
+                RunLifecycle.CANCELLED if cause.kind == "cancel" else RunLifecycle.FAILED
+            )
+            attempt.next_step_id = None
+            committed, receipt, outcome = await self._commit(attempt, artifact_ref, repository)
+        else:
+            return RunOutcome(snapshot.run_id, snapshot.lifecycle, "contract_violation", snapshot)
+        if receipt is not None:
+            await self._emit(EVENT_STEP_COMPLETED, committed, step_id=receipt.step_id)
+        if committed.is_terminal or committed.lifecycle is not RunLifecycle.RUNNING:
+            await self._emit(EVENT_RUN_FINISHED, committed, outcome=outcome)
+            return RunOutcome(committed.run_id, committed.lifecycle, outcome, committed, (receipt,))
+        walked = await self._walk(committed, artifact, artifact_ref, principal, mode, repository)
+        return replace(walked, receipts=(receipt,) + walked.receipts if receipt else walked.receipts)
 
     async def _resume_child_task(
         self,
@@ -1016,6 +1217,16 @@ class PlaybookEngine:
         attempt.idempotency_key = idempotency_key(
             snapshot.run_id, step_id, iteration, attempt.attempt
         )
+        resolution_kind = snapshot.context.get("_operator_resolution")
+        if resolution_kind is not None:
+            attempt.snapshot = replace(
+                snapshot,
+                context={
+                    key: value
+                    for key, value in snapshot.context.items()
+                    if key != "_operator_resolution"
+                },
+            )
 
         # 2. Cancellation — read from the snapshot the engine is about to
         #    write, so a live run cannot overwrite a cancellation.
@@ -1103,7 +1314,9 @@ class PlaybookEngine:
             repository.record_command(step_id, step.command, result.recorded_command_args)
 
         attempt.receipt_inputs = result.receipt_inputs
-        attempt.receipt_result = result.receipt_result
+        attempt.receipt_result = dict(result.receipt_result)
+        if resolution_kind is not None:
+            attempt.receipt_result["operator_resolution"] = resolution_kind
         attempt.idempotency_key = result.idempotency_key or attempt.idempotency_key
         if result.diagnostics:
             attempt.error = "; ".join(result.diagnostics)
