@@ -1666,12 +1666,17 @@ def release_check(
     test can perturb one.
 
     *activations* are mappings shaped like the rows
-    ``playbook_migration_queries`` returns.  A row that is disabled or
-    acknowledged does not block: an operator has already decided about it, and
-    a decision made on purpose is not a regression.  A row may carry its own
-    ``current_profiles`` map — the daemon supplies one resolved from its *live*
-    profile registry, because that, not the shipped defaults, is what its
-    artifacts were compiled against.
+    ``playbook_migration_queries`` returns.  A row that is **disabled** does
+    not block: an operator has already decided about it, and a decision made on
+    purpose is not a regression.  An acknowledgement does *not* excuse an
+    enabled row.  The waiver says "this playbook is not migrating"; an enabled
+    activation says it is already running V2.  Both cannot be true, and
+    honouring the waiver anyway let a stale artifact keep executing while this
+    gate reported a clean fleet (``sound-horizon-20``).  An operator who means
+    the waiver disables the activation, and *that* is the state this gate
+    reads.  A row may carry its own ``current_profiles`` map — the daemon
+    supplies one resolved from its *live* profile registry, because that, not
+    the shipped defaults, is what its artifacts were compiled against.
 
     Every **other** enabled row is either compared or named.  A row with no
     usable ``artifact_commands`` — a missing artifact, an unreadable one, an
@@ -1720,7 +1725,12 @@ def release_check(
         )
 
     for row in activations:
-        if not row.get("enabled", True) or row.get("acknowledged_by"):
+        # Only a disabled activation is excused.  `acknowledged_by` is
+        # deliberately *not* consulted here: a waiver recorded against a
+        # playbook whose activation is still enabled describes a state that
+        # does not exist, and skipping on it suppressed the compatibility
+        # check for live execution (`sound-horizon-20`).
+        if not row.get("enabled", True):
             continue
         playbook_id = str(row.get("playbook_id") or "")
         commands = row.get("artifact_commands") or {}
