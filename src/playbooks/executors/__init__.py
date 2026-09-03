@@ -15,6 +15,10 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from src.playbooks.executors.agent_task import (
+    LiveAgentTaskExecutor,
+    SymbolicAgentTaskExecutor,
+)
 from src.playbooks.executors.base import (
     Cancellable,
     EngineServices,
@@ -36,6 +40,11 @@ from src.playbooks.executors.foreach import ForEachExecutor
 from src.playbooks.executors.terminal import TerminalExecutor
 from src.playbooks.executors.wait import LiveWaitExecutor, ReportingWaitExecutor
 
+#: One shared symbolic agent-task executor: it has no state and no I/O, so
+#: dry-run and shadow get the same object for the same reason the
+#: deterministic three do.
+SYMBOLIC_AGENT_TASK_EXECUTOR = SymbolicAgentTaskExecutor()
+
 #: One shared instance per deterministic step kind (§3.1.2).
 DECISION_EXECUTOR = DecisionExecutor()
 FOREACH_EXECUTOR = ForEachExecutor()
@@ -46,6 +55,7 @@ REPORTING_WAIT_EXECUTOR = ReportingWaitExecutor()
 
 EXECUTORS: Mapping[ExecutionMode, Mapping[str, Executor]] = {
     ExecutionMode.LIVE: {
+        "agent_task": LiveAgentTaskExecutor(),
         "command": LiveCommandExecutor(),
         "decision": DECISION_EXECUTOR,
         "foreach": FOREACH_EXECUTOR,
@@ -53,6 +63,7 @@ EXECUTORS: Mapping[ExecutionMode, Mapping[str, Executor]] = {
         "terminal": TERMINAL_EXECUTOR,
     },
     ExecutionMode.DRY_RUN: {
+        "agent_task": SYMBOLIC_AGENT_TASK_EXECUTOR,
         "command": PreviewCommandExecutor(),
         "decision": DECISION_EXECUTOR,
         "foreach": FOREACH_EXECUTOR,
@@ -60,6 +71,7 @@ EXECUTORS: Mapping[ExecutionMode, Mapping[str, Executor]] = {
         "terminal": TERMINAL_EXECUTOR,
     },
     ExecutionMode.SHADOW: {
+        "agent_task": SYMBOLIC_AGENT_TASK_EXECUTOR,
         "command": ShadowCommandExecutor(),
         "decision": DECISION_EXECUTOR,
         "foreach": FOREACH_EXECUTOR,
@@ -94,6 +106,7 @@ __all__ = [
     "Executor",
     "ExecutorResult",
     "ForEachExecutor",
+    "LiveAgentTaskExecutor",
     "LiveCommandExecutor",
     "LiveWaitExecutor",
     "PreviewCommandExecutor",
@@ -101,6 +114,7 @@ __all__ = [
     "ShadowCommandExecutor",
     "StepContext",
     "StepControl",
+    "SymbolicAgentTaskExecutor",
     "TerminalExecutor",
     "TokenUsage",
     "UnknownStepType",

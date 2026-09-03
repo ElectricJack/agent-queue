@@ -8,6 +8,17 @@
           "title": "Cancel Child",
           "type": "boolean"
         },
+        "capability_narrowing": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CapabilityNarrowing"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "description": {
           "anyOf": [
             {
@@ -342,6 +353,61 @@
         "operands"
       ],
       "title": "BooleanExpr",
+      "type": "object"
+    },
+    "CapabilityNarrowing": {
+      "additionalProperties": false,
+      "description": "Explicit per-step narrowing of a delegated agent task's capabilities.\n\nRoadmap §2: \"Delegated agent-task permissions are the intersection of\nparent permissions, child profile permissions, and explicit per-step\nnarrowing.\"  This is that third term, and it is a *narrowing* only: the\nexecutor intersects, never unions, so listing a name the parent or the\nchild profile does not hold grants nothing.\n\n``None`` in a namespace means \"this step narrows nothing here\" — the\nidentity of intersection, not deny-all.  An explicitly empty list means\n*none*, matching :class:`~src.profiles.capabilities.CapabilityPolicy`'s\n\"empty means none\" rule.  The distinction matters: a step that wants a\nchild with no AQ commands writes ``aq_commands: []``, and a step that\ndoes not care omits the key.\n\nPackage 2 shipped ``AgentTaskStep`` without this field; Package 4's T-8\nadded it, because the roadmap constraint above is not implementable\nwithout it.  See the child plan §2.1 and §4.5.",
+      "properties": {
+        "aq_commands": {
+          "anyOf": [
+            {
+              "items": {
+                "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$",
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Aq Commands"
+        },
+        "harness_tools": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Harness Tools"
+        },
+        "plugin_tools": {
+          "anyOf": [
+            {
+              "items": {
+                "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$",
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Plugin Tools"
+        }
+      },
+      "title": "CapabilityNarrowing",
       "type": "object"
     },
     "CoalesceValue": {

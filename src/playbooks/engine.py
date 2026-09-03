@@ -33,6 +33,7 @@ from src.commands.authorization import authorize_command
 from src.commands.contracts.models import OutcomeClass
 from src.playbooks.artifact_ref import ArtifactRef
 from src.playbooks.definition import (
+    AgentTaskStep,
     CommandStep,
     ForEachStep,
     PlaybookDefinition,
@@ -41,6 +42,12 @@ from src.playbooks.definition import (
     step_targets,
 )
 from src.playbooks.executors import executor_for
+from src.playbooks.executors.agent_task import (
+    cancel_child_task,
+    child_outcome_for_status,
+    narrow_for_child,
+    resolve_profile_policy,
+)
 from src.playbooks.executors.base import (
     ENGINE_RESERVED_OUTCOMES,
     GOTO_CAPABLE_STEP_KINDS,
@@ -229,6 +236,13 @@ class _Attempt:
     wait_id: str | None = None
     loop_frame: LoopFrame | None = None
     clear_loop: bool = False
+    #: Set by the agent-task executor.  Persisted on the snapshot *before*
+    #: the run is observable as paused, so a paused run always knows what it
+    #: is waiting for.
+    child_task_id: str | None = None
+    #: Clear this run's registered waits at the boundary — what reconciling a
+    #: delivered child completion does.
+    clear_waits: bool = False
 
 
 class PlaybookEngine:
@@ -411,6 +425,10 @@ class PlaybookEngine:
         mode = ExecutionMode(snapshot.mode)
         artifact_ref = await self._ref_for(snapshot)
         artifact = self._load(artifact_ref)
+        if isinstance(cause, ChildTaskCompleted):
+            return await self._resume_child_task(
+                snapshot, cause, principal, artifact, artifact_ref, mode, repository
+            )
         snapshot = replace(
             snapshot,
             lifecycle=RunLifecycle.RUNNING,
@@ -424,7 +442,113 @@ class PlaybookEngine:
             )
         return await self._walk(snapshot, artifact, artifact_ref, principal, mode, repository)
 
-    async def cancel(self, run_id: str, principal: Any, *, reason: str = "operator") -> RunOutcome:
+    async def _resume_child_task(
+        self,
+        snapshot: RunSnapshot,
+        cause: ChildTaskCompleted,
+        principal: Any,
+        artifact: PlaybookDefinition,
+        artifact_ref: ArtifactRef,
+        mode: ExecutionMode,
+        repository: Any,
+    ) -> RunOutcome:
+        """§4.5 step 5 — reconcile one child completion, exactly once.
+
+        The registered wait *is* the idempotency token.  The first delivery
+        clears it in the same boundary that takes the edge, so a second
+        delivery of the same ``(run_id, step_id, task_id)`` finds nothing to
+        reconcile and returns without a receipt and without a transition.
+        That is why this does not re-enter the executor: re-running an
+        ``AgentTaskStep`` would create a *second* child task, which is the
+        expensive form of a duplicate side effect.
+        """
+        wait = snapshot.wait
+        step_id = snapshot.current_step_id
+        step = artifact.steps.get(step_id) if step_id else None
+        if (
+            wait is None
+            or wait.kind != "agent_task"
+            or wait.match.get("task_id") != cause.task_id
+            or not isinstance(step, AgentTaskStep)
+        ):
+            logger.info(
+                "v2 run %s ignored a duplicate child completion for task %s",
+                snapshot.run_id,
+                cause.task_id,
+            )
+            return RunOutcome(
+                snapshot.run_id, snapshot.lifecycle, "duplicate_child_completion", snapshot
+            )
+
+        now = self.services.clock()
+        running = replace(
+            snapshot,
+            lifecycle=RunLifecycle.RUNNING,
+            context=dict(snapshot.context) | self._resume_context(cause),
+            updated_at=now,
+        )
+        iteration = self._iteration_of(running, step_id)
+        attempt = _Attempt(
+            snapshot=running,
+            step_id=step_id or "",
+            step=step,
+            started_at=now,
+            principal=principal,
+            iteration=iteration,
+            attempt=self._next_attempt(running, step_id or "", iteration),
+        )
+        attempt.idempotency_key = idempotency_key(
+            running.run_id, step_id or "", iteration, attempt.attempt
+        )
+        attempt.outcome = child_outcome_for_status(cause.status)
+        attempt.clear_waits = True
+        attempt.wait_id = wait.wait_id
+        attempt.wait_changes = WaitChangeSet(clear_run_waits=True)
+        attempt.receipt_result = {"child_task_id": cause.task_id, "child_status": cause.status}
+        if attempt.outcome == "runtime_error":
+            attempt.error = f"child status {cause.status!r} has no mapped outcome"
+        if attempt.outcome == "timed_out":
+            attempt.timed_out = True
+        if step.save_result_as:
+            try:
+                attempt.snapshot = bind_step_output(
+                    running,
+                    step_id=step.save_result_as,
+                    value={"task_id": cause.task_id, "status": cause.status},
+                    declared=("task_id", "status"),
+                )
+            except StateLimitExceeded:
+                attempt.outcome = "state_limit_exceeded"
+                attempt.error = "bound child result exceeds the state limit"
+
+        committed, receipt, outcome = await self._advance_on_outcome(
+            attempt, artifact, artifact_ref, repository
+        )
+        if receipt is not None:
+            await self._emit(EVENT_STEP_COMPLETED, committed, step_id=receipt.step_id)
+        if committed.is_terminal or committed.lifecycle is not RunLifecycle.RUNNING:
+            await self._emit(EVENT_RUN_FINISHED, committed, outcome=outcome)
+            return RunOutcome(
+                committed.run_id,
+                committed.lifecycle,
+                outcome,
+                committed,
+                tuple(r for r in (receipt,) if r is not None),
+            )
+        walked = await self._walk(committed, artifact, artifact_ref, principal, mode, repository)
+        return replace(
+            walked,
+            receipts=tuple(r for r in (receipt,) if r is not None) + walked.receipts,
+        )
+
+    async def cancel(
+        self,
+        run_id: str,
+        principal: Any,
+        *,
+        reason: str = "operator",
+        cancel_children: bool | None = None,
+    ) -> RunOutcome:
         """Record a cancellation intent durably.
 
         The intent is durable *before* the engine has done anything about it,
@@ -447,7 +571,47 @@ class PlaybookEngine:
             reason=reason,
             requested_by=getattr(principal, "describe", lambda: "operator")(),
         )
+        await self._cancel_children(updated, principal, cancel_children)
         return RunOutcome(run_id, updated.lifecycle, "cancel_requested", updated)
+
+    async def _cancel_children(
+        self, snapshot: RunSnapshot, principal: Any, cancel_children: bool | None
+    ) -> None:
+        """§4.9 and §7.4 — propagate cancellation without granting authority.
+
+        ``cancel_children=None`` means "use each ``AgentTaskStep``'s
+        ``cancel_child``", which the model defaults to ``False``: cancelling
+        a parent leaves shared or reused child work running unless someone
+        said otherwise.  The stop is dispatched as the **narrowed child**
+        principal, re-derived from the parent's *current* policy, so a parent
+        whose authority has since shrunk cannot reach the child through the
+        cancel path.
+        """
+        if not snapshot.agent_task_ids:
+            return
+        step = None
+        if snapshot.current_step_id:
+            artifact_ref = await self._ref_for(snapshot)
+            step = self._load(artifact_ref).steps.get(snapshot.current_step_id)
+        if not isinstance(step, AgentTaskStep):
+            return
+        if not (step.cancel_child if cancel_children is None else cancel_children):
+            return
+        policy, reason = await resolve_profile_policy(self.services, step.profile_id)
+        if policy is None:
+            logger.warning(
+                "v2 run %s could not cancel its child: %s", snapshot.run_id, reason
+            )
+            return
+        child_principal = narrow_for_child(
+            step, principal, policy, snapshot.current_step_id or ""
+        )
+        for task_id in snapshot.agent_task_ids:
+            cancelled, diagnostic = await cancel_child_task(
+                task_id, principal=child_principal, services=self.services
+            )
+            if not cancelled:
+                logger.warning("v2 run %s: %s", snapshot.run_id, diagnostic)
 
     # ------------------------------------------------------------------
     # The walk
@@ -658,7 +822,10 @@ class PlaybookEngine:
             attempt.lifecycle = RunLifecycle.PAUSED
             attempt.wait = wait
             attempt.wait_id = wait.wait_id
-            attempt.wait_changes = WaitChangeSet(register=(wait,))
+            attempt.wait_changes = WaitChangeSet(
+                register=(wait,), clear_run_waits=result.child_task_id is not None
+            )
+            attempt.child_task_id = result.child_task_id
             attempt.next_step_id = attempt.step_id
             return await self._commit(attempt, artifact_ref, repository)
         if result.control is StepControl.UNRESOLVED:
@@ -746,9 +913,13 @@ class PlaybookEngine:
         }
         attempts = dict(snapshot.attempts)
         attempts[f"{attempt.step_id}:{attempt.iteration}"] = attempt.attempt
+        agent_task_ids = snapshot.agent_task_ids
+        if attempt.child_task_id and attempt.child_task_id not in agent_task_ids:
+            agent_task_ids = agent_task_ids + (attempt.child_task_id,)
         next_snapshot = replace(
             snapshot,
             lifecycle=attempt.lifecycle,
+            agent_task_ids=agent_task_ids,
             current_step_id=attempt.next_step_id or attempt.step_id,
             wait=self._next_wait(attempt),
             loop=self._next_loop(attempt),
@@ -791,10 +962,11 @@ class PlaybookEngine:
             completed_at=now,
             duration_ms=max(0, int((now - attempt.started_at) * 1000)),
         )
+        wait_changes = attempt.wait_changes
+        if attempt.clear_waits and wait_changes.is_empty:
+            wait_changes = WaitChangeSet(clear_run_waits=True)
         try:
-            committed = await repository.commit_boundary(
-                next_snapshot, receipt, attempt.wait_changes
-            )
+            committed = await repository.commit_boundary(next_snapshot, receipt, wait_changes)
         except SnapshotVersionConflict:
             # Two writers at one boundary means two engines think they own
             # the run.  The write is never retried: silently merging them is
@@ -999,6 +1171,8 @@ class PlaybookEngine:
     def _next_wait(attempt: _Attempt) -> WaitSpec | None:
         if attempt.wait is not None:
             return attempt.wait
+        if attempt.clear_waits:
+            return None
         changes = attempt.wait_changes
         if changes.clear_wait_ids or changes.clear_run_waits:
             return None
