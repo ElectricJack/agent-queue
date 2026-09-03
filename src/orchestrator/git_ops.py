@@ -427,6 +427,8 @@ class GitOpsMixin:
             return False
         try:
             default_branch = ctx.default_branch or "main"
+            if pr_mode and await self.git.ahas_uncommitted_changes(workspace, strict=True) is not False:
+                return False
             if await self._abranch_has_no_commits(workspace, branch, default_branch):
                 return True
             if pr_mode:
@@ -891,8 +893,13 @@ class GitOpsMixin:
                         True,  # fixable — agent can commit and push
                     )
                 )
-            branch_has_no_commits = not has_uncommitted and await self._abranch_has_no_commits(
-                workspace, pr_delivery_branch, default_branch
+            strict_clean = await self.git.ahas_uncommitted_changes(workspace, strict=True) is False
+            branch_has_no_commits = (
+                strict_clean
+                and not has_uncommitted
+                and await self._abranch_has_no_commits(
+                    workspace, pr_delivery_branch, default_branch
+                )
             )
             branch_is_absent = False
             if (
