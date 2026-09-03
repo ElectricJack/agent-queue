@@ -861,7 +861,7 @@ regenerate from it. `*` = new. Response models: add `src/api/models/task.py` ent
 | `aq project ready [--project-id] [--profile-id] [--brief]`* | `project_ready` (+ `profile_id` filter) | yes |
 | `aq formula list \| show \| cook`* | `formula_*`* | list/show yes; cook no |
 | `aq pool status [-p] [--profile]`* | `pool_status`* — desired/active/idle/claims per key, last `pool.scaled` reason | no |
-| `aq pool scale <profile> [-p] --min N --max N`* | `pool_scale`* — edits the profile's `## Config` in the vault (source of truth), sync follows | no |
+| `aq pool scale <profile> --min N --max N`* | `pool_scale`* — edits the **system** profile's `## Config` in the vault (source of truth), sync follows. Profiles are global, so the bounds apply to every project; each project's `max_concurrent_agents` still caps its own pool at runtime. `--project-id` is accepted and ignored for one release | no |
 | `aq session drain-ack` | `session_drain_ack` | yes |
 | `aq schema` | `get_schema` (+ `outcome`, `work_outcome`, `failure_class`, `session_state`, `claim_phase`, `claim_result`, `lifecycle`, `agent_state` incl. `RETIRED`) | yes |
 

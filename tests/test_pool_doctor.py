@@ -398,18 +398,11 @@ async def test_holder_consistency_ignores_push_launched_holder(db):
     assert finding.data.get("count", 0) == 0
 
 
-async def test_orphan_agents_sees_project_scoped_pool_profile(db):
-    """Project-scoped profile ids are ``<project>:<agent-type>`` (M2).
-
-    ``agents.profile_id`` holds the bare agent-type id, so the profile id
-    has to be normalised the same way ``core.py``/``pools.py`` do or the
-    check never matches a project-scoped pool agent.
-    """
+async def test_orphan_agents_matches_any_pool_profile(db):
+    """Profiles are global, so ``agents.profile_id`` is the profile id verbatim."""
     from src.config import AppConfig
 
-    await db.create_profile(
-        AgentProfile(id=f"{PROJECT_ID}:scoped", name="scoped", lifecycle="pool")
-    )
+    await db.create_profile(AgentProfile(id="scoped", name="scoped", lifecycle="pool"))
     cfg = AppConfig()
     cfg.swarm.prepare_timeout = 5
     await db.create_agent(Agent(id="a9", name="a9", profile_id="scoped", state=AgentState.ERROR))

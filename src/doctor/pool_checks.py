@@ -149,16 +149,13 @@ async def _fix_stale_worktree_checkouts(ctx: DoctorContext) -> CheckResult:
 
 
 async def _pool_profile_ids(db) -> set[str]:
-    """Bare agent-type ids of every ``lifecycle: pool`` profile.
+    """Agent-type ids of every ``lifecycle: pool`` profile.
 
-    A project-scoped profile is stored as ``<project>:<agent-type>`` while
-    ``agents.profile_id`` holds the bare agent-type id, so the id has to be
-    normalised before it can be matched against an agent — the same
-    ``rsplit(":", 1)[-1]`` the orchestrator's reaper (``core.py``) and
-    ``_reconcile_pools`` (``pools.py``) use.
+    Profiles are global, so the id is already the bare agent-type that
+    ``agents.profile_id`` holds — no normalisation needed.
     """
     return {
-        p.id.rsplit(":", 1)[-1]
+        p.id
         for p in await db.list_profiles()
         if getattr(p, "lifecycle", "task") == "pool"
     }

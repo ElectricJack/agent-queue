@@ -74,10 +74,10 @@ EXCLUDED_PROFILE_IDS: frozenset[str] = frozenset({"supervisor"})
 
 
 def _is_project_scoped(profile_id: str) -> bool:
-    """Project-scoped rows are ``project:{pid}:{profile_id}`` overrides.
+    """True for a retired ``project:{pid}:{profile_id}`` override row.
 
-    They are found by ``Orchestrator._resolve_profile`` via the *bare*
-    profile id, so the prefixed row id is never itself a valid default.
+    Project-scoped profiles were removed; a row left behind by an older
+    release (until the startup migration drops it) is never a valid default.
     """
     return profile_id.startswith("project:")
 

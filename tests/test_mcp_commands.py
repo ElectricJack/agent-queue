@@ -405,10 +405,14 @@ async def test_delete_mcp_server_removes_vault_registry_and_catalog(
     assert registry.get("files", project_id="alpha") is not None
     assert catalog.get("files", project_id="alpha") is not None
 
-    # A profile in *another* project does not block a project-scope delete.
+    # Profiles are global, so any profile naming the server blocks the delete —
+    # the reference cannot be attributed to one project's copy of it.
     await handler.db.create_profile(
-        AgentProfile(id="project:beta:reviewer", name="Beta reviewer", mcp_servers=["files"])
+        AgentProfile(id="reviewer", name="Reviewer", mcp_servers=["files"])
     )
+    blocked = await handler._cmd_delete_mcp_server({"name": "files", "project_id": "alpha"})
+    assert blocked["referenced_by"] == ["reviewer"]
+    await handler.db.delete_profile("reviewer")
 
     result = await handler._cmd_delete_mcp_server({"name": "files", "project_id": "alpha"})
 

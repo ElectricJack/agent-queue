@@ -260,17 +260,10 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
                 "available to resolve it"
             )
 
+        # Profiles are global: one definition per agent-type id.
         raw = self._profile_id_raw.strip()
-        project_id = self.event.get("project_id") if isinstance(self.event, dict) else None
-        candidates: list[str] = []
-        if raw.startswith("project:") or ":" in raw:
-            candidates.append(raw)
-        else:
-            if project_id:
-                candidates.append(f"project:{project_id}:{raw}")
-            candidates.append(raw)
 
-        for candidate in candidates:
+        for candidate in (raw,):
             try:
                 prof = await self.db.get_profile(candidate)
             except Exception:
@@ -292,10 +285,7 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
                 )
                 return None
 
-        return (
-            f"profile '{raw}' not found "
-            f"(tried {candidates}) — sandboxed playbook cannot run unscoped"
-        )
+        return f"profile '{raw}' not found — sandboxed playbook cannot run unscoped"
 
     # ------------------------------------------------------------------
     # Daily playbook token cap (roadmap 5.2.8)

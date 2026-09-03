@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   profileEditPayload,
   profileToForm,
-  projectProfileEditPayload,
   type ProfileFormState,
 } from "../profileForm";
 import type { ProfileDetail } from "../../../api/hooks";
@@ -92,32 +91,5 @@ describe("profileEditPayload", () => {
     expect(body.description).toBeNull();
     expect(body.permission_mode).toBeNull();
     expect(body.system_prompt_suffix).toBeNull();
-  });
-});
-
-describe("projectProfileEditPayload", () => {
-  it("carries the same field shape as the global payload", () => {
-    const scoped = projectProfileEditPayload("proj", "coding", FORM);
-    const globalBody = profileEditPayload("coding", FORM);
-    expect(scoped).toEqual({
-      project_id: "proj",
-      agent_type: "coding",
-      name: FORM.name,
-      description: FORM.description,
-      default_class: FORM.default_class,
-      permission_mode: FORM.permission_mode,
-      system_prompt_suffix: FORM.system_prompt_suffix,
-      allowed_tools: FORM.allowed_tools,
-      mcp_servers: FORM.mcp_servers,
-    });
-    // Same body either side of the id fields — one form, two routes.
-    const dropIds = (body: Record<string, unknown>) => {
-      const rest = { ...body };
-      delete rest.project_id;
-      delete rest.agent_type;
-      delete rest.profile_id;
-      return rest;
-    };
-    expect(dropIds(scoped)).toEqual(dropIds(globalBody));
   });
 });

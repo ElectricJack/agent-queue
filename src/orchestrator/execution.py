@@ -20,7 +20,6 @@ from src.notifications.events import (
     TaskStartedEvent,
     TaskThreadOpenEvent,
 )
-from src.profiles.sync import underlying_agent_type
 from src.review_keys import is_review_completion
 from src.models import (
     AgentOutput,
@@ -159,7 +158,7 @@ class ExecutionMixin:
                         "timeout",
                         error=f"Task execution timed out after {timeout}s",
                         agent_id=action.agent_id,
-                        agent_type=underlying_agent_type(profile.id) if profile else None,
+                        agent_type=profile.id if profile else None,
                     )
                 await self._emit_text_notify(
                     f"**Task Timed Out:** `{action.task_id}` — exceeded {timeout}s. Marked as BLOCKED.",
@@ -232,7 +231,7 @@ class ExecutionMixin:
             return f"required profile '{task.profile_id}' is not configured"
         return task_agent_mismatch(
             task, agent, task_profile=task_profile,
-            agent_profile=resolve_agent_profile(agent, task.project_id, profiles),
+            agent_profile=resolve_agent_profile(agent, profiles),
             harness_registry=getattr(self, "harness_registry", None),
             intelligence_classes=getattr(
                 getattr(self, "session_spec_builder", None), "_intelligence_classes", None,
@@ -367,10 +366,7 @@ class ExecutionMixin:
         profile = await self._resolve_profile(task)
         from src.agents.configuration import apply_agent_overrides
         if profile:
-            worker_profile = (
-                await self.db.get_profile(f"project:{task.project_id}:{agent.profile_id}")
-                or await self.db.get_profile(agent.profile_id)
-            )
+            worker_profile = await self.db.get_profile(agent.profile_id)
             profile = apply_agent_overrides(profile, agent, agent_profile=worker_profile)
         if profile:
             # Report the selected session CLI rather than the removed runtime.
@@ -756,10 +752,7 @@ class ExecutionMixin:
         # Re-resolve unmodified definitions: workspace preparation may await
         # long enough for either routing or worker settings to change.
         profile = await self._resolve_profile(task)
-        worker_profile = (
-            await self.db.get_profile(f"project:{task.project_id}:{agent.profile_id}")
-            or await self.db.get_profile(agent.profile_id)
-        )
+        worker_profile = await self.db.get_profile(agent.profile_id)
         profile = apply_agent_overrides(profile, agent, agent_profile=worker_profile)
         from src.sessions.provider import SessionDiedDuringStartup, SessionHandle
 

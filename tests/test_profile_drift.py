@@ -283,9 +283,12 @@ def test_check_is_registered_in_the_default_registry():
 def test_check_has_no_fix():
     # Auto-overwriting would silently discard operator edits; the repair is
     # the explicit ``profile_reseed`` command.
-    (check,) = profile_checks_mod.profile_checks()
-    assert check.fix is None
-    assert check.owner == "profiles"
+    checks = {c.id: c for c in profile_checks_mod.profile_checks()}
+    drift = checks["profiles.system_drift"]
+    assert drift.fix is None
+    assert drift.owner == "profiles"
+    # The retired-override migration, by contrast, is safe to apply.
+    assert checks["profiles.project_overrides"].fix is not None
 
 
 async def test_check_ok_when_everything_matches(defaults_root, data_dir, monkeypatch):

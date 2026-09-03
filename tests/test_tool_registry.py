@@ -54,7 +54,7 @@ _PLUGIN_TOOLS = [
     _make_tool("memory_reindex", "memory"),
     _make_tool("memory_compact", "memory"),
     _make_tool("memory_stats", "memory"),
-    _make_tool("edit_project_profile", "memory"),
+    _make_tool("memory_forget", "memory"),
     _make_tool("list_notes", "notes"),
     _make_tool("write_note", "notes"),
     _make_tool("read_note", "notes"),

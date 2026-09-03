@@ -1,13 +1,13 @@
 import { useEffect } from "react";
 import { CheckIcon, ArrowUturnLeftIcon, ArrowTopRightOnSquareIcon } from "@heroicons/react/24/outline";
 import { useNavigate } from "react-router-dom";
-import { useProject, useProjectProfiles, useEditProject } from "../../../api/hooks";
+import { useProfiles, useProject, useEditProject } from "../../../api/hooks";
 import {
   type FormState,
   parseOptionalInt,
   parseOptionalFloat,
   projectToForm,
-  profileOptionsFromRows,
+  dedupeProfileOptions,
 } from "../../../pages/project/Config";
 import { Section, Field } from "../../../components/profile/FormSection";
 import { useDirtyForm } from "../useDirtyForm";
@@ -20,7 +20,7 @@ type Args = Extract<ContextualSettingsArgs, { subject: "project" }>;
 export default function ProjectSubject({ args, setToolbar }: PaneViewProps<Args>) {
   const navigate = useNavigate();
   const { data: project, isLoading, error } = useProject(args.subjectId);
-  const { data: profiles } = useProjectProfiles(args.subjectId);
+  const { data: profiles } = useProfiles();
   const editProject = useEditProject();
   const { value: form, setValue: setForm, dirty, resetBaseline } = useDirtyForm<FormState>(
     projectToForm(project ?? {}),
@@ -72,7 +72,7 @@ export default function ProjectSubject({ args, setToolbar }: PaneViewProps<Args>
   if (error) return <p className="text-sm text-red-400">{(error as Error).message}</p>;
   if (!project) return <p className="text-sm text-gray-500">Project not found.</p>;
 
-  const profileOptions = profileOptionsFromRows(profiles?.agent_types ?? []);
+  const profileOptions = dedupeProfileOptions(profiles ?? []);
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) =>
     setForm((prev) => ({ ...prev, [key]: value }));
 

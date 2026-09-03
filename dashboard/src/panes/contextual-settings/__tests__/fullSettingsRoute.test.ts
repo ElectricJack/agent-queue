@@ -5,10 +5,6 @@ describe("fullSettingsRoute", () => {
   it.each([
     [{ subject: "project", subjectId: "demo" } as const, "/projects/demo/config"],
     [{ subject: "profile", subjectId: "reviewer" } as const, "/settings/profiles"],
-    [
-      { subject: "project-profile", subjectId: "coder", projectId: "demo" } as const,
-      "/projects/demo/config",
-    ],
     [{ subject: "playbook", subjectId: "review-gate" } as const, "/playbooks/review-gate"],
     [
       { subject: "intelligence-class", subjectId: "fast-off" } as const,

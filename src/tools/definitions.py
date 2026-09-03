@@ -62,10 +62,6 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "import_profile": "agent",
     "subagent_event": "agent",
     # agent profiles (project-scoped CRUD wrappers)
-    "create_project_profile": "agent",
-    "edit_project_profile": "agent",
-    "delete_project_profile": "agent",
-    "list_project_profiles": "agent",
     "show_effective_profile": "agent",
     # mcp — registry + tool catalog (vault-sourced)
     "list_mcp_servers": "mcp",
@@ -2725,10 +2721,6 @@ _ALL_TOOL_DEFINITIONS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "project_id": {
-                    "type": "string",
-                    "description": "Only audit this project's profiles",
-                },
                 "legacy_only": {
                     "type": "boolean",
                     "description": "Only report profiles that still need migration",
@@ -4016,84 +4008,6 @@ _ALL_TOOL_DEFINITIONS = [
                 },
             },
             "required": ["playbook_id", "enabled"],
-        },
-    },
-    # -----------------------------------------------------------------------
-    # Project-scoped agent profile CRUD wrappers
-    # -----------------------------------------------------------------------
-    {
-        "name": "create_project_profile",
-        "description": (
-            "Create a project-scoped agent profile.  Composes "
-            "``project:<project_id>:<agent_type>`` as the profile id and "
-            "writes the vault markdown.  When ``seed_from_global`` is true "
-            "(default), starts from the matching global ``<agent_type>`` "
-            "profile so the override is a delta."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {"type": "string"},
-                "agent_type": {"type": "string"},
-                "seed_from_global": {"type": "boolean", "default": True},
-                "name": {"type": "string"},
-                "description": {"type": "string"},
-                "model": {"type": "string"},
-                "permission_mode": {"type": "string"},
-                "allowed_tools": {"type": "array", "items": {"type": "string"}},
-                "mcp_servers": {"type": "array", "items": {"type": "string"}},
-                "system_prompt_suffix": {"type": "string"},
-                "install": {"type": "object"},
-            },
-            "required": ["project_id", "agent_type"],
-        },
-    },
-    {
-        "name": "edit_project_profile",
-        "description": "Edit fields on a project-scoped agent profile.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {"type": "string"},
-                "agent_type": {"type": "string"},
-                "name": {"type": "string"},
-                "description": {"type": "string"},
-                "model": {"type": "string"},
-                "permission_mode": {"type": "string"},
-                "allowed_tools": {"type": "array", "items": {"type": "string"}},
-                "mcp_servers": {"type": "array", "items": {"type": "string"}},
-                "system_prompt_suffix": {"type": "string"},
-                "install": {"type": "object"},
-                "default_class": {"type": "string"},
-            },
-            "required": ["project_id", "agent_type"],
-        },
-    },
-    {
-        "name": "delete_project_profile",
-        "description": ("Remove a project-scoped agent profile (vault file + DB row)."),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {"type": "string"},
-                "agent_type": {"type": "string"},
-            },
-            "required": ["project_id", "agent_type"],
-        },
-    },
-    {
-        "name": "list_project_profiles",
-        "description": (
-            "List per-agent-type profile rows for a project, including the "
-            "global, scoped, and effective views — plus the project-scoped "
-            "MCP tool catalog snapshot in the same response."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {"type": "string"},
-            },
-            "required": ["project_id"],
         },
     },
     {
@@ -5456,15 +5370,22 @@ _ALL_TOOL_DEFINITIONS = [
     {
         "name": "pool_scale",
         "description": (
-            "Set a pool profile's min/max active-session bounds. Validates "
-            "min >= 0, max >= 1, and max >= min; max may be null for no profile limit. "
-            "With `now: true`, also terminates "
-            "idle sessions above the new max, oldest first. Backs `aq pool scale`."
+            "Set a pool profile's min/max active-session bounds on the system profile "
+            "(they apply to every project; each project's max_concurrent_agents still "
+            "caps its own pool). Validates min >= 0, max >= 1, and max >= min; max may "
+            "be null for no profile limit. With `now: true`, also terminates idle "
+            "sessions above the effective max, oldest first. Backs `aq pool scale`."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "project_id": {"type": "string", "description": "Project ID."},
+                "project_id": {
+                    "type": "string",
+                    "description": (
+                        "Deprecated and ignored — bounds are global. Accepted for one "
+                        "release so existing scripts keep working."
+                    ),
+                },
                 "profile_id": {"type": "string", "description": "Pool profile (agent-type) ID."},
                 "min": {"type": "integer", "description": "New min_active bound (optional)."},
                 "max": {
@@ -5478,19 +5399,26 @@ _ALL_TOOL_DEFINITIONS = [
                     ),
                 },
             },
-            "required": ["project_id", "profile_id"],
+            "required": ["profile_id"],
         },
     },
     {
         "name": "pool_set_lifecycle",
         "description": (
-            "Set one project's profile lifecycle to task or pool. Refuses pool when "
-            "swarm.enabled is false. Backs `aq pool set-lifecycle`."
+            "Set a profile's lifecycle to task or pool on the system profile (it "
+            "applies to every project). Refuses pool when swarm.enabled is false. "
+            "Backs `aq pool set-lifecycle`."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "project_id": {"type": "string", "description": "Project ID."},
+                "project_id": {
+                    "type": "string",
+                    "description": (
+                        "Deprecated and ignored — lifecycle is global. Accepted for one "
+                        "release so existing scripts keep working."
+                    ),
+                },
                 "profile_id": {"type": "string", "description": "Profile (agent-type) ID."},
                 "lifecycle": {
                     "type": "string",
@@ -5498,7 +5426,7 @@ _ALL_TOOL_DEFINITIONS = [
                     "description": "Whether work launches per task or is claimed by a pool.",
                 },
             },
-            "required": ["project_id", "profile_id", "lifecycle"],
+            "required": ["profile_id", "lifecycle"],
         },
     },
 ]
