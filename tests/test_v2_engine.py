@@ -627,6 +627,62 @@ class TestLlmToolTurnBoundaries:
         assert [r.error_code for r in runs.receipts] == ["cancelled"]
 
     @pytest.mark.asyncio
+    async def test_pending_cancel_is_committed_when_initial_read_loses_scheduler(self):
+        class DelayedCancelReadRepository(RecordingRunRepository):
+            def __init__(self):
+                super().__init__()
+                self.delay_read = False
+                self.read_started = asyncio.Event()
+                self.release_read = asyncio.Event()
+
+            async def load_run(self, run_id):
+                if self.delay_read:
+                    self.delay_read = False
+                    self.read_started.set()
+                    await self.release_read.wait()
+                return await super().load_run(run_id)
+
+        class HeldProvider(FakeProvider):
+            def __init__(self):
+                super().__init__()
+                self.entered = asyncio.Event()
+                self.release = asyncio.Event()
+
+            @property
+            def reports_usage(self) -> bool:
+                return True
+
+            async def create_message(self, **kwargs):
+                self.entered.set()
+                await self.release.wait()
+                return await super().create_message(**kwargs)
+
+        provider = HeldProvider()
+        provider.add_tool_call(
+            "ensure_task",
+            {"project_id": "p", "title": "must-not-run"},
+            usage=TokenUsage(10, 2, True),
+        )
+        runs = DelayedCancelReadRepository()
+        engine, adapter, _runs, ref = build_llm(provider, runs=runs)
+        walk = asyncio.create_task(engine.run_rule(ref, "r", {}, TOOL_PRINCIPAL))
+        await provider.entered.wait()
+        run_id = next(iter(runs.snapshots))
+
+        runs.delay_read = True
+        cancelling = asyncio.create_task(engine.cancel(run_id, TOOL_PRINCIPAL))
+        await runs.read_started.wait()
+        provider.release.set()
+        outcome = await walk
+        runs.release_read.set()
+        cancelled = await cancelling
+
+        assert outcome.lifecycle is RunLifecycle.CANCELLED
+        assert cancelled.lifecycle is RunLifecycle.CANCELLED
+        assert adapter.calls == []
+        assert [r.error_code for r in runs.receipts] == ["cancelled"]
+
+    @pytest.mark.asyncio
     async def test_multi_turn_tool_loop_commits_one_receipt_per_completed_turn(self):
         provider = FakeProvider()
         provider.add_tool_call(

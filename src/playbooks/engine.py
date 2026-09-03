@@ -664,6 +664,8 @@ class PlaybookEngine:
         snapshot = await repository.load_run(run_id)
         if snapshot is None:
             return RunOutcome(run_id, RunLifecycle.FAILED, "unknown_run")
+        if control is not None and self._settled_cancellation(control) is not None:
+            return await self._await_cancellation(control, principal, repository)
         if snapshot.is_terminal:
             return self._already_terminal(snapshot)
 
@@ -1258,7 +1260,9 @@ class PlaybookEngine:
         # boundary is the cancellation's rather than the step's.  Under the
         # control's lock, because ``cancel`` writes the same boundary when its
         # grace window expires first and exactly one of them may.
-        if control is not None and control.cancel_snapshot is not None:
+        if control is not None and (
+            control.cancel_snapshot is not None or control.pending_cancel is not None
+        ):
             async with control.lock:
                 settled = self._settled_cancellation(control)
                 if settled is not None:
@@ -1267,11 +1271,30 @@ class PlaybookEngine:
                     if receipt is not None:
                         receipts.append(receipt)
                     return committed, tuple(receipts), boundary_outcome
-                cancelled = self._pending_cancellation(snapshot, control)
+                cancellation_principal = principal
+                if control.cancel_snapshot is None and control.pending_cancel is not None:
+                    cancellation_principal, reason = control.pending_cancel
+                    control.cancel_snapshot = await self._request_cancel_latest(
+                        repository,
+                        attempt.snapshot,
+                        reason=reason,
+                        principal=cancellation_principal,
+                    )
+                elif control.pending_cancel is not None:
+                    cancellation_principal = control.pending_cancel[0]
+                if control.cancel_snapshot is not None and control.cancel_snapshot.is_terminal:
+                    return (
+                        control.cancel_snapshot,
+                        tuple(attempt.boundary_receipts),
+                        "cancelled",
+                    )
+                cancelled = self._pending_cancellation(attempt.snapshot, control)
                 if cancelled is not None:
                     return await finish(
                         self._commit_cancellation(
-                            self._cancellation_attempt(cancelled, step, step_id, principal),
+                            self._cancellation_attempt(
+                                cancelled, step, step_id, cancellation_principal
+                            ),
                             artifact_ref,
                             repository,
                             control,
