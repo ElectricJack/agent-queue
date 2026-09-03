@@ -16,12 +16,18 @@ import {
 import StatusBadge from "../components/StatusBadge";
 import DeletePlaybookModal from "../components/DeletePlaybookModal";
 import PlaybookGraphView from "./playbook-graph/PlaybookGraphView";
+import PlaybookSemanticGraphView from "./playbook-graph-v2/PlaybookSemanticGraphView";
 
-type TabId = "source" | "graph" | "runs";
+// `graph` is the V1 compiled-registry view and `semantic` the V2 artifact
+// view. They are deliberately two tabs rather than one branching component:
+// the two node models share no field, and Package 7 retires the V1 tab by
+// deleting a directory rather than by unpicking a compatibility layer.
+type TabId = "source" | "graph" | "semantic" | "runs";
 
 const TABS: { id: TabId; label: string }[] = [
   { id: "source", label: "Source" },
   { id: "graph", label: "Graph" },
+  { id: "semantic", label: "Semantic graph" },
   { id: "runs", label: "Runs" },
 ];
 
@@ -100,6 +106,7 @@ export default function PlaybookDetail() {
 
       {tab === "source" && <SourceTab playbookId={id} />}
       {tab === "graph" && <PlaybookGraphView playbookId={id} />}
+      {tab === "semantic" && <PlaybookSemanticGraphView playbookId={id} />}
       {tab === "runs" && <RunsTab playbookId={id} />}
     </div>
   );
