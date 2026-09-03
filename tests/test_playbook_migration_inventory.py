@@ -460,6 +460,56 @@ async def test_ack_moves_question_required_to_disabled(tmp_path):
     assert _entry(inv, "needs-ack").disposition == "question_required"
 
 
+@pytest.mark.asyncio
+async def test_disabled_activation_without_operator_evidence_remains_blocking(tmp_path):
+    vault_root = _vault_root(tmp_path)
+    body = _source("unexplained-disabled", enabled=True)
+    _write_playbook(
+        vault_root,
+        "system/playbooks",
+        "unexplained-disabled.md",
+        body,
+    )
+    registry = StubContractRegistry()
+    activation = _ready_activation(
+        "unexplained-disabled",
+        registry.registry_fingerprint(),
+        enabled=False,
+        health="disabled",
+        source_digest=_sha(body),
+    )
+
+    inv = await _inventory(
+        vault_root,
+        contract_registry=registry,
+        activation_repo=StubActivationRepo([activation]),
+    )
+    entry = _entry(inv, "unexplained-disabled")
+    assert entry.disposition == "question_required"
+    assert _codes(entry) == {"compile_question"}
+    assert entry in inv.blocking()
+
+    ack = {
+        "playbook_id": "unexplained-disabled",
+        "scope": "system",
+        "scope_identifier": "",
+        "source_sha256": _sha(body),
+        "reason": "operator intentionally disabled migration",
+        "acknowledged_by": "operator",
+        "acknowledged_at": 1788400000.0,
+    }
+    acknowledged = await _inventory(
+        vault_root,
+        contract_registry=registry,
+        activation_repo=StubActivationRepo([activation]),
+        ack_repo=StubAckRepo([ack]),
+    )
+    acknowledged_entry = _entry(acknowledged, "unexplained-disabled")
+    assert acknowledged_entry.disposition == "disabled"
+    assert _codes(acknowledged_entry) == {"operator_disabled"}
+    assert acknowledged_entry not in acknowledged.blocking()
+
+
 # ---------------------------------------------------------------------------
 # 8 — blocking()
 # ---------------------------------------------------------------------------

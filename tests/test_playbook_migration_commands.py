@@ -678,7 +678,7 @@ async def test_inventory_sees_the_source_drift_the_activation_row_cannot_show(ha
         ("question_required", True, "question_required", "compile_question"),
         ("stale_contract", True, "question_required", "stale_contract"),
         ("unavailable", True, "question_required", "compile_question"),
-        ("disabled", False, "disabled", "operator_disabled"),
+        ("disabled", False, "question_required", "compile_question"),
     ],
 )
 async def test_inventory_blocks_non_ready_health_from_joined_activation_rows(
