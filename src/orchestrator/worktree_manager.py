@@ -339,8 +339,7 @@ class WorktreeSlotManager:
                 f.flush()
                 os.fsync(f.fileno())
             if mode is not None:
-                with contextlib.suppress(OSError):
-                    os.chmod(tmp_path, mode & 0o7777)
+                os.chmod(tmp_path, mode & 0o7777)
             os.replace(tmp_path, exclude)
             tmp_path = None
         finally:

@@ -1111,6 +1111,8 @@ class TestGitExcludeConcurrency:
 
         stop = threading.Event()
         bad: list[bytes] = []
+        successful_writes: list[bool] = []
+        unexpected_errors: list[OSError] = []
         watcher = threading.Thread(target=_watch, args=(exclude, stop, bad))
         watcher.start()
 
@@ -1119,13 +1121,16 @@ class TestGitExcludeConcurrency:
             while time.monotonic() < deadline:
                 _drift(exclude)
                 try:
-                    WorktreeSlotManager.ensure_git_exclude_path(exclude)
-                except OSError:
+                    if WorktreeSlotManager.ensure_git_exclude_path(exclude):
+                        successful_writes.append(True)
+                except OSError as exc:
                     # Another deliberately unlocked _drift may win between
                     # replacement and verification.  Fail-closed is correct;
                     # this stress test asserts only that readers never see a
                     # partial file.
-                    pass
+                    if "could not be verified" not in str(exc):
+                        unexpected_errors.append(exc)
+                        return
 
         writers = [threading.Thread(target=hammer) for _ in range(8)]
         for w in writers:
@@ -1136,6 +1141,10 @@ class TestGitExcludeConcurrency:
         watcher.join()
 
         assert bad == [], f"{len(bad)} incomplete observation(s), first: {bad[0]!r}"
+        assert unexpected_errors == []
+        assert successful_writes
+        WorktreeSlotManager.ensure_git_exclude_path(exclude)
+        assert WorktreeSlotManager.git_exclude_is_current_path(exclude)
         text = exclude.read_text(encoding="utf-8")
         assert "*.swp" in text
         assert text.count("# >>> agent-queue managed") == 1
@@ -1154,14 +1163,19 @@ class TestGitExcludeConcurrency:
             "    EXCLUDE_BEGIN, EXCLUDE_END, WorktreeSlotManager)\n"
             "base = Path(sys.argv[1]); exclude = base / '.git' / 'info' / 'exclude'\n"
             "stale = sys.argv[2] + EXCLUDE_BEGIN + '\\n/stale/\\n' + EXCLUDE_END + '\\n'\n"
+            "succeeded = False\n"
             "deadline = time.monotonic() + 1.0\n"
             "while time.monotonic() < deadline:\n"
             "    tmp = exclude.with_name(f'exclude.drift.{os.getpid()}.tmp')\n"
             "    tmp.write_text(stale, encoding='utf-8'); os.replace(tmp, exclude)\n"
             "    try:\n"
-            "        WorktreeSlotManager.ensure_git_exclude_path(exclude)\n"
-            "    except OSError:\n"
-            "        pass  # an intentionally unlocked drift won verification\n"
+            "        if WorktreeSlotManager.ensure_git_exclude_path(exclude):\n"
+            "            succeeded = True\n"
+            "    except OSError as exc:\n"
+            "        if 'could not be verified' not in str(exc):\n"
+            "            raise\n"
+            "if not succeeded:\n"
+            "    raise RuntimeError('no managed exclude write succeeded')\n"
         )
         stop = threading.Event()
         bad: list[bytes] = []
@@ -1181,9 +1195,12 @@ class TestGitExcludeConcurrency:
 
         assert all(p.returncode == 0 for p in procs), errs
         assert bad == [], f"{len(bad)} incomplete observation(s), first: {bad[0]!r}"
+        WorktreeSlotManager.ensure_git_exclude_path(exclude)
+        assert WorktreeSlotManager.git_exclude_is_current_path(exclude)
         text = exclude.read_text(encoding="utf-8")
         assert "*.swp" in text
         assert text.count("# >>> agent-queue managed") == 1
+        assert "/.aq/" in text
 
     def test_verifies_the_replacement_landed(self, base_repo: Path, monkeypatch):
         exclude = base_repo / ".git" / "info" / "exclude"
@@ -1199,3 +1216,31 @@ class TestGitExcludeConcurrency:
         with pytest.raises(OSError, match="could not be verified"):
             WorktreeSlotManager.ensure_git_exclude_path(exclude)
         assert exclude.read_text(encoding="utf-8") == _FOREIGN_RULE
+
+    def test_preserves_existing_exclude_mode(self, base_repo: Path):
+        exclude = base_repo / ".git" / "info" / "exclude"
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        exclude.write_text(_FOREIGN_RULE, encoding="utf-8")
+        exclude.chmod(0o640)
+
+        assert WorktreeSlotManager.ensure_git_exclude_path(exclude) is True
+
+        assert exclude.stat().st_mode & 0o777 == 0o640
+
+    def test_chmod_failure_leaves_existing_exclude_unchanged(
+        self, base_repo: Path, monkeypatch
+    ):
+        exclude = base_repo / ".git" / "info" / "exclude"
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        exclude.write_text(_FOREIGN_RULE, encoding="utf-8")
+        original = exclude.read_bytes()
+
+        def fail_chmod(_path, _mode):
+            raise OSError("mode preservation failed")
+
+        monkeypatch.setattr(os, "chmod", fail_chmod)
+        with pytest.raises(OSError, match="mode preservation failed"):
+            WorktreeSlotManager.ensure_git_exclude_path(exclude)
+
+        assert exclude.read_bytes() == original
+        assert not list(exclude.parent.glob("exclude.*.tmp"))
