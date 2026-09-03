@@ -184,8 +184,8 @@ class RecordingRunRepository:
 
     It is not a mock of the real repository's *storage*; it is a mock of its
     *contract*, so the assertions it supports are the ones the child plan
-    states: one commit per attempt, no retry after a version conflict, and
-    nothing written before the boundary.
+    states: one commit per durable boundary, no retry after a version
+    conflict, and nothing written before the boundary.
     """
 
     def __init__(

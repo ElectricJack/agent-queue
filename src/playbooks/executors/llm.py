@@ -80,13 +80,14 @@ def _result(
     usage: TokenUsage | None = None,
     value: dict[str, Any] | None = None,
     diagnostics: tuple[str, ...] = (),
+    control: StepControl = StepControl.ADVANCE,
 ) -> ExecutorResult:
     prompt_digest = hashlib.sha256(_prompt(step, ctx).encode()).hexdigest()
     _ignored_inputs, receipt_result = project_step_receipt(
         {}, value or {}, run_id=ctx.run_id
     )
     return ExecutorResult(
-        control=StepControl.ADVANCE,
+        control=control,
         outcome=outcome,
         value=value if step.save_result_as else None,
         usage=usage,
@@ -106,6 +107,36 @@ def _prompt(step: LlmStep, ctx: StepContext) -> str:
     if not ctx.inputs:
         return prompt
     return f"{prompt}\n\nInputs:\n{json.dumps(dict(ctx.inputs), sort_keys=True, default=str)}"
+
+
+def _resume_state(
+    prompt: str, ctx: StepContext
+) -> tuple[list[dict[str, Any]], int, TokenUsage | None]:
+    """Rebuild only completed turns belonging to this exact attempt."""
+    iteration = -1 if ctx.iteration_index is None else ctx.iteration_index
+    turns = sorted(
+        (
+            turn
+            for turn in ctx.llm_turns
+            if turn.get("step_id") == ctx.step_id
+            and int(turn.get("iteration", -1)) == iteration
+            and int(turn.get("attempt", 1)) == ctx.attempt
+        ),
+        key=lambda turn: int(turn["turn_index"]),
+    )
+    messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
+    usage: TokenUsage | None = None
+    for turn in turns:
+        messages.extend(dict(message) for message in turn.get("transcript_delta", ()))
+        raw_usage = turn.get("usage") or {}
+        turn_usage = TokenUsage(
+            input_tokens=int(raw_usage.get("input_tokens", 0)),
+            output_tokens=int(raw_usage.get("output_tokens", 0)),
+            reported=bool(raw_usage.get("reported", False)),
+        )
+        usage = turn_usage if usage is None else usage + turn_usage
+    next_turn_index = int(turns[-1]["turn_index"]) + 1 if turns else 0
+    return messages, next_turn_index, usage
 
 
 def _published_tools(step: LlmStep, ctx: StepContext) -> list[dict[str, Any]]:
@@ -204,8 +235,8 @@ class LiveLlmExecutor:
         try:
             prompt = _prompt(step, ctx)
             retries = step.retry.max_attempts if step.retry is not None else 1
-            usage: TokenUsage | None = None
-            calls = 0
+            messages, next_turn_index, usage = _resume_state(prompt, ctx)
+            calls = next_turn_index
             for retry_index in range(retries + 1):
                 if calls >= step.budget.max_calls:
                     return _result(step, ctx, outcome="budget_exceeded", usage=usage)
@@ -236,11 +267,13 @@ class LiveLlmExecutor:
                 async with asyncio.timeout(step.budget.timeout_seconds):
                     if tools:
                         run = await ctx.services.llm.run_tools(
-                            prompt,
+                            messages,
                             tools,
                             dispatch_tool,
                             spec=spec,
                             max_turns=step.budget.max_calls - calls,
+                            on_tool_turn=ctx.on_tool_turn,
+                            initial_turn_index=next_turn_index,
                         )
                         response_text, call_usage = run.text, run.usage or TokenUsage()
                         calls += run.turns
@@ -249,6 +282,15 @@ class LiveLlmExecutor:
                         response_text, call_usage = response.text, response.usage or TokenUsage()
                         calls += 1
                 usage = call_usage if usage is None else usage + call_usage
+                if tools and run.stopped_by == "interrupted":
+                    return _result(
+                        step,
+                        ctx,
+                        outcome="operator_decision_required",
+                        usage=usage,
+                        diagnostics=("LLM call interrupted",),
+                        control=StepControl.OPERATOR_DECISION,
+                    )
                 if denied:
                     return _result(step, ctx, outcome="unauthorized", usage=usage)
                 if step.budget.max_total_tokens is not None and not usage.reported:

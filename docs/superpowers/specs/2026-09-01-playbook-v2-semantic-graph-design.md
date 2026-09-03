@@ -85,7 +85,7 @@ The UI is therefore exposing storage structure rather than author or operator in
 
 **Run snapshot:** The mutable, authoritative continuation state persisted at each durable execution boundary.
 
-**Execution receipt:** An immutable audit record of one completed or interrupted step attempt. Receipts explain history; they are not replayed to reconstruct continuation state.
+**Execution receipt:** An immutable audit record of one durable boundary within a completed or interrupted step attempt. Most attempts have one `step` receipt; an LLM attempt may also have ordered `tool_turn` and `interrupted` receipts. Receipts explain history; they are not replayed to reconstruct continuation state.
 
 **Artifact hash:** The SHA-256 digest of the canonical installed JSON bytes. A run always points to this immutable artifact identity.
 
@@ -292,7 +292,9 @@ LLM branching must use declared structured output, such as an enum. The graph vi
 
 Every LLM step declares `max_calls`, `max_output_tokens`, `max_total_tokens`, and `timeout_seconds`. Token accounting uses provider-reported input and output usage. A provider adapter that cannot report usage cannot run a step with a hard total-token budget. The reserved outcomes are `invalid_output` after schema retries are exhausted, `budget_exceeded`, `provider_error`, `timed_out`, and `cancelled`.
 
-When tool use is enabled, every tool call is authorized by the step principal and routed through the same contracted command or MCP dispatch boundary used outside the LLM. Model-visible schemas are a narrowed projection, not the enforcement mechanism. The transcript and each completed tool turn are persisted at durable boundaries. An interrupted in-flight provider call is never silently replayed; it produces an interrupted receipt and requires an explicit retry attempt.
+When tool use is enabled, every tool call is authorized by the step principal and routed through the same contracted command or MCP dispatch boundary used outside the LLM. Model-visible schemas are a narrowed projection, not the enforcement mechanism. `LLMClient.run_tools` reports each completed tool turn through an awaited callback carrying the zero-based turn index, tool-call IDs, a digest of the canonical tool results, provider-reported usage, and the two-message transcript delta. The engine supplies that callback and is the only caller of `commit_boundary`: it appends the delta to the pinned run snapshot and atomically writes one `tool_turn` receipt before the client may start another provider call.
+
+An interrupted provider or tool call is never silently replayed. Cancellation observed inside a turn reports an `interrupted` turn payload; the engine atomically writes an `interrupted` receipt, records an `operator_decision_id`, and pauses the run without binding output or selecting an edge. Recovery treats a persisted `running` LLM snapshot at its current step as an ambiguous in-flight call and performs the same pause before provider I/O. Only an explicit operator `retry` clears that decision and continues from the transcript deltas of completed turns; the interrupted partial turn is not appended or replayed automatically.
 
 ### AgentTaskStep
 
@@ -415,7 +417,7 @@ The database adds:
 - `playbook_artifacts`: artifact hash, path, schema version, source hash, referenced execution/profile digests, creation time, and validation summary;
 - `playbook_activations`: scope and playbook ID, active artifact hash, enabled state, health, reason, and activation time;
 - `playbook_runs`: one row per rule run, artifact hash, lifecycle, current step, typed snapshot, deadline, dispatch/event identity, and summary;
-- `playbook_step_receipts`: immutable step-attempt records;
+- `playbook_step_receipts`: immutable durable-boundary records, ordered within an attempt by `turn_index` and `receipt_kind`;
 - `playbook_waits`: durable correlation keys and deadlines;
 - `playbook_pending_events`: events held while an activation is stale or unavailable.
 
@@ -441,7 +443,9 @@ The snapshot persists at every step boundary and before entering a wait:
 
 A bound result contains only the step's validated declared output, not an arbitrary handler dictionary. One result is limited to 256 KiB of canonical JSON and one run snapshot to 4 MiB by default; exceeding either produces `state_limit_exceeded` before the next step. Contracts mark sensitive fields. Sensitive material is represented by an opaque handle when needed downstream and is never written raw to a receipt. Receipt display is default-deny: an unmarked field is redacted.
 
-State mutation and its receipt commit atomically. A side-effecting command receives the deterministic attempt key `<run_id>:<step_id>:<attempt>` when its contract supports idempotency. After an ambiguous process interruption, a retry-safe command can be replayed with that key; a non-retry-safe command pauses with `operator_decision_required` rather than executing twice. The operator must record one explicit resolution: accept a supplied typed outcome and continue, retry as a new attempt, fail the run, or cancel it. That decision is itself receipted.
+State mutation and its receipt commit atomically. A side-effecting command receives the deterministic attempt key `<run_id>:<step_id>:<attempt>` when its contract supports idempotency. Receipt identity extends attempt identity with `(turn_index, receipt_kind)`: ordinary and pre-existing receipts use `receipt_kind="step"` and `turn_index=-1`; completed LLM tool turns use `tool_turn` and zero-based indices; an ambiguous call uses `interrupted` at the next index. The attempt idempotency key remains unchanged across its per-turn receipts.
+
+After an ambiguous process interruption, a retry-safe command can be replayed with that key; a non-retry-safe command and every in-flight LLM call pause with `operator_decision_required` rather than executing twice. The operator must record one explicit resolution: accept a supplied typed outcome and continue, retry, fail the run, or cancel it. The interrupted receipt and resolution receipt share an opaque `operator_decision_id`; it is a reference into the decision held in the run snapshot, not a foreign key to a second source of truth.
 
 There is one lifecycle enum: `running`, `paused`, `cancelling`, `completed`, `failed`, `timed_out`, and `cancelled`. Cancellation is legal from running or paused. A paused run cancels immediately. An in-flight executor enters `cancelling`, receives a best-effort cancellation signal, and becomes `cancelled` after acknowledgement or the cancellation grace deadline. `AgentTaskStep.cancel_child` controls whether owned child work is also cancelled.
 
@@ -485,7 +489,7 @@ Dry-run cannot use a different runner or silently treat an unrecognized node as 
 
 ### Execution receipts
 
-Every run pins the artifact hash and records structured receipts containing the rule and step ID, step type, redacted resolved inputs, principal and profile fingerprint, command or AI operation, validated outcome, redacted result projection, selected transition, timestamps, attempt, token usage, idempotency key, wait/cancellation facts, and timeout information.
+Every run pins the artifact hash and records structured receipts containing the rule and step ID, step type, receipt kind and turn index, redacted resolved inputs, principal and profile fingerprint, command or AI operation, validated outcome, redacted result projection, selected transition, timestamps, attempt, token usage, idempotency key, wait/cancellation facts, timeout information, and an optional operator-decision reference. Ordering is `(snapshot_version, turn_index, started_at, receipt_id)`; `snapshot_version` remains the authoritative total order because every boundary advances it.
 
 Receipt redaction is driven by contracts and is default-deny. Unmarked inputs and results are redacted; fields appear only when explicitly classified as safe, summarized, or represented by an opaque identifier. The internal run snapshot and user-visible receipt have different projections.
 
@@ -575,6 +579,8 @@ Migration avoids a permanent dual-runtime architecture:
 8. **Cutover:** once no V1 run remains and every enabled playbook is ready V2, atomically switch all orchestrator entry points. Acknowledged-disabled project playbooks are not considered active.
 9. **Removal:** disable V1 execution, remove new V1 artifact production, and retain V1 artifacts and traces for read-only inspection.
 
+The per-tool-turn amendment is a daemon-only additive migration after the Package 3 receipt revision. It adds `receipt_kind TEXT NOT NULL DEFAULT 'step'`, `turn_index INTEGER NOT NULL DEFAULT -1`, and nullable `operator_decision_id`; replaces the one-receipt-per-attempt unique constraint with uniqueness over `(run_id, step_id, iteration, attempt, turn_index, receipt_kind)`; and adds a run/step/attempt/turn ordering index. Existing rows require no rewrite beyond the database defaults and remain the sole `step/-1` receipt for their attempts. Downgrade refuses to proceed while post-amendment multi-boundary rows exist, then restores the original uniqueness constraint; V1 tables are never changed. Only the daemon/operator migration path may apply this revision.
+
 Cutover occurs only when every enabled Markdown playbook has a ready V2 artifact, no V1 run remains, and no enabled activation is stale. The migration window is the only temporary dual-runtime period.
 
 ## Validation and testing
@@ -631,6 +637,9 @@ Cutover occurs only when every enabled Markdown playbook has a ready V2 artifact
 - Event arrival before, during, and after wait registration produces one deterministic resume.
 - Cancellation has tested transitions from running, paused, and in-flight agent execution.
 - Execution receipts identify every traversed node, selected edge, loop iteration, and artifact hash.
+- A completed LLM tool turn advances the snapshot and writes exactly one `tool_turn` receipt before the next provider call begins.
+- An interrupted LLM call writes one `interrupted` receipt, pauses with an operator-decision reference, and performs no automatic provider or tool replay.
+- An explicit retry reconstructs the conversation only from completed transcript deltas and continues after the last committed turn.
 - An incompatible in-progress run fails before invoking the changed command.
 - A transiently unavailable dependency pauses or queues without demanding rebuild.
 
@@ -639,6 +648,8 @@ Cutover occurs only when every enabled Markdown playbook has a ready V2 artifact
 - Activation never points to a partially written artifact.
 - A historical run renders only against its pinned retained artifact.
 - Snapshot and receipt commits are atomic at step boundaries.
+- Snapshot and receipt commits are also atomic at each LLM tool-turn boundary; all boundaries retain pinned run, rule, and artifact identity and the existing wait-ownership checks.
+- Existing single-receipt attempts read as `receipt_kind="step", turn_index=-1` after migration.
 - Retention never collects an active, pinned, or otherwise referenced artifact.
 - Pending stale events replay in arrival order under rule-level deduplication or expire with an audit record.
 

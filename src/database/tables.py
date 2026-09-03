@@ -1197,6 +1197,9 @@ playbook_step_receipts = Table(
     Column("rule_id", Text, nullable=False),
     Column("step_id", Text, nullable=False),
     Column("step_kind", Text, nullable=False),
+    Column("receipt_kind", Text, nullable=False, server_default="step"),
+    Column("turn_index", Integer, nullable=False, server_default="-1"),
+    Column("operator_decision_id", Text, nullable=True),
     Column("iteration", Integer, nullable=False, server_default="-1"),
     Column("attempt", Integer, nullable=False, server_default="1"),
     Column("idempotency_key", Text, nullable=False),
@@ -1223,12 +1226,32 @@ playbook_step_receipts = Table(
         "'operator_decision_required')",
         name="ck_playbook_step_receipts_outcome",
     ),
+    CheckConstraint(
+        "receipt_kind IN ('step', 'tool_turn', 'interrupted', 'operator_decision')",
+        name="ck_playbook_step_receipts_kind",
+    ),
+    CheckConstraint(
+        "(receipt_kind = 'step' AND turn_index = -1) OR "
+        "(receipt_kind <> 'step' AND turn_index >= 0)",
+        name="ck_playbook_step_receipts_turn_index",
+    ),
+    CheckConstraint(
+        "(receipt_kind IN ('interrupted', 'operator_decision') AND "
+        "operator_decision_id IS NOT NULL) OR "
+        "(receipt_kind NOT IN ('interrupted', 'operator_decision') AND "
+        "operator_decision_id IS NULL)",
+        name="ck_playbook_step_receipts_decision_ref",
+    ),
     UniqueConstraint(
-        "run_id", "step_id", "iteration", "attempt",
-        name="uq_playbook_step_receipts_attempt",
+        "run_id", "step_id", "iteration", "attempt", "turn_index", "receipt_kind",
+        name="uq_playbook_step_receipts_boundary",
     ),
     Index("idx_playbook_step_receipts_run", "run_id", "started_at"),
     Index("idx_playbook_step_receipts_key", "idempotency_key"),
+    Index(
+        "idx_playbook_step_receipts_turn",
+        "run_id", "step_id", "iteration", "attempt", "turn_index",
+    ),
 )
 
 playbook_waits = Table(

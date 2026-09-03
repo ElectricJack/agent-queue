@@ -1,4 +1,4 @@
-"""Execution receipts — one immutable record per step attempt.
+"""Execution receipts — one immutable record per durable boundary.
 
 Package 3 child plan §9 (attempt identity) and §8.3 (the projection).
 
@@ -8,9 +8,9 @@ Two things make a receipt safe to show an operator:
   The design spec's prose gives a three-part key, which collides across
   iterations of the same step inside a ``ForEachStep`` and would suppress the
   second iteration's side effect as a duplicate (§9.1, amendment 2).  The
-  database enforces the same identity independently through
-  ``uq_playbook_step_receipts_attempt``, so a hand-built key cannot get past
-  it either.
+  Receipt identity extends it with turn index and receipt kind.  The database
+  enforces that independently through ``uq_playbook_step_receipts_boundary``,
+  so a hand-built key cannot get past it either.
 * **Projection is default-deny.**  With no contract classification supplied,
   a receipt records how many inputs and results existed and nothing about
   what they were.  Widening it takes a contract field, not a caller argument.
@@ -32,6 +32,13 @@ RECEIPT_OUTCOMES: tuple[str, ...] = (
     "timeout",
     "cancelled",
     "operator_decision_required",
+)
+
+RECEIPT_KINDS: tuple[str, ...] = (
+    "step",
+    "tool_turn",
+    "interrupted",
+    "operator_decision",
 )
 
 #: Key used when a mapping is redacted wholesale.
@@ -118,7 +125,7 @@ def project_receipt(
 
 @dataclass(frozen=True, slots=True)
 class StepReceipt:
-    """One attempt at one step.  Field names are §6.4's column names exactly."""
+    """One durable boundary within one step attempt."""
 
     receipt_id: str
     run_id: str
@@ -129,6 +136,9 @@ class StepReceipt:
     outcome: str
     started_at: float
     snapshot_version: int
+    receipt_kind: str = "step"
+    turn_index: int = -1
+    operator_decision_id: str | None = None
     iteration: int = -1
     attempt: int = 1
     idempotency_key: str = ""
@@ -152,6 +162,20 @@ class StepReceipt:
         if self.outcome not in RECEIPT_OUTCOMES:
             raise ValueError(
                 f"outcome must be one of {list(RECEIPT_OUTCOMES)}, got {self.outcome!r}"
+            )
+        if self.receipt_kind not in RECEIPT_KINDS:
+            raise ValueError(
+                f"receipt_kind must be one of {list(RECEIPT_KINDS)}, "
+                f"got {self.receipt_kind!r}"
+            )
+        if self.turn_index < -1:
+            raise ValueError("turn_index must be >= -1")
+        if (self.receipt_kind == "step") != (self.turn_index == -1):
+            raise ValueError("step receipts use turn_index -1; turn boundaries use >= 0")
+        decision_boundary = self.receipt_kind in {"interrupted", "operator_decision"}
+        if decision_boundary != bool(self.operator_decision_id):
+            raise ValueError(
+                "interrupted/operator_decision receipts require operator_decision_id only"
             )
         if self.attempt < 1:
             raise ValueError("attempt must be >= 1")

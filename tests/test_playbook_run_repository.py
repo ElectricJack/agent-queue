@@ -374,6 +374,108 @@ async def test_commit_boundary_advances_the_version_and_writes_one_receipt(db):
     assert receipts[0].selected_transition == "on-task-completed::ensure-task::success"
 
 
+async def test_one_llm_attempt_accepts_ordered_tool_turn_and_interrupted_boundaries(db):
+    snapshot = await db.create_run(make_snapshot(current_step_id="classify"))
+    first = make_receipt(
+        snapshot,
+        receipt_id="turn-0",
+        step_id="classify",
+        step_kind="llm",
+        receipt_kind="tool_turn",
+        turn_index=0,
+    )
+    snapshot = await db.commit_boundary(
+        replace(snapshot, llm_turns=({"turn_index": 0},)), first
+    )
+    interrupted = make_receipt(
+        snapshot,
+        receipt_id="turn-1-interrupted",
+        step_id="classify",
+        step_kind="llm",
+        receipt_kind="interrupted",
+        turn_index=1,
+        operator_decision_id="decision-1",
+    )
+    snapshot = await db.commit_boundary(snapshot, interrupted)
+
+    receipts = await db.list_receipts(snapshot.run_id)
+    assert [(r.receipt_kind, r.turn_index) for r in receipts] == [
+        ("tool_turn", 0),
+        ("interrupted", 1),
+    ]
+    assert {r.idempotency_key for r in receipts} == {"run-1:classify:-:1"}
+    assert receipts[-1].operator_decision_id == "decision-1"
+
+
+async def test_duplicate_llm_boundary_is_rejected_without_advancing_the_snapshot(db):
+    snapshot = await db.create_run(make_snapshot(current_step_id="classify"))
+    snapshot = await db.commit_boundary(
+        snapshot,
+        make_receipt(
+            snapshot,
+            receipt_id="turn-0",
+            step_id="classify",
+            step_kind="llm",
+            receipt_kind="tool_turn",
+            turn_index=0,
+        ),
+    )
+
+    with pytest.raises(DuplicateAttempt):
+        await db.commit_boundary(
+            snapshot,
+            make_receipt(
+                snapshot,
+                receipt_id="turn-0-again",
+                step_id="classify",
+                step_kind="llm",
+                receipt_kind="tool_turn",
+                turn_index=0,
+            ),
+        )
+
+    assert (await db.load_run(snapshot.run_id)).version == snapshot.version
+
+
+async def test_llm_tool_result_still_obeys_the_256_kib_result_cap(db):
+    snapshot = await db.create_run(make_snapshot(current_step_id="classify"))
+    oversized_turn = {
+        "step_id": "classify",
+        "iteration": -1,
+        "attempt": 1,
+        "turn_index": 0,
+        "transcript_delta": [
+            {"role": "assistant", "content": []},
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tool-1",
+                        "content": "x" * (256 * 1024),
+                    }
+                ],
+            },
+        ],
+    }
+
+    with pytest.raises(StateLimitExceeded) as excinfo:
+        await db.commit_boundary(
+            replace(snapshot, llm_turns=(oversized_turn,)),
+            make_receipt(
+                snapshot,
+                receipt_id="turn-0",
+                step_id="classify",
+                step_kind="llm",
+                receipt_kind="tool_turn",
+                turn_index=0,
+            ),
+        )
+
+    assert excinfo.value.limit == 256 * 1024
+    assert (await db.load_run(snapshot.run_id)).version == 0
+
+
 async def test_stale_version_raises_snapshot_version_conflict(db):
     snapshot = await db.create_run(make_snapshot())
     await db.commit_boundary(replace(snapshot, current_step_id="a"), make_receipt(snapshot))

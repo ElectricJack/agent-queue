@@ -15,12 +15,18 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from src.commands.contracts.models import CommandResult
-from src.commands.principal import TRUSTED_LOCAL
+from src.commands.principal import ExecutionPrincipal, PrincipalKind, TRUSTED_LOCAL
+from src.config import LLMConfig
+from src.llm import LLMClient
+from src.llm.fake import FakeProvider
+from src.llm.types import TokenUsage
+from src.playbooks.definition import LlmStep
 from src.playbooks.engine import (
     DispatchResult,
     EventArrived,
@@ -51,6 +57,7 @@ from src.playbooks.waits import (
     WaitRegistration,
     WaitSpec,
 )
+from src.profiles.capabilities import CapabilityPolicy
 from tests.fixtures.contracts.engine_contracts import (
     ENSURE_TASK,
     LIST_TASKS,
@@ -68,6 +75,7 @@ from tests.playbook_v2_engine_helpers import (
     artifact_ref_for,
     event,
     load_artifact,
+    minimal_artifact,
     with_step,
 )
 
@@ -114,6 +122,98 @@ def build(
         activations=StubActivations([ref]),
     )
     return engine, adapter, runs, bus, ref
+
+
+class _Resolver:
+    def is_builtin(self, _name: str) -> bool:
+        return True
+
+    def is_plugin(self, _name: str) -> bool:
+        return False
+
+    def plugin_command_names(self) -> frozenset[str]:
+        return frozenset()
+
+
+class _ProfileStore:
+    async def get_profile(self, _profile_id: str) -> Any:
+        return SimpleNamespace(
+            id="worker",
+            allowed_tools=[],
+            harness_tools=[],
+            aq_commands=["ensure_task"],
+            plugin_tools=[],
+        )
+
+
+def _llm_step() -> LlmStep:
+    return LlmStep.model_validate(
+        {
+            "rule": "r",
+            "title": "Classify",
+            "source": {"path": "x.md", "start_line": 1, "end_line": 1},
+            "profile_id": "worker",
+            "prompt": {"type": "literal", "value": "classify"},
+            "output_schema": {
+                "type": "object",
+                "properties": {"risk": {"type": "string", "enum": ["low", "high"]}},
+                "required": ["risk"],
+                "additionalProperties": False,
+            },
+            "outcome_field": "risk",
+            "tool_use": {"enabled": True, "aq_commands": ["ensure_task"]},
+            "budget": {
+                "max_calls": 3,
+                "max_output_tokens": 256,
+                "max_total_tokens": 8000,
+                "timeout_seconds": 60,
+            },
+            "save_result_as": "classification",
+            "transitions": {
+                "low": "done",
+                "high": "done",
+                "invalid_output": "bad",
+                "budget_exceeded": "bad",
+                "provider_error": "bad",
+                "runtime_error": "bad",
+            },
+        }
+    )
+
+
+def build_llm(
+    provider: FakeProvider,
+    *,
+    runs: RecordingRunRepository | None = None,
+):
+    artifact = minimal_artifact()
+    artifact = with_step(artifact, "ensure-review-task", _llm_step())
+    ref = artifact_ref_for(artifact)
+    registry, adapter = registry_with(ENSURE_TASK)
+    store = InMemoryArtifactStore()
+    store.put(artifact)
+    runs = runs or RecordingRunRepository()
+    engine = PlaybookEngine(
+        services=EngineServices(
+            contracts=registry,
+            clock=lambda: 1_000.0,
+            artifact_store=store,
+            llm=LLMClient.with_provider(provider, config=LLMConfig()),
+            db=_ProfileStore(),
+            resolver=_Resolver(),
+            authorization_mode="enforce",
+        ),
+        runs=runs,
+        waits=None,
+        activations=StubActivations([ref]),
+    )
+    return engine, adapter, runs, ref
+
+
+TOOL_PRINCIPAL = ExecutionPrincipal(
+    kind=PrincipalKind.SESSION,
+    policy=CapabilityPolicy.from_namespaces(aq_commands=["ensure_task"]),
+)
 
 
 class TestRulePerRunDispatch:
@@ -287,12 +387,22 @@ class TestCommitBoundary:
     """T-3 — exactly one durable write per attempt, and never a retry."""
 
     @pytest.mark.asyncio
-    async def test_exactly_one_commit_per_attempt(self):
+    async def test_exactly_one_commit_per_durable_boundary(self):
         engine, adapter, runs, _bus, _ref = build()
         adapter.queue.extend([ok(), listed()])
         await engine.dispatch_event(event("task-completed-code"), TRUSTED_LOCAL)
         assert runs.commit_calls == len(runs.receipts)
-        identities = [(r.run_id, r.step_id, r.iteration, r.attempt) for r in runs.receipts]
+        identities = [
+            (
+                r.run_id,
+                r.step_id,
+                r.iteration,
+                r.attempt,
+                r.turn_index,
+                r.receipt_kind,
+            )
+            for r in runs.receipts
+        ]
         assert len(identities) == len(set(identities))
 
     @pytest.mark.asyncio
@@ -333,6 +443,117 @@ class TestCommitBoundary:
         assert kinds.count("playbook.v2.step.completed") == len(runs.receipts)
         assert kinds[0] == "playbook.v2.run.started"
         assert kinds[-1] == "playbook.v2.run.finished"
+
+
+class TestLlmToolTurnBoundaries:
+    @pytest.mark.asyncio
+    async def test_multi_turn_tool_loop_commits_one_receipt_per_completed_turn(self):
+        provider = FakeProvider()
+        provider.add_tool_call(
+            "ensure_task",
+            {"project_id": "p", "title": "one"},
+            usage=TokenUsage(10, 2, True),
+        )
+        provider.add_tool_call(
+            "ensure_task",
+            {"project_id": "p", "title": "two"},
+            usage=TokenUsage(11, 3, True),
+        )
+        provider.add_text('{"risk":"high"}', usage=TokenUsage(12, 4, True))
+        engine, adapter, runs, ref = build_llm(provider)
+        adapter.queue.extend([ok("t-1"), ok("t-2")])
+
+        outcome = await engine.run_rule(ref, "r", {}, TOOL_PRINCIPAL)
+
+        turns = [r for r in runs.receipts if r.receipt_kind == "tool_turn"]
+        assert [(r.turn_index, r.tokens_in, r.tokens_out) for r in turns] == [
+            (0, 10, 2),
+            (1, 11, 3),
+        ]
+        assert len({r.idempotency_key for r in turns}) == 1
+        assert [r.snapshot_version for r in turns] == [1, 2]
+        assert outcome.lifecycle is RunLifecycle.COMPLETED
+
+    @pytest.mark.asyncio
+    async def test_interrupted_tool_call_receipts_and_pauses_without_a_final_step_receipt(self):
+        provider = FakeProvider()
+        provider.add_tool_calls(
+            [
+                ("ensure_task", {"project_id": "p", "title": "one"}),
+                ("ensure_task", {"project_id": "p", "title": "two"}),
+            ],
+            usage=TokenUsage(10, 2, True),
+        )
+        engine, adapter, runs, ref = build_llm(provider)
+        adapter.queue.extend([ok("t-1"), asyncio.CancelledError()])
+
+        outcome = await engine.run_rule(ref, "r", {}, TOOL_PRINCIPAL)
+
+        assert outcome.lifecycle is RunLifecycle.PAUSED
+        assert outcome.outcome == "operator_decision_required"
+        assert [r.receipt_kind for r in runs.receipts] == ["interrupted"]
+        receipt = runs.receipts[0]
+        assert receipt.operator_decision_id
+        assert receipt.selected_transition is None
+        assert runs.snapshots[outcome.run_id].operator_decision is not None
+
+    @pytest.mark.asyncio
+    async def test_retry_after_restart_continues_after_the_last_committed_turn(self):
+        class ProcessCrash(BaseException):
+            pass
+
+        class CrashAfterFirstResponse(FakeProvider):
+            @property
+            def reports_usage(self) -> bool:
+                return True
+
+            async def create_message(self, **kwargs):
+                if self.calls:
+                    raise ProcessCrash
+                return await super().create_message(**kwargs)
+
+        first_provider = CrashAfterFirstResponse()
+        first_provider.add_tool_call(
+            "ensure_task",
+            {"project_id": "p", "title": "one"},
+            usage=TokenUsage(10, 2, True),
+        )
+        engine, adapter, runs, ref = build_llm(first_provider)
+        adapter.queue.append(ok("t-1"))
+        with pytest.raises(ProcessCrash):
+            await engine.run_rule(ref, "r", {}, TOOL_PRINCIPAL)
+        run_id = next(iter(runs.snapshots))
+        assert runs.snapshots[run_id].lifecycle is RunLifecycle.RUNNING
+        assert [r.receipt_kind for r in runs.receipts] == ["tool_turn"]
+
+        resumed_provider = FakeProvider()
+        resumed_provider.add_text('{"risk":"low"}', usage=TokenUsage(5, 1, True))
+        restarted, restarted_adapter, _, _ = build_llm(resumed_provider, runs=runs)
+        interrupted = await restarted.resume(
+            run_id,
+            EventArrived(event_id="recovery"),
+            TOOL_PRINCIPAL,
+        )
+        assert interrupted.lifecycle is RunLifecycle.PAUSED
+        assert resumed_provider.calls == []
+        assert [r.receipt_kind for r in runs.receipts] == ["tool_turn", "interrupted"]
+
+        resumed = await restarted.resume(
+            run_id,
+            OperatorResolution(kind="retry"),
+            TOOL_PRINCIPAL,
+        )
+
+        assert resumed.lifecycle is RunLifecycle.COMPLETED
+        assert restarted_adapter.calls == []
+        assert len(resumed_provider.calls) == 1
+        messages = resumed_provider.calls[0].messages
+        assert [message["role"] for message in messages[-2:]] == ["assistant", "user"]
+        assert [r.receipt_kind for r in runs.receipts[:3]] == [
+            "tool_turn",
+            "interrupted",
+            "operator_decision",
+        ]
 
 
 class TestReceipts:

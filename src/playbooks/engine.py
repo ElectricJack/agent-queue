@@ -31,10 +31,13 @@ from typing import Any
 
 from src.commands.authorization import authorize_command
 from src.commands.contracts.models import OutcomeClass
+from src.llm.client import LLMToolTurn
+from src.llm.types import TokenUsage
 from src.playbooks.artifact_ref import ArtifactRef
 from src.playbooks.definition import (
     CommandStep,
     ForEachStep,
+    LlmStep,
     PlaybookDefinition,
     Rule,
     WaitStep,
@@ -62,6 +65,8 @@ from src.playbooks.run_state import (
     DuplicateRun,
     IllegalLifecycleTransition,
     LoopFrame,
+    OperatorDecision,
+    RunBudget,
     RunLifecycle,
     RunSnapshot,
     SnapshotVersionConflict,
@@ -259,6 +264,8 @@ class _Attempt:
     wait_id: str | None = None
     loop_frame: LoopFrame | None = None
     clear_loop: bool = False
+    usage: TokenUsage | None = None
+    boundary_receipts: list[StepReceipt] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -485,6 +492,109 @@ class PlaybookEngine:
         mode = ExecutionMode(snapshot.mode)
         artifact_ref = await self._ref_for(snapshot)
         artifact = self._load(artifact_ref)
+
+        if snapshot.operator_decision is not None:
+            if not isinstance(cause, OperatorResolution):
+                return RunOutcome(
+                    run_id,
+                    RunLifecycle.PAUSED,
+                    "operator_decision_required",
+                    snapshot,
+                )
+            if cause.kind not in {"retry", "fail", "cancel"}:
+                return RunOutcome(run_id, RunLifecycle.PAUSED, "invalid_resolution", snapshot)
+            decision = snapshot.operator_decision
+            now = self.services.clock()
+            lifecycle = {
+                "retry": RunLifecycle.RUNNING,
+                "fail": RunLifecycle.FAILED,
+                "cancel": RunLifecycle.CANCELLED,
+            }[cause.kind]
+            resolved = replace(
+                snapshot,
+                lifecycle=lifecycle,
+                operator_decision=None,
+                error=None if cause.kind == "retry" else f"operator resolved: {cause.kind}",
+                error_code=None if cause.kind == "retry" else cause.kind,
+                updated_at=now,
+                completed_at=now if lifecycle in {RunLifecycle.FAILED, RunLifecycle.CANCELLED} else None,
+            )
+            resolution_receipt = StepReceipt(
+                receipt_id=uuid.uuid4().hex,
+                run_id=snapshot.run_id,
+                artifact_sha256=snapshot.artifact_sha256,
+                rule_id=snapshot.rule_id,
+                step_id=decision.step_id,
+                step_kind="llm",
+                receipt_kind="operator_decision",
+                turn_index=decision.turn_index,
+                operator_decision_id=decision.decision_id,
+                outcome="success" if cause.kind == "retry" else "failure",
+                started_at=now,
+                snapshot_version=snapshot.version + 1,
+                iteration=snapshot.loop.index if snapshot.loop else -1,
+                attempt=decision.attempt,
+                principal=self._principal_projection(principal),
+                result={"resolution": cause.kind},
+                completed_at=now,
+            )
+            snapshot = await repository.commit_boundary(resolved, resolution_receipt)
+            if snapshot.is_terminal:
+                return RunOutcome(
+                    run_id,
+                    snapshot.lifecycle,
+                    cause.kind,
+                    snapshot,
+                    (resolution_receipt,),
+                )
+            walked = await self._walk(
+                snapshot, artifact, artifact_ref, principal, mode, repository
+            )
+            return replace(
+                walked,
+                receipts=(resolution_receipt,) + walked.receipts,
+            )
+
+        current_step = artifact.steps.get(snapshot.current_step_id or "")
+        if snapshot.lifecycle is RunLifecycle.RUNNING and isinstance(current_step, LlmStep):
+            relevant = [
+                int(turn.get("turn_index", -1))
+                for turn in snapshot.llm_turns
+                if turn.get("step_id") == snapshot.current_step_id
+            ]
+            attempt = _Attempt(
+                snapshot=snapshot,
+                step_id=snapshot.current_step_id or "",
+                step=current_step,
+                started_at=self.services.clock(),
+                principal=principal,
+                idempotency_key=idempotency_key(
+                    snapshot.run_id,
+                    snapshot.current_step_id or "",
+                    snapshot.loop.index if snapshot.loop else -1,
+                    1,
+                ),
+            )
+            await self._commit_llm_turn(
+                attempt,
+                LLMToolTurn(
+                    kind="interrupted",
+                    turn_index=max(relevant, default=-1) + 1,
+                    tool_call_ids=(),
+                    results_digest=hashlib.sha256(b"[]").hexdigest(),
+                    usage=TokenUsage(),
+                ),
+                artifact_ref,
+                repository,
+            )
+            return RunOutcome(
+                run_id,
+                RunLifecycle.PAUSED,
+                "operator_decision_required",
+                attempt.snapshot,
+                tuple(attempt.boundary_receipts),
+            )
+
         snapshot = replace(
             snapshot,
             lifecycle=RunLifecycle.RUNNING,
@@ -789,12 +899,13 @@ class PlaybookEngine:
                 receipts.append(receipt)
                 outcome = "state_limit_exceeded"
                 break
-            snapshot, receipt, outcome = await self._advance_one_step(
+            snapshot, step_receipts, outcome = await self._advance_one_step(
                 snapshot, artifact, artifact_ref, principal, mode, repository
             )
-            if receipt is not None:
+            for receipt in step_receipts:
                 receipts.append(receipt)
-                await self._emit(EVENT_STEP_COMPLETED, snapshot, step_id=receipt.step_id)
+                if receipt.receipt_kind == "step":
+                    await self._emit(EVENT_STEP_COMPLETED, snapshot, step_id=receipt.step_id)
             if snapshot.lifecycle is RunLifecycle.PAUSED and snapshot.pending_wait_claims:
                 # Registration and inbox ingestion serialize per playbook, so
                 # an event that arrived first is consumed *inside* the same
@@ -812,7 +923,7 @@ class PlaybookEngine:
         principal: Any,
         mode: ExecutionMode,
         repository: Any,
-    ) -> tuple[RunSnapshot, StepReceipt | None, str]:
+    ) -> tuple[RunSnapshot, tuple[StepReceipt, ...], str]:
         """§3.4's eleven stages, in order.
 
         Stages 8-10 are the atomic unit: nothing between the executor call
@@ -821,9 +932,10 @@ class PlaybookEngine:
         """
         step_id = snapshot.current_step_id
         if step_id is None or step_id not in artifact.steps:
-            return await self._fail_now(
+            failed, receipt, outcome = await self._fail_now(
                 snapshot, repository, "contract_violation", f"step {step_id!r} is not in the artifact"
             )
+            return failed, (() if receipt is None else (receipt,)), outcome
         step = artifact.steps[step_id]
         iteration = self._iteration_of(snapshot, step_id)
         attempt = _Attempt(
@@ -838,6 +950,13 @@ class PlaybookEngine:
         attempt.idempotency_key = idempotency_key(
             snapshot.run_id, step_id, iteration, attempt.attempt
         )
+
+        async def finish(boundary: Any) -> tuple[RunSnapshot, tuple[StepReceipt, ...], str]:
+            committed, receipt, boundary_outcome = await boundary
+            receipts = list(attempt.boundary_receipts)
+            if receipt is not None:
+                receipts.append(receipt)
+            return committed, tuple(receipts), boundary_outcome
 
         # 2. Cancellation — read from the snapshot the engine is about to
         #    write, so a live run cannot overwrite a cancellation.
@@ -861,7 +980,7 @@ class PlaybookEngine:
             attempt.lifecycle = RunLifecycle.TIMED_OUT
             attempt.timed_out = True
             attempt.error = "run deadline fired"
-            return await self._commit(attempt, artifact_ref, repository)
+            return await finish(self._commit(attempt, artifact_ref, repository))
 
         # A suspended run resumes *without* re-running its wait executor:
         # re-executing would compute a second correlation key and open a
@@ -882,14 +1001,21 @@ class PlaybookEngine:
         except ValueResolutionError as exc:
             attempt.outcome = "input_resolution_failed"
             attempt.error = exc.reason
-            return await self._advance_on_outcome(attempt, artifact, artifact_ref, repository)
+            return await finish(
+                self._advance_on_outcome(attempt, artifact, artifact_ref, repository)
+            )
 
         # 5. Authorize.  Package 0 owns the decision; the engine only routes
         #    it, so an artifact can declare an edge for a denial.
         if isinstance(step, CommandStep) and not self._authorized(step, principal):
             attempt.outcome = "unauthorized"
             attempt.error = f"capability denied: {step.command}"
-            return await self._advance_on_outcome(attempt, artifact, artifact_ref, repository)
+            return await finish(
+                self._advance_on_outcome(attempt, artifact, artifact_ref, repository)
+            )
+
+        async def on_tool_turn(turn: LLMToolTurn) -> None:
+            await self._commit_llm_turn(attempt, turn, artifact_ref, repository)
 
         ctx = StepContext(
             run_id=snapshot.run_id,
@@ -908,6 +1034,8 @@ class PlaybookEngine:
             cancel_requested=snapshot.cancel_requested_at is not None,
             inputs=inputs,
             loop_frame=snapshot.loop,
+            llm_turns=snapshot.llm_turns,
+            on_tool_turn=on_tool_turn if isinstance(step, LlmStep) else None,
         )
 
         # 6. Execute.  An unexpected exception is runtime_error carrying the
@@ -952,6 +1080,7 @@ class PlaybookEngine:
         attempt.receipt_inputs = result.receipt_inputs
         attempt.receipt_result = result.receipt_result
         attempt.idempotency_key = result.idempotency_key or attempt.idempotency_key
+        attempt.usage = result.usage
         if result.diagnostics:
             attempt.error = "; ".join(result.diagnostics)
 
@@ -960,7 +1089,9 @@ class PlaybookEngine:
         if violation is not None:
             attempt.outcome = violation
             attempt.error = f"{result.control} is not legal for a {step.type} step"
-            return await self._advance_on_outcome(attempt, artifact, artifact_ref, repository)
+            return await finish(
+                self._advance_on_outcome(attempt, artifact, artifact_ref, repository)
+            )
 
         attempt.control = result.control
         attempt.outcome = result.outcome
@@ -971,7 +1102,7 @@ class PlaybookEngine:
         if result.value is not None and getattr(step, "save_result_as", None):
             try:
                 attempt.snapshot = bind_step_output(
-                    snapshot,
+                    attempt.snapshot,
                     step_id=step.save_result_as,
                     value=result.value,
                     declared=result.value.keys()
@@ -981,7 +1112,9 @@ class PlaybookEngine:
             except StateLimitExceeded:
                 attempt.outcome = "state_limit_exceeded"
                 attempt.error = "bound result exceeds the state limit"
-                return await self._advance_on_outcome(attempt, artifact, artifact_ref, repository)
+                return await finish(
+                    self._advance_on_outcome(attempt, artifact, artifact_ref, repository)
+                )
 
         # 9 and 10.
         if result.control is StepControl.TERMINATE:
@@ -989,13 +1122,13 @@ class PlaybookEngine:
                 result.terminal_outcome or "completed", RunLifecycle.COMPLETED
             )
             attempt.next_step_id = None
-            return await self._commit(attempt, artifact_ref, repository)
+            return await finish(self._commit(attempt, artifact_ref, repository))
         if result.control is StepControl.GOTO:
             attempt.next_step_id = result.goto_step_id
             attempt.selected_transition = transition_id(
                 snapshot.rule_id, step_id, result.outcome
             )
-            return await self._commit(attempt, artifact_ref, repository)
+            return await finish(self._commit(attempt, artifact_ref, repository))
         if result.control is StepControl.SUSPEND:
             # One transaction: the paused snapshot, the receipt, and the
             # registration that scans the durable inbox for an event that
@@ -1008,16 +1141,130 @@ class PlaybookEngine:
             attempt.wait_id = wait.wait_id
             attempt.wait_changes = WaitChangeSet(register=(wait,))
             attempt.next_step_id = attempt.step_id
-            return await self._commit(attempt, artifact_ref, repository)
+            return await finish(self._commit(attempt, artifact_ref, repository))
         if result.control is StepControl.UNRESOLVED:
             attempt.lifecycle = RunLifecycle.PAUSED
             attempt.error = attempt.error or "unresolved boundary"
-            return await self._commit(attempt, artifact_ref, repository)
+            return await finish(self._commit(attempt, artifact_ref, repository))
         if result.control is StepControl.OPERATOR_DECISION:
+            if (
+                attempt.boundary_receipts
+                and attempt.boundary_receipts[-1].receipt_kind == "interrupted"
+            ):
+                return (
+                    attempt.snapshot,
+                    tuple(attempt.boundary_receipts),
+                    "operator_decision_required",
+                )
             attempt.lifecycle = RunLifecycle.PAUSED
             attempt.outcome = "operator_decision_required"
-            return await self._commit(attempt, artifact_ref, repository)
-        return await self._advance_on_outcome(attempt, artifact, artifact_ref, repository)
+            return await finish(self._commit(attempt, artifact_ref, repository))
+        return await finish(
+            self._advance_on_outcome(attempt, artifact, artifact_ref, repository)
+        )
+
+    async def _commit_llm_turn(
+        self,
+        attempt: _Attempt,
+        turn: LLMToolTurn,
+        artifact_ref: ArtifactRef,
+        repository: Any,
+    ) -> None:
+        """Persist one awaited client turn before provider execution continues."""
+        snapshot = attempt.snapshot
+        now = self.services.clock()
+        iteration = snapshot.loop.index if snapshot.loop else -1
+        decision_id: str | None = None
+        llm_turns = snapshot.llm_turns
+        lifecycle = RunLifecycle.RUNNING
+        operator_decision = snapshot.operator_decision
+        error = snapshot.error
+        error_code = snapshot.error_code
+
+        if turn.kind == "tool_turn":
+            llm_turns = llm_turns + (
+                {
+                    "step_id": attempt.step_id,
+                    "iteration": iteration,
+                    "attempt": 1,
+                    "turn_index": turn.turn_index,
+                    "tool_call_ids": list(turn.tool_call_ids),
+                    "results_digest": turn.results_digest,
+                    "usage": {
+                        "input_tokens": turn.usage.input_tokens,
+                        "output_tokens": turn.usage.output_tokens,
+                        "reported": turn.usage.reported,
+                    },
+                    "transcript_delta": [dict(message) for message in turn.transcript_delta],
+                },
+            )
+        else:
+            decision_id = uuid.uuid4().hex
+            lifecycle = RunLifecycle.PAUSED
+            operator_decision = OperatorDecision(
+                step_id=attempt.step_id,
+                attempt=1,
+                reason="LLM provider or tool call interrupted",
+                raised_at=now,
+                decision_id=decision_id,
+                turn_index=turn.turn_index,
+            )
+            error = "LLM provider or tool call interrupted"
+            error_code = "interrupted"
+
+        budget = RunBudget(
+            llm_calls=snapshot.budget.llm_calls + 1,
+            total_tokens=snapshot.budget.total_tokens + turn.usage.total,
+            max_total_tokens=snapshot.budget.max_total_tokens,
+            cost_usd=snapshot.budget.cost_usd,
+        )
+        next_snapshot = replace(
+            snapshot,
+            lifecycle=lifecycle,
+            llm_turns=llm_turns,
+            operator_decision=operator_decision,
+            budget=budget,
+            error=error,
+            error_code=error_code,
+            updated_at=now,
+        )
+        receipt = StepReceipt(
+            receipt_id=uuid.uuid4().hex,
+            run_id=snapshot.run_id,
+            artifact_sha256=artifact_ref.artifact_sha256,
+            rule_id=snapshot.rule_id,
+            step_id=attempt.step_id,
+            step_kind="llm",
+            receipt_kind=turn.kind,
+            turn_index=turn.turn_index,
+            operator_decision_id=decision_id,
+            outcome="success" if turn.kind == "tool_turn" else "operator_decision_required",
+            started_at=attempt.started_at,
+            snapshot_version=snapshot.version + 1,
+            iteration=iteration,
+            attempt=1,
+            idempotency_key=attempt.idempotency_key,
+            principal=self._principal_projection(attempt.principal),
+            result={
+                "tool_call_ids": list(turn.tool_call_ids),
+                "results_digest": turn.results_digest,
+            },
+            error=error if turn.kind == "interrupted" else None,
+            error_code="interrupted" if turn.kind == "interrupted" else None,
+            tokens_in=turn.usage.input_tokens,
+            tokens_out=turn.usage.output_tokens,
+            completed_at=now,
+            duration_ms=max(0, int((now - attempt.started_at) * 1000)),
+        )
+        attempt.snapshot = await repository.commit_boundary(next_snapshot, receipt)
+        attempt.boundary_receipts.append(receipt)
+        await self._emit(
+            EVENT_STEP_COMPLETED,
+            attempt.snapshot,
+            step_id=receipt.step_id,
+            receipt_kind=receipt.receipt_kind,
+            turn_index=receipt.turn_index,
+        )
 
     @staticmethod
     def _pending_cancellation(
@@ -1177,6 +1424,8 @@ class PlaybookEngine:
             cancelled_at=attempt.cancelled_at,
             completed_at=now,
             duration_ms=max(0, int((now - attempt.started_at) * 1000)),
+            tokens_in=attempt.usage.input_tokens if attempt.usage is not None else 0,
+            tokens_out=attempt.usage.output_tokens if attempt.usage is not None else 0,
         )
         try:
             committed = await repository.commit_boundary(

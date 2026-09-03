@@ -4,12 +4,13 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from src.config import LLMConfig
 from src.intelligence_classes import IntelligenceClass
@@ -27,13 +28,33 @@ class LLMRunResult:
     text: str
     transcript: list[dict]
     turns: int
-    stopped_by: str  # "done" | "max_turns" | "cancelled"
+    stopped_by: str  # "done" | "max_turns" | "cancelled" | "interrupted"
     tool_calls_made: list[str] = field(default_factory=list)
     usage: TokenUsage | None = None
 
 
 ProgressCallback = Callable[[str, str | None], Awaitable[None]]
 ToolExecutor = Callable[[str, dict], Awaitable[Any]]
+
+
+@dataclass(frozen=True, slots=True)
+class LLMToolTurn:
+    """One tool-loop boundary, safe for a durable caller to receipt.
+
+    Raw tool results stay in ``transcript_delta`` for the private run snapshot;
+    operator-visible receipts use only ``tool_call_ids`` and ``results_digest``.
+    An interrupted partial turn deliberately carries no delta.
+    """
+
+    kind: Literal["tool_turn", "interrupted"]
+    turn_index: int
+    tool_call_ids: tuple[str, ...]
+    results_digest: str
+    usage: TokenUsage
+    transcript_delta: tuple[dict, ...] = ()
+
+
+ToolTurnCallback = Callable[[LLMToolTurn], Awaitable[None]]
 
 
 def _json_safe(obj: Any) -> str:
@@ -164,6 +185,8 @@ class LLMClient:
         spec: LLMCallSpec = LLMCallSpec(),
         max_turns: int = 25,
         on_progress: ProgressCallback | None = None,
+        on_tool_turn: ToolTurnCallback | None = None,
+        initial_turn_index: int = 0,
         cancel_event: asyncio.Event | None = None,
     ) -> LLMRunResult:
         """Caller-supplied tool loop.  Tool errors become tool results; the loop
@@ -180,6 +203,20 @@ class LLMClient:
             if on_progress is not None:
                 await on_progress(kind, detail)
 
+        async def _turn_boundary(turn: LLMToolTurn) -> None:
+            if on_tool_turn is not None:
+                await on_tool_turn(turn)
+
+        def _results_digest(results: list[dict]) -> str:
+            payload = json.dumps(
+                results,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                default=str,
+            )
+            return hashlib.sha256(payload.encode()).hexdigest()
+
         while True:
             if cancel_event is not None and cancel_event.is_set():
                 await _progress("cancelled")
@@ -192,9 +229,23 @@ class LLMClient:
                 )
 
             await _progress("thinking", None if turns == 0 else f"round {turns + 1}")
-            resp = await self._create_message(
-                resolved, messages=transcript, system=system, tools=tools or None
-            )
+            try:
+                resp = await self._create_message(
+                    resolved, messages=transcript, system=system, tools=tools or None
+                )
+            except asyncio.CancelledError:
+                await _turn_boundary(
+                    LLMToolTurn(
+                        kind="interrupted",
+                        turn_index=initial_turn_index + turns,
+                        tool_call_ids=(),
+                        results_digest=_results_digest([]),
+                        usage=TokenUsage(),
+                    )
+                )
+                return LLMRunResult(
+                    "", transcript, turns, "interrupted", made, usage or TokenUsage()
+                )
             turns += 1
             call_usage = resp.usage or TokenUsage()
             usage = call_usage if usage is None else usage + call_usage
@@ -218,6 +269,19 @@ class LLMClient:
                 else:
                     try:
                         result = await execute(call.name, dict(call.input or {}))
+                    except asyncio.CancelledError:
+                        await _turn_boundary(
+                            LLMToolTurn(
+                                kind="interrupted",
+                                turn_index=initial_turn_index + turns - 1,
+                                tool_call_ids=tuple(item.id for item in resp.tool_uses),
+                                results_digest=_results_digest(results),
+                                usage=call_usage,
+                            )
+                        )
+                        return LLMRunResult(
+                            "", transcript, turns, "interrupted", made, usage
+                        )
                     except Exception as exc:
                         logger.warning(
                             "llm.run_tools: tool %s raised: %s", call.name, exc
@@ -230,7 +294,21 @@ class LLMClient:
                         "content": _json_safe(result),
                     }
                 )
-            transcript.append({"role": "user", "content": results})
+            result_message = {"role": "user", "content": results}
+            transcript.append(result_message)
+            assistant_message = serialize_canonical(
+                [{"role": "assistant", "content": resp.tool_uses}]
+            )[0]
+            await _turn_boundary(
+                LLMToolTurn(
+                    kind="tool_turn",
+                    turn_index=initial_turn_index + turns - 1,
+                    tool_call_ids=tuple(call.id for call in resp.tool_uses),
+                    results_digest=_results_digest(results),
+                    usage=call_usage,
+                    transcript_delta=(assistant_message, result_message),
+                )
+            )
 
     async def _create_message(
         self,

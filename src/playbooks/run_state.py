@@ -353,6 +353,8 @@ class OperatorDecision:
     attempt: int
     reason: str
     raised_at: float
+    decision_id: str = ""
+    turn_index: int = -1
     options: tuple[str, ...] = ("accept_outcome", "retry", "fail", "cancel")
 
 
@@ -578,6 +580,8 @@ class RunSnapshot:
                     attempt=int(decision["attempt"]),
                     reason=decision["reason"],
                     raised_at=float(decision["raised_at"]),
+                    decision_id=decision.get("decision_id", ""),
+                    turn_index=int(decision.get("turn_index", -1)),
                     options=tuple(decision.get("options") or ()),
                 )
                 if decision

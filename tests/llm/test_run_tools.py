@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 
 from src.config import LLMConfig
-from src.llm import LLMClient
+from src.llm import LLMClient, LLMToolTurn
 from src.llm.fake import FakeProvider
 
 TOOLS = [
@@ -110,3 +110,58 @@ async def test_multi_tool_turn_executes_all_in_order():
 
     await _client(fake).run_tools("go", TOOLS, ex)
     assert seen == [1, 2]
+
+
+async def test_completed_tool_turn_is_reported_before_the_next_provider_call():
+    fake = FakeProvider()
+    fake.add_tool_call("list_tasks", {"project_id": "p"})
+    fake.add_text("finished")
+    seen: list[LLMToolTurn] = []
+
+    async def on_tool_turn(turn: LLMToolTurn) -> None:
+        assert len(fake.calls) == 1
+        seen.append(turn)
+
+    result = await _client(fake).run_tools(
+        "go", TOOLS, _exec, on_tool_turn=on_tool_turn
+    )
+
+    assert result.text == "finished"
+    assert len(seen) == 1
+    assert seen[0].kind == "tool_turn"
+    assert seen[0].turn_index == 0
+    assert seen[0].tool_call_ids
+    assert len(seen[0].results_digest) == 64
+    assert [message["role"] for message in seen[0].transcript_delta] == [
+        "assistant",
+        "user",
+    ]
+
+
+async def test_interrupted_tool_call_reports_partial_receipt_without_a_transcript_delta():
+    fake = FakeProvider()
+    fake.add_tool_calls([("list_tasks", {"a": 1}), ("list_tasks", {"a": 2})])
+    seen: list[LLMToolTurn] = []
+    calls = 0
+
+    async def interrupt_second(_name, _args):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise asyncio.CancelledError
+        return {"success": True}
+
+    async def on_tool_turn(turn: LLMToolTurn) -> None:
+        seen.append(turn)
+
+    result = await _client(fake).run_tools(
+        "go", TOOLS, interrupt_second, on_tool_turn=on_tool_turn
+    )
+
+    assert result.stopped_by == "interrupted"
+    assert len(seen) == 1
+    assert seen[0].kind == "interrupted"
+    assert seen[0].turn_index == 0
+    assert len(seen[0].tool_call_ids) == 2
+    assert seen[0].transcript_delta == ()
+    assert len(seen[0].results_digest) == 64

@@ -16,7 +16,7 @@ Two properties are what the rest of the package is built on:
 
 from __future__ import annotations
 
-from collections.abc import Callable, Collection, Mapping
+from collections.abc import Awaitable, Callable, Collection, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol, runtime_checkable
@@ -35,6 +35,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from src.playbooks.definition import PlaybookDefinition
     from src.playbooks.run_state import LoopFrame
     from src.playbooks.waits import WaitSpec
+    from src.llm.client import LLMToolTurn
 
 
 class UnknownStepType(KeyError):
@@ -194,6 +195,12 @@ class StepContext:
     #: executor, which is otherwise stateless; every other executor ignores
     #: it and sees only :attr:`iteration_index`.
     loop_frame: LoopFrame | None = None
+    #: Completed tool-turn deltas for this run.  The LLM executor filters by
+    #: step/iteration/attempt and reconstructs the provider transcript.
+    llm_turns: tuple[Mapping[str, Any], ...] = ()
+    #: Engine-owned durable boundary.  Only live tool-enabled LLM execution
+    #: receives one; the executor never imports the engine or repository.
+    on_tool_turn: Callable[[LLMToolTurn], Awaitable[None]] | None = None
 
 
 @runtime_checkable
