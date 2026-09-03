@@ -126,6 +126,16 @@ async def run_one(engine, ref):
     return await engine.run_rule(ref, "review", event("task-completed-code"), TRUSTED_LOCAL)
 
 
+def step_receipt(runs):
+    """The command's completion receipt.
+
+    The attempt's first receipt is its ``attempt_start`` fence, which carries
+    identity and principal but by design no result, inputs or outcome
+    classification — the projection rules below are about the completion.
+    """
+    return next(r for r in runs.receipts if r.receipt_kind == "step")
+
+
 class TestCompleteness:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("field_name", MANDATORY_FIELDS)
@@ -139,7 +149,7 @@ class TestCompleteness:
             )
         )
         await run_one(engine, ref)
-        value = getattr(runs.receipts[0], field_name)
+        value = getattr(step_receipt(runs), field_name)
         assert value not in (None, "")
 
     @pytest.mark.asyncio
@@ -168,7 +178,7 @@ class TestCompleteness:
             )
         )
         await run_one(engine, ref)
-        assert runs.receipts[0].contract_fingerprint
+        assert step_receipt(runs).contract_fingerprint
         # A terminal has no contract, and does not borrow the command's.
         assert runs.receipts[-1].step_kind == "terminal"
         assert runs.receipts[-1].contract_fingerprint == ""
@@ -184,9 +194,13 @@ class TestCompleteness:
             )
         )
         await run_one(engine, ref)
-        keys = [r.idempotency_key for r in runs.receipts]
+        keys = [r.idempotency_key for r in runs.receipts if r.receipt_kind == "step"]
         assert len(keys) == len(set(keys))
         assert all(key.count(":") == 3 for key in keys)
+        # The attempt key is unchanged across an attempt's boundaries: its
+        # start fence and its completion name the same four-part identity.
+        fences = [r for r in runs.receipts if r.receipt_kind == "attempt_start"]
+        assert fences and all(fence.idempotency_key in keys for fence in fences)
 
 
 class TestDefaultDenyRedaction:
@@ -202,7 +216,7 @@ class TestDefaultDenyRedaction:
         )
         await run_one(engine, ref)
         projected = set(ENSURE_TASK.execution.receipt_projection)
-        assert set(runs.receipts[0].result) <= projected
+        assert set(step_receipt(runs).result) <= projected
 
     @pytest.mark.asyncio
     async def test_empty_receipt_projection_projects_nothing(self):
@@ -213,7 +227,7 @@ class TestDefaultDenyRedaction:
             CommandResult(outcome="done", value=NoProjectionResult(), summary="")
         )
         await run_one(engine, ref)
-        result = runs.receipts[0].result
+        result = step_receipt(runs).result
         assert "populated" not in result
         assert set(result) <= {REDACTED_KEY}
 
@@ -228,7 +242,7 @@ class TestDefaultDenyRedaction:
             )
         )
         await run_one(engine, ref)
-        result = runs.receipts[0].result
+        result = step_receipt(runs).result
         assert result["gate_id"] == "g-1"
         assert result["secret_note"].startswith(SENSITIVE_PREFIX)
         # ``approved`` is declared on the model but not projected: dropped,
@@ -249,7 +263,7 @@ class TestDefaultDenyRedaction:
             )
         )
         await run_one(engine, ref)
-        inputs = runs.receipts[0].inputs
+        inputs = step_receipt(runs).inputs
         assert set(inputs) <= {REDACTED_KEY}
         assert "Review: Add the widget" not in str(inputs)
 
@@ -258,8 +272,8 @@ class TestDefaultDenyRedaction:
         engine, adapter, runs, ref = build("list_tasks", LIST_TASKS, save_as="downstream")
         adapter.queue.append(RuntimeError("boom"))
         await run_one(engine, ref)
-        assert runs.receipts[0].result == {}
-        assert runs.receipts[0].error_code == "runtime_error"
+        assert step_receipt(runs).result == {}
+        assert step_receipt(runs).error_code == "runtime_error"
 
 
 class TestPrincipalProjection:
@@ -274,7 +288,7 @@ class TestPrincipalProjection:
             )
         )
         await run_one(engine, ref)
-        principal = runs.receipts[0].principal
+        principal = step_receipt(runs).principal
         assert principal["kind"] == TRUSTED_LOCAL.kind.value
         assert set(principal) == {
             "kind",
@@ -297,6 +311,6 @@ class TestPrincipalProjection:
             )
         )
         await run_one(engine, ref)
-        principal = runs.receipts[0].principal
+        principal = step_receipt(runs).principal
         assert principal["capability_fingerprint"] == TRUSTED_LOCAL.policy.fingerprint()
         assert "ensure_task" not in str(principal)

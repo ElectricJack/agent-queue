@@ -560,7 +560,13 @@ class TestDurableChildIdentity:
         )
 
         assert outcome.lifecycle is RunLifecycle.PAUSED
-        assert repository.boundaries == [("paused", ("child-7",), outcome.snapshot.wait.wait_id)]
+        # The attempt-start fence precedes ``create_task``; the one boundary
+        # that pauses the run carries the child's identity with it.
+        assert repository.boundaries == [
+            ("running", (), None),
+            ("paused", ("child-7",), outcome.snapshot.wait.wait_id),
+        ]
+        assert [r.receipt_kind for r in repository.receipts] == ["attempt_start", "step"]
         assert outcome.snapshot.agent_task_ids == ("child-7",)
         assert repository.receipts[-1].result["child_task_id"] == "child-7"
         assert repository.receipts[-1].wait_id == outcome.snapshot.wait.wait_id
