@@ -215,6 +215,25 @@ Six further disagreements between §4.6/§4.7 and what Packages 2 and 3 shipped.
 
 17. **A suspension receipt classifies as `skipped`.** `RECEIPT_OUTCOMES` (§2.5 item 2) has no `paused` member. A pause decides nothing — no edge is selected, no binding is written, and the resume boundary carries the real outcome — so calling it `success` would make every open wait look like a finished step. `WaitStep.wait_kind` is also the *author's* vocabulary (`event | human | task | timer`) while `WaitSpec.kind` is storage's (`event | timer | human | agent_task`); `wait.py::WAIT_KIND_STORAGE` is the single mapping between them, so a new kind cannot be added on one side only.
 
+
+### 2.7 Amendments applied — the C2 cancellation reconciliation, 2026-09-02
+
+Three disagreements between §4.9/§10.1 and what Packages 1 and 3 shipped. Each is applied below and implemented as written.
+
+18. **T-9's tests live in `tests/test_v2_engine.py`, not `tests/test_v2_cancellation.py`.** The same reasoning as §2.6 item 12, and the same resolution: the roadmap's Package 4 file list is the scope authority and creates no such file, so §5.2's test *names* are kept verbatim in `test_v2_engine.py` (class `TestCancellation`), and `test_v2_engine_repository.py` gains the paused-run assertion against the real repository, because the double cannot prove that the wait row and the terminal snapshot commit in one transaction.
+
+19. **The receipt's cancellation discriminator rides `result["cancellation"]`.** §4.9 asks for "the receipt's `cancellation` field"; `playbook_step_receipts` (Package 3, §6.4) has no such column and its `StepReceipt` field names are that table's column names exactly. Adding a column contradicts §10's "Package 4 owns no tables", so the discriminator goes into the receipt's existing JSON `result` projection under the key `cancellation`, whose two values are `acknowledged` and `grace_expired` (`engine.py`'s `CANCELLATION_KEY`, `CANCELLATION_ACKNOWLEDGED`, `CANCELLATION_GRACE_EXPIRED`). Together with `receipt.cancelled_at` — which §2.5 item 10 already made the acknowledgement's timestamp — the pair says both *when* the run stopped and *whether the executor gave it back*, which is what §4.9 wanted the column for.
+
+20. **Cancelling a paused run goes through `commit_boundary`, not `request_cancel`.** §4.9's paused row wants "cancelled, **one receipt**, wait deregistered in the same boundary", and `request_cancel` deliberately writes no receipt (it is the *intent* write, shared with callers that have no artifact loaded). `PlaybookEngine._cancel_paused` therefore builds the cancellation attempt over the run's current step and commits it with `WaitChangeSet(clear_run_waits=True)`, which is one transaction carrying the terminal snapshot, its receipt and the wait's retirement. Two consequences are recorded rather than hidden: the `cancel_reason` / `cancel_requested_by` *columns* are only written by `request_cancel`, so on this path the reason rides `receipt.error` and the canceller rides `receipt.principal`; and the boundary is a second attempt on the wait step, which is exactly what §2.6 item 15's per-step attempt counter exists to number.
+
+21. **The engine keeps an in-process registry of live walks.** §4.9's "running, executor in flight" row is not reachable from durable state alone: a walk that is inside `await executor.execute(...)` cannot observe a row that changed underneath it, and `request_cancel` advances the snapshot version, so the walk's next boundary would lose its CAS and report `interrupted` rather than `cancelled`. `PlaybookEngine._live: dict[str, _RunControl]` (registered by `_walk` for `LIVE` only, dropped in a `finally`) carries the post-cancel snapshot the walk must adopt, the in-flight `(executor, step, ctx)`, the one-shot `signalled` flag §4.9 requires, and a lock plus a `settled` event so that exactly one of the two possible writers — the walk on acknowledgement, `cancel` on grace expiry — writes the terminal boundary. Nothing on it is durable: a restart drops the registry and the run is still `cancelling` in the database, so the next boundary in whichever process picks the run up ends it through §3.4 step 2. The handle buys promptness within one process and nothing else. Grace expiry does **not** cancel the executor's task — the engine ends *runs*, and killing work it did not start would leave a half-finished side effect attributed to nobody.
+
+### 2.8 Amendment applied — per-tool-turn durable boundaries, 2026-09-02
+
+One further disagreement between C3 and Package 3's frozen receipt identity is applied below and implemented as written.
+
+22. **Per-tool-turn durability amends Package 3's receipt cardinality, not attempt identity.** `LLMClient.run_tools(..., on_tool_turn=...)` awaits a `ToolTurnReceipt` callback after tool results are appended and before another provider call. The payload is `kind`, zero-based `turn_index`, `tool_call_ids`, `results_digest`, per-call `usage`, and the serializable transcript delta. `StepContext` carries the resume deltas, the engine-owned callback, and a live cancellation event checked before tool dispatch; executors still cannot import or invoke the engine directly. `StepReceipt` adds `receipt_kind`, `turn_index`, and `operator_decision_id`. Its database identity is `(run_id, step_id, iteration, attempt, turn_index, receipt_kind)`, while every receipt from the attempt retains the same four-part idempotency key. Existing rows are `step/-1/NULL`.
+
 ---
 
 ## 3. Locked interfaces — the parallelism contract
@@ -287,6 +306,7 @@ class ExecutorResult:
     wait: "WaitSpec | None" = None            # src/playbooks/waits.py (Package 3)
     terminal_outcome: str | None = None
     usage: TokenUsage | None = None
+    llm_calls: int = 0                    # aggregate calls represented by usage
     idempotency_key: str | None = None
     #: Receipt projections. ALREADY REDACTED by the executor per §3.3.4 —
     #: the engine writes them verbatim and performs no further redaction.
@@ -351,6 +371,7 @@ class StepContext:
     run_deadline_at: float | None
     step_deadline_at: float | None
     cancel_requested: bool
+    cancel_event: asyncio.Event | None
     services: "EngineServices"
 ```
 
@@ -434,7 +455,7 @@ async def commit_boundary(
 ) -> RunSnapshot: ...     # returns the persisted snapshot with version+1
 ```
 
-Package 4's rule: **`commit_boundary` is the only write the engine makes to run state, and it is called exactly once per step attempt.** Not zero times (an attempt with no receipt is invisible after a crash), not twice (two receipts for one attempt breaks the idempotency key). T-3's `test_exactly_one_commit_per_attempt` wraps the repository in a counting double and asserts `calls == len(receipts)` over a full run, including the failure and cancellation paths.
+Package 4's rule: **`commit_boundary` is the only write the engine makes to run state, and it is called exactly once per durable boundary.** Ordinary steps have one boundary per attempt. An LLM step with tools has one boundary for each completed tool turn, one `llm_call` boundary for each schema-invalid response before a retry, plus its final step boundary; an interruption has an `interrupted` boundary instead of a final step boundary. Every boundary advances `snapshot.version`, and every successful call has exactly one receipt, so T-3's counting invariant remains `calls == len(receipts)`. The attempt idempotency key is unchanged across its boundaries; uniqueness adds `(turn_index, receipt_kind)` rather than inventing a new attempt.
 
 `commit_boundary` raises `SnapshotVersionConflict` when `snapshot.version` no longer matches the stored row. The engine's response is **never** to retry the write: it re-reads the snapshot, and if the run is still at the same step it fails the run with `interrupted` and an error receipt. Two writers at one step boundary means two engine instances think they own the run, and silently merging them is how a side-effecting command runs twice. T-3's `test_version_conflict_fails_the_run_and_receipts_it`.
 
@@ -464,6 +485,9 @@ Package 5 projects these; Package 6 and 7 measure them. Every field is mandatory
 | `artifact_sha256` | `ctx.artifact_ref` | Pins the overlay to the exact executed artifact |
 | `attempt` | `ctx.attempt` | 1-based |
 | `iteration_index` | `ctx.iteration_index` | `None` outside a loop body |
+| `receipt_kind` | engine | `step`, `tool_turn`, `llm_call`, `interrupted`, or `operator_decision` |
+| `turn_index` | engine/client | `-1` for compatibility step receipts; zero-based for LLM turn boundaries |
+| `operator_decision_id` | engine | optional opaque link shared by an interruption and its resolution |
 | `mode` | `ctx.mode` | Shadow and dry-run receipts exist **in memory only** (§3.3.5) |
 | `principal_kind`, `profile_id`, `capability_fingerprint` | `ctx.principal`, `principal.policy.fingerprint()` | |
 | `contract_fingerprint` | `CONTRACTS.fingerprint(step.command)` | `None` for non-command steps |
@@ -473,6 +497,7 @@ Package 5 projects these; Package 6 and 7 measure them. Every field is mandatory
 | `inputs` | `ExecutorResult.receipt_inputs` | Already redacted (§3.3.4) |
 | `result` | `ExecutorResult.receipt_result` | Already redacted |
 | `usage` | `ExecutorResult.usage` | `None` for non-LLM steps; §4.11 |
+| `llm_calls` | `ExecutorResult.llm_calls` | aggregate count; engine subtracts already-durable turn boundaries before updating run budget |
 | `idempotency_key` | §3.3.2 | Always recorded, even when not passed |
 | `started_at`, `completed_at`, `duration_ms` | `ctx.services.clock` | |
 | `deadline_fired` | engine | `"run"`, `"step"`, `"wait"` or `None` — spec: "the receipt records which deadline fired" |
@@ -519,17 +544,17 @@ This is the contract that lets an executor author reason locally. `PlaybookEngin
 3. **Deadline check.** `min(run_deadline_at, step_deadline_at, wait_deadline_at)`; if passed → outcome `timed_out`, `deadline_fired` records which.
 4. **Resolve inputs.** `resolve_value` (`expressions.py`; added by this package, §2.5 item 1) over `step.inputs` against `ctx.scope`. A missing or type-invalid reference → `input_resolution_failed` **before** the executor runs. The engine never injects an `UNRESOLVED` marker and never coerces to `""`.
 5. **Authorize.** For `CommandStep`, `authorize_command(name, ctx.principal)` (Package 0). A denial → `unauthorized`, error receipt, transition selection proceeds normally so an artifact can route a denial. The engine does **not** implement its own capability check.
-6. **Execute.** `await executor_for(step.type, ctx.mode).execute(step, ctx)`, wrapped so that an unexpected exception becomes `runtime_error` with the exception type (not its message — a message can carry an argument value) in `diagnostics`.
+6. **Execute.** `await executor_for(step.type, ctx.mode).execute(step, ctx)`, wrapped so that an unexpected exception becomes `runtime_error` with the exception type (not its message — a message can carry an argument value) in `diagnostics`. For a live tool-enabled `LlmStep`, `StepContext.on_tool_turn` is an engine-owned awaited callback. A completed payload appends its two-message delta to `snapshot.llm_turns`, commits a `tool_turn` receipt, replaces the executor's working snapshot with the returned version, and emits only after the commit. An `interrupted` payload appends an accounting-only turn with no transcript delta, sets `operator_decision`, commits the interruption, and leaves the snapshot paused. Callback/storage failures cross a distinct exception boundary and are never classified as provider failures.
 7. **Validate the result.** `outcome ∈ declared ∪ ENGINE_RESERVED_OUTCOMES`; `control`/field coherence (`SUSPEND` requires `wait`; `GOTO` requires `goto_step_id ∈ step.declared_targets()`; `TERMINATE` requires `terminal_outcome`). Violation → `contract_violation`.
 8. **Bind.** If `step.save_result_as`, `scope.with_binding(name, value)` — which raises on reassignment, because bindings are immutable. Then the 256 KiB check, then the 4 MiB whole-snapshot check; either breach → `state_limit_exceeded`.
 9. **Select the transition.** `step.transitions[outcome]`, falling back to `step.transitions["runtime_error"]` **only** for a member of `ENGINE_RESERVED_OUTCOMES`. A business outcome with no edge is a `contract_violation`, not a silent completion — this is the replacement for `pipeline_runner.py:151-158`, where a missing `on_success` key ends the run as `completed`.
-10. **Commit.** Build the next `RunSnapshot` (new step, new bindings, new loop frame, new version) and the `StepReceipt`, and call `commit_boundary(snapshot, receipt, wait_changes)` **once**. Steps 8–10 are the atomic unit; nothing between step 6 and step 10 writes anything durable.
+10. **Commit.** Build the next `RunSnapshot` (new step, new bindings, new loop frame, new version) and the final `step` receipt, and call `commit_boundary(snapshot, receipt, wait_changes)` once. Tool-turn boundaries already returned their advanced snapshot from step 6, so the final CAS is based on that version. Steps 8–10 are the final atomic unit; the only permitted writes during step 6 are the engine-owned LLM boundary callback above.
 11. **Emit.** After a successful commit only, emit `playbook.v2.step.completed` on the bus. An event before the commit would let a subscriber observe a step that a crash then un-happens.
 
 Two properties fall out and are asserted directly:
 
 - **Crash between 6 and 10 loses the attempt, never the run.** The stored snapshot still points at the step, `attempt` is unchanged, and the restart re-runs it. For a `retry_safe` command that is correct; for a non-retry-safe one, §4.8 stops and asks an operator. T-15.
-- **The executor cannot skip a boundary.** There is no path from an executor back into the engine. An executor that wants to continue returns; it does not call the engine.
+- **The executor cannot skip a boundary.** There is no import path from an executor back into the engine. An ordinary executor returns. The LLM executor may only await the boundary capability supplied in `StepContext`; that capability is implemented by the engine and commits before returning control to the client's loop.
 
 ### 3.5 `PlaybookEngine` — the public surface
 
@@ -677,7 +702,9 @@ The structural change from `runner.py` is that **the model no longer picks the e
 6. Accumulate usage across every call and tool turn into `ExecutorResult.usage`. A breach of `max_calls`, `max_output_tokens` or `max_total_tokens` → `budget_exceeded`, and the partial transcript is still receipted.
 7. The outcome is `validated_output[step.outcome_field]` (Package 2 requires `outcome_field` to name an enum property of `output_schema`). The value bound is the whole validated output.
 
-**Tool turns are durable.** When `step.tools` is non-empty, each completed tool turn is a `commit_boundary` with a `tool_turn` receipt and the transcript in the snapshot, so a restart mid-conversation resumes after the last completed turn. An **in-flight provider call is never replayed**: the restart writes an `interrupted` receipt and, per §4.8, requires an explicit retry attempt. T-14's `test_interrupted_provider_call_is_not_replayed`.
+**Tool turns are durable.** `LLMClient.run_tools` accepts `on_tool_turn: Callable[[ToolTurnReceipt], Awaitable[None]] | None`, `initial_turn_index`, and an already reconstructed message list. After all results for one provider response are appended, it awaits a payload containing `kind="tool_turn"`, the zero-based index, call IDs, `sha256` of the canonical result blocks, that provider call's `TokenUsage`, and the assistant/user transcript delta. The engine callback commits this delta and a `tool_turn` receipt before `run_tools` may issue another provider request. The result-cap check still applies to bound final output (256 KiB); transcript deltas remain subject to the 4 MiB snapshot cap and are never copied raw into receipts.
+
+If external cancellation interrupts provider I/O or any tool dispatch in durable callback mode, the client awaits one `kind="interrupted"` payload with the next turn index, known call IDs, a digest of only completed result blocks, and any known usage. The engine commits it with a fresh `operator_decision_id`, appends an accounting-only `llm_turns` entry, pauses, and the executor returns `OPERATOR_DECISION` without a second receipt. The accounting entry consumes call/token budget and advances identity but contributes no transcript delta. Cancellation is latched before its first repository await and serialized with callback storage: a callback already committing a completed turn writes that turn, then exactly one cancellation boundary, and stops before another provider request. Provider and tool-dispatch deadlines instead raise `TimeoutError` and take the `timed_out` outcome; legacy callers without the durable callback continue to receive `CancelledError`. On process restart, a `running` snapshot still pointing at an `LlmStep` is treated conservatively as the same ambiguity before provider I/O. An explicit `OperatorResolution(kind="retry")` clears the decision and reconstructs messages from the prompt plus committed `tool_turn` and `llm_call` deltas, continuing at `last_turn_index + 1`. Before every schema-validation retry, with or without tools, the invalid response, its usage, and the corrective user message are committed as `llm_call`, preserving complete call accounting and the monotonically increasing turn index. The final step boundary adds only calls and tokens not already represented by those turn boundaries to `RunSnapshot.budget`, while its receipt retains aggregate attempt usage. `max_turns` is handled as `budget_exceeded` before schema validation, so exhausting a tool-loop call budget never invents a zero-usage `llm_call`. T-14 pins multi-turn cardinality, interruption, and restart continuation.
 
 `SymbolicLlmExecutor` returns `UNRESOLVED` with `possible_outcomes` = the enum values of `output_schema[step.outcome_field]` plus every reserved outcome the step maps, and the engine forks across them (§4.10).
 
@@ -740,12 +767,12 @@ The aggregate binding is `{"items": [...], "outcomes": [...], "errors": [...]}` 
 
 Spec: "a retry-safe command can be replayed with that key; a non-retry-safe command pauses with `operator_decision_required` rather than executing twice."
 
-On restart, for a snapshot whose lifecycle is `running` and whose current step has an attempt with a *started* but no *completed* receipt:
+On restart, for a snapshot whose lifecycle is `running` and whose current step has an attempt with a *started* but no *completed* receipt, or an LLM snapshot still pointing at the step after its last `tool_turn` boundary:
 
 | Step / contract | Behaviour |
 |---|---|
 | `retry_safe=True` **or** `idempotency.mode in {"natural", "keyed"}` | Replay as the **same** attempt number with the same key. The receipt for the interrupted attempt is written with outcome `interrupted`, then a new receipt records the replay. |
-| Anything else — including every `LlmStep` with an in-flight provider call, and every `AgentTaskStep` whose child-task creation may or may not have landed | `control=OPERATOR_DECISION`: pause with reason `operator_decision_required`, no binding, no transition. |
+| Anything else — including every `LlmStep` with an in-flight provider/tool call, and every `AgentTaskStep` whose child-task creation may or may not have landed | Write an `interrupted` receipt carrying an `operator_decision_id`, pause with reason `operator_decision_required`, bind nothing, and select no transition. |
 
 The operator records exactly one resolution, and the resolution is itself receipted: `accept(outcome, value)`, `retry` (new attempt number), `fail`, `cancel`. The command surface is `playbook_run_resolve` — **Package 5 owns the endpoint and UI**; Package 4 owns `PlaybookEngine.resume(run_id, OperatorResolution(kind, payload), principal)` and the receipt. Package 5's plan already lists `playbook_run_overlay`; the resolution command is added to its scope by this plan's §12 note.
 
@@ -915,11 +942,11 @@ The roadmap names six commits. This plan uses **eight**, and both additions are 
 
 *Verify:* `aq test tests/test_command_executor.py -q`
 
-#### T-3 — one commit per attempt
+#### T-3 — one commit per durable boundary
 
 *Red:* in `tests/test_v2_engine.py`.
 
-- `test_exactly_one_commit_per_attempt` — a counting `RunRepository` double; run the fixture to completion and assert `double.commit_calls == len(double.receipts)` and that every receipt has a distinct `(step_id, iteration_index, attempt)`.
+- `test_exactly_one_commit_per_durable_boundary` — a counting `RunRepository` double; run the fixture to completion and assert `double.commit_calls == len(double.receipts)` and that every receipt has a distinct `(step_id, iteration_index, attempt, turn_index, receipt_kind)`.
 - `test_no_durable_write_happens_before_the_boundary` — the repository double raises on `commit_boundary`; assert the scripted command **was** called (the effect is real) but no snapshot row advanced and no bus event was emitted. Proves the §3.4 step-11 ordering.
 - `test_version_conflict_fails_the_run_and_receipts_it` — the double raises `SnapshotVersionConflict` once; assert the run ends `failed` with outcome `interrupted` and one error receipt, and that `commit_boundary` was **not** retried.
 
@@ -1035,8 +1062,10 @@ Every change is additive with a default of `None`, so `tests/llm/` and every exi
 - `test_invalid_output_retries_then_gives_up` — two malformed responses with `max_schema_retries=1`; assert `invalid_output` and exactly two provider calls.
 - `test_max_calls_and_max_output_tokens_breach_is_budget_exceeded` (two parameterisations).
 - `test_tool_calls_are_authorized_at_dispatch_not_by_the_published_schema` — publish a narrowed tool list, then have the fake model call a tool **outside** it; assert the call is denied by `authorize_command` and the step outcome is `unauthorized`. §7.3.
-- `test_completed_tool_turn_is_a_durable_boundary` — two turns; assert two `tool_turn` receipts.
-- `test_interrupted_provider_call_is_not_replayed` — a snapshot with a started-but-uncompleted LLM attempt; assert `operator_decision_required`, and that the provider was not called.
+- `test_completed_tool_turn_is_a_durable_boundary` — two completed tool turns; assert two ordered `tool_turn` receipts, two snapshot-version advances before the final `step` receipt, stable artifact/run/attempt identity, and one provider request starts only after the preceding boundary callback returns.
+- `test_interrupted_provider_call_is_not_replayed` — a snapshot with a started-but-uncompleted LLM attempt; assert one `interrupted` receipt with `operator_decision_id`, lifecycle `paused`, and that the provider was not called.
+- `test_interrupted_tool_dispatch_pauses_at_the_last_complete_turn` — cancel during a later tool dispatch; assert partial results are represented only by a digest, no partial transcript delta is persisted, and the final step receipt is absent.
+- `test_retry_after_restart_continues_from_last_committed_tool_turn` — reconstruct the engine around the persisted snapshot, resolve with `retry`, and assert the next provider request contains the completed turn transcript without re-dispatching its tools.
 - `test_profile_not_a_subset_of_the_principal_is_unauthorized`.
 
 *Green:* `src/playbooks/executors/llm.py` (`LiveLlmExecutor`, `SymbolicLlmExecutor`).
@@ -1344,9 +1373,19 @@ Package 7's plan §3.8 lists `playbooks.v2_api` and `playbooks.v2_activation_wri
 
 ---
 
-## 10. Storage — Package 4 owns no tables, and one conditional revision
+## 10. Storage — per-tool-turn receipt amendment
 
-Package 3 owns `playbook_artifacts`, `playbook_activations`, the V2 run/snapshot table, `playbook_step_receipts`, `playbook_waits` and `playbook_pending_events`. Package 4 adds **no** table and **no** column of its own. What it does own is the list of fields it cannot execute without, and an explicit fallback if Package 3 ships without them.
+Package 3 owns `playbook_artifacts`, `playbook_activations`, the V2 run/snapshot table, `playbook_step_receipts`, `playbook_waits` and `playbook_pending_events`. Package 4 changes no V1 table and adds no new V2 table, but C3 requires one daemon-only additive revision because Package 3 shipped a one-receipt-per-attempt constraint.
+
+The revision chains after the current head and adds to `playbook_step_receipts`:
+
+| Column | Definition | Compatibility |
+|---|---|---|
+| `receipt_kind` | `TEXT NOT NULL DEFAULT 'step'`, checked in `step|tool_turn|llm_call|interrupted|operator_decision` | every existing receipt is an ordinary final step boundary |
+| `turn_index` | `INTEGER NOT NULL DEFAULT -1` | `-1` preserves the ordering and identity of every single-receipt attempt |
+| `operator_decision_id` | nullable `TEXT` | existing receipts have no decision |
+
+It replaces `uq_playbook_step_receipts_attempt` with `uq_playbook_step_receipts_boundary` on `(run_id, step_id, iteration, attempt, turn_index, receipt_kind)` and adds `idx_playbook_step_receipts_turn` on `(run_id, step_id, iteration, attempt, turn_index)`. Repository reads order first by `snapshot_version`, then `turn_index`, `started_at`, and `receipt_id`. The downgrade is supported only after deleting post-amendment `tool_turn`, `llm_call`, `interrupted`, and `operator_decision` rows; it then restores the old constraint. The application never runs this migration from a worker scope—only `aq db upgrade` in daemon/operator scope applies it.
 
 ### 10.1 Fields Package 4 requires from Package 3
 
@@ -1359,15 +1398,16 @@ Package 3 owns `playbook_artifacts`, `playbook_activations`, the V2 run/snapshot
 | `llm_transcript: json\|null` | snapshot | §4.4 tool turns |
 | `child_task_id: text\|null` | snapshot **and** receipt | §4.5 |
 | `usage_input_tokens`, `usage_output_tokens`, `usage_reported: bool` | receipt | §4.11 |
+| `receipt_kind: text`, `turn_index: int`, `operator_decision_id: text\|null` | receipt | §4.4 durable tool turns and §4.8 interruption linkage |
 | `deadline_fired: text\|null`, `cancellation: text\|null` | receipt | §3.3.3 |
 | `iteration_index: int\|null`, `attempt: int`, `idempotency_key: text` | receipt | §3.3.2 |
 | Unique index on `(playbook_id, rule_id, event_id)` where `event_id IS NOT NULL` | V2 run table | §4.2 |
 
 The existing V1 index is `(playbook_id, event_id)` (`src/database/tables.py:946`) and the existing status check constraint is `('running','paused','completed','failed','timed_out','cancelled')` (`:955`) — **neither is altered by Package 4**. V1 rows keep V1 semantics so historical runs stay readable after Package 7.
 
-### 10.2 The conditional revision, if Package 3 ships without them
+### 10.2 The conditional engine-field revision, if Package 3 ships without them
 
-Only if §2.4's reconciliation shows a field above is missing. One revision, `xxxxxxxxxxxx_playbook_v2_engine_fields`, chaining after the then-current head:
+Only if §2.4's reconciliation shows a field above is missing. One revision with the slug `playbook_v2_engine_fields`, chaining after the then-current head:
 
 ```python
 def upgrade() -> None:
@@ -1404,6 +1444,8 @@ def downgrade() -> None:
 ```
 
 `src/database/tables.py` is edited **in the same commit** as the revision, per CLAUDE.md. Storage is the one place where "add it if it is missing" would otherwise become two competing schemas, so the escalation rule in §2.4 applies with full force: prefer amending Package 3's revision over adding this one, and add this one only when Package 3 has already merged.
+
+Migration tests upgrade a database containing a Package 3 `step/-1` receipt, verify it remains readable, insert two `tool_turn` rows for the same attempt at distinct indices, reject a duplicate boundary, and verify ordering. They exercise Alembic through a test-owned connection; workers never run `upgrade` or `stamp` against their configured database.
 
 ### 10.3 The `cancelling` lifecycle value
 
@@ -1471,7 +1513,7 @@ No full-repo `pytest`. Package 4 adds no API surface, so `openapi.json` does not
 |---|---|
 | *Every V2 step kind* | `tests/test_v2_engine.py::test_every_step_kind_has_a_registered_executor` (parameterised over the seven discriminator values in `src/playbooks/definition.py`, so adding an eighth step type fails this test) + the seven executors' own suites |
 | *runs through one engine* | T-16's six-site parameterisation; §7.1's static check that no second traversal exists in `src/playbooks/` |
-| *with durable boundaries* | T-3 (one commit per attempt, no write before the boundary, no retry on conflict), T-15 (restart at command, LLM, agent-task, wait and loop) |
+| *with durable boundaries* | T-3 (one commit per boundary, no write before the boundary, no retry on conflict), T-14 (ordered LLM turn boundaries), T-15 (restart at command, LLM, agent-task, wait and loop) |
 | *Live, dry-run, and shadow traverse the same graph* | T-11's `test_live_and_dry_run_select_the_same_edges`; T-12's `test_shadow_and_live_select_the_same_rules_for_the_corpus`; §3.1.2's object-identity assertion for the three deterministic executors |
 | *shadow can compare decisions* | T-12's `test_shadow_records_rules_selected_and_commands` — the two `DispatchResult` fields Package 6's parity harness consumes |
 | *without producing side effects* | T-12's class-attribute assertion (structural) **and** the five raising doubles (behavioural), plus §3.3.5's absence of `RunRepository` from shadow's `EngineServices` |
@@ -1514,7 +1556,7 @@ Setting `playbooks.v2_engine=False` returns every one of the six sites to its V1
 | Test-first steps with the failing assertion described | §5 — every task states its red assertions and, where the failure is not an assertion failure, what it fails *with* (e.g. T-1's `ModuleNotFoundError`, T-13's `AttributeError`) |
 | Representative fixture data, not placeholders | §6 — the Package 5 artifact reused verbatim, a six-event corpus, real `CommandContract` doubles, five hand-written crash snapshots |
 | API request and response examples when the package changes an endpoint | **Not applicable, and deliberately so.** Package 4 adds no endpoint and does not move `openapi.json` (§1.2, §12.3). The one command surface it implies — `playbook_run_resolve` for §4.8 — is explicitly assigned to Package 5, whose plan owns its DTOs |
-| Alembic upgrade and downgrade behaviour when the package changes storage | §10 — Package 4 owns no table; §10.2 gives the full conditional revision with a mirror-image downgrade, and §2.4/§10.2 both say to amend Package 3's revision in preference to adding it |
+| Alembic upgrade and downgrade behaviour when the package changes storage | §10 — Package 4 adds the per-turn receipt columns and boundary uniqueness in one daemon-only revision; existing rows retain `step/-1/NULL`, and downgrade refuses while multi-boundary rows exist |
 | SQLite and PostgreSQL considerations | §11 |
 | Security analysis for any new boundary or identity flow | §7, seven subsections including two stated non-goals |
 | Observability and operator failure behaviour | §8 — six operator-visible stop shapes, each with the next action; five bus events; the two timings Package 7 reads by name |

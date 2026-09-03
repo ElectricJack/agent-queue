@@ -7,8 +7,8 @@ achievable with the V1 mixin's unconditional ``UPDATE``:
 
 * a resume that raced another writer loses the CAS and raises rather than
   silently interleaving (V1's ``update_playbook_run`` is last-writer-wins);
-* a replayed attempt after an ambiguous interruption is rejected by
-  ``uq_playbook_step_receipts_attempt`` — by the database, not by an
+* a replayed boundary after an ambiguous interruption is rejected by
+  ``uq_playbook_step_receipts_boundary`` — by the database, not by an
   in-memory guard that a restart would have forgotten.
 
 Size limits are checked *before* the transaction opens, so an oversized
@@ -88,6 +88,9 @@ def _receipt_row(receipt: StepReceipt) -> dict:
         "rule_id": receipt.rule_id,
         "step_id": receipt.step_id,
         "step_kind": receipt.step_kind,
+        "receipt_kind": receipt.receipt_kind,
+        "turn_index": receipt.turn_index,
+        "operator_decision_id": receipt.operator_decision_id,
         "iteration": receipt.iteration,
         "attempt": receipt.attempt,
         "idempotency_key": receipt.idempotency_key,
@@ -265,6 +268,9 @@ def _row_to_receipt(row) -> StepReceipt:
         rule_id=row["rule_id"],
         step_id=row["step_id"],
         step_kind=row["step_kind"],
+        receipt_kind=row["receipt_kind"],
+        turn_index=int(row["turn_index"]),
+        operator_decision_id=row["operator_decision_id"],
         outcome=row["outcome"],
         started_at=row["started_at"],
         snapshot_version=int(row["snapshot_version"]),
@@ -412,6 +418,20 @@ class PlaybookRunQueryMixin:
         # trusting a caller to have used ``bind_step_output``.
         for step_id, value in snapshot.bindings.items():
             check_result_size(snapshot.run_id, step_id, value, limits=limits)
+        for turn in snapshot.llm_turns:
+            for message in turn.get("transcript_delta", ()):
+                if message.get("role") != "user" or not isinstance(
+                    message.get("content"), list
+                ):
+                    continue
+                for block in message["content"]:
+                    if isinstance(block, dict) and block.get("type") == "tool_result":
+                        check_result_size(
+                            snapshot.run_id,
+                            receipt.step_id,
+                            block.get("content"),
+                            limits=limits,
+                        )
         expected = snapshot.version
         advanced = replace(snapshot, version=expected + 1)
         # The receipt is the durable record of *which* graph and rule ran, so
@@ -656,7 +676,10 @@ class PlaybookRunQueryMixin:
             select(playbook_step_receipts)
             .where(playbook_step_receipts.c.run_id == run_id)
             .order_by(
-                playbook_step_receipts.c.started_at, playbook_step_receipts.c.receipt_id
+                playbook_step_receipts.c.snapshot_version,
+                playbook_step_receipts.c.turn_index,
+                playbook_step_receipts.c.started_at,
+                playbook_step_receipts.c.receipt_id,
             )
             .limit(limit)
             .offset(offset)

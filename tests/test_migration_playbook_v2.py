@@ -34,6 +34,7 @@ POSTGRES_DSN = ensure_worker_postgres_dsn()
 #: The revision immediately before the Package 3 chain — the package's
 #: documented rollback target (§19).
 BASE_REVISION = "d3e7b1c9a204"
+PRE_TURN_RECEIPTS_REVISION = "c52f1a4fb6ba"
 
 #: Every table the three revisions create, in creation order.
 V2_TABLES = (
@@ -62,6 +63,7 @@ V2_INDEXES = {
     "playbook_step_receipts": {
         "idx_playbook_step_receipts_run",
         "idx_playbook_step_receipts_key",
+        "idx_playbook_step_receipts_turn",
     },
     "playbook_waits": {
         "uq_playbook_waits_active_step",
@@ -193,6 +195,122 @@ def test_upgrade_creates_every_table_and_index(tmp_path):
         for table, expected in V2_INDEXES.items():
             found = {index["name"] for index in inspector.get_indexes(table)}
             assert expected <= found, f"{table} missing {expected - found}"
+    finally:
+        engine.dispose()
+
+
+def test_receipt_boundary_columns_preserve_single_receipt_compatibility(tmp_path):
+    engine = _sqlite_engine(tmp_path, name="receipt-boundaries.db")
+    try:
+        migrate(engine, "head")
+        inspector = _inspect(engine)
+        columns = {column["name"]: column for column in inspector.get_columns(
+            "playbook_step_receipts"
+        )}
+        assert columns["receipt_kind"]["default"] in {"'step'", '"step"'}
+        assert str(columns["turn_index"]["default"]) in {"-1", "'-1'"}
+        assert columns["operator_decision_id"]["nullable"] is True
+        unique = {
+            constraint["name"]: tuple(constraint["column_names"])
+            for constraint in inspector.get_unique_constraints("playbook_step_receipts")
+        }
+        assert unique["uq_playbook_step_receipts_boundary"] == (
+            "run_id",
+            "step_id",
+            "iteration",
+            "attempt",
+            "turn_index",
+            "receipt_kind",
+        )
+    finally:
+        engine.dispose()
+
+
+def test_pre_amendment_receipt_reads_as_step_minus_one_after_upgrade(tmp_path):
+    engine = _sqlite_engine(tmp_path, name="existing-receipt.db")
+    sha = "sha256:" + "a" * 64
+    try:
+        migrate(engine, PRE_TURN_RECEIPTS_REVISION)
+        with engine.begin() as conn:
+            conn.execute(
+                sa.text(
+                    "INSERT INTO playbook_artifacts (artifact_sha256, playbook_id, scope, "
+                    "scope_identifier, schema_generation, version, source_digest, "
+                    "contract_fingerprint, profile_fingerprint, compiler_build, path, "
+                    "size_bytes, validation, created_at) VALUES (:sha,'p','system','',2,1,"
+                    ":sha,:sha,'','build','/tmp/a.json',2,'{}',1.0)"
+                ),
+                {"sha": sha},
+            )
+            conn.execute(
+                sa.text(
+                    "INSERT INTO playbook_v2_runs (run_id, playbook_id, artifact_sha256, "
+                    "rule_id, lifecycle, mode, snapshot_version, snapshot, snapshot_bytes, "
+                    "event_type, summary, started_at, updated_at) VALUES "
+                    "('r','p',:sha,'rule','running','live',1,'{}',2,'','',1.0,1.0)"
+                ),
+                {"sha": sha},
+            )
+            conn.execute(
+                sa.text(
+                    "INSERT INTO playbook_step_receipts "
+                    "(receipt_id, run_id, artifact_sha256, rule_id, step_id, step_kind, "
+                    "idempotency_key, outcome, started_at) VALUES "
+                    "('old','r',:sha,'rule','step','command',:key,'success',1.0)"
+                ),
+                {"sha": sha, "key": "r:step:-:1"},
+            )
+
+        migrate(engine, "head")
+        with engine.connect() as conn:
+            row = conn.execute(
+                sa.text(
+                    "SELECT receipt_kind, turn_index, operator_decision_id "
+                    "FROM playbook_step_receipts WHERE receipt_id='old'"
+                )
+            ).one()
+        assert tuple(row) == ("step", -1, None)
+    finally:
+        engine.dispose()
+
+
+def test_downgrade_refuses_to_discard_per_turn_receipts(tmp_path):
+    engine = _sqlite_engine(tmp_path, name="turn-receipt-downgrade.db")
+    sha = "sha256:" + "b" * 64
+    try:
+        migrate(engine, "head")
+        with engine.begin() as conn:
+            conn.execute(
+                sa.text(
+                    "INSERT INTO playbook_artifacts (artifact_sha256, playbook_id, scope, "
+                    "scope_identifier, schema_generation, version, source_digest, "
+                    "contract_fingerprint, profile_fingerprint, compiler_build, path, "
+                    "size_bytes, validation, created_at) VALUES (:sha,'p','system','',2,1,"
+                    ":sha,:sha,'','build','/tmp/a.json',2,'{}',1.0)"
+                ),
+                {"sha": sha},
+            )
+            conn.execute(
+                sa.text(
+                    "INSERT INTO playbook_v2_runs (run_id, playbook_id, artifact_sha256, "
+                    "rule_id, lifecycle, mode, snapshot_version, snapshot, snapshot_bytes, "
+                    "event_type, summary, started_at, updated_at) VALUES "
+                    "('r','p',:sha,'rule','running','live',1,'{}',2,'','',1.0,1.0)"
+                ),
+                {"sha": sha},
+            )
+            conn.execute(
+                sa.text(
+                    "INSERT INTO playbook_step_receipts "
+                    "(receipt_id, run_id, artifact_sha256, rule_id, step_id, step_kind, "
+                    "receipt_kind, turn_index, idempotency_key, outcome, started_at) VALUES "
+                    "('turn','r',:sha,'rule','step','llm','tool_turn',0,:key,'success',1.0)"
+                ),
+                {"sha": sha, "key": "r:step:-:1"},
+            )
+
+        with pytest.raises(RuntimeError, match="per-turn playbook receipts exist"):
+            migrate(engine, PRE_TURN_RECEIPTS_REVISION, downgrade=True)
     finally:
         engine.dispose()
 

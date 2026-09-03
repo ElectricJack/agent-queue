@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from src.config import LLMConfig
-from src.llm import LLMClient
+from src.llm import LLMClient, LLMToolTurn
 from src.llm.fake import FakeProvider
 
 TOOLS = [
@@ -110,3 +112,106 @@ async def test_multi_tool_turn_executes_all_in_order():
 
     await _client(fake).run_tools("go", TOOLS, ex)
     assert seen == [1, 2]
+
+
+async def test_completed_tool_turn_is_reported_before_the_next_provider_call():
+    fake = FakeProvider()
+    fake.add_tool_call("list_tasks", {"project_id": "p"})
+    fake.add_text("finished")
+    seen: list[LLMToolTurn] = []
+
+    async def on_tool_turn(turn: LLMToolTurn) -> None:
+        assert len(fake.calls) == 1
+        seen.append(turn)
+
+    result = await _client(fake).run_tools(
+        "go", TOOLS, _exec, on_tool_turn=on_tool_turn
+    )
+
+    assert result.text == "finished"
+    assert len(seen) == 1
+    assert seen[0].kind == "tool_turn"
+    assert seen[0].turn_index == 0
+    assert seen[0].tool_call_ids
+    assert len(seen[0].results_digest) == 64
+    assert [message["role"] for message in seen[0].transcript_delta] == [
+        "assistant",
+        "user",
+    ]
+
+
+async def test_interrupted_tool_call_reports_partial_receipt_without_a_transcript_delta():
+    fake = FakeProvider()
+    fake.add_tool_calls([("list_tasks", {"a": 1}), ("list_tasks", {"a": 2})])
+    seen: list[LLMToolTurn] = []
+    calls = 0
+
+    async def interrupt_second(_name, _args):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise asyncio.CancelledError
+        return {"success": True}
+
+    async def on_tool_turn(turn: LLMToolTurn) -> None:
+        seen.append(turn)
+
+    result = await _client(fake).run_tools(
+        "go", TOOLS, interrupt_second, on_tool_turn=on_tool_turn
+    )
+
+    assert result.stopped_by == "interrupted"
+    assert len(seen) == 1
+    assert seen[0].kind == "interrupted"
+    assert seen[0].turn_index == 0
+    assert len(seen[0].tool_call_ids) == 2
+    assert seen[0].transcript_delta == ()
+    assert len(seen[0].results_digest) == 64
+
+
+async def test_provider_cancellation_without_a_durable_callback_propagates():
+    class BlockingProvider(FakeProvider):
+        async def create_message(self, **_kwargs):
+            await asyncio.Event().wait()
+
+    task = asyncio.create_task(
+        _client(BlockingProvider()).run_tools("go", TOOLS, _exec)
+    )
+    await asyncio.sleep(0)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+async def test_caller_timeout_without_a_durable_callback_is_not_an_interruption():
+    class BlockingProvider(FakeProvider):
+        async def create_message(self, **_kwargs):
+            await asyncio.Event().wait()
+
+    with pytest.raises(TimeoutError):
+        async with asyncio.timeout(0.01):
+            await _client(BlockingProvider()).run_tools("go", TOOLS, _exec)
+
+
+async def test_tool_dispatch_deadline_propagates_in_durable_mode():
+    fake = FakeProvider()
+    fake.add_tool_call("list_tasks")
+    seen: list[LLMToolTurn] = []
+
+    async def blocked_tool(_name, _args):
+        await asyncio.Event().wait()
+
+    async def on_tool_turn(turn: LLMToolTurn) -> None:
+        seen.append(turn)
+
+    with pytest.raises(TimeoutError):
+        await _client(fake).run_tools(
+            "go",
+            TOOLS,
+            blocked_tool,
+            on_tool_turn=on_tool_turn,
+            timeout_seconds=0.01,
+        )
+
+    assert seen == []

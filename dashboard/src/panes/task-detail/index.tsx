@@ -32,16 +32,36 @@ import { useShellPaneStore } from "../store";
 import type { PaneViewProps } from "../types";
 import type { TaskDetailArgs } from "./manifest";
 
+/** One row of the deliverables checklist, verdict included. */
+type DeliverableRow = { id: string; kind: string; target: string; met: boolean; reason: string };
+
 type CompletionWithDeliverables = TaskCompletionDetail & {
-  deliverables?: Array<{ id: string; kind: string; target: string; met: boolean; reason: string }>;
+  deliverables?: DeliverableRow[];
 };
 
 type TaskWithLooseFields = Task & {
   intelligence_class?: string;
   branch_name?: string;
-  deliverables?: Array<{ id: string; kind: string; target: string }>;
   completion?: CompletionWithDeliverables | null;
 };
+
+/**
+ * An open task's declared deliverables have no verdict yet — the close-time
+ * check is what produces one — so they render as unmet with a pending note.
+ *
+ * The daemon types a declared deliverable as a loose ``dict[str, str]``, which
+ * reaches us as an index signature. Spreading one drops its named fields, so
+ * the row is rebuilt field by field instead.
+ */
+function pendingDeliverable(item: Record<string, string>): DeliverableRow {
+  return {
+    id: item.id ?? "",
+    kind: item.kind ?? "",
+    target: item.target ?? "",
+    met: false,
+    reason: "Pending close-time check",
+  };
+}
 
 type LocalModal = "close" | "reopen" | null;
 
@@ -390,7 +410,7 @@ export default function TaskDetailPane({
       {!loose?.completion && (loose?.deliverables ?? []).length > 0 && (
         <section>
           <h3 className="mb-1.5 text-xs font-semibold uppercase text-gray-500">Deliverables</h3>
-          <DeliverablesChecklist items={(loose?.deliverables ?? []).map((item) => ({ ...item, met: false, reason: "Pending close-time check" }))} />
+          <DeliverablesChecklist items={(loose?.deliverables ?? []).map(pendingDeliverable)} />
         </section>
       )}
 
@@ -586,7 +606,7 @@ function CompletionList({
 function DeliverablesChecklist({
   items,
 }: {
-  items: Array<{ id: string; kind: string; target: string; met: boolean; reason: string }>;
+  items: DeliverableRow[];
 }) {
   return (
     <div>

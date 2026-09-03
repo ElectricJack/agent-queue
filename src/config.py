@@ -892,6 +892,12 @@ class PlaybooksConfig:
     #: Playbook V2 Package 7.
     v2_compiler_enabled: bool = False
 
+    #: How long ``PlaybookEngine.cancel`` waits for an in-flight executor to
+    #: acknowledge before it ends the run itself (V2 child plan §4.9, §9).
+    #: ``0`` means "do not wait": the run reaches ``cancelled`` immediately and
+    #: the receipt records ``grace_expired``.
+    cancellation_grace_seconds: int = 30
+
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
         for field_name in (
@@ -914,6 +920,10 @@ class PlaybooksConfig:
             )
         if self.v2_artifact_min_versions < 1:
             errors.append(ConfigError("playbooks", "v2_artifact_min_versions", "must be >= 1"))
+        if self.cancellation_grace_seconds < 0:
+            errors.append(
+                ConfigError("playbooks", "cancellation_grace_seconds", "must be >= 0")
+            )
         return errors
 
 
@@ -961,6 +971,9 @@ class SessionsConfig:
     nudge_debounce_ms: int = 500
     state_cache_ttl_seconds: int = 2
     transcript_poll_seconds: int = 2
+    #: Maximum historical usage entries an uncheckpointed watcher may see
+    #: before treating the batch as restart replay rather than fresh work.
+    transcript_startup_replay_limit: int = 100
     adopt_on_start: bool = True
     #: Live pane stream (dashboard).  Polling happens only while a
     #: subscriber is attached, so an unwatched daemon pays nothing.
@@ -1011,6 +1024,7 @@ class SessionsConfig:
             "nudge_debounce_ms",
             "state_cache_ttl_seconds",
             "transcript_poll_seconds",
+            "transcript_startup_replay_limit",
             "dialog_settle_seconds",
         ):
             if getattr(self, name) < 0:
@@ -2732,6 +2746,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
                     "nudge_debounce_ms": int,
                     "state_cache_ttl_seconds": int,
                     "transcript_poll_seconds": int,
+                    "transcript_startup_replay_limit": int,
                     "adopt_on_start": bool,
                     "pane_stream_interval_seconds": float,
                     "pane_stream_max_sessions": int,

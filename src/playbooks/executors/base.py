@@ -16,7 +16,8 @@ Two properties are what the rest of the package is built on:
 
 from __future__ import annotations
 
-from collections.abc import Callable, Collection, Mapping
+import asyncio
+from collections.abc import Awaitable, Callable, Collection, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol, runtime_checkable
@@ -35,6 +36,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from src.playbooks.definition import PlaybookDefinition
     from src.playbooks.run_state import LoopFrame
     from src.playbooks.waits import WaitSpec
+    from src.llm.client import LLMToolTurn
 
 
 class UnknownStepType(KeyError):
@@ -116,6 +118,12 @@ class ExecutorResult:
     wait: WaitSpec | None = None
     terminal_outcome: str | None = None
     usage: TokenUsage | None = None
+    #: Aggregate provider calls represented by ``usage`` for this LLM
+    #: attempt, including calls already persisted as turn boundaries.
+    llm_calls: int = 0
+    #: The narrowed identity that actually executed the step, when different
+    #: from the invoking principal (for example an LLM profile).
+    effective_principal: Any | None = None
     idempotency_key: str | None = None
     #: Receipt projections.  ALREADY REDACTED by the executor per §3.3.4 —
     #: the engine writes them verbatim and performs no further redaction.
@@ -191,6 +199,10 @@ class StepContext:
     run_deadline_at: float | None = None
     step_deadline_at: float | None = None
     cancel_requested: bool = False
+    #: Live signal checked again immediately before LLM tool dispatch.  The
+    #: snapshot boolean is only the value at executor entry and cannot stop a
+    #: new side effect after cancellation races provider I/O.
+    cancel_event: asyncio.Event | None = None
     #: Resolved ``step.inputs`` (§3.4 step 4).  The engine resolves them so a
     #: resolution failure is an outcome *before* any executor runs.
     inputs: Mapping[str, Any] = field(default_factory=dict)
@@ -198,6 +210,12 @@ class StepContext:
     #: executor, which is otherwise stateless; every other executor ignores
     #: it and sees only :attr:`iteration_index`.
     loop_frame: LoopFrame | None = None
+    #: Completed tool-turn deltas for this run.  The LLM executor filters by
+    #: step/iteration/attempt and reconstructs the provider transcript.
+    llm_turns: tuple[Mapping[str, Any], ...] = ()
+    #: Engine-owned durable boundary.  Only live tool-enabled LLM execution
+    #: receives one; the executor never imports the engine or repository.
+    on_tool_turn: Callable[[LLMToolTurn], Awaitable[None]] | None = None
 
 
 @runtime_checkable
