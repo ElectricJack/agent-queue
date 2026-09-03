@@ -89,7 +89,14 @@ EXCLUDE_END = "# <<< agent-queue managed <<<"
 #: ``<work_dir>/.codex/hooks.json`` into the slot rather than pass it as a
 #: flag.  Excluding only untracked paths, so a repo that genuinely tracks
 #: ``.codex/`` is unaffected.
-EXCLUDE_BODY = "/.aq/\n/.aq-worktree.json\n/.codex/"
+#:
+#: ``/.agent-queue-lock`` is the exclusive-clone workspace's own sentinel
+#: (``workspace.py``).  The block is written into every git workspace the
+#: daemon prepares, not only worktree slots — with ``worktrees.enabled:
+#: false`` nothing else keeps ``.aq/claim.json`` out of ``git status``, and
+#: the verify phase's auto-remediation used to commit it (and the lock file)
+#: onto the task branch and from there onto the project's default branch.
+EXCLUDE_BODY = "/.aq/\n/.aq-worktree.json\n/.codex/\n/.agent-queue-lock"
 EXCLUDE_BLOCK = f"{EXCLUDE_BEGIN}\n{EXCLUDE_BODY}\n{EXCLUDE_END}\n"
 
 #: The block is *located* by these ASCII-only prefixes rather than by

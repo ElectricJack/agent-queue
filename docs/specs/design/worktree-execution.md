@@ -72,6 +72,8 @@ The base workspace is the project's normal clone with the default branch checked
 
 The block is written if absent, rewritten if drifted, and left alone if present (idempotent under repeated daemon starts). Once ignored, `git worktree add` inside the repo's own directory is safe: `git status` in the base stays clean, and slot checkouts never contain `.aq/` because it is untracked.
 
+The shipped block also lists `/.aq-worktree.json` (§2.5), `/.codex/` (the Codex hook file) and `/.agent-queue-lock` (the exclusive-clone sentinel). It is written into **every** git workspace the daemon prepares, not only worktree bases: with `worktrees.enabled: false` an exclusive clone or linked checkout gets the same block from the workspace-prep path. Without it `.aq/claim.json` shows up in `git status`, the verify phase's `auto-commit: uncommitted changes from task <id>` sweeps it onto the task branch, and in direct mode it lands on the project's default branch — which also defeats the empty-branch guards that keep review/PR gates from arming on a task that produced no code.
+
 ### 2.5 Sentinel: `.aq-worktree.json`
 
 Every slot carries a sentinel at `<slot>/.aq-worktree.json`:
