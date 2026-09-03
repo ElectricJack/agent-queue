@@ -25,8 +25,7 @@ import json
 import os
 import re
 import sys
-import textwrap
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 DATA_DIR = os.path.expanduser("~/.agent-queue/logs/llm")
@@ -141,9 +140,9 @@ def format_new_messages(messages: list[dict], prev_message_count: int) -> str:
             # Assistant's prior tool calls (already shown in previous turn's output)
             # Show a brief note for continuity
             if isinstance(content, str) and "ToolUseBlock" in content:
-                parts.append(f"*> Assistant called tools (see previous turn)*")
+                parts.append("*> Assistant called tools (see previous turn)*")
             elif isinstance(content, list):
-                parts.append(f"*> Assistant called tools (see previous turn)*")
+                parts.append("*> Assistant called tools (see previous turn)*")
             elif content:
                 parts.append(f"**Assistant:**\n{content}")
 
@@ -305,8 +304,6 @@ def detect_conversations(entries: list[dict]) -> list[list[dict]]:
         time_gap = False
         if prev_timestamp and timestamp:
             try:
-                from datetime import datetime, timezone
-
                 # Parse ISO timestamps
                 cur_t = datetime.fromisoformat(timestamp)
                 prev_t = datetime.fromisoformat(prev_timestamp)
