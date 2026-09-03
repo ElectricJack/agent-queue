@@ -285,11 +285,22 @@ MD
 
 # `review-and-fix` names `reviewer` and `coding` as node profiles; graph
 # validation resolves both against the DB, so the vault must carry them.
+#
+# The reviewer mirrors the shipped `reviewer` profile: `read_only: true`
+# and no write tools.  That flag is the pipeline's declarative "this task
+# produces no code" signal — a read-only task skips the require-a-PR gate
+# at close.  Without it the review child of S4 was held to the
+# `pull_request` default and refused for a PR the bare e2e remote can
+# never carry (task solid-forge-63).
 for role in reviewer coding; do
     if [ "$role" = "reviewer" ]; then
         default_class="standard-low"
+        read_only=true
+        tools='["Bash", "Read", "Glob", "Grep"]'
     else
         default_class="standard-medium"
+        read_only=false
+        tools='["Bash", "Read", "Write", "Edit", "Glob", "Grep"]'
     fi
     mkdir -p "$E2E_VAULT/agent-types/$role"
     cat > "$E2E_VAULT/agent-types/$role/profile.md" <<MD
@@ -311,6 +322,7 @@ A task-lifecycle profile the formula fixtures route nodes to.  Present so
   "harness": "claude",
   "lifecycle": "task",
   "default_class": "$default_class",
+  "read_only": $read_only,
   "needs_workspace": true,
   "workspaces": ["project-repo"]
 }
@@ -319,7 +331,7 @@ A task-lifecycle profile the formula fixtures route nodes to.  Present so
 ## Tools
 \`\`\`json
 {
-  "allowed": ["Bash", "Read", "Write", "Edit", "Glob", "Grep"]
+  "allowed": $tools
 }
 \`\`\`
 

@@ -245,11 +245,15 @@ class Worker:
         return out
 
     def close(self, *, claim_next: bool = False, summary: str = "e2e close") -> dict:
+        # ``no-op``, not ``shipped``: this runner is the session and commits
+        # nothing, and a ``shipped`` close under the ``pull_request`` default
+        # is refused for the PR the bare e2e remote can never carry (see
+        # ``_close_next_child``).
         args = [
             "task", "close",
             "--outcome", "pass",
             "--summary", summary,
-            "--work-outcome", "shipped",
+            "--work-outcome", "no-op",
             "--claim-epoch", str(self.claim_epoch),
         ]
         if claim_next:
@@ -681,11 +685,17 @@ def _close_next_child(container: str) -> None:
 
     task_id, session_id = wait_for(_held, what=f"a session to pick up a child of {container}")
     token = session_token(session_id)
+    # ``no-op`` is the truthful outcome: under Tier 1 this runner *is* the
+    # session and it commits nothing.  A ``shipped`` close is held to the
+    # project's integration policy, and under the ``pull_request`` default
+    # that means an open PR for the task branch — which a bare local
+    # remote can never carry, so the close was refused and S4 never
+    # settled (task solid-forge-63).
     out = aq(
         "task", "close", task_id,
         "--outcome", "pass",
         "--summary", "S4 child closed by its session",
-        "--work-outcome", "shipped",
+        "--work-outcome", "no-op",
         token=token,
         session_id=session_id,
     )
