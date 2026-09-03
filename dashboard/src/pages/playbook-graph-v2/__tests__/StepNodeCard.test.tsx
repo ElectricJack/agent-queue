@@ -3,61 +3,74 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GraphNodeDTO } from "../../../api/client";
 import { StepNodeCard, outgoingOutcomes } from "../StepNodeCard";
-import {
-  awaitApproval,
-  checkGate,
-  classifyRisk,
-  doneNode,
-  ensureReviewTask,
-  escalateNode,
-  forEachTask,
-} from "./fixtures";
+import { projectedGraph, projectedNode } from "./projected";
 
 afterEach(cleanup);
 
+/** Every node here is the backend's own projection of the §10.1 artifact, not
+ *  a hand-authored stand-in: the compact card's job is to render what
+ *  `project_graph` emits, and a fixture written to match the component cannot
+ *  fail when the two disagree. */
+const ensureReviewTask = projectedNode("ensure-review-task");
+const classifyRisk = projectedNode("classify-risk");
+const escalateNode = projectedNode("escalate");
+const awaitApproval = projectedNode("await-approval");
+const forEachTask = projectedNode("for-each-task");
+const checkGate = projectedNode("check-gate");
+const doneNode = projectedNode("done");
+
 function card(node: GraphNodeDTO, selected = false) {
   return render(<StepNodeCard data={{ node }} selected={selected} />);
+}
+
+function keyData() {
+  return within(screen.getByRole("list", { name: "Key data" })).getAllByRole("listitem");
 }
 
 describe("StepNodeCard", () => {
   it("renders the compact contract for a command step", () => {
     card(ensureReviewTask);
     expect(screen.getByText("Ensure a review task")).toBeInTheDocument();
-    expect(screen.getByText("Create or reuse the matching review task")).toBeInTheDocument();
+    expect(screen.getByText("Invoke ensure_task")).toBeInTheDocument();
     expect(screen.getByText("command")).toBeInTheDocument();
-    expect(screen.getByTitle("idempotent: dedup_key")).toBeInTheDocument();
-    expect(screen.getByTitle("retry: 2 attempts")).toBeInTheDocument();
   });
 
   it("renders an AI step's declared outcome choices and profile badge", () => {
     card(classifyRisk);
-    expect(screen.getByText("low, high")).toBeInTheDocument();
-    expect(screen.getByTitle("profile: reviewer")).toBeInTheDocument();
-    expect(screen.getByTitle("budget: 8000 tokens")).toBeInTheDocument();
+    expect(screen.getByText("Low, High")).toBeInTheDocument();
+    expect(screen.getByTitle("Profile: reviewer")).toBeInTheDocument();
+    expect(screen.getByTitle("Budget: 2 call(s), 8000 tokens")).toBeInTheDocument();
     expect(screen.getByText("AI")).toBeInTheDocument();
   });
 
   it("renders an agent task's objective and delegation badges", () => {
     card(escalateNode);
-    expect(screen.getByText("Re-review the change and record the riskiest line")).toBeInTheDocument();
-    expect(screen.getByTitle("wait: waits for completion")).toBeInTheDocument();
+    expect(screen.getByText("Delegate a task to the reviewer profile and wait for it")).toBeInTheDocument();
+    expect(screen.getByTitle("Waits: for completion")).toBeInTheDocument();
+    // Whether a cancelled rule takes the child agent down with it (§6.2's
+    // cancel_child column) is a fleet an operator has to clean up otherwise.
+    expect(screen.getByTitle("On cancel: leaves the child running")).toBeInTheDocument();
   });
 
   it("renders a decision's condition summary and case count", () => {
     card(checkGate);
-    expect(screen.getByText("Branch on whether the gate was newly created — 2 cases")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Take the first of 1 matching branch(es), otherwise For each downstream task — 2 cases",
+      ),
+    ).toBeInTheDocument();
   });
 
   it("renders a wait step's kind and what it awaits", () => {
     card(awaitApproval);
     expect(screen.getByText("human: Approve the review")).toBeInTheDocument();
-    expect(screen.getByTitle("timeout: 86400s")).toBeInTheDocument();
+    expect(screen.getByTitle("Timeout: 86400s")).toBeInTheDocument();
   });
 
   it("renders a loop's collection, item binding and failure policy", () => {
     card(forEachTask);
     expect(screen.getByText("downstream.tasks → task")).toBeInTheDocument();
-    expect(screen.getByTitle("failure policy: collect")).toBeInTheDocument();
+    expect(screen.getByTitle("Failure policy: collect")).toBeInTheDocument();
   });
 
   it("renders a terminal step's outcome", () => {
@@ -66,10 +79,59 @@ describe("StepNodeCard", () => {
     expect(screen.getByText("terminal")).toBeInTheDocument();
   });
 
+  it("names the key inputs a step reads, from the projected explanation", () => {
+    card(awaitApproval);
+    expect(keyData().map((item) => item.getAttribute("data-input"))).toEqual([
+      "Awaited",
+      "Correlation key",
+      null, // the output binding, which is not an input
+    ]);
+    expect(screen.getByTitle("Awaited: Approve the review")).toBeInTheDocument();
+    expect(screen.getByTitle("Correlation key: review.task_id")).toBeInTheDocument();
+  });
+
+  it("bounds the inputs it prints and keeps the rest reachable", () => {
+    // ``ensure-review-task`` reads three arguments; a card that printed all of
+    // them would push its outcome ports off a fixed-height node.
+    expect(ensureReviewTask.explanation.inputs).toHaveLength(3);
+    card(ensureReviewTask);
+    expect(keyData().map((item) => item.getAttribute("data-input"))).toEqual([
+      "Project Id",
+      "Title",
+      null, // "+1 more"
+      null, // the output binding
+    ]);
+    const overflow = screen.getByText("+1 more");
+    expect(overflow).toHaveAttribute("title", "Dedup Key: (unresolved)");
+  });
+
+  it("names the binding each step writes, and nothing when it writes none", () => {
+    for (const [node, binding] of [
+      [ensureReviewTask, "review"],
+      [classifyRisk, "risk"],
+      [escalateNode, "escalation"],
+      [awaitApproval, "approval"],
+    ] as const) {
+      cleanup();
+      card(node);
+      const written = keyData().filter((item) => item.hasAttribute("data-binding"));
+      expect(written.map((item) => item.getAttribute("data-binding"))).toEqual([binding]);
+      expect(written[0]).toHaveAttribute("title", `Binds ${binding} (object)`);
+    }
+    cleanup();
+    card(forEachTask);
+    expect(keyData().some((item) => item.hasAttribute("data-binding"))).toBe(false);
+  });
+
+  it("shows no key-data line for a step that reads and writes nothing", () => {
+    card(doneNode);
+    expect(screen.queryByRole("list", { name: "Key data" })).not.toBeInTheDocument();
+  });
+
   it("never renders the canonical typed step on the card", () => {
     card(ensureReviewTask);
-    expect(screen.queryByText(/ensure_task/)).not.toBeInTheDocument();
     expect(screen.queryByText(/save_result_as/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/binding_ref/)).not.toBeInTheDocument();
   });
 
   it("renders one labelled outcome port per outgoing edge", () => {
@@ -92,6 +154,19 @@ describe("StepNodeCard", () => {
     expect(
       within(screen.getByRole("list", { name: "Outcome ports" })).queryAllByRole("listitem"),
     ).toHaveLength(0);
+  });
+
+  it("renders every badge the projector emits, for every projected node", () => {
+    // The projector owns which chips a card carries (§6.2); the card owns none
+    // of that vocabulary, so a chip it silently dropped would be invisible to
+    // every per-kind test above.
+    for (const node of projectedGraph.nodes ?? []) {
+      cleanup();
+      card(node);
+      for (const badge of node.badges ?? []) {
+        expect(screen.getByTitle(`${badge.label}: ${badge.value}`)).toBeInTheDocument();
+      }
+    }
   });
 
   it("is one button carrying an accessible name and pressed state", async () => {

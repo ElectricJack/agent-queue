@@ -1,6 +1,6 @@
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import type { GraphNodeDTO, OutcomeExplanationDTO } from "../../api/client";
-import { secondaryLine } from "./IntentSections";
+import { keyData, secondaryLine } from "./IntentSections";
 import {
   NODE_HEIGHT,
   NODE_RUN_STATE_LABELS,
@@ -36,6 +36,7 @@ export function StepNodeCard({ data, selected = false }: CardProps) {
   const tone = STEP_KIND_TONES[node.step_kind] ?? STEP_KIND_TONES.command;
   const kindLabel = STEP_KIND_LABELS[node.step_kind] ?? node.step_kind;
   const secondary = secondaryLine(node);
+  const summary = keyData(node.explanation);
   const ports = outgoingOutcomes(node);
   const badges = node.badges ?? [];
   const diagnostics = node.diagnostics ?? [];
@@ -88,6 +89,50 @@ export function StepNodeCard({ data, selected = false }: CardProps) {
       {secondary && (
         <span className="line-clamp-2 w-full text-[10px] leading-4 opacity-90" title={secondary}>
           {secondary}
+        </span>
+      )}
+
+      {(summary.shown.length > 0 || summary.result) && (
+        // What this step reads and what it writes, bounded to one line. Both
+        // come from the explanation payload the inspector renders in full, so
+        // an operator gets the same answer from the card and from the panel.
+        <span className="flex w-full min-w-0 flex-wrap gap-1" role="list" aria-label="Key data">
+          {summary.shown.map((row, index) => (
+            <span
+              key={`${row.label}:${index}`}
+              role="listitem"
+              data-input={row.label}
+              title={`${row.label}: ${row.value.display}`}
+              className="flex min-w-0 items-baseline gap-1 rounded bg-black/25 px-1 text-[9px]"
+            >
+              <span className="shrink-0 opacity-60">{row.label}</span>
+              <span className={`truncate ${row.value.redacted ? "font-mono text-rose-300" : ""}`}>
+                {row.value.display}
+              </span>
+            </span>
+          ))}
+          {summary.hidden.length > 0 && (
+            <span
+              role="listitem"
+              title={summary.hidden.map((row) => `${row.label}: ${row.value.display}`).join("\n")}
+              className="shrink-0 rounded bg-black/25 px-1 text-[9px] opacity-70"
+            >
+              +{summary.hidden.length} more
+            </span>
+          )}
+          {summary.result && (
+            <span
+              role="listitem"
+              data-binding={summary.result.label}
+              title={`Binds ${summary.result.label}${
+                summary.result.value.type_name ? ` (${summary.result.value.type_name})` : ""
+              }`}
+              className="flex shrink-0 items-baseline gap-1 rounded bg-emerald-500/15 px-1 text-[9px] text-emerald-100"
+            >
+              <span aria-hidden>⇥</span>
+              {summary.result.label}
+            </span>
+          )}
         </span>
       )}
 
