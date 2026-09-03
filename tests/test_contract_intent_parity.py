@@ -21,9 +21,10 @@ from src.playbooks.models import CompiledPlaybook
 from src.playbooks.pipeline_compiler import compile_pipeline
 
 FIXTURES = Path(__file__).parent / "fixtures" / "contracts"
-DEFAULT_PIPELINE = (
-    Path(__file__).parent.parent / "src" / "prompts" / "default_playbooks" / "default-pipeline.md"
-)
+# The frozen pre-Package-6 V1 graph: the shipped Markdown is a prose
+# authoring source now and carries no machine graph for V1 to compile.
+# See tests/fixtures/playbooks/v1/README.md.
+DEFAULT_PIPELINE = Path(__file__).parent / "fixtures" / "playbooks" / "v1" / "default-pipeline.md"
 
 
 def _compile(path: Path) -> CompiledPlaybook:

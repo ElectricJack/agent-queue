@@ -37,6 +37,9 @@ from src.playbooks.routing import is_deprecated_default_assignment_entry
 
 logger = logging.getLogger(__name__)
 
+#: The three exact-match capability namespaces (Package 0).
+_CAPABILITY_NAMESPACES: tuple[str, ...] = ("harness_tools", "aq_commands", "plugin_tools")
+
 
 PlaybookDisposition = Literal["ready", "question_required", "invalid", "disabled"]
 
@@ -835,15 +838,100 @@ def _orphan_entry(
     )
 
 
+
+# ---------------------------------------------------------------------------
+# §5.3 T-9 — capability audit
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class CapabilityFinding:
+    """One capability an artifact needs that a review record does not list."""
+
+    namespace: str          # harness_tools | aq_commands | plugin_tools
+    name: str               # the command or tool
+    step_id: str            # the step that needs it
+    rule_id: str | None
+
+
+def required_capabilities(definition: Any) -> dict[str, set[str]]:
+    """What one artifact actually needs, split by capability namespace.
+
+    A ``command`` step needs its command in ``aq_commands``; an ``llm`` step
+    needs each name in its ``tool_use`` allowance, classified the same way
+    :func:`src.profiles.capabilities.classify_capability` classifies it, so a
+    plugin tool is not audited as an AQ command.
+    """
+    from src.profiles.capabilities import classify_capability
+
+    required: dict[str, set[str]] = {namespace: set() for namespace in _CAPABILITY_NAMESPACES}
+    for step in getattr(definition, "steps", {}).values():
+        command = getattr(step, "command", None)
+        if isinstance(command, str) and command:
+            required["aq_commands"].add(command)
+        for name in getattr(step, "tool_use", None) or ():
+            if isinstance(name, str) and name:
+                required[classify_capability(name)].add(name)
+    return required
+
+
+def audit_capabilities(definition: Any, policy: Any) -> tuple[CapabilityFinding, ...]:
+    """Every capability the artifact needs that *policy* does not grant.
+
+    *policy* is either a :class:`~src.profiles.capabilities.CapabilityPolicy`
+    or a plain mapping of namespace to names — the shape a reviewed fixture's
+    ``review.md`` records for the capabilities a human approved.
+
+    **One direction only** (child plan §4.1).  A finding means the artifact
+    exceeds what was approved.  A capability listed in the review but unused by
+    the artifact is not a finding, because this function must never be readable
+    as a way to *grant* something: a repository write is not a privilege grant.
+    """
+    granted: dict[str, frozenset[str]] = {}
+    for namespace in _CAPABILITY_NAMESPACES:
+        if isinstance(policy, Mapping):
+            names = policy.get(namespace) or ()
+        else:
+            names = getattr(policy, namespace, None) or ()
+        granted[namespace] = frozenset(str(name) for name in names)
+
+    findings: list[CapabilityFinding] = []
+    for step_id, step in sorted(getattr(definition, "steps", {}).items()):
+        needed: list[tuple[str, str]] = []
+        command = getattr(step, "command", None)
+        if isinstance(command, str) and command:
+            needed.append(("aq_commands", command))
+        for name in getattr(step, "tool_use", None) or ():
+            if isinstance(name, str) and name:
+                from src.profiles.capabilities import classify_capability
+
+                needed.append((classify_capability(name), name))
+        for namespace, name in needed:
+            if name in granted[namespace]:
+                continue
+            findings.append(
+                CapabilityFinding(
+                    namespace=namespace,
+                    name=name,
+                    step_id=step_id,
+                    rule_id=getattr(step, "rule", None),
+                )
+            )
+    return tuple(findings)
+
+
 __all__ = [
     "REASON_CODES",
     "SHA256_RE",
+    "CapabilityFinding",
     "InventoryEntry",
     "MigrationInventory",
     "MigrationReason",
     "MigrationReasonError",
     "PlaybookDisposition",
     "SourceRef",
+    "audit_capabilities",
     "build_inventory",
     "find_embedded_action_block",
+    "required_capabilities",
 ]

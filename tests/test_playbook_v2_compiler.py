@@ -104,9 +104,36 @@ def _bundled(name: str) -> PlaybookSource:
     return loaded
 
 
-def test_default_pipeline_shadow_compile_is_clean_against_live_registries():
+def _frozen_v1_pipeline() -> PlaybookSource:
+    """The pre-Package-6 `default-pipeline.md`, which still carries its graph.
+
+    The shipped Markdown is a prose authoring source now, so the deterministic
+    lowering assertions below run against the frozen snapshot — the same graph
+    the reviewed V2 artifact was lowered from.  See
+    `tests/fixtures/playbooks/v1/README.md`.
+    """
+    path = Path("tests/fixtures/playbooks/v1/default-pipeline.md")
+    loaded = PlaybookSource.load(path, vault_root=path.parent)
+    assert isinstance(loaded, PlaybookSource)
+    return loaded
+
+
+def test_shipped_pipeline_prose_needs_an_agent_proposal():
+    """The shipped source has no machine graph, so lowering must ask for one."""
     row = shadow_compile(
         [_bundled("default-pipeline.md")],
+        contracts=RegistryContractLookup(),
+        profiles=NullProfileLookup(),
+        events=RegisteredEventLookup(),
+    ).rows[0]
+    assert row.lowered is False
+    assert row.question_count == 1
+    assert row.artifact_sha256 is None
+
+
+def test_default_pipeline_shadow_compile_is_clean_against_live_registries():
+    row = shadow_compile(
+        [_frozen_v1_pipeline()],
         contracts=RegistryContractLookup(),
         profiles=NullProfileLookup(),
         events=RegisteredEventLookup(),
@@ -117,7 +144,7 @@ def test_default_pipeline_shadow_compile_is_clean_against_live_registries():
 
 def test_default_pipeline_matches_the_deterministic_fixture():
     expected = json.loads((LOWERING / "default-pipeline.expected.json").read_text())
-    body, diagnostics = lower_pipeline(_bundled("default-pipeline.md"))
+    body, diagnostics = lower_pipeline(_frozen_v1_pipeline())
     loops = sorted(key for key, step in body["steps"].items() if step["type"] == "foreach")
     assert {
         "artifact_diagnostics": [diagnostic.code for diagnostic in diagnostics],
@@ -128,7 +155,7 @@ def test_default_pipeline_matches_the_deterministic_fixture():
 
 
 def test_command_transitions_use_closed_registered_outcomes():
-    body, diagnostics = lower_pipeline(_bundled("default-pipeline.md"))
+    body, diagnostics = lower_pipeline(_frozen_v1_pipeline())
     assert diagnostics == []
     ensure = body["steps"]["per-task-review--create-review"]
     assert set(ensure["transitions"]) == {"created", "reused", "rejected", "runtime_error"}
@@ -137,7 +164,7 @@ def test_command_transitions_use_closed_registered_outcomes():
 
 
 def test_foreach_bodies_reenter_the_foreach_node():
-    body, _ = lower_pipeline(_bundled("default-pipeline.md"))
+    body, _ = lower_pipeline(_frozen_v1_pipeline())
     loops = {key: step for key, step in body["steps"].items() if step["type"] == "foreach"}
     assert len(loops) == 2
     for loop_id, loop in loops.items():
