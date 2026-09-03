@@ -23,6 +23,7 @@ import pytest
 from src.commands.handler import CommandHandler
 from src.config import AppConfig, DiscordConfig
 from src.database import Database
+from src.git.manager import PullRequestIdentity
 from src.models import (
     AgentProfile,
     Project,
@@ -37,6 +38,16 @@ from tests.pg_dsn import ensure_worker_postgres_dsn
 POSTGRES_DSN = ensure_worker_postgres_dsn()
 
 PR = "https://github.com/o/r/pull/288"
+#: What ``avalidate_pr_for_merge`` resolves ``PR`` to.  ``_cmd_pr_merge``
+#: pins the merge to these OIDs, so they have to be well-formed.
+PR_IDENTITY = PullRequestIdentity(
+    repository="o/r",
+    number=288,
+    base_ref="feature/pkg4-core",
+    base_oid="a" * 40,
+    head_ref="task/c5",
+    head_oid="b" * 40,
+)
 
 
 @pytest.fixture(params=["sqlite", "postgres"])
@@ -66,6 +77,10 @@ async def orch(request, tmp_path):
     o = Orchestrator(cfg)
     o.db = db
     o.git = MagicMock()
+    # ``pr_merge`` resolves the immutable PR identity before it merges and
+    # fails closed when it cannot; a bare MagicMock is not awaitable, so the
+    # merge under test would never be reached.
+    o.git.avalidate_pr_for_merge = AsyncMock(return_value=PR_IDENTITY)
     o.bus = MagicMock()
     o.bus.emit = AsyncMock()
     o.command_handler = CommandHandler(o, cfg)
