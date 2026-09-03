@@ -291,8 +291,14 @@ push, integration, or PR acceptance, the orchestrator diffs the delivery tip
 from its merge-base with `origin/<default>` (or the local default when no
 remote exists) and rejects changed `.aq/**`, `.aq-worktree.json`, or
 `.codex/**` paths. A reserved path merely tracked and unchanged on the base is
-not rejected. Git errors are unknown—not clean—and stop delivery. No-code and
-`skip_verification` shortcuts cannot bypass this invariant.
+not rejected. The diff runs with `--no-renames` so a rename is reported as a
+deletion of its source and an addition of its destination: moving
+`.aq/claim.json` to an ordinary path is a deletion of daemon state and is
+rejected, whatever `diff.renames` the repository configures. The PR-files
+guard asks GitHub for `previous_filename` alongside `filename` for the same
+reason, so a renamed or copied file is checked under both names. Git errors
+are unknown—not clean—and stop delivery. No-code and `skip_verification`
+shortcuts cannot bypass this invariant.
 
 ### Immutable PR merge and exact-tip push guard
 

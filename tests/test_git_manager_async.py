@@ -624,31 +624,52 @@ async def test_delivery_push_checks_and_pushes_one_immutable_tip_despite_head_mu
     assert pushed == [["push", "origin", f"{clean_tip}:refs/heads/main"]]
 
 
+_RENAMEABLE_CONTENT = "".join(f"line {i}\n" for i in range(30))
+
+
 @pytest.mark.parametrize(
     ("reserved_path", "change"),
     [
         (".aq/claim.json", "add"),
         (".aq-worktree.json", "modify"),
         (".codex/settings.json", "delete"),
+        (".aq/claim.json", "rename-out"),
+        (".codex/settings.json", "rename-in"),
     ],
 )
 @pytest.mark.asyncio
 async def test_delivery_push_rejects_every_reserved_path_change_kind(
     clone, mgr, reserved_path, change
 ):
-    """Task delivery rejects added, modified, and deleted daemon-owned paths."""
+    """Task delivery rejects added, modified, deleted, and renamed daemon-owned paths.
+
+    ``rename-out`` moves a tracked reserved file to an ordinary path (a
+    deletion of daemon state that git's rename detection would otherwise
+    collapse into the destination); ``rename-in`` moves an ordinary tracked
+    file onto a reserved path.
+    """
     repo = pathlib.Path(clone)
     path = repo / reserved_path
-    if change != "add":
+    plain = repo / "plain.json"
+    if change in {"modify", "delete", "rename-out"}:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("base\n")
+        path.write_text(_RENAMEABLE_CONTENT)
         _git(["add", "-f", reserved_path], cwd=clone)
         _git(["commit", "-m", f"track {reserved_path}"], cwd=clone)
+    elif change == "rename-in":
+        plain.write_text(_RENAMEABLE_CONTENT)
+        _git(["add", "plain.json"], cwd=clone)
+        _git(["commit", "-m", "track plain.json"], cwd=clone)
 
     _git(["switch", "-c", f"task/reserved-{change}"], cwd=clone)
     if change == "delete":
         path.unlink()
         _git(["add", "-u", reserved_path], cwd=clone)
+    elif change == "rename-out":
+        _git(["mv", reserved_path, "moved.json"], cwd=clone)
+    elif change == "rename-in":
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _git(["mv", "plain.json", reserved_path], cwd=clone)
     else:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("task\n")
@@ -668,6 +689,39 @@ async def test_delivery_push_rejects_every_reserved_path_change_kind(
         cwd=clone,
     )
     assert remote == ""
+
+
+@pytest.mark.asyncio
+async def test_reserved_path_guards_report_both_sides_of_a_rename(clone, mgr):
+    """The sync and async delivery guards see rename sources, not just destinations.
+
+    Git's default rename detection reports ``git mv .aq/claim.json moved.json``
+    as a single changed path, ``moved.json``, hiding that a daemon-owned file
+    left the tree. The guards must diff without rename detection, even when
+    the repository configures the most aggressive detection.
+    """
+    repo = pathlib.Path(clone)
+    _git(["config", "diff.renames", "copies"], cwd=clone)
+    reserved = repo / ".aq" / "claim.json"
+    reserved.parent.mkdir()
+    reserved.write_text(_RENAMEABLE_CONTENT)
+    (repo / "plain.json").write_text(_RENAMEABLE_CONTENT * 2)
+    _git(["add", "-f", ".aq/claim.json", "plain.json"], cwd=clone)
+    _git(["commit", "-m", "track reserved and plain files"], cwd=clone)
+
+    _git(["switch", "-c", "task/renames"], cwd=clone)
+    _git(["mv", ".aq/claim.json", "moved.json"], cwd=clone)
+    (repo / ".codex").mkdir()
+    _git(["mv", "plain.json", ".codex/settings.json"], cwd=clone)
+    _git(["commit", "-m", "rename across the reserved boundary"], cwd=clone)
+
+    # Premise: git's own rename detection collapses the reserved source path.
+    detected = _git(["diff", "--name-only", "main", "task/renames", "--"], cwd=clone)
+    assert ".aq/claim.json" not in detected.splitlines()
+
+    expected = [".aq/claim.json", ".codex/settings.json"]
+    assert mgr.reserved_paths_in_diff(clone, "main", "task/renames") == expected
+    assert await mgr.areserved_paths_in_diff(clone, "main", "task/renames") == expected
 
 
 @pytest.mark.asyncio

@@ -151,36 +151,92 @@ def _pr_identity_payload(*, base_oid: str = "a" * 40, head_oid: str = "b" * 40) 
     )
 
 
+# The exact jq program handed to ``gh api``: one line per PR-file path, with a
+# rename or copy source (``previous_filename``) emitted after its destination.
+_PR_FILES_JQ = ".[] | .filename, (.previous_filename // empty)"
+
+
+def _pr_files_stdout(files: list[dict]) -> str:
+    """Emulate what ``gh api --jq _PR_FILES_JQ`` prints for a PR-files payload."""
+    lines: list[str] = []
+    for entry in files:
+        lines.append(entry["filename"])
+        if entry.get("previous_filename"):
+            lines.append(entry["previous_filename"])
+    return "".join(f"{line}\n" for line in lines)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("operation", "path"),
+    ("operation", "entry", "reserved"),
     [
-        ("added", ".aq/claim.json"),
-        ("modified", ".aq-worktree.json"),
-        ("deleted", ".codex/config.json"),
+        ("added", {"filename": ".aq/claim.json", "status": "added"}, ".aq/claim.json"),
+        ("modified", {"filename": ".aq-worktree.json", "status": "modified"}, ".aq-worktree.json"),
+        ("deleted", {"filename": ".codex/config.json", "status": "deleted"}, ".codex/config.json"),
+        (
+            "renamed out of a reserved path",
+            {"filename": "moved.json", "status": "renamed", "previous_filename": ".aq/claim.json"},
+            ".aq/claim.json",
+        ),
+        (
+            "renamed onto a reserved path",
+            {"filename": ".codex/config.json", "status": "renamed", "previous_filename": "c.json"},
+            ".codex/config.json",
+        ),
+        (
+            "copied out of a reserved path",
+            {"filename": "copy.json", "status": "copied", "previous_filename": ".aq/claim.json"},
+            ".aq/claim.json",
+        ),
     ],
 )
 async def test_pr_validation_rejects_added_modified_and_deleted_reserved_paths(
-    monkeypatch, operation, path
+    monkeypatch, operation, entry, reserved
 ):
     from src.git.manager import GitManager
 
     gm = GitManager()
+    files = [{"filename": "work.py", "status": "modified"}, entry]
 
     async def fake_arun_subprocess(cmd, cwd, timeout):
         if cmd[:3] == ["gh", "pr", "view"]:
             return MagicMock(returncode=0, stdout=_pr_identity_payload(), stderr="")
         assert cmd[:4] == ["gh", "api", "--paginate", "repos/org/repo/pulls/42/files"]
-        return MagicMock(returncode=0, stdout=f"work.py\n{path}\n", stderr="")
+        # GitHub reports a rename or copy under its new ``filename`` and keeps
+        # the old name in ``previous_filename``; the guard must ask for both.
+        assert cmd[cmd.index("--jq") + 1] == _PR_FILES_JQ
+        return MagicMock(returncode=0, stdout=_pr_files_stdout(files), stderr="")
 
     monkeypatch.setattr(gm, "_arun_subprocess", fake_arun_subprocess)
 
-    # GitHub's PR-files endpoint exposes the filename for each status, and
-    # safety must not vary with whether the reserved path was added, modified,
-    # or deleted.
-    assert operation in {"added", "modified", "deleted"}
-    with pytest.raises(GitError, match="reserved daemon bookkeeping"):
+    # Safety must not vary with whether the reserved path was added, modified,
+    # deleted, or moved across the reserved boundary in either direction.
+    with pytest.raises(GitError, match=f"reserved daemon bookkeeping.*{reserved}") as excinfo:
         await gm.avalidate_pr_for_merge("/some/checkout", "https://github.com/org/repo/pull/42")
+    assert operation
+    assert "work.py" not in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+async def test_pr_changed_paths_include_rename_sources(monkeypatch):
+    """``_apr_changed_paths`` returns every filename and every previous_filename."""
+    from src.git.manager import GitManager, PullRequestIdentity
+
+    gm = GitManager()
+    identity = PullRequestIdentity("org/repo", 42, "main", "a" * 40, "feature", "b" * 40)
+    files = [
+        {"filename": "work.py", "status": "modified"},
+        {"filename": "moved.json", "status": "renamed", "previous_filename": ".aq/claim.json"},
+        {"filename": "new.py", "status": "added"},
+    ]
+
+    async def fake_arun_subprocess(cmd, cwd, timeout):
+        assert cmd[cmd.index("--jq") + 1] == _PR_FILES_JQ
+        return MagicMock(returncode=0, stdout=_pr_files_stdout(files), stderr="")
+
+    monkeypatch.setattr(gm, "_arun_subprocess", fake_arun_subprocess)
+    paths = await gm._apr_changed_paths("/some/checkout", identity)
+    assert paths == ["work.py", "moved.json", ".aq/claim.json", "new.py"]
 
 
 @pytest.mark.asyncio
