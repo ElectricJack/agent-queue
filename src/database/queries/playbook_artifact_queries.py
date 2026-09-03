@@ -38,6 +38,25 @@ _ACTIVATION_UPDATE_COLUMNS = (
 )
 
 
+#: The artifact columns :meth:`list_playbook_activations_with_artifacts` adds
+#: to each activation row.  ``playbook_id``, ``scope`` and ``scope_identifier``
+#: are deliberately absent: they exist on both tables, and the activation's
+#: values are the authority for where the playbook is installed.
+_ACTIVATION_ARTIFACT_COLUMNS = (
+    "artifact_sha256",
+    "schema_generation",
+    "version",
+    "source_digest",
+    "contract_fingerprint",
+    "profile_fingerprint",
+    "compiler_build",
+    "path",
+    "size_bytes",
+    "validation",
+    "compiled_at",
+)
+
+
 #: Bound parameters per ``IN`` clause.  SQLite's historical limit is 999 and
 #: PostgreSQL's is 65535; a few hundred keeps one statement comfortably inside
 #: both while still collapsing a large directory scan into a handful of reads.
@@ -287,6 +306,49 @@ class PlaybookArtifactQueryMixin:
         doctor check, and both are box-wide sweeps rather than operator lookups.
         """
         stmt = select(playbook_activations).order_by(playbook_activations.c.updated_at.desc())
+        if enabled_only:
+            stmt = stmt.where(playbook_activations.c.enabled.is_(True))
+        async with self._engine.connect() as conn:
+            rows = (await conn.execute(stmt)).mappings().fetchall()
+        return [dict(row) for row in rows]
+
+    async def list_playbook_activations_with_artifacts(
+        self, *, enabled_only: bool = False
+    ) -> list[dict]:
+        """Every activation row joined to the artifact it activates.
+
+        The activation table stores a *reference* — ``active_artifact_sha256``
+        — and nothing else about the artifact.  Every reporting surface that
+        has to answer "which bytes are live, and what were they compiled
+        from?" therefore needs this join, and reading the activation row alone
+        yields ``None`` for hashes that are genuinely recorded (the release
+        check and the cutover report both did exactly that until §5.5's
+        evidence was joined here).
+
+        A ``LEFT`` join, deliberately: an activation whose artifact row is
+        missing is the ``unavailable`` fault the health surface reports, and
+        dropping it here would hide it from the reports that exist to name it.
+        Such a row comes back with the activation's own columns and ``None``
+        for every artifact column.
+
+        ``playbook_id``, ``scope`` and ``scope_identifier`` exist on both
+        tables and are **not** taken from the artifact: the activation's values
+        are the authority for where the playbook is installed.
+        """
+        artifact_columns = [
+            playbook_artifacts.c[name] for name in _ACTIVATION_ARTIFACT_COLUMNS
+        ]
+        stmt = (
+            select(playbook_activations, *artifact_columns)
+            .select_from(
+                playbook_activations.outerjoin(
+                    playbook_artifacts,
+                    playbook_activations.c.active_artifact_sha256
+                    == playbook_artifacts.c.artifact_sha256,
+                )
+            )
+            .order_by(playbook_activations.c.updated_at.desc())
+        )
         if enabled_only:
             stmt = stmt.where(playbook_activations.c.enabled.is_(True))
         async with self._engine.connect() as conn:

@@ -672,6 +672,24 @@ async def _safe_call(obj: Any, name: str, *, default: Any, **kwargs: Any) -> Any
     return default if result is None else result
 
 
+async def _activation_rows(activation_repo: Any) -> list[Any]:
+    """Activation rows carrying their artifact's identity columns.
+
+    An activation row on its own names an artifact hash and nothing else, so
+    the drift checks below — is the artifact still compiled against this
+    contract fingerprint, and against the source bytes on disk? — have no
+    evidence to compare.  The joined read supplies it; a repository that
+    predates the join (or a narrower test double) still degrades to the
+    unjoined rows rather than to no report at all.
+    """
+    rows = await _safe_call(
+        activation_repo, "list_playbook_activations_with_artifacts", default=None
+    )
+    if rows is None:
+        rows = await _safe_call(activation_repo, "list_playbook_activations", default=[])
+    return list(rows)
+
+
 def _activation_key(row: Mapping[str, Any]) -> tuple[str, str, str]:
     return (
         str(row.get("playbook_id") or ""),
@@ -958,9 +976,7 @@ async def build_inventory(
         except Exception:  # pragma: no cover - defensive
             logger.warning("migration inventory: compiled store scan failed", exc_info=True)
 
-    activation_rows = await _safe_call(
-        activation_repo, "list_playbook_activations", default=[]
-    )
+    activation_rows = await _activation_rows(activation_repo)
     activations = {
         _activation_key(row): row for row in activation_rows if isinstance(row, Mapping)
     }
@@ -1133,10 +1149,14 @@ def audit_capabilities(definition: Any, policy: Any) -> tuple[CapabilityFinding,
     return tuple(findings)
 
 
-
 # ---------------------------------------------------------------------------
 # §5.5 — cutover evidence report
 # ---------------------------------------------------------------------------
+
+
+def _playbook_ids(rows: Sequence[Mapping[str, Any]]) -> str:
+    """A short, stable ``a, b, c`` list for an operator-facing blocking reason."""
+    return ", ".join(sorted({str(row.get("playbook_id") or "?") for row in rows}))
 
 
 def build_cutover_report(
@@ -1182,6 +1202,7 @@ def build_cutover_report(
             "activation_health": row.get("activation_health", row.get("health")),
             "reviewed_by": row.get("reviewed_by"),
             "reviewed_at": row.get("reviewed_at"),
+            "v1_available": bool(row.get("v1_available", False)),
         }
         for row in artifacts
     ]
@@ -1211,13 +1232,29 @@ def build_cutover_report(
             run_started.append(float(timestamp))
 
     unexplained = int(parity.get("unexplained") or 0)
-    # Rollback readiness is a claim about what was *read*.  When the activation
-    # rows or the V1 store could not be read there is no evidence either way,
-    # so the claim is withheld rather than defaulted.
+    # §3.7: an activation is rollback-ready only when a human approved the exact
+    # bytes that are live *and* the V1 artifact it would roll back to still
+    # exists.  Evidence that is merely absent counts as absent, never as fine —
+    # a report assembled from rows that could not be joined would otherwise
+    # declare a fleet cutover-eligible on the strength of four nulls.
+    incomplete = [
+        row
+        for row in rendered_artifacts
+        if not row.get("artifact_sha256") or not row.get("source_sha256")
+    ]
+    unreviewed = [
+        row
+        for row in rendered_artifacts
+        if not row.get("reviewed_by") or not row.get("reviewed_at")
+    ]
+    # The claim is also withheld when the activation rows or V1 store could not
+    # be read: absence of evidence from an unavailable source is not evidence of
+    # rollback readiness.
     rollback_ready = (
         bool(rendered_artifacts)
+        and not unreviewed
         and all(row.get("v1_available", False) for row in artifacts)
-        and not unread_sources & {"activations", "v1_store"}
+        and not (unread_sources & {"activations", "v1_store"})
     )
     blocking_reasons: list[str] = []
     for row in unread:
@@ -1230,6 +1267,16 @@ def build_cutover_report(
     unhealthy = [row for row in rendered_artifacts if row.get("activation_health") != "ready"]
     if unhealthy:
         blocking_reasons.append(f"{len(unhealthy)} enabled activations are not ready")
+    if incomplete:
+        blocking_reasons.append(
+            f"{len(incomplete)} enabled activations have incomplete artifact evidence "
+            f"({_playbook_ids(incomplete)})"
+        )
+    if unreviewed:
+        blocking_reasons.append(
+            f"{len(unreviewed)} enabled activations have no recorded review of the live "
+            f"artifact ({_playbook_ids(unreviewed)})"
+        )
     if pending_events:
         blocking_reasons.append(f"{len(pending_events)} pending events require an operator decision")
     if runs:
@@ -1336,6 +1383,38 @@ def _reviewed_fixture_artifacts(fixture_root: Path) -> dict[str, Any]:
         except Exception as exc:  # pragma: no cover - a malformed fixture is a test failure
             logger.warning("release check: unreadable fixture %s: %s", artifact_path, exc)
     return artifacts
+
+
+def reviewed_artifact_evidence(
+    fixture_root: Path | str = REVIEWED_FIXTURE_ROOT,
+) -> dict[str, dict[str, Any]]:
+    """``{playbook_id: review frontmatter}`` for every *approved* reviewed fixture.
+
+    The human decision record is the only place ``reviewed_by`` and
+    ``reviewed_at`` exist — no table stores them (§3.4) — so the cutover report
+    reads them from the same files the release check reads artifacts from.
+
+    Only ``decision: approved`` is returned.  A rejected or undecided review is
+    not weaker evidence than none, it is evidence of the opposite, and the
+    report's caller must not be able to mistake one for the other.
+    """
+    root = Path(fixture_root)
+    evidence: dict[str, dict[str, Any]] = {}
+    if not root.is_dir():
+        return evidence
+    for directory in sorted(p for p in root.iterdir() if p.is_dir()):
+        review_path = directory / "review.md"
+        if not review_path.is_file():
+            continue
+        try:
+            frontmatter = _review_frontmatter(review_path)
+        except Exception:  # pragma: no cover - a malformed review is a test failure
+            logger.warning("cutover report: unreadable review %s", review_path, exc_info=True)
+            continue
+        if frontmatter.get("decision") != "approved":
+            continue
+        evidence[str(frontmatter.get("playbook_id") or directory.name)] = frontmatter
+    return evidence
 
 
 def _review_frontmatter(path: Path) -> dict[str, Any]:
@@ -1478,4 +1557,5 @@ __all__ = [
     "find_embedded_action_block",
     "release_check",
     "required_capabilities",
+    "reviewed_artifact_evidence",
 ]

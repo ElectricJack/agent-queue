@@ -184,13 +184,82 @@ def test_cutover_report_blocks_unresolved_parity_and_missing_rollback_artifact()
     assert any("rollback" in reason for reason in report["blocking_reasons"])
 
 
+def test_cutover_report_blocks_on_incomplete_artifact_evidence() -> None:
+    """Null hashes are missing evidence, never evidence that nothing is wrong.
+
+    An activation row names an artifact hash and nothing else, so a report
+    assembled without joining the artifact renders four nulls per row.  Reading
+    those as "fine" is how a fleet gets signed off on no evidence at all.
+    """
+    report = build_cutover_report(
+        contract_fingerprint="sha256:" + "a" * 64,
+        artifacts=(
+            {
+                "playbook_id": "default-pipeline",
+                "activation_health": "ready",
+                "v1_available": True,
+            },
+        ),
+        unresolved=(),
+        acknowledged_disabled=(),
+        pending_events=(),
+        active_v1_runs=(),
+        parity={"observations": 1, "identical": 1, "expected": 0, "unexplained": 0,
+                "recorded": True},
+        now=100.0,
+    )
+
+    assert report["cutover_eligible"] is False
+    assert report["rollback_ready"] is False
+    assert any("incomplete artifact evidence" in r for r in report["blocking_reasons"])
+    assert any("no recorded review" in r for r in report["blocking_reasons"])
+    assert all("default-pipeline" in r for r in report["blocking_reasons"] if "(" in r)
+
+
+def test_cutover_report_blocks_an_unreviewed_artifact_that_has_both_hashes() -> None:
+    """Hashes prove which bytes are live; only a review says a human read them."""
+    report = build_cutover_report(
+        contract_fingerprint="sha256:" + "a" * 64,
+        artifacts=(
+            {
+                "playbook_id": "default-pipeline",
+                "artifact_sha256": "sha256:" + "b" * 64,
+                "source_sha256": "sha256:" + "c" * 64,
+                "activation_health": "ready",
+                "v1_available": True,
+            },
+        ),
+        unresolved=(),
+        acknowledged_disabled=(),
+        pending_events=(),
+        active_v1_runs=(),
+        parity={"observations": 1, "identical": 1, "expected": 0, "unexplained": 0,
+                "recorded": True},
+        now=100.0,
+    )
+
+    assert report["rollback_ready"] is False
+    assert not any("incomplete artifact evidence" in r for r in report["blocking_reasons"])
+    assert any("no recorded review" in r for r in report["blocking_reasons"])
+
+
 @pytest.mark.asyncio
 async def test_cutover_report_command_uses_only_collected_evidence() -> None:
     class _Handler(PlaybookMigrationCommandsMixin):
         async def _cutover_report_inputs(self):
             return {
                 "contract_fingerprint": "sha256:" + "a" * 64,
-                "artifacts": ({"playbook_id": "default-pipeline", "health": "ready", "v1_available": True},),
+                "artifacts": (
+                    {
+                        "playbook_id": "default-pipeline",
+                        "artifact_sha256": "sha256:" + "b" * 64,
+                        "source_sha256": "sha256:" + "c" * 64,
+                        "health": "ready",
+                        "reviewed_by": "operator",
+                        "reviewed_at": "2026-09-01",
+                        "v1_available": True,
+                    },
+                ),
                 "unresolved": (),
                 "acknowledged_disabled": (),
                 "pending_events": (),
@@ -228,16 +297,18 @@ class _CleanEvidence:
 
     async def list_playbook_activations(self) -> list[dict]:
         self._maybe_raise("list_playbook_activations")
+        fixture_root = PARITY_REPORT.parent / "default-pipeline"
+        artifact = json.loads((fixture_root / "artifact.json").read_text(encoding="utf-8"))
         return [
             {
                 "playbook_id": "default-pipeline",
                 "scope": "system",
                 "enabled": True,
-                "artifact_sha256": "sha256:" + "b" * 64,
-                "source_digest": "sha256:" + "c" * 64,
+                "artifact_sha256": (fixture_root / "artifact.sha256")
+                .read_text(encoding="utf-8")
+                .strip(),
+                "source_digest": artifact["source_hash"],
                 "health": "ready",
-                "reviewed_by": "operator",
-                "reviewed_at": 1.0,
             }
         ]
 
@@ -373,7 +444,17 @@ def test_cutover_report_evidence_errors_default_to_none_recorded() -> None:
     """Callers that pass no ``evidence_errors`` are unaffected."""
     report = build_cutover_report(
         contract_fingerprint="sha256:" + "a" * 64,
-        artifacts=({"playbook_id": "p", "activation_health": "ready", "v1_available": True},),
+        artifacts=(
+            {
+                "playbook_id": "p",
+                "artifact_sha256": "sha256:" + "b" * 64,
+                "source_sha256": "sha256:" + "c" * 64,
+                "activation_health": "ready",
+                "reviewed_by": "operator",
+                "reviewed_at": "2026-09-03",
+                "v1_available": True,
+            },
+        ),
         unresolved=(),
         acknowledged_disabled=(),
         pending_events=(),
