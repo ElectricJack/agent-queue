@@ -687,14 +687,20 @@ def _activation_record(ref, *, health, enabled=True):
     )
 
 
-def _activation_handler(*, policy, health="ready", enabled=True, held=(), quota=1000):
-    """``playbook_activate`` over doubles, with a backlog behind the artifact."""
+def _activation_handler(
+    *, policy, health="ready", enabled=True, held=(), quota=1000, health_read_sees_row=True
+):
+    """``playbook_activate`` over doubles, with a backlog behind the artifact.
+
+    ``health_read_sees_row=False`` is the post-write health read coming back
+    without the row that was just activated.
+    """
     from tests.test_api_playbook_v2_commands import _backend_fixture
     from tests.test_playbook_activation_commands import _Handler
 
     definition, ref, _activation = _backend_fixture()
     refreshed = _activation_record(ref, health=health, enabled=enabled)
-    handler = _Handler(definition, ref, [[], [refreshed]])
+    handler = _Handler(definition, ref, [[], [refreshed] if health_read_sees_row else []])
     handler.config = SimpleNamespace(
         playbooks=PlaybooksConfig(
             v2_api=True,
@@ -856,6 +862,31 @@ async def test_automatic_replay_requires_a_ready_activation(health):
     replay = result["pending_event_replay"]
     assert replay["replayed"] is False
     assert health in replay["refused_reason"]
+    engine.dispatch_event.assert_not_awaited()
+
+
+async def test_automatic_replay_is_refused_when_the_health_read_misses_the_row():
+    """An activation whose health cannot be read is not a ready one.
+
+    The write landed, so the command still succeeds and reports the activation
+    it wrote — but the health it could not verify is ``unavailable``, and an
+    unavailable activation may not auto-consume a backlog.
+    """
+    from src.commands.playbook_v2_commands import PENDING_EVENT_REPLAY_UNREADABLE_REFUSAL
+
+    handler, engine, definition, ref = _activation_handler(
+        policy="automatic", held=[_held("event-1")], health_read_sees_row=False
+    )
+
+    result = await _activate(handler, definition, ref)
+
+    assert result["success"] is True
+    assert result["blocked"] is False
+    assert result["activation"]["health"] == "unavailable"
+    replay = result["pending_event_replay"]
+    assert replay["replayed"] is False
+    assert replay["refused_reason"] == PENDING_EVENT_REPLAY_UNREADABLE_REFUSAL
+    handler.db.list_pending_events.assert_not_awaited()
     engine.dispatch_event.assert_not_awaited()
 
 

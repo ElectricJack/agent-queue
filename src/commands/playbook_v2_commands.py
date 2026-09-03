@@ -97,6 +97,10 @@ PENDING_EVENT_REPLAY_DISABLED_REFUSAL = (
 PENDING_EVENT_REPLAY_BLOCKED_REFUSAL = (
     "automatic replay is refused because the activation was blocked"
 )
+PENDING_EVENT_REPLAY_UNREADABLE_REFUSAL = (
+    "automatic replay is refused because the activation's health could not be "
+    "read back after the write"
+)
 
 
 def _pending_event_replay_refusal(health: str, *, enabled: bool) -> str | None:
@@ -121,6 +125,59 @@ def _pending_event_replay_refusal(health: str, *, enabled: bool) -> str | None:
             f"'{health}'"
         )
     return None
+
+
+#: Reason code on the activation an operator gets back when the write landed
+#: but the health read that follows it did not return the row.
+ACTIVATION_HEALTH_UNREADABLE_CODE = "activation_health_unreadable"
+
+
+def _unreadable_activation_payload(
+    *,
+    playbook_id: str,
+    scope: str,
+    scope_identifier: str,
+    artifact_sha256: str,
+    enabled: bool,
+    activated_by: str,
+) -> dict[str, Any]:
+    """The ``ActivationStateDTO`` for a write whose health read came back empty.
+
+    ``set_playbook_activation`` has already committed when this is reached, so
+    the activation is live whatever the read that follows it says, and the
+    response describes the row that was written.  What cannot be claimed is the
+    *health*, which is exactly what that read computes — so it is reported as
+    ``unavailable`` with a reason naming the playbook and the hash, rather than
+    asserting the ``ready`` the write asked for.  That is also what keeps
+    :meth:`_v2_replay_on_activation` fail-closed here: an unavailable health may
+    not auto-consume a backlog.
+
+    This mirrors the blocked path, which has always synthesised a payload when
+    no record matched; the success path used to dereference the ``None`` and
+    raise ``AttributeError`` at the operator instead.
+    """
+    from src.playbooks.activation import ActivationHealth, HealthReason
+
+    return {
+        "playbook_id": playbook_id,
+        "scope": scope,
+        "scope_identifier": scope_identifier or None,
+        "enabled": enabled,
+        "active_artifact_sha256": artifact_sha256,
+        "health": ActivationHealth.UNAVAILABLE.value,
+        "reasons": [
+            HealthReason(
+                ACTIVATION_HEALTH_UNREADABLE_CODE,
+                (
+                    f"Activation for playbook '{playbook_id}' at artifact "
+                    f"'{artifact_sha256}' was written, but the activation health "
+                    f"read did not return it"
+                ),
+                playbook_id,
+            ).as_dict()
+        ],
+        "activated_by": activated_by,
+    }
 
 
 #: The seven command names this mixin owns, in child-plan §4.8 order.  Imported
@@ -1141,7 +1198,18 @@ class PlaybookV2CommandsMixin:
         replay = await self._v2_replay_on_activation(playbook_id, activation)
         return {
             "success": True,
-            "activation": activation.as_dict(),
+            "activation": (
+                activation.as_dict()
+                if activation is not None
+                else _unreadable_activation_payload(
+                    playbook_id=playbook_id,
+                    scope=scope,
+                    scope_identifier=scope_identifier,
+                    artifact_sha256=artifact_sha256,
+                    enabled=enabled,
+                    activated_by=actor,
+                )
+            ),
             "previous_artifact_sha256": current_sha,
             "changed": current_sha != artifact_sha256 or bool(current and current.enabled) != enabled,
             "blocked": False,
@@ -1191,16 +1259,27 @@ class PlaybookV2CommandsMixin:
 
         Fail-closed: the gate reads the health recomputed *after* the write,
         not the value the write asked for, and refuses anything that is not a
-        ready, enabled activation.  A refusal is not an activation failure —
-        the artifact is live either way — so it is reported rather than
-        raised, and the backlog stays operable by hand.
+        ready, enabled activation — including the case where that read does
+        not return the row at all and there is no recomputed health to gate
+        on.  A refusal is not an activation failure — the artifact is live
+        either way — so it is reported rather than raised, and the backlog
+        stays operable by hand.
         """
         if self._v2_replay_policy() != "automatic":
             return self._v2_replay_report()
 
-        health = "unavailable" if activation is None else activation.health.value
-        enabled = bool(activation is not None and activation.enabled)
-        refusal = _pending_event_replay_refusal(health, enabled=enabled)
+        if activation is None:
+            # The write committed but the health read did not return the row,
+            # so there is no recomputed health to gate on.  Refusing by its
+            # own name keeps the report honest: the generic disabled refusal
+            # would tell an operator the playbook is not running, which is not
+            # what happened.
+            return self._v2_replay_report(
+                refused_reason=PENDING_EVENT_REPLAY_UNREADABLE_REFUSAL
+            )
+        refusal = _pending_event_replay_refusal(
+            activation.health.value, enabled=bool(activation.enabled)
+        )
         if refusal:
             return self._v2_replay_report(refused_reason=refusal)
 
