@@ -89,7 +89,18 @@ class GitError(Exception):
 
 @dataclass(frozen=True)
 class PullRequestIdentity:
-    """Immutable PR facts that must agree from review through merge."""
+    """Immutable PR facts that must agree from review through merge.
+
+    ``base_oid`` is recorded but is *not* part of :attr:`pin`.  It is the tip
+    of the base branch at the moment of the read, so it moves on every push
+    to the default branch — with several agents delivering concurrently it
+    differs between two reads seconds apart for reasons that have nothing to
+    do with this PR.  Nothing the merge relies on depends on it: the PR-files
+    diff inspected before merging is GitHub's merge-base diff, and
+    ``gh pr merge`` merges into whatever the base tip is at that moment.  The
+    base *branch name* is pinned, because a PR retargeted onto another branch
+    lands its commits somewhere the review never looked at.
+    """
 
     repository: str
     number: int
@@ -97,6 +108,11 @@ class PullRequestIdentity:
     base_oid: str
     head_ref: str
     head_oid: str
+
+    @property
+    def pin(self) -> tuple[str, int, str, str, str]:
+        """The facts that fix *what* a review of this PR reviewed."""
+        return (self.repository, self.number, self.base_ref, self.head_ref, self.head_oid)
 
 
 # ---------------------------------------------------------------------------
@@ -183,6 +199,33 @@ def _validate_rev(name: str, *, field: str = "revision") -> str:
     if name.endswith(".lock"):
         raise GitError(f"invalid {field} {name!r}: rejected by git check-ref-format rules")
     return name
+
+
+#: Characters that only appear in a git *revision expression* (``HEAD~1``,
+#: ``main@{yesterday}``, ``v1^{commit}``), never in a plain branch name.
+_REVISION_SYNTAX_RE = re.compile(r"[~^@{}]")
+
+
+def _delivery_source_rev(source: str) -> str:
+    """The revision to ``rev-parse`` for a delivery *source*.
+
+    Git's ref lookup order tries ``refs/<name>`` and ``refs/tags/<name>``
+    before ``refs/heads/<name>``, so a bare ``rev-parse main`` answers with a
+    tag called ``main`` when one exists — and a tag planted in a checkout
+    would then be what gets validated and pushed to ``refs/heads/main``.
+    A plain branch name therefore resolves ``refs/heads/<name>`` explicitly
+    (peeled to a commit); only ``HEAD``, object ids, fully qualified refs and
+    revision expressions keep bare resolution, since those name the object
+    the caller means without any lookup-order ambiguity.
+    """
+    if (
+        source == "HEAD"
+        or source.startswith("refs/")
+        or _OID_RE.fullmatch(source.lower())
+        or _REVISION_SYNTAX_RE.search(source)
+    ):
+        return source
+    return f"refs/heads/{source}^{{commit}}"
 
 
 class GitManager:
@@ -679,7 +722,11 @@ class GitManager:
         Plain push (default) is used for the ``sync_and_merge`` flow where
         only the default branch is pushed and force-push is never appropriate.
         """
-        args = ["push", "origin", branch_name]
+        _validate_ref(branch_name)
+        # An explicit refs/heads/ source: a bare name is looked up in git's
+        # ref order, where a same-named tag shadows (or, on push, collides
+        # with) the branch.
+        args = ["push", "origin", f"refs/heads/{branch_name}:refs/heads/{branch_name}"]
         if force_with_lease:
             args.insert(2, "--force-with-lease")
         self._run(args, cwd=checkout_path)
@@ -1612,52 +1659,90 @@ class GitManager:
         project_id: str | None = None,
     ) -> None:
         _validate_ref(branch_name)
-        # Capture the remote ref before pushing so we can compute commit_range.
-        remote_ref_before: str | None = None
-        if event_bus is not None:
-            try:
-                remote_ref_before = await self._arun(
-                    ["rev-parse", f"origin/{branch_name}"],
-                    cwd=checkout_path,
-                )
-            except GitError:
-                # Remote branch doesn't exist yet (first push).
-                remote_ref_before = None
+        remote_ref_before = await self._aremote_ref_before_push(
+            checkout_path, branch_name, event_bus=event_bus
+        )
 
-        tip = (
-            await self._arun(["rev-parse", "--verify", branch_name], cwd=checkout_path)
-        ).strip()
-        if not _OID_RE.fullmatch(tip.lower()):
-            raise GitError(f"could not resolve immutable delivery tip for {branch_name}")
+        tip = await self._aresolve_delivery_tip(checkout_path, branch_name)
         args = ["push", "origin", f"{tip}:refs/heads/{branch_name}"]
         if force_with_lease:
             args.insert(2, "--force-with-lease")
         await self._arun(args, cwd=checkout_path)
 
-        # Emit git.push event on success
-        if event_bus is not None:
-            try:
-                if remote_ref_before:
-                    commit_range = f"{remote_ref_before}..{tip}"
-                else:
-                    commit_range = tip
-                await event_bus.emit(
-                    "git.push",
-                    {
-                        "branch": branch_name,
-                        "remote": "origin",
-                        "commit_range": commit_range,
-                        "project_id": project_id,
-                    },
-                )
-            except Exception:
-                # Event emission is best-effort; never fail the push
-                # because we couldn't emit the event.
-                logger.debug(
-                    "Failed to emit git.push event for %s",
-                    checkout_path,
-                    exc_info=True,
-                )
+        await self._aemit_push_event(
+            checkout_path,
+            branch_name,
+            remote_ref_before,
+            tip,
+            event_bus=event_bus,
+            project_id=project_id,
+        )
+
+    async def _aremote_ref_before_push(
+        self,
+        checkout_path: str,
+        branch: str,
+        *,
+        event_bus: EventBus | None,
+    ) -> str | None:
+        """``origin/<branch>`` as the remote-tracking ref has it, or ``None``.
+
+        Read *before* a push so the ``git.push`` event can carry the
+        ``<before>..<tip>`` range the push actually moved the branch over.
+        ``None`` means the remote branch does not exist yet (a first push) --
+        or that no event bus was given, in which case there is no event to
+        compute the range for and the extra ``rev-parse`` is skipped.
+        """
+        if event_bus is None:
+            return None
+        try:
+            out = await self._arun(
+                ["rev-parse", "--verify", f"refs/remotes/origin/{branch}"],
+                cwd=checkout_path,
+            )
+        except GitError:
+            return None
+        return out.strip() or None
+
+    @staticmethod
+    def _push_commit_range(remote_ref_before: str | None, tip: str) -> str:
+        """The ``commit_range`` a ``git.push`` event carries.
+
+        One shape for every push path: ``<remote-before>..<tip>`` when the
+        remote branch already existed, the bare ``<tip>`` on a first push.
+        """
+        if remote_ref_before:
+            return f"{remote_ref_before}..{tip}"
+        return tip
+
+    async def _aemit_push_event(
+        self,
+        checkout_path: str,
+        branch: str,
+        remote_ref_before: str | None,
+        tip: str,
+        *,
+        event_bus: EventBus | None,
+        project_id: str | None,
+    ) -> None:
+        """Emit ``git.push`` after a successful push, best-effort.
+
+        Never fails the push because the event could not be emitted.
+        """
+        if event_bus is None:
+            return
+        try:
+            await event_bus.emit(
+                "git.push",
+                {
+                    "branch": branch,
+                    "remote": "origin",
+                    "commit_range": self._push_commit_range(remote_ref_before, tip),
+                    "project_id": project_id,
+                },
+            )
+        except Exception:
+            logger.debug("Failed to emit git.push event for %s", checkout_path, exc_info=True)
 
     async def arebase_onto(
         self,
@@ -2218,7 +2303,7 @@ class GitManager:
         method: str = "squash",
         *,
         expected_head_oid: str | None = None,
-        expected_base_oid: str | None = None,
+        expected_base_ref: str | None = None,
     ) -> dict:
         """Merge a PR via ``gh pr merge``.
 
@@ -2232,6 +2317,17 @@ class GitManager:
             One of ``"squash"``, ``"merge"``, ``"rebase"``.  Defaults to
             ``"squash"`` — matches the project convention documented in
             the shipped final-reviewer profile.
+        expected_head_oid:
+            The head the caller validated and had CI judged.  Any other head
+            refuses to merge, and the same OID goes into
+            ``--match-head-commit`` so GitHub enforces it too.
+        expected_base_ref:
+            The branch the PR targeted when the caller validated it.  A PR
+            retargeted since then refuses to merge.  The base branch's *tip*
+            is deliberately not pinned — see :class:`PullRequestIdentity`;
+            the default branch advancing between validation and merge is
+            the normal state of affairs under concurrent delivery, not a
+            change to this PR.
 
         Returns
         -------
@@ -2247,22 +2343,27 @@ class GitManager:
             expected_head_oid = expected_head_oid.lower()
             if not _OID_RE.fullmatch(expected_head_oid):
                 return {"success": False, "sha": None, "error": "invalid expected PR head OID"}
-        if expected_base_oid is not None:
-            expected_base_oid = expected_base_oid.lower()
-            if not _OID_RE.fullmatch(expected_base_oid):
-                return {"success": False, "sha": None, "error": "invalid expected PR base OID"}
         try:
             current = await self.avalidate_pr_for_merge(checkout_path, pr_url)
         except GitError as exc:
             return {"success": False, "sha": None, "error": str(exc)}
-        if (
-            (expected_head_oid is not None and current.head_oid != expected_head_oid)
-            or (expected_base_oid is not None and current.base_oid != expected_base_oid)
-        ):
+        if expected_head_oid is not None and current.head_oid != expected_head_oid:
             return {
                 "success": False,
                 "sha": None,
-                "error": "PR identity changed after validation; refusing merge",
+                "error": (
+                    "PR identity changed after validation (head moved from "
+                    f"{expected_head_oid} to {current.head_oid}); refusing merge"
+                ),
+            }
+        if expected_base_ref is not None and current.base_ref != expected_base_ref:
+            return {
+                "success": False,
+                "sha": None,
+                "error": (
+                    "PR identity changed after validation (retargeted from "
+                    f"{expected_base_ref} to {current.base_ref}); refusing merge"
+                ),
             }
         expected_head_oid = current.head_oid
         flag = f"--{method}"
@@ -2357,22 +2458,35 @@ class GitManager:
         the remote branch has commits this HEAD does not, and the caller
         picks a different name rather than overwriting them.
         """
+        remote_ref_before = await self._aremote_ref_before_push(
+            checkout_path, branch, event_bus=event_bus
+        )
         tip = await self.apush_validated_ref(checkout_path, "HEAD", branch)
-        if event_bus is not None:
-            try:
-                await event_bus.emit(
-                    "git.push",
-                    {
-                        "branch": branch,
-                        "remote": "origin",
-                        "commit_range": tip,
-                        "project_id": project_id,
-                    },
-                )
-            except Exception:
-                logger.debug(
-                    "Failed to emit git.push event for %s", checkout_path, exc_info=True
-                )
+        await self._aemit_push_event(
+            checkout_path,
+            branch,
+            remote_ref_before,
+            tip,
+            event_bus=event_bus,
+            project_id=project_id,
+        )
+
+    async def _aresolve_delivery_tip(self, checkout_path: str, source: str) -> str:
+        """Resolve a delivery *source* to the one commit id that will be pushed.
+
+        A plain branch name is resolved as ``refs/heads/<name>`` so a
+        same-named tag cannot shadow it (see :func:`_delivery_source_rev`);
+        a missing branch fails closed rather than falling back to whatever
+        else carries the name.
+        """
+        rev = _delivery_source_rev(source)
+        try:
+            tip = (await self._arun(["rev-parse", "--verify", rev], cwd=checkout_path)).strip()
+        except GitError as e:
+            raise GitError(f"could not resolve delivery source {rev}: {e}") from e
+        if not _OID_RE.fullmatch(tip.lower()):
+            raise GitError(f"could not resolve immutable delivery tip for {source}")
+        return tip
 
     async def apush_validated_ref(
         self,
@@ -2390,9 +2504,7 @@ class GitManager:
         """
         source_ref = _validate_rev(source_ref, field="push source")
         branch = _validate_ref(branch)
-        tip = (await self._arun(["rev-parse", "--verify", source_ref], cwd=checkout_path)).strip()
-        if not _OID_RE.fullmatch(tip.lower()):
-            raise GitError(f"could not resolve immutable delivery tip for {source_ref}")
+        tip = await self._aresolve_delivery_tip(checkout_path, source_ref)
         args = ["push", "origin", f"{tip}:refs/heads/{branch}"]
         if force_with_lease:
             args.insert(2, "--force-with-lease")
@@ -2402,7 +2514,7 @@ class GitManager:
     async def apush_validated_delivery(
         self,
         checkout_path: str,
-        base_ref: str,
+        base_ref: str | None,
         source_ref: str,
         branch: str,
         *,
@@ -2415,34 +2527,38 @@ class GitManager:
         Resolve the source exactly once, diff that content-addressed OID from
         its target base, then use the same OID in the remote refspec. A later
         mutation of ``HEAD`` or a branch name is therefore irrelevant.
+
+        ``base_ref=None`` is a *root delivery*: the target branch has no base
+        on origin (a new default branch cut from a workspace whose recorded
+        default was never pushed), so there is no merge-base to diff from and
+        nothing on origin has vetted the tree. The reserved gate then covers
+        every tracked path in the tip (:meth:`areserved_paths_in_tree`).
         """
         source_ref = _validate_rev(source_ref, field="delivery source")
-        base_ref = _validate_rev(base_ref, field="delivery base")
+        if base_ref is not None:
+            base_ref = _validate_rev(base_ref, field="delivery base")
         branch = _validate_ref(branch)
-        tip = (
-            await self._arun(["rev-parse", "--verify", source_ref], cwd=checkout_path)
-        ).strip()
-        if not _OID_RE.fullmatch(tip.lower()):
-            raise GitError(f"could not resolve immutable delivery tip for {source_ref}")
-        paths = await self.areserved_paths_in_diff(checkout_path, base_ref, tip)
+        tip = await self._aresolve_delivery_tip(checkout_path, source_ref)
+        if base_ref is None:
+            paths = await self.areserved_paths_in_tree(checkout_path, tip)
+        else:
+            paths = await self.areserved_paths_in_diff(checkout_path, base_ref, tip)
         if paths:
             raise GitError("reserved delivery paths: " + ", ".join(paths))
+        remote_ref_before = await self._aremote_ref_before_push(
+            checkout_path, branch, event_bus=event_bus
+        )
         pushed = await self.apush_validated_ref(
             checkout_path, tip, branch, force_with_lease=force_with_lease
         )
-        if event_bus is not None:
-            try:
-                await event_bus.emit(
-                    "git.push",
-                    {
-                        "branch": branch,
-                        "remote": "origin",
-                        "commit_range": pushed,
-                        "project_id": project_id,
-                    },
-                )
-            except Exception:
-                logger.debug("Failed to emit git.push event for %s", checkout_path, exc_info=True)
+        await self._aemit_push_event(
+            checkout_path,
+            branch,
+            remote_ref_before,
+            pushed,
+            event_bus=event_bus,
+            project_id=project_id,
+        )
         return pushed
 
     async def alist_prs(
@@ -2597,7 +2713,10 @@ class GitManager:
 
         The REST PR-files endpoint is GitHub's merge-base PR diff and supports
         pagination. Re-reading the identity after that potentially long query
-        proves the inspected diff still belongs to the precise base/head pair.
+        proves the inspected diff still belongs to the precise head and target
+        branch.  The base branch's tip is not compared: it advances with every
+        concurrent delivery and does not change a merge-base diff (see
+        :attr:`PullRequestIdentity.pin`).
         """
         identity = await self.aget_pr_identity(checkout_path, pr_url)
         paths = await self._apr_changed_paths(checkout_path, identity)
@@ -2606,7 +2725,7 @@ class GitManager:
             raise GitError(
                 "PR changes reserved daemon bookkeeping paths: " + ", ".join(sorted(reserved))
             )
-        if await self.aget_pr_identity(checkout_path, pr_url) != identity:
+        if (await self.aget_pr_identity(checkout_path, pr_url)).pin != identity.pin:
             raise GitError("PR identity changed while its delivery diff was inspected")
         return identity
 
@@ -2730,6 +2849,22 @@ class GitManager:
             cwd=checkout_path,
         )
         return sorted(self._daemon_bookkeeping_paths(changed))
+
+    async def areserved_paths_in_tree(self, checkout_path: str, rev: str) -> list[str]:
+        """Return daemon-owned paths tracked anywhere in *rev*'s tree.
+
+        The root-delivery counterpart of :meth:`areserved_paths_in_diff`:
+        when a branch is published to a remote that holds no base for it,
+        every tracked path is new content from origin's point of view, so a
+        reserved path that a normal delivery would excuse as "unchanged on
+        the base" is here being published for the first time. Git failures
+        propagate, as for the diff gate.
+        """
+        rev = _validate_rev(rev, field="delivery tip")
+        listed = await self._arun(
+            ["ls-tree", "-r", "--name-only", "-z", rev, "--"], cwd=checkout_path
+        )
+        return sorted(self._daemon_bookkeeping_paths(listed))
 
     async def aget_current_branch(self, checkout_path: str) -> str:
         try:

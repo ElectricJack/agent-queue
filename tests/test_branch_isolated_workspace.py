@@ -277,6 +277,9 @@ class TestTwoAgentsAcquireBranchIsolated:
         mock_git.ahas_remote = AsyncMock(return_value=True)
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
         mock_git._arun = AsyncMock(return_value="")
+        mock_git.aget_git_path = AsyncMock(
+            side_effect=lambda checkout, path: os.path.join(checkout, ".git", path)
+        )
         mock_git.aforce_clean_workspace = AsyncMock(return_value=True)
         mock_git.make_branch_name = GitManager.make_branch_name
         mock_git.slugify = GitManager.slugify
@@ -761,6 +764,9 @@ class TestThreeOrMoreAgentsConcurrent:
         mock_git.ahas_remote = AsyncMock(return_value=True)
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
         mock_git._arun = AsyncMock(return_value="")
+        mock_git.aget_git_path = AsyncMock(
+            side_effect=lambda checkout, path: os.path.join(checkout, ".git", path)
+        )
         mock_git.aforce_clean_workspace = AsyncMock(return_value=True)
         mock_git.make_branch_name = GitManager.make_branch_name
         mock_git.slugify = GitManager.slugify
@@ -1218,6 +1224,9 @@ class TestGitMutexRegistration:
         mock_git.ahas_remote = AsyncMock(return_value=True)
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
         mock_git._arun = AsyncMock(return_value="")
+        mock_git.aget_git_path = AsyncMock(
+            side_effect=lambda checkout, path: os.path.join(checkout, ".git", path)
+        )
         mock_git.aforce_clean_workspace = AsyncMock(return_value=True)
         mock_git.make_branch_name = GitManager.make_branch_name
         mock_git.set_lock_provider = MagicMock()
@@ -1277,6 +1286,9 @@ class TestGitMutexRegistration:
         mock_git.ahas_remote = AsyncMock(return_value=True)
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
         mock_git._arun = AsyncMock(return_value="")
+        mock_git.aget_git_path = AsyncMock(
+            side_effect=lambda checkout, path: os.path.join(checkout, ".git", path)
+        )
         mock_git.aforce_clean_workspace = AsyncMock(return_value=True)
         mock_git.make_branch_name = GitManager.make_branch_name
         mock_git.set_lock_provider = MagicMock()

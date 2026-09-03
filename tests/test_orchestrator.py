@@ -152,12 +152,14 @@ async def session_orch(tmp_path):
     # Branch setup is not what these tests assert on, and the workspaces
     # below are bare directories rather than real clones.
     o.git = AsyncMock()
-    # ``_prepare_workspace`` writes the managed excludes at whatever path this
-    # returns.  Left as a bare AsyncMock it answers with a MagicMock, and the
-    # write lands in a stray ``AsyncMock/`` directory under the CWD.
+    # ``_prepare_workspace`` resolves Git's exclude path and the verify phase
+    # inspects the delivery diff.  A bare AsyncMock answers both with a mock:
+    # truthy (read as a reserved-path finding) and, via ``__fspath__``, a
+    # relative directory that ``ensure_git_exclude_path`` creates in the CWD.
     o.git.aget_git_path = AsyncMock(
-        side_effect=lambda cwd, path: os.path.join(cwd, ".git", path)
+        side_effect=lambda checkout, path: os.path.join(checkout, ".git", path)
     )
+    o.git.areserved_paths_in_diff = AsyncMock(return_value=[])
     o.harness_registry.upsert(
         Harness(
             id="claude",
@@ -1048,6 +1050,9 @@ class TestPrepareWorkspaceCleanDefault:
         mock_git.ahas_remote = AsyncMock(return_value=True)
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
         mock_git._arun = AsyncMock(return_value="")
+        mock_git.aget_git_path = AsyncMock(
+            side_effect=lambda checkout, path: os.path.join(checkout, ".git", path)
+        )
         orch.git = mock_git
 
         result = await orch._prepare_workspace(task, agent)
@@ -1083,6 +1088,9 @@ class TestPrepareWorkspaceCleanDefault:
         mock_git.aprepare_for_task = AsyncMock()
         mock_git.aswitch_to_branch = AsyncMock()
         mock_git._arun = AsyncMock(return_value="")
+        mock_git.aget_git_path = AsyncMock(
+            side_effect=lambda checkout, path: os.path.join(checkout, ".git", path)
+        )
         orch.git = mock_git
 
         await orch._prepare_workspace(task, agent)
@@ -1108,6 +1116,9 @@ class TestPrepareWorkspaceCleanDefault:
         mock_git.ahas_remote = AsyncMock(return_value=True)
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
         mock_git._arun = AsyncMock(return_value="")
+        mock_git.aget_git_path = AsyncMock(
+            side_effect=lambda checkout, path: os.path.join(checkout, ".git", path)
+        )
         orch.git = mock_git
 
         result = await orch._prepare_workspace(task, agent)
@@ -1162,15 +1173,10 @@ class TestPhaseVerifyNormalTask:
         mock_git.acount_commits_ahead = AsyncMock(return_value=1)
         mock_git._arun = AsyncMock(return_value="0")
         mock_git.acommit_all = AsyncMock(return_value=True)
-        mock_git.apush_branch = AsyncMock(return_value=None)
+        mock_git.apush_validated_delivery = AsyncMock(return_value="a" * 40)
         mock_git.aabort_in_progress_operations = AsyncMock()
         mock_git.aforce_clean_workspace = AsyncMock(return_value=True)
-        # The delivery guard runs before every merge and push in
-        # ``_phase_verify`` and fails closed.  Unstubbed, a spec'd
-        # AsyncMock answers with a truthy MagicMock, which the guard
-        # reads as "this delivery changes reserved daemon paths".
         mock_git.areserved_paths_in_diff = AsyncMock(return_value=[])
-        mock_git.apush_validated_delivery = AsyncMock(return_value="a" * 40)
         o.git = mock_git
 
         yield o
@@ -1558,15 +1564,10 @@ class TestPhaseVerifyApprovalTask:
         mock_git.acount_commits_ahead = AsyncMock(return_value=1)
         mock_git._arun = AsyncMock(return_value="0")
         mock_git.acommit_all = AsyncMock(return_value=True)
-        mock_git.apush_branch = AsyncMock(return_value=None)
+        mock_git.apush_validated_delivery = AsyncMock(return_value="a" * 40)
         mock_git.aabort_in_progress_operations = AsyncMock()
         mock_git.aforce_clean_workspace = AsyncMock(return_value=True)
-        # The delivery guard runs before every merge and push in
-        # ``_phase_verify`` and fails closed.  Unstubbed, a spec'd
-        # AsyncMock answers with a truthy MagicMock, which the guard
-        # reads as "this delivery changes reserved daemon paths".
         mock_git.areserved_paths_in_diff = AsyncMock(return_value=[])
-        mock_git.apush_validated_delivery = AsyncMock(return_value="a" * 40)
         o.git = mock_git
 
         yield o
@@ -1781,15 +1782,10 @@ class TestPhaseVerifyIntermediateSubtask:
         mock_git.acount_commits_ahead = AsyncMock(return_value=1)
         mock_git._arun = AsyncMock(return_value="0")
         mock_git.acommit_all = AsyncMock(return_value=True)
-        mock_git.apush_branch = AsyncMock(return_value=None)
+        mock_git.apush_validated_delivery = AsyncMock(return_value="a" * 40)
         mock_git.aabort_in_progress_operations = AsyncMock()
         mock_git.aforce_clean_workspace = AsyncMock(return_value=True)
-        # The delivery guard runs before every merge and push in
-        # ``_phase_verify`` and fails closed.  Unstubbed, a spec'd
-        # AsyncMock answers with a truthy MagicMock, which the guard
-        # reads as "this delivery changes reserved daemon paths".
         mock_git.areserved_paths_in_diff = AsyncMock(return_value=[])
-        mock_git.apush_validated_delivery = AsyncMock(return_value="a" * 40)
         o.git = mock_git
 
         yield o, sub1

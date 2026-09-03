@@ -23,7 +23,7 @@ import pytest
 from src.commands.handler import CommandHandler
 from src.config import AppConfig, DiscordConfig
 from src.database import Database
-from src.git.manager import PullRequestIdentity
+from src.git.manager import GitError, PullRequestIdentity
 from src.models import (
     AgentProfile,
     Project,
@@ -183,6 +183,23 @@ async def test_a_failed_merge_records_nothing(orch):
     )
 
     assert result["success"] is False
+    assert await orch.db.get_task_meta("t1", "pr_base") is None
+
+
+async def test_identity_validation_failure_fails_closed_before_merging(orch):
+    """A PR whose base/head pair cannot be validated is never merged."""
+    await _task_with_pr(orch.db)
+    orch.git.avalidate_pr_for_merge = AsyncMock(side_effect=GitError("head moved"))
+    orch.git.amerge_pr = AsyncMock()
+    orch.git.apr_base_ref = AsyncMock(return_value="main")
+
+    result = await orch.command_handler.execute(
+        "pr_merge", {"project_id": "p1", "pr_url": PR}
+    )
+
+    assert result["success"] is False
+    assert result["error"] == "Could not validate immutable PR delivery: head moved"
+    orch.git.amerge_pr.assert_not_awaited()
     assert await orch.db.get_task_meta("t1", "pr_base") is None
 
 

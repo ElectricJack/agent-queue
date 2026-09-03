@@ -108,6 +108,22 @@ class TestPushBranchForceWithLease:
         remote_branches = _git(["branch", "-r"], cwd=clone)
         assert "origin/feature/plain-push" in remote_branches
 
+    def test_push_pushes_the_branch_even_when_a_same_named_tag_exists(self, git_repo):
+        """``refs/heads/<name>`` is pushed, so a planted tag can neither shadow nor block."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+
+        _git(["checkout", "-b", "feature/shadowed"], cwd=clone)
+        branch_tip = _git_commit(clone, "file.txt", "content", "add file")
+        _git(["checkout", "--detach", "main"], cwd=clone)
+        decoy_tip = _git_commit(clone, "decoy.txt", "decoy", "decoy")
+        _git(["tag", "feature/shadowed", decoy_tip], cwd=clone)
+        _git(["checkout", "feature/shadowed"], cwd=clone)
+
+        mgr.push_branch(clone, "feature/shadowed")
+
+        assert _git(["rev-parse", "origin/feature/shadowed"], cwd=clone) == branch_tip
+
     def test_force_with_lease_push(self, git_repo):
         """With force_with_lease=True, push_branch uses --force-with-lease."""
         mgr = GitManager()
