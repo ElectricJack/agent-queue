@@ -431,7 +431,7 @@ class PlaybookEngine:
         refs: Sequence[ArtifactRef] = []
         pending: list[PendingEventRef] = []
         if self.activations is not None:
-            refs = await self.activations.ready_activations(event_type)
+            refs = await self.activations.ready_activations(event_type, hydrated)
 
         selected: list[str] = []
         run_ids: list[str] = []
@@ -813,7 +813,25 @@ class PlaybookEngine:
             existing = await repository.find_run_for_dispatch(dispatch_id, rule.id)
             if existing is None:  # pragma: no cover - the index said it exists
                 raise
-            return RunOutcome(existing.run_id, existing.lifecycle, "deduplicated", existing)
+            result_value = None
+            list_receipts = getattr(repository, "list_receipts", None)
+            if callable(list_receipts):
+                receipts = await list_receipts(existing.run_id)
+                result_value = next(
+                    (
+                        receipt.result["value"]
+                        for receipt in reversed(receipts)
+                        if "value" in receipt.result
+                    ),
+                    None,
+                )
+            return RunOutcome(
+                existing.run_id,
+                existing.lifecycle,
+                "deduplicated",
+                existing,
+                result_value=result_value,
+            )
 
         await self._emit(EVENT_RUN_STARTED, snapshot)
         if pause_before_start:
@@ -957,9 +975,27 @@ class PlaybookEngine:
             and receipt.iteration == iteration
             and receipt.completed_at is None
         ]
-        if not started:
+        marker = snapshot.context.get("_in_flight_attempt")
+        if started:
+            receipt = max(started, key=lambda item: item.attempt)
+        elif isinstance(marker, Mapping) and marker.get("step_id") == snapshot.current_step_id:
+            receipt = StepReceipt(
+                receipt_id=uuid.uuid4().hex,
+                run_id=snapshot.run_id,
+                artifact_sha256=snapshot.artifact_sha256,
+                rule_id=snapshot.rule_id,
+                step_id=snapshot.current_step_id,
+                step_kind=str(marker.get("step_kind") or "command"),
+                outcome="skipped",
+                started_at=float(marker.get("started_at") or self.services.clock()),
+                snapshot_version=snapshot.version,
+                iteration=int(marker.get("iteration", iteration)),
+                attempt=int(marker.get("attempt", 1)),
+                idempotency_key=str(marker.get("idempotency_key") or ""),
+                completed_at=None,
+            )
+        else:
             return snapshot, None
-        receipt = max(started, key=lambda item: item.attempt)
         step = artifact.steps.get(snapshot.current_step_id)
         if step is None:
             return snapshot, None
@@ -991,7 +1027,16 @@ class PlaybookEngine:
         if self._retry_safe_after_interruption(step):
             attempts = dict(snapshot.attempts)
             attempts[f"{receipt.step_id}:{iteration}"] = max(0, receipt.attempt - 1)
-            replayable = replace(snapshot, attempts=attempts, updated_at=now)
+            replayable = replace(
+                snapshot,
+                attempts=attempts,
+                context={
+                    key: value
+                    for key, value in snapshot.context.items()
+                    if key != "_in_flight_attempt"
+                },
+                updated_at=now,
+            )
             return await repository.commit_boundary(replayable, interrupted), "replay"
 
         attempts = dict(snapshot.attempts)
@@ -1008,6 +1053,11 @@ class PlaybookEngine:
             snapshot,
             lifecycle=RunLifecycle.PAUSED,
             attempts=attempts,
+            context={
+                key: value
+                for key, value in snapshot.context.items()
+                if key != "_in_flight_attempt"
+            },
             operator_decision=decision,
             error="operator_decision_required",
             error_code="operator_decision_required",
@@ -1851,8 +1901,54 @@ class PlaybookEngine:
         # 6. Execute.  An unexpected exception is runtime_error carrying the
         #    exception *type*; a message can carry an argument value.
         executor = executor_for(step.type, mode)
+        mark_started = getattr(repository, "mark_attempt_started", None)
+        marker = {
+            "step_id": step_id,
+            "step_kind": step.type,
+            "iteration": iteration,
+            "attempt": attempt.attempt,
+            "started_at": attempt.started_at,
+            "idempotency_key": attempt.idempotency_key,
+        }
         if control is not None:
-            control.in_flight = (executor, step, ctx)
+            # Cancellation latches before waiting for this lock.  Publishing
+            # the durable marker and the in-process executor handle under the
+            # same lock closes the gap where cancel could observe neither.
+            async with control.lock:
+                if control.pending_cancel is not None:
+                    cancel_principal, reason = control.pending_cancel
+                    current = await repository.load_run(snapshot.run_id) or snapshot
+                    cancelling = await self._request_cancel_latest(
+                        repository,
+                        current,
+                        reason=reason,
+                        principal=cancel_principal,
+                    )
+                    control.cancel_snapshot = cancelling
+                    return await finish(
+                        self._commit_cancellation(
+                            self._cancellation_attempt(
+                                cancelling, step, step_id, cancel_principal
+                            ),
+                            artifact_ref,
+                            repository,
+                            control,
+                            cancellation=CANCELLATION_ACKNOWLEDGED,
+                        )
+                    )
+                if callable(mark_started) and isinstance(
+                    step, (CommandStep, LlmStep, AgentTaskStep)
+                ):
+                    marked = await mark_started(attempt.snapshot, marker)
+                    snapshot = marked
+                    attempt.snapshot = marked
+                control.in_flight = (executor, step, ctx)
+        elif callable(mark_started) and isinstance(
+            step, (CommandStep, LlmStep, AgentTaskStep)
+        ):
+            marked = await mark_started(attempt.snapshot, marker)
+            snapshot = marked
+            attempt.snapshot = marked
         try:
             result = await executor.execute(step, ctx)
         except asyncio.CancelledError:
@@ -2378,6 +2474,11 @@ class PlaybookEngine:
             wait=self._next_wait(attempt),
             loop=self._next_loop(attempt),
             attempts=attempts,
+            context={
+                key: value
+                for key, value in snapshot.context.items()
+                if key != "_in_flight_attempt"
+            },
             budget=budget,
             error=attempt.error,
             error_code=(
@@ -2914,6 +3015,11 @@ class PlaybookEngine:
     async def _ref_for(self, snapshot: RunSnapshot) -> ArtifactRef:
         if self.activations is None:
             raise RuntimeError("resume requires an activation repository")
+        by_sha = getattr(self.activations, "artifact_by_sha", None)
+        if callable(by_sha):
+            ref = await by_sha(snapshot.artifact_sha256)
+            if ref is not None:
+                return ref
         for ref in await self.activations.ready_activations(snapshot.event_type):
             if ref.artifact_sha256 == snapshot.artifact_sha256:
                 return ref

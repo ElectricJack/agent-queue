@@ -31,7 +31,7 @@ def build() -> tuple[PlaybookEngine, ScriptedAdapter]:
                 bus=RaisingBus(),
             ),
             runs=RecordingRunRepository(),
-            activations=type("Activations", (), {"ready_activations": lambda _self, _event: _one(artifact_ref_for(artifact))})(),
+            activations=type("Activations", (), {"ready_activations": lambda _self, _event, _payload=None: _one(artifact_ref_for(artifact))})(),
         ),
         adapter,
     )
@@ -80,7 +80,7 @@ async def test_shadow_never_touches_command_llm_task_gate_preview_or_bus(entry_s
         bus=RaisingBus(),
     )
     engine.activations = type(
-        "Activations", (), {"ready_activations": lambda _self, _event: _one(artifact_ref_for(artifact))}
+        "Activations", (), {"ready_activations": lambda _self, _event, _payload=None: _one(artifact_ref_for(artifact))}
     )()
 
     result = await engine.dispatch_event(event("task-completed-code"), TRUSTED_LOCAL, mode=ExecutionMode.SHADOW)

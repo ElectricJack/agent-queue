@@ -1900,34 +1900,22 @@ class PlaybookCommandsMixin:
         results = []
         now = time.time()
 
-        list_v2_runs = getattr(self.db, "list_runs", None)
-        if callable(list_v2_runs):
+        if callable(getattr(type(self.db), "expire_due", None)):
             from src.commands.principal import ExecutionPrincipal
-            from src.playbooks.engine import TimerFired
-            from src.playbooks.run_state import RunSnapshot
+            from src.playbooks.engine import WaitScheduler
 
-            try:
-                v2_runs = await list_v2_runs(lifecycle="paused", limit=100)
-            except (AttributeError, TypeError):
-                v2_runs = []
-            engine = None
-            for snapshot in v2_runs:
-                if not isinstance(snapshot, RunSnapshot) or snapshot.deadline_at is None:
-                    continue
-                if snapshot.deadline_at > now:
-                    continue
-                engine = engine or self._v2_engine()
-                outcome = await engine.resume(
-                    snapshot.run_id,
-                    TimerFired(wait_id=snapshot.wait.wait_id if snapshot.wait else ""),
-                    ExecutionPrincipal.service("playbook-timeout"),
-                )
+            resumed = await WaitScheduler(
+                self._v2_engine(),
+                self.db,
+                ExecutionPrincipal.service("playbook-timeout"),
+            ).tick(now, limit=100)
+            for run_id in resumed:
                 results.append(
                     {
-                        "run_id": snapshot.run_id,
-                        "playbook_id": snapshot.playbook_id,
-                        "status": outcome.lifecycle.value,
-                        "timeout_seconds": max(0, int(now - snapshot.deadline_at)),
+                        "run_id": run_id,
+                        "playbook_id": None,
+                        "status": "resumed",
+                        "timeout_seconds": 0,
                         "on_timeout": None,
                     }
                 )

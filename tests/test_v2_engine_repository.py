@@ -22,7 +22,7 @@ from src.commands.contracts.models import CommandResult
 from src.commands.principal import TRUSTED_LOCAL
 from src.database import Database
 from src.database.tables import playbook_artifacts
-from src.playbooks.engine import HumanDecision, PlaybookEngine, WaitScheduler
+from src.playbooks.engine import HumanDecision, PlaybookEngine, TimerFired, WaitScheduler
 from src.playbooks.executors.base import EngineServices
 from src.playbooks.run_state import RunLifecycle
 from tests.fixtures.contracts.engine_contracts import (
@@ -146,6 +146,22 @@ async def test_the_bound_result_round_trips_through_the_snapshot(db):
     outcome = await engine.run_rule(ref, "review", event("task-completed-code"), TRUSTED_LOCAL)
     stored = await db.load_run(outcome.run_id)
     assert stored.bindings["review"] == {"task_id": "t-1", "created": True}
+    assert "_in_flight_attempt" not in stored.context
+
+
+@pytest.mark.asyncio
+async def test_external_work_is_fenced_before_the_executor_returns(db):
+    engine, adapter, ref, _bus = await build(db)
+    adapter.queue.append(asyncio.CancelledError())
+
+    with pytest.raises(asyncio.CancelledError):
+        await engine.run_rule(
+            ref, "review", event("task-completed-code"), TRUSTED_LOCAL
+        )
+
+    [stored] = await db.list_runs(playbook_id=ref.playbook_id)
+    assert stored.context["_in_flight_attempt"]["step_id"] == "ensure-review-task"
+    assert stored.version == 1
 
 
 @pytest.mark.asyncio
@@ -268,6 +284,22 @@ async def test_an_expired_wait_is_claimed_once_and_resumes_the_run(db):
     assert stored.current_step_id == "sleep-done"
     # The claim is a compare-and-set, so a second sweep finds nothing.
     assert await scheduler.tick(NOW + 60) == ()
+
+
+@pytest.mark.asyncio
+async def test_an_expired_wait_claim_is_recovered_after_scheduler_restart(db):
+    engine, _adapter, ref = await build_for(db, "wait-kinds.artifact.json")
+    await engine.run_rule(ref, "sleep", event("task-created"), TRUSTED_LOCAL)
+
+    [first] = await db.expire_due(NOW + 31)
+    [recovered] = await db.expire_due(NOW + 32)
+    assert recovered.wait_id == first.wait_id
+
+    resumed = await engine.resume(
+        recovered.run_id, TimerFired(recovered.wait_id), TRUSTED_LOCAL
+    )
+    assert resumed.lifecycle is RunLifecycle.COMPLETED
+    assert await db.expire_due(NOW + 60) == []
 
 
 @pytest.mark.asyncio

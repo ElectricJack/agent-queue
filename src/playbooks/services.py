@@ -37,18 +37,37 @@ class DatabaseActivationSource:
     def __init__(self, db: Any) -> None:
         self._db = db
 
-    async def ready_activations(self, _event_type: str) -> list[Any]:
+    async def ready_activations(
+        self, _event_type: str, event: Any | None = None
+    ) -> list[Any]:
         rows = await self._db.list_playbook_activations(enabled_only=True)
         refs: list[Any] = []
+        event = event or {}
+        project_id = event.get("project_id")
+        agent_type = event.get("agent_type")
         for row in rows:
             health = getattr(row.get("health"), "value", row.get("health"))
             artifact_sha256 = row.get("active_artifact_sha256")
             if health != "ready" or not artifact_sha256:
                 continue
+            scope = row.get("scope")
+            identifier = row.get("scope_identifier") or ""
+            if scope == "project" and identifier != project_id:
+                continue
+            if scope == "agent_type" and (
+                project_id is None or identifier != agent_type
+            ):
+                continue
+            if scope not in {"system", "project", "agent_type"}:
+                continue
             ref = await self._db.get_playbook_artifact(artifact_sha256)
             if ref is not None:
                 refs.append(ref)
         return refs
+
+    async def artifact_by_sha(self, artifact_sha256: str) -> Any | None:
+        """Resolve an immutable artifact independently of current activation."""
+        return await self._db.get_playbook_artifact(artifact_sha256)
 
     async def artifact_for(
         self, playbook_id: str, *, scope_identifier: str | None = None
@@ -86,6 +105,10 @@ def build_v2_engine(
     from src.playbooks.engine import PlaybookEngine
     from src.playbooks.executors.base import EngineServices
 
+    cached = getattr(handler, "__dict__", {}).get("_v2_playbook_engine")
+    if cached is not None:
+        return cached
+
     playbooks = config.playbooks
     services = EngineServices(
         contracts=CONTRACTS,
@@ -103,7 +126,7 @@ def build_v2_engine(
             getattr(config, "security", None), "capability_enforcement", "audit"
         ),
     )
-    return PlaybookEngine(
+    engine = PlaybookEngine(
         services=services,
         runs=db,
         waits=db,
@@ -111,6 +134,11 @@ def build_v2_engine(
         max_step_visits=playbooks.v2_dry_run_max_step_visits,
         cancellation_grace_seconds=playbooks.cancellation_grace_seconds,
     )
+    try:
+        setattr(handler, "_v2_playbook_engine", engine)
+    except (AttributeError, TypeError):
+        pass
+    return engine
 
 
 async def load_v2_snapshot(db: Any, run_id: str) -> Any | None:

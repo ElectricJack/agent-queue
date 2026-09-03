@@ -174,8 +174,15 @@ class StubActivations:
         self.pending = list(pending)
         self.queued: list[tuple[str, dict[str, Any]]] = []
 
-    async def ready_activations(self, event_type: str) -> list[ArtifactRef]:
+    async def ready_activations(
+        self, event_type: str, event: Mapping[str, Any] | None = None
+    ) -> list[ArtifactRef]:
         return [ref for ref in self.refs if ref.playbook_id not in self.pending]
+
+    async def artifact_by_sha(self, artifact_sha256: str) -> ArtifactRef | None:
+        return next(
+            (ref for ref in self.refs if ref.artifact_sha256 == artifact_sha256), None
+        )
 
     async def queue_pending_event(self, playbook_id: str, event: Mapping[str, Any]) -> None:
         self.queued.append((playbook_id, dict(event)))
