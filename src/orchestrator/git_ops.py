@@ -915,7 +915,7 @@ class GitOpsMixin:
                     pr_url = await self.git.afind_open_pr(
                         workspace,
                         pr_delivery_branch,
-                        include_workspace_head=pr_delivery_branch != task.branch_name,
+                        include_workspace_head=False,
                     )
                     if pr_url:
                         ctx.pr_url = pr_url

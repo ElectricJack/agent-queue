@@ -262,8 +262,30 @@ class TestPhaseVerifyByMode:
         assert await orch._phase_verify(ctx) == PhaseResult.CONTINUE
         assert ctx.pr_url == "https://github.com/org/repo/pull/alt"
         orch.git.afind_open_pr.assert_awaited_once_with(
-            ws.workspace_path, "feature/delivery", include_workspace_head=True
+            ws.workspace_path, "feature/delivery", include_workspace_head=False
         )
+
+    async def test_pr_mode_rejects_a_stale_pr_for_an_alternate_delivery_branch(self, orch):
+        """An alternate branch's PR must deliver its current tip, too."""
+        task = _pr_task("t-pr-stale-alternate", branch_name="aq/t-pr-stale-alternate")
+        await orch.db.create_task(task)
+        orch.git.aget_current_branch = AsyncMock(return_value="feature/delivery")
+        orch.git.acount_commits_ahead = AsyncMock(side_effect=[0, 1])
+        orch.git.ais_ancestor = AsyncMock(return_value=False)
+
+        async def find_open_pr(_workspace, _branch, *, include_workspace_head=True):
+            if include_workspace_head:
+                return "https://github.com/org/repo/pull/stale-alt"
+            return None
+
+        orch.git.afind_open_pr = find_open_pr
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = _ctx(orch, task, ws.workspace_path)
+        ctx.close_session_live = True
+
+        assert await orch._phase_verify(ctx) == PhaseResult.STOP
+        assert ctx.verification_retry_in_session is True
+        assert any("No open PR" in issue for issue in ctx.verification_issues)
 
     async def test_direct_mode_auto_merges_to_default(self, orch):
         task = _direct_task()
