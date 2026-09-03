@@ -263,6 +263,27 @@ class ListPlaybookArtifactsResponse(V2Model):
     active_artifact_sha256: str | None = None
 
 
+class PendingEventReplayDTO(V2Model):
+    """What ``playbooks.v2_pending_event_replay_on_activation`` did here.
+
+    Always present on an activation response, including under the default
+    ``manual`` policy, so an empty backlog and a policy that never looked at
+    one are distinguishable without reading the daemon's config.
+    ``refused_reason`` is the fail-closed path: the policy is ``automatic``
+    but the activation was not a ready, enabled one — most importantly
+    ``question_required``, where an unreviewed playbook may not auto-consume
+    a backlog.
+    """
+
+    policy: Literal["manual", "automatic"] = "manual"
+    replayed: bool = False
+    refused_reason: str | None = None
+    considered: int = 0
+    dispatched_run_ids: list[str] = []
+    skipped: list[str] = []
+    errors: list[str] = []
+
+
 class SetPlaybookActivationResponse(V2Model):
     success: bool = True
     activation: ActivationStateDTO
@@ -270,6 +291,7 @@ class SetPlaybookActivationResponse(V2Model):
     changed: bool = False
     blocked: bool = False
     blockers: list[str] = []  # non-empty only when blocked
+    pending_event_replay: PendingEventReplayDTO = PendingEventReplayDTO()
 
 
 # ---------------------------------------------------------------------------

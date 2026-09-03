@@ -573,6 +573,8 @@ from .pause_task_response_422 import PauseTaskResponse422
 from .pending_event_dto import PendingEventDTO
 from .pending_event_dto_event import PendingEventDTOEvent
 from .pending_event_dto_reason import PendingEventDTOReason
+from .pending_event_replay_dto import PendingEventReplayDTO
+from .pending_event_replay_dto_policy import PendingEventReplayDTOPolicy
 from .playbook_activate_request import PlaybookActivateRequest
 from .playbook_activate_response_422 import PlaybookActivateResponse422
 from .playbook_activation_health_request import PlaybookActivationHealthRequest
@@ -1665,6 +1667,8 @@ __all__ = (
     "PendingEventDTO",
     "PendingEventDTOEvent",
     "PendingEventDTOReason",
+    "PendingEventReplayDTO",
+    "PendingEventReplayDTOPolicy",
     "PlaybookActivateRequest",
     "PlaybookActivateResponse422",
     "PlaybookActivationHealthRequest",

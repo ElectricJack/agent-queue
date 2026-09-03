@@ -28473,6 +28473,68 @@
         ],
         "title": "PendingEventDTO"
       },
+      "PendingEventReplayDTO": {
+        "properties": {
+          "policy": {
+            "type": "string",
+            "enum": [
+              "manual",
+              "automatic"
+            ],
+            "title": "Policy",
+            "default": "manual"
+          },
+          "replayed": {
+            "type": "boolean",
+            "title": "Replayed",
+            "default": false
+          },
+          "refused_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Refused Reason"
+          },
+          "considered": {
+            "type": "integer",
+            "title": "Considered",
+            "default": 0
+          },
+          "dispatched_run_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Dispatched Run Ids",
+            "default": []
+          },
+          "skipped": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Skipped",
+            "default": []
+          },
+          "errors": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Errors",
+            "default": []
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "PendingEventReplayDTO",
+        "description": "What ``playbooks.v2_pending_event_replay_on_activation`` did here.\n\nAlways present on an activation response, including under the default\n``manual`` policy, so an empty backlog and a policy that never looked at\none are distinguishable without reading the daemon's config.\n``refused_reason`` is the fail-closed path: the policy is ``automatic``\nbut the activation was not a ready, enabled one \u2014 most importantly\n``question_required``, where an unreviewed playbook may not auto-consume\na backlog."
+      },
       "PlaybookActivateRequest": {
         "properties": {
           "playbook_id": {
@@ -36370,6 +36432,17 @@
             "type": "array",
             "title": "Blockers",
             "default": []
+          },
+          "pending_event_replay": {
+            "$ref": "#/components/schemas/PendingEventReplayDTO",
+            "default": {
+              "policy": "manual",
+              "replayed": false,
+              "considered": 0,
+              "dispatched_run_ids": [],
+              "skipped": [],
+              "errors": []
+            }
           }
         },
         "additionalProperties": false,

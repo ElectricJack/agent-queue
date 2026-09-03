@@ -468,3 +468,367 @@ def test_an_unknown_overflow_policy_does_not_break_the_daemon(caplog):
     )
 
     assert repository.playbook_pending_event_overflow() == DEFAULT_PENDING_EVENT_OVERFLOW
+
+
+# -- 9b: the automatic policy at activation time -----------------------------
+#
+# The config key is only half the property: refusing `automatic` in
+# validation is worth nothing while no runtime path reads the setting.  These
+# cover the other half — what `playbook_activate` actually does with a backlog
+# under each policy, and the production caller that hands live activation
+# health to `PlaybooksConfig.validate()`.
+
+
+def _activation_record(ref, *, health, enabled=True):
+    from src.playbooks.activation import ActivationHealth, ActivationHealthRecord
+
+    return ActivationHealthRecord(
+        "activation-1",
+        ref.playbook_id,
+        "system",
+        "",
+        enabled,
+        ref.artifact_sha256,
+        ActivationHealth(health),
+        (),
+        activated_by="operator",
+    )
+
+
+def _activation_handler(*, policy, health="ready", enabled=True, held=(), quota=1000):
+    """``playbook_activate`` over doubles, with a backlog behind the artifact."""
+    from tests.test_api_playbook_v2_commands import _backend_fixture
+    from tests.test_playbook_activation_commands import _Handler
+
+    definition, ref, _activation = _backend_fixture()
+    refreshed = _activation_record(ref, health=health, enabled=enabled)
+    handler = _Handler(definition, ref, [[], [refreshed]])
+    handler.config = SimpleNamespace(
+        playbooks=PlaybooksConfig(
+            v2_api=True,
+            v2_storage_enabled=True,
+            v2_activation_writes=True,
+            v2_pending_event_replay_on_activation=policy,
+            v2_max_pending_events_per_playbook=quota,
+        )
+    )
+    handler.db.list_pending_events = AsyncMock(return_value=[dict(row) for row in held])
+    handler.db.claim_pending_event_dispatch = AsyncMock(return_value="claim-1")
+    handler.db.renew_pending_event_dispatch_claim = AsyncMock(return_value=True)
+    handler.db.finalize_pending_event_dispatch = AsyncMock(return_value=True)
+    handler.db.record_pending_event_dispatch_failure = AsyncMock(return_value=True)
+    engine = MagicMock()
+    engine.dispatch_event = AsyncMock(
+        return_value=SimpleNamespace(run_ids=("run-1",), rules_selected=("r",))
+    )
+    handler._v2_engine = MagicMock(return_value=engine)
+    return handler, engine, definition, ref
+
+
+async def _activate(handler, definition, ref, **extra):
+    args = {
+        "playbook_id": definition.id,
+        "artifact_sha256": ref.artifact_sha256,
+        "acknowledge_diff": ref.artifact_sha256,
+    }
+    args.update(extra)
+    return await handler._cmd_playbook_activate(args)
+
+
+def _held(event_id, **overrides):
+    row = {
+        "pending_event_id": event_id,
+        "playbook_id": "default-pipeline",
+        "event": {"event_type": "task.completed", "event_id": event_id},
+    }
+    row.update(overrides)
+    return row
+
+
+async def test_manual_policy_leaves_the_backlog_for_the_operator():
+    """The default policy does not touch held events, and says so."""
+    handler, engine, definition, ref = _activation_handler(
+        policy="manual", held=[_held("event-1")]
+    )
+
+    result = await _activate(handler, definition, ref)
+
+    assert result["blocked"] is False
+    replay = result["pending_event_replay"]
+    assert replay == {
+        "policy": "manual",
+        "replayed": False,
+        "refused_reason": None,
+        "considered": 0,
+        "dispatched_run_ids": [],
+        "skipped": [],
+        "errors": [],
+    }
+    handler.db.list_pending_events.assert_not_awaited()
+    engine.dispatch_event.assert_not_awaited()
+
+
+async def test_automatic_policy_consumes_the_backlog_on_activation():
+    """``automatic`` is what the config docstring says it is: activation drains."""
+    handler, engine, definition, ref = _activation_handler(
+        policy="automatic", held=[_held("event-1"), _held("event-2")]
+    )
+
+    result = await _activate(handler, definition, ref)
+
+    replay = result["pending_event_replay"]
+    assert replay["policy"] == "automatic"
+    assert replay["replayed"] is True
+    assert replay["refused_reason"] is None
+    assert replay["considered"] == 2
+    assert replay["dispatched_run_ids"] == ["run-1", "run-1"]
+    assert replay["errors"] == []
+    # Each row went through the durable claim and was finalised, not merely
+    # dispatched — a replay that does not consume its row replays forever.
+    assert handler.db.claim_pending_event_dispatch.await_count == 2
+    assert handler.db.finalize_pending_event_dispatch.await_count == 2
+    assert engine.dispatch_event.await_count == 2
+
+
+async def test_automatic_replay_is_a_fresh_dispatch_of_the_stripped_payload():
+    """The activation replay re-enters the same guarded path as the manual one."""
+    handler, engine, definition, ref = _activation_handler(
+        policy="automatic",
+        held=[
+            _held(
+                "event-1",
+                event={
+                    "event_type": "task.completed",
+                    "task_id": "t1",
+                    "_principal": {"kind": "trusted_local"},
+                    "_capabilities": {"aq_commands": ["*"]},
+                },
+            )
+        ],
+    )
+
+    await _activate(handler, definition, ref)
+
+    replayed = engine.dispatch_event.await_args.args[0]
+    assert set(replayed) == {"event_type", "task_id"}
+    for key in SERVER_OWNED_ARG_KEYS:
+        assert key not in replayed
+    # Matching is re-run against the playbook that was just activated.
+    assert engine.dispatch_event.await_args.kwargs["playbook_ids"] == ["default-pipeline"]
+
+
+async def test_automatic_replay_is_refused_for_a_question_required_activation():
+    """Fail-closed: an unreviewed playbook may not auto-consume a backlog."""
+    from src.commands.playbook_v2_commands import PENDING_EVENT_REPLAY_UNREVIEWED_REFUSAL
+
+    handler, engine, definition, ref = _activation_handler(
+        policy="automatic", health="question_required", held=[_held("event-1")]
+    )
+
+    result = await _activate(handler, definition, ref)
+
+    assert result["blocked"] is False  # the artifact is live; only the replay is refused
+    replay = result["pending_event_replay"]
+    assert replay["replayed"] is False
+    assert replay["refused_reason"] == PENDING_EVENT_REPLAY_UNREVIEWED_REFUSAL
+    assert "question_required" in replay["refused_reason"]
+    handler.db.list_pending_events.assert_not_awaited()
+    engine.dispatch_event.assert_not_awaited()
+    handler.db.claim_pending_event_dispatch.assert_not_awaited()
+
+
+async def test_automatic_replay_is_refused_for_a_disabled_activation():
+    from src.commands.playbook_v2_commands import PENDING_EVENT_REPLAY_DISABLED_REFUSAL
+
+    handler, engine, definition, ref = _activation_handler(
+        policy="automatic", enabled=False, held=[_held("event-1")]
+    )
+
+    result = await _activate(handler, definition, ref, enabled=False)
+
+    replay = result["pending_event_replay"]
+    assert replay["replayed"] is False
+    assert replay["refused_reason"] == PENDING_EVENT_REPLAY_DISABLED_REFUSAL
+    engine.dispatch_event.assert_not_awaited()
+
+
+@pytest.mark.parametrize("health", ["stale_contract", "invalid", "unavailable"])
+async def test_automatic_replay_requires_a_ready_activation(health):
+    """Only ``ready`` may drain: a stale or broken artifact is not a review."""
+    handler, engine, definition, ref = _activation_handler(
+        policy="automatic", health=health, held=[_held("event-1")]
+    )
+
+    result = await _activate(handler, definition, ref)
+
+    replay = result["pending_event_replay"]
+    assert replay["replayed"] is False
+    assert health in replay["refused_reason"]
+    engine.dispatch_event.assert_not_awaited()
+
+
+async def test_automatic_replay_is_bounded_by_the_pending_event_quota():
+    """An activation may not become an unbounded dispatch storm."""
+    handler, _engine, definition, ref = _activation_handler(
+        policy="automatic", held=[_held("event-1")], quota=7
+    )
+
+    await _activate(handler, definition, ref)
+
+    kwargs = handler.db.list_pending_events.await_args.kwargs
+    assert kwargs["limit"] == 7
+    assert kwargs["playbook_id"] == "default-pipeline"
+    assert kwargs["include_resolved"] is False
+
+
+async def test_automatic_replay_reports_a_failed_dispatch_without_losing_the_row():
+    """A replay failure is reported; the row is restored, not consumed."""
+    handler, engine, definition, ref = _activation_handler(
+        policy="automatic", held=[_held("event-1")]
+    )
+    engine.dispatch_event.side_effect = RuntimeError("executor exploded")
+
+    result = await _activate(handler, definition, ref)
+
+    replay = result["pending_event_replay"]
+    assert replay["replayed"] is True
+    assert replay["dispatched_run_ids"] == []
+    assert replay["errors"] == ["event-1: executor exploded"]
+    handler.db.record_pending_event_dispatch_failure.assert_awaited_once()
+    handler.db.finalize_pending_event_dispatch.assert_not_awaited()
+    # The activation itself still succeeded — the artifact is live either way.
+    assert result["success"] is True
+    assert result["blocked"] is False
+
+
+async def test_automatic_replay_skips_a_row_another_operator_holds():
+    handler, engine, definition, ref = _activation_handler(
+        policy="automatic", held=[_held("event-1")]
+    )
+    handler.db.claim_pending_event_dispatch = AsyncMock(return_value=None)
+
+    result = await _activate(handler, definition, ref)
+
+    replay = result["pending_event_replay"]
+    assert replay["skipped"] == ["event-1"]
+    assert replay["dispatched_run_ids"] == []
+    engine.dispatch_event.assert_not_awaited()
+
+
+async def test_blocked_activation_never_replays():
+    """No activation, no replay — and the response says which refusal it was."""
+    from src.commands.playbook_v2_commands import PENDING_EVENT_REPLAY_BLOCKED_REFUSAL
+
+    handler, engine, definition, ref = _activation_handler(
+        policy="automatic", held=[_held("event-1")]
+    )
+
+    # No ``acknowledge_diff`` — the executable-change blocker fires.
+    result = await handler._cmd_playbook_activate(
+        {"playbook_id": definition.id, "artifact_sha256": ref.artifact_sha256}
+    )
+
+    assert result["blocked"] is True
+    replay = result["pending_event_replay"]
+    assert replay["replayed"] is False
+    assert replay["refused_reason"] == PENDING_EVENT_REPLAY_BLOCKED_REFUSAL
+    engine.dispatch_event.assert_not_awaited()
+
+
+# -- 9c: the production caller for activation-aware config validation ---------
+
+
+def _doctor_ctx(policy, healths):
+    """A doctor context whose activation health is fixed by the test."""
+    from src.doctor.models import DoctorContext
+    from tests.playbook_v2_helpers import StubContracts, StubProfiles
+
+    async def _v2_lookups():
+        return StubContracts(), StubProfiles(), None
+
+    records = [
+        SimpleNamespace(playbook_id=playbook_id, health=SimpleNamespace(value=health))
+        for playbook_id, health in healths.items()
+    ]
+
+    async def _load(db, **kwargs):
+        return records
+
+    return (
+        DoctorContext(
+            config=SimpleNamespace(
+                playbooks=PlaybooksConfig(
+                    v2_storage_enabled=True,
+                    v2_pending_event_replay_on_activation=policy,
+                )
+            ),
+            db=SimpleNamespace(list_playbook_activations=AsyncMock(return_value=[])),
+            handler=SimpleNamespace(_v2_lookups=_v2_lookups),
+        ),
+        _load,
+    )
+
+
+async def test_doctor_reports_automatic_replay_against_an_unreviewed_activation(monkeypatch):
+    """The missing production caller: config validation against live rows."""
+    import src.playbooks.activation as activation_module
+    from src.doctor.models import Severity
+    from src.doctor.playbook_v2_checks import (
+        REPLAY_POLICY_CHECK_ID,
+        _check_pending_event_replay_policy,
+    )
+
+    ctx, load = _doctor_ctx(
+        "automatic", {"default-pipeline": "question_required", "coding-reflection": "ready"}
+    )
+    monkeypatch.setattr(activation_module, "load_activation_health", load)
+
+    result = await _check_pending_event_replay_policy(ctx)
+
+    assert result.id == REPLAY_POLICY_CHECK_ID
+    assert result.severity is Severity.ERROR
+    assert "default-pipeline" in result.detail
+    assert "coding-reflection" not in result.detail
+    assert result.data["question_required"] == ["default-pipeline"]
+    assert result.fixable is False
+
+
+async def test_doctor_is_ok_when_every_activation_is_reviewed(monkeypatch):
+    import src.playbooks.activation as activation_module
+    from src.doctor.models import Severity
+    from src.doctor.playbook_v2_checks import _check_pending_event_replay_policy
+
+    ctx, load = _doctor_ctx("automatic", {"default-pipeline": "ready"})
+    monkeypatch.setattr(activation_module, "load_activation_health", load)
+
+    result = await _check_pending_event_replay_policy(ctx)
+
+    assert result.severity is Severity.OK
+    assert result.data["checked"] == 1
+
+
+async def test_doctor_does_not_read_activations_under_the_manual_policy(monkeypatch):
+    import src.playbooks.activation as activation_module
+    from src.doctor.models import Severity
+    from src.doctor.playbook_v2_checks import _check_pending_event_replay_policy
+
+    ctx, _load = _doctor_ctx("manual", {"default-pipeline": "question_required"})
+
+    def _explode(*args, **kwargs):  # pragma: no cover - must not be reached
+        raise AssertionError("manual policy must not need activation health")
+
+    monkeypatch.setattr(activation_module, "load_activation_health", _explode)
+
+    result = await _check_pending_event_replay_policy(ctx)
+
+    assert result.severity is Severity.OK
+    assert result.data["policy"] == "manual"
+
+
+def test_replay_policy_check_is_registered_in_the_default_doctor_registry():
+    from src.doctor import default_registry
+    from src.doctor.playbook_v2_checks import REPLAY_POLICY_CHECK_ID
+
+    registry = default_registry()
+    check = next(c for c in registry.checks() if c.id == REPLAY_POLICY_CHECK_ID)
+    assert check.fix is None
