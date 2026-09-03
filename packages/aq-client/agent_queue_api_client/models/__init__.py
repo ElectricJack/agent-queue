@@ -542,6 +542,12 @@ from .message_status_response import MessageStatusResponse
 from .message_status_response_422 import MessageStatusResponse422
 from .metrics_sample import MetricsSample
 from .metrics_series_response import MetricsSeriesResponse
+from .migration_ack_dto import MigrationAckDTO
+from .migration_disposition_counts_dto import MigrationDispositionCountsDTO
+from .migration_inventory_entry_dto import MigrationInventoryEntryDTO
+from .migration_inventory_entry_dto_disposition import MigrationInventoryEntryDTODisposition
+from .migration_reason_dto import MigrationReasonDTO
+from .migration_source_ref_dto import MigrationSourceRefDTO
 from .model_tokens import ModelTokens
 from .node_advanced_dto import NodeAdvancedDTO
 from .node_advanced_dto_result_schema_type_0 import NodeAdvancedDTOResultSchemaType0
@@ -606,6 +612,14 @@ from .playbook_install_request import PlaybookInstallRequest
 from .playbook_install_response import PlaybookInstallResponse
 from .playbook_install_response_422 import PlaybookInstallResponse422
 from .playbook_last_run import PlaybookLastRun
+from .playbook_migration_ack_response import PlaybookMigrationAckResponse
+from .playbook_migration_acknowledge_request import PlaybookMigrationAcknowledgeRequest
+from .playbook_migration_acknowledge_response_422 import PlaybookMigrationAcknowledgeResponse422
+from .playbook_migration_inventory_request import PlaybookMigrationInventoryRequest
+from .playbook_migration_inventory_response import PlaybookMigrationInventoryResponse
+from .playbook_migration_inventory_response_422 import PlaybookMigrationInventoryResponse422
+from .playbook_migration_unacknowledge_request import PlaybookMigrationUnacknowledgeRequest
+from .playbook_migration_unacknowledge_response_422 import PlaybookMigrationUnacknowledgeResponse422
 from .playbook_node_llm_config import PlaybookNodeLlmConfig
 from .playbook_pending_event_action_request import PlaybookPendingEventActionRequest
 from .playbook_pending_event_action_response import PlaybookPendingEventActionResponse
@@ -1598,6 +1612,12 @@ __all__ = (
     "MessageStatusResponse422",
     "MetricsSample",
     "MetricsSeriesResponse",
+    "MigrationAckDTO",
+    "MigrationDispositionCountsDTO",
+    "MigrationInventoryEntryDTO",
+    "MigrationInventoryEntryDTODisposition",
+    "MigrationReasonDTO",
+    "MigrationSourceRefDTO",
     "ModelTokens",
     "NodeAdvancedDTO",
     "NodeAdvancedDTOResultSchemaType0",
@@ -1662,6 +1682,14 @@ __all__ = (
     "PlaybookInstallResponse",
     "PlaybookInstallResponse422",
     "PlaybookLastRun",
+    "PlaybookMigrationAcknowledgeRequest",
+    "PlaybookMigrationAcknowledgeResponse422",
+    "PlaybookMigrationAckResponse",
+    "PlaybookMigrationInventoryRequest",
+    "PlaybookMigrationInventoryResponse",
+    "PlaybookMigrationInventoryResponse422",
+    "PlaybookMigrationUnacknowledgeRequest",
+    "PlaybookMigrationUnacknowledgeResponse422",
     "PlaybookNodeLlmConfig",
     "PlaybookPendingEventActionRequest",
     "PlaybookPendingEventActionResponse",

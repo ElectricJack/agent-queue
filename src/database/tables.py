@@ -1334,6 +1334,26 @@ playbook_pending_events = Table(
     Index("idx_playbook_pending_events_expiry", "expires_at"),
 )
 
+playbook_migration_acks = Table(
+    "playbook_migration_acks",
+    metadata,
+    # Package 6 of the Playbook V2 roadmap: an operator's written waiver that a
+    # playbook cannot be migrated to V2 and the fleet may cut over without it.
+    # Keyed by the source hash so any edit to the authoring Markdown silently
+    # invalidates the waiver rather than letting it outlive its justification.
+    Column("playbook_id", Text, primary_key=True),
+    Column("scope", Text, primary_key=True),
+    # System- and supervisor-scoped rows store '', never NULL: a nullable
+    # primary-key column is illegal on PostgreSQL.
+    Column("scope_identifier", Text, primary_key=True, server_default=""),
+    Column("source_sha256", Text, nullable=False),
+    Column("reason", Text, nullable=False),
+    Column("acknowledged_by", Text, nullable=False),
+    Column("acknowledged_at", Float, nullable=False),
+    CheckConstraint("length(reason) >= 12", name="ck_playbook_migration_acks_reason"),
+    Index("idx_playbook_migration_acks_source", "source_sha256"),
+)
+
 task_assignment_routes = Table(
     "task_assignment_routes",
     metadata,

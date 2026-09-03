@@ -145,6 +145,10 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "playbook_v2_validate": "playbook",
     "playbook_v2_propose": "playbook",
     "playbook_v2_shadow_compile": "playbook",
+    # playbook V1->V2 migration readiness -- Package 6
+    "playbook_migration_inventory": "playbook",
+    "playbook_migration_acknowledge": "playbook",
+    "playbook_migration_unacknowledge": "playbook",
     # plugin — installation, configuration, lifecycle
     "plugin_list": "plugin",
     "plugin_info": "plugin",
@@ -5294,6 +5298,69 @@ _ALL_TOOL_DEFINITIONS = [
                     "description": "Optional source-scope filter.",
                 }
             },
+        },
+    },
+    {
+        "name": "playbook_migration_inventory",
+        "description": (
+            "Report every installed playbook's V1->V2 migration readiness: its "
+            "disposition (ready, question_required, invalid, disabled), the "
+            "operator-facing reasons behind it, the active V2 artifact and its "
+            "activation health. Read-only: it never compiles, activates or "
+            "writes anything."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "disposition": {
+                    "type": "string",
+                    "enum": ["ready", "question_required", "invalid", "disabled"],
+                    "description": "Optional filter; counts always describe the whole fleet.",
+                }
+            },
+        },
+    },
+    {
+        "name": "playbook_migration_acknowledge",
+        "description": (
+            "Record a written operator waiver that one playbook cannot be "
+            "migrated to V2, so cutover may proceed without it. Operator-only. "
+            "The waiver binds to the source bytes present now, so editing the "
+            "authoring markdown invalidates it."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "playbook_id": {
+                    "type": "string",
+                    "description": "The playbook's frontmatter id.",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": (
+                        "Why this playbook cannot migrate. At least 12 characters; "
+                        "an empty waiver is not a waiver."
+                    ),
+                },
+            },
+            "required": ["playbook_id", "reason"],
+        },
+    },
+    {
+        "name": "playbook_migration_unacknowledge",
+        "description": (
+            "Withdraw a migration waiver. The playbook returns to its computed "
+            "disposition and blocks cutover again if it is not ready."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "playbook_id": {
+                    "type": "string",
+                    "description": "The playbook's frontmatter id.",
+                },
+            },
+            "required": ["playbook_id"],
         },
     },
     {

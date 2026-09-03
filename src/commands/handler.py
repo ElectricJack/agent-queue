@@ -49,6 +49,7 @@ from src.commands.profile_commands import ProfileCommandsMixin
 from src.commands.mcp_commands import McpCommandsMixin
 from src.commands.notes_commands import NotesCommandsMixin
 from src.commands.playbook_commands import PlaybookCommandsMixin
+from src.commands.playbook_migration_commands import PlaybookMigrationCommandsMixin
 from src.commands.playbook_v2_commands import (
     PLAYBOOK_V2_ARTIFACT_COMMANDS,
     PLAYBOOK_V2_COMMANDS,
@@ -335,6 +336,7 @@ class CommandHandler(
     NotesCommandsMixin,
     PlaybookCommandsMixin,
     PlaybookV2CommandsMixin,
+    PlaybookMigrationCommandsMixin,
     WorkflowCommandsMixin,
     PluginCommandsMixin,
     ToolCommandsMixin,
@@ -394,6 +396,7 @@ class CommandHandler(
     - :class:`ProfileCommandsMixin` — agent profile CRUD
     - :class:`NotesCommandsMixin` — note path helpers
     - :class:`PlaybookCommandsMixin` — playbook compile, run, health
+    - :class:`PlaybookMigrationCommandsMixin` — V1→V2 inventory and waivers
     - :class:`PlaybookV2CommandsMixin` — V2 semantic graph, diff, activation
     - :class:`WorkflowCommandsMixin` — workflow CRUD, stage advancement
     - :class:`PluginCommandsMixin` — plugin lifecycle

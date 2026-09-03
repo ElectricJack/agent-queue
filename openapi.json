@@ -6303,6 +6303,147 @@
         }
       }
     },
+    "/api/playbook/migration-acknowledge": {
+      "post": {
+        "tags": [
+          "playbook"
+        ],
+        "summary": "Record a written operator waiver that one playbook cannot be migrated to V2, so cutover may proceed without it. Operator-only. The waiver binds to the source bytes present now, so editing the authoring markdown invalidates it.",
+        "description": "Record a written operator waiver that one playbook cannot be migrated to V2, so cutover may proceed without it. Operator-only. The waiver binds to the source bytes present now, so editing the authoring markdown invalidates it.",
+        "operationId": "playbook_migration_acknowledge",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaybookMigrationAcknowledgeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybookMigrationAckResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/playbook/migration-inventory": {
+      "post": {
+        "tags": [
+          "playbook"
+        ],
+        "summary": "Report every installed playbook's V1->V2 migration readiness: its disposition (ready, question_required, invalid, disabled), the operator-facing reasons behind it, the active V2 artifact and its activation health. Read-only: it never compiles, activates or writes anything.",
+        "description": "Report every installed playbook's V1->V2 migration readiness: its disposition (ready, question_required, invalid, disabled), the operator-facing reasons behind it, the active V2 artifact and its activation health. Read-only: it never compiles, activates or writes anything.",
+        "operationId": "playbook_migration_inventory",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaybookMigrationInventoryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybookMigrationInventoryResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/playbook/migration-unacknowledge": {
+      "post": {
+        "tags": [
+          "playbook"
+        ],
+        "summary": "Withdraw a migration waiver. The playbook returns to its computed disposition and blocks cutover again if it is not ready.",
+        "description": "Withdraw a migration waiver. The playbook returns to its computed disposition and blocks cutover again if it is not ready.",
+        "operationId": "playbook_migration_unacknowledge",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaybookMigrationUnacknowledgeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybookMigrationAckResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/playbook/pending-event-action": {
       "post": {
         "tags": [
@@ -27306,6 +27447,268 @@
         "title": "MetricsSeriesResponse",
         "description": "``GET /api/metrics/series``.\n\n``step`` is the resolution actually served, which may be coarser than\nthe one requested when ``step=auto`` or when the requested span would\nexceed ``max_points``."
       },
+      "MigrationAckDTO": {
+        "properties": {
+          "playbook_id": {
+            "type": "string",
+            "title": "Playbook Id"
+          },
+          "scope": {
+            "type": "string",
+            "title": "Scope"
+          },
+          "scope_identifier": {
+            "type": "string",
+            "title": "Scope Identifier"
+          },
+          "source_sha256": {
+            "type": "string",
+            "title": "Source Sha256"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          },
+          "acknowledged_by": {
+            "type": "string",
+            "title": "Acknowledged By"
+          },
+          "acknowledged_at": {
+            "type": "number",
+            "title": "Acknowledged At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "playbook_id",
+          "scope",
+          "scope_identifier",
+          "source_sha256",
+          "reason",
+          "acknowledged_by",
+          "acknowledged_at"
+        ],
+        "title": "MigrationAckDTO"
+      },
+      "MigrationDispositionCountsDTO": {
+        "properties": {
+          "ready": {
+            "type": "integer",
+            "title": "Ready"
+          },
+          "question_required": {
+            "type": "integer",
+            "title": "Question Required"
+          },
+          "invalid": {
+            "type": "integer",
+            "title": "Invalid"
+          },
+          "disabled": {
+            "type": "integer",
+            "title": "Disabled"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "ready",
+          "question_required",
+          "invalid",
+          "disabled"
+        ],
+        "title": "MigrationDispositionCountsDTO"
+      },
+      "MigrationInventoryEntryDTO": {
+        "properties": {
+          "playbook_id": {
+            "type": "string",
+            "title": "Playbook Id"
+          },
+          "scope": {
+            "type": "string",
+            "title": "Scope"
+          },
+          "scope_identifier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Identifier"
+          },
+          "source": {
+            "$ref": "#/components/schemas/MigrationSourceRefDTO"
+          },
+          "v1_kind": {
+            "type": "string",
+            "title": "V1 Kind"
+          },
+          "v1_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "V1 Version"
+          },
+          "v1_enabled": {
+            "type": "boolean",
+            "title": "V1 Enabled"
+          },
+          "disposition": {
+            "type": "string",
+            "enum": [
+              "ready",
+              "question_required",
+              "invalid",
+              "disabled"
+            ],
+            "title": "Disposition"
+          },
+          "reasons": {
+            "items": {
+              "$ref": "#/components/schemas/MigrationReasonDTO"
+            },
+            "type": "array",
+            "title": "Reasons",
+            "default": []
+          },
+          "artifact": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ArtifactRefDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "activation_health": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Activation Health"
+          },
+          "has_embedded_action_block": {
+            "type": "boolean",
+            "title": "Has Embedded Action Block"
+          },
+          "acknowledged_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Acknowledged By"
+          },
+          "acknowledged_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Acknowledged At"
+          },
+          "pending_events": {
+            "type": "integer",
+            "title": "Pending Events",
+            "default": 0
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "playbook_id",
+          "scope",
+          "source",
+          "v1_kind",
+          "v1_enabled",
+          "disposition",
+          "has_embedded_action_block"
+        ],
+        "title": "MigrationInventoryEntryDTO"
+      },
+      "MigrationReasonDTO": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "title": "Code"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          },
+          "source_line": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Line"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "MigrationReasonDTO",
+        "description": "One operator-facing explanation for an entry's disposition.\n\n``code`` is drawn from ``src.playbooks.migration.REASON_CODES``, a closed\nset the CLI and the cutover report both switch on."
+      },
+      "MigrationSourceRefDTO": {
+        "properties": {
+          "vault_rel_path": {
+            "type": "string",
+            "title": "Vault Rel Path"
+          },
+          "bundled_rel_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bundled Rel Path"
+          },
+          "source_sha256": {
+            "type": "string",
+            "title": "Source Sha256"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "vault_rel_path",
+          "source_sha256"
+        ],
+        "title": "MigrationSourceRefDTO",
+        "description": "Where an inventory entry's authoring Markdown lives.\n\nDistinct from :class:`SourceRefDTO`, which points at a span *inside* a\nsource; this points at the whole file and carries its content hash."
+      },
       "ModelTokens": {
         "properties": {
           "input_per_min": {
@@ -28902,6 +29305,183 @@
           "status"
         ],
         "title": "PlaybookLastRun"
+      },
+      "PlaybookMigrationAckResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "acknowledgement": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MigrationAckDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "playbook_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Playbook Id"
+          },
+          "removed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Removed"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "PlaybookMigrationAckResponse"
+      },
+      "PlaybookMigrationAcknowledgeRequest": {
+        "properties": {
+          "playbook_id": {
+            "type": "string",
+            "title": "Playbook Id",
+            "description": "The playbook's frontmatter id."
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": "Why this playbook cannot migrate. At least 12 characters; an empty waiver is not a waiver."
+          }
+        },
+        "type": "object",
+        "required": [
+          "playbook_id",
+          "reason"
+        ],
+        "title": "PlaybookMigrationAcknowledgeRequest"
+      },
+      "PlaybookMigrationInventoryRequest": {
+        "properties": {
+          "disposition": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Disposition",
+            "description": "Optional filter; counts always describe the whole fleet."
+          }
+        },
+        "type": "object",
+        "title": "PlaybookMigrationInventoryRequest"
+      },
+      "PlaybookMigrationInventoryResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "generated_at": {
+            "type": "number",
+            "title": "Generated At"
+          },
+          "contract_fingerprint": {
+            "type": "string",
+            "title": "Contract Fingerprint"
+          },
+          "counts": {
+            "$ref": "#/components/schemas/MigrationDispositionCountsDTO"
+          },
+          "blocking": {
+            "type": "integer",
+            "title": "Blocking"
+          },
+          "pending_events_total": {
+            "type": "integer",
+            "title": "Pending Events Total"
+          },
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/MigrationInventoryEntryDTO"
+            },
+            "type": "array",
+            "title": "Entries",
+            "default": []
+          },
+          "filtered_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filtered By"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success",
+          "generated_at",
+          "contract_fingerprint",
+          "counts",
+          "blocking",
+          "pending_events_total"
+        ],
+        "title": "PlaybookMigrationInventoryResponse"
+      },
+      "PlaybookMigrationUnacknowledgeRequest": {
+        "properties": {
+          "playbook_id": {
+            "type": "string",
+            "title": "Playbook Id",
+            "description": "The playbook's frontmatter id."
+          }
+        },
+        "type": "object",
+        "required": [
+          "playbook_id"
+        ],
+        "title": "PlaybookMigrationUnacknowledgeRequest"
       },
       "PlaybookNodeLlmConfig": {
         "properties": {
