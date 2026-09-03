@@ -1,5 +1,5 @@
-"""Playbook V2 semantic-graph commands — graph, health, diff, activation,
-pending events and run overlays.
+"""Playbook V2 semantic-graph commands — graph, health, artifact listing,
+diff, activation, pending events and run overlays.
 
 Package 5 of the Playbook V2 roadmap
 (``docs/superpowers/plans/2026-09-01-playbook-v2-graph-api-ui.md``) ships the
@@ -104,6 +104,13 @@ PLAYBOOK_V2_COMPILER_COMMANDS: frozenset[str] = frozenset(
     }
 )
 
+#: The activation chooser's read.  Deliberately its own constant rather than an
+#: eighth member of ``PLAYBOOK_V2_COMMANDS``: several API-contract tests pin
+#: that set to the child plan's seven §4.8 commands, and this command answers a
+#: question none of them do — *which artifacts could be activated*, including
+#: the inactive candidates an operator diffs before activating one.
+PLAYBOOK_V2_ARTIFACT_COMMANDS: frozenset[str] = frozenset({"playbook_artifacts"})
+
 V2_COMPILER_DISABLED_ERROR = "playbook v2 compiler is disabled"
 
 #: Activation scopes, matching ``ActivationStateDTO.scope``.
@@ -121,6 +128,10 @@ _VALID_PENDING_REASONS: frozenset[str] = frozenset(
 
 #: ``PendingAction`` — child plan §4.6.
 _VALID_PENDING_ACTIONS: frozenset[str] = frozenset({"dispatch", "discard"})
+
+#: Default page size for the artifact chooser — enough versions to cover a
+#: playbook's recent history without loading a whole retention window.
+_ARTIFACT_LIST_DEFAULT_LIMIT = 50
 
 #: Full ``sha256:<64 hex>`` form.  Hashes are never truncated on the wire
 #: (child plan §4 conventions), so a truncated hash is a client bug worth an
@@ -160,6 +171,34 @@ def _diagnostic_counts(diagnostics: list[Diagnostic]) -> dict[str, int]:
     return {
         severity: sum(d.severity == severity for d in diagnostics)
         for severity in ("error", "warning", "question", "info")
+    }
+
+
+def _artifact_summary(row: dict[str, Any], active_shas: set[str]) -> dict[str, Any]:
+    """Project one ``playbook_artifacts`` row into ``PlaybookArtifactSummaryDTO``.
+
+    Projected field-for-field rather than through ``ArtifactRef.from_row``: the
+    dataclass rejects a row whose ``schema_generation`` this build no longer
+    stores, and a chooser that hides an artifact is worse than one that shows an
+    operator a candidate they cannot activate — ``playbook_activate`` is where
+    that refusal belongs.
+    """
+    return {
+        "artifact": {
+            "playbook_id": row["playbook_id"],
+            "artifact_sha256": row["artifact_sha256"],
+            "schema_generation": int(row["schema_generation"]),
+            "contract_fingerprint": row["contract_fingerprint"],
+            "source_digest": row["source_digest"],
+            "compiler_build": row["compiler_build"],
+            "compiled_at": row.get("compiled_at"),
+            "version": int(row["version"]),
+        },
+        "scope": row.get("scope") or "system",
+        "scope_identifier": row.get("scope_identifier") or None,
+        "size_bytes": int(row.get("size_bytes") or 0),
+        "created_at": row.get("created_at"),
+        "is_active": row["artifact_sha256"] in active_shas,
     }
 
 
@@ -205,6 +244,22 @@ class PlaybookV2CommandsMixin:
             return False
         return hasattr(self.db, "list_playbook_activations") and hasattr(
             self.db, "get_playbook_artifact_row"
+        )
+
+    def _v2_artifact_storage_ready(self) -> bool:
+        """Whether the stored artifact rows can actually be listed here.
+
+        Same shape as :meth:`_v2_activation_storage_ready` and for the same
+        reason: the artifact *rows* are Package 3 state, so listing them does
+        not wait for the ``_v2_storage_unavailable`` seam, but a database
+        adapter without the V2 tables must still report the seam error rather
+        than raise.
+        """
+        playbooks = getattr(self.config, "playbooks", None)
+        if not bool(getattr(playbooks, "v2_storage_enabled", False)):
+            return False
+        return hasattr(self.db, "list_playbook_artifacts") and hasattr(
+            self.db, "list_playbook_activations"
         )
 
     def _v2_compiler_enabled(self) -> bool:
@@ -533,6 +588,74 @@ class PlaybookV2CommandsMixin:
             "activations": activations,
             "count": len(activations),
             "by_health": by_health,
+        }
+
+    async def _cmd_playbook_artifacts(self, args: dict) -> dict:
+        """List the stored artifacts of one playbook, active flagged.
+
+        The chooser behind the activation review.  ``playbook_activation_health``
+        names only the artifact a scope has *already* activated, so without this
+        read an operator has no way to name the newly compiled candidate they
+        want to diff and activate — the dashboard would be left diffing the
+        active artifact against itself.
+
+        Read-only, and it never loads an artifact's bytes: the rows carry the
+        whole identity the chooser shows, and the diff and graph commands do the
+        loading once a hash has been picked.
+
+        Args:
+            playbook_id: Required — the playbook whose artifacts to list.
+            limit: Max artifacts to return, newest version first. Default: 50.
+        """
+        if not self._v2_api_enabled():
+            return {"error": V2_API_DISABLED_ERROR}
+
+        playbook_id = _clean_str(args, "playbook_id")
+        if not playbook_id:
+            return {"error": "playbook_id is required"}
+
+        raw_limit = args.get("limit", _ARTIFACT_LIST_DEFAULT_LIMIT)
+        try:
+            limit = int(raw_limit)
+        except (TypeError, ValueError):
+            return {"error": "limit must be an integer"}
+        if limit < 1:
+            return {"error": "limit must be >= 1"}
+
+        if not self._v2_artifact_storage_ready():
+            return self._v2_storage_unavailable()
+
+        rows = await self.db.list_playbook_artifacts(playbook_id, limit=limit)
+        activations = [
+            row
+            for row in await self.db.list_playbook_activations()
+            if row.get("playbook_id") == playbook_id
+        ]
+        # One playbook can be activated in several scopes, so "active" is a set
+        # rather than a single hash.  ``active_artifact_sha256`` reports the
+        # most recently updated one, which is the row the health read shows
+        # first, and ``is_active`` stays true for every scope's choice.
+        active_shas = {
+            row["active_artifact_sha256"]
+            for row in activations
+            if row.get("active_artifact_sha256")
+        }
+        active_artifact_sha256 = next(
+            (
+                row["active_artifact_sha256"]
+                for row in sorted(
+                    activations, key=lambda row: row.get("updated_at") or 0, reverse=True
+                )
+                if row.get("active_artifact_sha256")
+            ),
+            None,
+        )
+        return {
+            "success": True,
+            "playbook_id": playbook_id,
+            "artifacts": [_artifact_summary(row, active_shas) for row in rows],
+            "count": len(rows),
+            "active_artifact_sha256": active_artifact_sha256,
         }
 
     async def _cmd_playbook_artifact_diff(self, args: dict) -> dict:

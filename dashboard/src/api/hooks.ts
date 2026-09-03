@@ -82,6 +82,7 @@ import {
   playbookActivate,
   playbookActivationHealth,
   playbookArtifactDiff,
+  playbookArtifacts,
   playbookPendingEventAction,
   playbookPendingEvents,
   playbookRunOverlay,
@@ -159,6 +160,7 @@ import type {
   PoolScaleResponse,
   PlaybookActivationHealthResponse,
   PlaybookArtifactDiffResponse,
+  ListPlaybookArtifactsResponse,
   PlaybookRunOverlayResponse,
   ListPlaybookPendingEventsResponse,
 } from "./client";
@@ -886,9 +888,31 @@ export function usePlaybookV2Graph(playbookId?: string, opts: PlaybookV2GraphOpt
   });
 }
 export function usePlaybookActivationHealth(playbookId?: string) { return useQuery({ queryKey: ["playbook-activation-health", playbookId ?? "all"], queryFn: async () => (await playbookActivationHealth({ body: { playbook_id: playbookId }, throwOnError: true })).data as PlaybookActivationHealthResponse, enabled: !!playbookId, refetchInterval: 30_000 }); }
+/** Query key for one playbook's stored artifacts.
+ *
+ *  Not keyed by hash: this is the list an operator picks a hash *from*, and it
+ *  changes when a new artifact is compiled or one is activated. */
+export const playbookArtifactsKey = (playbookId: string) => ["playbook-artifacts", playbookId] as const;
+
+/** Every stored artifact of one playbook, newest version first, active flagged.
+ *
+ *  The server-state half of the activation chooser: activation health names
+ *  only the artifact a scope has already activated, so without this list an
+ *  operator cannot name the inactive candidate they want to diff and activate
+ *  and the review would diff the active artifact against itself. */
+export function usePlaybookArtifacts(playbookId?: string) {
+  return useQuery({
+    queryKey: playbookArtifactsKey(playbookId ?? ""),
+    queryFn: async () =>
+      (await playbookArtifacts({ body: { playbook_id: playbookId! }, throwOnError: true }))
+        .data as ListPlaybookArtifactsResponse,
+    enabled: !!playbookId,
+    refetchInterval: 30_000,
+  });
+}
 export function usePlaybookArtifactDiff(playbookId?: string, targetSha?: string, baseSha?: string) { return useQuery({ queryKey: ["playbook-artifact-diff", playbookId, targetSha, baseSha], queryFn: async () => (await playbookArtifactDiff({ body: { playbook_id: playbookId!, target_sha256: targetSha!, base_sha256: baseSha }, throwOnError: true })).data as PlaybookArtifactDiffResponse, enabled: !!playbookId && !!targetSha }); }
 export function usePlaybookPendingEvents(playbookId?: string) { return useQuery({ queryKey: ["playbook-pending-events", playbookId ?? "all"], queryFn: async () => (await playbookPendingEvents({ body: { playbook_id: playbookId }, throwOnError: true })).data as ListPlaybookPendingEventsResponse, enabled: !!playbookId, refetchInterval: 30_000 }); }
-export function useSetPlaybookActivation() { const client = useQueryClient(); return useMutation({ mutationFn: async (input: { playbook_id: string; artifact_sha256: string; acknowledge_diff?: string }) => (await playbookActivate({ body: input, throwOnError: true })).data, onSettled: (_data, _error, input) => { void client.invalidateQueries({ queryKey: ["playbook-v2-graph", input?.playbook_id] }); void client.invalidateQueries({ queryKey: ["playbook-activation-health"] }); void client.invalidateQueries({ queryKey: ["playbook-pending-events", input?.playbook_id] }); } }); }
+export function useSetPlaybookActivation() { const client = useQueryClient(); return useMutation({ mutationFn: async (input: { playbook_id: string; artifact_sha256: string; acknowledge_diff?: string }) => (await playbookActivate({ body: input, throwOnError: true })).data, onSettled: (_data, _error, input) => { void client.invalidateQueries({ queryKey: ["playbook-v2-graph", input?.playbook_id] }); void client.invalidateQueries({ queryKey: ["playbook-activation-health"] }); void client.invalidateQueries({ queryKey: playbookArtifactsKey(input?.playbook_id ?? "") }); void client.invalidateQueries({ queryKey: ["playbook-pending-events", input?.playbook_id] }); } }); }
 export function usePlaybookPendingEventAction() { const client = useQueryClient(); return useMutation({ mutationFn: async (input: { action: "dispatch" | "discard"; pending_event_ids: string[] }) => (await playbookPendingEventAction({ body: input, throwOnError: true })).data, onSettled: () => { void client.invalidateQueries({ queryKey: ["playbook-pending-events"] }); void client.invalidateQueries({ queryKey: ["playbook-activation-health"] }); } }); }
 export function usePlaybookRunOverlay(runId?: string, opts: { live?: boolean } = {}) { return useQuery({ queryKey: ["playbook-run-overlay", runId ?? ""], queryFn: async () => (await playbookRunOverlay({ body: { run_id: runId! }, throwOnError: true })).data as PlaybookRunOverlayResponse, enabled: !!runId, refetchInterval: opts.live ? 5_000 : false }); }
 

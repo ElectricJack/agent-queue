@@ -476,6 +476,7 @@ from .list_mcp_tool_catalog_response_servers import ListMcpToolCatalogResponseSe
 from .list_notes_request import ListNotesRequest
 from .list_notes_response import ListNotesResponse
 from .list_notes_response_422 import ListNotesResponse422
+from .list_playbook_artifacts_response import ListPlaybookArtifactsResponse
 from .list_playbook_pending_events_response import ListPlaybookPendingEventsResponse
 from .list_playbook_pending_events_response_by_reason import ListPlaybookPendingEventsResponseByReason
 from .list_playbook_runs_request import ListPlaybookRunsRequest
@@ -575,6 +576,9 @@ from .playbook_activation_health_response_by_health import PlaybookActivationHea
 from .playbook_artifact_diff_request import PlaybookArtifactDiffRequest
 from .playbook_artifact_diff_response import PlaybookArtifactDiffResponse
 from .playbook_artifact_diff_response_422 import PlaybookArtifactDiffResponse422
+from .playbook_artifact_summary_dto import PlaybookArtifactSummaryDTO
+from .playbook_artifacts_request import PlaybookArtifactsRequest
+from .playbook_artifacts_response_422 import PlaybookArtifactsResponse422
 from .playbook_graph_edge import PlaybookGraphEdge
 from .playbook_graph_edge_edge_type import PlaybookGraphEdgeEdgeType
 from .playbook_graph_identity import PlaybookGraphIdentity
@@ -1528,6 +1532,7 @@ __all__ = (
     "ListNotesRequest",
     "ListNotesResponse",
     "ListNotesResponse422",
+    "ListPlaybookArtifactsResponse",
     "ListPlaybookPendingEventsResponse",
     "ListPlaybookPendingEventsResponseByReason",
     "ListPlaybookRunsRequest",
@@ -1627,6 +1632,9 @@ __all__ = (
     "PlaybookArtifactDiffRequest",
     "PlaybookArtifactDiffResponse",
     "PlaybookArtifactDiffResponse422",
+    "PlaybookArtifactsRequest",
+    "PlaybookArtifactsResponse422",
+    "PlaybookArtifactSummaryDTO",
     "PlaybookGraphEdge",
     "PlaybookGraphEdgeEdgeType",
     "PlaybookGraphIdentity",

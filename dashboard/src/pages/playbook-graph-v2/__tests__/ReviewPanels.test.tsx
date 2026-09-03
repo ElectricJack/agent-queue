@@ -55,6 +55,44 @@ describe("Package 5 review panels", () => {
     expect(screen.getByRole("button", { name: "Activate displayed artifact" })).toBeDisabled();
   });
 
+  it("lists the inactive candidates and reports the chosen hash", async () => {
+    const select = vi.fn();
+    const user = userEvent.setup();
+    const candidate = "sha256:" + "6".repeat(64);
+    render(
+      <ActivationPanel
+        artifact={artifact}
+        activation={activation}
+        executableChange={false}
+        onActivate={vi.fn()}
+        artifacts={[
+          { artifact: { ...artifact, artifact_sha256: candidate, version: 6 }, is_active: false },
+          { artifact: { ...artifact, version: 5 }, is_active: true },
+        ]}
+        selectedSha={sha}
+        onSelect={select}
+      />,
+    );
+
+    const chooser = screen.getByLabelText("Artifact under review");
+    expect(chooser).toHaveValue(sha);
+    expect(screen.getByRole("option", { name: /v5 .* \(active\)/ })).toBeInTheDocument();
+    await user.selectOptions(chooser, candidate);
+    expect(select).toHaveBeenCalledWith(candidate);
+  });
+
+  it("has no chooser at all when the artifact list has not loaded", () => {
+    render(
+      <ActivationPanel
+        artifact={artifact}
+        activation={activation}
+        executableChange={false}
+        onActivate={vi.fn()}
+      />,
+    );
+    expect(screen.queryByLabelText("Artifact under review")).toBeNull();
+  });
+
   it("offers dispatch and discard for every pending event", async () => {
     const action = vi.fn();
     const user = userEvent.setup();
