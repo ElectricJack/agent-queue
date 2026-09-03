@@ -28,7 +28,7 @@ async def test_pr_merge_command_shells_gh_and_returns_success(monkeypatch):
 
     gm = GitManager()
     gm.avalidate_pr_for_merge = AsyncMock(
-        return_value=PullRequestIdentity("org/repo", 42, "main", "a" * 40, "feature", "b" * 40)
+        return_value=PullRequestIdentity("org/repo", 42, "main", "a" * 40, "feature", "b" * 40, 1)
     )
 
     async def fake_arun_subprocess(cmd, cwd, timeout):
@@ -53,7 +53,7 @@ async def test_pr_merge_command_reports_gh_failure(monkeypatch):
 
     gm = GitManager()
     gm.avalidate_pr_for_merge = AsyncMock(
-        return_value=PullRequestIdentity("org/repo", 42, "main", "a" * 40, "feature", "b" * 40)
+        return_value=PullRequestIdentity("org/repo", 42, "main", "a" * 40, "feature", "b" * 40, 1)
     )
 
     async def fake_arun_subprocess(cmd, cwd, timeout):
@@ -87,7 +87,7 @@ async def test_pr_merge_parses_sha_from_output(monkeypatch):
 
     gm = GitManager()
     gm.avalidate_pr_for_merge = AsyncMock(
-        return_value=PullRequestIdentity("org/repo", 42, "main", "a" * 40, "feature", "b" * 40)
+        return_value=PullRequestIdentity("org/repo", 42, "main", "a" * 40, "feature", "b" * 40, 1)
     )
     sha = "a" * 40
 
@@ -112,7 +112,7 @@ async def test_pr_merge_pins_the_validated_head_oid(monkeypatch):
     gm = GitManager()
     head_oid = "b" * 40
     gm.avalidate_pr_for_merge = AsyncMock(
-        return_value=PullRequestIdentity("org/repo", 42, "main", "a" * 40, "feature", head_oid)
+        return_value=PullRequestIdentity("org/repo", 42, "main", "a" * 40, "feature", head_oid, 1)
     )
 
     async def fake_arun_subprocess(cmd, cwd, timeout):
@@ -137,18 +137,29 @@ async def test_pr_merge_pins_the_validated_head_oid(monkeypatch):
     assert result["success"] is True
 
 
-def _pr_identity_payload(*, base_oid: str = "a" * 40, head_oid: str = "b" * 40) -> str:
+def _pr_identity_payload(
+    *,
+    base_oid: str = "a" * 40,
+    head_oid: str = "b" * 40,
+    changed_files: object = 1,
+) -> str:
     import json
 
-    return json.dumps(
-        {
-            "baseRefName": "main",
-            "baseRefOid": base_oid,
-            "headRefName": "feature/guard",
-            "headRefOid": head_oid,
-            "baseRepository": {"nameWithOwner": "org/repo"},
-        }
-    )
+    payload = {
+        "baseRefName": "main",
+        "baseRefOid": base_oid,
+        "headRefName": "feature/guard",
+        "headRefOid": head_oid,
+        "baseRepository": {"nameWithOwner": "org/repo"},
+    }
+    if changed_files is not None:
+        payload["changedFiles"] = changed_files
+    return json.dumps(payload)
+
+
+def _clean_paths(count: int) -> str:
+    """``count`` distinct non-reserved paths, one per line, as gh prints them."""
+    return "".join(f".a/{i:05d}\n" for i in range(count))
 
 
 @pytest.mark.asyncio
@@ -169,7 +180,7 @@ async def test_pr_validation_rejects_added_modified_and_deleted_reserved_paths(
 
     async def fake_arun_subprocess(cmd, cwd, timeout):
         if cmd[:3] == ["gh", "pr", "view"]:
-            return MagicMock(returncode=0, stdout=_pr_identity_payload(), stderr="")
+            return MagicMock(returncode=0, stdout=_pr_identity_payload(changed_files=2), stderr="")
         assert cmd[:4] == ["gh", "api", "--paginate", "repos/org/repo/pulls/42/files"]
         return MagicMock(returncode=0, stdout=f"work.py\n{path}\n", stderr="")
 
@@ -247,6 +258,151 @@ async def test_pr_validation_accepts_clean_paths_and_detects_a_changed_head(monk
         await gm.avalidate_pr_for_merge("/some/checkout", "https://github.com/org/repo/pull/42")
 
 
+def _gm_with_pr(monkeypatch, *, changed_files: object, listed: str, views: int = 2):
+    """A GitManager whose gh reports ``changed_files`` and lists ``listed``."""
+    from src.git.manager import GitManager
+
+    gm = GitManager()
+    snapshots = iter([_pr_identity_payload(changed_files=changed_files)] * views)
+
+    async def fake_arun_subprocess(cmd, cwd, timeout):
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return MagicMock(returncode=0, stdout=next(snapshots), stderr="")
+        assert cmd[:4] == ["gh", "api", "--paginate", "repos/org/repo/pulls/42/files"]
+        return MagicMock(returncode=0, stdout=listed, stderr="")
+
+    monkeypatch.setattr(gm, "_arun_subprocess", fake_arun_subprocess)
+    return gm
+
+
+_PR_URL = "https://github.com/org/repo/pull/42"
+_PR_FILES_API_CAP = 3000
+
+
+@pytest.mark.asyncio
+async def test_pr_validation_fails_closed_when_the_files_listing_stops_at_the_api_cap(
+    monkeypatch,
+):
+    # GitHub's "List pull request files" returns at most 3000 entries, so a PR
+    # with 3000 clean paths sorting before ``.aq/`` hides ``.aq/claim.json`` in
+    # the unlisted tail.  The listing is exactly the cap while the PR reports
+    # one more file: the guard must refuse rather than trust the visible prefix.
+    gm = _gm_with_pr(
+        monkeypatch,
+        changed_files=_PR_FILES_API_CAP + 1,
+        listed=_clean_paths(_PR_FILES_API_CAP),
+    )
+    with pytest.raises(GitError, match="3000"):
+        await gm.avalidate_pr_for_merge("/some/checkout", _PR_URL)
+
+
+@pytest.mark.asyncio
+async def test_pr_validation_fails_closed_exactly_at_the_api_cap(monkeypatch):
+    # At the cap the listing and the count agree, yet nothing proves the
+    # listing was not truncated at precisely that boundary: fail closed.
+    gm = _gm_with_pr(
+        monkeypatch,
+        changed_files=_PR_FILES_API_CAP,
+        listed=_clean_paths(_PR_FILES_API_CAP),
+    )
+    with pytest.raises(GitError, match="3000"):
+        await gm.avalidate_pr_for_merge("/some/checkout", _PR_URL)
+
+
+@pytest.mark.asyncio
+async def test_pr_validation_accepts_a_complete_listing_just_below_the_api_cap(monkeypatch):
+    gm = _gm_with_pr(
+        monkeypatch,
+        changed_files=_PR_FILES_API_CAP - 1,
+        listed=_clean_paths(_PR_FILES_API_CAP - 1),
+    )
+    identity = await gm.avalidate_pr_for_merge("/some/checkout", _PR_URL)
+    assert identity.changed_files == _PR_FILES_API_CAP - 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("changed_files", "listed"), [(3, 2), (1, 2), (2, 0)])
+async def test_pr_validation_fails_closed_when_listing_and_changed_file_count_disagree(
+    monkeypatch, changed_files, listed
+):
+    # A listing that does not match the PR's own changed-file count cannot be
+    # a complete merge-base diff, whichever side is larger.
+    gm = _gm_with_pr(monkeypatch, changed_files=changed_files, listed=_clean_paths(listed))
+    expected = rf"incomplete.*\b{listed}\b.*\b{changed_files}\b"
+    with pytest.raises(GitError, match=expected):
+        await gm.avalidate_pr_for_merge("/some/checkout", _PR_URL)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changed_files", [None, "many", -1, 1.5, True])
+async def test_pr_validation_fails_closed_without_a_usable_changed_file_count(
+    monkeypatch, changed_files
+):
+    # ``None`` omits the field entirely; the others are not a non-negative int.
+    gm = _gm_with_pr(monkeypatch, changed_files=changed_files, listed=_clean_paths(1))
+    with pytest.raises(GitError, match="complete PR identity"):
+        await gm.avalidate_pr_for_merge("/some/checkout", _PR_URL)
+
+
+@pytest.mark.asyncio
+async def test_pr_identity_pins_the_changed_file_count_in_the_same_snapshot(monkeypatch):
+    from src.git.manager import GitManager
+
+    gm = GitManager()
+    fields: list[str] = []
+
+    async def fake_arun_subprocess(cmd, cwd, timeout):
+        assert cmd[:3] == ["gh", "pr", "view"]
+        fields.append(cmd[cmd.index("--json") + 1])
+        return MagicMock(returncode=0, stdout=_pr_identity_payload(changed_files=7), stderr="")
+
+    monkeypatch.setattr(gm, "_arun_subprocess", fake_arun_subprocess)
+    identity = await gm.aget_pr_identity("/some/checkout", _PR_URL)
+
+    assert identity.changed_files == 7
+    # One ``gh pr view`` call carries the OIDs and the count together, so the
+    # count belongs to the same base/head pair the listing is checked against.
+    assert len(fields) == 1
+    assert set(fields[0].split(",")) >= {"baseRefOid", "headRefOid", "changedFiles"}
+
+
+@pytest.mark.asyncio
+async def test_pr_identity_reads_the_rest_changed_files_name_too(monkeypatch):
+    # The REST ``pulls/{n}`` resource spells the same fact ``changed_files``;
+    # the identity must read it whichever endpoint produced the snapshot.
+    import json
+
+    from src.git.manager import GitManager
+
+    gm = GitManager()
+    payload = json.loads(_pr_identity_payload(changed_files=None))
+    payload["changed_files"] = 5
+
+    async def fake_arun_subprocess(cmd, cwd, timeout):
+        return MagicMock(returncode=0, stdout=json.dumps(payload), stderr="")
+
+    monkeypatch.setattr(gm, "_arun_subprocess", fake_arun_subprocess)
+    identity = await gm.aget_pr_identity("/some/checkout", _PR_URL)
+    assert identity.changed_files == 5
+
+
+@pytest.mark.asyncio
+async def test_pr_validation_detects_a_changed_file_count_between_snapshots(monkeypatch):
+    from src.git.manager import GitManager
+
+    gm = GitManager()
+    views = iter([_pr_identity_payload(changed_files=1), _pr_identity_payload(changed_files=2)])
+
+    async def fake_arun_subprocess(cmd, cwd, timeout):
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return MagicMock(returncode=0, stdout=next(views), stderr="")
+        return MagicMock(returncode=0, stdout=_clean_paths(1), stderr="")
+
+    monkeypatch.setattr(gm, "_arun_subprocess", fake_arun_subprocess)
+    with pytest.raises(GitError, match="identity changed"):
+        await gm.avalidate_pr_for_merge("/some/checkout", _PR_URL)
+
+
 @pytest.mark.asyncio
 async def test_pr_merge_refuses_when_head_changes_after_ci_validation(monkeypatch):
     from src.git.manager import GitManager
@@ -280,7 +436,7 @@ async def test_direct_manager_merge_validates_and_pins_identity(monkeypatch):
     from src.git.manager import GitManager, PullRequestIdentity
 
     gm = GitManager()
-    identity = PullRequestIdentity("org/repo", 42, "main", "a" * 40, "feature", "b" * 40)
+    identity = PullRequestIdentity("org/repo", 42, "main", "a" * 40, "feature", "b" * 40, 1)
     gm.avalidate_pr_for_merge = AsyncMock(return_value=identity)
 
     async def fake_arun_subprocess(cmd, cwd, timeout):

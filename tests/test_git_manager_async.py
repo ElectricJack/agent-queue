@@ -1434,7 +1434,7 @@ async def test_async_merge_pr_handles_invalid_method_timeout_and_sha(mgr, monkey
     from src.git.manager import PullRequestIdentity
 
     mgr.avalidate_pr_for_merge = AsyncMock(
-        return_value=PullRequestIdentity("org/repo", 42, "main", "a" * 40, "feature", "b" * 40)
+        return_value=PullRequestIdentity("org/repo", 42, "main", "a" * 40, "feature", "b" * 40, 1)
     )
 
     # Invalid method: rejected before any gh invocation.

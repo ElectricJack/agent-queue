@@ -97,6 +97,10 @@ class PullRequestIdentity:
     base_oid: str
     head_ref: str
     head_oid: str
+    #: GitHub's own count of files the PR changes, read in the same snapshot
+    #: as the OIDs.  The PR-files listing is only trusted when it is exactly
+    #: this long and below :data:`_PR_FILES_API_CAP`.
+    changed_files: int
 
 
 # ---------------------------------------------------------------------------
@@ -111,6 +115,25 @@ _REFNAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
 _OID_RE = re.compile(r"^[0-9a-f]{40}$")
 _REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _PR_NUMBER_RE = re.compile(r"/pull/([1-9][0-9]*)/?(?:[?#].*)?$")
+#: GitHub's "List pull request files" endpoint documents "Responses include a
+#: maximum of 3000 files"; pagination simply stops there, so a listing that
+#: long may be a truncated prefix of the real diff.
+_PR_FILES_API_CAP = 3000
+
+
+def _pr_changed_file_count(data: dict) -> int:
+    """GitHub's changed-file count from a PR snapshot, or raise ``GitError``.
+
+    The REST ``pulls/{n}`` resource spells it ``changed_files`` and the
+    GraphQL object behind ``gh pr view --json`` spells it ``changedFiles``;
+    it is the same fact and the identity reads it from whichever endpoint
+    produced the snapshot.  Anything but a non-negative integer (``bool`` is
+    an ``int`` subclass and is not a count) fails closed.
+    """
+    count = data.get("changed_files", data.get("changedFiles"))
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        raise GitError("could not resolve complete PR identity")
+    return count
 
 
 def _validate_ref(name: str, *, field: str = "branch") -> str:
@@ -2651,7 +2674,7 @@ class GitManager:
                     "view",
                     pr_url,
                     "--json",
-                    "baseRefName,baseRefOid,headRefName,headRefOid,baseRepository",
+                    "baseRefName,baseRefOid,headRefName,headRefOid,baseRepository,changedFiles",
                 ],
                 cwd=checkout_path,
                 timeout=self._GIT_TIMEOUT,
@@ -2667,6 +2690,7 @@ class GitManager:
             head_ref = data["headRefName"]
             base_oid = data["baseRefOid"].lower()
             head_oid = data["headRefOid"].lower()
+            changed_files = _pr_changed_file_count(data)
         except (KeyError, TypeError, ValueError, AttributeError) as exc:
             raise GitError("could not resolve complete PR identity") from exc
         number_match = _PR_NUMBER_RE.search(pr_url)
@@ -2687,6 +2711,7 @@ class GitManager:
             base_oid=base_oid,
             head_ref=head_ref,
             head_oid=head_oid,
+            changed_files=changed_files,
         )
 
     async def _apr_changed_paths(
@@ -2712,11 +2737,26 @@ class GitManager:
         """Fail closed unless a PR identity and its reserved-path diff are stable.
 
         The REST PR-files endpoint is GitHub's merge-base PR diff and supports
-        pagination. Re-reading the identity after that potentially long query
-        proves the inspected diff still belongs to the precise base/head pair.
+        pagination, but only up to :data:`_PR_FILES_API_CAP` entries, after
+        which it silently stops.  The listing is therefore trusted only when
+        it is exactly as long as the PR's own changed-file count and that
+        count is below the cap; otherwise a reserved path could hide in the
+        unlisted tail.  Re-reading the identity after that potentially long
+        query proves the inspected diff still belongs to the precise
+        base/head pair.
         """
         identity = await self.aget_pr_identity(checkout_path, pr_url)
         paths = await self._apr_changed_paths(checkout_path, identity)
+        if identity.changed_files >= _PR_FILES_API_CAP or len(paths) >= _PR_FILES_API_CAP:
+            raise GitError(
+                f"PR changes {identity.changed_files} files but GitHub lists at most "
+                f"{_PR_FILES_API_CAP}; the reserved-path check cannot be complete"
+            )
+        if len(paths) != identity.changed_files:
+            raise GitError(
+                f"PR delivery diff is incomplete: GitHub listed {len(paths)} of "
+                f"{identity.changed_files} changed files"
+            )
         reserved = self._daemon_bookkeeping_paths("\0".join(paths))
         if reserved:
             raise GitError(
