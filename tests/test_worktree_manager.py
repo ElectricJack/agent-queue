@@ -204,8 +204,8 @@ def kind() -> WorkspaceKind:
 
 
 class TestGitExclude:
-    def test_creates_block_when_absent(self, base_repo: Path):
-        assert WorktreeSlotManager.ensure_git_exclude(base_repo) is True
+    def test_creates_block_when_absent(self, base_repo: Path, mgr):
+        assert asyncio.run(mgr.ensure_git_exclude(base_repo)) is True
         text = (base_repo / ".git" / "info" / "exclude").read_text(
             encoding="utf-8", errors="surrogateescape"
         )
@@ -215,24 +215,24 @@ class TestGitExclude:
         # sentinel out of `git status` in every slot.
         assert "/.aq-worktree.json" in text
 
-    def test_is_idempotent(self, base_repo: Path):
-        WorktreeSlotManager.ensure_git_exclude(base_repo)
+    def test_is_idempotent(self, base_repo: Path, mgr):
+        asyncio.run(mgr.ensure_git_exclude(base_repo))
         exclude = base_repo / ".git" / "info" / "exclude"
         first = exclude.read_bytes()
-        assert WorktreeSlotManager.ensure_git_exclude(base_repo) is False
+        assert asyncio.run(mgr.ensure_git_exclude(base_repo)) is False
         assert exclude.read_bytes() == first
 
-    def test_preserves_foreign_content(self, base_repo: Path):
+    def test_preserves_foreign_content(self, base_repo: Path, mgr):
         exclude = base_repo / ".git" / "info" / "exclude"
         exclude.parent.mkdir(parents=True, exist_ok=True)
         exclude.write_text("# operator's own rules\n*.swp\n")
-        WorktreeSlotManager.ensure_git_exclude(base_repo)
+        asyncio.run(mgr.ensure_git_exclude(base_repo))
         text = exclude.read_text()
         assert "# operator's own rules" in text
         assert "*.swp" in text
         assert "/.aq/" in text
 
-    def test_rewrites_a_drifted_block(self, base_repo: Path):
+    def test_rewrites_a_drifted_block(self, base_repo: Path, mgr):
         exclude = base_repo / ".git" / "info" / "exclude"
         exclude.parent.mkdir(parents=True, exist_ok=True)
         # Written cp1252-ish on purpose: the marker's em-dash must not be what
@@ -243,7 +243,7 @@ class TestGitExclude:
                 "cp1252"
             )
         )
-        assert WorktreeSlotManager.ensure_git_exclude(base_repo) is True
+        assert asyncio.run(mgr.ensure_git_exclude(base_repo)) is True
         text = exclude.read_text(encoding="utf-8", errors="surrogateescape")
         assert "/stale/" not in text
         assert "/.aq/" in text

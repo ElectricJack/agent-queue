@@ -1470,7 +1470,7 @@ class TestPhaseVerifyNormalTask:
 
         result = await orch._phase_verify(ctx)
         assert result == PhaseResult.CONTINUE
-        orch.git.apush_branch.assert_awaited_once()
+        orch.git.apush_validated_delivery.assert_awaited_once()
 
     async def test_fails_when_ahead_and_auto_push_fails(self, pipeline_orch):
         """Falls back to failure when auto-push raises an exception."""

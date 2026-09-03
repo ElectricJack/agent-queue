@@ -202,6 +202,9 @@ async def test_full_review_chain_end_to_end(
     orch.git.amerge_pr = AsyncMock(
         return_value={"success": True, "sha": "f" * 40, "error": None}
     )
+    orch.git.avalidate_pr_for_merge = AsyncMock(
+        return_value=MagicMock(head_oid="h" * 40, base_oid="b" * 40)
+    )
     merge_result = await h.execute(
         "pr_merge", {"project_id": "p", "pr_url": pr_url}
     )

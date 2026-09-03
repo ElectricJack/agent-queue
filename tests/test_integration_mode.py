@@ -75,6 +75,7 @@ async def orch(tmp_path):
     mock_git._arun = AsyncMock(return_value="0")
     mock_git.acommit_all = AsyncMock(return_value=True)
     mock_git.apush_branch = AsyncMock(return_value=None)
+    mock_git.apush_validated_delivery = AsyncMock(return_value="a" * 40)
     mock_git.amerge_branch = AsyncMock(return_value=True)
     mock_git.aabort_in_progress_operations = AsyncMock()
     mock_git.aforce_clean_workspace = AsyncMock(return_value=True)
@@ -1195,4 +1196,3 @@ class TestEmptyBranchIsFlaggedNoCode:
 
         assert await orch._task_proves_no_work(ctx) is False
         assert ctx.no_work_proven is False
-

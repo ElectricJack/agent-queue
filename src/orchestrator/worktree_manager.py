@@ -252,23 +252,8 @@ class WorktreeSlotManager:
         failures raise, so callers can never confuse an unprotected checkout
         with an already-protected one.
         """
-        exclude_path = await self.git.aget_git_path(str(checkout_path), "info/exclude")
+        exclude_path = await resolve_managed_exclude_path(self.git, checkout_path)
         return self.ensure_git_exclude_path(exclude_path)
-
-    @staticmethod
-    def git_exclude_is_current_path(exclude_path: str | Path) -> bool:
-        """Return whether *exclude_path* contains the exact managed block."""
-        exclude = Path(exclude_path)
-        if not exclude.exists():
-            return False
-        with exclude.open(encoding="utf-8", errors="surrogateescape", newline="") as f:
-            existing = f.read()
-        start = existing.find(_EXCLUDE_BEGIN_ASCII)
-        end = existing.find(_EXCLUDE_END_ASCII)
-        if start == -1 or end == -1 or end <= start:
-            return False
-        current = existing[start : end + len(_EXCLUDE_END_ASCII)]
-        return current.strip() == EXCLUDE_BLOCK.strip()
 
     @staticmethod
     def resolve_exclude_path(base_path: str | Path) -> Path:
@@ -291,20 +276,6 @@ class WorktreeSlotManager:
     def exclude_lock_path(cls, base_path: str | Path) -> Path:
         """The lock file every rewrite of *base_path*'s ``info/exclude`` takes."""
         return cls.resolve_exclude_path(base_path).with_name(_EXCLUDE_LOCK_NAME)
-
-    @staticmethod
-    def ensure_git_exclude_path(exclude_path: str | Path) -> bool:
-        """Atomically maintain the managed block at an exact Git-resolved path.
-
-        The read-modify-write is serialised across threads and processes.  I/O
-        or verification failures raise so callers cannot mistake an
-        unprotected checkout for an already-current one.
-        """
-        exclude = Path(exclude_path)
-        info_dir = exclude.parent
-        info_dir.mkdir(parents=True, exist_ok=True)
-        with _exclude_lock(info_dir / _EXCLUDE_LOCK_NAME):
-            return WorktreeSlotManager._ensure_git_exclude_locked(exclude)
 
     @staticmethod
     def git_exclude_is_current_path(exclude_path: str | Path) -> bool:
@@ -331,13 +302,6 @@ class WorktreeSlotManager:
         if not cls.git_exclude_is_current_path(exclude):
             raise OSError(f"managed Git exclude block could not be verified at {exclude}")
         return changed
-
-    async def ensure_git_exclude_for_checkout(
-        self, checkout_path: str | Path
-    ) -> bool:
-        """Validate the root checkout, then install its exact exclude block."""
-        exclude = await resolve_managed_exclude_path(self.git, checkout_path)
-        return self.ensure_git_exclude_path(exclude)
 
     @staticmethod
     def _ensure_git_exclude_locked(exclude: Path) -> bool:
@@ -491,7 +455,7 @@ class WorktreeSlotManager:
         default_branch = await self._default_branch(base_path)
 
         async with self._git_mutex(base_path):
-            await self.ensure_git_exclude_for_checkout(base_path)
+            await self.ensure_git_exclude(base_path)
             try:
                 await self.git.aworktree_prune(base_path)
             except GitError as e:
@@ -582,7 +546,7 @@ class WorktreeSlotManager:
             _validate_ref(resume_branch, field="resume branch")
 
         slot_dir = Path(slot_ws.workspace_path)
-        await self.ensure_git_exclude_for_checkout(slot_dir)
+        await self.ensure_git_exclude(slot_dir)
         from src.orchestrator.task_checkpoint import prepare_checkpoint, restore_checkpoint
         checkpoint = await prepare_checkpoint(self.db, self.git, task.id, str(slot_dir))
         if checkpoint:
@@ -1483,7 +1447,7 @@ class WorktreeSlotManager:
                 continue
             # Repair exclude block idempotently.
             try:
-                if await self.ensure_git_exclude_for_checkout(base_path):
+                if await self.ensure_git_exclude(base_path):
                     report.repaired.append(base.id)
             except Exception as e:
                 logger.warning("ensure_git_exclude failed for %s: %s", base_path, e)
