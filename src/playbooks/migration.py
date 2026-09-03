@@ -1273,6 +1273,176 @@ def _playbook_ids(rows: Sequence[Mapping[str, Any]]) -> str:
     return ", ".join(sorted({str(row.get("playbook_id") or "?") for row in rows}))
 
 
+#: The provenance a committed shadow-parity record must name (§3.7).
+#:
+#: Each one answers a different "against what?": which suite produced the
+#: record, which artifact bytes it ran against, which V1 source the other arm
+#: replayed, and which event corpus both arms saw.  A record missing any of
+#: them cannot be checked by the reader it exists for, so it is not evidence.
+_PARITY_PROVENANCE_FIELDS: tuple[str, ...] = (
+    "suite",
+    "artifact_sha256",
+    "v1_source",
+    "corpus",
+)
+
+#: The counters the parity claim is made of.  ``unexplained`` already blocks
+#: when it is non-zero; the other three exist so that "nothing unexplained"
+#: cannot be satisfied by a record that observed nothing.
+_PARITY_COUNTER_FIELDS: tuple[str, ...] = (
+    "observations",
+    "identical",
+    "expected",
+    "unexplained",
+)
+
+
+def _parity_counter(parity: Mapping[str, Any], field: str) -> int | None:
+    """The record's *field* as a whole count, or ``None`` if it is not one.
+
+    ``bool`` is excluded deliberately: ``True`` is an ``int`` in Python, and a
+    record that says ``"observations": true`` has recorded no observations.
+    """
+    value = parity.get(field)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def _parity_binding_problems(
+    parity: Mapping[str, Any], artifacts: Sequence[Mapping[str, Any]]
+) -> list[str]:
+    """Every way the record's artifact hash fails to bind to what is live.
+
+    This is the report's only freshness signal, and it is a stronger one than a
+    timestamp would be: the record names the exact artifact bytes both arms ran
+    against, so requiring that hash to equal the hash each deterministic
+    playbook actually activates means the evidence is about the fleet being cut
+    over rather than about some artifact that has since been recompiled.
+
+    The matching activation must also carry a review, which
+    :func:`build_cutover_report` already requires of *every* enabled
+    activation; it is not repeated here so one missing review yields one
+    blocking reason rather than two.
+    """
+    recorded_sha = str(parity.get("artifact_sha256") or "")
+    covered = parity.get("deterministic_playbooks")
+    names = [
+        name.strip()
+        for name in (covered if isinstance(covered, list) else [])
+        if isinstance(name, str) and name.strip()
+    ]
+    if not isinstance(covered, list) or len(names) != len(covered) or not names:
+        return [
+            (
+                "the shadow-parity record names no deterministic playbook, so its "
+                "artifact hash binds to nothing that is live"
+            )
+        ]
+
+    problems: list[str] = []
+    for playbook_id in sorted(set(names)):
+        rows = [row for row in artifacts if str(row.get("playbook_id") or "") == playbook_id]
+        if not rows:
+            problems.append(
+                f"shadow-parity evidence covers {playbook_id!r}, which is not an enabled "
+                "activation; the record proves nothing about the fleet being cut over"
+            )
+            continue
+        for row in rows:
+            live = str(row.get("artifact_sha256") or "")
+            if live and recorded_sha and live == recorded_sha:
+                continue
+            identifier = str(row.get("scope_identifier") or "")
+            where = f"{row.get('scope') or 'system'}" + (f":{identifier}" if identifier else "")
+            problems.append(
+                f"shadow-parity evidence was recorded against artifact "
+                f"{recorded_sha or '<none>'} but {playbook_id!r} ({where}) activates "
+                f"{live or '<none>'}; re-run the parity suite against the live artifact"
+            )
+    return problems
+
+
+def validate_parity_evidence(
+    parity: Any, *, artifacts: Sequence[Mapping[str, Any]] = ()
+) -> list[str]:
+    """Every reason the committed shadow-parity record cannot certify a cutover.
+
+    Package 6's parity gate used to ask the record two questions — is
+    ``unexplained`` non-zero, and is ``recorded`` exactly ``False`` — which any
+    JSON object answered acceptably.  ``{"recorded": true}`` was therefore a
+    complete pass: no observations, no suite, no artifact hash, no counters,
+    nothing bound to anything live.  A record is checked here instead, and
+    every check **fails closed**: a field that is missing, malformed, or of the
+    wrong type is a blocking reason, never a value the report may assume.
+
+    *artifacts* are the enabled activations the report renders, used to bind
+    the record's artifact hash to the bytes each deterministic playbook is
+    actually running (see :func:`_parity_binding_problems`).
+    """
+    if not isinstance(parity, Mapping):
+        return [
+            (
+                "the shadow-parity record is not an object; cutover cannot be certified "
+                "against evidence that could not be read"
+            )
+        ]
+    if parity.get("recorded") is False:
+        detail = str(parity.get("error") or "").strip()
+        return [
+            "no committed shadow-parity report is available" + (f" ({detail})" if detail else "")
+        ]
+
+    problems: list[str] = []
+    for field in _PARITY_PROVENANCE_FIELDS:
+        value = parity.get(field)
+        if not isinstance(value, str) or not value.strip():
+            problems.append(f"the shadow-parity record has no {field}")
+    artifact_sha = parity.get("artifact_sha256")
+    if isinstance(artifact_sha, str) and artifact_sha.strip() and not SHA256_RE.match(artifact_sha):
+        problems.append(
+            f"the shadow-parity record's artifact_sha256 {artifact_sha!r} is not a sha256 digest"
+        )
+
+    counters: dict[str, int] = {}
+    for field in _PARITY_COUNTER_FIELDS:
+        counted = _parity_counter(parity, field)
+        if counted is None:
+            problems.append(f"the shadow-parity record's {field} is not a whole count")
+        else:
+            counters[field] = counted
+    observations = counters.get("observations")
+    if observations == 0:
+        problems.append(
+            "the shadow-parity record observed no events; an empty comparison is not "
+            "evidence that V1 and V2 agree"
+        )
+    if len(counters) == len(_PARITY_COUNTER_FIELDS):
+        classified = counters["identical"] + counters["expected"] + counters["unexplained"]
+        if classified != counters["observations"]:
+            problems.append(
+                f"the shadow-parity record classifies {classified} of "
+                f"{counters['observations']} observations; its counters do not add up"
+            )
+
+    events = parity.get("events")
+    if not isinstance(events, list) or not events:
+        problems.append("the shadow-parity record carries no per-event evidence")
+    elif any(
+        not isinstance(event, Mapping) or not str(event.get("event_id") or "").strip()
+        for event in events
+    ):
+        problems.append("the shadow-parity record has per-event entries that name no event")
+    elif observations is not None and len(events) != observations:
+        problems.append(
+            f"the shadow-parity record lists {len(events)} events for "
+            f"{observations} observations"
+        )
+
+    problems.extend(_parity_binding_problems(parity, artifacts))
+    return problems
+
+
 def build_cutover_report(
     *,
     contract_fingerprint: str,
@@ -1301,6 +1471,12 @@ def build_cutover_report(
     *compatibility_blockers* are the live release-check findings collected by
     the command layer.  They are rendered with the report's other blockers so
     contract, profile, or artifact drift can never leave cutover eligible.
+
+    *parity* is the committed shadow-parity record, checked by
+    :func:`validate_parity_evidence` rather than trusted: it has to carry its
+    provenance, counters that add up over a non-empty corpus, and an artifact
+    hash equal to the bytes each deterministic playbook actually activates.
+    Any object at all used to satisfy this gate.
     """
     generated_at = time.time() if now is None else now
     unread = [
@@ -1350,7 +1526,9 @@ def build_cutover_report(
         if isinstance(timestamp, (int, float)):
             run_started.append(float(timestamp))
 
-    unexplained = int(parity.get("unexplained") or 0)
+    parity_record: Mapping[str, Any] = parity if isinstance(parity, Mapping) else {}
+    parity_problems = validate_parity_evidence(parity, artifacts=rendered_artifacts)
+    unexplained = _parity_counter(parity_record, "unexplained") or 0
     # §3.7: an activation is rollback-ready only when a human approved the exact
     # bytes that are live *and* the V1 artifact it would roll back to still
     # exists.  Evidence that is merely absent counts as absent, never as fine —
@@ -1403,8 +1581,7 @@ def build_cutover_report(
         blocking_reasons.append(f"{len(runs)} active V1 runs must drain before cutover")
     if unexplained:
         blocking_reasons.append(f"{unexplained} unexplained shadow-parity findings")
-    if parity.get("recorded") is False:
-        blocking_reasons.append("no committed shadow-parity report is available")
+    blocking_reasons.extend(parity_problems)
     if not rollback_ready:
         blocking_reasons.append("rollback artifacts are incomplete")
 
@@ -1428,7 +1605,7 @@ def build_cutover_report(
             "runs": runs,
             "unavailable": "active_v1_runs" in unread_sources,
         },
-        "parity": dict(parity),
+        "parity": dict(parity_record),
         "evidence_errors": unread,
         "rollback_ready": rollback_ready,
         "cutover_eligible": not blocking_reasons,
@@ -1976,4 +2153,5 @@ __all__ = [
     "reviewed_artifact_evidence",
     "shipped_profile_fingerprints",
     "shipped_profile_lookup",
+    "validate_parity_evidence",
 ]
