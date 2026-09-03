@@ -24,7 +24,12 @@ from sqlalchemy import insert, select, update
 from sqlalchemy.exc import IntegrityError
 
 from src.database import Database
-from src.database.tables import playbook_artifacts, playbook_pending_events, playbook_waits
+from src.database.tables import (
+    playbook_artifacts,
+    playbook_pending_events,
+    playbook_v2_runs,
+    playbook_waits,
+)
 from src.playbooks.receipts import StepReceipt
 from src.playbooks.run_state import (
     DuplicateWait,
@@ -758,6 +763,64 @@ async def test_expire_persists_one_claim_under_concurrency(db):
     assert len({claim.claimed_at for claim in claims}) == 1
     [recovered] = await db.expire_due(NOW + DAY)
     assert recovered == claims[0]
+
+
+async def test_expire_skips_a_wait_whose_run_is_no_longer_paused(db):
+    """The lifecycle half of the expiry fence, on its own.
+
+    A run that has left ``paused`` is executing again: its wait belongs to a
+    suspension somebody already picked up, and expiring it would resume a run
+    that is mid-step.  The drift is forced onto the row because every real
+    boundary advances the version too — which the *other* half of the fence
+    would refuse by itself, leaving this half unproven.
+    """
+    await pause_run_on_waits(db, make_wait(deadline_at=NOW - 1))
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(playbook_v2_runs)
+            .where(playbook_v2_runs.c.run_id == "run-1")
+            .values(lifecycle=RunLifecycle.RUNNING.value)
+        )
+
+    assert await db.expire_due(NOW) == []
+    assert [wait.wait_id for wait in await db.list_active("run-1")] == ["wait-1"]
+
+
+async def test_expire_skips_a_wait_left_behind_by_an_advanced_snapshot(db):
+    """The version half: the wait names a boundary the run has moved past.
+
+    This is what ends the crash-retry replay.  A resume commits at the next
+    version, so the expired row stops being selectable the moment the run it
+    belongs to advances — an expiry is replayed until it lands, and never
+    after.  Here the run stays ``paused`` across the boundary so only the
+    version can be what refuses it.
+    """
+    paused = await pause_run_on_waits(db, make_wait(deadline_at=NOW - 1))
+    advanced = await db.commit_boundary(
+        replace(paused, lifecycle=RunLifecycle.PAUSED, current_step_id="await-later"),
+        make_receipt(paused, step_id="await-later", attempt=2),
+        WaitChangeSet(),
+    )
+    assert advanced.version == paused.version + 1
+
+    assert await db.expire_due(NOW) == []
+    assert [wait.wait_id for wait in await db.list_active("run-1")] == ["wait-1"]
+
+
+async def test_an_expired_claim_stops_replaying_once_the_run_advances(db):
+    """The two halves together, as the scheduler actually meets them."""
+    paused = await pause_run_on_waits(db, make_wait(deadline_at=NOW - 1))
+    [claim] = await db.expire_due(NOW)
+    [replayed] = await db.expire_due(NOW + HOUR)
+    assert replayed == claim
+
+    await db.commit_boundary(
+        replace(paused, lifecycle=RunLifecycle.RUNNING, current_step_id="after-wait"),
+        make_receipt(paused, step_id="after-wait", attempt=2),
+        WaitChangeSet(clear_wait_ids=("wait-1",)),
+    )
+
+    assert await db.expire_due(NOW + DAY) == []
 
 
 async def test_clear_for_run_deactivates_every_wait(db):
