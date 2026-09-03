@@ -291,6 +291,7 @@ class PlaybookV2CommandsMixin:
                 profile_map,
                 plugin_command_names=self._plugin_command_names(),
                 intelligence_classes=self._v2_intelligence_classes(),
+                llm_config=getattr(self.config, "llm", None),
             ),
             RegisteredEventLookup(),
         )

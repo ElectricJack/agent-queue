@@ -291,7 +291,8 @@ def main() -> int:
     for name, payloads in sorted(scenarios.items()):
         path = out / f"{name}.json"
         path.write_text(json.dumps(payloads, indent=2, sort_keys=True) + "\n")
-        print(f"wrote {path.relative_to(ROOT)}")
+        display_path = path.relative_to(ROOT) if path.is_relative_to(ROOT) else path
+        print(f"wrote {display_path}")
     (out / "index.json").write_text(json.dumps(sorted(scenarios), indent=2) + "\n")
     return 0
 

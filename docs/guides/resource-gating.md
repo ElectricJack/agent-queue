@@ -125,6 +125,28 @@ wrapper adds `-n <cap> --dist loadfile` and the default marker deselects **only 
 did not pass your own** — `aq test -m perf tests/perf` and `aq test -p
 no:xdist tests/` both do exactly what they say.
 
+### Wall-clock budgets need a quiet box
+
+Everything under `tests/perf/` carries the `perf` marker, which is what keeps
+it out of the default suite and out of CI's `Tests (default)` job. The
+*latency* budgets there — as opposed to the statement counts, which are
+deterministic — additionally take the `perf_strict` fixture and skip unless
+`AQ_PERF_STRICT=1`. They measure the machine as much as the query, so under
+`-n auto`, or on a box running several agents, they fail on load rather than
+on a regression. Run them on purpose, serially, when the box is idle:
+
+```bash
+POSTGRES_TEST_DSN=postgresql+asyncpg://agent_queue:agent_queue_dev@localhost:5533/aq_perf \
+AQ_PERF_STRICT=1 aq test -m perf -p no:xdist -s tests/perf
+```
+
+`-m perf` matters as much as `AQ_PERF_STRICT`: `--aq-all-markers` only stops
+`aq test` from adding its *own* `-m`, and pyproject's `addopts` still carries
+`-m "not perf and ..."`, so without an explicit `-m` the run deselects
+everything and reports "no tests were collected". `-s` matters too: each
+latency test prints its p95, median and max, so a passing run records the
+margin rather than only the verdict.
+
 While it waits, it prints a line per poll naming the current holders. That
 is deliberate: the daemon reads terminal silence as a stall, so an agent
 queued behind a busy box has to *look* queued.

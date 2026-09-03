@@ -145,7 +145,14 @@ export const EDGE_KIND_LABELS: Record<string, string> = {
  *  the two hashes are identical (`overlayAppliesTo` in `layout.ts`). */
 export type RunOverlayInput = Pick<
   PlaybookRunOverlayResponse,
-  "run_id" | "artifact" | "artifact_is_active" | "lifecycle" | "current_step_id" | "nodes" | "edges"
+  | "run_id"
+  | "artifact"
+  | "artifact_is_active"
+  | "lifecycle"
+  | "current_step_id"
+  | "nodes"
+  | "edges"
+  | "receipts"
 >;
 
 export type NodeRunState = NonNullable<NodeOverlayDTO["state"]>;

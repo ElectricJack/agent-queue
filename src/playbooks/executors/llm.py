@@ -59,6 +59,14 @@ def _spec(step: LlmStep, ctx: StepContext, intelligence_class: str | None) -> LL
     into the class field makes ``resolve_call`` log "unknown intelligence
     class" and silently fall back to ``llm.model`` (child plan §4.4 step 1).
     ``None`` means the profile declares no class, which is the config default.
+
+    ``provider`` is deliberately left unset, so ``resolve_call`` takes it from
+    ``llm.provider``.  The profile's ``harness`` names the CLI that runs a
+    *session*, and this step is a headless API call with no CLI; more
+    concretely, ``llm:`` carries a single ``api_key`` / ``base_url`` pair bound
+    to ``llm.provider``, so honouring the harness here would hand one
+    provider's credentials to another's adapter.  The AI card follows this
+    surface — see ``src.profiles.intelligence.direct_call_intelligence_for``.
     """
     return LLMCallSpec(
         intelligence_class=intelligence_class,

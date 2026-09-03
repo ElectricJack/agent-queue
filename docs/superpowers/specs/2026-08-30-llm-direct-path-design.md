@@ -84,6 +84,13 @@ Resolution order (`spec.resolve(config, classes) -> ResolvedCall`):
 
 An unknown class id or a class with no slice for the provider logs a warning and falls through to the next step — never a hard failure, matching `sessions/spec.py`.
 
+**The profile's `harness` does not select a provider here** (settled 2026-09-03, task `swift-ember-68`). A playbook `LlmStep` names a profile, and `src/playbooks/executors/llm.py` takes only the profile's `default_class` from it, deliberately leaving `spec.provider` unset so step 1 resolves to `llm.provider`. Two reasons:
+
+- `harness` names the **CLI that runs a session**; a direct-path call is headless and runs no CLI, so a codex- or gemini-harnessed profile has no CLI to honour here.
+- `llm:` carries a **single** `api_key` / `base_url` pair bound to `llm.provider`, and `LLMConfig.validate()` only checks credentials for that one provider. Deriving the provider per profile would hand one provider's credentials to another's adapter, failing at call time with nothing at config time able to catch it.
+
+Read-only surfaces follow this path rather than restating it: the semantic graph's AI card for an `llm` node resolves through `src.profiles.intelligence.direct_call_intelligence_for`, which builds the executor's own `LLMCallSpec` and calls `resolve_call`, so the card cannot name a provider or model the step would not use. An `agent_task` node does launch a session, so its card keeps the harness-derived `intelligence_for`. `ProfileLookup` exposes the two as separate methods (`direct_routing` / `routing`) precisely so a caller has to say which surface it is on.
+
 ### 3.2 `LLMClient`
 
 ```python

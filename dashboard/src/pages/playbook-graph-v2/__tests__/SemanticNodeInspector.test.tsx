@@ -4,13 +4,19 @@ import { afterEach, describe, expect, it } from "vitest";
 import SemanticNodeInspector from "../SemanticNodeInspector";
 import {
   awaitApproval,
+  checkGate,
   classifyRisk,
   ensureReviewTask,
   escalateNode,
   forEachTask,
   listDownstream,
+  openGate,
+  runOverlay,
+  runReceipts,
   unroutedEscalateNode,
 } from "./fixtures";
+
+const overlayFor = (stepId: string) => runOverlay.nodes!.find((node) => node.step_id === stepId)!;
 
 afterEach(cleanup);
 
@@ -146,5 +152,92 @@ describe("SemanticNodeInspector", () => {
     await userEvent.click(toggle);
     expect(screen.getByTestId("advanced-detail")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Hide advanced" })).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("shows no run block at all when no run is overlaid", () => {
+    render(<SemanticNodeInspector node={openGate} />);
+    expect(screen.queryByRole("group", { name: "Run" })).not.toBeInTheDocument();
+  });
+
+  it("shows the step's run state and keeps every attempt of a retry selectable", async () => {
+    const user = userEvent.setup();
+    render(<SemanticNodeInspector node={openGate} overlay={overlayFor("open-gate")} receipts={runReceipts} />);
+    const run = within(screen.getByRole("group", { name: "Run" }));
+    expect(run.getByText("completed")).toBeInTheDocument();
+    expect(run.getByText("3")).toBeInTheDocument();
+    expect(run.getByText("created")).toBeInTheDocument();
+
+    // One definition node on the canvas; four receipts under it here.
+    const chooser = within(run.getByRole("group", { name: "Receipts" }));
+    expect(chooser.getAllByRole("button")).toHaveLength(4);
+
+    await user.click(run.getByRole("button", { name: "Receipt for open-gate, iteration 1 · attempt 1 · runtime_error" }));
+    expect(screen.getByRole("region", { name: "Receipt detail" })).toHaveTextContent("Outcome: runtime_error");
+    expect(screen.getByRole("alert")).toHaveTextContent("gate_create timed out talking to the daemon");
+
+    await user.click(run.getByRole("button", { name: "Receipt for open-gate, iteration 1 · attempt 2 · reused" }));
+    expect(screen.getByRole("region", { name: "Receipt detail" })).toHaveTextContent("Outcome: reused");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("selects a loop iteration and opens the receipt its body step recorded", async () => {
+    const user = userEvent.setup();
+    render(
+      <SemanticNodeInspector node={forEachTask} overlay={overlayFor("for-each-task")} receipts={runReceipts} />,
+    );
+    const iterations = within(screen.getByRole("group", { name: "Iterations" }));
+    expect(iterations.getAllByRole("button")).toHaveLength(3);
+    expect(iterations.getByRole("button", { name: "Iteration 1: task-b" })).toHaveTextContent(
+      "1: task-b · reused · 50s",
+    );
+
+    await user.click(iterations.getByRole("button", { name: "Iteration 1: task-b" }));
+    const detail = within(screen.getByRole("region", { name: "Receipt detail" }));
+    // The iteration's first receipt is the failed attempt on the body step —
+    // a different step id from the foreach node being inspected.
+    expect(detail.getByText("Outcome: runtime_error")).toBeInTheDocument();
+    expect(detail.getByText("open-gate")).toBeInTheDocument();
+  });
+
+  it("starts the receipt selection over when a different step is inspected", async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(
+      <SemanticNodeInspector node={openGate} overlay={overlayFor("open-gate")} receipts={runReceipts} />,
+    );
+    await user.click(screen.getByRole("button", { name: "Receipt for open-gate, iteration 0 · attempt 1 · created" }));
+    expect(screen.getByRole("region", { name: "Receipt detail" })).toBeInTheDocument();
+
+    rerender(
+      <SemanticNodeInspector node={forEachTask} overlay={overlayFor("for-each-task")} receipts={runReceipts} />,
+    );
+    expect(screen.queryByRole("region", { name: "Receipt detail" })).not.toBeInTheDocument();
+    expect(screen.getByText("Select a receipt to see what the step actually did.")).toBeInTheDocument();
+  });
+
+  it("says the overlay returned no receipt for a step it did visit", () => {
+    render(<SemanticNodeInspector node={checkGate} overlay={overlayFor("check-gate")} receipts={runReceipts} />);
+    const run = within(screen.getByRole("group", { name: "Run" }));
+    expect(run.getByText("No receipt for this step came back with the overlay.")).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Receipt detail" })).not.toBeInTheDocument();
+  });
+
+  it("keeps the chosen receipt across a live run's re-fetch of the same run", async () => {
+    const user = userEvent.setup();
+    const props = { node: openGate, receipts: runReceipts, runId: runOverlay.run_id };
+    const { rerender } = render(<SemanticNodeInspector {...props} overlay={overlayFor("open-gate")} />);
+    await user.click(
+      screen.getByRole("button", { name: "Receipt for open-gate, iteration 1 · attempt 2 · reused" }),
+    );
+    expect(screen.getByRole("region", { name: "Receipt detail" })).toHaveTextContent("Outcome: reused");
+
+    // A polled overlay is a new object every few seconds; only a new run id is
+    // a reason to throw away what the operator is reading.
+    rerender(<SemanticNodeInspector {...props} overlay={{ ...overlayFor("open-gate") }} />);
+    expect(screen.getByRole("region", { name: "Receipt detail" })).toHaveTextContent("Outcome: reused");
+
+    rerender(
+      <SemanticNodeInspector {...props} runId="run-99" overlay={{ ...overlayFor("open-gate") }} />,
+    );
+    expect(screen.queryByRole("region", { name: "Receipt detail" })).not.toBeInTheDocument();
   });
 });

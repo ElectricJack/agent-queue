@@ -754,14 +754,24 @@ def _canonical_explanation(step_id: str, step: Any, definition: PlaybookDefiniti
     }
 
 
-def _routing(profiles: Any, profile_id: str) -> Any | None:
+def _routing(profiles: Any, step: Any, profile_id: str) -> Any | None:
     """The profile's resolved intelligence class / provider / model.
 
-    ``routing`` is part of the ``ProfileLookup`` protocol, but a caller may
-    still pass an older stub that only answers ``policy``; such a lookup
-    reports no routing rather than raising.
+    Which question to ask depends on the step, because the two surfaces do
+    not agree on the provider: an :class:`AgentTaskStep` launches a session,
+    where the profile's harness names the CLI and so fixes the provider,
+    while an :class:`LlmStep` is a headless direct-path call with no CLI,
+    where ``llm.provider`` fixes it.  Asking ``routing`` for an ``LlmStep``
+    is what made the card claim a provider and model slice the executor
+    never used.
+
+    Both methods are part of the ``ProfileLookup`` protocol, but a caller may
+    still pass an older stub that answers only ``policy``, or only the
+    session-surface ``routing``; such a lookup reports no routing rather
+    than raising.
     """
-    lookup = getattr(profiles, "routing", None)
+    method = "direct_routing" if isinstance(step, LlmStep) else "routing"
+    lookup = getattr(profiles, method, None)
     return lookup(profile_id) if callable(lookup) else None
 
 
@@ -769,7 +779,7 @@ def _ai_detail(step: Any, profiles: Any) -> dict | None:
     if not isinstance(step, (LlmStep, AgentTaskStep)):
         return None
     policy = profiles.policy(step.profile_id) if profiles is not None else None
-    routing = _routing(profiles, step.profile_id) if profiles is not None else None
+    routing = _routing(profiles, step, step.profile_id) if profiles is not None else None
     capabilities = {
         "harness_tools": sorted(getattr(policy, "harness_tools", ())),
         "aq_commands": sorted(getattr(policy, "aq_commands", ())),

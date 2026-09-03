@@ -1,4 +1,9 @@
-"""Layout perf on PostgreSQL (spec §9). Skipped without POSTGRES_TEST_DSN."""
+"""Layout perf on PostgreSQL (spec §9). Skipped without POSTGRES_TEST_DSN.
+
+Wall-clock budgets, so the module is marked ``perf`` and each test takes
+``perf_strict`` (``tests/perf/conftest.py``) — see that fixture for why and
+for the command that runs them.
+"""
 
 from __future__ import annotations
 
@@ -12,7 +17,10 @@ from src.task_graph.layout.driver import LayoutDriver
 from tests.pg_dsn import ensure_worker_postgres_dsn
 
 DSN = ensure_worker_postgres_dsn()
-pytestmark = pytest.mark.skipif(not DSN, reason="POSTGRES_TEST_DSN not set")
+pytestmark = [
+    pytest.mark.perf,
+    pytest.mark.skipif(not DSN, reason="POSTGRES_TEST_DSN not set"),
+]
 
 
 @pytest.fixture
@@ -32,7 +40,7 @@ async def _drain(db, drv) -> None:
     raise AssertionError("dirty marks did not drain")
 
 
-async def test_full_layout_under_budget(pg):
+async def test_full_layout_under_budget(perf_strict, pg):
     drv = LayoutDriver(pg)
     t0 = time.perf_counter()
     await drv.full_layout("perf", "all")
@@ -41,7 +49,7 @@ async def test_full_layout_under_budget(pg):
     assert elapsed < 60.0
 
 
-async def test_incremental_batch_of_ten_under_550ms(pg):
+async def test_incremental_batch_of_ten_under_550ms(perf_strict, pg):
     drv = LayoutDriver(pg)
     await drv.full_layout("perf", "all")
     await drv.full_layout("perf", "active")
@@ -85,7 +93,7 @@ async def test_incremental_batch_of_ten_under_550ms(pg):
     assert elapsed < 0.55
 
 
-async def test_root_band_crossing_publish_under_1s(pg):
+async def test_root_band_crossing_publish_under_1s(perf_strict, pg):
     drv = LayoutDriver(pg)
     await drv.full_layout("perf", "all")
     await drv.full_layout("perf", "active")
