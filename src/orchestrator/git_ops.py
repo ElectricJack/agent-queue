@@ -417,7 +417,7 @@ class GitOpsMixin:
         review.
         """
         workspace = ctx.workspace_path
-        branch = ctx.task.branch_name
+        branch = ctx.delivery_branch or ctx.task.branch_name
         if not workspace or not branch:
             return False
         pr_mode = (
@@ -605,8 +605,6 @@ class GitOpsMixin:
 
         if not workspace or not await self.git.avalidate_checkout(workspace):
             return PhaseResult.CONTINUE
-        if not task.branch_name:
-            return PhaseResult.CONTINUE
 
         default_branch = ctx.default_branch
         has_remote = await self.git.ahas_remote(workspace)
@@ -618,6 +616,15 @@ class GitOpsMixin:
         pr_mode = (
             await self._effective_integration_mode(task) == INTEGRATION_MODE_PULL_REQUEST
         )
+        # A task branch is normally the delivery branch. If it carries no
+        # work, an agent may have committed and opened its PR from the branch
+        # currently checked out instead. That alternate branch is selected
+        # below only after the task branch is shown empty.
+        pr_delivery_branch = task.branch_name
+        if not pr_delivery_branch:
+            if not pr_mode or not current_branch or current_branch == default_branch:
+                return PhaseResult.CONTINUE
+            pr_delivery_branch = current_branch
 
         # Worktree-mode tasks integrate via _phase_integrate under the merge
         # slot, not via _phase_verify's auto-merge remediations.  The agent
@@ -791,7 +798,7 @@ class GitOpsMixin:
         if has_remote and not has_uncommitted:
             # Determine the expected branch for this task type
             if is_intermediate or pr_mode:
-                expected_push_branch = task.branch_name
+                expected_push_branch = task.branch_name if is_intermediate else pr_delivery_branch
             else:
                 expected_push_branch = default_branch
             if current_branch == expected_push_branch:
@@ -871,52 +878,66 @@ class GitOpsMixin:
                 failures.append(
                     (
                         "You left uncommitted changes. Please commit them on "
-                        f"branch `{task.branch_name}` and push.",
+                        f"branch `{pr_delivery_branch}` and push.",
                         True,  # fixable — agent can commit and push
                     )
                 )
-            # Allow being on default if no changes were made (research task)
-            if current_branch == default_branch:
-                # No-change task — acceptable, skip PR checks
-                pass
-            elif not has_uncommitted and await self._abranch_has_no_commits(
-                workspace, current_branch, default_branch
+            if not has_uncommitted and await self._abranch_has_no_commits(
+                workspace, pr_delivery_branch, default_branch
             ):
-                # Review-only task: the worktree is pinned to its own task
-                # branch but the agent produced no commits.  There is nothing
-                # to push and nothing to open a PR for — demanding one forces
-                # an empty PR or a manual checkout of the default branch.
-                logger.info(
-                    "Task %s: branch '%s' has no commits ahead of '%s' — "
-                    "skipping PR/push checks",
-                    task.id,
-                    current_branch,
-                    default_branch,
-                )
-            else:
+                if (
+                    task.branch_name
+                    and current_branch != default_branch
+                    and current_branch != task.branch_name
+                    and not await self._abranch_has_no_commits(
+                        workspace, current_branch, default_branch
+                    )
+                ):
+                    # The task branch never moved, but the current branch
+                    # contains the work and is its actual PR delivery tip.
+                    pr_delivery_branch = current_branch
+                else:
+                    # Review-only task: the worktree is pinned to its own task
+                    # branch, or checkout moved to default, but the task branch
+                    # produced no commits. There is nothing to push and nothing
+                    # to open a PR for — demanding one forces an empty PR.
+                    logger.info(
+                        "Task %s: branch '%s' has no commits ahead of '%s' — "
+                        "skipping PR/push checks",
+                        task.id,
+                        pr_delivery_branch,
+                        default_branch,
+                    )
+                    pr_delivery_branch = None
+            if pr_delivery_branch:
+                ctx.delivery_branch = pr_delivery_branch
                 if has_remote:
-                    pr_url = await self.git.afind_open_pr(workspace, task.branch_name)
+                    pr_url = await self.git.afind_open_pr(
+                        workspace,
+                        pr_delivery_branch,
+                        include_workspace_head=False,
+                    )
                     if pr_url:
                         ctx.pr_url = pr_url
                     elif await self.git.ais_ancestor(
                         workspace,
-                        task.branch_name,
+                        pr_delivery_branch,
                         f"origin/{default_branch}",
                     ):
                         logger.info(
                             "Task %s: branch '%s' is already integrated into '%s'",
                             task.id,
-                            task.branch_name,
+                            pr_delivery_branch,
                             default_branch,
                         )
                     else:
                         failures.append(
                             (
-                                f"No open PR found for branch `{task.branch_name}`. "
+                                f"No open PR found for branch `{pr_delivery_branch}`. "
                                 f"Please push your branch and create a PR: "
-                                f"`git push origin {task.branch_name}` then "
+                                f"`git push origin {pr_delivery_branch}` then "
                                 f"`gh pr create --base {default_branch} "
-                                f"--head {task.branch_name}`.",
+                                f"--head {pr_delivery_branch}`.",
                                 True,  # fixable — agent can push and create PR
                             )
                         )

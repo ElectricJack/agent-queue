@@ -210,6 +210,83 @@ class TestPhaseVerifyByMode:
             "origin/main",
         )
 
+    async def test_pr_mode_requires_a_pr_for_task_branch_when_checkout_is_default(
+        self, orch
+    ):
+        """A task branch with commits cannot bypass the PR gate via checkout."""
+        task = _pr_task("t-pr-default-checkout", branch_name="feature-2")
+        await orch.db.create_task(task)
+        orch.git.aget_current_branch = AsyncMock(return_value="main")
+        orch.git.afind_open_pr = AsyncMock(return_value=None)
+        orch.git.ais_ancestor = AsyncMock(return_value=False)
+        orch.git.acount_commits_ahead = AsyncMock(return_value=1)
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = _ctx(orch, task, ws.workspace_path)
+        ctx.close_session_live = True
+
+        assert await orch._phase_verify(ctx) == PhaseResult.STOP
+        assert ctx.verification_retry_in_session is True
+        assert any("No open PR" in issue for issue in ctx.verification_issues)
+
+    async def test_pr_mode_rejects_a_pr_that_only_matches_default_head(self, orch):
+        """A main-head PR is not delivery evidence for the task branch."""
+        task = _pr_task("t-pr-main-head", branch_name="feature-2")
+        await orch.db.create_task(task)
+        orch.git.aget_current_branch = AsyncMock(return_value="main")
+        orch.git.ais_ancestor = AsyncMock(return_value=False)
+
+        async def find_open_pr(_workspace, _branch, *, include_workspace_head=True):
+            if include_workspace_head:
+                return "https://github.com/org/repo/pull/unrelated-main"
+            return None
+
+        orch.git.afind_open_pr = find_open_pr
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = _ctx(orch, task, ws.workspace_path)
+        ctx.close_session_live = True
+
+        assert await orch._phase_verify(ctx) == PhaseResult.STOP
+        assert ctx.verification_retry_in_session is True
+        assert any("No open PR" in issue for issue in ctx.verification_issues)
+
+    async def test_pr_mode_uses_alternate_delivery_branch_when_task_branch_is_empty(self, orch):
+        """Work committed on a delivery branch must still find its PR."""
+        task = _pr_task("t-pr-alt-delivery", branch_name="aq/t-pr-alt-delivery")
+        await orch.db.create_task(task)
+        orch.git.aget_current_branch = AsyncMock(return_value="feature/delivery")
+        orch.git.acount_commits_ahead = AsyncMock(side_effect=[0, 1])
+        orch.git.afind_open_pr = AsyncMock(return_value="https://github.com/org/repo/pull/alt")
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = _ctx(orch, task, ws.workspace_path)
+
+        assert await orch._phase_verify(ctx) == PhaseResult.CONTINUE
+        assert ctx.pr_url == "https://github.com/org/repo/pull/alt"
+        orch.git.afind_open_pr.assert_awaited_once_with(
+            ws.workspace_path, "feature/delivery", include_workspace_head=False
+        )
+
+    async def test_pr_mode_rejects_a_stale_pr_for_an_alternate_delivery_branch(self, orch):
+        """An alternate branch's PR must deliver its current tip, too."""
+        task = _pr_task("t-pr-stale-alternate", branch_name="aq/t-pr-stale-alternate")
+        await orch.db.create_task(task)
+        orch.git.aget_current_branch = AsyncMock(return_value="feature/delivery")
+        orch.git.acount_commits_ahead = AsyncMock(side_effect=[0, 1])
+        orch.git.ais_ancestor = AsyncMock(return_value=False)
+
+        async def find_open_pr(_workspace, _branch, *, include_workspace_head=True):
+            if include_workspace_head:
+                return "https://github.com/org/repo/pull/stale-alt"
+            return None
+
+        orch.git.afind_open_pr = find_open_pr
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = _ctx(orch, task, ws.workspace_path)
+        ctx.close_session_live = True
+
+        assert await orch._phase_verify(ctx) == PhaseResult.STOP
+        assert ctx.verification_retry_in_session is True
+        assert any("No open PR" in issue for issue in ctx.verification_issues)
+
     async def test_direct_mode_auto_merges_to_default(self, orch):
         task = _direct_task()
         await orch.db.create_task(task)
@@ -712,6 +789,25 @@ class TestEmptyBranchIsFlaggedNoCode:
 
     async def test_pr_mode_branch_with_commits_is_not_flagged(self, orch, monkeypatch):
         ctx = await self._run_pipeline(orch, _pr_task("t-flag-ahead"), monkeypatch, ahead=4)
+        assert ctx.branch_no_commits is False
+
+    async def test_alternate_delivery_branch_with_commits_is_not_flagged(self, orch):
+        """Completion must not report delivered alternate-branch work as no-code."""
+        task = _pr_task("t-flag-alternate", branch_name="aq/t-flag-alternate")
+        await orch.db.create_task(task)
+        orch.git.aget_current_branch = AsyncMock(return_value="feature/delivery")
+        # The task branch is empty; the alternate branch carries work; the
+        # final pipeline flag must also inspect that alternate branch.
+        async def commits_ahead(_workspace, branch, _base):
+            return {"aq/t-flag-alternate": 0, "feature/delivery": 1}[branch]
+
+        orch.git.acount_commits_ahead = AsyncMock(side_effect=commits_ahead)
+        orch.git.afind_open_pr = AsyncMock(return_value="https://github.com/org/repo/pull/alt")
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = _ctx(orch, task, ws.workspace_path)
+        ctx.work_outcome = "shipped"
+
+        assert await orch._run_completion_pipeline(ctx) == (ctx.pr_url, True)
         assert ctx.branch_no_commits is False
 
     async def test_worktree_mode_empty_branch_is_flagged(self, orch, monkeypatch):
