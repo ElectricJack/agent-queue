@@ -457,6 +457,7 @@ class PlaybookEngine:
         mode: ExecutionMode = ExecutionMode.LIVE,
         *,
         playbook_ids: Collection[str] | None = None,
+        dispatch_id: str | None = None,
     ) -> DispatchResult:
         """Start one run per matching rule, across every ready activation.
 
@@ -471,10 +472,12 @@ class PlaybookEngine:
         filter the callback would start every scope-matching activation and
         silently overturn the sibling decisions the manager just made.
         ``None`` keeps the unconstrained event-level dispatch for callers
-        that own admission themselves.
+        that own admission themselves. ``dispatch_id`` lets a durable caller
+        supply its own stable idempotency identity across process restarts;
+        ordinary event dispatch derives the identity from the event as before.
         """
         hydrated = await self._hydrate_event(event)
-        dispatch_id = self._dispatch_id(hydrated)
+        dispatch_id = dispatch_id or self._dispatch_id(hydrated)
         event_type = self._event_type(hydrated)
 
         refs: Sequence[ArtifactRef] = []
