@@ -1209,6 +1209,11 @@ class PlaybookV2CommandsMixin:
             reviewed_artifact_sha256=(artifact_sha256 if scope == "project" else None),
             reviewed_by=(actor if scope == "project" else None),
         )
+        manager = getattr(getattr(self, "orchestrator", None), "playbook_manager", None)
+        if manager is not None:
+            from src.playbooks.routing import refresh_routing_activation_snapshot
+
+            await refresh_routing_activation_snapshot(manager, self.db)
         refreshed, _contracts, _profiles = await self._v2_health_records()
         activation = self._v2_activation_for(refreshed, playbook_id, artifact_sha256)
         replay = await self._v2_replay_on_activation(playbook_id, activation)

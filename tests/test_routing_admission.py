@@ -1,7 +1,6 @@
 """Routing gates must exist before newly created work becomes visible."""
 
 import asyncio
-from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -14,8 +13,10 @@ from src.orchestrator import Orchestrator
 from src.playbooks.manager import PlaybookManager
 from src.playbooks.models import PlaybookTrigger
 from src.playbooks.pipeline_compiler import compile_pipeline
+from src.playbooks.routing import install_routing_activation_snapshot
 from src.vault import ensure_default_intelligence_classes
 from tests.pg_dsn import ensure_worker_postgres_dsn
+from tests.test_routing_admission_v2 import RecordingStore, SHA, _routing_artifact
 
 POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
 
@@ -88,6 +89,21 @@ async def setup(tmp_path, request):
     pb = compile_pipeline(LEGACY_ROUTING_PIPELINE).playbook
     manager._active[pb.id] = pb
     manager._index_triggers(pb)
+    artifact = _routing_artifact()
+    install_routing_activation_snapshot(
+        manager,
+        [
+            {
+                "playbook_id": artifact.id,
+                "scope": "system",
+                "scope_identifier": "",
+                "active_artifact_sha256": SHA,
+                "enabled": True,
+                "health": "ready",
+            }
+        ],
+        artifact_store=RecordingStore({SHA: artifact}),
+    )
     orch.playbook_manager = manager
     yield handler, db, manager, pb
     await db.close()
@@ -223,7 +239,7 @@ async def test_atomic_admission_rolls_back_task_if_gate_write_fails(setup, monke
     assert await db.list_tasks(project_id="p") == []
 
 
-async def test_policy_respects_disabled_and_shadowed_pipelines(setup):
+async def test_policy_reads_v2_activation_not_v1_enablement(setup):
     from src.playbooks.routing import requires_routing_gate, uses_default_triage
 
     _, _, manager, pb = setup
@@ -231,16 +247,8 @@ async def test_policy_respects_disabled_and_shadowed_pipelines(setup):
     assert requires_routing_gate(manager, task)
     assert uses_default_triage(manager, "p")
     pb.enabled = False
-    assert not requires_routing_gate(manager, task)
-    assert not uses_default_triage(manager, "p")
-    pb.enabled = True
-    project = replace(pb, id="project-pipeline", scope="project", nodes={}, pipeline_rules={})
-    manager._active[project.id] = project
-    manager._index_triggers(project)
-    manager.set_scope_identifier(project.id, "p")
-    assert not requires_routing_gate(manager, task)
-    assert not uses_default_triage(manager, "p")
-    assert requires_routing_gate(manager, replace(task, project_id="elsewhere"))
+    assert requires_routing_gate(manager, task)
+    assert uses_default_triage(manager, "p")
 
 
 async def test_policy_matches_event_filter_when_and_ignores_cooldown(setup):
@@ -248,6 +256,21 @@ async def test_policy_matches_event_filter_when_and_ignores_cooldown(setup):
 
     _, _, manager, pb = setup
     task = Task(id="new", project_id="p", title="New", description="")
+    artifact = _routing_artifact(trigger_filter={"task_type": "feature"})
+    install_routing_activation_snapshot(
+        manager,
+        [
+            {
+                "playbook_id": artifact.id,
+                "scope": "system",
+                "scope_identifier": "",
+                "active_artifact_sha256": SHA,
+                "enabled": True,
+                "health": "ready",
+            }
+        ],
+        artifact_store=RecordingStore({SHA: artifact}),
+    )
     pb.triggers = [PlaybookTrigger("task.created", filter={"task_type": "feature"})]
     assert not requires_routing_gate(manager, task)
     assert requires_routing_gate(manager, task, {"task_type": "feature"})
@@ -255,7 +278,7 @@ async def test_policy_matches_event_filter_when_and_ignores_cooldown(setup):
         "field": "event.parent_task_id",
         "is_null": False,
     }
-    assert not requires_routing_gate(manager, task, {"task_type": "feature"})
+    assert requires_routing_gate(manager, task, {"task_type": "feature"})
     manager.is_on_cooldown = MagicMock(return_value=True)
     assert requires_routing_gate(
         manager, task, {"task_type": "feature", "parent_task_id": "parent"}
