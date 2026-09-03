@@ -1194,9 +1194,15 @@ class TestReflectionPlaybookTemplate:
         """The playbook triggers on task.failed."""
         assert "task.failed" in playbook_source
 
-    def test_playbook_scope_is_agent_type_coding(self, playbook_source: str) -> None:
-        """The playbook scope targets agent-type:coding."""
-        assert "scope: agent-type:coding" in playbook_source
+    def test_playbook_scope_is_agent_type_claude_opus(self, playbook_source: str) -> None:
+        """The playbook scope targets the agent type it ships under."""
+        # The bundled tree is keyed by agent type
+        # (src/prompts/default_agent_type_playbooks/<type>/), and
+        # ensure_default_agent_type_playbooks copies each file into
+        # vault/agent-types/<type>/playbooks/.  The scope has to name that
+        # same type, which has been claude-opus since the reflection
+        # playbook moved out of the retired claude-code directory.
+        assert "scope: agent-type:claude-opus" in playbook_source
 
     def test_playbook_has_cooldown(self, playbook_source: str) -> None:
         """The playbook has a cooldown period configured."""
@@ -1209,9 +1215,9 @@ class TestReflectionPlaybookTemplate:
         lower = playbook_source.lower()
         assert "task record" in lower or "task description" in lower
 
-    def test_playbook_mentions_memory_store(self, playbook_source: str) -> None:
-        """The playbook template instructs saving insights via memory_store."""
-        assert "memory_store" in playbook_source
+    def test_playbook_mentions_memory_save(self, playbook_source: str) -> None:
+        """The playbook template instructs saving insights via memory_save."""
+        assert "memory_save" in playbook_source
 
     def test_playbook_mentions_insight_extraction(self, playbook_source: str) -> None:
         """The playbook template describes extracting patterns/insights."""
