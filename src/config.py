@@ -21,6 +21,7 @@ import dataclasses
 import logging
 import os
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
@@ -853,6 +854,13 @@ class DatabaseConfig:
 # ---------------------------------------------------------------------------
 
 
+#: Closed vocabularies for the Package 6 pending-event policy keys.  Both are
+#: exported so the storage layer and the operator commands name the same
+#: values the config file does.
+PENDING_EVENT_OVERFLOW_POLICIES: tuple[str, ...] = ("drop_oldest", "reject_new")
+PENDING_EVENT_REPLAY_POLICIES: tuple[str, ...] = ("manual", "automatic")
+
+
 @dataclass
 class PlaybooksConfig:
     """Playbook subsystem switch.
@@ -870,6 +878,17 @@ class PlaybooksConfig:
     v2_max_snapshot_bytes: int = 4_194_304
     v2_max_pending_events_per_playbook: int = 1000
     v2_pending_event_retention_days: int = 7
+    #: What a full pending-event queue does with the *next* held event.
+    #: ``drop_oldest`` keeps the newest window and resolves the oldest
+    #: unclaimed row with an audit reason; ``reject_new`` refuses the
+    #: arrival instead.  Either way the drop is recorded — Package 6 §4.3:
+    #: an unrecorded drop is a silently lost event.
+    v2_pending_event_on_overflow: str = "drop_oldest"
+    #: Whether activating an artifact consumes the backlog held behind it.
+    #: ``manual`` requires ``playbook_pending_event_action``; ``automatic``
+    #: is refused for any activation still ``question_required``, because an
+    #: unreviewed playbook may not auto-consume a backlog.
+    v2_pending_event_replay_on_activation: str = "manual"
     v2_receipt_retention_days: int = 90
     v2_artifact_retention_days: int = 90
     v2_artifact_min_versions: int = 10
@@ -904,7 +923,19 @@ class PlaybooksConfig:
     #: the receipt records ``grace_expired``.
     cancellation_grace_seconds: int = 30
 
-    def validate(self) -> list[ConfigError]:
+    def validate(
+        self, *, activation_healths: Mapping[str, str] | None = None
+    ) -> list[ConfigError]:
+        """Validate the section, optionally against live activation health.
+
+        ``activation_healths`` maps ``playbook_id`` to the activation health
+        Package 3 computed for it.  ``AppConfig.validate()`` calls this with
+        no activations — a config file is validated before any database is
+        open — and the daemon passes them when it has them, which is what
+        makes the ``automatic`` replay refusal (Package 6 §5.5 T-16) a
+        configuration error naming the offending playbook rather than a
+        surprise at replay time.
+        """
         errors: list[ConfigError] = []
         for field_name in (
             "v2_max_artifact_bytes",
@@ -941,6 +972,38 @@ class PlaybooksConfig:
             errors.append(
                 ConfigError("playbooks", "cancellation_grace_seconds", "must be >= 0")
             )
+        if self.v2_pending_event_on_overflow not in PENDING_EVENT_OVERFLOW_POLICIES:
+            errors.append(
+                ConfigError(
+                    "playbooks",
+                    "v2_pending_event_on_overflow",
+                    f"must be one of {', '.join(PENDING_EVENT_OVERFLOW_POLICIES)}",
+                )
+            )
+        if self.v2_pending_event_replay_on_activation not in PENDING_EVENT_REPLAY_POLICIES:
+            errors.append(
+                ConfigError(
+                    "playbooks",
+                    "v2_pending_event_replay_on_activation",
+                    f"must be one of {', '.join(PENDING_EVENT_REPLAY_POLICIES)}",
+                )
+            )
+        elif self.v2_pending_event_replay_on_activation == "automatic":
+            unreviewed = sorted(
+                playbook_id
+                for playbook_id, health in (activation_healths or {}).items()
+                if health == "question_required"
+            )
+            if unreviewed:
+                errors.append(
+                    ConfigError(
+                        "playbooks",
+                        "v2_pending_event_replay_on_activation",
+                        "'automatic' may not consume the backlog of an unreviewed "
+                        "activation; these are question_required: "
+                        + ", ".join(unreviewed),
+                    )
+                )
         return errors
 
 
@@ -2550,6 +2613,12 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             v2_max_snapshot_bytes=int(pb.get("v2_max_snapshot_bytes", 4_194_304)),
             v2_max_pending_events_per_playbook=int(pb.get("v2_max_pending_events_per_playbook", 1000)),
             v2_pending_event_retention_days=int(pb.get("v2_pending_event_retention_days", 7)),
+            v2_pending_event_on_overflow=str(
+                pb.get("v2_pending_event_on_overflow", "drop_oldest")
+            ),
+            v2_pending_event_replay_on_activation=str(
+                pb.get("v2_pending_event_replay_on_activation", "manual")
+            ),
             v2_receipt_retention_days=int(pb.get("v2_receipt_retention_days", 90)),
             v2_artifact_retention_days=int(pb.get("v2_artifact_retention_days", 90)),
             v2_artifact_min_versions=int(pb.get("v2_artifact_min_versions", 10)),

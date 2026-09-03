@@ -42,7 +42,12 @@ READ_COMMANDS = {
 
 WRITE_COMMANDS = {
     "playbook_activate": {"playbook_id": "p", "artifact_sha256": VALID_SHA},
-    "playbook_pending_event_action": {"action": "discard", "pending_event_ids": ["e1"]},
+    "playbook_pending_event_action": {
+        "action": "discard",
+        "pending_event_ids": ["e1"],
+        # A discard carries an operator justification (Package 6 T-16).
+        "reason": "held against an activation that was withdrawn",
+    },
 }
 
 ALL_COMMANDS = {**READ_COMMANDS, **WRITE_COMMANDS}

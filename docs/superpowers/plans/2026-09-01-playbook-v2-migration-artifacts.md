@@ -418,6 +418,36 @@ default pipeline that nothing executes until an operator activates the reviewed
 artifact. Closing that window is Package 7's, and it is recorded here so it is
 not discovered later.
 
+#### 3.8.3 Reconciliation for T-16, the pending-event policy (`azure-cascade.20`)
+
+The policy slice found four deviations from the drafted T-16.  As above the
+drafted text is left intact.
+
+| Drafted | Live tree | What shipped |
+|---|---|---|
+| T-16 "Implement `playbook_pending_event_list\|replay\|discard` (§3.6)" | §3.8.1 already superseded this row: Package 5 ships `playbook_pending_events` (list) and `playbook_pending_event_action` (dispatch/discard) | **No new commands.** The replay and discard policy lands on `playbook_pending_event_action`: `action=discard` now requires a `reason` at the §4.2 12-character floor, and `action=dispatch` strips `SERVER_OWNED_ARG_KEYS` from the held payload before it re-enters the engine |
+| §6 "Package 6 adds **one table and no column changes**" | `playbook_pending_events` has `resolution`, `resolved_by` and `resolved_at`, but nowhere to record *why* a row was resolved | One nullable column, `resolution_reason`, added by revision `a5d2c0de0008` off head `43b61ffc38ec`. Without it neither an operator's discard reason nor an overflow's drop reason has anywhere to live, and "records the drop with playbook id, event id, and reason" is unimplementable. Nullable with no backfill: rows resolved before the revision were resolved by a path that had no reason to record |
+| `on_overflow` as a property of the pending-event table | The quota is shared with the wait-delivery inbox (`_record_wait_event`, `reason='wait_registration'`), whose rows back `_claim_registered_wait_from_inbox`'s race window | The overflow policy governs `retain_pending_event` **only**. Evicting the oldest inbox row would lose a delivery a registered wait is still entitled to find, so a full inbox keeps refusing the arrival. Recorded in a comment at the call site |
+| `max_per_activation: 500`, `retention_days: 7` as new keys | Package 3 ships `v2_max_pending_events_per_playbook: 1000` and `v2_pending_event_retention_days: 7` | Package 3's two keys are left alone (§3.8's rule against reimplementing an earlier package's interface). The two new keys keep the section's `v2_` prefix: `v2_pending_event_on_overflow` and `v2_pending_event_replay_on_activation` |
+
+Two further notes that outlive the slice:
+
+- **`drop_oldest` is the shipped default**, as T-16's YAML block states, which
+  changes `retain_pending_event`'s behaviour from "raise" to "evict the oldest
+  and audit it".  It is inert today — `retain_pending_event` still has no
+  production caller, because `PlaybookEngine._queue_pending` calls an optional
+  `queue_pending_event` protocol nothing implements yet — but the day one
+  lands, a flooded playbook keeps its newest events instead of refusing them.
+  A row with a live dispatch claim is never evicted, so a full queue whose
+  rows are all claimed still raises `PendingEventQuotaExceeded`.
+- **The config keys are bound to storage by `build_v2_engine`**
+  (`src/playbooks/services.py`), which is the daemon's single V2 seam.  Package
+  3 shipped `set_playbook_pending_event_quota` with no caller, so
+  `playbooks.v2_max_pending_events_per_playbook` was inert as well; binding
+  both there is what makes either key mean anything.  An unknown policy string
+  is reported by `AppConfig.validate()` and logged-and-ignored at the seam,
+  rather than being allowed to kill the daemon.
+
 If a symbol turns out **not** to exist because an earlier package deviated, the fallback is explicit, never invented: record it as a `MigrationReason` with code `schema_violation` in the reconciliation commit's message and escalate to the roadmap owner. Package 6 must not ship a local reimplementation of an earlier package's interface.
 
 ---

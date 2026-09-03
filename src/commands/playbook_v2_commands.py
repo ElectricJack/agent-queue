@@ -37,6 +37,8 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from src.commands.principal import SERVER_OWNED_ARG_KEYS
+from src.database.queries.playbook_migration_queries import MIN_ACK_REASON_LENGTH
 from src.playbooks.authoring import PlaybookSource, SourceError
 from src.playbooks.definition import (
     DuplicateJsonKey,
@@ -71,6 +73,15 @@ V2_STORAGE_UNAVAILABLE_ERROR = (
 )
 
 _PENDING_EVENT_DISPATCH_RENEW_SECONDS = 60.0
+
+#: A discard drops a real event that a playbook was entitled to see, so it
+#: carries the same justification floor as a migration acknowledgement
+#: (Package 6 §4.2, §5.5 T-16 assertion 10) — an empty waiver is not a waiver.
+MIN_PENDING_EVENT_REASON_LENGTH = MIN_ACK_REASON_LENGTH
+PENDING_EVENT_REASON_TOO_SHORT_ERROR = (
+    f"a discard reason must be at least {MIN_PENDING_EVENT_REASON_LENGTH} characters — "
+    "an event dropped without a recorded reason is a silently lost event"
+)
 
 #: The seven command names this mixin owns, in child-plan §4.8 order.  Imported
 #: by ``src/commands/handler.py`` (feature pause) and by the tests that pin the
@@ -1089,6 +1100,22 @@ class PlaybookV2CommandsMixin:
             "blockers": [],
         }
 
+    @staticmethod
+    def _v2_replayable_event(event: Any) -> dict[str, Any]:
+        """The held payload with the keys the server owns removed.
+
+        Held events are untrusted input stored as received (Package 6 §4.3):
+        they are never re-signed or re-attributed, and the replaying
+        principal is this request's, never the payload's.  Stripping happens
+        here rather than at retention so the stored row stays a faithful
+        record of what arrived.
+        """
+        return {
+            key: value
+            for key, value in dict(event or {}).items()
+            if key not in SERVER_OWNED_ARG_KEYS
+        }
+
     async def _v2_dispatch_pending_event(self, row, principal, claim_token: str):
         """Dispatch while renewing the durable claim that excludes other operators."""
         pending_event_id = row["pending_event_id"]
@@ -1097,7 +1124,7 @@ class PlaybookV2CommandsMixin:
         ).hexdigest()[:12]
         dispatch = asyncio.create_task(
             self._v2_engine().dispatch_event(
-                row["event"],
+                self._v2_replayable_event(row["event"]),
                 principal,
                 playbook_ids=[row["playbook_id"]],
                 dispatch_id=stable_dispatch_id,
@@ -1131,9 +1158,17 @@ class PlaybookV2CommandsMixin:
         matching and never adopts a principal from the stored event.
         ``discard`` records the resolution without dispatching.
 
+        A replay is a *fresh* dispatch: the current activation's rule
+        matching and guards are re-evaluated from scratch, and the held
+        payload's server-owned keys are stripped before it re-enters the
+        engine, so a held event can never carry a principal into its own
+        replay (Package 6 §4.3).
+
         Args:
             action: Required — ``dispatch`` or ``discard``.
             pending_event_ids: Required — non-empty list of pending event ids.
+            reason: Required for ``discard`` — why these events may be
+                dropped, at least 12 characters.  Recorded on every row.
         """
         if not self._v2_api_enabled():
             return {"error": V2_API_DISABLED_ERROR}
@@ -1159,6 +1194,12 @@ class PlaybookV2CommandsMixin:
         pending_event_ids = [i.strip() for i in raw_ids if isinstance(i, str) and i.strip()]
         if not pending_event_ids:
             return {"error": "pending_event_ids must be a non-empty list of event ids"}
+
+        # Shape first, policy second: a malformed request is reported as
+        # malformed rather than as a missing justification.
+        reason = (_clean_str(args, "reason") or "").strip()
+        if action == "discard" and len(reason) < MIN_PENDING_EVENT_REASON_LENGTH:
+            return {"error": PENDING_EVENT_REASON_TOO_SHORT_ERROR}
 
         storage_methods = ["get_pending_events"]
         if action == "discard":
@@ -1195,6 +1236,7 @@ class PlaybookV2CommandsMixin:
                     event_id,
                     resolution="discarded",
                     resolved_by=actor,
+                    resolution_reason=reason,
                     now=time.time(),
                 )
                 if not resolved:

@@ -6496,8 +6496,8 @@
         "tags": [
           "playbook"
         ],
-        "summary": "Dispatch or discard held playbook pending events. 'dispatch' re-enters the engine's own event dispatch with the server-derived principal of this request -- it never re-implements matching and never adopts a principal from the stored event. 'discard' records the resolution without dispatching.",
-        "description": "Dispatch or discard held playbook pending events. 'dispatch' re-enters the engine's own event dispatch with the server-derived principal of this request -- it never re-implements matching and never adopts a principal from the stored event. 'discard' records the resolution without dispatching.",
+        "summary": "Dispatch or discard held playbook pending events. 'dispatch' re-enters the engine's own event dispatch with the server-derived principal of this request -- it never re-implements matching and never adopts a principal from the stored event, and strips the server-owned keys from the held payload before replaying it. 'discard' records the resolution, and the operator reason for it, without dispatching.",
+        "description": "Dispatch or discard held playbook pending events. 'dispatch' re-enters the engine's own event dispatch with the server-derived principal of this request -- it never re-implements matching and never adopts a principal from the stored event, and strips the server-owned keys from the held payload before replaying it. 'discard' records the resolution, and the operator reason for it, without dispatching.",
         "operationId": "playbook_pending_event_action",
         "requestBody": {
           "content": {
@@ -29733,6 +29733,18 @@
             "type": "array",
             "title": "Pending Event Ids",
             "description": "Non-empty list of pending event ids to act on."
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason",
+            "description": "Required for 'discard': why these events may be dropped, at least 12 characters. Recorded on every row."
           }
         },
         "type": "object",

@@ -176,7 +176,13 @@ async def test_discard_marks_resolved_without_dispatch():
     }
     handler, engine = _handler(row)
     result = await handler._cmd_playbook_pending_event_action(
-        {"action": "discard", "pending_event_ids": ["event-1"]}
+        {
+            "action": "discard",
+            "pending_event_ids": ["event-1"],
+            # Package 6 T-16 made the justification mandatory; see
+            # tests/test_playbook_pending_events_policy.py for the floor itself.
+            "reason": "the activation it was held for was withdrawn",
+        }
     )
     assert result["discarded_ids"] == ["event-1"]
     handler.db.resolve_pending_event.assert_awaited_once()

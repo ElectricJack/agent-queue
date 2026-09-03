@@ -99,6 +99,10 @@ def test_production_engine_is_shared_by_all_handler_entry_points():
             v2_max_artifact_bytes=1024,
             v2_dry_run_max_step_visits=1000,
             cancellation_grace_seconds=30,
+            # build_v2_engine also binds the pending-event policy onto the
+            # repository, so the double carries those keys too.
+            v2_max_pending_events_per_playbook=1000,
+            v2_pending_event_on_overflow="drop_oldest",
         ),
     )
     db = MagicMock()

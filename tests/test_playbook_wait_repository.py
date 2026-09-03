@@ -1082,7 +1082,11 @@ async def test_expiry_sweep_resolves_an_abandoned_dispatch_claim(db):
 
 
 async def test_pending_event_quota_is_enforced(db):
+    # ``reject_new`` is stated rather than assumed: Package 6 T-16 made
+    # ``drop_oldest`` the shipped default, and the eviction half of that
+    # policy is covered by tests/test_playbook_pending_events_policy.py.
     db.set_playbook_pending_event_quota(3)
+    db.set_playbook_pending_event_overflow("reject_new")
     for i in range(3):
         assert await retain(db, dedup_key=f"k{i}", event_id=f"evt-{i}") is not None
     with pytest.raises(PendingEventQuotaExceeded) as caught:

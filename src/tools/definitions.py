@@ -3869,8 +3869,10 @@ _ALL_TOOL_DEFINITIONS = [
             "Dispatch or discard held playbook pending events. 'dispatch' "
             "re-enters the engine's own event dispatch with the server-derived "
             "principal of this request -- it never re-implements matching and "
-            "never adopts a principal from the stored event. 'discard' records "
-            "the resolution without dispatching."
+            "never adopts a principal from the stored event, and strips the "
+            "server-owned keys from the held payload before replaying it. "
+            "'discard' records the resolution, and the operator reason for it, "
+            "without dispatching."
         ),
         "input_schema": {
             "type": "object",
@@ -3884,6 +3886,13 @@ _ALL_TOOL_DEFINITIONS = [
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "Non-empty list of pending event ids to act on.",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": (
+                        "Required for 'discard': why these events may be dropped, "
+                        "at least 12 characters. Recorded on every row."
+                    ),
                 },
             },
             "required": ["action", "pending_event_ids"],
