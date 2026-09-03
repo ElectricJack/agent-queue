@@ -9,7 +9,7 @@
   ],
   "corpus": "tests/fixtures/playbooks/v2/events/",
   "coverage_limits": [
-    "Per-run command comparison covers the deterministic playbooks only (default-pipeline); default-assignment-routing, memory-consolidation, coding-reflection are compared structurally (id, kind, role, scope, triggers, cooldown, budget, llm config, output schema) because their V1 behaviour is an LLM call and is not reproducible.",
+    "Per-run command comparison covers the deterministic playbooks only (default-pipeline); default-assignment-routing, memory-consolidation, coding-reflection are compared structurally (source metadata plus artifact rules, triggers, step topology, profiles, budgets, capabilities, output schemas, and transitions) because their V1 behaviour is an LLM call and is not reproducible.",
     "Agreement is proved over the events in tests/fixtures/playbooks/v2/events/, one per (rule, guard-outcome) pair of the deterministic playbook, not over all possible events.",
     "Past the shadow binding frontier the V2 arm is projected from the artifact with the engine's own resolver, taking each boundary outcome from the same scripted oracle the V1 arm answers with; test_projection_agrees_with_the_engine_at_the_shadow_frontier pins the projection to the engine wherever shadow resolves."
   ],

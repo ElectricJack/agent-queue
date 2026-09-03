@@ -19,6 +19,7 @@ disagrees with the committed record.
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from types import SimpleNamespace
 
 import pytest
@@ -654,7 +655,7 @@ async def test_projection_agrees_with_the_engine_at_the_shadow_frontier() -> Non
     "playbook_id", ["default-assignment-routing", "memory-consolidation", "coding-reflection"]
 )
 def test_llm_playbooks_get_structural_parity_only(playbook_id: str) -> None:
-    """§4.5: triggers, scope, budgets and llm config, and no command comparison.
+    """§4.5: compare the source plus every promised V2 structural field.
 
     Their V1 behaviour is an LLM call, so there is nothing deterministic to
     compare per run.  The limit is recorded in the report's
@@ -665,6 +666,53 @@ def test_llm_playbooks_get_structural_parity_only(playbook_id: str) -> None:
     report = json.loads(PARITY_REPORT.read_text(encoding="utf-8"))
     assert playbook_id in report["structural_only_playbooks"]
     assert any("structurally" in limit for limit in report["coverage_limits"])
+
+
+@pytest.mark.parametrize(
+    "category",
+    [
+        "scope",
+        "rules",
+        "triggers",
+        "steps",
+        "profiles",
+        "budgets",
+        "capabilities",
+        "output_schemas",
+        "transitions",
+    ],
+)
+def test_llm_structural_parity_detects_artifact_mutations(category: str) -> None:
+    """A change in any promised category must alter the V2 projection."""
+    playbook_id = "coding-reflection"
+    fixture = PARITY_REPORT.parent / playbook_id / "artifact.json"
+    artifact = json.loads(fixture.read_text(encoding="utf-8"))
+    mutated = deepcopy(artifact)
+    entry_step = mutated["rules"][0]["entry_step"]
+
+    if category == "scope":
+        mutated["scope"] = {"type": "project", "project_id": "mutated"}
+    elif category == "rules":
+        mutated["rules"][0]["entry_step"] = "mutated-entry"
+    elif category == "triggers":
+        mutated["rules"][0]["trigger"]["event_type"] = "task.mutated"
+    elif category == "steps":
+        mutated["steps"][entry_step]["rule"] = "mutated-rule"
+    elif category == "profiles":
+        mutated["steps"][entry_step]["profile_id"] = "mutated-profile"
+    elif category == "budgets":
+        mutated["steps"][entry_step]["budget"]["max_calls"] += 1
+    elif category == "capabilities":
+        mutated["steps"][entry_step]["tool_use"]["aq_commands"].append("mutated_command")
+    elif category == "output_schemas":
+        mutated["steps"][entry_step]["output_schema"]["required"].append("mutated_field")
+    elif category == "transitions":
+        mutated["steps"][entry_step]["transitions"]["completed"] = "reflect-completed--failed"
+    else:  # pragma: no cover - the parameter list is the closed category set
+        raise AssertionError(category)
+
+    expected, actual = structural_parity(playbook_id, artifact=mutated)
+    assert expected["artifact"][category] != actual["artifact"][category]
 
 
 # --- one executable demonstration per registered rationale -----------------
