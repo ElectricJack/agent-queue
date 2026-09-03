@@ -81,6 +81,29 @@ describe("Package 5 review panels", () => {
     expect(select).toHaveBeenCalledWith(candidate);
   });
 
+  it("refuses activation while the diff reports a blocker, and names it", async () => {
+    const activate = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <ActivationPanel
+        artifact={artifact}
+        activation={activation}
+        executableChange
+        activationBlocked
+        activationBlockers={["Command contract changed for 'gate_create'"]}
+        onActivate={activate}
+      />,
+    );
+
+    expect(screen.getByText("Command contract changed for 'gate_create'")).toBeInTheDocument();
+    const button = screen.getByRole("button", { name: "Activate displayed artifact" });
+    expect(button).toBeDisabled();
+    // Acknowledging the executable diff does not unblock a stale contract.
+    await user.click(screen.getByRole("checkbox", { name: "I reviewed the executable diff" }));
+    expect(button).toBeDisabled();
+    expect(activate).not.toHaveBeenCalled();
+  });
+
   it("has no chooser at all when the artifact list has not loaded", () => {
     render(
       <ActivationPanel
