@@ -11,6 +11,8 @@ the codegen surface.
 from __future__ import annotations
 
 import inspect
+import json
+from pathlib import Path
 
 from pydantic import BaseModel
 
@@ -130,6 +132,40 @@ class TestSerializationConventions:
         assert playbook_v2.PlaybookV2GraphResponse.__pydantic_complete__
         field = playbook_v2.PlaybookV2GraphResponse.model_fields["activation"]
         assert field.annotation is playbook_v2.ActivationStateDTO
+
+    def test_dashboard_fixture_matches_backend_projection(self):
+        from src.playbooks.artifact_ref import ArtifactRef
+        from src.playbooks.definition import load_definition_json
+        from src.playbooks.graph_projection import project_graph
+        from tests.playbook_v2_helpers import StubContracts, StubProfiles
+
+        root = Path(__file__).parent.parent
+        definition = load_definition_json(
+            (Path(__file__).parent / "fixtures/playbooks/v2/review-pipeline.artifact.json").read_text()
+        )
+        ref = ArtifactRef(
+            definition.id,
+            definition.artifact_sha256(),
+            2,
+            definition.contract_fingerprint(),
+            definition.source_hash,
+            definition.compiler_build or "fixture",
+            definition.compiled_at.isoformat(),
+            definition.version,
+        )
+        graph = project_graph(
+            definition, ref, None, contracts=StubContracts(), profiles=StubProfiles()
+        )
+        fixture = json.loads(
+            (
+                root
+                / "dashboard/src/pages/playbook-graph-v2/__tests__/graph.fixture.json"
+            ).read_text()
+        )
+        assert fixture["nodes"] == [
+            [node["id"], node["step_kind"]] for node in graph["nodes"]
+        ]
+        assert fixture["edges"] == [[edge["id"], edge["kind"]] for edge in graph["edges"]]
 
 
 class TestDelegationNarrowing:
