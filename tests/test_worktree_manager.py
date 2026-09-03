@@ -80,9 +80,22 @@ class FakeDB:
     def __init__(self):
         self.workspaces: dict[str, Workspace] = {}
         self.contexts: list[dict] = []
+        self.meta: dict[tuple[str, str], object] = {}
 
     async def get_task_meta(self, task_id, key):
-        return None
+        return self.meta.get((task_id, key))
+
+    async def set_task_meta(self, task_id, key, value) -> None:
+        self.meta[(task_id, key)] = value
+
+    async def list_sessions(self, **kwargs):
+        """No sessions at all — every slot branch holder is abandonable.
+
+        ``_detach_stale_branch_holders`` consults this as one of its two
+        liveness fences; without it every reset in this module raised
+        ``AttributeError`` before reaching what it meant to assert.
+        """
+        return []
 
     async def create_workspace(self, ws: Workspace) -> None:
         self.workspaces[ws.id] = ws
@@ -461,16 +474,46 @@ class TestResetSlot:
         assert _git(["status", "--porcelain"], cwd=slot.workspace_path) == ""
 
     def test_retry_reuses_the_existing_branch(self, mgr, base_ws, kind):
+        """A retry reuses the branch and resumes the attempt that was preserved.
+
+        Design §3.2 step 4 re-points a retried branch at the fresh start
+        point, and did drop the failed attempt's commit — which is why three
+        re-runs of ``solid-harbor.43`` each started from ``main`` and could
+        not find their predecessor's work.  Two rules now meet here and agree:
+        the reset first *publishes* those commits (``salvage_unpushed``), and
+        ``_retry_reset_ref`` keeps a published tip the start point does not
+        already contain.  So a retry lands on its predecessor's work rather
+        than silently below it.  ``test_a_retry_with_nothing_published_starts
+        _clean`` covers the other half — the start point still wins when
+        there was nothing to preserve.
+        """
         slot = self._make_slot(mgr, base_ws, kind)
         asyncio.run(mgr.reset_slot_for_task(slot, FakeTask(id="tsk-r")))
         (Path(slot.workspace_path) / "attempt.txt").write_text("one")
         _git(["add", "-A"], cwd=slot.workspace_path)
         _git(["commit", "-m", "attempt one"], cwd=slot.workspace_path)
+        attempt = _git(["rev-parse", "HEAD"], cwd=slot.workspace_path)
 
         branch = asyncio.run(mgr.reset_slot_for_task(slot, FakeTask(id="tsk-r")))
         assert branch == "aq/tsk-r"
         assert _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=slot.workspace_path) == "aq/tsk-r"
-        # A retry starts clean: the failed attempt's commit is dropped.
+        assert (
+            _git(["ls-remote", "origin", "refs/heads/aq/tsk-r"], cwd=slot.workspace_path).split()[0]
+            == attempt
+        ), "the attempt must be on origin before anything is reset"
+        assert (Path(slot.workspace_path) / "attempt.txt").exists()
+
+    def test_a_retry_with_nothing_published_starts_clean(self, mgr, base_ws, kind, base_repo):
+        """No remote to preserve to → §3.2's fresh start point still wins."""
+        _git(["remote", "remove", "origin"], cwd=base_repo)
+        slot = self._make_slot(mgr, base_ws, kind)
+        asyncio.run(mgr.reset_slot_for_task(slot, FakeTask(id="tsk-r2")))
+        (Path(slot.workspace_path) / "attempt.txt").write_text("one")
+        _git(["add", "-A"], cwd=slot.workspace_path)
+        _git(["commit", "-m", "attempt one"], cwd=slot.workspace_path)
+
+        asyncio.run(mgr.reset_slot_for_task(slot, FakeTask(id="tsk-r2")))
+
         assert not (Path(slot.workspace_path) / "attempt.txt").exists()
 
     def test_continuation_resumes_the_branch_tip(self, mgr, base_ws, kind):
@@ -782,6 +825,58 @@ class TestRestoreSlotAfterTask:
 
         assert not (git_dir / "index.lock").exists()
         assert _git(["status", "--porcelain"], cwd=d) == ""
+
+
+class TestSalvageUnpushedCommits:
+    """§3.4: salvage must *push*, not merely leave a local branch behind.
+
+    ``salvage_dirty`` archives uncommitted files.  Committed-but-unpushed
+    work had nothing at all: the branch stayed in the slot, the slot was
+    reset for the next task, and the commits were reachable from nowhere any
+    other agent could look.  That is how task ``solid-harbor.43`` lost five
+    commits and then failed three times over.
+    """
+
+    def _slot_with_unpushed_commit(self, mgr, base_ws, kind):
+        slot = asyncio.run(mgr.create_slot(base_ws, kind, 0))
+        asyncio.run(mgr.reset_slot_for_task(slot, FakeTask(id="tsk-1")))
+        d = Path(slot.workspace_path)
+        (d / "work.py").write_text("print(1)\n")
+        _git(["add", "-A"], cwd=d)
+        _git(["commit", "-m", "real work"], cwd=d)
+        return slot, d, _git(["rev-parse", "HEAD"], cwd=d)
+
+    def test_restore_pushes_the_commits_before_resetting(
+        self, mgr, base_ws, kind, base_repo, db
+    ):
+        slot, d, sha = self._slot_with_unpushed_commit(mgr, base_ws, kind)
+
+        asyncio.run(mgr.restore_slot_after_task(slot, task_id="tsk-1"))
+
+        origin = _git(["rev-parse", "--git-dir"], cwd=base_repo)  # sanity: real repo
+        assert origin
+        assert _git(["ls-remote", "origin", "refs/heads/aq/tsk-1"], cwd=d).split()[0] == sha
+        assert db.meta[("tsk-1", "unmerged_branch")] == "aq/tsk-1"
+        assert db.meta[("tsk-1", "unmerged_commit")] == sha
+
+    def test_reset_for_the_next_task_pushes_the_predecessors_commits(
+        self, mgr, base_ws, kind, db
+    ):
+        slot, d, sha = self._slot_with_unpushed_commit(mgr, base_ws, kind)
+
+        asyncio.run(mgr.reset_slot_for_task(slot, FakeTask(id="tsk-2")))
+
+        assert _git(["ls-remote", "origin", "refs/heads/aq/tsk-1"], cwd=d).split()[0] == sha
+        assert db.meta[("tsk-1", "unmerged_branch")] == "aq/tsk-1"
+        assert _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=d) == "aq/tsk-2"
+
+    def test_a_clean_slot_records_nothing(self, mgr, base_ws, kind, db):
+        slot = asyncio.run(mgr.create_slot(base_ws, kind, 0))
+        asyncio.run(mgr.reset_slot_for_task(slot, FakeTask(id="tsk-1")))
+
+        asyncio.run(mgr.restore_slot_after_task(slot, task_id="tsk-1"))
+
+        assert db.meta == {}
 
 
 # ───────────────────────────── events registry ───────────────────────────

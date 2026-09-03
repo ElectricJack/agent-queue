@@ -945,6 +945,12 @@ class SessionCommandsMixin:
             # release, no token revoke — nothing about the run ended.
             issues = result.get("issues") or []
             bullets = "\n".join(f"- {msg}" for msg in issues)
+            lead = (
+                "close refused: this workspace holds commits no remote branch has"
+                if result.get("unmerged")
+                else "close refused: git verification found issues you can still "
+                "fix from this workspace"
+            )
             return {
                 "success": False,
                 "result": "verification_failed",
@@ -952,9 +958,9 @@ class SessionCommandsMixin:
                 "status": result.get("status"),
                 "issues": issues,
                 "feedback": result.get("feedback") or "",
+                "unmerged": result.get("unmerged"),
                 "error": (
-                    "close refused: git verification found issues you can still "
-                    f"fix from this workspace:\n{bullets}\n"
+                    f"{lead}:\n{bullets}\n"
                     "The task is still yours (IN_PROGRESS, same claim). Fix these, "
                     "then run `aq task close` again."
                 ),
@@ -972,6 +978,25 @@ class SessionCommandsMixin:
                 )
                 if sha:
                     await self.db.set_task_meta(task_id, "work_commit_auto", sha)
+        # Work that could not go anywhere else must at least be *findable*.
+        # The branch name goes in the completion summary, not only in task
+        # metadata, because the summary is what a human, the reviewer and the
+        # next agent actually read (stranded_work.py).
+        unmerged_branch = result.get("unmerged_branch")
+        if unmerged_branch:
+            unmerged = result.get("unmerged") or {}
+            where = (
+                f"origin/{unmerged_branch}"
+                if unmerged.get("status") == "pushed"
+                else f"local branch {unmerged_branch} (this repo has no remote)"
+            )
+            note = (
+                f"Unmerged work: {unmerged.get('count', 0)} commit(s) preserved on "
+                f"{where} at {(unmerged.get('commit') or '')[:12]}."
+            )
+            summary = f"{summary}\n\n{note}" if summary else note
+            await self.db.set_task_meta(task_id, "summary", summary)
+
         explicit_commit = str(args.get("commit") or "").strip()
         auto_commit = await self.db.get_task_meta(task_id, "work_commit_auto")
         commit = explicit_commit or str(auto_commit or "").strip()

@@ -21,6 +21,7 @@ from src.runtimes.base import Runtime
 from src.config import AppConfig, AutoTaskConfig
 from src.intelligence_classes import IntelligenceClass
 from src.sessions.harness_parser import Harness
+from src.git.manager import GitManager
 from tests.assignment_routing_helpers import install_already_routed
 
 
@@ -1125,7 +1126,10 @@ class TestPhaseVerifyNormalTask:
         )
         await o.db.create_agent(Agent(id="a-1", name="claude-1", profile_id="claude"))
 
-        mock_git = MagicMock()
+        # spec=GitManager — see TestCompletionPipelineVerify: an unstubbed
+        # a-prefixed method must be an awaitable AsyncMock, not a MagicMock
+        # that blows up inside the phase under test.
+        mock_git = MagicMock(spec=GitManager)
         mock_git.avalidate_checkout = AsyncMock(return_value=True)
         mock_git.ahas_remote = AsyncMock(return_value=True)
         mock_git.aget_current_branch = AsyncMock(return_value="main")
@@ -1503,7 +1507,8 @@ class TestPhaseVerifyApprovalTask:
         )
         await o.db.create_agent(Agent(id="a-1", name="claude-1", profile_id="claude"))
 
-        mock_git = MagicMock()
+        # spec=GitManager — see TestCompletionPipelineVerify.
+        mock_git = MagicMock(spec=GitManager)
         mock_git.avalidate_checkout = AsyncMock(return_value=True)
         mock_git.ahas_remote = AsyncMock(return_value=True)
         mock_git.aget_current_branch = AsyncMock(return_value="feature-1")
@@ -2004,13 +2009,23 @@ class TestCompletionPipelineVerify:
         )
         await o.db.create_agent(Agent(id="a-1", name="claude-1", profile_id="claude"))
 
-        # Mock git — default: everything passes verification
-        mock_git = MagicMock()
+        # Mock git — default: everything passes verification.
+        # spec=GitManager so a method _phase_verify starts calling is an
+        # awaitable AsyncMock (and a typo is an AttributeError) instead of a
+        # bare MagicMock that raises inside the phase and silently turns
+        # every completed_ok assertion in this class into False.
+        mock_git = MagicMock(spec=GitManager)
         mock_git.avalidate_checkout = AsyncMock(return_value=True)
         mock_git.ahas_remote = AsyncMock(return_value=True)
         mock_git.aget_current_branch = AsyncMock(return_value="main")
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
         mock_git.afind_open_pr = AsyncMock(return_value=None)
+        # These tasks carry no integration_mode, so they run in the config
+        # default (pull_request) with the checkout left on the default
+        # branch. The passing shape there is "the task branch is already
+        # integrated into origin/main": no PR is expected and ctx.pr_url
+        # stays None.
+        mock_git.ais_ancestor = AsyncMock(return_value=True)
         mock_git.acount_commits_ahead = AsyncMock(return_value=1)
         mock_git._arun = AsyncMock(return_value="0")
         mock_git.ahas_non_plan_changes = AsyncMock(return_value=False)
