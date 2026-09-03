@@ -206,6 +206,12 @@ class StepContext:
     #: Resolved ``step.inputs`` (§3.4 step 4).  The engine resolves them so a
     #: resolution failure is an outcome *before* any executor runs.
     inputs: Mapping[str, Any] = field(default_factory=dict)
+    #: Resolved ``CommandStep.idempotency_key``, the step-level override of
+    #: the contract's key field (``definition.py``: "overrides the contract
+    #: default").  Resolved by the engine for the same reason
+    #: :attr:`inputs` is.  ``None`` means the step authored none — it never
+    #: means "the author asked for an empty key".
+    authored_idempotency_key: str | None = None
     #: The run's active loop frame, or ``None``.  Read by the foreach
     #: executor, which is otherwise stateless; every other executor ignores
     #: it and sees only :attr:`iteration_index`.

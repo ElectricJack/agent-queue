@@ -63,6 +63,7 @@ def context(
     step_id: str = "ensure-review-task",
     attempt: int = 1,
     iteration_index: int | None = None,
+    authored_idempotency_key: str | None = None,
 ) -> StepContext:
     artifact = minimal_artifact()
     return StepContext(
@@ -79,6 +80,7 @@ def context(
         attempt=attempt,
         iteration_index=iteration_index,
         inputs=inputs if inputs is not None else {"project_id": "p", "title": "Review"},
+        authored_idempotency_key=authored_idempotency_key,
     )
 
 
@@ -223,6 +225,82 @@ class TestRoutingIsByOutcomeNotClassification:
 
 
 class TestIdempotencyKey:
+    """Three sources for a keyed contract's key argument, and the engine's is
+    last.  The precedence is the whole point: a keyed field is a *semantic*
+    identity (``ensure_task``'s ``dedup_key``, ``task_batch_commit``'s
+    ``proposal_id``), so overwriting an authored one with the attempt key
+    turns "create or reuse by this key" into "create every time"."""
+
+    @pytest.mark.asyncio
+    async def test_authored_key_field_survives_the_attempt_key(self):
+        """The regression this class exists for.
+
+        ``per-task-review`` authors ``dedup_key`` ``review:task:<task_id>`` so
+        that two different ``task.completed`` events for one task converge on
+        a single review task.  The attempt key is per-dispatch, so injecting it
+        would mint a new review task per event — and ``src/doctor``'s
+        stranded-PR check, which looks the row up by that exact key, would
+        never find one.
+        """
+        registry, adapter = registry_with(ENSURE_TASK)
+        adapter.queue.append(
+            CommandResult(
+                outcome="created", value=EnsureTaskResult(task_id="t", created=True), summary=""
+            )
+        )
+        ctx = context(
+            registry,
+            inputs={"project_id": "p", "title": "Review", "dedup_key": "review:task:TASK-1"},
+            attempt=3,
+        )
+        result = await run(command_step(), ctx)
+        args = adapter.args_for("ensure_task")[0]
+        assert args.dedup_key == "review:task:TASK-1"
+        # The attempt key is not lost — it is on the receipt, where attempt
+        # identity belongs, and it is *not* the argument.
+        assert result.idempotency_key == "run-1:ensure-review-task:-:3"
+
+    @pytest.mark.asyncio
+    async def test_authored_key_field_that_resolved_to_none_stays_none(self):
+        """Presence wins over value.
+
+        A key the author bound and that resolved to ``None`` is an authoring
+        problem for the argument model to report; substituting an attempt key
+        would invent an identity nobody asked for and hide the mistake behind
+        a successful create.
+        """
+        registry, adapter = registry_with(ENSURE_TASK)
+        adapter.queue.append(
+            CommandResult(
+                outcome="created", value=EnsureTaskResult(task_id="t", created=True), summary=""
+            )
+        )
+        ctx = context(
+            registry, inputs={"project_id": "p", "title": "Review", "dedup_key": None}
+        )
+        await run(command_step(), ctx)
+        assert adapter.args_for("ensure_task")[0].dedup_key is None
+
+    @pytest.mark.asyncio
+    async def test_step_level_override_beats_both(self):
+        """``CommandStep.idempotency_key`` is documented as overriding the
+        contract default and the graph projection renders it as "keyed by this
+        step"; it is resolved by the engine and applied here."""
+        registry, adapter = registry_with(ENSURE_TASK)
+        adapter.queue.append(
+            CommandResult(
+                outcome="created", value=EnsureTaskResult(task_id="t", created=True), summary=""
+            )
+        )
+        ctx = context(
+            registry,
+            inputs={"project_id": "p", "title": "Review", "dedup_key": "review:task:TASK-1"},
+            authored_idempotency_key="review-of-TASK-1",
+        )
+        result = await run(command_step(), ctx)
+        assert adapter.args_for("ensure_task")[0].dedup_key == "review-of-TASK-1"
+        assert result.idempotency_key == "run-1:ensure-review-task:-:1"
+
     @pytest.mark.asyncio
     async def test_keyed_command_receives_the_attempt_key(self):
         registry, adapter = registry_with(ENSURE_TASK)
@@ -231,6 +309,8 @@ class TestIdempotencyKey:
                 outcome="created", value=EnsureTaskResult(task_id="t", created=True), summary=""
             )
         )
+        # No authored key anywhere: the engine still guarantees a keyed
+        # contract gets a key, so the fallback branch is preserved.
         result = await run(command_step(), context(registry, iteration_index=2, attempt=3))
         args = adapter.args_for("ensure_task")[0]
         assert args.dedup_key == "run-1:ensure-review-task:2:3"
