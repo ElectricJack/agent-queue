@@ -182,6 +182,51 @@ def _lookup(step: CommandStep, services: EngineServices) -> CommandRegistration 
         return None
 
 
+def _keyed_argument(
+    execution: Any,
+    ctx: StepContext,
+    payload: dict[str, Any],
+    *,
+    fallback: str | None,
+) -> None:
+    """Fill a keyed contract's key argument, authored value first.
+
+    Three sources, in this order, and the engine's is last:
+
+    1. ``step.idempotency_key`` — the step-level override the definition model
+       has always declared and the graph projection already renders as "keyed
+       by this step".  Until this precedence existed nothing read it.
+    2. The step's own binding of the key field, when the artifact declares one.
+       This is the ordinary case: ``ensure_task``'s ``dedup_key``,
+       ``gate_create``'s ``await_id``, ``task_batch_commit``'s ``proposal_id``.
+    3. The attempt key, only when the author supplied neither.
+
+    The order matters because a keyed field is a *semantic* identity, not an
+    execution token.  ``dedup_key`` ``review:task:<id>`` is what makes two
+    different ``task.completed`` events for one task converge on a single
+    review task, and ``proposal_id`` is a real row id that an attempt key
+    would simply falsify.  Overwriting either with ``<run>:<step>:<iter>:
+    <attempt>`` turns "create or reuse by this key" into "create every time",
+    which is the opposite of what the contract's own idempotency clause
+    promises the operator (``explanation.py``: "Repeating with the same dedup
+    key reuses the existing task").
+
+    Presence wins over value: a key the author bound to something that
+    resolved to ``None`` stays ``None``, and the argument model decides
+    whether that is legal.  Substituting an attempt key there would invent an
+    identity the author never asked for.
+
+    The attempt key is not lost — it is carried on
+    :attr:`ExecutorResult.idempotency_key` and from there onto the receipt in
+    every branch, which is where attempt identity belongs.
+    """
+    field_name = execution.idempotency.key_field or "idempotency_key"
+    if ctx.authored_idempotency_key is not None:
+        payload[field_name] = ctx.authored_idempotency_key
+    elif field_name not in payload and fallback is not None:
+        payload[field_name] = fallback
+
+
 def _build_args(
     registration: CommandRegistration,
     ctx: StepContext,
@@ -194,11 +239,14 @@ def _build_args(
     *resolved values*, which the compiler cannot see.  A failure here is
     ``input_resolution_failed`` — the value was wrong — and never
     ``contract_violation``, because the contract itself was fine.
+
+    ``key`` is the attempt key offered as a *fallback*, never as an override:
+    see :func:`_keyed_argument`.
     """
     execution = registration.contract.execution
     payload = dict(ctx.inputs)
-    if key is not None and execution.idempotency.mode == "keyed":
-        payload[execution.idempotency.key_field or "idempotency_key"] = key
+    if execution.idempotency.mode == "keyed":
+        _keyed_argument(execution, ctx, payload, fallback=key)
     try:
         return execution.args_model(**payload), payload, None
     except ValidationError as exc:

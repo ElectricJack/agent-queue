@@ -441,7 +441,14 @@ def _current_commands(definition) -> dict[str, str]:
     return {name: live[name] for name in definition.compiled_against.commands if name in live}
 
 
-async def _activate(handler, definition, *, enabled: bool = True, health: str = "ready"):
+async def _activate(
+    handler,
+    definition,
+    *,
+    enabled: bool = True,
+    health: str = "ready",
+    source_digest: str = "sha256:" + "e" * 64,
+):
     """Store the artifact bytes and write the artifact + activation rows."""
     from src.commands.contracts import CONTRACTS
     from src.playbooks.artifact_store import ArtifactStore
@@ -452,7 +459,7 @@ async def _activate(handler, definition, *, enabled: bool = True, health: str = 
     )
     ref = store.put(
         definition,
-        source_digest="sha256:" + "e" * 64,
+        source_digest=source_digest,
         contract_fingerprint=str(CONTRACTS.registry_fingerprint()),
         profile_fingerprint="",
         compiler_build="test-build",
@@ -652,6 +659,61 @@ async def test_inventory_sees_the_source_drift_the_activation_row_cannot_show(ha
     entry = next(e for e in result["entries"] if e["playbook_id"] == "default-pipeline")
     assert entry["artifact"]["artifact_sha256"] == ref.artifact_sha256
     assert any(reason["code"] == "compile_question" for reason in entry["reasons"])
+
+
+@pytest.mark.parametrize(
+    ("health", "enabled", "disposition", "reason_code"),
+    [
+        ("invalid", True, "invalid", "schema_violation"),
+        ("question_required", True, "question_required", "compile_question"),
+        ("stale_contract", True, "question_required", "stale_contract"),
+        ("unavailable", True, "question_required", "compile_question"),
+        ("disabled", False, "disabled", "operator_disabled"),
+    ],
+)
+async def test_inventory_blocks_non_ready_health_from_joined_activation_rows(
+    handler, health, enabled, disposition, reason_code
+):
+    """Every non-ready V2 health state carries a visible migration blocker."""
+    source_path = Path(handler.config.vault_root) / "system/playbooks/default-pipeline.md"
+    source_digest = "sha256:" + hashlib.sha256(source_path.read_bytes()).hexdigest()
+    definition = _probe_definition().model_copy(update={"id": "default-pipeline"})
+    await _activate(
+        handler,
+        definition,
+        health=health,
+        enabled=enabled,
+        source_digest=source_digest,
+    )
+
+    result = await handler._cmd_playbook_migration_inventory({})
+
+    entry = next(e for e in result["entries"] if e["playbook_id"] == "default-pipeline")
+    assert entry["activation_health"] == health
+    assert entry["disposition"] == disposition
+    assert reason_code in {reason["code"] for reason in entry["reasons"]}
+    assert entry["artifact"] is not None
+
+
+async def test_inventory_never_reports_ready_without_a_valid_joined_artifact(handler):
+    """A dangling activation row cannot satisfy the ready evidence contract."""
+    await handler.db.set_playbook_activation(
+        playbook_id="default-pipeline",
+        scope="system",
+        scope_identifier="",
+        artifact_sha256=None,
+        enabled=True,
+        activated_by="operator",
+        health="ready",
+        reasons="[]",
+    )
+
+    result = await handler._cmd_playbook_migration_inventory({})
+
+    entry = next(e for e in result["entries"] if e["playbook_id"] == "default-pipeline")
+    assert entry["artifact"] is None
+    assert entry["disposition"] == "invalid"
+    assert "schema_violation" in {reason["code"] for reason in entry["reasons"]}
 
 
 @pytest.mark.asyncio

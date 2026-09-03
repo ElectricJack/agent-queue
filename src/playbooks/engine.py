@@ -421,6 +421,22 @@ class _RunControl:
     receipt: StepReceipt | None = None
 
 
+def _authored_idempotency_key(step: Any, scope: ResolutionScope) -> str | None:
+    """Resolve a ``CommandStep``'s step-level idempotency override, if any.
+
+    Resolved here rather than in the executor for the same reason
+    ``step.inputs`` is: a resolution failure has to be an *outcome* before any
+    executor runs, so the engine is the only thing that touches the scope.
+    A ``ValueResolutionError`` therefore propagates to the same handler and
+    becomes ``input_resolution_failed``.
+    """
+    raw = getattr(step, "idempotency_key", None)
+    if raw is None:
+        return None
+    value = resolve_value(raw, scope)
+    return None if value is None else str(value)
+
+
 class PlaybookEngine:
     """Dispatch, single-rule execution and resume over the strict artifact."""
 
@@ -665,6 +681,7 @@ class PlaybookEngine:
                     name: resolve_value(value, cursor.scope)
                     for name, value in getattr(step, "inputs", {}).items()
                 }
+                authored_key = _authored_idempotency_key(step, cursor.scope)
             except ValueResolutionError as exc:
                 paths.append(
                     DryRunPath(
@@ -695,6 +712,7 @@ class PlaybookEngine:
             else:
                 result = await self._execute_symbolic(
                     step, cursor, artifact, artifact_ref, principal, inputs,
+                    authored_key=authored_key,
                     mode=mode,
                     dispatch_id=dispatch_id,
                     run_id=run_id_for(cursor.rule_id),
@@ -877,6 +895,7 @@ class PlaybookEngine:
         principal: Any,
         inputs: Mapping[str, Any],
         *,
+        authored_key: str | None = None,
         mode: ExecutionMode,
         dispatch_id: str,
         run_id: str,
@@ -901,6 +920,7 @@ class PlaybookEngine:
             mode=mode,
             iteration_index=None if cursor.loop is None else cursor.loop.index,
             inputs=inputs,
+            authored_idempotency_key=authored_key,
             loop_frame=cursor.loop,
         )
         try:
@@ -2099,6 +2119,7 @@ class PlaybookEngine:
                 name: resolve_value(value, scope)
                 for name, value in getattr(step, "inputs", {}).items()
             }
+            authored_key = _authored_idempotency_key(step, scope)
         except ValueResolutionError as exc:
             attempt.outcome = "input_resolution_failed"
             attempt.error = exc.reason
@@ -2161,6 +2182,7 @@ class PlaybookEngine:
             cancel_requested=snapshot.cancel_requested_at is not None,
             cancel_event=control.cancel_event if control is not None else None,
             inputs=inputs,
+            authored_idempotency_key=authored_key,
             loop_frame=snapshot.loop,
             llm_turns=snapshot.llm_turns,
             on_tool_turn=on_tool_turn if isinstance(step, LlmStep) else None,

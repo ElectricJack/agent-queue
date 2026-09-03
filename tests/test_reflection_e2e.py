@@ -1198,8 +1198,10 @@ class TestReflectionPlaybookTemplate:
         """The scope targets the agent type whose directory the template lives in.
 
         The shipped agent type was renamed ``coding`` -> ``claude-opus`` when
-        the defaults moved to provider-explicit ids; the scope follows the
-        directory under ``src/prompts/default_agent_type_playbooks/``.
+        the defaults moved to provider-explicit ids. The bundled tree is keyed
+        by agent type under ``src/prompts/default_agent_type_playbooks/``, and
+        ``ensure_default_agent_type_playbooks`` copies each file into the same
+        type's vault directory, so the scope must follow that directory.
         """
         assert "scope: agent-type:claude-opus" in playbook_source
 

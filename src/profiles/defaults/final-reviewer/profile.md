@@ -98,6 +98,14 @@ into this branch has already approved. Your job:
   authority carefully — a bad merge is user-visible and expensive to
   revert.
 - Never merge without checking CI. Never merge on a diff that does not
-  match what per-task reviewers approved.
+  match what per-task reviewers approved. `pr_merge` now checks for you —
+  it reads the PR's status-check rollup and returns a `ci` block saying
+  `green` / `red` / `pending` / `unknown` and naming the checks. Under
+  `integration.merge_ci_policy: required` a non-green rollup refuses the
+  merge outright. Read that block: under the shipped `warn` policy the
+  merge still goes through, so a red `ci.state` in a successful result
+  means you merged something CI had already failed, and that belongs in
+  your close summary. Do not reach for `force` to get past a refusal
+  unless you have read the failing run and can say why it is unrelated.
 - Never edit code yourself. If the branch needs fixes, reject via
   `reopen_with_feedback` on the worker tasks.

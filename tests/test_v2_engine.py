@@ -14,6 +14,7 @@ here that would fail against the live V1 runner:
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
@@ -26,7 +27,7 @@ from src.config import LLMConfig
 from src.llm import LLMClient
 from src.llm.fake import FakeProvider
 from src.llm.types import TokenUsage
-from src.playbooks.definition import LlmStep
+from src.playbooks.definition import LlmStep, load_definition_json
 from src.playbooks.engine import (
     DispatchResult,
     EventArrived,
@@ -74,6 +75,7 @@ from tests.fixtures.contracts.engine_contracts import (
     registry_with,
 )
 from tests.playbook_v2_engine_helpers import (
+    FIXTURES,
     InMemoryArtifactStore,
     RecordingBus,
     RecordingRunRepository,
@@ -107,8 +109,9 @@ def build(
     *,
     contracts: tuple[Any, ...] = (ENSURE_TASK, LIST_TASKS),
     runs: RecordingRunRepository | None = None,
+    artifact: Any | None = None,
 ) -> tuple[PlaybookEngine, Any, RecordingRunRepository, RecordingBus, Any]:
-    artifact = load_artifact(artifact_name)
+    artifact = load_artifact(artifact_name) if artifact is None else artifact
     ref = artifact_ref_for(artifact)
     registry, adapter = registry_with(*contracts)
     store = InMemoryArtifactStore()
@@ -273,6 +276,98 @@ TOOL_PRINCIPAL = ExecutionPrincipal(
         aq_commands=["ensure_task", "playbook_admin"]
     ),
 )
+
+
+def _ensure_step_with(*, inputs: dict[str, Any] | None = None, idempotency_key: Any = None):
+    """``two-rules-one-event``, with authored keying on its ``ensure_task``.
+
+    Edited as JSON and re-loaded rather than ``model_copy``-ed, so the added
+    values go through the same validation a compiled artifact does.
+    """
+    raw = json.loads((FIXTURES / "two-rules-one-event.artifact.json").read_text())
+    step = raw["steps"]["ensure-review-task"]
+    step["inputs"].update(inputs or {})
+    if idempotency_key is not None:
+        step["idempotency_key"] = idempotency_key
+    return load_definition_json(json.dumps(raw))
+
+
+class TestAuthoredIdempotencyKey:
+    """The authored key reaches the command; the attempt key reaches the receipt.
+
+    These two live at the engine level rather than only in the executor suite
+    because the step-level override has to be *resolved* against the run's
+    scope before an executor can see it, and that resolution is the engine's
+    job — the same one that turns a miss into ``input_resolution_failed``
+    before any side effect happens.
+    """
+
+    @pytest.mark.asyncio
+    async def test_an_authored_dedup_key_reaches_the_command_unchanged(self):
+        artifact = _ensure_step_with(
+            inputs={
+                "dedup_key": {
+                    "type": "template",
+                    "parts": [
+                        {"type": "literal", "value": "review:task:"},
+                        {"type": "event_ref", "path": "task_id"},
+                    ],
+                }
+            }
+        )
+        engine, adapter, runs, _bus, _ref = build(artifact=artifact)
+        adapter.queue.extend([ok(), listed()])
+
+        result = await engine.dispatch_event(event("task-completed-code"), TRUSTED_LOCAL)
+
+        assert adapter.args_for("ensure_task")[0].dedup_key == "review:task:task-1"
+        receipts = [
+            r
+            for run_id in result.run_ids
+            for r in runs.receipts
+            if r.run_id == run_id and r.step_id == "ensure-review-task"
+        ]
+        assert receipts
+        # Attempt identity is still recorded, and it is not the argument.
+        assert all(r.idempotency_key.endswith(":ensure-review-task:-:1") for r in receipts)
+
+    @pytest.mark.asyncio
+    async def test_a_step_level_override_is_resolved_and_wins(self):
+        artifact = _ensure_step_with(
+            inputs={"dedup_key": {"type": "literal", "value": "authored-input"}},
+            idempotency_key={
+                "type": "template",
+                "parts": [
+                    {"type": "literal", "value": "review-of-"},
+                    {"type": "event_ref", "path": "task_id"},
+                ],
+            },
+        )
+        engine, adapter, _runs, _bus, _ref = build(artifact=artifact)
+        adapter.queue.extend([ok(), listed()])
+
+        await engine.dispatch_event(event("task-completed-code"), TRUSTED_LOCAL)
+
+        assert adapter.args_for("ensure_task")[0].dedup_key == "review-of-task-1"
+
+    @pytest.mark.asyncio
+    async def test_an_unresolvable_step_level_key_fails_before_the_command_runs(self):
+        artifact = _ensure_step_with(
+            idempotency_key={"type": "event_ref", "path": "missing_field"},
+        )
+        engine, adapter, runs, _bus, _ref = build(artifact=artifact)
+        adapter.queue.extend([ok(), listed()])
+
+        result = await engine.dispatch_event(event("task-completed-code"), TRUSTED_LOCAL)
+
+        assert adapter.args_for("ensure_task") == []
+        outcomes = {
+            r.outcome
+            for run_id in result.run_ids
+            for r in runs.receipts
+            if r.run_id == run_id and r.step_id == "ensure-review-task"
+        }
+        assert outcomes == {"failure"}
 
 
 class TestRulePerRunDispatch:

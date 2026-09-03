@@ -61,6 +61,15 @@ class ConsoleFrame:
         return d
 
 
+def _frame_bytes(frame: ConsoleFrame) -> int:
+    """Payload size of a buffered frame, for the ``buffer_max_bytes`` cap.
+
+    Only the text payload is counted — the fixed per-frame overhead is small
+    and constant, and ``buffer_max_lines`` already bounds the frame count.
+    """
+    return len(frame.text.encode("utf-8", "replace")) if frame.text else 0
+
+
 @dataclass
 class StreamHandle:
     stream_id: str
@@ -74,20 +83,41 @@ class StreamHandle:
     started_at: float = field(default_factory=time.time)
     ended_at: float | None = None
     buffer: "deque[ConsoleFrame]" = field(default_factory=lambda: deque(maxlen=5000))
+    buffer_max_bytes: int | None = None
     process: "asyncio.subprocess.Process | None" = None
     subscribers: "set[asyncio.Queue]" = field(default_factory=set)
     truncated: bool = False
     _next_seq: int = field(default=0, repr=False)
+    _buffer_bytes: int = field(default=0, repr=False)
 
     def next_seq(self) -> int:
         seq = self._next_seq
         self._next_seq += 1
         return seq
 
+    @property
+    def buffer_bytes(self) -> int:
+        """Payload bytes currently held by the ring buffer (see ``append``)."""
+        return self._buffer_bytes
+
     def append(self, frame: ConsoleFrame) -> None:
+        # Two caps, both from ``streams:``: ``buffer_max_lines`` is the deque's
+        # own ``maxlen``, ``buffer_max_bytes`` is accounted here. Without the
+        # byte cap a handful of pathologically long lines can pin
+        # ``buffer_max_lines`` x line-length bytes in memory (design §8.1).
         if self.buffer.maxlen is not None and len(self.buffer) == self.buffer.maxlen:
+            # ``deque.append`` is about to drop the oldest frame for us.
+            self._buffer_bytes -= _frame_bytes(self.buffer[0])
             self.truncated = True
         self.buffer.append(frame)
+        self._buffer_bytes += _frame_bytes(frame)
+        if self.buffer_max_bytes is not None:
+            # Always keep the newest frame, even when it alone busts the cap:
+            # dropping it would lose an ``exit``/``killed`` frame and leave
+            # subscribers replaying a stream that never terminates.
+            while len(self.buffer) > 1 and self._buffer_bytes > self.buffer_max_bytes:
+                self._buffer_bytes -= _frame_bytes(self.buffer.popleft())
+                self.truncated = True
         for q in list(self.subscribers):
             try:
                 q.put_nowait(frame)
@@ -109,8 +139,14 @@ class StreamHandle:
 class StreamRegistry:
     """``dict[str, StreamHandle]`` keyed by uuid4, hung off the orchestrator."""
 
-    def __init__(self, *, buffer_max_lines: int = 5000) -> None:
+    def __init__(
+        self,
+        *,
+        buffer_max_lines: int = 5000,
+        buffer_max_bytes: int = 2 * 1024 * 1024,
+    ) -> None:
         self._buffer_max_lines = buffer_max_lines
+        self._buffer_max_bytes = buffer_max_bytes
         self._streams: dict[str, StreamHandle] = {}
         self._concurrency: dict[str, int] = {}
 
@@ -123,6 +159,7 @@ class StreamRegistry:
             stream_id=stream_id, title=title, session_id=session_id,
             project_id=project_id, command=command, cwd=cwd,
             buffer=deque(maxlen=self._buffer_max_lines),
+            buffer_max_bytes=self._buffer_max_bytes,
         )
         self._streams[stream_id] = handle
         self._concurrency[session_id] = self._concurrency.get(session_id, 0) + 1
@@ -186,6 +223,10 @@ class StreamMetadata(BaseModel):
     ended_at: float | None
     session_id: str
     project_id: str | None
+    # Server-owned reconnect budget for the console-stream pane's SSE
+    # backoff loop (``streams.client_reconnect_attempts``, design §7.2) —
+    # the browser has no other way to read the daemon's config.
+    client_reconnect_attempts: int = 5
 
 
 async def _validate_cwd(cwd: str, *, db, workspace_dir: str) -> str | None:
@@ -338,7 +379,8 @@ def build_streams_router(
 
     router = APIRouter()
     reg = registry if registry is not None else StreamRegistry(
-        buffer_max_lines=getattr(config.streams, "buffer_max_lines", 5000)
+        buffer_max_lines=getattr(config.streams, "buffer_max_lines", 5000),
+        buffer_max_bytes=getattr(config.streams, "buffer_max_bytes", 2 * 1024 * 1024),
     )
 
     @router.post("/api/streams", response_model=StreamStartResponse)
@@ -409,6 +451,9 @@ def build_streams_router(
             exit_code=handle.exit_code, started_at=handle.started_at,
             ended_at=handle.ended_at, session_id=handle.session_id,
             project_id=handle.project_id,
+            client_reconnect_attempts=getattr(
+                config.streams, "client_reconnect_attempts", 5
+            ),
         )
 
     @router.get("/api/streams/{stream_id}/subscribe")
@@ -514,7 +559,10 @@ def _build_default_router() -> APIRouter:
         registry = getattr(orch, "stream_registry", None)
         if registry is None:
             registry = StreamRegistry(
-                buffer_max_lines=getattr(orch.config.streams, "buffer_max_lines", 5000)
+                buffer_max_lines=getattr(orch.config.streams, "buffer_max_lines", 5000),
+                buffer_max_bytes=getattr(
+                    orch.config.streams, "buffer_max_bytes", 2 * 1024 * 1024
+                ),
             )
             orch.stream_registry = registry
         inner = build_streams_router(

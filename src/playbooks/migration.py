@@ -32,6 +32,7 @@ from typing import Any, Literal
 
 import yaml
 
+from src.playbooks.activation import ActivationHealth
 from src.playbooks.artifact_ref import SHA256_RE, ArtifactRef, ArtifactRefError
 from src.playbooks.handler import PLAYBOOK_PATTERNS, derive_playbook_scope
 from src.playbooks.routing import is_deprecated_default_assignment_entry
@@ -83,11 +84,39 @@ _FATAL_CODES: frozenset[str] = frozenset(
     }
 )
 
-#: ``ActivationHealth`` values that map onto a reason code.  ``ready`` and
-#: ``needs_rebuild``/``unavailable`` are handled separately: the first produces
-#: no reason and the others are transient operational states rather than
-#: migration blockers.
-_HEALTH_REASONS: Mapping[str, tuple[str, str]] = {
+#: Every non-ready ``ActivationHealth`` maps onto an operator-facing reason.
+#: Keeping the enum members here makes drift between the activation subsystem
+#: and the migration inventory a type-visible change instead of a silent
+#: fall-through to ``ready``.
+_HEALTH_REASONS: Mapping[ActivationHealth, tuple[str, str]] = {
+    ActivationHealth.INVALID: (
+        "schema_violation",
+        "the active artifact does not satisfy the strict V2 schema",
+    ),
+    ActivationHealth.QUESTION_REQUIRED: (
+        "compile_question",
+        "the active artifact has unresolved compiler questions",
+    ),
+    ActivationHealth.DISABLED: (
+        "operator_disabled",
+        "the V2 activation is disabled",
+    ),
+    ActivationHealth.STALE_CONTRACT: (
+        "stale_contract",
+        "the active artifact was compiled against a superseded command contract",
+    ),
+    ActivationHealth.UNAVAILABLE: (
+        "compile_question",
+        "the active artifact is unavailable; restore or recompile it before cutover",
+    ),
+}
+
+# Older inventory inputs used validator diagnostics as the health string.  They
+# are not legal ``ActivationHealth`` values, but retaining this read adapter
+# preserves the more specific migration reason when an old snapshot or a
+# pre-enum repository double is inspected.  Live rows always take the enum path
+# above, and any other unknown string fails closed below.
+_LEGACY_HEALTH_REASONS: Mapping[str, tuple[str, str]] = {
     "invalid_artifact": (
         "schema_violation",
         "the active artifact does not satisfy the strict V2 schema",
@@ -115,10 +144,6 @@ _HEALTH_REASONS: Mapping[str, tuple[str, str]] = {
     "nested_loop_rejected": (
         "nested_loop_rejected",
         "the active artifact nests a for-each loop, which V2 rejects",
-    ),
-    "stale_contract": (
-        "stale_contract",
-        "the active artifact was compiled against a superseded command contract",
     ),
 }
 
@@ -814,13 +839,38 @@ def _classify(
         (playbook_id, primary.scope, primary.scope_identifier or "")
     )
     artifact = _artifact_ref(activation) if activation is not None else None
-    health = str(activation.get("health")) if activation is not None else None
+    raw_health = activation.get("health") if activation is not None else None
+    try:
+        activation_health = ActivationHealth(raw_health) if raw_health is not None else None
+    except (TypeError, ValueError):
+        activation_health = None
+    if activation_health is not None:
+        health = activation_health.value
+    elif activation is not None:
+        health = str(raw_health)
+    else:
+        health = None
 
     if activation is not None:
-        mapped = _HEALTH_REASONS.get(health or "")
-        if mapped is not None:
+        if artifact is None:
+            reasons.append(
+                MigrationReason(
+                    code="schema_violation",
+                    message="the activation does not reference a valid joined V2 artifact",
+                )
+            )
+        elif legacy_reason := _LEGACY_HEALTH_REASONS.get(str(raw_health)):
+            reasons.append(MigrationReason(code=legacy_reason[0], message=legacy_reason[1]))
+        elif activation_health is None:
+            reasons.append(
+                MigrationReason(
+                    code="schema_violation",
+                    message=f"the activation reports unknown health state {raw_health!r}",
+                )
+            )
+        elif (mapped := _HEALTH_REASONS.get(activation_health)) is not None:
             reasons.append(MigrationReason(code=mapped[0], message=mapped[1]))
-        elif artifact is not None and artifact.contract_fingerprint != contract_fingerprint:
+        elif artifact.contract_fingerprint != contract_fingerprint:
             reasons.append(
                 MigrationReason(
                     code="stale_contract",
@@ -831,7 +881,7 @@ def _classify(
                     ),
                 )
             )
-        elif artifact is not None and artifact.source_digest != primary.source_sha256:
+        elif artifact.source_digest != primary.source_sha256:
             reasons.append(
                 MigrationReason(
                     code="compile_question",
@@ -858,17 +908,19 @@ def _classify(
         ack=ack if ack_matches else None,
     )
     if disposition == "disabled":
-        reasons = [r for r in reasons if r.code == "operator_disabled"] + [
-            MigrationReason(
+        if frontmatter_enabled is False:
+            disabled_reason = MigrationReason(
                 code="operator_disabled",
-                message=(
-                    "the source declares 'enabled: false'"
-                    if frontmatter_enabled is False
-                    else f"an operator acknowledged this playbook: {ack.get('reason')}"
-                ),
+                message="the source declares 'enabled: false'",
             )
-        ]
-        reasons = reasons[-1:]
+        elif ack_matches:
+            disabled_reason = MigrationReason(
+                code="operator_disabled",
+                message=f"an operator acknowledged this playbook: {ack.get('reason')}",
+            )
+        else:
+            disabled_reason = next(r for r in reasons if r.code == "operator_disabled")
+        reasons = [disabled_reason]
 
     return InventoryEntry(
         playbook_id=playbook_id,
@@ -910,7 +962,7 @@ def _disposition(
     codes = {reason.code for reason in reasons}
     if codes & _FATAL_CODES:
         return "invalid", None, None
-    if frontmatter_disabled:
+    if frontmatter_disabled or "operator_disabled" in codes:
         return "disabled", None, None
     if ack is not None:
         return (

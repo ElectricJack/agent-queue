@@ -146,6 +146,13 @@ branch, the gate stays open until `origin/<base>` is an ancestor of
 network, no checkout — resolves the gate as before: unknowable must not wedge
 every dependent shut forever.
 
+Before it merges anything, `pr_merge` asks what CI said. `integration.merge_ci_policy`
+(`off` / `warn` / `required`, shipped as `warn`) decides what a non-green
+status-check rollup does — nothing, a logged verdict in the result's `ci`
+block, or a refusal. The gate exists because GitHub's does not: `main`
+carries no required status check, so `gh pr merge` merged 29 of the last 30
+PRs red, #341 among them. See [the merge-gating guide](../../guides/merge-gating.md).
+
 The merge itself records what it did. `pr_merge` writes `pr_base` and
 `pr_merged_to_default` on the task carrying that PR and returns
 `merged to <base> (not <default>)`, so the state is visible without asking
