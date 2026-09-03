@@ -27046,8 +27046,10 @@
             "$ref": "#/components/schemas/SubagentMetrics",
             "default": {
               "total": 0.0,
+              "active": 0.0,
               "native": 0.0,
               "aq": 0.0,
+              "spawned_per_hour": 0.0,
               "complete": true,
               "by_session": {}
             }
@@ -27057,8 +27059,14 @@
             "default": {
               "input_per_min": 0.0,
               "output_per_min": 0.0,
+              "cache_read_per_min": 0.0,
+              "cache_write_per_min": 0.0,
               "total_per_min": 0.0,
               "unattributed_per_min": 0.0,
+              "input_per_min_1m": 0.0,
+              "output_per_min_1m": 0.0,
+              "total_per_min_1m": 0.0,
+              "window_seconds": 60.0,
               "by_model": {}
             }
           },
@@ -27161,10 +27169,26 @@
             "type": "number",
             "title": "Output Per Min",
             "default": 0
+          },
+          "cache_read_per_min": {
+            "type": "number",
+            "title": "Cache Read Per Min",
+            "default": 0
+          },
+          "cache_write_per_min": {
+            "type": "number",
+            "title": "Cache Write Per Min",
+            "default": 0
+          },
+          "total_per_min": {
+            "type": "number",
+            "title": "Total Per Min",
+            "default": 0
           }
         },
         "type": "object",
-        "title": "ModelTokens"
+        "title": "ModelTokens",
+        "description": "One model's share of the window, scaled to per minute.\n\n``total_per_min`` is that model's whole ledger volume \u2014 the other four\nfields are its breakdown, and cache is usually most of it."
       },
       "NodeAdvancedDTO": {
         "properties": {
@@ -34643,6 +34667,11 @@
             "title": "Aq",
             "default": 0
           },
+          "spawned": {
+            "type": "number",
+            "title": "Spawned",
+            "default": 0
+          },
           "hooks": {
             "type": "boolean",
             "title": "Hooks",
@@ -34651,7 +34680,7 @@
         },
         "type": "object",
         "title": "SessionSubagents",
-        "description": "One live session's children.\n\n``hooks`` is False when the session was launched without its harness\nsub-agent hooks wired, which makes ``native`` a floor rather than a total."
+        "description": "One session's children.\n\n``native`` and ``aq`` are children open right now, so they are 0 for a\nsession that has already exited; ``spawned`` counts the starts it\nrecorded inside the sampler's window and outlives the session row, which\nis why an entry can appear here keyed by a session id rather than a name.\n\n``hooks`` is False when the session was launched without its harness\nsub-agent hooks wired, which makes ``native`` a floor rather than a total."
       },
       "SessionSummary": {
         "properties": {
@@ -36567,6 +36596,11 @@
             "title": "Total",
             "default": 0
           },
+          "active": {
+            "type": "number",
+            "title": "Active",
+            "default": 0
+          },
           "native": {
             "type": "number",
             "title": "Native",
@@ -36575,6 +36609,11 @@
           "aq": {
             "type": "number",
             "title": "Aq",
+            "default": 0
+          },
+          "spawned_per_hour": {
+            "type": "number",
+            "title": "Spawned Per Hour",
             "default": 0
           },
           "complete": {
@@ -36593,7 +36632,7 @@
         },
         "type": "object",
         "title": "SubagentMetrics",
-        "description": "Fleet sub-agent totals plus the per-session drill-down.\n\n``complete`` is the conjunction over live sessions: one session without\nhooks makes ``native`` and ``total`` lower bounds for the whole fleet."
+        "description": "Fleet sub-agent totals plus the per-session drill-down.\n\nTwo different questions, kept apart because they answer differently on a\npool fleet: ``active`` (== the older ``total``) is how many children are\nopen at this instant, and reads ~0 when the sessions that start children\nare shorter-lived than the children; ``spawned_per_hour`` is how many\nwere started over the sampler's window, counted from the event table\nregardless of whether the parent session still exists.\n\n``complete`` is the conjunction over live sessions: one session without\nhooks makes ``native`` and ``active`` lower bounds for the whole fleet."
       },
       "SubagentRollup": {
         "properties": {
@@ -39430,6 +39469,16 @@
             "title": "Output Per Min",
             "default": 0
           },
+          "cache_read_per_min": {
+            "type": "number",
+            "title": "Cache Read Per Min",
+            "default": 0
+          },
+          "cache_write_per_min": {
+            "type": "number",
+            "title": "Cache Write Per Min",
+            "default": 0
+          },
           "total_per_min": {
             "type": "number",
             "title": "Total Per Min",
@@ -39439,6 +39488,26 @@
             "type": "number",
             "title": "Unattributed Per Min",
             "default": 0
+          },
+          "input_per_min_1m": {
+            "type": "number",
+            "title": "Input Per Min 1M",
+            "default": 0
+          },
+          "output_per_min_1m": {
+            "type": "number",
+            "title": "Output Per Min 1M",
+            "default": 0
+          },
+          "total_per_min_1m": {
+            "type": "number",
+            "title": "Total Per Min 1M",
+            "default": 0
+          },
+          "window_seconds": {
+            "type": "number",
+            "title": "Window Seconds",
+            "default": 60
           },
           "by_model": {
             "additionalProperties": {
@@ -39451,7 +39520,7 @@
         },
         "type": "object",
         "title": "TokenMetrics",
-        "description": "Rates over the trailing 60 seconds of the token ledger.\n\n``unattributed_per_min`` is ledger volume that carried no input/output\nsplit \u2014 reported separately rather than folded into a model's rate, the\nsame honesty rule ``get_costs`` applies to pricing."
+        "description": "Ledger rates over ``window_seconds``, scaled to per minute.\n\n``total_per_min`` is everything the ledger recorded, cache included: on a\nlong-lived session cache reads are the overwhelming majority of the\ntraffic, so a \"total\" of input+output alone understates it by orders of\nmagnitude.  ``unattributed_per_min`` is what no column could account for\n\u2014 rows from writers that report only a total, or written before the cache\ncolumns existed \u2014 reported separately rather than folded into a model's\nrate, the same honesty rule ``get_costs`` applies to pricing.\n\nThe ``*_per_min_1m`` fields are the raw trailing-minute counts, kept\nbeside the smoothed rates so the unsmoothed flush pattern is still\nreadable."
       },
       "TokenUsageDTO": {
         "properties": {

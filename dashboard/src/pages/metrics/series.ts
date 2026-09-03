@@ -113,33 +113,46 @@ export function buildCharts(samples: MetricsSample[]): ChartDef[] {
       ],
     },
     {
+      // Spawn rate first: on a pool fleet the sessions that start children
+      // are shorter-lived than the children, so "open right now" sits at ~0
+      // while the event table fills up. `active` stays on the chart as the
+      // secondary reading, not the headline.
       id: "subagents",
-      title: "Sub-agents in flight",
-      unit: "children",
+      title: "Sub-agents started per hour",
+      unit: "children / hour · open now",
       series: fixed([
-        ["subagents.total", "total", PALETTE[0]],
-        ["subagents.native", "native", PALETTE[1]],
-        ["subagents.aq", "AQ-delegated", PALETTE[2]],
+        ["subagents.spawned_per_hour", "started / hour", PALETTE[0]],
+        ["subagents.active", "open now", PALETTE[1]],
+        ["subagents.native", "open — native", PALETTE[2]],
+        ["subagents.aq", "open — AQ-delegated", PALETTE[4]],
       ]),
     },
     {
       id: "tokens",
       title: "Tokens per minute",
       unit: "tokens / min",
-      series: [
-        ...fixed([
-          ["tokens.total_per_min", "total", PALETTE[0]],
-          ["tokens.input_per_min", "input", PALETTE[1]],
-          ["tokens.output_per_min", "output", PALETTE[2]],
-          ["tokens.unattributed_per_min", "unattributed", PALETTE[3]],
-        ]),
-        ...breakdown(rows, "tokens.by_model", 4).map((series) => ({
-          ...series,
-          // The per-model buckets are objects; graph their input rate.
-          value: (sample: Sample) => pick(sample, `${series.key}.input_per_min`),
-          label: `${series.label} in`,
-        })),
-      ],
+      series: fixed([
+        // `total` includes cache. Plotting input+output as the total is what
+        // made this chart look dead: on a warm context the cache read is
+        // three orders of magnitude larger than fresh input.
+        ["tokens.total_per_min", "total", PALETTE[0]],
+        ["tokens.cache_read_per_min", "cache read", PALETTE[6]],
+        ["tokens.cache_write_per_min", "cache write", PALETTE[5]],
+        ["tokens.input_per_min", "input", PALETTE[1]],
+        ["tokens.output_per_min", "output", PALETTE[2]],
+        ["tokens.unattributed_per_min", "unattributed", PALETTE[3]],
+      ]),
+    },
+    {
+      id: "tokens-by-model",
+      title: "Tokens per minute by model",
+      unit: "tokens / min",
+      series: breakdown(rows, "tokens.by_model", 0).map((series) => ({
+        ...series,
+        // The per-model buckets are objects; graph the whole of each one,
+        // matching the `total` line on the chart above.
+        value: (sample: Sample) => pick(sample, `${series.key}.total_per_min`),
+      })),
     },
     {
       id: "tasks",

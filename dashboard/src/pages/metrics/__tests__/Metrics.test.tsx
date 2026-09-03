@@ -54,8 +54,8 @@ function sample(ts: number, overrides: Partial<MetricsSample> = {}): MetricsSamp
     ts,
     agents: { total: 3, by_state: { running: 3 }, by_harness: { claude: 2, codex: 1 }, by_profile: {}, by_lifecycle: {} },
     tasks: { READY: 4, IN_PROGRESS: 3, ASSIGNED: 0, PAUSED: 1, BLOCKED: 2, WAITING_INPUT: 0, other: 0, total: 10 },
-    subagents: { total: 5, native: 3, aq: 2, complete: true, by_session: {} },
-    tokens: { input_per_min: 1200, output_per_min: 300, total_per_min: 1500, unattributed_per_min: 0, by_model: {} },
+    subagents: { total: 5, active: 5, native: 3, aq: 2, spawned_per_hour: 12, complete: true, by_session: {} },
+    tokens: { input_per_min: 1200, output_per_min: 300, cache_read_per_min: 90000, cache_write_per_min: 200, total_per_min: 91700, unattributed_per_min: 0, input_per_min_1m: 0, output_per_min_1m: 0, total_per_min_1m: 0, window_seconds: 300, by_model: {} },
     slots: { used: 6, total: 8, cap: 8 },
     machine: { load1: 4.5, load5: 4, load15: 3.5, cpu_count: 24, mem_total_mb: 32000, mem_free_mb: 8000, mem_available_mb: 12000 },
     daemon: { uptime_seconds: 600, restarts: 1 },
@@ -147,21 +147,24 @@ describe("Metrics page", () => {
     // The tiles render immediately with "—"; wait for the history to land.
     await screen.findByTestId("chart-Running agents");
     expect(screen.getByText("Agents now")).toBeInTheDocument();
-    expect(screen.getByText("1,500")).toBeInTheDocument(); // tokens/min
+    // The total includes cache, which on a warm agent is most of it.
+    expect(screen.getByText("91,700")).toBeInTheDocument(); // tokens/min
+    expect(screen.getByText("Sub-agents / hr")).toBeInTheDocument();
+    expect(screen.getByText("12")).toBeInTheDocument(); // sub-agents started/hr
     expect(screen.getByText("of 8 cap")).toBeInTheDocument();
     expect(screen.getByText("4.50")).toBeInTheDocument(); // load1
   });
 
-  it("says the sub-agent count is a floor when a session had no hooks", async () => {
+  it("says the open sub-agent count is a floor when a session had no hooks", async () => {
     api.response = {
       ...api.response!,
       samples: [sample(1000, {
-        subagents: { total: 2, native: 1, aq: 1, complete: false, by_session: {} },
+        subagents: { total: 2, active: 2, native: 1, aq: 1, spawned_per_hour: 9, complete: false, by_session: {} },
       } as Partial<MetricsSample>)],
     };
     render(page());
     await screen.findByTestId("chart-Running agents");
-    expect(screen.getByText("at least — hooks missing")).toBeInTheDocument();
+    expect(screen.getByText("2+ open — hooks missing")).toBeInTheDocument();
   });
 
   it("appends a live tick without refetching history", async () => {

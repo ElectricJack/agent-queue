@@ -370,6 +370,18 @@ existing per-stream Discord worker consumes these unchanged); `usage` deltas →
 `touch_session_activity` + `agents.last_heartbeat`. Missing path → one-shot
 `session.transcript_missing` event, fall back to peek-diff.
 
+The read position is checkpointed durably in `transcript_checkpoints`, keyed by
+**transcript path** rather than session id (`byte_offset` + the last charged
+entry uuid). The in-process offset is per session id, and a session that dies
+and is relaunched on the same workspace resolves to the same transcript file
+under a new id — so it started at 0 and replayed the whole file, re-emitting
+every past turn and re-charging every assistant turn's usage. Three successive
+supervisor incarnations each wrote an identical 133 ledger rows for one window
+before this existed. On first sight of a path (or a rotation onto a different
+one) the watcher adopts that file's stored mark; a mark past the end of the
+file means the file was rewritten, so the resume point is its start. Updates
+are monotonic, so two readers on one file cannot rewind each other.
+
 ### 3.8 API and commands
 
 `src/api/sessions.py`: `router = APIRouter()`; `GET /api/sessions/{session_id}/stream`

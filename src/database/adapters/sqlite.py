@@ -51,6 +51,7 @@ from src.database.queries.task_recovery_queries import TaskRecoveryQueryMixin
 from src.database.queries.task_requirements_queries import TaskRequirementsQueryMixin
 from src.database.queries.token_queries import TokenQueryMixin
 from src.database.queries.transaction_queries import TransactionQueryMixin
+from src.database.queries.transcript_queries import TranscriptQueryMixin
 from src.database.queries.playbook_queries import PlaybookQueryMixin
 from src.database.queries.playbook_artifact_queries import PlaybookArtifactQueryMixin
 from src.database.queries.playbook_run_queries import PlaybookRunQueryMixin
@@ -85,6 +86,7 @@ class SQLiteDatabaseAdapter(
     SubagentQueriesMixin,
     TaskSessionQueryMixin,
     TokenQueryMixin,
+    TranscriptQueryMixin,
     ResultQueryMixin,
     EventQueryMixin,
     ArchiveQueryMixin,

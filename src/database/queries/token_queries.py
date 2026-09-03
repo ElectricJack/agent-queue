@@ -24,6 +24,8 @@ class TokenQueryMixin:
         model: str | None = None,
         input_tokens: int | None = None,
         output_tokens: int | None = None,
+        cache_read_tokens: int | None = None,
+        cache_write_tokens: int | None = None,
     ) -> None:
         """Append a token usage record.
 
@@ -32,6 +34,12 @@ class TokenQueryMixin:
         total: a row without them is reported as ``unpriced_tokens`` by
         :meth:`get_cost_rollup` rather than priced at a guessed rate
         (``docs/specs/design/trust-and-ops.md`` §7 — honesty over estimates).
+
+        The cache figures are a *third* category, not part of that split:
+        they are billed at their own rates, so they are recorded beside
+        ``input_tokens`` rather than inside it.  Passing them is what lets a
+        reader account for the whole of ``tokens`` instead of writing the
+        difference off as unattributed.
         """
         async with self._engine.begin() as conn:
             await conn.execute(
@@ -44,6 +52,8 @@ class TokenQueryMixin:
                     model=model,
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
+                    cache_read_tokens=cache_read_tokens,
+                    cache_write_tokens=cache_write_tokens,
                     timestamp=time.time(),
                 )
             )
