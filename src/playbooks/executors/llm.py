@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import replace
+from dataclasses import dataclass, replace
 import hashlib
 import json
 from typing import Any, ClassVar
@@ -35,17 +35,33 @@ def _attempt_key(ctx: StepContext) -> str:
     )
 
 
-def _operation(step: LlmStep, ctx: StepContext) -> str:
+def _operation(step: LlmStep, ctx: StepContext, spec: LLMCallSpec | None) -> str:
+    """Name the boundary, and its model only when the profile actually resolved.
+
+    ``spec`` is ``None`` on every path that returns before the profile was
+    read (cancellation, no client, an unresolvable profile).  Resolving a
+    model from a spec we never built would report a model that no call used.
+    """
+    if spec is None:
+        return f"llm:{step.profile_id}"
     try:
-        resolved = ctx.services.llm.resolve(_spec(step, ctx))
+        resolved = ctx.services.llm.resolve(spec)
         return f"llm:{step.profile_id}/{resolved.model}"
     except Exception:  # noqa: BLE001 - a receipt must never expose resolution details
         return f"llm:{step.profile_id}"
 
 
-def _spec(step: LlmStep, ctx: StepContext) -> LLMCallSpec:
+def _spec(step: LlmStep, ctx: StepContext, intelligence_class: str | None) -> LLMCallSpec:
+    """The call the step declares.
+
+    ``intelligence_class`` is the *resolved profile's* ``default_class``, never
+    the profile id: the two namespaces are unrelated, and feeding a profile id
+    into the class field makes ``resolve_call`` log "unknown intelligence
+    class" and silently fall back to ``llm.model`` (child plan §4.4 step 1).
+    ``None`` means the profile declares no class, which is the config default.
+    """
     return LLMCallSpec(
-        intelligence_class=step.profile_id,
+        intelligence_class=intelligence_class,
         max_tokens=step.budget.max_output_tokens,
         caller=f"playbook:{ctx.artifact.id}:{ctx.step_id}",
     )
@@ -78,6 +94,7 @@ def _result(
     ctx: StepContext,
     *,
     outcome: str,
+    spec: LLMCallSpec | None = None,
     usage: TokenUsage | None = None,
     llm_calls: int = 0,
     value: dict[str, Any] | None = None,
@@ -98,7 +115,7 @@ def _result(
         idempotency_key=_attempt_key(ctx),
         receipt_inputs={"prompt_digest": prompt_digest},
         receipt_result=receipt_result,
-        operation=_operation(step, ctx),
+        operation=_operation(step, ctx, spec),
         diagnostics=diagnostics,
     )
 
@@ -172,10 +189,35 @@ def _published_tools(step: LlmStep, ctx: StepContext) -> list[dict[str, Any]]:
     return tools
 
 
+@dataclass(frozen=True, slots=True)
+class ProfileResolution:
+    """What one ``LlmStep``'s ``profile_id`` resolves to, or why it did not.
+
+    Both halves come from the same authoritative read: the narrowed identity
+    the call executes under, and the intelligence class it executes on.  They
+    are returned together so the executor cannot resolve one and guess the
+    other — guessing the class is exactly the defect §4.4 step 1 forbids.
+    """
+
+    principal: Any | None = None
+    #: The profile's ``default_class``.  ``None`` both when the profile
+    #: declares none and when there is no profile; read it only alongside a
+    #: non-``None`` :attr:`principal`.
+    intelligence_class: str | None = None
+    #: The profile itself could not be read, as opposed to being refused.
+    #: §4.4 step 1: a missing profile is ``unavailable`` (it can be
+    #: transiently unloaded), a widening one is ``unauthorized``.
+    missing: bool = False
+    diagnostics: tuple[str, ...] = ()
+
+
 async def resolve_profile_principal(
     step: LlmStep, services: Any, invoking_principal: Any
-) -> tuple[Any | None, tuple[str, ...]]:
+) -> ProfileResolution:
     """Resolve the named profile from the server authority and only narrow.
+
+    Returns both halves of that one read — the narrowed principal and the
+    profile's ``default_class`` — as a :class:`ProfileResolution`.
 
     The database is the authority that command dispatch itself uses to resolve
     a profile policy.  An executor must never derive this policy from an LLM
@@ -184,11 +226,20 @@ async def resolve_profile_principal(
     """
     get_profile = getattr(services.db, "get_profile", None)
     if not callable(get_profile):
-        return None, ("profile authority unavailable",)
+        return ProfileResolution(
+            missing=True, diagnostics=("profile authority unavailable",)
+        )
     try:
         profile = await get_profile(step.profile_id)
-        if profile is None:
-            return None, ("named profile unavailable",)
+    except Exception:  # noqa: BLE001 - the authority itself could not be read
+        return ProfileResolution(
+            missing=True, diagnostics=("profile authority unavailable",)
+        )
+    if profile is None:
+        return ProfileResolution(
+            missing=True, diagnostics=("named profile unavailable",)
+        )
+    try:
         resolver = services.resolver
         plugin_command_names = (
             resolver.plugin_command_names() if resolver is not None else frozenset()
@@ -196,14 +247,21 @@ async def resolve_profile_principal(
         policy = capability_policy_for(profile, plugin_command_names=plugin_command_names)
         parent_policy = invoking_principal.policy
         widening = check_delegation(parent_policy, policy)
-    except Exception:  # noqa: BLE001 - authority failures must fail closed
-        return None, ("profile authority unavailable",)
+    except Exception:  # noqa: BLE001 - an unprovable policy fails closed
+        # The profile was read; only its policy could not be established.  A
+        # subset that cannot be proven is refused, not reported as absent.
+        return ProfileResolution(diagnostics=("profile authority unavailable",))
     if widening:
-        return None, ("named profile exceeds invoking principal",)
-    return replace(
-        invoking_principal.narrow(policy, reason=f"llm-profile:{step.profile_id}"),
-        profile_id=step.profile_id,
-    ), ()
+        return ProfileResolution(
+            diagnostics=("named profile exceeds invoking principal",)
+        )
+    return ProfileResolution(
+        principal=replace(
+            invoking_principal.narrow(policy, reason=f"llm-profile:{step.profile_id}"),
+            profile_id=step.profile_id,
+        ),
+        intelligence_class=str(getattr(profile, "default_class", "") or "").strip() or None,
+    )
 
 
 class LiveLlmExecutor:
@@ -219,24 +277,34 @@ class LiveLlmExecutor:
         if ctx.services.llm is None:
             return _result(step, ctx, outcome="unavailable", diagnostics=("LLM client unavailable",))
 
-        principal, diagnostics = await resolve_profile_principal(
-            step, ctx.services, ctx.principal
-        )
-        if principal is None:
-            return _result(step, ctx, outcome="unauthorized", diagnostics=diagnostics)
-        ctx = replace(ctx, principal=principal)
+        resolution = await resolve_profile_principal(step, ctx.services, ctx.principal)
+        if resolution.principal is None:
+            return _result(
+                step,
+                ctx,
+                outcome="unavailable" if resolution.missing else "unauthorized",
+                diagnostics=resolution.diagnostics,
+            )
+        ctx = replace(ctx, principal=resolution.principal)
 
-        spec = _spec(step, ctx)
+        spec = _spec(step, ctx, resolution.intelligence_class)
         try:
             resolved = ctx.services.llm.resolve(spec)
             provider = ctx.services.llm._provider_for(resolved)
         except Exception:  # noqa: BLE001 - profiles/providers may reload between boundaries
-            return _result(step, ctx, outcome="unavailable", diagnostics=("profile unavailable",))
+            return _result(
+                step,
+                ctx,
+                spec=spec,
+                outcome="unavailable",
+                diagnostics=("profile unavailable",),
+            )
 
         if step.budget.max_total_tokens is not None and not provider.reports_usage:
             return _result(
                 step,
                 ctx,
+                spec=spec,
                 outcome="budget_exceeded",
                 usage=TokenUsage(),
                 diagnostics=("provider does not report usage",),
@@ -260,7 +328,12 @@ class LiveLlmExecutor:
                     usage is not None and _usage_breaches(step, usage)
                 ):
                     return _result(
-                        step, ctx, outcome="budget_exceeded", usage=usage, llm_calls=calls
+                        step,
+                        ctx,
+                        spec=spec,
+                        outcome="budget_exceeded",
+                        usage=usage,
+                        llm_calls=calls,
                     )
                 # ``invoke_ai`` can opt a dry-run into a metered model call,
                 # never into a command call.  Do not publish tools in this
@@ -316,6 +389,7 @@ class LiveLlmExecutor:
                     return _result(
                         step,
                         ctx,
+                        spec=spec,
                         outcome="operator_decision_required",
                         usage=usage,
                         llm_calls=calls,
@@ -324,20 +398,26 @@ class LiveLlmExecutor:
                     )
                 if tools and run.stopped_by == "cancelled":
                     return _result(
-                        step, ctx, outcome="cancelled", usage=usage, llm_calls=calls
+                        step, ctx, spec=spec, outcome="cancelled", usage=usage, llm_calls=calls
                     )
                 if tools and run.stopped_by == "max_turns":
                     return _result(
-                        step, ctx, outcome="budget_exceeded", usage=usage, llm_calls=calls
+                        step,
+                        ctx,
+                        spec=spec,
+                        outcome="budget_exceeded",
+                        usage=usage,
+                        llm_calls=calls,
                     )
                 if denied:
                     return _result(
-                        step, ctx, outcome="unauthorized", usage=usage, llm_calls=calls
+                        step, ctx, spec=spec, outcome="unauthorized", usage=usage, llm_calls=calls
                     )
                 if step.budget.max_total_tokens is not None and not usage.reported:
                     return _result(
                         step,
                         ctx,
+                        spec=spec,
                         outcome="budget_exceeded",
                         usage=usage,
                         llm_calls=calls,
@@ -345,7 +425,12 @@ class LiveLlmExecutor:
                     )
                 if _usage_breaches(step, usage):
                     return _result(
-                        step, ctx, outcome="budget_exceeded", usage=usage, llm_calls=calls
+                        step,
+                        ctx,
+                        spec=spec,
+                        outcome="budget_exceeded",
+                        usage=usage,
+                        llm_calls=calls,
                     )
                 try:
                     value = _parse_and_validate(response_text, step)
@@ -354,6 +439,7 @@ class LiveLlmExecutor:
                         return _result(
                             step,
                             ctx,
+                            spec=spec,
                             outcome="invalid_output",
                             usage=usage,
                             llm_calls=calls,
@@ -389,6 +475,7 @@ class LiveLlmExecutor:
                     return _result(
                         step,
                         ctx,
+                        spec=spec,
                         outcome="invalid_output",
                         usage=usage,
                         llm_calls=calls,
@@ -396,6 +483,7 @@ class LiveLlmExecutor:
                 return _result(
                     step,
                     ctx,
+                    spec=spec,
                     outcome=outcome,
                     usage=usage,
                     llm_calls=calls,
@@ -404,13 +492,14 @@ class LiveLlmExecutor:
         except LLMToolTurnBoundaryError:
             raise
         except TimeoutError:
-            return _result(step, ctx, outcome="timed_out", llm_calls=calls)
+            return _result(step, ctx, spec=spec, outcome="timed_out", llm_calls=calls)
         except asyncio.CancelledError:
-            return _result(step, ctx, outcome="cancelled", llm_calls=calls)
+            return _result(step, ctx, spec=spec, outcome="cancelled", llm_calls=calls)
         except Exception as exc:  # noqa: BLE001 - provider errors are a typed outcome
             return _result(
                 step,
                 ctx,
+                spec=spec,
                 outcome="provider_error",
                 llm_calls=calls,
                 diagnostics=(type(exc).__name__,),
@@ -439,10 +528,17 @@ class SymbolicLlmExecutor:
             control=StepControl.UNRESOLVED,
             outcome="unavailable",
             idempotency_key=_attempt_key(ctx),
-            operation=_operation(step, ctx),
+            # A symbolic walk resolves no profile, so it can name no model:
+            # the operation descriptor stays the boundary alone.
+            operation=_operation(step, ctx, None),
             diagnostics=("LLM invocation is symbolic in this mode",),
             possible_outcomes=possible,
         )
 
 
-__all__ = ["LiveLlmExecutor", "SymbolicLlmExecutor", "resolve_profile_principal"]
+__all__ = [
+    "LiveLlmExecutor",
+    "ProfileResolution",
+    "SymbolicLlmExecutor",
+    "resolve_profile_principal",
+]
