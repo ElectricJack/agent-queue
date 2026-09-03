@@ -28,6 +28,7 @@ from src.commands.contracts.models import (
     UpdateClause,
 )
 from src.commands.contracts.registry import CommandContext, CommandRegistration, ContractRegistry
+from src.commands.principal import principal_context
 
 
 class CreateTaskArgs(CommandArgs):
@@ -287,8 +288,14 @@ def _outcome_of(name: str, raw: dict[str, Any]) -> str:
 
 
 def _adapter(name: str, value_type: type[CommandValue]):
-    async def invoke(args: CommandArgs, _ctx: CommandContext) -> CommandResult[Any]:
-        raw = await _handler().execute(name, args.model_dump(exclude_none=True))
+    async def invoke(args: CommandArgs, ctx: CommandContext | None) -> CommandResult[Any]:
+        if ctx is None:
+            raw = await _handler().execute(name, args.model_dump(exclude_none=True))
+        else:
+            # Re-enter the handler under the executor's principal so its
+            # narrowed authority cannot be replaced by a broader ambient one.
+            with principal_context(ctx):
+                raw = await _handler().execute(name, args.model_dump(exclude_none=True))
         outcome = _outcome_of(name, raw)
         if outcome in {"rejected", "refused_routing_gate", "already_linked", "not_running"}:
             value = value_type.model_construct()

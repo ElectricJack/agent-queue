@@ -119,6 +119,56 @@ async def test_production_wiring_makes_the_registered_invokes_operational() -> N
         builtin.set_handler_provider(previous)
 
 
+async def test_builtin_adapter_enforces_its_supplied_narrowed_principal(
+    command_handler_factory,
+) -> None:
+    """An ambient session principal must not replace the executor's principal."""
+    from src.commands.contracts import builtin
+    from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
+    from src.profiles.capabilities import CapabilityPolicy, DENY_ALL
+
+    handler = await command_handler_factory()
+    handler.config.security.capability_enforcement = "enforce"
+    dispatched: list[dict] = []
+
+    async def _cmd_create_task(args: dict) -> dict:
+        dispatched.append(args)
+        return {
+            "created": "task-1",
+            "task_id": "task-1",
+            "status": "READY",
+            "title": args["title"],
+            "project_id": "project-1",
+        }
+
+    handler._cmd_create_task = _cmd_create_task
+    ambient = ExecutionPrincipal(
+        kind=PrincipalKind.SESSION,
+        policy=CapabilityPolicy.from_namespaces(aq_commands=["create_task"]),
+        session_id="session-1",
+    )
+    narrowed = ExecutionPrincipal(
+        kind=PrincipalKind.PLAYBOOK,
+        policy=DENY_ALL,
+        parent_run_id="run-1",
+        parent_step_id="step-1",
+    )
+
+    previous = builtin._handler_provider
+    builtin.set_handler_provider(lambda: handler)
+    try:
+        with principal_context(ambient):
+            result = await CONTRACTS.require("create_task").invoke(
+                CreateTaskArgs(title="Must be denied"), narrowed
+            )
+    finally:
+        builtin.set_handler_provider(previous)
+
+    assert result.outcome == "rejected"
+    assert result.summary == "capability denied: create_task"
+    assert dispatched == []
+
+
 async def test_stop_task_is_dispatchable_and_an_already_stopped_child_is_not_a_violation() -> None:
     """``stop_task`` is what a parent run dispatches to cancel its child.
 
