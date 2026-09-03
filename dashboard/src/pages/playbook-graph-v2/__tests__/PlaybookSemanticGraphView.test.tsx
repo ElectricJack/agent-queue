@@ -4,7 +4,7 @@ import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import PlaybookSemanticGraphView from "../PlaybookSemanticGraphView";
-import { graph } from "./fixtures";
+import { foreignRunOverlay, graph, runOverlay } from "./fixtures";
 
 const api = vi.hoisted(() => ({
   useGraph: vi.fn(),
@@ -151,5 +151,22 @@ describe("PlaybookSemanticGraphView", () => {
     expect(screen.getByText("API 404: no activation")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(api.refetch).toHaveBeenCalled();
+  });
+
+  it("hands the inspector the selected step's run state and the run's receipts", async () => {
+    render(<PlaybookSemanticGraphView playbookId="default-pipeline" overlay={runOverlay} />);
+    await userEvent.click(screen.getByRole("button", { name: /Inspect step Open a spec-ingest gate/ }));
+
+    const run = within(screen.getByRole("group", { name: "Run" }));
+    expect(run.getByText("completed")).toBeInTheDocument();
+    expect(run.getByText("3")).toBeInTheDocument();
+    expect(within(run.getByRole("group", { name: "Receipts" })).getAllByRole("button")).toHaveLength(4);
+  });
+
+  it("shows no run state in the inspector for a run pinned to another artifact", async () => {
+    render(<PlaybookSemanticGraphView playbookId="default-pipeline" overlay={foreignRunOverlay} />);
+    await userEvent.click(screen.getByRole("button", { name: /Inspect step Open a spec-ingest gate/ }));
+    expect(screen.getByRole("complementary", { name: "Node inspector" })).toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Run" })).not.toBeInTheDocument();
   });
 });

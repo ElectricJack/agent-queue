@@ -1,21 +1,9 @@
-import { useState } from "react";
-import type { CapabilityNamespacesDTO, GraphNodeDTO } from "../../api/client";
+import { useEffect, useMemo, useState } from "react";
+import type { CapabilityNamespacesDTO, GraphNodeDTO, NodeOverlayDTO, ReceiptDTO } from "../../api/client";
 import AdvancedNodeDetail from "./AdvancedNodeDetail";
-import IntentSections, { Block, Value } from "./IntentSections";
-import { STEP_KIND_LABELS } from "./types";
-
-function Pairs({ pairs }: { pairs: [string, React.ReactNode][] }) {
-  return (
-    <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs">
-      {pairs.map(([label, value]) => (
-        <div key={label} className="contents">
-          <dt className="text-gray-500">{label}</dt>
-          <dd className="min-w-0 break-words text-gray-200">{value}</dd>
-        </div>
-      ))}
-    </dl>
-  );
-}
+import IntentSections, { Block, Pairs, Value } from "./IntentSections";
+import ReceiptDetail, { ReceiptChooser, formatDuration, receiptInIteration } from "./ReceiptDetail";
+import { NODE_RUN_STATE_LABELS, STEP_KIND_LABELS } from "./types";
 
 /** A namespace list. `[]` is deny-all and says so; a narrowing's `null` means
  *  "this step narrows nothing here", which is a different instruction. */
@@ -52,6 +40,18 @@ export interface SemanticNodeInspectorProps {
    *  should not have to re-open it five times. */
   advanced?: boolean;
   onAdvancedChange?: (next: boolean) => void;
+  /** This step's row of the applied run overlay. Absent when no run is
+   *  selected or when the run pinned a different artifact — the inspector
+   *  never invents run state for an artifact the run did not execute. */
+  overlay?: NodeOverlayDTO | null;
+  /** The run's receipts. Passed whole and filtered here by step, so the view
+   *  does not have to keep a second index of the same response. */
+  receipts?: ReceiptDTO[];
+  /** The run the overlay belongs to. Only the run id resets the receipt
+   *  selection: a live run re-fetches its overlay every few seconds, and
+   *  resetting on the response object would clear the operator's selection
+   *  under them on every poll. */
+  runId?: string;
 }
 
 /** Everything the artifact knows about one step, laid out rather than dumped.
@@ -63,10 +63,39 @@ export default function SemanticNodeInspector({
   node,
   advanced,
   onAdvancedChange,
+  overlay,
+  receipts,
+  runId,
 }: SemanticNodeInspectorProps) {
   const [uncontrolled, setUncontrolled] = useState(false);
   const showAdvanced = advanced ?? uncontrolled;
   const setShowAdvanced = onAdvancedChange ?? setUncontrolled;
+
+  // Which receipt of this step is open, and which iteration narrowed the list
+  // down to it. Both are per-node: selecting a different step starts over.
+  const [selectedReceiptId, setSelectedReceiptId] = useState<string | null>(null);
+  const [selectedIteration, setSelectedIteration] = useState<number | null>(null);
+  const stepId = node?.id;
+  useEffect(() => {
+    setSelectedReceiptId(null);
+    setSelectedIteration(null);
+  }, [stepId, runId]);
+
+  const iterations = overlay?.iterations ?? [];
+  const stepReceipts = useMemo(
+    () => (receipts ?? []).filter((receipt) => receipt.step_id === stepId),
+    [receipts, stepId],
+  );
+  const iteration =
+    selectedIteration == null ? undefined : iterations.find((it) => it.index === selectedIteration);
+  // Narrowing that would empty the list is not applied: a step whose receipts
+  // belong to no iteration still has receipts worth reading.
+  const narrowed = stepReceipts.filter((receipt) => receiptInIteration(receipt, iteration));
+  const shownReceipts = narrowed.length > 0 ? narrowed : stepReceipts;
+  // Resolved against the whole run, not just this step: a loop iteration's
+  // receipts are recorded against the body step, so an iteration chosen on the
+  // `foreach` node opens a receipt that belongs to a different step id.
+  const selectedReceipt = (receipts ?? []).find((receipt) => receipt.receipt_id === selectedReceiptId) ?? null;
 
   // Nothing selected: the panel is absent, not an empty box. An empty aside
   // would keep claiming space and be announced as a landmark with no content.
@@ -108,6 +137,86 @@ export default function SemanticNodeInspector({
               </li>
             ))}
           </ul>
+        </Block>
+      )}
+
+      {overlay && (
+        <Block name="Run">
+          <Pairs
+            pairs={[
+              ["state", NODE_RUN_STATE_LABELS[overlay.state ?? "not_visited"] ?? overlay.state],
+              ["visits", overlay.visit_count ?? 0],
+              ["last outcome", overlay.last_outcome ?? <span className="text-gray-500">—</span>],
+            ]}
+          />
+
+          {iterations.length > 0 && (
+            <div className="mt-2 space-y-1">
+              <h6 className="text-[10px] uppercase tracking-wide text-gray-500">Iterations</h6>
+              <div role="group" aria-label="Iterations" className="flex flex-wrap gap-1">
+                {iterations.map((iteration) => {
+                  const chosen = selectedIteration === iteration.index;
+                  return (
+                    <button
+                      type="button"
+                      key={iteration.index}
+                      aria-pressed={chosen}
+                      aria-label={`Iteration ${iteration.index}: ${iteration.item_display}`}
+                      onClick={() => {
+                        setSelectedIteration(iteration.index);
+                        setSelectedReceiptId(iteration.receipt_ids?.[0] ?? null);
+                      }}
+                      className={`rounded px-2 py-1 text-[11px] ${
+                        chosen ? "bg-indigo-600 text-white" : "bg-gray-800 text-gray-200 hover:bg-gray-700"
+                      }`}
+                    >
+                      {`${iteration.index}: ${iteration.item_display}`}
+                      {iteration.outcome ? ` · ${iteration.outcome}` : ""}
+                      {iteration.started_at != null && iteration.completed_at != null
+                        ? ` · ${formatDuration(iteration.completed_at - iteration.started_at)}`
+                        : ""}
+                    </button>
+                  );
+                })}
+              </div>
+              {selectedIteration != null && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedIteration(null);
+                    setSelectedReceiptId(null);
+                  }}
+                  className="text-[10px] text-gray-400 underline"
+                >
+                  Show every iteration&rsquo;s receipts
+                </button>
+              )}
+            </div>
+          )}
+
+          <div className="mt-2 space-y-2">
+            {stepReceipts.length > 0 ? (
+              <ReceiptChooser
+                receipts={shownReceipts}
+                selectedId={selectedReceiptId}
+                onSelect={(receiptId) => {
+                  setSelectedReceiptId(receiptId);
+                  const iterationIndex = stepReceipts.find((r) => r.receipt_id === receiptId)?.iteration_index;
+                  setSelectedIteration(iterationIndex ?? null);
+                }}
+              />
+            ) : (
+              <p className="text-[11px] text-gray-500">
+                No receipt for this step came back with the overlay.
+              </p>
+            )}
+            {(stepReceipts.length > 0 || selectedReceiptId) && (
+              <ReceiptDetail
+                receipt={selectedReceipt}
+                missingReceiptId={selectedReceiptId && !selectedReceipt ? selectedReceiptId : null}
+              />
+            )}
+          </div>
         </Block>
       )}
 

@@ -8,6 +8,7 @@ import type {
   OutcomeExplanationDTO,
   PlaybookRunOverlayResponse,
   PlaybookV2GraphResponse,
+  ReceiptDTO,
   RuleClusterDTO,
   SourceRefDTO,
 } from "../../../api/client";
@@ -748,6 +749,111 @@ export const tinyGraph: PlaybookV2GraphResponse = {
 };
 
 
+function receipt(overrides: Partial<ReceiptDTO> & Pick<ReceiptDTO, "receipt_id" | "step_id" | "outcome" | "started_at">): ReceiptDTO {
+  return {
+    rule_id: R2,
+    step_kind: "command",
+    attempt: 1,
+    iteration_index: null,
+    selected_edge_id: null,
+    completed_at: null,
+    duration_seconds: null,
+    inputs: [],
+    result: null,
+    token_usage: null,
+    idempotency_key: null,
+    principal_fingerprint: null,
+    profile_id: null,
+    contract_fingerprint: null,
+    error: null,
+    wait: null,
+    cancellation: null,
+    ...overrides,
+  };
+}
+
+/** The receipts of the run below. Two of them belong to the same loop
+ *  iteration and differ only in `attempt`, which is the case a panel that
+ *  renders `receipt_ids[0]` silently loses: the failed attempt is the one an
+ *  operator asking "why did this retry?" needs to read. */
+export const runReceipts: ReceiptDTO[] = [
+  receipt({
+    receipt_id: "r-list",
+    step_id: "list-downstream",
+    outcome: "listed",
+    selected_edge_id: `${R2}::list-downstream::listed`,
+    started_at: 1_756_000_100,
+    completed_at: 1_756_000_110,
+    duration_seconds: 10,
+    inputs: [row("Project", "this event's project", { source: "event" })],
+    result: value("3 downstream tasks"),
+    contract_fingerprint: "sha256:task-list-v1",
+  }),
+  receipt({
+    receipt_id: "r-loop",
+    step_id: "for-each-task",
+    step_kind: "foreach",
+    outcome: "completed",
+    selected_edge_id: `${R2}::for-each-task::completed`,
+    started_at: 1_756_000_120,
+    completed_at: 1_756_000_390,
+    duration_seconds: 270,
+  }),
+  receipt({
+    receipt_id: "r-a",
+    step_id: "open-gate",
+    iteration_index: 0,
+    outcome: "created",
+    selected_edge_id: `${R2}::open-gate::created`,
+    started_at: 1_756_000_200,
+    completed_at: 1_756_000_205,
+    duration_seconds: 5,
+    inputs: [row("Title", "Spec ingest: task-a", { source: "loop" })],
+    result: value("gate-a"),
+    idempotency_key: "gate:task-a",
+  }),
+  receipt({
+    receipt_id: "r-b-1",
+    step_id: "open-gate",
+    iteration_index: 1,
+    attempt: 1,
+    outcome: "runtime_error",
+    started_at: 1_756_000_210,
+    completed_at: 1_756_000_211.5,
+    duration_seconds: 1.5,
+    inputs: [row("Title", "Spec ingest: task-b", { source: "loop" })],
+    idempotency_key: "gate:task-b",
+    error: "gate_create timed out talking to the daemon",
+  }),
+  receipt({
+    receipt_id: "r-b",
+    step_id: "open-gate",
+    iteration_index: 1,
+    attempt: 2,
+    outcome: "reused",
+    selected_edge_id: `${R2}::open-gate::created`,
+    started_at: 1_756_000_255,
+    completed_at: 1_756_000_260,
+    duration_seconds: 5,
+    inputs: [row("Title", "Spec ingest: task-b", { source: "loop" })],
+    result: value("gate-b"),
+    idempotency_key: "gate:task-b",
+  }),
+  receipt({
+    receipt_id: "r-c",
+    step_id: "open-gate",
+    iteration_index: 2,
+    outcome: "created",
+    selected_edge_id: `${R2}::open-gate::created`,
+    started_at: 1_756_000_300,
+    completed_at: 1_756_000_306,
+    duration_seconds: 6,
+    inputs: [row("Title", "Spec ingest: task-c", { source: "loop" })],
+    result: value("gate-c"),
+    idempotency_key: "gate:task-c",
+  }),
+];
+
 /** One completed run of the `sweep-on-spec-approved` rule against the exact
  *  artifact above: it listed three downstream tasks, went round the foreach
  *  body three times, and left through the loop's exit. The
@@ -772,12 +878,14 @@ export const runOverlay: PlaybookRunOverlayResponse = {
       last_outcome: "completed",
       receipt_ids: ["r-loop"],
       iterations: [
-        { index: 0, item_display: "task-a", outcome: "created", receipt_ids: ["r-a"] },
-        { index: 1, item_display: "task-b", outcome: "reused", receipt_ids: ["r-b"] },
-        { index: 2, item_display: "task-c", outcome: "created", receipt_ids: ["r-c"] },
+        { index: 0, item_display: "task-a", outcome: "created", receipt_ids: ["r-a"], started_at: 1_756_000_200, completed_at: 1_756_000_205 },
+        // Two receipts: the first attempt hit a runtime error and the retry
+        // reused the gate the aborted attempt had already opened.
+        { index: 1, item_display: "task-b", outcome: "reused", receipt_ids: ["r-b-1", "r-b"], started_at: 1_756_000_210, completed_at: 1_756_000_260 },
+        { index: 2, item_display: "task-c", outcome: "created", receipt_ids: ["r-c"], started_at: 1_756_000_300, completed_at: 1_756_000_306 },
       ],
     },
-    { step_id: "open-gate", state: "completed", visit_count: 3, last_outcome: "created", receipt_ids: ["r-a", "r-b", "r-c"] },
+    { step_id: "open-gate", state: "completed", visit_count: 3, last_outcome: "created", receipt_ids: ["r-a", "r-b-1", "r-b", "r-c"] },
     { step_id: "check-gate", state: "completed", visit_count: 3, last_outcome: "default", receipt_ids: [] },
     { step_id: "sweep-done", state: "completed", visit_count: 1, last_outcome: "completed", receipt_ids: [] },
   ],
@@ -788,10 +896,10 @@ export const runOverlay: PlaybookRunOverlayResponse = {
     { edge_id: `${R2}::check-gate::default`, traversal_count: 3, last_traversed_at: 1_756_000_340 },
     { edge_id: `${R2}::for-each-task::completed`, traversal_count: 1, last_traversed_at: 1_756_000_390 },
   ],
-  receipts: [],
+  receipts: runReceipts,
   bindings: [],
   truncated: false,
-  receipt_total: 0,
+  receipt_total: runReceipts.length,
 };
 
 /** The same run, reported against an artifact this projection is not of. */
