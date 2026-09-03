@@ -143,6 +143,33 @@ class GitRemoteUrlResponse(BaseModel):
     message: str | None = None
 
 
+class PrMergeCiVerdict(BaseModel):
+    """What the PR head's status checks said, and what the policy did about it.
+
+    Present on every ``pr_merge`` response unless
+    ``integration.merge_ci_policy`` is ``off`` (in which case CI is never
+    consulted).  Under ``warn`` the merge happens regardless and this block
+    is the record of what landed; under ``required`` a ``blocked`` verdict
+    is why ``success`` is false.
+    """
+
+    #: The effective ``integration.merge_ci_policy``: ``warn`` or ``required``.
+    policy: str = ""
+    #: ``green`` / ``red`` / ``pending`` / ``unknown`` (see ``src/git/ci_gate.py``).
+    state: str = ""
+    #: One line naming the checks behind the verdict.
+    summary: str = ""
+    failing: list[str] = []
+    pending: list[str] = []
+    #: Required check names the rollup does not mention at all.
+    missing: list[str] = []
+    #: True when the merge was refused because of this verdict.
+    blocked: bool = False
+    #: True when ``force`` overrode a ``required`` refusal.
+    forced: bool = False
+    message: str = ""
+
+
 class PrMergeResponse(BaseModel):
     """Response model for the ``pr_merge`` command."""
 
@@ -150,6 +177,7 @@ class PrMergeResponse(BaseModel):
     pr_url: str = ""
     sha: str | None = None
     error: str | None = None
+    ci: PrMergeCiVerdict | None = None
 
 
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {

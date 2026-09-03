@@ -721,6 +721,7 @@ from .pool_status_row import PoolStatusRow
 from .post_message_api_messages_send_post_response_post_message_api_messages_send_post import (
     PostMessageApiMessagesSendPostResponsePostMessageApiMessagesSendPost,
 )
+from .pr_merge_ci_verdict import PrMergeCiVerdict
 from .pr_merge_request import PrMergeRequest
 from .pr_merge_response import PrMergeResponse
 from .pr_merge_response_422 import PrMergeResponse422
@@ -1806,6 +1807,7 @@ __all__ = (
     "PoolStatusResponse422",
     "PoolStatusRow",
     "PostMessageApiMessagesSendPostResponsePostMessageApiMessagesSendPost",
+    "PrMergeCiVerdict",
     "PrMergeRequest",
     "PrMergeResponse",
     "PrMergeResponse422",

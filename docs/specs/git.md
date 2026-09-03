@@ -382,6 +382,32 @@ Polls the state of a pull request. Returns one of three values:
 - `None` for all other states (e.g. `"CLOSED"`).
 - Raises `GitError` if `gh` exits with a non-zero code.
 
+### `apr_check_rollup(checkout_path, pr_url)` (async only)
+
+Returns the PR head's `statusCheckRollup` entries — one per GitHub Actions
+check run or legacy commit status — or `None` when the question cannot be
+answered.
+
+- Runs: `gh pr view <pr_url> --json statusCheckRollup`
+- Returns the raw entry list. Judging it belongs to
+  `src/git/ci_gate.py`'s `classify_rollup`, so the interesting cases
+  (duplicate check names, superseded runs, a required check that has not
+  reported yet) stay testable without `gh`, a network, or a real PR.
+- `None` means unknown: no `gh`, not authenticated, no network, malformed
+  JSON, or a non-list rollup. Callers must never read it as green — under
+  `integration.merge_ci_policy: required`, `pr_merge` refuses on `None`.
+- `[]` is different and is a real answer: the rollup was read and nothing
+  has reported yet. `gh` writes `null` for a head with no checks at all;
+  that is normalised to `[]`.
+- Never raises.
+
+The consumer is `GitCommandsMixin._check_ci_before_merge`, which applies
+`integration.merge_ci_policy` (`off` / `warn` / `required`) to the verdict
+before `amerge_pr` runs. It exists because branch protection does not:
+`main` carries no required status check, so `gh pr merge` merged PR #341
+with its own `Tests (default)` run red. See
+[the merge-gating guide](../guides/merge-gating.md).
+
 ### `check_gh_auth()`
 
 Checks whether the `gh` CLI is authenticated. Returns `True` if `gh auth status` exits successfully, `False` otherwise (including timeout and missing executable). Async counterpart: `acheck_gh_auth`.
