@@ -4,14 +4,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import type { TilesResponse } from "@aq/ts-client";
 
+/** The subset of a React Flow node the canvas builds and these tests read back. */
+interface FlowNode {
+  id: string;
+  type?: string;
+  position: { x: number; y: number };
+  selected?: boolean;
+  data: Record<string, unknown>;
+}
+
 interface FlowProps {
-  // The shape the canvas actually hands React Flow. `position` and `selected`
-  // are what several assertions below read, so they belong in the type.
-  nodes: { id: string; type?: string; position: { x: number; y: number }; selected?: boolean; data: Record<string, unknown> }[];
+  nodes: FlowNode[];
   children: ReactNode;
   onlyRenderVisibleElements?: boolean;
   onMove?: (event: unknown, viewport: { x: number; y: number; zoom: number }) => void;
-  onNodeClick?: (event: unknown, node: FlowProps["nodes"][number]) => void;
+  onNodeClick?: (event: unknown, node: FlowNode) => void;
 }
 
 const flow = vi.hoisted(() => ({ current: null as FlowProps | null }));

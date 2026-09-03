@@ -519,3 +519,52 @@ describe("TaskDetailPane — toolbar/shortcut publishing is effect-scoped", () =
     expect(props.setShortcuts).toHaveBeenLastCalledWith([]);
   });
 });
+
+describe("TaskDetailPane — deliverables", () => {
+  const deliverables = [
+    { id: "d1", kind: "file", target: "src/deliverables.py" },
+    { id: "d2", kind: "test", target: "tests/test_deliverables.py" },
+  ];
+
+  it("renders an open task's declared deliverables as pending and unmet", () => {
+    mockUseTask.mockReturnValue({
+      data: { ...fixtureTask, deliverables },
+      isLoading: false,
+      isError: false,
+    });
+    renderWithRouter(<TaskDetailPane {...noopProps()} />);
+
+    // The id/kind/target of each declared item has to survive the pending
+    // placeholder — a spread that dropped them would render bare checkboxes.
+    expect(screen.getByText("d1")).toBeInTheDocument();
+    expect(screen.getByText("src/deliverables.py")).toBeInTheDocument();
+    expect(screen.getByText("tests/test_deliverables.py")).toBeInTheDocument();
+    expect(screen.getAllByText("Pending close-time check")).toHaveLength(2);
+    expect(screen.getAllByLabelText("Unmet")).toHaveLength(2);
+  });
+
+  it("shows the close-time verdicts instead once the task has completed", () => {
+    mockUseTask.mockReturnValue({
+      data: {
+        ...fixtureTask,
+        deliverables,
+        completion: {
+          id: "c1", task_id: "t1", outcome: "pass", changes: "", verification: "",
+          tests: [], commands: [], commits: [], summary: "", notes: "", completed_at: 0,
+          deliverables: [
+            { ...deliverables[0], met: true, reason: "" },
+            { ...deliverables[1], met: false, reason: "no such test file" },
+          ],
+        },
+      },
+      isLoading: false,
+      isError: false,
+    });
+    renderWithRouter(<TaskDetailPane {...noopProps()} />);
+
+    expect(screen.queryByText("Pending close-time check")).toBeNull();
+    expect(screen.getByText("no such test file")).toBeInTheDocument();
+    expect(screen.getAllByLabelText("Met")).toHaveLength(1);
+    expect(screen.getAllByLabelText("Unmet")).toHaveLength(1);
+  });
+});
