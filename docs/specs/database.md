@@ -747,6 +747,37 @@ arrived is still stored, because losing a Start must not make a session look lik
 it is running a child forever.
 The SQLite-to-PostgreSQL copy inventory includes this table.
 
+### Table: `transcript_checkpoints`
+
+Durable high-water mark for each on-disk harness transcript file. The transcript
+watcher (`src/sessions/transcripts/watcher.py`) used to hold its read offset in
+process, keyed by session id; a session that died and was relaunched onto the
+same workspace adopted the *same* transcript file with a fresh id starting at
+offset 0, so the file's whole history was re-emitted as agent output and
+re-charged to the token ledger — three consecutive supervisor incarnations each
+wrote an identical 133 ledger rows for one window. The key is therefore the
+transcript **path**, the one thing that outlives the session that set it.
+
+Written only through `TranscriptQueryMixin`
+(`src/database/queries/transcript_queries.py`): the watcher reads the mark on
+attach and advances it as it consumes entries.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `transcript_path` | TEXT | PRIMARY KEY | Absolute path of the transcript file — deliberately not the session id |
+| `byte_offset` | INTEGER | NOT NULL DEFAULT 0 | Bytes consumed so far; the resume position |
+| `last_entry_uuid` | TEXT | nullable | Newest assistant entry whose usage was charged — second half of the dedupe key, so a reader resuming exactly on a record boundary cannot re-charge it |
+| `session_id` | TEXT | nullable | Soft provenance: which session last advanced the mark. Diagnostic only — nothing reads it to decide whether to advance |
+| `updated_at` | REAL | NOT NULL | Daemon clock at the last advance |
+
+Advances are monotonic: an update is guarded by `byte_offset <= :offset`, so two
+live readers pointed at one file cannot undo each other's progress. Truncation
+is the single exception — the caller detects a file shorter than the mark and
+passes `byte_offset=0`, and a zero offset always wins, because a rewritten file
+genuinely has to be read from its start again. A missed update falls through to
+an insert, and a racing writer's `IntegrityError` is swallowed: the conflict is
+itself proof the row now exists.
+
 ### Table: `metrics_samples`
 
 Fleet Metrics tab time-series buckets. Each row stores one JSON metric sample
