@@ -11,17 +11,20 @@ import {
   usePlaybookSource,
   usePlaybookRuns,
   useUpdatePlaybookSource,
+  usePlaybookActivationHealth,
   type PlaybookUpdateResult,
 } from "../api/hooks";
 import StatusBadge from "../components/StatusBadge";
 import DeletePlaybookModal from "../components/DeletePlaybookModal";
 import PlaybookGraphView from "./playbook-graph/PlaybookGraphView";
+import PlaybookSemanticReview from "./playbook-graph-v2/PlaybookSemanticReview";
 
-type TabId = "source" | "graph" | "runs";
+type TabId = "source" | "graph" | "semantic" | "runs";
 
 const TABS: { id: TabId; label: string }[] = [
   { id: "source", label: "Source" },
   { id: "graph", label: "Graph" },
+  { id: "semantic", label: "Semantic graph" },
   { id: "runs", label: "Runs" },
 ];
 
@@ -34,6 +37,7 @@ export default function PlaybookDetail() {
   const [deleteOpen, setDeleteOpen] = useState(false);
 
   const { data: playbooks } = usePlaybooks();
+  const activationHealth = usePlaybookActivationHealth(id);
   const meta = useMemo(() => playbooks?.find((p) => p.id === id), [playbooks, id]);
 
   return (
@@ -83,7 +87,7 @@ export default function PlaybookDetail() {
       />
 
       <div className="flex items-center gap-1 border-b border-gray-800">
-        {TABS.map((t) => (
+        {TABS.filter((t) => t.id !== "semantic" || Boolean(activationHealth.data?.activations?.length)).map((t) => (
           <button
             key={t.id}
             onClick={() => setTab(t.id)}
@@ -100,6 +104,7 @@ export default function PlaybookDetail() {
 
       {tab === "source" && <SourceTab playbookId={id} />}
       {tab === "graph" && <PlaybookGraphView playbookId={id} />}
+      {tab === "semantic" && <PlaybookSemanticReview playbookId={id} />}
       {tab === "runs" && <RunsTab playbookId={id} />}
     </div>
   );

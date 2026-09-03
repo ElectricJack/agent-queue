@@ -51,6 +51,7 @@ vi.mock("../../api/hooks", () => ({
   useUpdatePlaybookSource: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useDeletePlaybook: () => ({ mutateAsync: vi.fn(), isPending: false }),
   usePlaybookGraph: () => ({ ...state.graph, refetch: vi.fn() }),
+  usePlaybookActivationHealth: () => ({ data: { activations: [] }, isPending: false }),
 }));
 
 function page() {
@@ -79,6 +80,7 @@ describe("PlaybookDetail tabs", () => {
     expect(screen.getByRole("button", { name: "Source" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Graph" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Runs" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Semantic graph" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Compiled" })).not.toBeInTheDocument();
   });
 
