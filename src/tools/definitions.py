@@ -1259,6 +1259,14 @@ _ALL_TOOL_DEFINITIONS = [
                         "Create as a child of this container; the id becomes <parent>.<n>"
                     ),
                 },
+                "root": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "For worker-filed work, create at project root instead of defaulting "
+                        "beside the held task. Mutually exclusive with parent_id."
+                    ),
+                },
                 "depends_on": {
                     "type": "array",
                     "items": {

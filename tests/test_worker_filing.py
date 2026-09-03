@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import time
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from click.testing import CliRunner
 
 from src.commands.handler import CommandHandler
 from src.config import AppConfig, DiscordConfig
@@ -394,6 +395,61 @@ class TestSiblingFiling:
         assert new.parent_task_id is None and "." not in new.id
         assert await db.get_typed_dependencies(new.id) == [("held", "discovered-from")]
 
+    async def test_explicit_root_from_child_bypasses_sibling_default(self, handler, db):
+        """``root=True`` means project root even while the worker holds a child."""
+        sid = await holding_child_session(db)
+
+        res = await scoped(handler, sid)._cmd_create_task({
+            "title": "cross-cutting bug", "description": "d", "root": True,
+            "reason": "epic.1 exposed a project-wide parser defect",
+        })
+
+        assert res["success"] is True and res["gate_id"]
+        new = await db.get_task(res["task_id"])
+        assert new.parent_task_id is None and "." not in new.id
+        assert (new.status, new.is_blocked) == (TaskStatus.DEFINED, True)
+        assert await db.get_typed_dependencies(new.id) == [
+            ("epic.1", "discovered-from")
+        ]
+        detail = await db.get_typed_dependencies_detailed(new.id)
+        assert detail[0]["description"] == "epic.1 exposed a project-wide parser defect"
+        assert [g["gate_type"] for g in await db.get_gates_for_task(new.id)] == ["routing"]
+        event = created_events(handler)[0]
+        assert (event["parent_task_id"], event["discovered_from"]) == (None, "epic.1")
+        assert (await db.get_task("epic.1")).filed_count == 1
+
+    async def test_explicit_root_and_parent_are_rejected_before_mutation(self, handler, db):
+        sid = await holding_child_session(db)
+
+        res = await scoped(handler, sid)._cmd_create_task({
+            "title": "ambiguous", "description": "d", "root": True,
+            "parent_id": "epic.1", "reason": "epic.1 exposed it",
+        })
+
+        assert res["success"] is False
+        assert "mutually exclusive" in res["error"]
+        assert {task.id for task in await db.list_tasks(PROJECT_ID)} == {"epic", "epic.1"}
+        assert (await db.get_task("epic.1")).filed_count == 0
+
+    async def test_explicit_root_does_not_widen_discovered_from_scope(self, handler, db):
+        sid = await holding_child_session(db)
+        await db.create_task(Task(
+            id="elsewhere", project_id=PROJECT_ID, title="e", description="e",
+            status=TaskStatus.READY,
+        ))
+
+        res = await scoped(handler, sid)._cmd_create_task({
+            "title": "out of scope", "description": "d", "root": True,
+            "discovered_from": "elsewhere", "reason": "claimed provenance",
+        })
+
+        assert res["success"] is False
+        assert "discovered_from" in res["error"]
+        assert {task.id for task in await db.list_tasks(PROJECT_ID)} == {
+            "epic", "epic.1", "elsewhere",
+        }
+        assert (await db.get_task("epic.1")).filed_count == 0
+
     async def test_sibling_default_at_naming_depth_cap_does_not_fall_back(self, handler, db):
         """A held task at the naming-depth cap (``a.b.c``) still gets a real
         sibling (``a.b.N``) — the sibling default never trips the cap that an
@@ -467,3 +523,68 @@ class TestSiblingFiling:
         assert (await db.get_task("epic.1")).filed_count == 0
         async with db._engine.begin() as conn:
             assert set(await db.subtree_ids("epic", conn=conn)) == {"epic", "epic.1"}
+
+
+def _cli_client(captured_args: dict):
+    client = AsyncMock()
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=False)
+
+    async def execute(command, args=None):
+        if command == "create_task":
+            captured_args.update(args or {})
+            return {"created": "root-task", "title": (args or {}).get("title", "")}
+        return {}
+
+    client.execute = AsyncMock(side_effect=execute)
+    return client
+
+
+class TestRootFilingCLI:
+    def test_root_is_forwarded_to_single_task_creation(self):
+        from src.cli.app import cli
+
+        captured_args: dict = {}
+        client = _cli_client(captured_args)
+
+        with patch("src.cli.tasks._get_client", return_value=client):
+            result = CliRunner().invoke(cli, [
+                "task", "create", "--project", PROJECT_ID, "--title", "T",
+                "--description", "D", "--reason", "Found elsewhere", "--root",
+            ])
+
+        assert result.exit_code == 0, result.output
+        assert captured_args["root"] is True
+        assert "parent_id" not in captured_args
+
+    def test_root_and_parent_conflict_is_rejected_before_daemon_call(self):
+        from src.cli.app import cli
+
+        captured_args: dict = {}
+        client = _cli_client(captured_args)
+
+        with patch("src.cli.tasks._get_client", return_value=client):
+            result = CliRunner().invoke(cli, [
+                "task", "create", "--project", PROJECT_ID, "--title", "T",
+                "--description", "D", "--parent", "epic", "--root",
+            ])
+
+        assert result.exit_code == 2
+        assert "mutually exclusive" in result.output
+        client.execute.assert_not_awaited()
+
+    def test_root_is_rejected_for_graph_creation(self):
+        from src.cli.app import cli
+
+        captured_args: dict = {}
+        client = _cli_client(captured_args)
+
+        with patch("src.cli.tasks._get_client", return_value=client):
+            result = CliRunner().invoke(cli, [
+                "task", "create", "--project", PROJECT_ID, "--from-spec", "spec.md",
+                "--root",
+            ])
+
+        assert result.exit_code == 2
+        assert "--root only applies to single-task creation" in result.output
+        client.execute.assert_not_awaited()

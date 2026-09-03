@@ -16851,6 +16851,12 @@
             "title": "Parent Id",
             "description": "Create as a child of this container; the id becomes <parent>.<n>"
           },
+          "root": {
+            "type": "boolean",
+            "title": "Root",
+            "description": "For worker-filed work, create at project root instead of defaulting beside the held task. Mutually exclusive with parent_id.",
+            "default": false
+          },
           "depends_on": {
             "anyOf": [
               {

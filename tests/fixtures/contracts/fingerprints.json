@@ -1,7 +1,7 @@
 {
   "add_dependency": "sha256:cfc0c88e9c03cdaa2931d2631f91f39b18229db3a931ae064d98d67201eb44ed",
   "count_project_memory_files": "sha256:90758becb22f4652cacb1bb1f554b0b7af9c1e012b6af57f3ce63adec21b2ae9",
-  "create_task": "sha256:5ab1d8c825b2884f3fbe592a91d5ad8a174c70c0f7c5132e6da21752343aa146",
+  "create_task": "sha256:797fedf7c5613f2e2508e508706ff564d70ab91b65123a475f15fabd1ece9534",
   "edit_task": "sha256:a5c02bc88c11931d870330d03db0b1a7237e539a51a7d65a18149b3dc63b9fb6",
   "ensure_task": "sha256:4b35696e1543b60b340641db99370be0cf94b2e5982e5926fb2b1aa55a5fc4bc",
   "gate_create": "sha256:cef412074d2e82ff21c66ce7aac359b3fd4211e7a2a7ec5f451db6ddf023500d",

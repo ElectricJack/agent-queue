@@ -1157,6 +1157,13 @@ class TaskCommandsMixin:
         return None
 
     async def _cmd_create_task(self, args: dict) -> dict:
+        explicit_root = bool(args.get("root"))
+        if explicit_root and args.get("parent_id"):
+            return {
+                "success": False,
+                "error": "--root and parent_id are mutually exclusive",
+            }
+
         # ----- Worker-filed work (swarm work model §12) --------------------
         # A session-scoped, non-elevated caller is a pool worker currently
         # holding a task. Its filings are pinned to its own project, forced
@@ -1199,12 +1206,13 @@ class TaskCommandsMixin:
                     "error": "discovered_from must be the held task or one of its descendants",
                 }
             # §12: emergent work found while holding a *child* task T is
-            # organised as T's sibling — the new task defaults to T's own
-            # parent (the shared container/epic) and keeps a
+            # organised as T's sibling — unless the caller explicitly asks
+            # for a root, the new task defaults to T's own parent (the shared
+            # container/epic) and keeps a
             # ``discovered-from`` edge back to T. The worker may name exactly
             # that immediate parent explicitly; nothing further up or across
             # the tree opens up. A root-held task keeps root filing.
-            if not args.get("parent_id") and held_parent_id:
+            if not explicit_root and not args.get("parent_id") and held_parent_id:
                 args["parent_id"] = held_parent_id
             allowed_parents = allowed | ({held_parent_id} if held_parent_id else set())
             if args.get("parent_id") and args["parent_id"] not in allowed_parents:
