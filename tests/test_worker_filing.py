@@ -652,7 +652,7 @@ class TestFilingScopeRace:
 
 
 async def test_lock_filing_scope_shares_project_lock_with_hierarchy_writes(db):
-    """The PostgreSQL scope read and hierarchy writer use one project lock."""
+    """The PostgreSQL scope read uses the project hierarchy advisory lock."""
     from types import SimpleNamespace
 
     from sqlalchemy.dialects import postgresql
@@ -674,7 +674,7 @@ async def test_lock_filing_scope_shares_project_lock_with_hierarchy_writes(db):
     project_lock, task_lock = [call.args[0] for call in conn.execute.await_args_list]
     project_sql = str(project_lock.compile(dialect=postgresql.dialect()))
     task_sql = str(task_lock.compile(dialect=postgresql.dialect()))
-    assert "FROM projects" in project_sql and "FOR UPDATE" in project_sql
+    assert "pg_advisory_xact_lock" in project_sql
     assert "WHERE tasks.id IN" in task_sql and "FOR UPDATE" in task_sql
 
 
@@ -777,10 +777,12 @@ async def test_lock_filing_scope_blocks_intermediate_ancestor_reparent_on_postgr
 async def test_create_task_under_waits_before_child_ordinal_on_postgres(monkeypatch):
     """Ordinary child creation cannot invert filing's project/task lock order."""
     import asyncio
+    import contextlib
 
     from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
     from src.database.queries import hierarchy_queries
 
+    creator = None
     db = PostgreSQLDatabaseAdapter(POSTGRES_TEST_DSN)
     await db.initialize()
     await db.reset_for_tests()
@@ -817,7 +819,7 @@ async def test_create_task_under_waits_before_child_ordinal_on_postgres(monkeypa
                 db.create_task_under(created, "parent"),
                 name="ordinary-child-creator",
             )
-            # create_task_under must wait on the project row before it can
+            # create_task_under must wait on the project advisory lock before it can
             # update and lock the parent's ordinal row.
             with pytest.raises(asyncio.TimeoutError):
                 await asyncio.wait_for(creator_reached_ordinal.wait(), timeout=0.5)
@@ -826,6 +828,11 @@ async def test_create_task_under_waits_before_child_ordinal_on_postgres(monkeypa
         await asyncio.wait_for(creator, timeout=5)
         assert created.id == "parent.2"
     finally:
+        if creator is not None and not creator.done():
+            creator.cancel()
+        if creator is not None:
+            with contextlib.suppress(asyncio.CancelledError):
+                await creator
         await db.close()
 
 

@@ -761,13 +761,14 @@ close is skipped for pools; the token is revoked at drain.
   Anything a worker wants to file it files before closing;
 - **the scope is resolved *and* re-enforced under a row lock, inside the creation
   transaction.** `T`'s parent and subtree are read again at the start of that transaction.
-  On Postgres, the filing takes a `FOR UPDATE` lock on `T`'s durable project row — the
-  same lock every `set_parent` takes before validating or moving a subtree — and then
-  row-locks `T` plus any explicitly named nodes in ascending id order. A named
+  On Postgres, the filing takes a project-scoped transaction advisory lock in AQ's
+  hierarchy namespace — the same lock every `set_parent` takes before validating or
+  moving a subtree — and then row-locks `T` plus any explicitly named nodes in ascending
+  id order. The advisory lock does not contend with unrelated project-row updates. A named
   descendant's membership depends on every intermediate ancestor, so locking only `T`
   and the named leaf would not exclude an intermediate-ancestor move; the shared project
   lock does. On SQLite `immediate()`'s writer lock already serialises the two transactions.
-  All parented-task creation follows the same lock order — project hierarchy row first,
+  All parented-task creation follows the same lock order — project hierarchy lock first,
   then task rows (including child-ordinal reservation) — to avoid lock inversion.
   Without this exclusion a
   `set_parent` committing between the pre-check and the write would file the task under a

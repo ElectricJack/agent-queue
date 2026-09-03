@@ -675,11 +675,12 @@ class ClaimQueryMixin:
 
         Returns ``{id: parent_task_id}`` for the rows that exist (a missing
         id is simply absent). On Postgres the filing first takes the same
-        durable project-row lock as ``set_parent``, serializing scope reads
-        with every hierarchy move. It then row-locks the requested tasks in
-        ascending id order so deletion cannot invalidate the result. The
-        shared project lock covers intermediate ancestors: moving one waits
-        even though it is not itself named by the filing. On SQLite
+        project-scoped advisory transaction lock as ``set_parent``,
+        serializing scope reads with every hierarchy move without contending
+        on ordinary project-row updates. It then row-locks the requested
+        tasks in ascending id order so deletion cannot invalidate the result.
+        The shared hierarchy lock covers intermediate ancestors: moving one
+        waits even though it is not itself named by the filing. On SQLite
         ``immediate()`` already holds the database write lock.
 
         Called first in the filing transaction, before ``reserve_filing``

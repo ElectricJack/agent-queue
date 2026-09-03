@@ -20,7 +20,6 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from src.database.queries.task_queries import TransitionResult
 from src.database.tables import (
     agents,
-    projects,
     sessions,
     task_dependencies,
     task_metadata,
@@ -38,6 +37,8 @@ from src.task_names import MAX_STRUCTURAL_DEPTH, child_task_id
 
 CONTAINER_KEY = "container"
 CONTAINER_VALUE = "true"  # json.dumps(True); matches set_task_meta's encoding
+#: Two-key PostgreSQL advisory-lock namespace "AQHI" (AQ hierarchy).
+HIERARCHY_LOCK_NAMESPACE = 0x41514849
 
 
 def container_flag_exists():
@@ -231,16 +232,21 @@ class HierarchyQueryMixin:
     async def lock_hierarchy_project(self, conn, project_id: str) -> None:
         """Serialize hierarchy moves and worker-filing scope reads per project.
 
-        PostgreSQL row-locks the durable project row for the transaction.
-        SQLite filing transactions already use ``BEGIN IMMEDIATE``, so its
-        database-wide writer lock provides the same exclusion.
+        PostgreSQL takes a transaction-scoped advisory lock in the dedicated
+        AQ hierarchy namespace, keyed by the project's stable id. It does not
+        contend with unrelated writes to the project row. SQLite filing
+        transactions already use ``BEGIN IMMEDIATE``, so its database-wide
+        writer lock provides the same exclusion.
         """
         if conn.dialect.name != "postgresql":
             return
         await conn.execute(
-            select(projects.c.id)
-            .where(projects.c.id == project_id)
-            .with_for_update()
+            select(
+                func.pg_advisory_xact_lock(
+                    HIERARCHY_LOCK_NAMESPACE,
+                    func.hashtext(project_id),
+                )
+            )
         )
 
     async def set_parent(
@@ -273,7 +279,7 @@ class HierarchyQueryMixin:
         if task_row is None:
             raise HierarchyError("not_found", task_id)
         await self.lock_hierarchy_project(conn, task_row.project_id)
-        # The project lock may have waited behind another hierarchy move;
+        # The hierarchy lock may have waited behind another hierarchy move;
         # re-read the row so all validation below sees that committed move.
         task_row = (
             await conn.execute(
@@ -673,8 +679,8 @@ class HierarchyQueryMixin:
         ``discovered-from`` edge.  Returns ``(task_id, capped)``.
         """
         async with self._engine.begin() as conn:
-            # Lock order is project hierarchy row, then task rows. Worker
-            # filing takes the same order before reserving a child ordinal.
+            # Lock order is project hierarchy advisory lock, then task rows.
+            # Worker filing takes the same order before reserving an ordinal.
             await self.lock_hierarchy_project(conn, task.project_id)
             task_id, capped = await child_task_id(conn, parent_id)
             task.id = task_id
