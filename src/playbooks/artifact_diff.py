@@ -84,14 +84,20 @@ def _rule_rows(base: PlaybookDefinition | None, target: PlaybookDefinition) -> l
     rows = []
     for rule_id in sorted(set(old) | set(new)):
         before, after = old.get(rule_id), new.get(rule_id)
+        # A rule the two artifacts share is itemised field by field, the way a
+        # step is: its trigger filter or condition moving is an executable
+        # change an operator has to be able to see, not just a number in
+        # ``semantic_change_count``.  An added or removed rule keeps an empty
+        # list — its whole body is implied by the change tone, and counting it
+        # would move the semantic count.
+        changes: list[dict[str, Any]] = []
         if before is None:
             change = "added"
         elif after is None:
             change = "removed"
-        elif before.model_dump(mode="json") == after.model_dump(mode="json"):
-            change = "unchanged"
         else:
-            change = "modified"
+            changes = _fields(before.model_dump(mode="json"), after.model_dump(mode="json"))
+            change = "modified" if changes else "unchanged"
         old_steps = {key for key, value in base.steps.items() if value.rule == rule_id} if base else set()
         new_steps = {key for key, value in target.steps.items() if value.rule == rule_id}
         rows.append(
@@ -102,6 +108,7 @@ def _rule_rows(base: PlaybookDefinition | None, target: PlaybookDefinition) -> l
                 "event_type_after": after.trigger.event_type if after else None,
                 "step_ids_added": sorted(new_steps - old_steps),
                 "step_ids_removed": sorted(old_steps - new_steps),
+                "field_changes": changes,
             }
         )
     return rows
@@ -201,13 +208,9 @@ def diff_artifacts(
     rules = _rule_rows(base, target)
     edges = _edge_rows(base, target)
     contracts_changed = _contract_rows(base, target)
-    if base is not None:
-        old_rules = {rule.id: rule.model_dump(mode="json") for rule in base.rules}
-        new_rules = {rule.id: rule.model_dump(mode="json") for rule in target.rules}
-        for rule_id in set(old_rules) & set(new_rules):
-            rule_changes = _fields(old_rules[rule_id], new_rules[rule_id])
-            semantic_count += sum(row["executable"] for row in rule_changes)
-            presentation_count += sum(not row["executable"] for row in rule_changes)
+    for rule_row in rules:
+        semantic_count += sum(row["executable"] for row in rule_row["field_changes"])
+        presentation_count += sum(not row["executable"] for row in rule_row["field_changes"])
     # Structural graph and contract changes are executable even if no step field changed.
     semantic_count += sum(row["change"] != "unchanged" for row in edges)
     semantic_count += sum(row["change"] != "unchanged" for row in contracts_changed)

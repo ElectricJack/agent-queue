@@ -34439,6 +34439,14 @@
             "type": "array",
             "title": "Step Ids Removed",
             "default": []
+          },
+          "field_changes": {
+            "items": {
+              "$ref": "#/components/schemas/FieldChangeDTO"
+            },
+            "type": "array",
+            "title": "Field Changes",
+            "default": []
           }
         },
         "additionalProperties": false,
