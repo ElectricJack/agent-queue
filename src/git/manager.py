@@ -2514,7 +2514,7 @@ class GitManager:
     async def apush_validated_delivery(
         self,
         checkout_path: str,
-        base_ref: str,
+        base_ref: str | None,
         source_ref: str,
         branch: str,
         *,
@@ -2527,12 +2527,22 @@ class GitManager:
         Resolve the source exactly once, diff that content-addressed OID from
         its target base, then use the same OID in the remote refspec. A later
         mutation of ``HEAD`` or a branch name is therefore irrelevant.
+
+        ``base_ref=None`` is a *root delivery*: the target branch has no base
+        on origin (a new default branch cut from a workspace whose recorded
+        default was never pushed), so there is no merge-base to diff from and
+        nothing on origin has vetted the tree. The reserved gate then covers
+        every tracked path in the tip (:meth:`areserved_paths_in_tree`).
         """
         source_ref = _validate_rev(source_ref, field="delivery source")
-        base_ref = _validate_rev(base_ref, field="delivery base")
+        if base_ref is not None:
+            base_ref = _validate_rev(base_ref, field="delivery base")
         branch = _validate_ref(branch)
         tip = await self._aresolve_delivery_tip(checkout_path, source_ref)
-        paths = await self.areserved_paths_in_diff(checkout_path, base_ref, tip)
+        if base_ref is None:
+            paths = await self.areserved_paths_in_tree(checkout_path, tip)
+        else:
+            paths = await self.areserved_paths_in_diff(checkout_path, base_ref, tip)
         if paths:
             raise GitError("reserved delivery paths: " + ", ".join(paths))
         remote_ref_before = await self._aremote_ref_before_push(
@@ -2839,6 +2849,22 @@ class GitManager:
             cwd=checkout_path,
         )
         return sorted(self._daemon_bookkeeping_paths(changed))
+
+    async def areserved_paths_in_tree(self, checkout_path: str, rev: str) -> list[str]:
+        """Return daemon-owned paths tracked anywhere in *rev*'s tree.
+
+        The root-delivery counterpart of :meth:`areserved_paths_in_diff`:
+        when a branch is published to a remote that holds no base for it,
+        every tracked path is new content from origin's point of view, so a
+        reserved path that a normal delivery would excuse as "unchanged on
+        the base" is here being published for the first time. Git failures
+        propagate, as for the diff gate.
+        """
+        rev = _validate_rev(rev, field="delivery tip")
+        listed = await self._arun(
+            ["ls-tree", "-r", "--name-only", "-z", rev, "--"], cwd=checkout_path
+        )
+        return sorted(self._daemon_bookkeeping_paths(listed))
 
     async def aget_current_branch(self, checkout_path: str) -> str:
         try:

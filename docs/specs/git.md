@@ -343,6 +343,34 @@ OID as the delivery-diff tip against `base_ref`, rejects reserved paths, then
 pushes the identical OID. Callers that have just merged or rebased must use it
 instead of separate diff and push calls.
 
+`base_ref=None` is a **root delivery**: the target branch has no base on
+origin, so there is no merge-base to diff from and nothing on origin has vetted
+the tree. The reserved gate then covers every tracked path in the tip
+(`areserved_paths_in_tree`), because a reserved path that a normal delivery
+would excuse as "unchanged on the base" is here being published for the first
+time.
+
+### `areserved_paths_in_diff(checkout_path, base_ref, tip_ref)` / `areserved_paths_in_tree(checkout_path, rev)`
+
+The two reserved-path gates behind `apush_validated_delivery`. The diff form
+lists daemon-owned paths (`.aq/**`, `.aq-worktree.json`, `.codex/**`) changed
+between `merge-base(base_ref, tip_ref)` and `tip_ref`; the tree form lists
+every daemon-owned path tracked anywhere in `rev`. Both propagate Git failures
+rather than returning an empty list, so callers fail closed.
+
+### Operator-initiated pushes
+
+`set_default_branch` is the one operator command that pushes. When the new
+default branch is missing on origin it is created from `refs/remotes/origin/
+<old-default>` via `apush_validated_ref` (the content is already on origin, so
+the exact-OID push is the whole delivery), or — when the recorded default was
+never pushed — from the workspace `HEAD` via a root delivery
+(`apush_validated_delivery(..., base_ref=None, "HEAD", ...)`). A reserved path in
+that tree refuses the switch with an error and leaves the recorded default
+unchanged. No local branch is created: the exact-OID push updates
+`origin/<branch>` itself, which is what every reader of the default branch
+consults. There is no raw `git push -u origin <name>` anywhere in the daemon.
+
 ### `push_branch(checkout_path, branch_name, *, force_with_lease=False)`
 
 Pushes a local branch to the `origin` remote.
