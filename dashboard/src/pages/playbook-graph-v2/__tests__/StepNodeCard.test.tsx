@@ -30,9 +30,9 @@ function keyData() {
 describe("StepNodeCard", () => {
   it("renders the compact contract for a command step", () => {
     card(ensureReviewTask);
-    // ``ensure_task`` is registered, so the card is titled and summarised by
-    // the contract's presentation rather than by the authored step title.
-    expect(screen.getByText("Ensure a task exists")).toBeInTheDocument();
+    // The authored title names this use of ``ensure_task``; the contract still
+    // supplies the command's effect summary and presentation details.
+    expect(screen.getByText("Ensure a review task")).toBeInTheDocument();
     expect(
       screen.getByText("Create the task, or reuse the one already keyed by this deduplication key."),
     ).toBeInTheDocument();
