@@ -117,14 +117,36 @@ def stub_policies() -> dict[str, Any]:
     }
 
 
+def stub_routing() -> dict[str, Any]:
+    """Resolved provider/model policy per stub profile, for the AI cards."""
+    from src.profiles.intelligence import ProfileIntelligence
+
+    return {
+        "worker": ProfileIntelligence("standard-medium", "anthropic", "claude-sonnet-5"),
+        "wide": ProfileIntelligence("deep-high", "anthropic", "claude-opus-5"),
+        # A profile with no class still names its provider.
+        "hollow": ProfileIntelligence(None, "anthropic", None),
+        "reviewer": ProfileIntelligence("deep-high", "anthropic", "claude-opus-5"),
+    }
+
+
 class StubProfiles:
     """§3.3's ``ProfileLookup`` seam."""
 
-    def __init__(self, table: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        table: dict[str, Any] | None = None,
+        *,
+        routing: dict[str, Any] | None = None,
+    ) -> None:
         self._table = stub_policies() if table is None else table
+        self._routing = stub_routing() if routing is None else routing
 
     def policy(self, profile_id: str) -> Any | None:
         return self._table.get(profile_id)
+
+    def routing(self, profile_id: str) -> Any | None:
+        return self._routing.get(profile_id)
 
 
 STUB_EVENTS: dict[str, dict[str, Any]] = {

@@ -33,6 +33,10 @@ describe("SemanticNodeInspector", () => {
     render(<SemanticNodeInspector node={classifyRisk} />);
     const ai = within(screen.getByRole("group", { name: "AI" }));
     expect(ai.getByText("reviewer")).toBeInTheDocument();
+    expect(ai.getByText("intelligence class")).toBeInTheDocument();
+    expect(ai.getByText("deep")).toBeInTheDocument();
+    expect(ai.getByText("provider")).toBeInTheDocument();
+    expect(ai.getByText("anthropic")).toBeInTheDocument();
     expect(ai.getByText("claude-opus-5")).toBeInTheDocument();
     expect(ai.getByText("Read, Grep")).toBeInTheDocument();
     expect(ai.getByText("task_show")).toBeInTheDocument();
@@ -51,6 +55,14 @@ describe("SemanticNodeInspector", () => {
     // `null` for a namespace means "not narrowed here"; `[]` means deny-all.
     expect(block.getByText("not narrowed here")).toBeInTheDocument();
     expect(block.getAllByText("none (deny-all)").length).toBeGreaterThan(0);
+  });
+
+  it("omits the routing rows when the backend resolved no provider or model", () => {
+    render(<SemanticNodeInspector node={escalateNode} />);
+    const block = within(screen.getByRole("group", { name: "Delegated agent" }));
+    expect(block.queryByText("intelligence class")).not.toBeInTheDocument();
+    expect(block.queryByText("provider")).not.toBeInTheDocument();
+    expect(block.queryByText("model")).not.toBeInTheDocument();
   });
 
   it("shows wait kind, correlation key and timeout", () => {

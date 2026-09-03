@@ -3764,6 +3764,6 @@ class TaskCommandsMixin:
 
 def _harness_provider(harness: str | None) -> str:
     """Map a profile harness id to the intelligence-class provider key."""
-    return {"claude": "anthropic", "codex": "openai", "gemini": "google"}.get(
-        (harness or "").strip(), ""
-    )
+    from src.profiles.intelligence import provider_for_harness
+
+    return provider_for_harness(harness)

@@ -8,6 +8,7 @@ import pytest
 from src.playbooks.artifact_ref import ArtifactRef
 from src.playbooks.definition import load_definition_json
 from src.playbooks.graph_projection import GraphProjectionError, project_graph
+from src.profiles.intelligence import ProfileIntelligence
 from tests.playbook_v2_helpers import StubContracts, StubProfiles
 
 FIXTURES = Path(__file__).parent / "fixtures" / "playbooks" / "v2"
@@ -33,12 +34,13 @@ def _ref(definition):
 def _project(definition=None, **kwargs):
     definition = definition or _definition()
     contracts = kwargs.pop("contracts", StubContracts())
+    profiles = kwargs.pop("profiles", None)
     return project_graph(
         definition,
         _ref(definition),
         None,
         contracts=contracts,
-        profiles=StubProfiles(),
+        profiles=StubProfiles() if profiles is None else profiles,
         **kwargs,
     )
 
@@ -149,3 +151,51 @@ def test_projection_is_deterministic():
     first = json.dumps(_project(), sort_keys=True, separators=(",", ":"))
     second = json.dumps(_project(), sort_keys=True, separators=(",", ":"))
     assert first == second
+
+
+def test_ai_nodes_carry_the_resolved_intelligence_class_provider_and_model():
+    """Package 5's AI cards state provider/model policy, not just capabilities."""
+    graph = _project()
+    ai_nodes = {node["id"]: node["ai"] for node in graph["nodes"] if node["ai"]}
+    assert set(ai_nodes) == {"classify-risk", "escalate"}
+    for node_id, ai in ai_nodes.items():
+        assert ai["profile_id"] == "reviewer", node_id
+        assert (ai["intelligence_class"], ai["provider"], ai["model"]) == (
+            "deep-high",
+            "anthropic",
+            "claude-opus-5",
+        ), node_id
+
+
+def test_ai_routing_comes_from_the_profile_lookup_not_the_step():
+    graph = _project(profiles=StubProfiles(routing={"reviewer": ProfileIntelligence(
+        "fast-low", "google", "gemini-3-flash"
+    )}))
+    ai = next(node["ai"] for node in graph["nodes"] if node["id"] == "classify-risk")
+    assert (ai["intelligence_class"], ai["provider"], ai["model"]) == (
+        "fast-low",
+        "google",
+        "gemini-3-flash",
+    )
+
+
+def test_a_profile_the_lookup_does_not_know_reports_no_routing():
+    graph = _project(profiles=StubProfiles(routing={}))
+    ai = next(node["ai"] for node in graph["nodes"] if node["id"] == "escalate")
+    assert (ai["intelligence_class"], ai["provider"], ai["model"]) == (None, None, None)
+    # The capability half of the card is unaffected.
+    assert ai["capabilities"]["aq_commands"] == ["demo_command"]
+
+
+def test_a_lookup_without_routing_degrades_instead_of_raising():
+    class PolicyOnly:
+        def policy(self, profile_id: str):
+            return StubProfiles().policy(profile_id)
+
+    ai = next(
+        node["ai"]
+        for node in _project(profiles=PolicyOnly())["nodes"]
+        if node["id"] == "classify-risk"
+    )
+    assert (ai["intelligence_class"], ai["provider"], ai["model"]) == (None, None, None)
+    assert ai["capability_fingerprint"]

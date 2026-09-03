@@ -220,6 +220,15 @@ class ProfileLookup(Protocol):
     def policy(self, profile_id: str) -> Any | None:
         """The profile's ``CapabilityPolicy``, or ``None`` when unknown."""
 
+    def routing(self, profile_id: str) -> Any | None:
+        """The profile's :class:`~src.profiles.intelligence.ProfileIntelligence`.
+
+        ``None`` when the profile is unknown.  Validation never reads this —
+        it exists because the semantic graph's AI cards must state which
+        provider and model a step's profile actually resolves to, and this
+        lookup is the only seam the projection has onto a profile.
+        """
+
 
 @runtime_checkable
 class EventSchemaLookup(Protocol):
@@ -249,6 +258,9 @@ class NullContractLookup:
 
 class NullProfileLookup:
     def policy(self, profile_id: str) -> Any | None:
+        return None
+
+    def routing(self, profile_id: str) -> Any | None:
         return None
 
 
@@ -303,6 +315,12 @@ class VaultProfileLookup:
     It owns the ``plugin_command_names`` argument so no call site has to
     remember it — forgetting it classifies a legitimate plugin tool into the
     wrong namespace and fires ``tool_use_not_subset`` spuriously (§3.1).
+
+    It also owns ``intelligence_classes``: the profile row alone names a
+    class, not a model, so without the snapshot the AI cards can only report
+    the class and its provider.  The snapshot is passed in (the daemon hands
+    over its live registry) rather than loaded here, because every consumer
+    of this lookup is a pure projection.
     """
 
     def __init__(
@@ -310,9 +328,11 @@ class VaultProfileLookup:
         profiles: Mapping[str, Any],
         *,
         plugin_command_names: frozenset[str] = frozenset(),
+        intelligence_classes: Mapping[str, Any] | None = None,
     ) -> None:
         self._profiles = profiles
         self._plugin_command_names = plugin_command_names
+        self._intelligence_classes = intelligence_classes
 
     def policy(self, profile_id: str) -> Any | None:
         profile = self._profiles.get(profile_id)
@@ -321,6 +341,18 @@ class VaultProfileLookup:
         from src.profiles.capabilities import capability_policy_for
 
         return capability_policy_for(profile, plugin_command_names=self._plugin_command_names)
+
+    def profile(self, profile_id: str) -> Any | None:
+        """The resolved profile row itself, or ``None`` when unknown."""
+        return self._profiles.get(profile_id)
+
+    def routing(self, profile_id: str) -> Any | None:
+        profile = self._profiles.get(profile_id)
+        if profile is None:
+            return None
+        from src.profiles.intelligence import intelligence_for
+
+        return intelligence_for(profile, self._intelligence_classes)
 
 
 class RegisteredEventLookup:
