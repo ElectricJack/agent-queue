@@ -22,7 +22,29 @@ export interface FlowContext {
   /** Display names by project id, for stubs that live in another project. */
   projectNames?: ReadonlyMap<string, string>;
   density?: LayoutDensity;
+  /**
+   * Visual level of detail: at far zoom the smoothstep router and the ×N
+   * labels are invisible detail that still costs a path solve and a label
+   * component per edge, so the edges are drawn straight and unlabelled.
+   */
+  simpleEdges?: boolean;
 }
+
+/**
+ * The previous conversion's output, keyed by element id with the content
+ * signature it was built from. Handing it back to `toFlowElements` lets an
+ * unchanged element keep its object identity, which is what stops React Flow
+ * re-rendering its card: `adoptUserNodes` reuses the internal node whenever
+ * the user node is `===` the previous one, and `NodeWrapper` is memoised on
+ * that internal node.
+ */
+export interface FlowCache {
+  ctx: FlowContext | null;
+  nodes: Map<string, { sig: string; node: Node }>;
+  edges: Map<string, { sig: string; edge: Edge }>;
+}
+
+export interface FlowElements { nodes: Node[]; edges: Edge[]; cache: FlowCache }
 
 /** The card payload for one layout node; shared with the flat mobile list. */
 export function taskNodeData(n: LayoutNode, ctx: FlowContext, gates: GraphGate[]): TaskNodeData {
@@ -44,18 +66,69 @@ export function taskNodeData(n: LayoutNode, ctx: FlowContext, gates: GraphGate[]
   };
 }
 
-export function toFlowElements(store: LayoutStore, ctx: FlowContext): { nodes: Node[]; edges: Edge[] } {
+const SEP = "\u0001";
+
+/**
+ * Everything a card or container renders from. A field read by `taskNodeData`,
+ * `TaskCard` or `ContainerNode` and missing here would stop updating on the
+ * canvas, so extend this whenever one of those grows a field.
+ */
+function nodeSignature(n: LayoutNode, gates: GraphGate[]): string {
+  return [
+    n.x, n.y, n.w, n.h, n.depth, n.kind, n.status, n.title, n.priority, n.is_blocked,
+    n.container_id, n.context_only, n.agg_children, n.agg_descendants, n.agg_completed,
+    n.agg_running, n.agg_blocked, n.profile_id, n.intelligence_class, n.assigned_agent_id,
+    n.branch_name, n.pr_url, n.playbook_run_id,
+    gates.map((g) => `${g.id}:${g.status}:${g.gate_type}`).join(","),
+  ].join(SEP);
+}
+
+/** A cached element is only reusable while the surrounding context is the same. */
+function sameContext(a: FlowContext | null, b: FlowContext): boolean {
+  return !!a && a.projectId === b.projectId && a.offsetY === b.offsetY && a.density === b.density
+    && a.handlers === b.handlers && a.projectNames === b.projectNames
+    && a.expanded === b.expanded && !!a.simpleEdges === !!b.simpleEdges;
+}
+
+export function toFlowElements(store: LayoutStore, ctx: FlowContext, previous?: FlowCache): FlowElements {
+  const reusable = previous && sameContext(previous.ctx, ctx) ? previous : null;
+  const cache: FlowCache = { ctx, nodes: new Map(), edges: new Map() };
   const nodes: Node[] = [];
   const pos = new Map<string, { x: number; y: number }>();
-  const gatesFor = (id: string) => store.gates.filter((g) => g.task_ids?.includes(id));
+  // One pass over the gates instead of one scan per node: with a container
+  // expanded this was the O(nodes × gates) part of every conversion.
+  const gatesByTask = new Map<string, GraphGate[]>();
+  for (const gate of store.gates) {
+    for (const id of gate.task_ids ?? []) {
+      const list = gatesByTask.get(id);
+      if (list) list.push(gate); else gatesByTask.set(id, [gate]);
+    }
+  }
+  const NO_GATES: GraphGate[] = [];
+  const gatesFor = (id: string) => gatesByTask.get(id) ?? NO_GATES;
+
+  /** Reuse the previous object when nothing this element draws from moved. */
+  const push = (id: string, sig: string, build: () => Node) => {
+    const hit = reusable?.nodes.get(id);
+    const node = hit && hit.sig === sig ? hit.node : build();
+    cache.nodes.set(id, { sig, node });
+    nodes.push(node);
+  };
+
   for (const n of store.nodes.values()) {
-    const position = toPx(n.x, n.y + ctx.offsetY, ctx.density);
     pos.set(n.id, { x: n.x, y: n.y });
+    const gates = gatesFor(n.id);
+    const sig = nodeSignature(n, gates);
     if (n.kind === "container") {
-      const data: ContainerNodeData = { node: n, projectId: ctx.projectId, ...ctx.handlers, layoutScale: DENSITY_SCALE[ctx.density ?? "comfortable"] };
-      nodes.push({ id: n.id, type: "container", position, ...sizePx(n.w, n.h, ctx.density), zIndex: n.depth, selectable: false, draggable: false, connectable: false, data });
+      push(n.id, sig, () => {
+        const data: ContainerNodeData = { node: n, projectId: ctx.projectId, ...ctx.handlers, layoutScale: DENSITY_SCALE[ctx.density ?? "comfortable"] };
+        return { id: n.id, type: "container", position: toPx(n.x, n.y + ctx.offsetY, ctx.density), ...sizePx(n.w, n.h, ctx.density), zIndex: n.depth, selectable: false, draggable: false, connectable: false, data };
+      });
     } else {
-      nodes.push({ id: n.id, type: "task", position, ...sizePx(1, 1, ctx.density), zIndex: 100 + n.depth, draggable: false, connectable: false, data: taskNodeData(n, ctx, gatesFor(n.id)) });
+      push(n.id, sig, () => ({
+        id: n.id, type: "task", position: toPx(n.x, n.y + ctx.offsetY, ctx.density), ...sizePx(1, 1, ctx.density),
+        zIndex: 100 + n.depth, draggable: false, connectable: false, data: taskNodeData(n, ctx, gates),
+      }));
     }
   }
   for (const s of store.stubs.values()) {
@@ -70,7 +143,11 @@ export function toFlowElements(store: LayoutStore, ctx: FlowContext): { nodes: N
     pos.set(s.id, { x, y: s.y });
     const stub: LayoutNode = { id: s.id, title, status: "PENDING", priority: 100, is_blocked: false, x, y: s.y, w: 1, h: 1, depth: 0,
       container_id: null, kind: "stub", context_only: true, agg_children: 0, agg_descendants: 0, agg_completed: 0, agg_running: 0, agg_blocked: 0, agg_active: 0 } as LayoutNode;
-    nodes.push({ id: s.id, type: "task", className: "aq-stub", position: toPx(x, s.y + ctx.offsetY, ctx.density), ...sizePx(1, 1, ctx.density), zIndex: 5, draggable: false, connectable: false, data: taskNodeData(stub, ctx, gatesFor(s.id)) });
+    const gates = gatesFor(s.id);
+    push(s.id, nodeSignature(stub, gates), () => ({
+      id: s.id, type: "task", className: "aq-stub", position: toPx(x, s.y + ctx.offsetY, ctx.density),
+      ...sizePx(1, 1, ctx.density), zIndex: 5, draggable: false, connectable: false, data: taskNodeData(stub, ctx, gates),
+    }));
   }
   // Boundary markers: a card with more far dependencies than the tile carries
   // stubs for gets one "+N more" pill on the side the links leave from. It is
@@ -82,29 +159,40 @@ export function toFlowElements(store: LayoutStore, ctx: FlowContext): { nodes: N
     const outward = overflow.direction === "out";
     const x = outward ? anchor.x + anchor.w + OVERFLOW_GAP : anchor.x - OVERFLOW_W - OVERFLOW_GAP;
     const y = anchor.y + anchor.h / 2 - OVERFLOW_H / 2;
-    nodes.push({
+    push(`overflow:${key}`, [overflow.more, overflow.direction, anchor.id, anchor.depth, x, y].join(SEP), () => ({
       id: `overflow:${key}`, type: "overflowMarker", className: "aq-stub-overflow",
       position: toPx(x, y + ctx.offsetY, ctx.density), ...sizePx(OVERFLOW_W, OVERFLOW_H, ctx.density),
       zIndex: 200 + anchor.depth, selectable: false, focusable: false, draggable: false,
       connectable: false,
       data: { label: `+${overflow.more} more`, direction: overflow.direction, anchorId: anchor.id },
-    });
+    }));
   }
   const edges: Edge[] = [];
   for (const e of store.edges.values()) {
     const from = pos.get(e.from), to = pos.get(e.to);
     if (!from || !to) continue;
+    const id = `${e.from}|${e.to}|${e.dep_type}`;
+    const sig = [e.count ?? 1, from.x, from.y, to.x, to.y].join(SEP);
+    const hit = reusable?.edges.get(id);
+    if (hit && hit.sig === sig) {
+      cache.edges.set(id, hit);
+      edges.push(hit.edge);
+      continue;
+    }
     const vertical = Math.abs(from.y - to.y) > 0.5;
     // ``from`` is the dependent and ``to`` the blocker; the rendered edge
     // travels blocker → dependent, so compare them in that direction.
     const rightward = from.x >= to.x;
-    edges.push({
-      id: `${e.from}|${e.to}|${e.dep_type}`, source: e.to, target: e.from, type: "smoothstep",
+    const edge: Edge = {
+      id, source: e.to, target: e.from, type: ctx.simpleEdges ? "straight" : "smoothstep",
       sourceHandle: vertical ? "out-bottom" : rightward ? "out-right" : "out-left",
       targetHandle: vertical ? "in-top" : rightward ? "in-left" : "in-right",
-      label: (e.count ?? 1) > 1 ? `×${e.count}` : undefined, markerEnd: { type: MarkerType.ArrowClosed },
+      label: ctx.simpleEdges || (e.count ?? 1) <= 1 ? undefined : `×${e.count}`,
+      markerEnd: { type: MarkerType.ArrowClosed },
       style: edgeStyleForType(e.dep_type), data: { depType: e.dep_type },
-    });
+    };
+    cache.edges.set(id, { sig, edge });
+    edges.push(edge);
   }
-  return { nodes, edges };
+  return { nodes, edges, cache };
 }

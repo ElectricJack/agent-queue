@@ -217,4 +217,25 @@ describe("shared task workspace live snapshots", () => {
     expect(stale("p1", "all")).toBe(true);
     expect(stale("p2", "active")).toBe(false);
   });
+
+  it("leaves the canvas untouched by the once-a-second metrics tick", async () => {
+    const { result } = setup();
+    await waitFor(() => expect(result.current.data.tasks).toHaveLength(2));
+    const refetch = vi.fn();
+    const dispose = registerLayoutRefetch("p1", refetch);
+    transport.get.mockClear();
+    vi.useFakeTimers();
+    try {
+      // A minute of ticks. They belong to the Metrics tab and the flock rail;
+      // the graph must not re-fetch, re-layout or re-render for any of them.
+      for (let i = 0; i < 60; i++) {
+        act(() => socket().receive({ _event_type: "metrics.tick", sample: { running_agents: i } }));
+      }
+      await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+      expect(refetch).not.toHaveBeenCalled();
+      expect(transport.get).not.toHaveBeenCalled();
+    } finally {
+      dispose();
+    }
+  });
 });

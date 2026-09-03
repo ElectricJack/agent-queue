@@ -5,11 +5,13 @@ import { MemoryRouter } from "react-router-dom";
 import type { TilesResponse } from "@aq/ts-client";
 
 interface FlowProps {
-  nodes: { id: string; type?: string; data: Record<string, unknown> }[];
+  // The shape the canvas actually hands React Flow. `position` and `selected`
+  // are what several assertions below read, so they belong in the type.
+  nodes: { id: string; type?: string; position: { x: number; y: number }; selected?: boolean; data: Record<string, unknown> }[];
   children: ReactNode;
   onlyRenderVisibleElements?: boolean;
   onMove?: (event: unknown, viewport: { x: number; y: number; zoom: number }) => void;
-  onNodeClick?: (event: unknown, node: { id: string; type?: string; data: Record<string, unknown> }) => void;
+  onNodeClick?: (event: unknown, node: FlowProps["nodes"][number]) => void;
 }
 
 const flow = vi.hoisted(() => ({ current: null as FlowProps | null }));
@@ -34,11 +36,13 @@ vi.mock("@xyflow/react", () => ({
   Controls: () => null,
   Panel: ({ children }: { children: ReactNode }) => <aside>{children}</aside>,
   ViewportPortal: ({ children }: { children: ReactNode }) => <>{children}</>,
-  useNodes: () => [],
+  useStore: (selector: (s: { nodeLookup: Map<string, unknown> }) => unknown) => selector({ nodeLookup: new Map() }),
 }));
 
 const tiles = vi.hoisted(() => ({
   store: null as unknown,
+  /** Every rect the canvas has handed the tiles hook, newest last. */
+  rects: [] as unknown[],
   pending: false,
   error: null as Error | null,
   refetchVisible: vi.fn(),
@@ -47,8 +51,9 @@ const tiles = vi.hoisted(() => ({
 }));
 const extents = vi.hoisted(() => ({ pending: false }));
 vi.mock("../useLayoutTiles", () => ({
-  useLayoutTiles: (_projectId: string, params: unknown) => {
+  useLayoutTiles: (_projectId: string, params: unknown, rect: unknown) => {
     tiles.params = params;
+    tiles.rects.push(rect);
     return tiles;
   },
 }));
@@ -89,6 +94,7 @@ beforeEach(() => {
     edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
   } as unknown as TilesResponse);
   tiles.params = null;
+  tiles.rects.length = 0;
   tiles.loaded = true;
   tiles.refetchVisible = vi.fn();
   extents.pending = false;
@@ -126,6 +132,72 @@ describe("LayoutCanvas", () => {
     localStorage.setItem("aq.command-center.graph-density", "spacious");
     render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
     expect(screen.getByRole("combobox", { name: "Graph density" })).toHaveValue("spacious");
+  });
+
+  it("re-renders only the cards a live refetch actually changed", () => {
+    const wire = (nodes: unknown[]) => mergeTiles(emptyStore(), ["0:0"], {
+      nodes: JSON.parse(JSON.stringify(nodes)), edges: [], stubs: [], stub_overflow: [],
+      workers: [], gates: [], layout_version: 1,
+    } as unknown as TilesResponse);
+    tiles.store = wire([n("e", "card", 0, 0), n("z", "card", 2, 0)]);
+    const view = render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+    const before = Object.fromEntries(flow.current!.nodes.map((node) => [node.id, node]));
+
+    // A `task.updated` for `e` alone: the layer re-delivers both cards off the
+    // wire, but `z` must keep the very object React Flow already adopted --
+    // that identity is exactly what stops its card re-rendering.
+    tiles.store = wire([n("e", "card", 0, 0, { status: "COMPLETED" }), n("z", "card", 2, 0)]);
+    view.rerender(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+    const after = Object.fromEntries(flow.current!.nodes.map((node) => [node.id, node]));
+    expect(after.z).toBe(before.z);
+    expect(after.e).not.toBe(before.e);
+  });
+
+  it("leaves every other card's identity alone when the selection moves", () => {
+    const view = render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+    const before = Object.fromEntries(flow.current!.nodes.map((node) => [node.id, node]));
+    view.rerender(<MemoryRouter><LayoutCanvas {...base} selectedTaskId="e" /></MemoryRouter>);
+    const after = Object.fromEntries(flow.current!.nodes.map((node) => [node.id, node]));
+    expect(after.e!.selected).toBe(true);
+    expect(after.z).toBe(before.z);
+  });
+
+  it("only asks for tiles again when a pan changes the cells the viewport covers", () => {
+    const observers = globalThis.ResizeObserver;
+    const raf = globalThis.requestAnimationFrame;
+    let notify: (entries: { contentRect: { width: number; height: number } }[]) => void = () => {};
+    class Stub {
+      constructor(cb: typeof notify) { notify = cb; }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+    globalThis.ResizeObserver = Stub as unknown as typeof ResizeObserver;
+    // The canvas throttles pans onto the animation frame, and only the
+    // leading edge of a frame lands immediately -- so the queue is drained by
+    // hand between the two pans.
+    const frames: FrameRequestCallback[] = [];
+    globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => frames.push(cb)) as unknown as typeof requestAnimationFrame;
+    const flushFrames = () => act(() => { for (const cb of frames.splice(0)) cb(0); });
+    try {
+      render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+      act(() => notify([{ contentRect: { width: 1200, height: 800 } }]));
+      const settled = tiles.rects[tiles.rects.length - 1];
+      expect(settled).not.toBeNull();
+
+      // A pan of a few pixels covers the same tiles: the hook must not even
+      // see a new rect, let alone issue a request.
+      act(() => flow.current!.onMove!(null, { x: -12, y: -4, zoom: 1 }));
+      expect(tiles.rects[tiles.rects.length - 1]).toBe(settled);
+      flushFrames();
+
+      // A pan of several tiles is a real change.
+      act(() => flow.current!.onMove!(null, { x: -20000, y: -8000, zoom: 1 }));
+      expect(tiles.rects[tiles.rects.length - 1]).not.toBe(settled);
+    } finally {
+      globalThis.ResizeObserver = observers;
+      globalThis.requestAnimationFrame = raf;
+    }
   });
 
   it("lowers max depth when zoomed out", () => {

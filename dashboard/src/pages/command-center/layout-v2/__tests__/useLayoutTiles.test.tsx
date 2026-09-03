@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const fetchTiles = vi.hoisted(() => vi.fn());
 vi.mock("../../../../api/graphLayout", () => ({ fetchTiles }));
-import { useLayoutTiles } from "../useLayoutTiles";
+import { useLayoutTiles, VIEWPORT_DEBOUNCE_MS } from "../useLayoutTiles";
 import { missingCells } from "../layoutStore";
 import { cellsForRect, worldRectFromViewport } from "../units";
 
@@ -139,4 +139,22 @@ describe("useLayoutTiles", () => {
     expect(second.maxDepth).toBe(1);
   });
 
+
+  it("waits for a pan to settle before fetching, and then asks once", async () => {
+    fetchTiles.mockResolvedValue(ok([node("a", 1, 1)]));
+    const { rerender } = renderHook(({ rect }) => useLayoutTiles("p1", params, rect),
+      { initialProps: { rect: { x0: 0, y0: 0, x1: 4, y1: 4 } } });
+    // The first rect is what puts anything on screen, so it is not debounced.
+    await waitFor(() => expect(fetchTiles).toHaveBeenCalledTimes(1));
+
+    vi.useFakeTimers();
+    rerender({ rect: { x0: 40, y0: 0, x1: 44, y1: 4 } });
+    rerender({ rect: { x0: 80, y0: 0, x1: 84, y1: 4 } });
+    expect(fetchTiles).toHaveBeenCalledTimes(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(VIEWPORT_DEBOUNCE_MS); });
+    // One request, and for where the gesture ended rather than where it passed.
+    expect(fetchTiles).toHaveBeenCalledTimes(2);
+    const [, rect] = fetchTiles.mock.calls[1]!;
+    expect((rect as { x0: number }).x0).toBeGreaterThanOrEqual(64);
+  });
 });
