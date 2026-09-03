@@ -475,18 +475,30 @@ class PlaybookMigrationCommandsMixin:
             evidence_errors.append(_unread_evidence("v1_store", exc))
             v1_ids = set()
 
-        # ``reviewed_by``/``reviewed_at`` exist only in the human decision
-        # records (§3.4), and a review is evidence about *specific bytes*: one
-        # that names a different artifact hash than the row activates is
-        # evidence that the live artifact was never reviewed, so it is dropped
-        # rather than reported as approval of whatever is running now.
+        # Shipped reviews live in checked-in human decision records (§3.4),
+        # while project reviews live on their activation row.  Both are
+        # evidence about *specific bytes*: one that names a different artifact
+        # hash than the row activates is dropped rather than reported as
+        # approval of whatever is running now.
         reviews = reviewed_artifact_evidence(fixture_root)
         artifacts = []
         for row in enabled:
             playbook_id = str(row.get("playbook_id") or "")
             sha = _active_sha(row)
-            review = reviews.get(playbook_id) or {}
-            if not sha or str(review.get("artifact_sha256") or "") != sha:
+            if row.get("scope") == "project":
+                review = {
+                    "artifact_sha256": row.get("reviewed_artifact_sha256"),
+                    "reviewed_by": row.get("reviewed_by"),
+                    "reviewed_at": row.get("reviewed_at"),
+                }
+            else:
+                review = reviews.get(playbook_id) or {}
+            if (
+                not sha
+                or str(review.get("artifact_sha256") or "") != sha
+                or not review.get("reviewed_by")
+                or review.get("reviewed_at") is None
+            ):
                 review = {}
             artifacts.append(
                 {

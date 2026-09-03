@@ -1506,9 +1506,11 @@ def reviewed_artifact_evidence(
 ) -> dict[str, dict[str, Any]]:
     """``{playbook_id: review frontmatter}`` for every *approved* reviewed fixture.
 
-    The human decision record is the only place ``reviewed_by`` and
-    ``reviewed_at`` exist — no table stores them (§3.4) — so the cutover report
-    reads them from the same files the release check reads artifacts from.
+    For shipped playbooks, the human decision record is the authority for
+    ``reviewed_by`` and ``reviewed_at`` (§3.4), so the cutover report reads
+    them from the same files the release check reads artifacts from.  Project
+    reviews are persisted separately on their activation rows and never enter
+    this fixture-only index.
 
     Only ``decision: approved`` is returned.  A rejected or undecided review is
     not weaker evidence than none, it is evidence of the opposite, and the

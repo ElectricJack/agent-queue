@@ -10,13 +10,15 @@ entry is also a blocking reason and the section it fed is marked
 `unavailable: true`. Fix the read and regenerate; do not sign a report that did
 not see the whole fleet.
 
-**Run it from a checkout.** `reviewed_by`/`reviewed_at` come from the human
-decision records in `tests/fixtures/playbooks/v2/<playbook_id>/review.md`, and
-the shadow-parity record from `parity-report.json` beside them — both are
-checked-in files read relative to the working directory. A report generated
-somewhere else finds neither and blocks for missing review evidence, which is
-the intended direction: an activation whose live artifact hash no approved
-review names is reported as unreviewed, never as approved.
+**Run it from a checkout.** For shipped playbooks, `reviewed_by`/`reviewed_at`
+come from the human decision records in
+`tests/fixtures/playbooks/v2/<playbook_id>/review.md`, and the shadow-parity
+record from `parity-report.json` beside them — both are checked-in files read
+relative to the working directory. Project-scoped playbooks instead carry an
+attributed review of their exact active hash in the activation database row.
+A report generated somewhere else finds no shipped review fixtures and blocks
+for missing review evidence. In every scope, an activation whose live artifact
+hash no approved review names is reported as unreviewed, never as approved.
 
 ## Evidence
 
