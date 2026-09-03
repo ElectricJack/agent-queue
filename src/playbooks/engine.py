@@ -198,6 +198,10 @@ class _Attempt:
     step_id: str
     step: Any
     started_at: float
+    #: Who ran it.  Carried on the attempt so the receipt records the
+    #: identity that actually executed, not the engine's construction-time
+    #: default — a resumed run can carry a different principal.
+    principal: Any = None
     outcome: str = ""
     control: StepControl = StepControl.ADVANCE
     next_step_id: str | None = None
@@ -323,6 +327,14 @@ class PlaybookEngine:
         deadline_at: float | None = None,
         pause_before_start: bool = False,
     ) -> RunOutcome:
+        """Create one run for *rule_id* and walk it.
+
+        ``pause_before_start`` creates the run row and stops, which is what a
+        caller wants when the run must exist before it may execute: the
+        dependency-unavailable path (§4.13) and an operator starting a run
+        for later resumption both need a durable, addressable run at its
+        entry step rather than a promise to make one.
+        """
         artifact = self._load(artifact_ref)
         rule = next((r for r in artifact.rules if r.id == rule_id), None)
         if rule is None:
@@ -477,6 +489,7 @@ class PlaybookEngine:
             step_id=step_id,
             step=step,
             started_at=self.services.clock(),
+            principal=principal,
         )
         attempt.idempotency_key = idempotency_key(snapshot.run_id, step_id, -1, 1)
 
@@ -705,7 +718,7 @@ class PlaybookEngine:
             attempt=1,
             idempotency_key=attempt.idempotency_key,
             contract_fingerprint=self._contract_fingerprint(attempt.step),
-            principal=self._principal_projection(),
+            principal=self._principal_projection(attempt.principal),
             inputs=dict(attempt.receipt_inputs),
             result=dict(attempt.receipt_result),
             selected_transition=attempt.selected_transition,
@@ -931,8 +944,29 @@ class PlaybookEngine:
         except Exception:  # noqa: BLE001 - an uncontracted command already failed
             return ""
 
-    def _principal_projection(self) -> dict[str, Any]:
-        return {}
+    @staticmethod
+    def _principal_projection(principal: Any) -> dict[str, Any]:
+        """The identity a receipt records — §3.3.3, mapped by §2.5 item 2.
+
+        The *fingerprint* of the capability policy, never the policy itself:
+        an operator needs to know that the grant changed between two runs,
+        and printing the grant would put a capability list in a surface that
+        Package 5 renders to anyone who can read the overlay.
+        """
+        kind = getattr(principal, "kind", None)
+        policy = getattr(principal, "policy", None)
+        fingerprint = ""
+        if policy is not None:
+            try:
+                fingerprint = policy.fingerprint()
+            except Exception:  # noqa: BLE001 - a receipt never fails a run
+                fingerprint = ""
+        return {
+            "kind": getattr(kind, "value", kind),
+            "profile_id": getattr(principal, "profile_id", None),
+            "session_id": getattr(principal, "session_id", None),
+            "capability_fingerprint": fingerprint,
+        }
 
     def _classify(self, attempt: _Attempt) -> str:
         """The receipt's six-value classification (§2.5 item 2).

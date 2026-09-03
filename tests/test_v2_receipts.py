@@ -260,3 +260,43 @@ class TestDefaultDenyRedaction:
         await run_one(engine, ref)
         assert runs.receipts[0].result == {}
         assert runs.receipts[0].error_code == "runtime_error"
+
+
+class TestPrincipalProjection:
+    @pytest.mark.asyncio
+    async def test_the_receipt_records_the_identity_that_executed(self):
+        engine, adapter, runs, ref = build("ensure_task", ENSURE_TASK, save_as="review")
+        adapter.queue.append(
+            CommandResult(
+                outcome="created",
+                value=EnsureTaskResult(task_id="t-1", created=True),
+                summary="",
+            )
+        )
+        await run_one(engine, ref)
+        principal = runs.receipts[0].principal
+        assert principal["kind"] == TRUSTED_LOCAL.kind.value
+        assert set(principal) == {
+            "kind",
+            "profile_id",
+            "session_id",
+            "capability_fingerprint",
+        }
+
+    @pytest.mark.asyncio
+    async def test_the_receipt_records_a_fingerprint_never_the_grant(self):
+        """An operator needs to know the grant *changed* between two runs.
+        Printing the grant itself would put a capability list into a surface
+        Package 5 renders to anyone who can read the overlay."""
+        engine, adapter, runs, ref = build("ensure_task", ENSURE_TASK, save_as="review")
+        adapter.queue.append(
+            CommandResult(
+                outcome="created",
+                value=EnsureTaskResult(task_id="t-1", created=True),
+                summary="",
+            )
+        )
+        await run_one(engine, ref)
+        principal = runs.receipts[0].principal
+        assert principal["capability_fingerprint"] == TRUSTED_LOCAL.policy.fingerprint()
+        assert "ensure_task" not in str(principal)
