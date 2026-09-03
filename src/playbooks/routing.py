@@ -289,10 +289,19 @@ def _artifact_command_effects(
 def _playbooks_enabled(manager: Any) -> bool:
     if manager is None:
         return False
-    return (
-        getattr(getattr(getattr(manager, "_config", None), "playbooks", None), "enabled", True)
-        is not False
-    )
+    # ``playbook_manager`` is optional during orchestrator startup.  Proxy and
+    # test-double orchestrators can fabricate a missing attribute on demand;
+    # that object is not a manager and must not make every task fail-closed.
+    # A real PlaybookManager always owns an explicit ``_config`` instance, even
+    # before its activation snapshot is initialized, so that state still takes
+    # the conservative routing-gate path below.
+    try:
+        config = vars(manager).get("_config")
+    except TypeError:
+        return False
+    if config is None:
+        return False
+    return getattr(getattr(config, "playbooks", None), "enabled", True) is not False
 
 
 def requires_routing_gate(manager, task, event_extra=None) -> bool:
