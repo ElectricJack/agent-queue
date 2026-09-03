@@ -417,7 +417,7 @@ class GitOpsMixin:
         review.
         """
         workspace = ctx.workspace_path
-        branch = ctx.task.branch_name
+        branch = ctx.delivery_branch or ctx.task.branch_name
         if not workspace or not branch:
             return False
         pr_mode = (
@@ -910,6 +910,7 @@ class GitOpsMixin:
                     )
                     pr_delivery_branch = None
             if pr_delivery_branch:
+                ctx.delivery_branch = pr_delivery_branch
                 if has_remote:
                     pr_url = await self.git.afind_open_pr(
                         workspace,

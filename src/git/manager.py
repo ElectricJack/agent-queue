@@ -2252,9 +2252,10 @@ class GitManager:
         shipped. Closed-but-unmerged PRs deliberately remain a failure.
         Best-effort throughout: any gh/git failure returns ``None``.
         """
-        url = await self._open_pr_url_by_head_name(checkout_path, branch_name)
-        if url:
-            return url
+        if include_workspace_head:
+            url = await self._open_pr_url_by_head_name(checkout_path, branch_name)
+            if url:
+                return url
 
         refs = [branch_name]
         if include_workspace_head:

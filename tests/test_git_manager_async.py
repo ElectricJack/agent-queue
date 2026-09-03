@@ -1206,6 +1206,33 @@ class TestAfindOpenPr:
         assert await mgr.afind_open_pr(clone, "aq/t-1") is None
 
     @pytest.mark.asyncio
+    async def test_strict_lookup_rejects_a_stale_pr_with_the_same_branch_name(
+        self, clone, mgr, monkeypatch
+    ):
+        """A PR name alone does not prove it delivers the branch's current tip."""
+        _git(["checkout", "-b", "aq/t-1"], cwd=clone)
+        _commit_file(clone, "work.txt", "done", "work")
+        _git(["checkout", "main"], cwd=clone)
+        main_tip = _git(["rev-parse", "main"], cwd=clone)
+
+        self._fake_gh(
+            mgr,
+            monkeypatch,
+            by_name="https://gh/org/repo/pull/46\n",
+            prs=[
+                {
+                    "url": "https://gh/org/repo/pull/46",
+                    "headRefName": "aq/t-1",
+                    "headRefOid": main_tip,
+                }
+            ],
+        )
+
+        assert (
+            await mgr.afind_open_pr(clone, "aq/t-1", include_workspace_head=False) is None
+        )
+
+    @pytest.mark.asyncio
     async def test_head_commit_counts_when_the_task_branch_never_moved(
         self, clone, mgr, monkeypatch
     ):

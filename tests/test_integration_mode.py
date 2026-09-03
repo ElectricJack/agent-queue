@@ -769,6 +769,25 @@ class TestEmptyBranchIsFlaggedNoCode:
         ctx = await self._run_pipeline(orch, _pr_task("t-flag-ahead"), monkeypatch, ahead=4)
         assert ctx.branch_no_commits is False
 
+    async def test_alternate_delivery_branch_with_commits_is_not_flagged(self, orch):
+        """Completion must not report delivered alternate-branch work as no-code."""
+        task = _pr_task("t-flag-alternate", branch_name="aq/t-flag-alternate")
+        await orch.db.create_task(task)
+        orch.git.aget_current_branch = AsyncMock(return_value="feature/delivery")
+        # The task branch is empty; the alternate branch carries work; the
+        # final pipeline flag must also inspect that alternate branch.
+        async def commits_ahead(_workspace, branch, _base):
+            return {"aq/t-flag-alternate": 0, "feature/delivery": 1}[branch]
+
+        orch.git.acount_commits_ahead = AsyncMock(side_effect=commits_ahead)
+        orch.git.afind_open_pr = AsyncMock(return_value="https://github.com/org/repo/pull/alt")
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = _ctx(orch, task, ws.workspace_path)
+        ctx.work_outcome = "shipped"
+
+        assert await orch._run_completion_pipeline(ctx) == (ctx.pr_url, True)
+        assert ctx.branch_no_commits is False
+
     async def test_worktree_mode_empty_branch_is_flagged(self, orch, monkeypatch):
         """Non-PR worktree slots are asked too — integration merges later."""
         ctx = await self._run_pipeline(
