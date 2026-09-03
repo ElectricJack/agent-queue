@@ -383,6 +383,11 @@ def _rewrite_profile_md(parsed, mcp_server_names: list[str]) -> str:
         name=fm.name or fm.id,
         description=str(fm.extra.get("description") or ""),
         permission_mode=str(parsed.config.get("permission_mode") or ""),
+        harness=parsed.config.get("harness"),
+        codex_full_auto=parsed.config.get("codex_full_auto", False),
+        claude_dangerously_skip_permissions=parsed.config.get(
+            "claude_dangerously_skip_permissions", False
+        ),
         allowed_tools=list(parsed.tools.get("allowed") or []),
         mcp_servers=list(mcp_server_names) if mcp_server_names else None,
         install=parsed.install if parsed.install else None,

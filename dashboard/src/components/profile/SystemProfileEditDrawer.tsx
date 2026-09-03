@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { XMarkIcon, ExclamationTriangleIcon } from "@heroicons/react/24/outline";
 import { useEditProfile, useGetProfile } from "../../api/hooks";
 import IntelligenceClassPicker from "./IntelligenceClassPicker";
+import AutonomousPermissionFields from "./AutonomousPermissionFields";
 import McpServerSelector from "./McpServerSelector";
 import ToolPicker from "./ToolPicker";
 import { Section, Field } from "./FormSection";
@@ -125,6 +126,7 @@ export default function SystemProfileEditDrawer({ open, onClose, profileId }: Pr
                 className="w-full rounded-md border border-gray-700 bg-gray-950 px-3 py-1.5 font-mono text-xs text-gray-200 focus:border-indigo-500 focus:outline-none"
               />
             </Field>
+            <AutonomousPermissionFields form={form} onChange={set} />
           </Section>
 
           <Section title="System prompt suffix">

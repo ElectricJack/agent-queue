@@ -484,6 +484,8 @@ UNIQUE constraint on `(project_id, workspace_path)`. Has extensive CRUD methods:
 | `description` | TEXT | NOT NULL DEFAULT '' | Profile description |
 | `model` | TEXT | NOT NULL DEFAULT '' | LLM model identifier |
 | `permission_mode` | TEXT | NOT NULL DEFAULT '' | Permission level |
+| `codex_full_auto` | BOOLEAN | NOT NULL DEFAULT false | Codex `--full-auto` profile opt-in |
+| `claude_dangerously_skip_permissions` | BOOLEAN | NOT NULL DEFAULT false | Claude permission-bypass profile opt-in |
 | `allowed_tools` | TEXT | NOT NULL DEFAULT '[]' | JSON-encoded list of tool names |
 | `mcp_servers` | TEXT | NOT NULL DEFAULT '{}' | JSON-encoded server configurations |
 | `system_prompt_suffix` | TEXT | NOT NULL DEFAULT '' | Additional system prompt text |

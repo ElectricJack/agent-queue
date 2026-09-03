@@ -11,8 +11,11 @@ describe("profileToForm", () => {
     const profile = {
       name: "Reviewer",
       description: "Reviews PRs",
+      harness: "codex",
       default_class: "standard-medium",
       permission_mode: "acceptEdits",
+      codex_full_auto: true,
+      claude_dangerously_skip_permissions: false,
       system_prompt_suffix: "Be terse.",
       allowed_tools: ["Read", "Edit"],
       mcp_servers: ["aq-files"],
@@ -20,8 +23,11 @@ describe("profileToForm", () => {
     expect(profileToForm(profile)).toEqual({
       name: "Reviewer",
       description: "Reviews PRs",
+      harness: "codex",
       default_class: "standard-medium",
       permission_mode: "acceptEdits",
+      codex_full_auto: true,
+      claude_dangerously_skip_permissions: false,
       system_prompt_suffix: "Be terse.",
       allowed_tools: ["Read", "Edit"],
       mcp_servers: ["aq-files"],
@@ -32,8 +38,11 @@ describe("profileToForm", () => {
     expect(profileToForm(null)).toEqual({
       name: "",
       description: "",
+      harness: "",
       default_class: "",
       permission_mode: "",
+      codex_full_auto: false,
+      claude_dangerously_skip_permissions: false,
       system_prompt_suffix: "",
       allowed_tools: [],
       mcp_servers: [],
@@ -44,13 +53,31 @@ describe("profileToForm", () => {
     const profile = { permission_mode: "(default)" } as unknown as ProfileDetail;
     expect(profileToForm(profile).permission_mode).toBe("");
   });
+
+  it("canonicalizes the legacy Claude bypass permission mode", () => {
+    const profile = {
+      harness: "claude",
+      permission_mode: "bypassPermissions",
+      claude_dangerously_skip_permissions: false,
+    } as unknown as ProfileDetail;
+
+    expect(profileToForm(profile)).toEqual(
+      expect.objectContaining({
+        permission_mode: "",
+        claude_dangerously_skip_permissions: true,
+      }),
+    );
+  });
 });
 
 const FORM: ProfileFormState = {
   name: "Supervisor",
   description: "Coordinates work",
+  harness: "codex",
   default_class: "standard-medium",
   permission_mode: "acceptEdits",
+  codex_full_auto: true,
+  claude_dangerously_skip_permissions: false,
   system_prompt_suffix: "Be terse.",
   allowed_tools: ["Read", "Edit"],
   mcp_servers: ["playwright"],
@@ -65,6 +92,8 @@ describe("profileEditPayload", () => {
       description: "Coordinates work",
       default_class: "standard-medium",
       permission_mode: "acceptEdits",
+      codex_full_auto: true,
+      claude_dangerously_skip_permissions: false,
       system_prompt_suffix: "Be terse.",
       allowed_tools: ["Read", "Edit"],
       mcp_servers: ["playwright"],

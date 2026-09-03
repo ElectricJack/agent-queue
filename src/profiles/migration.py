@@ -177,11 +177,23 @@ def verify_round_trip(profile: AgentProfile, markdown: str) -> tuple[bool, list[
             f"default_class: DB={profile.default_class!r}, "
             f"markdown={rebuilt.get('default_class', '')!r}"
         )
-    if rebuilt.get("permission_mode", "") != profile.permission_mode:
+    legacy_claude_skip = (
+        profile.harness == "claude" and profile.permission_mode == "bypassPermissions"
+    )
+    expected_permission_mode = "" if legacy_claude_skip else profile.permission_mode
+    if rebuilt.get("permission_mode", "") != expected_permission_mode:
         diffs.append(
-            f"permission_mode: DB={profile.permission_mode!r}, "
+            f"permission_mode: DB={expected_permission_mode!r}, "
             f"markdown={rebuilt.get('permission_mode', '')!r}"
         )
+    for key in ("codex_full_auto", "claude_dangerously_skip_permissions"):
+        expected = getattr(profile, key) or (
+            key == "claude_dangerously_skip_permissions" and legacy_claude_skip
+        )
+        if rebuilt.get(key, False) != expected:
+            diffs.append(
+                f"{key}: DB={expected!r}, markdown={rebuilt.get(key, False)!r}"
+            )
 
     # Check tools
     rebuilt_tools = rebuilt.get("allowed_tools", [])
@@ -231,6 +243,9 @@ def _render_profile_markdown(profile: AgentProfile) -> str:
         name=profile.name,
         description=profile.description,
         permission_mode=profile.permission_mode,
+        harness=profile.harness,
+        codex_full_auto=profile.codex_full_auto,
+        claude_dangerously_skip_permissions=profile.claude_dangerously_skip_permissions,
         default_class=profile.default_class,
         allowed_tools=profile.allowed_tools if profile.allowed_tools else None,
         mcp_servers=profile.mcp_servers if profile.mcp_servers else None,

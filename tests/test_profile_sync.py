@@ -354,6 +354,33 @@ class TestSyncProfileToDb:
         assert "## Reflection" in profile.system_prompt_suffix
 
     @pytest.mark.asyncio
+    async def test_autonomous_permission_opt_ins_persist_and_update(self, db):
+        enabled = parse_profile(
+            "---\nid: autonomous\nname: Autonomous\n---\n"
+            "## Config\n```json\n"
+            '{"harness": "codex", "codex_full_auto": true, '
+            '"claude_dangerously_skip_permissions": false}\n'
+            "```\n"
+        )
+        result = await sync_profile_to_db(enabled, db)
+        assert result.success is True
+        profile = await db.get_profile("autonomous")
+        assert profile.codex_full_auto is True
+        assert profile.claude_dangerously_skip_permissions is False
+
+        disabled = parse_profile(
+            "---\nid: autonomous\nname: Autonomous\n---\n"
+            "## Config\n```json\n"
+            '{"harness": "codex", "codex_full_auto": false}\n'
+            "```\n"
+        )
+        result = await sync_profile_to_db(disabled, db)
+        assert result.success is True
+        profile = await db.get_profile("autonomous")
+        assert profile.codex_full_auto is False
+        assert profile.claude_dangerously_skip_permissions is False
+
+    @pytest.mark.asyncio
     async def test_invalid_json_fails(self, db):
         """Profile with invalid JSON in structured sections fails sync."""
         parsed = parse_profile(INVALID_JSON_PROFILE)

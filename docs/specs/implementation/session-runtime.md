@@ -564,6 +564,12 @@ from one profile); live sessions drain naturally — `aq session kill` cleans st
       [[worktree-execution]] lands most workspaces are `LINK`s to a real checkout, which is
       precisely the case §4 excludes. `settings_flag` (`--settings`) is emitted whenever
       `hook_files` render, so the hook payload is read rather than merely written.
+      Provider-specific profile booleans add the softer Codex `--full-auto` mode or
+      Claude's explicit `--dangerously-skip-permissions` opt-in; they are disabled by
+      default and validated against `harness`. Derived flags are deduplicated against
+      harness `args`. Legacy `permission_mode: bypassPermissions` still requests every
+      harness's `permission_flag`; when Codex also has `codex_full_auto: true`, the
+      stronger legacy/worktree bypass wins and suppresses `--full-auto`.
 
 **Phase S2 — orchestration**
 - [x] `SessionReconciler` (adopt, drain-ack, exit classifier, orphans, stall ladder,

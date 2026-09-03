@@ -699,6 +699,13 @@ agent_profiles = Table(
     Column("description", Text, nullable=False, server_default=""),
     Column("model", Text, nullable=False, server_default=""),
     Column("permission_mode", Text, nullable=False, server_default=""),
+    Column("codex_full_auto", Boolean, nullable=False, server_default=false()),
+    Column(
+        "claude_dangerously_skip_permissions",
+        Boolean,
+        nullable=False,
+        server_default=false(),
+    ),
     Column("allowed_tools", Text, nullable=False, server_default="[]"),
     # Normalized capability namespaces (Playbook V2 Package 0 §3.1), stored
     # as JSON arrays of text like ``allowed_tools`` above.  NULL is

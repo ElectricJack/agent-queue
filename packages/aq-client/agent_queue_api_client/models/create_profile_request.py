@@ -19,7 +19,11 @@ class CreateProfileRequest:
         name (str): Human-readable display name
         description (None | str | Unset): What this profile is for (optional)
         default_class (None | str | Unset): Default intelligence class id (optional)
+        harness (None | str | Unset): CLI harness id (for example 'codex' or 'claude')
         permission_mode (None | str | Unset): Permission mode override (optional)
+        codex_full_auto (bool | None | Unset): Enable Codex --full-auto (requires harness 'codex')
+        claude_dangerously_skip_permissions (bool | None | Unset): Let Claude skip permission prompts (requires harness
+            'claude')
         allowed_tools (list[Any] | None | Unset): Tool whitelist (e.g. ['Read', 'Glob', 'Grep', 'Bash'])
         mcp_servers (list[Any] | None | Unset): MCP server names from the registry (e.g. ['playwright']). A legacy name
             -> config mapping is reduced to its keys.
@@ -30,7 +34,10 @@ class CreateProfileRequest:
     name: str
     description: None | str | Unset = UNSET
     default_class: None | str | Unset = UNSET
+    harness: None | str | Unset = UNSET
     permission_mode: None | str | Unset = UNSET
+    codex_full_auto: bool | None | Unset = UNSET
+    claude_dangerously_skip_permissions: bool | None | Unset = UNSET
     allowed_tools: list[Any] | None | Unset = UNSET
     mcp_servers: list[Any] | None | Unset = UNSET
     system_prompt_suffix: None | str | Unset = UNSET
@@ -53,11 +60,29 @@ class CreateProfileRequest:
         else:
             default_class = self.default_class
 
+        harness: None | str | Unset
+        if isinstance(self.harness, Unset):
+            harness = UNSET
+        else:
+            harness = self.harness
+
         permission_mode: None | str | Unset
         if isinstance(self.permission_mode, Unset):
             permission_mode = UNSET
         else:
             permission_mode = self.permission_mode
+
+        codex_full_auto: bool | None | Unset
+        if isinstance(self.codex_full_auto, Unset):
+            codex_full_auto = UNSET
+        else:
+            codex_full_auto = self.codex_full_auto
+
+        claude_dangerously_skip_permissions: bool | None | Unset
+        if isinstance(self.claude_dangerously_skip_permissions, Unset):
+            claude_dangerously_skip_permissions = UNSET
+        else:
+            claude_dangerously_skip_permissions = self.claude_dangerously_skip_permissions
 
         allowed_tools: list[Any] | None | Unset
         if isinstance(self.allowed_tools, Unset):
@@ -95,8 +120,14 @@ class CreateProfileRequest:
             field_dict["description"] = description
         if default_class is not UNSET:
             field_dict["default_class"] = default_class
+        if harness is not UNSET:
+            field_dict["harness"] = harness
         if permission_mode is not UNSET:
             field_dict["permission_mode"] = permission_mode
+        if codex_full_auto is not UNSET:
+            field_dict["codex_full_auto"] = codex_full_auto
+        if claude_dangerously_skip_permissions is not UNSET:
+            field_dict["claude_dangerously_skip_permissions"] = claude_dangerously_skip_permissions
         if allowed_tools is not UNSET:
             field_dict["allowed_tools"] = allowed_tools
         if mcp_servers is not UNSET:
@@ -131,6 +162,15 @@ class CreateProfileRequest:
 
         default_class = _parse_default_class(d.pop("default_class", UNSET))
 
+        def _parse_harness(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        harness = _parse_harness(d.pop("harness", UNSET))
+
         def _parse_permission_mode(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -139,6 +179,26 @@ class CreateProfileRequest:
             return cast(None | str | Unset, data)
 
         permission_mode = _parse_permission_mode(d.pop("permission_mode", UNSET))
+
+        def _parse_codex_full_auto(data: object) -> bool | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(bool | None | Unset, data)
+
+        codex_full_auto = _parse_codex_full_auto(d.pop("codex_full_auto", UNSET))
+
+        def _parse_claude_dangerously_skip_permissions(data: object) -> bool | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(bool | None | Unset, data)
+
+        claude_dangerously_skip_permissions = _parse_claude_dangerously_skip_permissions(
+            d.pop("claude_dangerously_skip_permissions", UNSET)
+        )
 
         def _parse_allowed_tools(data: object) -> list[Any] | None | Unset:
             if data is None:
@@ -188,7 +248,10 @@ class CreateProfileRequest:
             name=name,
             description=description,
             default_class=default_class,
+            harness=harness,
             permission_mode=permission_mode,
+            codex_full_auto=codex_full_auto,
+            claude_dangerously_skip_permissions=claude_dangerously_skip_permissions,
             allowed_tools=allowed_tools,
             mcp_servers=mcp_servers,
             system_prompt_suffix=system_prompt_suffix,

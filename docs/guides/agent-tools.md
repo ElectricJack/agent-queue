@@ -114,7 +114,7 @@ All git tools accept optional `project_id` (defaults to active project) and `wor
 | `list_agents` | List agent slots (locked=busy, unlocked=idle) | `project_id` (optional if active set) |
 | `get_agent_error` | Last error with classification and suggested fix | `task_id` (required) |
 | `list_profiles` | List all agent profiles | *none* |
-| `create_profile` | Create new agent profile | `id` (required, slug), `name` (required), `description`, `model`, `permission_mode`, `allowed_tools` (array, e.g. ["Read", "Glob", "Bash"]), `mcp_servers` (object: name → {command, args}), `system_prompt_suffix` |
+| `create_profile` | Create new agent profile | `id` (required, slug), `name` (required), `description`, `harness`, `default_class`, `permission_mode`, `codex_full_auto` (bool; Codex only), `claude_dangerously_skip_permissions` (bool; Claude only), `allowed_tools` (array, e.g. ["Read", "Glob", "Bash"]), `mcp_servers` (array of registry names), `system_prompt_suffix` |
 | `get_profile` | Get profile details | `profile_id` (required) |
 | `edit_profile` | Edit profile properties | `profile_id` (required), then same fields as create_profile |
 | `delete_profile` | Delete profile (refs in tasks/projects cleared) | `profile_id` (required) |

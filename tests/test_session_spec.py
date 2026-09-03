@@ -33,6 +33,8 @@ class _Profile:
     effort: str = ""
     harness: str = "claude"
     permission_mode: str = ""
+    codex_full_auto: bool = False
+    claude_dangerously_skip_permissions: bool = False
 
 
 class _McpCfg:
@@ -172,6 +174,48 @@ class TestSkipPermissionsGating:
             workspace_source_type=RepoSourceType.LINK,
         )
         assert self.FLAG in spec.command
+
+    def test_claude_profile_boolean_can_opt_in_explicitly(self, builder):
+        from src.models import RepoSourceType
+
+        spec = _build(
+            builder,
+            profile=_Profile(claude_dangerously_skip_permissions=True),
+            workspace_source_type=RepoSourceType.LINK,
+        )
+        assert spec.command.count(self.FLAG) == 1
+
+    def test_claude_profile_boolean_does_not_affect_another_harness(self, builder):
+        codex = Harness(
+            id="codex",
+            command="codex",
+            permission_flag="--dangerously-bypass-approvals-and-sandbox",
+        )
+        spec = _build(
+            builder,
+            harness=codex,
+            profile=_Profile(claude_dangerously_skip_permissions=True),
+        )
+        assert self.FLAG not in spec.command
+        assert "--dangerously-bypass-approvals-and-sandbox" not in spec.command
+
+    def test_claude_derived_flag_is_not_duplicated_from_harness_args(self, builder):
+        harness = replace(CLAUDE, args=(self.FLAG,))
+        profile = _Profile(
+            permission_mode="bypassPermissions",
+            claude_dangerously_skip_permissions=True,
+        )
+        spec = _build(builder, harness=harness, profile=profile)
+        assert spec.command.count(self.FLAG) == 1
+
+    def test_false_claude_profile_boolean_preserves_raw_harness_arg(self, builder):
+        harness = replace(CLAUDE, args=(self.FLAG,))
+        spec = _build(
+            builder,
+            harness=harness,
+            profile=_Profile(claude_dangerously_skip_permissions=False),
+        )
+        assert spec.command.count(self.FLAG) == 1
 
     def test_another_permission_mode_is_not_an_opt_in(self, builder):
         from src.models import RepoSourceType
@@ -343,6 +387,47 @@ class TestCodexHookTrust:
 
 
 class TestArgvComposition:
+    def test_codex_full_auto_profile_opt_in_adds_flag_once(self, builder):
+        codex = Harness(id="codex", command="codex", args=("--quiet",))
+        spec = _build(builder, harness=codex, profile=_Profile(codex_full_auto=True))
+        assert spec.command.count("--full-auto") == 1
+        assert spec.command.index("--quiet") < spec.command.index("--full-auto")
+
+    def test_codex_full_auto_defaults_off(self, builder):
+        codex = Harness(id="codex", command="codex")
+        spec = _build(builder, harness=codex, profile=_Profile())
+        assert "--full-auto" not in spec.command
+
+    def test_codex_full_auto_does_not_affect_another_harness(self, builder):
+        spec = _build(builder, profile=_Profile(codex_full_auto=True))
+        assert "--full-auto" not in spec.command
+
+    def test_codex_full_auto_is_not_duplicated_from_harness_args(self, builder):
+        codex = Harness(id="codex", command="codex", args=("--full-auto",))
+        spec = _build(builder, harness=codex, profile=_Profile(codex_full_auto=True))
+        assert spec.command.count("--full-auto") == 1
+
+    def test_legacy_codex_bypass_takes_precedence_over_derived_full_auto(self, builder):
+        bypass = "--dangerously-bypass-approvals-and-sandbox"
+        codex = Harness(
+            id="codex",
+            command="codex",
+            args=("--full-auto",),
+            permission_flag=bypass,
+        )
+        profile = _Profile(
+            permission_mode="bypassPermissions",
+            codex_full_auto=True,
+        )
+        spec = _build(builder, harness=codex, profile=profile)
+        assert spec.command.count(bypass) == 1
+        assert "--full-auto" not in spec.command
+
+    def test_false_codex_profile_boolean_preserves_raw_harness_arg(self, builder):
+        codex = Harness(id="codex", command="codex", args=("--full-auto",))
+        spec = _build(builder, harness=codex, profile=_Profile(codex_full_auto=False))
+        assert spec.command.count("--full-auto") == 1
+
     def test_basic_argv(self, builder):
         spec = _isolated(builder)
         assert spec.command[0] == "claude"

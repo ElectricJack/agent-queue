@@ -45,6 +45,10 @@ class ProfileQueryMixin:
                     description=profile.description,
                     model=profile.model,
                     permission_mode=profile.permission_mode,
+                    codex_full_auto=profile.codex_full_auto,
+                    claude_dangerously_skip_permissions=(
+                        profile.claude_dangerously_skip_permissions
+                    ),
                     allowed_tools=json.dumps(profile.allowed_tools),
                     harness_tools=_dump_namespace(profile.harness_tools),
                     aq_commands=_dump_namespace(profile.aq_commands),
@@ -127,6 +131,10 @@ class ProfileQueryMixin:
                 description=profile.description,
                 model=profile.model,
                 permission_mode=profile.permission_mode,
+                codex_full_auto=profile.codex_full_auto,
+                claude_dangerously_skip_permissions=(
+                    profile.claude_dangerously_skip_permissions
+                ),
                 allowed_tools=profile.allowed_tools,
                 harness_tools=profile.harness_tools,
                 aq_commands=profile.aq_commands,
@@ -190,6 +198,10 @@ class ProfileQueryMixin:
             description=row["description"],
             model=row["model"],
             permission_mode=row["permission_mode"],
+            codex_full_auto=bool(row.get("codex_full_auto", 0)),
+            claude_dangerously_skip_permissions=bool(
+                row.get("claude_dangerously_skip_permissions", 0)
+            ),
             allowed_tools=json.loads(row["allowed_tools"]),
             harness_tools=_load_namespace(row.get("harness_tools")),
             aq_commands=_load_namespace(row.get("aq_commands")),

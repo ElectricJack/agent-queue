@@ -229,6 +229,30 @@ class TestAgentProfileConfigValidation:
         cfg = AgentProfileConfig(id="test", permission_mode="")
         assert cfg.validate() == []
 
+    def test_autonomous_permission_opt_ins_require_matching_harness(self):
+        assert AgentProfileConfig(
+            id="codex", harness="codex", codex_full_auto=True
+        ).validate() == []
+        assert AgentProfileConfig(
+            id="claude",
+            harness="claude",
+            claude_dangerously_skip_permissions=True,
+        ).validate() == []
+
+        errors = AgentProfileConfig(
+            id="wrong", harness="claude", codex_full_auto=True
+        ).validate()
+        assert any(e.field == "codex_full_auto" and "harness 'codex'" in e.message for e in errors)
+
+    def test_autonomous_permission_opt_ins_must_be_booleans(self):
+        cfg = AgentProfileConfig(
+            id="bad",
+            harness="codex",
+            codex_full_auto="true",  # type: ignore[arg-type]
+        )
+        errors = cfg.validate()
+        assert any(e.field == "codex_full_auto" and "must be a boolean" in e.message for e in errors)
+
 
 # ── AppConfig.validate() aggregation ─────────────────────────────────
 

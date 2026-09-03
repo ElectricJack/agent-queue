@@ -5979,8 +5979,8 @@
         "tags": [
           "playbook"
         ],
-        "summary": "Activate one reviewed Playbook V2 artifact hash. Activation is an explicit operation against a reviewed artifact -- compilation never activates. Refused when playbooks.v2_activation_writes is off, when the artifact's health is invalid, or when the diff against the currently active artifact carries an executable change and acknowledge_diff was not supplied. Every refusal returns blocked=true with machine-readable blockers.",
-        "description": "Activate one reviewed Playbook V2 artifact hash. Activation is an explicit operation against a reviewed artifact -- compilation never activates. Refused when playbooks.v2_activation_writes is off, when the artifact's health is invalid, or when the diff against the currently active artifact carries an executable change and acknowledge_diff was not supplied. Every refusal returns blocked=true with machine-readable blockers.",
+        "summary": "Activate one reviewed Playbook V2 artifact hash. Activation is an explicit operation against a reviewed artifact -- compilation never activates. Refused when playbooks.v2_activation_writes is off, when the artifact's health is invalid, or when the diff against the currently active artifact carries an executable change and acknowledge_diff was not supplied. Project artifacts require matching project authority and persist the caller as the reviewer of that exact hash. Every refusal returns blocked=true with machine-readable blockers.",
+        "description": "Activate one reviewed Playbook V2 artifact hash. Activation is an explicit operation against a reviewed artifact -- compilation never activates. Refused when playbooks.v2_activation_writes is off, when the artifact's health is invalid, or when the diff against the currently active artifact carries an executable change and acknowledge_diff was not supplied. Project artifacts require matching project authority and persist the caller as the reviewer of that exact hash. Every refusal returns blocked=true with machine-readable blockers.",
         "operationId": "playbook_activate",
         "requestBody": {
           "content": {
@@ -16359,6 +16359,18 @@
             "title": "Default Class",
             "description": "Default intelligence class id (optional)"
           },
+          "harness": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Harness",
+            "description": "CLI harness id (for example 'codex' or 'claude')"
+          },
           "permission_mode": {
             "anyOf": [
               {
@@ -16370,6 +16382,30 @@
             ],
             "title": "Permission Mode",
             "description": "Permission mode override (optional)"
+          },
+          "codex_full_auto": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Codex Full Auto",
+            "description": "Enable Codex --full-auto (requires harness 'codex')"
+          },
+          "claude_dangerously_skip_permissions": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claude Dangerously Skip Permissions",
+            "description": "Let Claude skip permission prompts (requires harness 'claude')"
           },
           "allowed_tools": {
             "anyOf": [
@@ -18368,6 +18404,18 @@
             "title": "Description",
             "description": "New description (optional)"
           },
+          "harness": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Harness",
+            "description": "New CLI harness id (optional)"
+          },
           "permission_mode": {
             "anyOf": [
               {
@@ -18379,6 +18427,30 @@
             ],
             "title": "Permission Mode",
             "description": "New permission mode (optional)"
+          },
+          "codex_full_auto": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Codex Full Auto",
+            "description": "Enable or disable Codex --full-auto"
+          },
+          "claude_dangerously_skip_permissions": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claude Dangerously Skip Permissions",
+            "description": "Enable or disable Claude permission-prompt bypass"
           },
           "allowed_tools": {
             "anyOf": [
@@ -21640,6 +21712,16 @@
             "type": "string",
             "title": "Permission Mode",
             "default": ""
+          },
+          "codex_full_auto": {
+            "type": "boolean",
+            "title": "Codex Full Auto",
+            "default": false
+          },
+          "claude_dangerously_skip_permissions": {
+            "type": "boolean",
+            "title": "Claude Dangerously Skip Permissions",
+            "default": false
           },
           "allowed_tools": {
             "items": {
@@ -32083,6 +32165,16 @@
             "title": "Permission Mode",
             "default": ""
           },
+          "codex_full_auto": {
+            "type": "boolean",
+            "title": "Codex Full Auto",
+            "default": false
+          },
+          "claude_dangerously_skip_permissions": {
+            "type": "boolean",
+            "title": "Claude Dangerously Skip Permissions",
+            "default": false
+          },
           "allowed_tools": {
             "items": {
               "type": "string"
@@ -32387,6 +32479,16 @@
             "type": "string",
             "title": "Default Class",
             "default": ""
+          },
+          "codex_full_auto": {
+            "type": "boolean",
+            "title": "Codex Full Auto",
+            "default": false
+          },
+          "claude_dangerously_skip_permissions": {
+            "type": "boolean",
+            "title": "Claude Dangerously Skip Permissions",
+            "default": false
           },
           "allowed_tools": {
             "items": {

@@ -68,14 +68,16 @@ def sync_detailed(
     """Activate one reviewed Playbook V2 artifact hash. Activation is an explicit operation against a
     reviewed artifact -- compilation never activates. Refused when playbooks.v2_activation_writes is
     off, when the artifact's health is invalid, or when the diff against the currently active artifact
-    carries an executable change and acknowledge_diff was not supplied. Every refusal returns
-    blocked=true with machine-readable blockers.
+    carries an executable change and acknowledge_diff was not supplied. Project artifacts require
+    matching project authority and persist the caller as the reviewer of that exact hash. Every refusal
+    returns blocked=true with machine-readable blockers.
 
      Activate one reviewed Playbook V2 artifact hash. Activation is an explicit operation against a
     reviewed artifact -- compilation never activates. Refused when playbooks.v2_activation_writes is
     off, when the artifact's health is invalid, or when the diff against the currently active artifact
-    carries an executable change and acknowledge_diff was not supplied. Every refusal returns
-    blocked=true with machine-readable blockers.
+    carries an executable change and acknowledge_diff was not supplied. Project artifacts require
+    matching project authority and persist the caller as the reviewer of that exact hash. Every refusal
+    returns blocked=true with machine-readable blockers.
 
     Args:
         body (PlaybookActivateRequest):
@@ -107,14 +109,16 @@ def sync(
     """Activate one reviewed Playbook V2 artifact hash. Activation is an explicit operation against a
     reviewed artifact -- compilation never activates. Refused when playbooks.v2_activation_writes is
     off, when the artifact's health is invalid, or when the diff against the currently active artifact
-    carries an executable change and acknowledge_diff was not supplied. Every refusal returns
-    blocked=true with machine-readable blockers.
+    carries an executable change and acknowledge_diff was not supplied. Project artifacts require
+    matching project authority and persist the caller as the reviewer of that exact hash. Every refusal
+    returns blocked=true with machine-readable blockers.
 
      Activate one reviewed Playbook V2 artifact hash. Activation is an explicit operation against a
     reviewed artifact -- compilation never activates. Refused when playbooks.v2_activation_writes is
     off, when the artifact's health is invalid, or when the diff against the currently active artifact
-    carries an executable change and acknowledge_diff was not supplied. Every refusal returns
-    blocked=true with machine-readable blockers.
+    carries an executable change and acknowledge_diff was not supplied. Project artifacts require
+    matching project authority and persist the caller as the reviewer of that exact hash. Every refusal
+    returns blocked=true with machine-readable blockers.
 
     Args:
         body (PlaybookActivateRequest):
@@ -141,14 +145,16 @@ async def asyncio_detailed(
     """Activate one reviewed Playbook V2 artifact hash. Activation is an explicit operation against a
     reviewed artifact -- compilation never activates. Refused when playbooks.v2_activation_writes is
     off, when the artifact's health is invalid, or when the diff against the currently active artifact
-    carries an executable change and acknowledge_diff was not supplied. Every refusal returns
-    blocked=true with machine-readable blockers.
+    carries an executable change and acknowledge_diff was not supplied. Project artifacts require
+    matching project authority and persist the caller as the reviewer of that exact hash. Every refusal
+    returns blocked=true with machine-readable blockers.
 
      Activate one reviewed Playbook V2 artifact hash. Activation is an explicit operation against a
     reviewed artifact -- compilation never activates. Refused when playbooks.v2_activation_writes is
     off, when the artifact's health is invalid, or when the diff against the currently active artifact
-    carries an executable change and acknowledge_diff was not supplied. Every refusal returns
-    blocked=true with machine-readable blockers.
+    carries an executable change and acknowledge_diff was not supplied. Project artifacts require
+    matching project authority and persist the caller as the reviewer of that exact hash. Every refusal
+    returns blocked=true with machine-readable blockers.
 
     Args:
         body (PlaybookActivateRequest):
@@ -178,14 +184,16 @@ async def asyncio(
     """Activate one reviewed Playbook V2 artifact hash. Activation is an explicit operation against a
     reviewed artifact -- compilation never activates. Refused when playbooks.v2_activation_writes is
     off, when the artifact's health is invalid, or when the diff against the currently active artifact
-    carries an executable change and acknowledge_diff was not supplied. Every refusal returns
-    blocked=true with machine-readable blockers.
+    carries an executable change and acknowledge_diff was not supplied. Project artifacts require
+    matching project authority and persist the caller as the reviewer of that exact hash. Every refusal
+    returns blocked=true with machine-readable blockers.
 
      Activate one reviewed Playbook V2 artifact hash. Activation is an explicit operation against a
     reviewed artifact -- compilation never activates. Refused when playbooks.v2_activation_writes is
     off, when the artifact's health is invalid, or when the diff against the currently active artifact
-    carries an executable change and acknowledge_diff was not supplied. Every refusal returns
-    blocked=true with machine-readable blockers.
+    carries an executable change and acknowledge_diff was not supplied. Project artifacts require
+    matching project authority and persist the caller as the reviewer of that exact hash. Every refusal
+    returns blocked=true with machine-readable blockers.
 
     Args:
         body (PlaybookActivateRequest):

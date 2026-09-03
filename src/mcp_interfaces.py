@@ -96,8 +96,13 @@ def profile_to_dict(profile: Any) -> dict[str, Any]:
         "id": profile.id,
         "name": profile.name,
         "description": profile.description,
+        "harness": profile.harness,
         "default_class": profile.default_class,
         "permission_mode": profile.permission_mode,
+        "codex_full_auto": profile.codex_full_auto,
+        "claude_dangerously_skip_permissions": (
+            profile.claude_dangerously_skip_permissions
+        ),
         "allowed_tools": profile.allowed_tools,
         "mcp_servers": profile.mcp_servers,
         "system_prompt_suffix": profile.system_prompt_suffix,

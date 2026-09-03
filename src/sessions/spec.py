@@ -60,6 +60,14 @@ _UNSAFE = re.compile(r"[^A-Za-z0-9_-]+")
 #: writes one word in one place and both runtimes honour it.
 BYPASS_PERMISSION_MODE = "bypassPermissions"
 
+#: Profile-owned, harness-specific autonomous modes.  These are intentionally
+#: separate from ``Harness.permission_flag``: Codex's permission flag disables
+#: both approvals and sandboxing, whereas ``--full-auto`` keeps the workspace
+#: sandbox.  Claude's flag overlaps its legacy permission flag, so argv
+#: composition adds derived flags idempotently.
+CODEX_FULL_AUTO_FLAG = "--full-auto"
+CLAUDE_DANGEROUSLY_SKIP_PERMISSIONS_FLAG = "--dangerously-skip-permissions"
+
 #: The bootstrap prompt.  Deliberately tiny — see the module docstring.
 #: ``{}`` fields: task_id, work_dir.
 #:
@@ -162,6 +170,20 @@ def _is_codex_cli(harness) -> bool:
         getattr(harness, "id", "") == "codex"
         and Path(getattr(harness, "command", "")).name in {"codex", "codex.exe"}
     )
+
+
+def _is_claude_cli(harness) -> bool:
+    """Keep Claude-specific settings off other Anthropic-backed harnesses."""
+    return (
+        getattr(harness, "id", "") == "claude"
+        and Path(getattr(harness, "command", "")).name in {"claude", "claude.exe"}
+    )
+
+
+def _append_once(argv: list[str], flag: str) -> None:
+    """Append a derived flag without disturbing operator-supplied argv."""
+    if flag not in argv:
+        argv.append(flag)
 
 
 def sanitize_name(raw: str) -> str:
@@ -522,6 +544,30 @@ class SessionSpecBuilder:
 
         argv.extend(harness.args)
 
+        # These profile switches are explicit opt-ins for one concrete CLI.
+        # Raw harness args remain a supported escape hatch; when they already
+        # carry the same flag, keep their position and do not append a second
+        # copy.  False profile values likewise never remove raw args.
+        # The established isolated-worktree / legacy bypass policy may add
+        # Codex's stronger ``dangerously-bypass`` flag below.  Do not combine
+        # it with ``--full-auto``: the two select conflicting approval and
+        # sandbox modes, so the stronger backwards-compatible mode wins.
+        codex_stronger_bypass = bool(allow_skip_permissions and harness.permission_flag)
+        codex_full_auto = _is_codex_cli(harness) and bool(
+            getattr(profile, "codex_full_auto", False)
+        )
+        if codex_full_auto:
+            if codex_stronger_bypass:
+                argv[:] = [arg for arg in argv if arg != CODEX_FULL_AUTO_FLAG]
+            else:
+                _append_once(argv, CODEX_FULL_AUTO_FLAG)
+
+        claude_skip_permissions = _is_claude_cli(harness) and bool(
+            getattr(profile, "claude_dangerously_skip_permissions", False)
+        )
+        if claude_skip_permissions:
+            _append_once(argv, CLAUDE_DANGEROUSLY_SKIP_PERMISSIONS_FLAG)
+
         # Resolve the model from the task-scoped or profile default class.
         # Unknown classes or missing mappings leave the model unset; profiles
         # no longer carry a conflicting literal fallback.
@@ -558,8 +604,8 @@ class SessionSpecBuilder:
         # :func:`skip_permissions_allowed` for the trust-and-ops §4 rule.
         if harness.permission_flag:
             if allow_skip_permissions:
-                argv.append(harness.permission_flag)
-            else:
+                _append_once(argv, harness.permission_flag)
+            elif harness.permission_flag not in argv:
                 logger.debug(
                     "Session %s: withholding %s -- work_dir is not an isolated "
                     "worktree and the profile did not opt in",

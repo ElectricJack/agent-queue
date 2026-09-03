@@ -2591,9 +2591,23 @@ _ALL_TOOL_DEFINITIONS = [
                     "type": "string",
                     "description": "Default intelligence class id (optional)",
                 },
+                "harness": {
+                    "type": "string",
+                    "description": "CLI harness id (for example 'codex' or 'claude')",
+                },
                 "permission_mode": {
                     "type": "string",
                     "description": "Permission mode override (optional)",
+                },
+                "codex_full_auto": {
+                    "type": "boolean",
+                    "description": "Enable Codex --full-auto (requires harness 'codex')",
+                },
+                "claude_dangerously_skip_permissions": {
+                    "type": "boolean",
+                    "description": (
+                        "Let Claude skip permission prompts (requires harness 'claude')"
+                    ),
                 },
                 "allowed_tools": {
                     "type": "array",
@@ -2636,9 +2650,18 @@ _ALL_TOOL_DEFINITIONS = [
                 "profile_id": {"type": "string", "description": "Profile ID to edit"},
                 "name": {"type": "string", "description": "New display name (optional)"},
                 "description": {"type": "string", "description": "New description (optional)"},
+                "harness": {"type": "string", "description": "New CLI harness id (optional)"},
                 "permission_mode": {
                     "type": "string",
                     "description": "New permission mode (optional)",
+                },
+                "codex_full_auto": {
+                    "type": "boolean",
+                    "description": "Enable or disable Codex --full-auto",
+                },
+                "claude_dangerously_skip_permissions": {
+                    "type": "boolean",
+                    "description": "Enable or disable Claude permission-prompt bypass",
                 },
                 "allowed_tools": {
                     "type": "array",

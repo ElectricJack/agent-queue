@@ -139,8 +139,27 @@ disjoint — taking both `message` channels double-counts every turn, and
 emitted only when the session's work_dir is an isolated worktree (or the
 profile opts in). In a linked checkout Codex keeps its own sandbox +
 approval prompts, and the session is attachable so a human can answer them.
-Codex additionally has softer modes (`--full-auto`, `-s workspace-write`)
-that could ride `args` if you want sandboxed-but-automatic instead.
+
+**The softer profile opt-in is `codex_full_auto: true`.** It adds
+`--full-auto`, defaults to `false`, and is rejected when enabled on non-Codex
+profiles. A disabled `false` value is harmless on other harnesses.
+Unlike the harness `permission_flag`, full-auto retains Codex's workspace
+sandbox while removing routine approval prompts. The legacy
+`permission_mode: bypassPermissions` setting remains supported and still
+selects `--dangerously-bypass-approvals-and-sandbox`; it is a stronger,
+distinct posture and is not translated to full-auto.
+
+Harness `args` remain a supported operator-wide way to configure either flag.
+If an enabled profile option and `args` request the same flag, the launch
+command contains it only once; a profile value of `false` does not cancel an
+argument deliberately placed in `args`. If `codex_full_auto` is enabled and
+the launch also qualifies for the stronger bypass mode (through the legacy
+profile value or isolated-worktree policy), bypass wins and every
+`--full-auto` occurrence is suppressed rather than sending conflicting modes
+to Codex. A disabled profile value leaves raw harness arguments untouched.
+Prefer `codex_full_auto` unless the session genuinely requires host-level
+access, and remember that even the workspace sandbox is not a substitute for
+scrubbing secrets and restricting network/tool access.
 
 **`skip_escape_before_enter: true` is load-bearing** — Escape in the Codex
 composer backtracks/clears; a blind Escape-then-Enter sequence would eat
