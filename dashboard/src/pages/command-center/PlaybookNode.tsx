@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { ArrowPathIcon } from "@heroicons/react/24/outline";
 import type { Node, NodeProps } from "@xyflow/react";
 import { NODE_HEIGHT, NODE_WIDTH, type PlaybookNodeData } from "./types";
@@ -19,6 +20,8 @@ export function PlaybookCard({ data, selected = false, fluid = false }: { data: 
   </button>;
 }
 
-export default function PlaybookNode({ data, selected }: NodeProps<Node<PlaybookNodeData, "playbook">>) {
+function PlaybookNode({ data, selected }: NodeProps<Node<PlaybookNodeData, "playbook">>) {
   return <PlaybookCard data={data} selected={selected} />;
 }
+
+export default memo(PlaybookNode);

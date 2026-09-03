@@ -124,4 +124,54 @@ describe("toFlowElements", () => {
     expect(out.zIndex).toBe(200);
     expect(out.selectable).toBe(false);
   });
+
+  it("hands back the same node and edge objects for everything a re-delivery did not change", () => {
+    const tiles = {
+      nodes: [n("a", "card", 0, 0), n("b", "card", 2, 0), n("c", "container", 0, 4, { w: 3, h: 2 })],
+      edges: [{ from: "b", to: "a", dep_type: "blocks", description: null, count: 1 }],
+      stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+    };
+    // A refetch parses fresh objects off the wire, so nothing can be shared
+    // by accident: only the content signature can make an element reusable.
+    const wire = () => mergeTiles(emptyStore(), ["0:0"], JSON.parse(JSON.stringify(tiles)) as never);
+    const first = toFlowElements(wire(), ctx);
+    const again = toFlowElements(wire(), ctx, first.cache);
+    const byId = (r: { nodes: { id: string }[] }, id: string) => r.nodes.find((x) => x.id === id)!;
+    expect(byId(again, "a")).toBe(byId(first, "a"));
+    expect(byId(again, "b")).toBe(byId(first, "b"));
+    expect(byId(again, "c")).toBe(byId(first, "c"));
+    expect(again.edges[0]).toBe(first.edges[0]);
+
+    // One task changes: only that node is rebuilt.
+    const changed = { ...tiles, nodes: [n("a", "card", 0, 0, { status: "COMPLETED" }), tiles.nodes[1]!, tiles.nodes[2]!] };
+    const third = toFlowElements(
+      mergeTiles(emptyStore(), ["0:0"], JSON.parse(JSON.stringify(changed)) as never), ctx, again.cache);
+    expect(byId(third, "a")).not.toBe(byId(again, "a"));
+    expect(byId(third, "b")).toBe(byId(again, "b"));
+    expect(byId(third, "c")).toBe(byId(again, "c"));
+    expect(third.edges[0]).toBe(again.edges[0]);
+  });
+
+  it("rebuilds everything when the surrounding context changes", () => {
+    const store = mergeTiles(emptyStore(), ["0:0"], {
+      nodes: [n("a", "card", 0, 0)], edges: [], stubs: [], stub_overflow: [],
+      workers: [], gates: [], layout_version: 1,
+    } as never);
+    const first = toFlowElements(store, ctx);
+    const moved = toFlowElements(store, { ...ctx, offsetY: 4 }, first.cache);
+    expect(moved.nodes[0]).not.toBe(first.nodes[0]);
+    expect(moved.nodes[0]!.position.y).toBeCloseTo(4 * 156);
+  });
+
+  it("drops to straight unlabelled edges at far zoom", () => {
+    const store = mergeTiles(emptyStore(), ["0:0"], {
+      nodes: [n("a", "card", 0, 0), n("b", "card", 2, 0)],
+      edges: [{ from: "b", to: "a", dep_type: "blocks", description: null, count: 3 }],
+      stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+    } as never);
+    expect(toFlowElements(store, ctx).edges[0]).toMatchObject({ type: "smoothstep", label: "\u00d73" });
+    const far = toFlowElements(store, { ...ctx, simpleEdges: true }).edges[0]!;
+    expect(far.type).toBe("straight");
+    expect(far.label).toBeUndefined();
+  });
 });
