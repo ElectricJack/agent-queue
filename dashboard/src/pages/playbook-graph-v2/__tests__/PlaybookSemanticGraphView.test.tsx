@@ -106,7 +106,7 @@ describe("PlaybookSemanticGraphView", () => {
     render(<PlaybookSemanticGraphView playbookId="default-pipeline" />);
     expect(
       within(screen.getByRole("region", { name: "Graph diagnostics" })).getByText(
-        /Command 'gate_create' is not registered/,
+        /Command 'list_tasks' is not registered/,
       ),
     ).toBeInTheDocument();
     for (const node of graph.nodes!) {

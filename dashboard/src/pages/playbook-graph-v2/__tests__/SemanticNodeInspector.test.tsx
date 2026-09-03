@@ -8,7 +8,7 @@ import {
   ensureReviewTask,
   escalateNode,
   forEachTask,
-  openGate,
+  listDownstream,
   unroutedEscalateNode,
 } from "./fixtures";
 
@@ -18,7 +18,9 @@ describe("SemanticNodeInspector", () => {
   it("shows inputs, outputs, outcomes and their targets for a command node", () => {
     render(<SemanticNodeInspector node={ensureReviewTask} />);
     const inputs = within(screen.getByRole("group", { name: "Inputs" }));
-    expect(inputs.getByText("Project Id")).toBeInTheDocument();
+    // ``ensure_task`` is registered, so the rows carry the contract's argument
+    // labels rather than the titled argument names.
+    expect(inputs.getByText("Project")).toBeInTheDocument();
     expect(inputs.getByText("Title")).toBeInTheDocument();
     // The projector labels the result row with the binding it writes and
     // displays the same binding as the value, so both cells read "review".
@@ -36,11 +38,18 @@ describe("SemanticNodeInspector", () => {
   });
 
   it("says when a step has no presentation metadata rather than inventing an effect", () => {
-    // The stub registry knows none of this artifact's commands, so the
-    // projector renders the step canonically and declares no effect clauses.
-    render(<SemanticNodeInspector node={ensureReviewTask} />);
+    // The stub registry deliberately does not know ``list_tasks``, so the
+    // projector renders that step canonically and declares no effect clauses.
+    render(<SemanticNodeInspector node={listDownstream} />);
     expect(screen.getByRole("status")).toHaveTextContent(/No presentation metadata for this step/);
     expect(screen.queryByRole("group", { name: "Effects" })).not.toBeInTheDocument();
+  });
+
+  it("lists the effect clauses a registered command's contract declares", () => {
+    render(<SemanticNodeInspector node={ensureReviewTask} />);
+    const effects = within(screen.getByRole("group", { name: "Effects" }));
+    expect(effects.getByText(/a task/)).toBeInTheDocument();
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 
   it("lists the effects the projection derived for a non-command step", () => {
@@ -116,7 +125,7 @@ describe("SemanticNodeInspector", () => {
   });
 
   it("surfaces the node's own diagnostics without hiding its intent", () => {
-    render(<SemanticNodeInspector node={openGate} />);
+    render(<SemanticNodeInspector node={listDownstream} />);
     expect(
       within(screen.getByRole("group", { name: "Diagnostics" })).getByText(/is not registered/),
     ).toBeInTheDocument();
