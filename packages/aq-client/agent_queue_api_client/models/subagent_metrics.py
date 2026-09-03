@@ -19,20 +19,31 @@ T = TypeVar("T", bound="SubagentMetrics")
 class SubagentMetrics:
     """Fleet sub-agent totals plus the per-session drill-down.
 
+    Two different questions, kept apart because they answer differently on a
+    pool fleet: ``active`` (== the older ``total``) is how many children are
+    open at this instant, and reads ~0 when the sessions that start children
+    are shorter-lived than the children; ``spawned_per_hour`` is how many
+    were started over the sampler's window, counted from the event table
+    regardless of whether the parent session still exists.
+
     ``complete`` is the conjunction over live sessions: one session without
-    hooks makes ``native`` and ``total`` lower bounds for the whole fleet.
+    hooks makes ``native`` and ``active`` lower bounds for the whole fleet.
 
         Attributes:
             total (float | Unset):  Default: 0.0.
+            active (float | Unset):  Default: 0.0.
             native (float | Unset):  Default: 0.0.
             aq (float | Unset):  Default: 0.0.
+            spawned_per_hour (float | Unset):  Default: 0.0.
             complete (bool | Unset):  Default: True.
             by_session (SubagentMetricsBySession | Unset):
     """
 
     total: float | Unset = 0.0
+    active: float | Unset = 0.0
     native: float | Unset = 0.0
     aq: float | Unset = 0.0
+    spawned_per_hour: float | Unset = 0.0
     complete: bool | Unset = True
     by_session: SubagentMetricsBySession | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -40,9 +51,13 @@ class SubagentMetrics:
     def to_dict(self) -> dict[str, Any]:
         total = self.total
 
+        active = self.active
+
         native = self.native
 
         aq = self.aq
+
+        spawned_per_hour = self.spawned_per_hour
 
         complete = self.complete
 
@@ -55,10 +70,14 @@ class SubagentMetrics:
         field_dict.update({})
         if total is not UNSET:
             field_dict["total"] = total
+        if active is not UNSET:
+            field_dict["active"] = active
         if native is not UNSET:
             field_dict["native"] = native
         if aq is not UNSET:
             field_dict["aq"] = aq
+        if spawned_per_hour is not UNSET:
+            field_dict["spawned_per_hour"] = spawned_per_hour
         if complete is not UNSET:
             field_dict["complete"] = complete
         if by_session is not UNSET:
@@ -73,9 +92,13 @@ class SubagentMetrics:
         d = dict(src_dict)
         total = d.pop("total", UNSET)
 
+        active = d.pop("active", UNSET)
+
         native = d.pop("native", UNSET)
 
         aq = d.pop("aq", UNSET)
+
+        spawned_per_hour = d.pop("spawned_per_hour", UNSET)
 
         complete = d.pop("complete", UNSET)
 
@@ -88,8 +111,10 @@ class SubagentMetrics:
 
         subagent_metrics = cls(
             total=total,
+            active=active,
             native=native,
             aq=aq,
+            spawned_per_hour=spawned_per_hour,
             complete=complete,
             by_session=by_session,
         )

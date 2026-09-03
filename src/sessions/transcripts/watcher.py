@@ -22,6 +22,16 @@ State is kept in-process:
 
 That state is bounded by the number of live sessions and is discarded when
 a session's row disappears.
+
+**The offset is also mirrored durably, keyed by transcript path** (see
+:mod:`src.database.queries.transcript_queries`).  In-process state keyed by
+session id is not enough: a session that dies and is relaunched on the same
+workspace resolves to the *same* transcript file under a new id, so the
+fresh in-memory offset of 0 replayed the entire file — every past turn
+re-emitted as agent output, and every assistant turn's usage charged to the
+ledger a second time.  Whenever a session first resolves a path (or rotates
+onto a different one) the watcher adopts that file's stored mark instead of
+starting at zero.
 """
 
 from __future__ import annotations
@@ -58,6 +68,10 @@ class SessionTrackingState:
     #: Independent checkpoint: a failed question write must be retried
     #: without re-emitting transcript output or charging usage twice.
     question_offset: int = 0
+    #: Newest assistant uuid whose usage was charged.  Persisted with the
+    #: offset so a reader resuming exactly on a record boundary — a
+    #: relaunched session adopting this same file — cannot charge it twice.
+    last_charged_uuid: str | None = None
 
 
 class TranscriptWatcher:
@@ -131,19 +145,16 @@ class TranscriptWatcher:
         # A resolved path clears the one-shot suppression: if the file
         # goes away again later, we want to know.
         state.missing_emitted = False
-        if state.last_path is not None and state.last_path != path:
-            # Rotation to a new file — start reading from its beginning
-            # rather than a byte offset that belongs to the previous file.
-            # We also clear ``charged_uuids`` because uuids are unique per
-            # transcript file: on rotation the new file will not repeat the
-            # old file's uuids, so nothing is lost.  Known limitation: if
-            # Claude ever re-uses a uuid across files (session resume that
-            # replays a prior turn's uuid, etc.), the same uuid seen in
-            # the *new* file would be re-charged.  We accept that trade to
-            # keep bookkeeping bounded per live session.
-            state.offset = 0
-            state.question_offset = 0
-            state.charged_uuids.clear()
+        if state.last_path != path:
+            # First sight of this file for this session, or a rotation onto
+            # a different one.  Either way the in-process offset belongs to
+            # some other file, so it is replaced by whatever has already
+            # been consumed *from this path* — by an earlier incarnation of
+            # this session, or by a different session entirely.  Charged
+            # uuids are dropped for the same reason: they were the previous
+            # file's, and the stored mark carries the only one that still
+            # matters, the entry the offset now sits immediately after.
+            await self._adopt_transcript(state, path)
         state.last_path = path
         await self._learn_session_key(row, reader, path)
 
@@ -163,6 +174,8 @@ class TranscriptWatcher:
                 # output/accounting/activity still consume this batch once.
                 logger.warning("question observation failed for %s", row.id, exc_info=True)
         if not entries:
+            if new_offset != previous_offset:
+                await self._save_checkpoint(row, path, state)
             return
 
         # Resolve the agent once per tick: usage rows FK to ``agents.id``,
@@ -178,6 +191,11 @@ class TranscriptWatcher:
                 if agent_id:
                     await self._record_usage(row, entry, agent_id=agent_id)
                 state.charged_uuids.add(entry.uuid)
+                state.last_charged_uuid = entry.uuid
+
+        # Before the activity write: the mark is what stops a relaunch from
+        # replaying this batch, and it is worth more than a heartbeat.
+        await self._save_checkpoint(row, path, state)
 
         # Activity: use the entry timestamps, not wall clock, so a busy
         # session catching up on backlog is not marked active *now*.
@@ -193,6 +211,67 @@ class TranscriptWatcher:
         tail = entries[-self._tail_size :]
         if reader.infer_activity(tail) == "in-turn":
             await self._on_in_turn(row, now=now)
+
+    async def _adopt_transcript(self, state: SessionTrackingState, path: Path) -> None:
+        """Point *state* at *path*, resuming from that file's durable mark.
+
+        A stored mark that is past the end of the file means the file was
+        rewritten rather than appended to (Codex re-creating a transcript
+        under a reused name, an operator truncating one), so the only honest
+        resume point is its beginning.
+
+        A database without the checkpoint methods, or one that errors, falls
+        back to reading the file from the start — the pre-checkpoint
+        behaviour.  Replaying is wrong but recoverable; skipping a live
+        agent's output because a bookkeeping table was unavailable is worse.
+        """
+        state.offset = 0
+        state.question_offset = 0
+        state.charged_uuids.clear()
+        state.last_charged_uuid = None
+
+        getter = getattr(self.db, "get_transcript_checkpoint", None)
+        if getter is None:
+            return
+        try:
+            mark = await getter(str(path))
+        except Exception:
+            logger.debug("transcript checkpoint read failed for %s", path, exc_info=True)
+            return
+        if not mark:
+            return
+        offset = int(mark.get("byte_offset") or 0)
+        if offset <= 0:
+            return
+        try:
+            size = path.stat().st_size
+        except OSError:
+            size = None
+        if size is not None and size < offset:
+            return
+        state.offset = offset
+        state.question_offset = offset
+        last_uuid = mark.get("last_entry_uuid")
+        if last_uuid:
+            state.charged_uuids.add(last_uuid)
+            state.last_charged_uuid = last_uuid
+
+    async def _save_checkpoint(
+        self, row, path: Path, state: SessionTrackingState
+    ) -> None:
+        """Publish this session's progress through *path* for the next reader."""
+        setter = getattr(self.db, "set_transcript_checkpoint", None)
+        if setter is None:
+            return
+        try:
+            await setter(
+                str(path),
+                byte_offset=state.offset,
+                last_entry_uuid=state.last_charged_uuid,
+                session_id=getattr(row, "id", None),
+            )
+        except Exception:
+            logger.debug("transcript checkpoint write failed for %s", path, exc_info=True)
 
     async def _learn_session_key(self, row, reader, path: Path) -> None:
         """Write back a harness-chosen conversation id we did not pin.
@@ -298,9 +377,11 @@ class TranscriptWatcher:
         # model's input rate downstream; adding cache_read (which is priced
         # separately and cheaper) or cache_creation (priced separately and
         # more expensive) would inflate priced input and produce a wrong
-        # cost.  Cache figures still contribute to the raw ``tokens``
-        # total for accounting; when the ledger grows dedicated columns
-        # for cache reads/writes we can pass them through explicitly.
+        # cost.  The cache figures go into their own ledger columns instead,
+        # which is what lets a reader account for all of ``tokens`` — on a
+        # long-lived session they are the overwhelming majority of it, and
+        # while they had nowhere to go the metrics tab could only report
+        # them as a six-figure "unattributed" residue.
         input_tokens = int(usage.get("input_tokens") or 0)
         output_tokens = int(usage.get("output_tokens") or 0)
         cache_read = int(usage.get("cache_read_input_tokens") or 0)
@@ -317,6 +398,8 @@ class TranscriptWatcher:
                 model=entry.model,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
+                cache_read_tokens=cache_read,
+                cache_write_tokens=cache_write,
             )
         except Exception:
             logger.debug(

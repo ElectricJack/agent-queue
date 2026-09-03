@@ -259,6 +259,25 @@ async def test_token_split_excludes_cache_from_input(tmp_path, db, bus):
     # tokens_used still totals everything (10 + 5 + 100 + 50 = 165)
     assert row["tokens_used"] == 165
 
+    # …and the cache halves land in their own columns, so the total is fully
+    # accounted for rather than showing up downstream as unattributable.
+    from sqlalchemy import select
+
+    from src.database.tables import token_ledger
+
+    async with db._engine.connect() as conn:
+        ledger = (
+            await conn.execute(
+                select(
+                    token_ledger.c.cache_read_tokens,
+                    token_ledger.c.cache_write_tokens,
+                )
+            )
+        ).mappings().all()
+    assert [dict(r) for r in ledger] == [
+        {"cache_read_tokens": 100, "cache_write_tokens": 50}
+    ]
+
 
 @pytest.mark.asyncio
 async def test_rotation_does_not_double_charge_within_same_path(tmp_path, db, bus):
@@ -410,3 +429,110 @@ async def test_legacy_codex_row_uuid_is_replaced_with_real_conversation(tmp_path
     await _make_codex_session(db, "/work/legacy", session_key="sc")
     await TranscriptWatcher(db=db, bus=bus, base_dir=tmp_path).tick()
     assert (await db.get_session("sc")).session_key == CODEX_UUID
+
+
+@pytest.mark.asyncio
+async def test_a_relaunched_session_does_not_replay_the_transcript(tmp_path, db, bus):
+    """The re-recording bug: same file, new session id, whole history again.
+
+    Three successive supervisor incarnations each wrote an identical set of
+    ledger rows for one window, because the in-process byte offset is keyed by
+    session id and a relaunch starts a new one at zero.  The durable
+    per-transcript mark is what stops the second reader replaying the file.
+    """
+    work_dir = "/work/adopt"
+    path = _make_transcript(tmp_path, work_dir, "skadopt")
+    now = time.time()
+    _append(path, [{
+        "type": "assistant", "uuid": "a1", "parentUuid": None,
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(now)),
+        "message": {"role": "assistant", "model": "m",
+                     "content": [{"type": "text", "text": "first turn"}],
+                     "usage": {"input_tokens": 40, "output_tokens": 10}},
+    }])
+    await _make_session(db, work_dir, "skadopt",
+                        session_id="s-first", task_id="t-adopt")
+    await db.create_agent(Agent(
+        id="agent-adopt", name="aadopt", profile_id="claude-agent",
+        state=AgentState.IDLE,
+    ))
+    await db.transition_task("t-adopt", TaskStatus.IN_PROGRESS,
+                              assigned_agent_id="agent-adopt")
+
+    await TranscriptWatcher(db=db, bus=bus, base_dir=tmp_path).tick()
+    assert sum(r["tokens_used"] for r in await db.get_cost_rollup(project_id="p1")) == 50
+
+    # The session dies; a new one is launched onto the same workspace and
+    # resolves the very same transcript file.
+    await db.delete_session("s-first")
+    await db.create_session(SessionRecord(
+        id="s-second",
+        project_id="p1",
+        profile_id="claude-agent",
+        harness="claude",
+        provider="fake",
+        name="s-t-adopt",
+        lifecycle="task",
+        work_dir=work_dir,
+        epoch="e",
+        instance_token="tok2",
+        started_at=time.time(),
+        task_id="t-adopt",
+        state="running",
+        session_key="skadopt",
+    ))
+
+    fresh_bus = _Bus()
+    await TranscriptWatcher(db=db, bus=fresh_bus, base_dir=tmp_path).tick()
+
+    assert sum(r["tokens_used"] for r in await db.get_cost_rollup(project_id="p1")) == 50
+    assert fresh_bus.payloads("notify.task_message") == []
+
+    # New output on the same file is still picked up by the new session.
+    _append(path, [{
+        "type": "assistant", "uuid": "a2", "parentUuid": "a1",
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(now)),
+        "message": {"role": "assistant", "model": "m",
+                     "content": [{"type": "text", "text": "second turn"}],
+                     "usage": {"input_tokens": 4, "output_tokens": 1}},
+    }])
+    await TranscriptWatcher(db=db, bus=fresh_bus, base_dir=tmp_path).tick()
+    assert sum(r["tokens_used"] for r in await db.get_cost_rollup(project_id="p1")) == 55
+    assert [p["message"] for p in fresh_bus.payloads("notify.task_message")] == [
+        "second turn"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_rewritten_transcript_is_read_from_the_start(tmp_path, db, bus):
+    """A mark past the end of the file means the file was replaced, not appended."""
+    work_dir = "/work/trunc"
+    path = _make_transcript(tmp_path, work_dir, "sktrunc")
+    now = time.time()
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(now))
+    _append(path, [{
+        "type": "assistant", "uuid": "old", "parentUuid": None,
+        "timestamp": stamp,
+        "message": {"role": "assistant", "model": "m",
+                     "content": [{"type": "text", "text": "a" * 400}],
+                     "usage": {"input_tokens": 9, "output_tokens": 1}},
+    }])
+    await _make_session(db, work_dir, "sktrunc",
+                        session_id="strunc", task_id="ttrunc")
+    await TranscriptWatcher(db=db, bus=bus, base_dir=tmp_path).tick()
+    mark = await db.get_transcript_checkpoint(str(path))
+    assert mark["byte_offset"] > 0
+
+    # The harness re-creates the file under the same name, shorter than the
+    # stored mark.  Resuming at that offset would skip the whole new file.
+    path.write_text("")
+    _append(path, [{
+        "type": "assistant", "uuid": "new", "parentUuid": None,
+        "timestamp": stamp,
+        "message": {"role": "assistant", "model": "m",
+                     "content": [{"type": "text", "text": "short"}],
+                     "usage": {"input_tokens": 1, "output_tokens": 1}},
+    }])
+    fresh_bus = _Bus()
+    await TranscriptWatcher(db=db, bus=fresh_bus, base_dir=tmp_path).tick()
+    assert [p["message"] for p in fresh_bus.payloads("notify.task_message")] == ["short"]

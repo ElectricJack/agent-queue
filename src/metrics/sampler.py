@@ -70,6 +70,13 @@ _ROLLUP_ROW_LIMIT = 100_000
 #: upper bound.
 _EPSILON = 1e-6
 
+#: Most sessions the sub-agent drill-down will name in one sample.  The fleet
+#: totals are always exact; this bounds only the per-session breakdown, which
+#: is stored 86,400 times a day.  Sessions that started children inside the
+#: window outlive their own rows, so on a busy pool fleet the honest set is
+#: unbounded — the busiest few are what a drill-down is for.
+_MAX_SESSION_ROWS = 25
+
 
 def floor_bucket(ts: float, step: int) -> float:
     """Floor *ts* to a whole multiple of *step* seconds."""
@@ -386,55 +393,118 @@ class MetricsSampler:
         self._trim(window)
         return float(len(window))
 
+    def _window(self, key: str, default: float) -> float:
+        """A configured measurement window, floored at a minute."""
+        value = getattr(self._settings, key, None)
+        try:
+            seconds = float(value)
+        except (TypeError, ValueError):
+            seconds = default
+        return max(60.0, seconds or default)
+
     async def _collect_slow(self, now: float) -> dict[str, Any]:
         """The tier that range-scans append-only tables.  Cached between ticks."""
-        snapshot = await self.db.metrics_slow_snapshot(now - 60.0)
+        token_window = self._window("token_window_seconds", 300.0)
+        spawn_window = self._window("subagent_window_seconds", _HOUR)
+        snapshot = await self.db.metrics_slow_snapshot(
+            now - token_window,
+            recent_ts=now - 60.0,
+            spawn_since_ts=now - spawn_window,
+        )
         live = snapshot["live"]
         ids = [row[0] for row in live]
         names = {row[0]: row[1] for row in live}
         hooks = {row[0]: row[2] for row in live}
         native = snapshot["native"]
         delegated = snapshot["delegated"]
+        spawned = snapshot.get("spawned") or {}
         slots = snapshot["slots"]
         ledger = snapshot["ledger"]
 
-        by_session: dict[str, dict[str, int]] = {}
+        by_session: dict[str, dict[str, Any]] = {}
         native_total = 0
         aq_total = 0
+        # Live sessions first, keyed by the name the dashboard shows.  Every
+        # session that started a child inside the window follows, live or
+        # not: on a pool fleet the session is usually gone by the time you
+        # look, and dropping it would erase the only record of the work.
         for sid in ids:
             native_count = int(native.get(sid, 0))
             aq_count = int(delegated.get(sid, 0))
-            if native_count == 0 and aq_count == 0:
-                # A session with no children of either kind adds nothing to
-                # the drill-down and would otherwise put one entry per idle
+            spawn_count = int(spawned.get(sid, 0))
+            if native_count == 0 and aq_count == 0 and spawn_count == 0:
+                # A session with no children of any kind adds nothing to the
+                # drill-down and would otherwise put one entry per idle
                 # session into every stored sample.
                 continue
             by_session[names.get(sid, sid)] = {
                 "native": native_count,
                 "aq": aq_count,
+                "spawned": spawn_count,
                 # False here means the launch never wired the harness hooks,
                 # so this row's native count is a floor, not a total.
                 "hooks": bool(hooks.get(sid, False)),
             }
             native_total += native_count
             aq_total += aq_count
+        live_ids = set(ids)
+        spawned_total = 0
+        for sid, count in spawned.items():
+            spawned_total += int(count)
+            if sid in live_ids:
+                continue
+            # No name to show: the session row is gone, which is the whole
+            # reason this entry exists.  The id is what the events carry.
+            by_session[sid] = {
+                "native": 0,
+                "aq": 0,
+                "spawned": int(count),
+                "hooks": True,
+            }
+        if len(by_session) > _MAX_SESSION_ROWS:
+            ranked = sorted(
+                by_session.items(),
+                key=lambda item: (
+                    item[1]["native"] + item[1]["aq"] + item[1]["spawned"],
+                    item[0],
+                ),
+                reverse=True,
+            )
+            by_session = dict(ranked[:_MAX_SESSION_ROWS])
 
         by_model: dict[str, dict[str, float]] = {}
-        input_total = 0
-        output_total = 0
+        totals = dict.fromkeys(
+            ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"), 0
+        )
+        recent_totals = dict(totals)
         unattributed = 0
+        recent_unattributed = 0
         for row in ledger:
+            attributed = sum(row.get(name, 0) for name in totals)
+            recent_attributed = sum(row.get(f"recent_{name}", 0) for name in totals)
+            for name in totals:
+                totals[name] += row.get(name, 0)
+                recent_totals[name] += row.get(f"recent_{name}", 0)
+            unattributed += max(0, row.get("tokens_used", 0) - attributed)
+            recent_unattributed += max(
+                0, row.get("recent_tokens_used", 0) - recent_attributed
+            )
             model = row["model"]
-            split = row["input_tokens"] + row["output_tokens"]
-            input_total += row["input_tokens"]
-            output_total += row["output_tokens"]
-            unattributed += max(0, row["tokens_used"] - split)
             if model:
                 by_model[model] = {
-                    "input_per_min": float(row["input_tokens"]),
-                    "output_per_min": float(row["output_tokens"]),
+                    "input_per_min": _per_min(row.get("input_tokens", 0), token_window),
+                    "output_per_min": _per_min(row.get("output_tokens", 0), token_window),
+                    "cache_read_per_min": _per_min(
+                        row.get("cache_read_tokens", 0), token_window
+                    ),
+                    "cache_write_per_min": _per_min(
+                        row.get("cache_write_tokens", 0), token_window
+                    ),
+                    "total_per_min": _per_min(row.get("tokens_used", 0), token_window),
                 }
 
+        attributed_total = sum(totals.values())
+        recent_attributed_total = sum(recent_totals.values())
         return {
             "subagents": {
                 # ``complete`` is the conjunction over live sessions, matching
@@ -443,16 +513,43 @@ class MetricsSampler:
                 "complete": all(hooks.get(sid, False) for sid in ids) if ids else True,
                 "native": native_total,
                 "aq": aq_total,
+                # Children open right now.  ``total`` is the same number under
+                # its original name, kept so stored history stays readable.
+                "active": native_total + aq_total,
                 "total": native_total + aq_total,
+                # Children *started* in the window, whether or not the session
+                # that started them still exists.  This is the series that
+                # actually moves on a pool fleet.
+                "spawned_per_hour": round(spawned_total * (_HOUR / spawn_window), 3),
                 "by_session": by_session,
             },
             "tokens": {
-                # The window is the trailing 60 seconds, so the count *is*
-                # the per-minute rate — no scaling, no extrapolation.
-                "input_per_min": float(input_total),
-                "output_per_min": float(output_total),
-                "total_per_min": float(input_total + output_total),
-                "unattributed_per_min": float(unattributed),
+                # Measured over ``token_window`` and scaled to a minute, so a
+                # per-turn usage flush is a rate rather than a spike.
+                "input_per_min": _per_min(totals["input_tokens"], token_window),
+                "output_per_min": _per_min(totals["output_tokens"], token_window),
+                "cache_read_per_min": _per_min(totals["cache_read_tokens"], token_window),
+                "cache_write_per_min": _per_min(
+                    totals["cache_write_tokens"], token_window
+                ),
+                # Everything the ledger recorded, cache included.  This is the
+                # line the tab plots: input+output alone is a few percent of a
+                # cached agent's traffic.
+                "total_per_min": _per_min(
+                    attributed_total + unattributed, token_window
+                ),
+                # Ledger volume no column could account for — rows written
+                # before the cache columns existed, or by a writer that
+                # reports only a total.
+                "unattributed_per_min": _per_min(unattributed, token_window),
+                # The raw trailing minute, unsmoothed, for anyone who needs to
+                # see the flush pattern rather than the rate.
+                "input_per_min_1m": float(recent_totals["input_tokens"]),
+                "output_per_min_1m": float(recent_totals["output_tokens"]),
+                "total_per_min_1m": float(
+                    recent_attributed_total + recent_unattributed
+                ),
+                "window_seconds": token_window,
                 "by_model": by_model,
             },
             "slots": {
@@ -578,6 +675,13 @@ class MetricsSampler:
         deleted = dict.fromkeys(RESOLUTIONS, 0)
         deleted.update(await self.db.prune_metrics_samples(horizons))
         return deleted
+
+
+def _per_min(tokens: float, window_seconds: float) -> float:
+    """*tokens* observed over *window_seconds*, expressed per minute."""
+    if window_seconds <= 0:
+        return 0.0
+    return round(float(tokens) * (60.0 / window_seconds), 3)
 
 
 def _slot_cap(config) -> int | None:

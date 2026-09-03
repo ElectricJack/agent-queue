@@ -1620,6 +1620,20 @@ class MetricsConfig:
     #: history if the daemon is killed.
     flush_interval_seconds: float = 5.0
     rollup_interval_seconds: float = 60.0
+    #: Window the token *rates* are measured over, then scaled to per minute.
+    #: The rate used to be the raw count in the trailing 60 s, which at one
+    #: sample a second is not a rate but a sampling artefact: a harness
+    #: flushes a whole turn's usage in one write, so the series read 0 for
+    #: most seconds and spiked on the tick after each flush.  Five minutes is
+    #: long enough to smooth a turn boundary and short enough to still show a
+    #: fleet going quiet.  The unsmoothed trailing-minute figures are kept
+    #: alongside as ``*_per_min_1m`` rather than thrown away.
+    token_window_seconds: float = 300.0
+    #: Window the sub-agent *spawn* rate is counted over, then scaled to per
+    #: hour.  An hour, because the alternative reading — how many children
+    #: are open right now — is near zero on a pool fleet whose sessions are
+    #: shorter-lived than the children they start.
+    subagent_window_seconds: float = 3600.0
     retain_seconds_1s: int = 3600
     retain_seconds_1m: int = 30 * 86400
     retain_seconds_1h: int = 365 * 86400
@@ -1641,6 +1655,17 @@ class MetricsConfig:
                     "slow_interval_seconds",
                     "must be >= interval_seconds",
                 )
+            )
+        # Both windows carry a narrower reading inside them (the trailing
+        # minute of tokens, the open-child count for sub-agents), so a window
+        # shorter than that is not a smoothing window at all.
+        if self.token_window_seconds < 60:
+            errors.append(
+                ConfigError("metrics", "token_window_seconds", "must be >= 60")
+            )
+        if self.subagent_window_seconds < 60:
+            errors.append(
+                ConfigError("metrics", "subagent_window_seconds", "must be >= 60")
             )
         for key in ("retain_seconds_1s", "retain_seconds_1m", "retain_seconds_1h"):
             if getattr(self, key) < 0:

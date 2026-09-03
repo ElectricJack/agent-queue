@@ -26,7 +26,12 @@ class AgentMetrics(BaseModel):
 
 
 class SessionSubagents(BaseModel):
-    """One live session's children.
+    """One session's children.
+
+    ``native`` and ``aq`` are children open right now, so they are 0 for a
+    session that has already exited; ``spawned`` counts the starts it
+    recorded inside the sampler's window and outlives the session row, which
+    is why an entry can appear here keyed by a session id rather than a name.
 
     ``hooks`` is False when the session was launched without its harness
     sub-agent hooks wired, which makes ``native`` a floor rather than a total.
@@ -34,40 +39,73 @@ class SessionSubagents(BaseModel):
 
     native: float = 0
     aq: float = 0
+    spawned: float = 0
     hooks: bool = True
 
 
 class SubagentMetrics(BaseModel):
     """Fleet sub-agent totals plus the per-session drill-down.
 
+    Two different questions, kept apart because they answer differently on a
+    pool fleet: ``active`` (== the older ``total``) is how many children are
+    open at this instant, and reads ~0 when the sessions that start children
+    are shorter-lived than the children; ``spawned_per_hour`` is how many
+    were started over the sampler's window, counted from the event table
+    regardless of whether the parent session still exists.
+
     ``complete`` is the conjunction over live sessions: one session without
-    hooks makes ``native`` and ``total`` lower bounds for the whole fleet.
+    hooks makes ``native`` and ``active`` lower bounds for the whole fleet.
     """
 
     total: float = 0
+    active: float = 0
     native: float = 0
     aq: float = 0
+    spawned_per_hour: float = 0
     complete: bool = True
     by_session: dict[str, SessionSubagents] = {}
 
 
 class ModelTokens(BaseModel):
-    input_per_min: float = 0
-    output_per_min: float = 0
+    """One model's share of the window, scaled to per minute.
 
-
-class TokenMetrics(BaseModel):
-    """Rates over the trailing 60 seconds of the token ledger.
-
-    ``unattributed_per_min`` is ledger volume that carried no input/output
-    split — reported separately rather than folded into a model's rate, the
-    same honesty rule ``get_costs`` applies to pricing.
+    ``total_per_min`` is that model's whole ledger volume — the other four
+    fields are its breakdown, and cache is usually most of it.
     """
 
     input_per_min: float = 0
     output_per_min: float = 0
+    cache_read_per_min: float = 0
+    cache_write_per_min: float = 0
+    total_per_min: float = 0
+
+
+class TokenMetrics(BaseModel):
+    """Ledger rates over ``window_seconds``, scaled to per minute.
+
+    ``total_per_min`` is everything the ledger recorded, cache included: on a
+    long-lived session cache reads are the overwhelming majority of the
+    traffic, so a "total" of input+output alone understates it by orders of
+    magnitude.  ``unattributed_per_min`` is what no column could account for
+    — rows from writers that report only a total, or written before the cache
+    columns existed — reported separately rather than folded into a model's
+    rate, the same honesty rule ``get_costs`` applies to pricing.
+
+    The ``*_per_min_1m`` fields are the raw trailing-minute counts, kept
+    beside the smoothed rates so the unsmoothed flush pattern is still
+    readable.
+    """
+
+    input_per_min: float = 0
+    output_per_min: float = 0
+    cache_read_per_min: float = 0
+    cache_write_per_min: float = 0
     total_per_min: float = 0
     unattributed_per_min: float = 0
+    input_per_min_1m: float = 0
+    output_per_min_1m: float = 0
+    total_per_min_1m: float = 0
+    window_seconds: float = 60
     by_model: dict[str, ModelTokens] = {}
 
 

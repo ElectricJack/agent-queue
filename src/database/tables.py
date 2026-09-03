@@ -506,6 +506,14 @@ token_ledger = Table(
     Column("model", Text, nullable=True),
     Column("input_tokens", Integer, nullable=True),
     Column("output_tokens", Integer, nullable=True),
+    # Cache tokens, kept apart from the priced input/output split.  A cached
+    # read is billed at a different rate from fresh input and a cache write
+    # at a third, so folding either into ``input_tokens`` would silently
+    # overprice the row.  They are the bulk of the volume on a long-lived
+    # session — without their own columns ``tokens_used`` minus the split is
+    # a six-figure "unattributed" number that the metrics tab cannot explain.
+    Column("cache_read_tokens", Integer, nullable=True),
+    Column("cache_write_tokens", Integer, nullable=True),
     Column("timestamp", Float, nullable=False),
     # The metrics sampler reads a trailing window off this append-only,
     # unbounded table every few seconds to compute tokens/minute.
@@ -1425,6 +1433,31 @@ subagent_events = Table(
     CheckConstraint("event IN ('start','stop')", name="ck_subagent_events_event"),
     Index("idx_subagent_events_session", "session_id", "event"),
     Index("idx_subagent_events_occurred", "occurred_at"),
+)
+
+# How far the transcript watcher has consumed each on-disk transcript file.
+#
+# Keyed by the transcript *path*, deliberately not by session id.  A session
+# that dies and is relaunched onto the same workspace adopts the same
+# transcript file, and the watcher's in-process offset starts at 0 for the
+# new session id -- so the whole history was re-emitted to Discord and, worse,
+# re-charged to the token ledger under the new id.  Three successive
+# supervisor incarnations each carried an identical 133 rows for the same
+# window.  The high-water mark has to outlive the session that set it, which
+# means it has to be keyed by the thing that actually persists: the file.
+#
+# ``last_entry_uuid`` is the second half of the dedupe key from the same
+# defect report: the newest assistant entry whose usage was charged, so a
+# reader that resumes exactly on a record boundary cannot re-charge it.
+transcript_checkpoints = Table(
+    "transcript_checkpoints", metadata,
+    Column("transcript_path", Text, primary_key=True),
+    Column("byte_offset", Integer, nullable=False, default=0),
+    Column("last_entry_uuid", Text, nullable=True),
+    # Soft provenance: which session last advanced the mark.  Diagnostic
+    # only -- nothing reads it to decide whether to advance.
+    Column("session_id", Text, nullable=True),
+    Column("updated_at", Float, nullable=False),
 )
 
 # ---------------------------------------------------------------------------

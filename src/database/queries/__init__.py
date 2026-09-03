@@ -24,6 +24,7 @@ from src.database.queries.repo_queries import RepoQueryMixin
 from src.database.queries.result_queries import ResultQueryMixin
 from src.database.queries.task_queries import TaskQueryMixin
 from src.database.queries.token_queries import TokenQueryMixin
+from src.database.queries.transcript_queries import TranscriptQueryMixin
 from src.database.queries.workflow_queries import WorkflowQueryMixin
 from src.database.queries.workspace_queries import WorkspaceQueryMixin
 
@@ -46,6 +47,7 @@ __all__ = [
     "ResultQueryMixin",
     "TaskQueryMixin",
     "TokenQueryMixin",
+    "TranscriptQueryMixin",
     "WorkflowQueryMixin",
     "WorkspaceQueryMixin",
 ]

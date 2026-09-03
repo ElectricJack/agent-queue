@@ -110,16 +110,63 @@ def _delegated_stmt(session_ids: list[str]):
     )
 
 
-def _token_window_stmt(since_ts: float):
-    return (
-        select(
-            token_ledger.c.model,
-            func.coalesce(func.sum(token_ledger.c.input_tokens), 0).label("input_tokens"),
-            func.coalesce(func.sum(token_ledger.c.output_tokens), 0).label("output_tokens"),
-            func.coalesce(func.sum(token_ledger.c.tokens_used), 0).label("tokens_used"),
+#: The four token columns that are individually attributable, and the total
+#: they are measured against.  ``tokens_used`` includes cache volume, so any
+#: reader that sums only ``input``/``output`` reports a small fraction of a
+#: cached session's real traffic and writes the rest off as unattributed.
+_TOKEN_COLUMNS = (
+    ("input_tokens", token_ledger.c.input_tokens),
+    ("output_tokens", token_ledger.c.output_tokens),
+    ("cache_read_tokens", token_ledger.c.cache_read_tokens),
+    ("cache_write_tokens", token_ledger.c.cache_write_tokens),
+    ("tokens_used", token_ledger.c.tokens_used),
+)
+
+
+def _token_window_stmt(since_ts: float, recent_ts: float):
+    """Per-model token sums over ``[since_ts, now)``, and over ``[recent_ts, now)``.
+
+    Both windows come out of one scan.  The wide window is what the reported
+    rate is computed from — a 60-second window sampled once a second reads 0
+    for most seconds and spikes on the tick after a harness flushes a turn's
+    usage, which looks exactly like a broken chart.  The narrow window is
+    carried alongside under ``recent_*`` so the raw, unsmoothed reading is
+    still available rather than being silently replaced.
+    """
+    columns = [token_ledger.c.model]
+    for name, column in _TOKEN_COLUMNS:
+        columns.append(func.coalesce(func.sum(column), 0).label(name))
+        columns.append(
+            func.coalesce(
+                func.sum(case((token_ledger.c.timestamp >= recent_ts, column), else_=0)),
+                0,
+            ).label(f"recent_{name}")
         )
+    return (
+        select(*columns)
         .where(token_ledger.c.timestamp >= since_ts)
         .group_by(token_ledger.c.model)
+    )
+
+
+def _subagent_spawn_stmt(since_ts: float):
+    """Sub-agent *starts* per session since *since_ts*, whatever their session.
+
+    Deliberately not scoped to live sessions, unlike :func:`_native_fold_stmt`.
+    The open-children fold answers "how many are running right now", which
+    under pool lifecycles is almost always ~0 because the sessions that spawned
+    them are already gone — while the events themselves are still right there
+    in the table.  Served by ``idx_subagent_events_occurred``.
+    """
+    return (
+        select(subagent_events.c.session_id, func.count().label("starts"))
+        .where(
+            and_(
+                subagent_events.c.event == "start",
+                subagent_events.c.occurred_at >= since_ts,
+            )
+        )
+        .group_by(subagent_events.c.session_id)
     )
 
 
@@ -165,15 +212,30 @@ class MetricsQueryMixin:
             "tasks": {row["status"]: int(row["count"] or 0) for row in task_rows},
         }
 
-    async def metrics_slow_snapshot(self, since_ts: float) -> dict:
+    async def metrics_slow_snapshot(
+        self,
+        since_ts: float,
+        *,
+        recent_ts: float | None = None,
+        spawn_since_ts: float | None = None,
+    ) -> dict:
         """The tier that range-scans append-only tables.
 
         Returns ``{"live": [(session_id, name, hooks)], "native": {...},
-        "delegated": {...}, "slots": {...}, "ledger": [...]}``.  The sub-agent
-        and delegation folds are scoped to the live session ids so they read
-        an index rather than the whole event table; the ledger window is
-        served by ``idx_token_ledger_timestamp``.
+        "delegated": {...}, "slots": {...}, "ledger": [...], "spawned": {...}}``.
+        The sub-agent and delegation folds are scoped to the live session ids
+        so they read an index rather than the whole event table; the ledger
+        window is served by ``idx_token_ledger_timestamp``.
+
+        ``since_ts`` bounds the ledger window.  ``recent_ts`` is the narrower
+        window carried alongside it (default: the trailing minute of that same
+        window).  ``spawn_since_ts`` bounds the sub-agent *start* count, which
+        is not scoped to live sessions at all — it defaults to ``since_ts``,
+        but the sampler passes a wider window because a spawn rate measured
+        over five minutes of a pool fleet is mostly zeros.
         """
+        recent = since_ts if recent_ts is None else recent_ts
+        spawn_since = since_ts if spawn_since_ts is None else spawn_since_ts
         async with self._engine.connect() as conn:
             live_rows = (await conn.execute(_live_session_ids_stmt())).mappings().all()
             live = [
@@ -198,13 +260,19 @@ class MetricsQueryMixin:
 
             slot_row = (await conn.execute(_slot_counts_stmt())).mappings().one()
             ledger_rows = (
-                await conn.execute(_token_window_stmt(since_ts))
+                await conn.execute(_token_window_stmt(since_ts, recent))
+            ).mappings().all()
+            spawn_rows = (
+                await conn.execute(_subagent_spawn_stmt(spawn_since))
             ).mappings().all()
 
         return {
             "live": live,
             "native": native,
             "delegated": delegated,
+            "spawned": {
+                row["session_id"]: int(row["starts"] or 0) for row in spawn_rows
+            },
             "slots": {
                 "total": int(slot_row["total"] or 0),
                 "locked": int(slot_row["locked"] or 0),
@@ -212,9 +280,11 @@ class MetricsQueryMixin:
             "ledger": [
                 {
                     "model": row["model"],
-                    "input_tokens": int(row["input_tokens"] or 0),
-                    "output_tokens": int(row["output_tokens"] or 0),
-                    "tokens_used": int(row["tokens_used"] or 0),
+                    **{
+                        key: int(row[key] or 0)
+                        for name, _ in _TOKEN_COLUMNS
+                        for key in (name, f"recent_{name}")
+                    },
                 }
                 for row in ledger_rows
             ],

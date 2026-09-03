@@ -393,6 +393,8 @@ class DatabaseBackend(Protocol):
         model: str | None = None,
         input_tokens: int | None = None,
         output_tokens: int | None = None,
+        cache_read_tokens: int | None = None,
+        cache_write_tokens: int | None = None,
     ) -> None: ...
     async def get_cost_rollup(
         self,
@@ -411,6 +413,19 @@ class DatabaseBackend(Protocol):
         days: int = 7,
         project_id: str | None = None,
     ) -> dict: ...
+
+    # --- Transcript checkpoints ---
+
+    async def get_transcript_checkpoint(self, transcript_path: str) -> dict | None: ...
+    async def set_transcript_checkpoint(
+        self,
+        transcript_path: str,
+        *,
+        byte_offset: int,
+        last_entry_uuid: str | None = None,
+        session_id: str | None = None,
+    ) -> None: ...
+    async def delete_transcript_checkpoint(self, transcript_path: str) -> None: ...
 
     # --- Task Results ---
 
