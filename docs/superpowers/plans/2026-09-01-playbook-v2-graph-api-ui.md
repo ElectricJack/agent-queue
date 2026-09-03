@@ -1592,6 +1592,17 @@ Run against a daemon with `playbooks.enabled: true`, `playbooks.v2_api: true`, `
 
 Store them under `docs/superpowers/reports/2026-09-01-playbook-v2-pkg5-scenarios/` and link them from the Package 5 exit-gate evidence.
 
+> **Status on 2026-09-02 (task amber-rapids-37): not capturable yet, blocked on §16.2.**
+> All seven scenarios read the V2 API, and every command in
+> `src/commands/playbook_v2_commands.py` still ends at
+> `PlaybookV2CommandsMixin._v2_storage_unavailable` — `src/playbooks/graph_projection.py`,
+> `artifact_diff.py` and `run_overlay.py` do not exist on `main`. There is no graph,
+> diff or overlay to photograph: the review surface renders only the storage-unavailable
+> error. The screenshots move with the task that replaces that seam (§16.2), which is the
+> same task that lands T-4-T-9, T-27, T-28, T-32 and T-36-T-41. Until then `docs/superpowers/reports/2026-09-01-playbook-v2-pkg5-scenarios/`
+> stays absent rather than being filled with pictures of an error page, and milestone
+> **M5 - Operator legible** (§13.1 note above) is not claimable.
+
 ---
 
 ## 14. Mapping to the package exit gate
