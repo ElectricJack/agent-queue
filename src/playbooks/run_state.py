@@ -24,7 +24,7 @@ from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Protocol
 
-from src.playbooks.waits import EMPTY_WAIT_CHANGES, WaitChangeSet, WaitSpec
+from src.playbooks.waits import EMPTY_WAIT_CHANGES, WaitChangeSet, WaitClaim, WaitSpec
 
 if TYPE_CHECKING:
     from src.playbooks.receipts import StepReceipt
@@ -395,6 +395,7 @@ class RunSnapshot:
     sensitive: Mapping[str, Any] = field(default_factory=dict)
     loop: LoopFrame | None = None
     wait: WaitSpec | None = None
+    pending_wait_claims: tuple[WaitClaim, ...] = ()
     budget: RunBudget = field(default_factory=RunBudget)
     agent_task_ids: tuple[str, ...] = ()
     llm_turns: tuple[Mapping[str, Any], ...] = ()
@@ -448,6 +449,7 @@ class RunSnapshot:
             "sensitive": dict(self.sensitive),
             "loop": asdict(self.loop) if self.loop is not None else None,
             "wait": self.wait.as_dict() if self.wait is not None else None,
+            "pending_wait_claims": [asdict(claim) for claim in self.pending_wait_claims],
             "budget": asdict(self.budget),
             "agent_task_ids": list(self.agent_task_ids),
             "llm_turns": [dict(turn) for turn in self.llm_turns],
@@ -506,6 +508,22 @@ class RunSnapshot:
                 else None
             ),
             wait=WaitSpec.from_dict(wait) if wait else None,
+            pending_wait_claims=tuple(
+                WaitClaim(
+                    wait_id=claim["wait_id"],
+                    run_id=claim["run_id"],
+                    step_id=claim["step_id"],
+                    iteration=int(claim["iteration"]),
+                    kind=claim["kind"],
+                    snapshot_version=int(claim["snapshot_version"]),
+                    claimed_event_id=claim.get("claimed_event_id"),
+                    claimed_at=float(claim["claimed_at"]),
+                    expired=bool(claim.get("expired", False)),
+                    event_type=claim.get("event_type", ""),
+                    event_fields=dict(claim.get("event_fields") or {}),
+                )
+                for claim in (body.get("pending_wait_claims") or ())
+            ),
             budget=RunBudget(**(body.get("budget") or {})),
             agent_task_ids=tuple(body.get("agent_task_ids") or ()),
             llm_turns=tuple(dict(turn) for turn in (body.get("llm_turns") or ())),

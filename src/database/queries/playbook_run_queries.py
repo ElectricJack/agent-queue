@@ -34,6 +34,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from src.database.tables import (
+    playbook_artifacts,
     playbook_pending_events,
     playbook_step_receipts,
     playbook_v2_runs,
@@ -66,6 +67,7 @@ from src.playbooks.waits import (
     MatchableEvent,
     WaitChangeSet,
     WaitClaim,
+    WaitRegistration,
     WaitSpec,
     matches,
 )
@@ -116,6 +118,14 @@ DEFAULT_PENDING_EVENT_QUOTA = 1000
 # deterministic system decision and must identify the component that made it.
 PENDING_EVENT_EXPIRY_ACTOR = "retention_sweep"
 
+# Inbox rows are resolved immediately because they have already entered the
+# wait-delivery path.  They remain durable for the normal pending-event
+# retention horizon so a wait whose registration transaction was in flight at
+# arrival can still find them after it acquires the delivery lock.
+WAIT_EVENT_REASON = "wait_registration"
+WAIT_EVENT_RESOLVER = "wait_repository"
+WAIT_EVENT_TTL_SECONDS = 7 * 86_400.0
+
 
 @dataclass(frozen=True, slots=True)
 class PendingEventPurge:
@@ -136,8 +146,8 @@ def _warn_pending_quota(playbook_id: str, quota: int, now: float) -> None:
         return
     _last_quota_warning[playbook_id] = now
     logger.warning(
-        "playbook %s is at its pending-event quota (%d unresolved); "
-        "further events for it are refused until some are resolved",
+        "playbook %s is at its pending-event retention quota (%d); "
+        "further retained events are refused until rows are resolved or purged",
         playbook_id,
         quota,
     )
@@ -158,7 +168,10 @@ def _wait_row(wait: WaitSpec, snapshot_version: int) -> dict:
         "state": "active",
         "claimed_event_id": None,
         "claimed_at": None,
-        "created_at": time.time(),
+        # This is when the executor decided to wait, not when its transaction
+        # happened to reach the INSERT.  Inbox events older than this wait
+        # must not satisfy a newly-created suspension.
+        "created_at": wait.created_at,
     }
 
 
@@ -172,10 +185,13 @@ def _row_to_wait(row) -> WaitSpec:
         event_type=row["event_type"],
         match=json.loads(row["match"]),
         deadline_at=row["deadline_at"],
+        created_at=float(row["created_at"]),
     )
 
 
-def _row_to_claim(row, event_id: str | None, now: float, *, expired: bool) -> WaitClaim:
+def _row_to_claim(
+    row, event: _InboxEvent | None, now: float, *, expired: bool
+) -> WaitClaim:
     return WaitClaim(
         wait_id=row["wait_id"],
         run_id=row["run_id"],
@@ -183,9 +199,11 @@ def _row_to_claim(row, event_id: str | None, now: float, *, expired: bool) -> Wa
         iteration=int(row["iteration"]),
         kind=row["kind"],
         snapshot_version=int(row["snapshot_version"]),
-        claimed_event_id=event_id,
+        claimed_event_id=event.event_id if event is not None else None,
         claimed_at=now,
         expired=expired,
+        event_type=event.event_type if event is not None else "",
+        event_fields=dict(event.fields) if event is not None else {},
     )
 
 
@@ -209,6 +227,33 @@ def _row_to_pending_event(row) -> dict[str, Any]:
         "resolved_by": row["resolved_by"],
         "resolution": row["resolution"],
     }
+
+
+@dataclass(frozen=True, slots=True)
+class _InboxEvent:
+    """Canonical stored event used for every wait-matching decision."""
+
+    pending_event_id: str
+    playbook_id: str
+    scope: str
+    scope_identifier: str
+    event_type: str
+    event_id: str | None
+    fields: Mapping[str, Any]
+    received_at: float
+
+
+def _row_to_inbox_event(row) -> _InboxEvent:
+    return _InboxEvent(
+        pending_event_id=row["pending_event_id"],
+        playbook_id=row["playbook_id"],
+        scope=row["scope"],
+        scope_identifier=row["scope_identifier"],
+        event_type=row["event_type"],
+        event_id=row["event_id"],
+        fields=json.loads(row["event"]),
+        received_at=float(row["received_at"]),
+    )
 
 
 def _row_to_receipt(row) -> StepReceipt:
@@ -409,14 +454,33 @@ class PlaybookRunQueryMixin:
                 raise DuplicateAttempt(
                     receipt.run_id, receipt.step_id, receipt.iteration, receipt.attempt
                 ) from exc
-            await self._apply_wait_changes(
+            immediate_claims = await self._apply_wait_changes(
                 conn, snapshot.run_id, wait_changes, advanced.version
             )
+            if immediate_claims:
+                # Registration runs inside this boundary, so its result must
+                # cross the same durable seam.  Otherwise the wait can be
+                # marked claimed while the caller receives only a paused
+                # snapshot and has no event with which to resume.  Package 4
+                # consumes and clears these claims on its next boundary.
+                advanced = replace(
+                    advanced,
+                    pending_wait_claims=advanced.pending_wait_claims + immediate_claims,
+                )
+                payload = serialize_snapshot(advanced, limits=limits)
+                await conn.execute(
+                    update(playbook_v2_runs)
+                    .where(
+                        playbook_v2_runs.c.run_id == snapshot.run_id,
+                        playbook_v2_runs.c.snapshot_version == advanced.version,
+                    )
+                    .values(**_run_columns(advanced, payload))
+                )
         return advanced
 
     async def _apply_wait_changes(
         self, conn: AsyncConnection, run_id: str, wait_changes: WaitChangeSet, version: int
-    ) -> None:
+    ) -> tuple[WaitClaim, ...]:
         """Applied on the boundary's own connection — see §4.5.
 
         Order is ``clear_run_waits`` → ``clear_wait_ids`` → ``register``, so a
@@ -428,7 +492,7 @@ class PlaybookRunQueryMixin:
         that run's suspension outside its own fence.
         """
         if wait_changes.is_empty:
-            return
+            return ()
         # Up front, before any write: an ownership breach is a caller bug, not
         # a race, and it costs nothing to refuse it before the first UPDATE.
         for wait in wait_changes.register:
@@ -462,8 +526,12 @@ class PlaybookRunQueryMixin:
                 )
                 .values(state="cleared")
             )
+        immediate: list[WaitClaim] = []
         for wait in wait_changes.register:
-            await self.register(wait, version, conn=conn)
+            registration = await self.register(wait, version, conn=conn)
+            if registration.matched_immediately is not None:
+                immediate.append(registration.matched_immediately)
+        return tuple(immediate)
 
     async def request_cancel(
         self, run_id: str, *, expected_version: int, reason: str, requested_by: str
@@ -691,51 +759,268 @@ class PlaybookRunQueryMixin:
         async with self.immediate() as owned:
             yield owned
 
+    async def _lock_wait_delivery(
+        self,
+        conn: AsyncConnection,
+        playbook_id: str,
+        scope: str,
+        scope_identifier: str,
+    ) -> None:
+        """Serialize delivery and registration for one routed playbook.
+
+        SQLite's ``immediate()`` already serializes writers.  PostgreSQL needs
+        an explicit common lock because neither side has a wait row it can
+        lock until after the race window has opened.
+        """
+        if conn.dialect.name == "postgresql":
+            route = _dumps([playbook_id, scope, scope_identifier])
+            await conn.execute(
+                select(
+                    func.pg_advisory_xact_lock(
+                        func.hashtextextended(route, 0x41515754)
+                    )
+                )
+            )
+
+    async def _claim_registered_wait_from_inbox(
+        self,
+        conn: AsyncConnection,
+        *,
+        wait: WaitSpec,
+        playbook_id: str,
+        scope: str,
+        scope_identifier: str,
+        snapshot_version: int,
+    ) -> WaitClaim | None:
+        """Claim a just-inserted wait from the first matching inbox event."""
+        rows = (
+            (
+                await conn.execute(
+                    select(playbook_pending_events)
+                    .where(
+                        playbook_pending_events.c.playbook_id == playbook_id,
+                        playbook_pending_events.c.scope == scope,
+                        playbook_pending_events.c.scope_identifier == scope_identifier,
+                        playbook_pending_events.c.reason == WAIT_EVENT_REASON,
+                        playbook_pending_events.c.received_at >= wait.created_at,
+                        or_(
+                            playbook_pending_events.c.event_type == wait.event_type,
+                            wait.event_type == "",
+                        ),
+                    )
+                    .order_by(
+                        playbook_pending_events.c.received_at,
+                        playbook_pending_events.c.pending_event_id,
+                    )
+                )
+            )
+            .mappings()
+            .fetchall()
+        )
+        for row in rows:
+            event = _row_to_inbox_event(row)
+            if not matches(wait, event):
+                continue
+            claimed_at = event.received_at
+            result = await conn.execute(
+                update(playbook_waits)
+                .where(
+                    playbook_waits.c.wait_id == wait.wait_id,
+                    playbook_waits.c.state == "active",
+                )
+                .values(
+                    state="claimed",
+                    claimed_event_id=event.event_id,
+                    claimed_at=claimed_at,
+                )
+            )
+            if result.rowcount == 1:
+                return WaitClaim(
+                    wait_id=wait.wait_id,
+                    run_id=wait.run_id,
+                    step_id=wait.step_id,
+                    iteration=wait.iteration,
+                    kind=wait.kind,
+                    snapshot_version=snapshot_version,
+                    claimed_event_id=event.event_id,
+                    claimed_at=claimed_at,
+                    event_type=event.event_type,
+                    event_fields=dict(event.fields),
+                )
+        return None
+
+    async def _record_wait_event(
+        self, conn: AsyncConnection, event: MatchableEvent, *, now: float
+    ) -> _InboxEvent:
+        """Persist or retrieve the canonical event before matching waits.
+
+        A replay with the same routed event identity always uses the original
+        payload and arrival timestamp.  This keeps retransmission from
+        rewriting history and satisfying a wait that did not exist when the
+        event first arrived.
+        """
+        if event.event_id is None:
+            pending_event_id = uuid.uuid4().hex
+        else:
+            identity = _dumps(
+                [
+                    event.playbook_id,
+                    event.scope,
+                    event.scope_identifier,
+                    event.event_id,
+                ]
+            )
+            pending_event_id = uuid.uuid5(uuid.NAMESPACE_OID, identity).hex
+            existing = (
+                (
+                    await conn.execute(
+                        select(playbook_pending_events).where(
+                            playbook_pending_events.c.pending_event_id == pending_event_id
+                        )
+                    )
+                )
+                .mappings()
+                .fetchone()
+            )
+            if existing is not None:
+                return _row_to_inbox_event(existing)
+
+        quota = self.playbook_pending_event_quota()
+        retained = (
+            await conn.execute(
+                select(func.count())
+                .select_from(playbook_pending_events)
+                .where(
+                    playbook_pending_events.c.playbook_id == event.playbook_id,
+                    playbook_pending_events.c.reason == WAIT_EVENT_REASON,
+                )
+            )
+        ).scalar_one()
+        if int(retained) >= quota:
+            _warn_pending_quota(event.playbook_id, quota, now)
+            raise PendingEventQuotaExceeded(event.playbook_id, quota)
+
+        insert_fn = pg_insert if conn.dialect.name == "postgresql" else sqlite_insert
+        await conn.execute(
+            insert_fn(playbook_pending_events)
+            .values(
+                pending_event_id=pending_event_id,
+                playbook_id=event.playbook_id,
+                scope=event.scope,
+                scope_identifier=event.scope_identifier,
+                event_type=event.event_type,
+                event=_dumps(dict(event.fields)),
+                event_id=event.event_id,
+                dedup_key="",
+                reason=WAIT_EVENT_REASON,
+                attempts=1,
+                last_error=None,
+                received_at=now,
+                expires_at=now + WAIT_EVENT_TTL_SECONDS,
+                resolved_at=now,
+                resolved_by=WAIT_EVENT_RESOLVER,
+                resolution="dispatched",
+            )
+            .on_conflict_do_nothing(
+                index_elements=[playbook_pending_events.c.pending_event_id]
+            )
+        )
+        row = (
+            (
+                await conn.execute(
+                    select(playbook_pending_events).where(
+                        playbook_pending_events.c.pending_event_id == pending_event_id
+                    )
+                )
+            )
+            .mappings()
+            .one()
+        )
+        return _row_to_inbox_event(row)
+
     async def register(
         self, wait: WaitSpec, snapshot_version: int, *, conn: AsyncConnection | None = None
-    ) -> str:
-        """Open one durable wait, recording the snapshot it suspends.
+    ) -> WaitRegistration:
+        """Open one durable wait and consume an already-arrived inbox match.
 
         ``snapshot_version`` is the version the boundary is *writing*, not the
         one it loaded: a resume that finds the two disagreeing refuses with
         ``wait_version_mismatch`` rather than resuming into a moved-on state.
+        ``matched_immediately`` lets the engine continue instead of sleeping
+        when ingestion won the delivery lock before this registration.
         """
         values = _wait_row(wait, snapshot_version)
         try:
             async with self._wait_conn(conn) as active:
-                # A boundary-owned connection has already CAS-advanced and
-                # locked the run.  Standalone registration happens just
-                # before that write, so fence it to the locked next version.
-                if conn is None:
-                    current_version = (
+                current = (
+                    (
                         await active.execute(
-                            select(playbook_v2_runs.c.snapshot_version)
+                            select(
+                                playbook_v2_runs.c.snapshot_version,
+                                playbook_v2_runs.c.playbook_id,
+                                playbook_artifacts.c.scope,
+                                playbook_artifacts.c.scope_identifier,
+                            )
+                            .select_from(
+                                playbook_v2_runs.join(
+                                    playbook_artifacts,
+                                    playbook_v2_runs.c.artifact_sha256
+                                    == playbook_artifacts.c.artifact_sha256,
+                                )
+                            )
                             .where(playbook_v2_runs.c.run_id == wait.run_id)
                             .with_for_update()
                         )
-                    ).scalar_one_or_none()
-                    if current_version is not None:
-                        expected_version = int(current_version) + 1
-                        if snapshot_version != expected_version:
-                            raise WaitVersionMismatch(
-                                wait.wait_id,
-                                wait.run_id,
-                                expected_version,
-                                snapshot_version,
-                            )
+                    )
+                    .mappings()
+                    .fetchone()
+                )
+                # A boundary-owned connection has already CAS-advanced and
+                # locked the run.  Standalone registration happens just
+                # before that write, so fence it to the locked next version.
+                if conn is None and current is not None:
+                    expected_version = int(current["snapshot_version"]) + 1
+                    if snapshot_version != expected_version:
+                        raise WaitVersionMismatch(
+                            wait.wait_id,
+                            wait.run_id,
+                            expected_version,
+                            snapshot_version,
+                        )
+                playbook_id = current["playbook_id"] if current is not None else ""
+                if playbook_id:
+                    await self._lock_wait_delivery(
+                        active,
+                        playbook_id,
+                        current["scope"],
+                        current["scope_identifier"],
+                    )
                 await active.execute(insert(playbook_waits).values(**values))
+                matched = None
+                if playbook_id and wait.kind == "event":
+                    matched = await self._claim_registered_wait_from_inbox(
+                        active,
+                        wait=wait,
+                        playbook_id=playbook_id,
+                        scope=current["scope"],
+                        scope_identifier=current["scope_identifier"],
+                        snapshot_version=snapshot_version,
+                    )
         except IntegrityError as exc:
             # uq_playbook_waits_active_step — one live wait per step instance.
             raise DuplicateWait(wait.run_id, wait.step_id, wait.iteration) from exc
-        return wait.wait_id
+        return WaitRegistration(wait_id=wait.wait_id, matched_immediately=matched)
 
     async def claim_for_event(
         self, event: MatchableEvent, *, now: float, limit: int = 100
     ) -> list[WaitClaim]:
-        """Claim every active wait this event satisfies, at most once each.
+        """Persist an event, then claim every active wait it satisfies.
 
-        The predicate is evaluated in Python over an index-narrowed candidate
-        set (``idx_playbook_waits_match``) because ``match`` is inert JSON.
+        Inbox persistence happens before the wait scan in the same serialized
+        transaction. If registration wins the per-playbook lock, this scan
+        sees its wait; if ingestion wins, registration later sees the inbox
+        row. The predicate is evaluated in Python over an index-narrowed
+        candidate set (``idx_playbook_waits_match``) because ``match`` is inert JSON.
         Only event-addressable kinds are candidates at all: a timer, human, or
         agent-task wait carries no ``event_type`` and no ``match``, so without
         the kind filter it would read as "matches every event" and an
@@ -752,12 +1037,20 @@ class PlaybookRunQueryMixin:
         claims: list[WaitClaim] = []
         cursor: tuple[float, str] | None = None
         async with self.immediate() as conn:
+            await self._lock_wait_delivery(
+                conn,
+                event.playbook_id,
+                event.scope,
+                event.scope_identifier,
+            )
+            canonical = await self._record_wait_event(conn, event, now=now)
             while len(claims) < limit:
                 filters = [
                     playbook_waits.c.state == "active",
+                    playbook_waits.c.created_at <= canonical.received_at,
                     playbook_waits.c.kind.in_(sorted(EVENT_ADDRESSABLE_WAIT_KINDS)),
                     or_(
-                        playbook_waits.c.event_type == event.event_type,
+                        playbook_waits.c.event_type == canonical.event_type,
                         playbook_waits.c.event_type == "",
                     ),
                 ]
@@ -776,7 +1069,23 @@ class PlaybookRunQueryMixin:
                     (
                         await conn.execute(
                             select(playbook_waits)
+                            .select_from(
+                                playbook_waits.join(
+                                    playbook_v2_runs,
+                                    playbook_waits.c.run_id == playbook_v2_runs.c.run_id,
+                                ).join(
+                                    playbook_artifacts,
+                                    playbook_v2_runs.c.artifact_sha256
+                                    == playbook_artifacts.c.artifact_sha256,
+                                )
+                            )
                             .where(*filters)
+                            .where(
+                                playbook_v2_runs.c.playbook_id == canonical.playbook_id,
+                                playbook_artifacts.c.scope == canonical.scope,
+                                playbook_artifacts.c.scope_identifier
+                                == canonical.scope_identifier,
+                            )
                             .order_by(playbook_waits.c.created_at, playbook_waits.c.wait_id)
                             .limit(limit)
                         )
@@ -788,7 +1097,7 @@ class PlaybookRunQueryMixin:
                     break
                 for row in rows:
                     cursor = (row["created_at"], row["wait_id"])
-                    if not matches(_row_to_wait(row), event):
+                    if not matches(_row_to_wait(row), canonical):
                         continue
                     result = await conn.execute(
                         update(playbook_waits)
@@ -798,13 +1107,20 @@ class PlaybookRunQueryMixin:
                         )
                         .values(
                             state="claimed",
-                            claimed_event_id=event.event_id,
-                            claimed_at=now,
+                            claimed_event_id=canonical.event_id,
+                            claimed_at=canonical.received_at,
                         )
                     )
                     if result.rowcount != 1:
                         continue
-                    claims.append(_row_to_claim(row, event.event_id, now, expired=False))
+                    claims.append(
+                        _row_to_claim(
+                            row,
+                            canonical,
+                            canonical.received_at,
+                            expired=False,
+                        )
+                    )
                     if len(claims) == limit:
                         break
         return claims
