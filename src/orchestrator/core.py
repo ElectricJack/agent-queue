@@ -3028,12 +3028,21 @@ class Orchestrator(
                 merged = await self._poll_pr_merged(
                     pr_url, project_id=gate["project_id"]
                 )
-                if merged is True:
-                    await self._resolve_gate_and_emit(
-                        gate["id"],
-                        resolved_by=f"sweep:{gate_type}",
-                        resolution=pr_url,
-                    )
+                if merged is not True:
+                    continue
+                # "Merged" is not "on main".  A PR merged into a stacked
+                # feature branch has put nothing on the default branch, and
+                # resolving here would tell dependents their prerequisite
+                # shipped when it did not (see ``_pr_reached_default_branch``).
+                if gate_type == "pr-merged" and not await self._pr_reached_default_branch(
+                    pr_url, project_id=gate["project_id"]
+                ):
+                    continue
+                await self._resolve_gate_and_emit(
+                    gate["id"],
+                    resolved_by=f"sweep:{gate_type}",
+                    resolution=pr_url,
+                )
 
     async def _sweep_resolve_event_gates(self) -> None:
         """Backstop for ``event`` gates: match persisted events after the

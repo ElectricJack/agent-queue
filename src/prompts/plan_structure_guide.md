@@ -39,6 +39,19 @@ phases are ALWAYS preferred.
 - Don't include sections labeled "Future Work", "Out of Scope", or "Background"
 - Don't write a design document when asked to implement something
 
+### Branching between phases
+
+Each phase becomes a separate task on its own `aq/<task-id>` branch, cut from
+the default branch. **Do not tell a phase to branch from the previous phase's
+branch.** Stacked branches are only correct when a phase genuinely cannot
+build or run without its predecessor's unmerged code — say so explicitly when
+you write such a phase, and give the **last** phase in the stack an explicit
+step: open the `<base> -> main` pull request and name it in the close summary.
+
+A PR merged into a feature branch has put nothing on the default branch. Every
+task in the stack closes COMPLETED and every dependent is released, while the
+default branch never gains the code — the failure this rule exists to prevent.
+
 ### Plan File Location
 
 **Always write your plan to `.claude/plan.md`** — this is the ONLY location the
