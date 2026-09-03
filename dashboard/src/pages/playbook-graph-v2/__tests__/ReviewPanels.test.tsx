@@ -24,6 +24,37 @@ describe("Package 5 review panels", () => {
     expect(activate).toHaveBeenCalledWith(sha);
   });
 
+  it("requires a fresh acknowledgement when the displayed artifact changes", async () => {
+    const activate = vi.fn();
+    const user = userEvent.setup();
+    const { rerender } = render(
+      <ActivationPanel
+        artifact={artifact}
+        activation={activation}
+        executableChange
+        onActivate={activate}
+      />,
+    );
+    await user.click(screen.getByRole("checkbox", { name: "I reviewed the executable diff" }));
+    expect(screen.getByRole("button", { name: "Activate displayed artifact" })).toBeEnabled();
+
+    const nextArtifact = {
+      ...artifact,
+      artifact_sha256: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    };
+    rerender(
+      <ActivationPanel
+        artifact={nextArtifact}
+        activation={activation}
+        executableChange
+        onActivate={activate}
+      />,
+    );
+
+    expect(screen.getByRole("checkbox", { name: "I reviewed the executable diff" })).not.toBeChecked();
+    expect(screen.getByRole("button", { name: "Activate displayed artifact" })).toBeDisabled();
+  });
+
   it("offers dispatch and discard for every pending event", async () => {
     const action = vi.fn();
     const user = userEvent.setup();
