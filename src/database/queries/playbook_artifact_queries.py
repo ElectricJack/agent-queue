@@ -184,6 +184,30 @@ class PlaybookArtifactQueryMixin:
             ).mappings().fetchone()
         return dict(row) if row else None
 
+    async def list_playbook_artifacts(self, playbook_id: str, *, limit: int = 50) -> list[dict]:
+        """Every stored artifact for one playbook, newest version first.
+
+        The activation chooser's read: an operator reviewing a newly compiled
+        artifact needs the *inactive* candidates, which no other read returns —
+        ``list_playbook_activations`` only ever names the one active hash per
+        scope.  Ordered by ``version`` (monotonic per playbook) and then by
+        ``created_at``, so two artifacts that share a version — the store does
+        not enforce uniqueness there — still come back newest first rather than
+        in insertion order.
+        """
+        stmt = (
+            select(playbook_artifacts)
+            .where(playbook_artifacts.c.playbook_id == playbook_id)
+            .order_by(
+                playbook_artifacts.c.version.desc(),
+                playbook_artifacts.c.created_at.desc(),
+            )
+            .limit(limit)
+        )
+        async with self._engine.connect() as conn:
+            rows = (await conn.execute(stmt)).mappings().fetchall()
+        return [dict(row) for row in rows]
+
     async def set_playbook_activation(
         self,
         *,

@@ -6115,6 +6115,53 @@
         }
       }
     },
+    "/api/playbook/artifacts": {
+      "post": {
+        "tags": [
+          "playbook"
+        ],
+        "summary": "List the stored Playbook V2 artifacts of one playbook, newest version first, with the currently active one flagged. This is the read behind the activation chooser: activation health names only the artifact a scope already activated, so this is how an inactive candidate is named before it is diffed and activated. Read-only; it never loads an artifact's bytes.",
+        "description": "List the stored Playbook V2 artifacts of one playbook, newest version first, with the currently active one flagged. This is the read behind the activation chooser: activation health names only the artifact a scope already activated, so this is how an inactive candidate is named before it is diffed and activated. Read-only; it never loads an artifact's bytes.",
+        "operationId": "playbook_artifacts",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaybookArtifactsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListPlaybookArtifactsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/playbook/graph-view": {
       "post": {
         "tags": [
@@ -25224,6 +25271,47 @@
         ],
         "title": "ListNotesResponse"
       },
+      "ListPlaybookArtifactsResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "playbook_id": {
+            "type": "string",
+            "title": "Playbook Id",
+            "default": ""
+          },
+          "artifacts": {
+            "items": {
+              "$ref": "#/components/schemas/PlaybookArtifactSummaryDTO"
+            },
+            "type": "array",
+            "title": "Artifacts",
+            "default": []
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count",
+            "default": 0
+          },
+          "active_artifact_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active Artifact Sha256"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "ListPlaybookArtifactsResponse"
+      },
       "ListPlaybookPendingEventsResponse": {
         "properties": {
           "success": {
@@ -28129,6 +28217,77 @@
         ],
         "title": "PlaybookArtifactDiffResponse",
         "description": "``executable_change=False`` with ``presentation_change_count>0`` is the\nspec's \"a label or help-text improvement does not block activation or change\nan execution fingerprint\".  The diff is computed from the two\n``PlaybookDefinition`` objects, **not** from their JSON bytes."
+      },
+      "PlaybookArtifactSummaryDTO": {
+        "properties": {
+          "artifact": {
+            "$ref": "#/components/schemas/ArtifactRefDTO"
+          },
+          "scope": {
+            "type": "string",
+            "title": "Scope",
+            "default": "system"
+          },
+          "scope_identifier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Identifier"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "title": "Size Bytes",
+            "default": 0
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "is_active": {
+            "type": "boolean",
+            "title": "Is Active",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "artifact"
+        ],
+        "title": "PlaybookArtifactSummaryDTO",
+        "description": "One stored artifact as the activation chooser lists it.\n\n``is_active`` is per *playbook*, not per scope: a playbook activated in\nmore than one scope has more than one active artifact, and every one of\nthem is flagged."
+      },
+      "PlaybookArtifactsRequest": {
+        "properties": {
+          "playbook_id": {
+            "type": "string",
+            "title": "Playbook Id",
+            "description": "The playbook whose artifacts to list."
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "description": "Max artifacts to return, newest version first. Default: 50.",
+            "default": 50
+          }
+        },
+        "type": "object",
+        "required": [
+          "playbook_id"
+        ],
+        "title": "PlaybookArtifactsRequest"
       },
       "PlaybookGraphEdge": {
         "properties": {

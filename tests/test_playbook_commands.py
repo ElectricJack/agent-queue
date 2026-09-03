@@ -1186,6 +1186,9 @@ class TestAllPlaybookCommandsRegistered:
         "playbook_v2_graph",
         "playbook_activation_health",
         "playbook_activate",
+        # The activation chooser's read: the inactive candidates a diff needs
+        # a target from, which activation health never names.
+        "playbook_artifacts",
         "playbook_artifact_diff",
         "playbook_pending_events",
         "playbook_pending_event_action",

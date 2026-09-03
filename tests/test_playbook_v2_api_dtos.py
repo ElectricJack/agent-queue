@@ -21,6 +21,7 @@ from src.api import models as api_models
 from src.api.models import playbook_v2
 from src.commands.handler import PAUSED_PLAYBOOK_COMMANDS
 from src.commands.playbook_v2_commands import (
+    PLAYBOOK_V2_ARTIFACT_COMMANDS,
     PLAYBOOK_V2_COMMANDS,
     PLAYBOOK_V2_COMPILER_COMMANDS,
 )
@@ -41,7 +42,12 @@ COMPILER_COMMANDS = {
     "playbook_v2_propose",
     "playbook_v2_shadow_compile",
 }
-ALL_V2_COMMANDS = SEVEN_COMMANDS | COMPILER_COMMANDS
+
+#: The activation chooser's read.  Not one of the child plan's seven, and kept
+#: out of ``SEVEN_COMMANDS`` on purpose so that set keeps pinning §4.8.
+ARTIFACT_COMMANDS = {"playbook_artifacts"}
+
+ALL_V2_COMMANDS = SEVEN_COMMANDS | COMPILER_COMMANDS | ARTIFACT_COMMANDS
 
 
 def _v2_models() -> list[type[BaseModel]]:
@@ -74,7 +80,7 @@ class TestStrictness:
 class TestRegistration:
     def test_response_models_registered_for_seven_commands(self):
         merged = api_models.get_all_response_models()
-        assert SEVEN_COMMANDS <= set(merged)
+        assert SEVEN_COMMANDS | ARTIFACT_COMMANDS <= set(merged)
         for name, model in playbook_v2.RESPONSE_MODELS.items():
             assert merged[name] is model
 
@@ -82,6 +88,7 @@ class TestRegistration:
         assert set(playbook_v2.RESPONSE_MODELS) == ALL_V2_COMMANDS
         assert PLAYBOOK_V2_COMMANDS == frozenset(SEVEN_COMMANDS)
         assert PLAYBOOK_V2_COMPILER_COMMANDS == frozenset(COMPILER_COMMANDS)
+        assert PLAYBOOK_V2_ARTIFACT_COMMANDS == frozenset(ARTIFACT_COMMANDS)
 
     def test_v2_commands_are_not_in_response_exclude_none(self):
         """Optional blocks serialize as explicit ``null`` so the TS client can
@@ -97,12 +104,12 @@ class TestRegistration:
             assert _TOOL_CATEGORIES[name] == "playbook"
 
     def test_every_command_pauses_with_the_playbook_subsystem(self):
-        assert SEVEN_COMMANDS <= PAUSED_PLAYBOOK_COMMANDS
+        assert SEVEN_COMMANDS | ARTIFACT_COMMANDS <= PAUSED_PLAYBOOK_COMMANDS
 
     def test_every_command_is_implemented_on_the_handler(self):
         from src.commands.handler import CommandHandler
 
-        for name in SEVEN_COMMANDS:
+        for name in SEVEN_COMMANDS | ARTIFACT_COMMANDS:
             assert hasattr(CommandHandler, f"_cmd_{name}"), name
 
 

@@ -136,6 +136,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "playbook_v2_graph": "playbook",
     "playbook_activation_health": "playbook",
     "playbook_activate": "playbook",
+    "playbook_artifacts": "playbook",
     "playbook_artifact_diff": "playbook",
     "playbook_pending_events": "playbook",
     "playbook_pending_event_action": "playbook",
@@ -3760,6 +3761,32 @@ _ALL_TOOL_DEFINITIONS = [
                 },
             },
             "required": ["playbook_id", "artifact_sha256"],
+        },
+    },
+    {
+        "name": "playbook_artifacts",
+        "description": (
+            "List the stored Playbook V2 artifacts of one playbook, newest "
+            "version first, with the currently active one flagged. This is the "
+            "read behind the activation chooser: activation health names only "
+            "the artifact a scope already activated, so this is how an "
+            "inactive candidate is named before it is diffed and activated. "
+            "Read-only; it never loads an artifact's bytes."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "playbook_id": {
+                    "type": "string",
+                    "description": "The playbook whose artifacts to list.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max artifacts to return, newest version first. Default: 50.",
+                    "default": 50,
+                },
+            },
+            "required": ["playbook_id"],
         },
     },
     {

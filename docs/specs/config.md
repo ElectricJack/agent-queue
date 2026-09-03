@@ -313,7 +313,7 @@ Maps to `PlaybooksConfig`. The YAML key is `playbooks`.
 | YAML key | Type | Default | Description |
 |---|---|---|---|
 | `enabled` | `bool` | `False` | Whether the playbook/workflow subsystem is active. |
-| `v2_api` | `bool` | `False` | Playbook V2 semantic-graph **read** surface: `playbook_v2_graph`, `playbook_activation_health`, `playbook_artifact_diff`, `playbook_pending_events`, `playbook_run_overlay`. Off returns `playbook v2 api is disabled (playbooks.v2_api=false)`. |
+| `v2_api` | `bool` | `False` | Playbook V2 semantic-graph **read** surface: `playbook_v2_graph`, `playbook_activation_health`, `playbook_artifacts`, `playbook_artifact_diff`, `playbook_pending_events`, `playbook_run_overlay`. Off returns `playbook v2 api is disabled (playbooks.v2_api=false)`. |
 | `v2_activation_writes` | `bool` | `False` | Playbook V2 operator **writes**: `playbook_activate` and `playbook_pending_event_action`. Gated separately from `v2_api` so the whole review surface stays readable with writes disabled. Off returns `playbook v2 activation writes are disabled (playbooks.v2_activation_writes=false)`. |
 
 > **Temporary — framework overhaul pause.** While `playbooks.enabled` is
