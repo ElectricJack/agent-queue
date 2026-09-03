@@ -1,11 +1,20 @@
 import {
   useCallback,
+  useEffect,
   useMemo,
   useRef,
+  useState,
   type KeyboardEvent,
   type MouseEvent as ReactMouseEvent,
 } from "react";
-import { Background, Controls, Panel, ReactFlow, ReactFlowProvider } from "@xyflow/react";
+import {
+  Background,
+  Controls,
+  Panel,
+  ReactFlow,
+  ReactFlowProvider,
+  type EdgeChange,
+} from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import RuleClusterNode from "./RuleClusterNode";
 import SemanticStepNode from "./StepNodeCard";
@@ -16,6 +25,10 @@ import {
   NEUTRAL_EDGE_STYLE,
   RULE_CLUSTER_NODE_TYPE,
   SEMANTIC_NODE_TYPE,
+  TRAVERSED_EDGE_WIDTH,
+  UNTRAVERSED_EDGE_OPACITY,
+  selectedEdgeStyle,
+  type RunOverlayInput,
 } from "./types";
 
 const nodeTypes = {
@@ -28,6 +41,9 @@ export interface PlaybookSemanticGraphCanvasProps {
   selectedNodeId?: string | null;
   /** Called with a step id on activation, and with `null` when selection clears. */
   onSelectNode: (nodeId: string | null) => void;
+  /** Run state to draw over the graph. It is drawn only when the run pinned
+   *  this exact artifact; otherwise the canvas says why it is not. */
+  overlay?: RunOverlayInput;
 }
 
 /** Read-only canvas for one playbook artifact.
@@ -40,9 +56,13 @@ export default function PlaybookSemanticGraphCanvas({
   graph,
   selectedNodeId = null,
   onSelectNode,
+  overlay,
 }: PlaybookSemanticGraphCanvasProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
-  const { nodes, edges, droppedEdgeCount } = useMemo(() => layoutSemanticGraph(graph), [graph]);
+  const { nodes, edges, droppedEdgeCount, overlayApplied, overlayMismatch } = useMemo(
+    () => layoutSemanticGraph(graph, overlay),
+    [graph, overlay],
+  );
 
   const select = useCallback((nodeId: string) => onSelectNode(nodeId), [onSelectNode]);
   /** React Flow only gives a node wrapper `pointer-events: all` when the node
@@ -55,7 +75,45 @@ export default function PlaybookSemanticGraphCanvas({
       onSelectNode(node.type === RULE_CLUSTER_NODE_TYPE ? null : node.id),
     [onSelectNode],
   );
-  const clearSelection = useCallback(() => onSelectNode(null), [onSelectNode]);
+
+  /** Edge selection lives here rather than in the view: nothing outside the
+   *  canvas consumes it, and React Flow will not keep it on its own — the
+   *  `edges` prop is controlled, so a click's `select` change is dropped unless
+   *  `onEdgesChange` records it. */
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+  const clearSelection = useCallback(() => {
+    setSelectedEdgeId(null);
+    onSelectNode(null);
+  }, [onSelectNode]);
+
+  /** One selection at a time, the way React Flow itself treats it: picking an
+   *  edge (by click or by Enter on a focused one) drops the step selection, and
+   *  the effect below does the reverse for every path that picks a step —
+   *  card, pane, and the diagnostics banner. */
+  const onEdgesChange = useCallback(
+    (changes: EdgeChange[]) => {
+      for (const change of changes) {
+        if (change.type !== "select") continue;
+        if (change.selected) {
+          setSelectedEdgeId(change.id);
+          onSelectNode(null);
+        } else {
+          setSelectedEdgeId((current) => (current === change.id ? null : current));
+        }
+      }
+    },
+    [onSelectNode],
+  );
+  useEffect(() => {
+    if (selectedNodeId !== null) setSelectedEdgeId(null);
+  }, [selectedNodeId]);
+  // Narrowing the event scope can drop the selected edge; don't keep a stale id
+  // that would light the edge up again when the scope widens.
+  useEffect(() => {
+    setSelectedEdgeId((current) =>
+      current !== null && !edges.some((edge) => edge.id === current) ? null : current,
+    );
+  }, [edges]);
 
   const decorated = useMemo(
     () =>
@@ -71,6 +129,25 @@ export default function PlaybookSemanticGraphCanvas({
     [nodes, selectedNodeId, select],
   );
 
+  const decoratedEdges = useMemo(
+    () =>
+      edges.map((edge) => {
+        const selected = edge.id === selectedEdgeId;
+        return {
+          ...edge,
+          selected,
+          // `aria-pressed` on the button role React Flow gives a focusable edge:
+          // a screen reader announces which transition is picked, not just that
+          // one can be.
+          domAttributes: { ...edge.domAttributes, "aria-pressed": selected },
+          ...(selected
+            ? { style: selectedEdgeStyle(edge.style ?? {}), zIndex: (edge.zIndex ?? 0) + 1 }
+            : {}),
+        };
+      }),
+    [edges, selectedEdgeId],
+  );
+
   const edgeKinds = useMemo(
     () => [...new Set(edges.map((edge) => String(edge.data?.edgeKind ?? "unknown")))],
     [edges],
@@ -80,6 +157,8 @@ export default function PlaybookSemanticGraphCanvas({
     if (event.key !== "Escape") return;
     event.preventDefault();
     event.stopPropagation();
+    // Escape from anywhere in the region clears both selections, including one
+    // made on an edge that currently holds focus.
     clearSelection();
     wrapRef.current?.focus({ preventScroll: true });
   }
@@ -96,7 +175,7 @@ export default function PlaybookSemanticGraphCanvas({
       <ReactFlowProvider>
         <ReactFlow
           nodes={decorated}
-          edges={edges}
+          edges={decoratedEdges}
           nodeTypes={nodeTypes}
           colorMode="dark"
           fitView
@@ -106,21 +185,78 @@ export default function PlaybookSemanticGraphCanvas({
           nodesDraggable={false}
           nodesConnectable={false}
           nodesFocusable={false}
-          edgesFocusable={false}
+          edgesFocusable
           edgesReconnectable={false}
+          // Off so the cards and cluster chrome stay read-only and drag-select
+          // never competes with panning. Edges opt in per element instead (see
+          // `layout.ts`), which is what xyflow's `edge.selectable` is for.
           elementsSelectable={false}
           deleteKeyCode={null}
           selectionKeyCode={null}
-          disableKeyboardA11y
           nodeClickDistance={5}
           panOnScroll
           zoomOnScroll={false}
           proOptions={{ hideAttribution: true }}
           onNodeClick={onNodeClick}
+          onEdgesChange={onEdgesChange}
           onPaneClick={clearSelection}
         >
           <Background gap={24} color="#1f2937" />
           <Controls position="bottom-right" showInteractive={false} />
+          {overlayApplied && (
+            <Panel position="top-right">
+              <section
+                aria-label="Run overlay"
+                className="rounded border border-gray-700 bg-gray-950/95 px-3 py-2 text-[10px] text-gray-300"
+              >
+                <dl>
+                <div className="flex items-center gap-2">
+                  <dt className="text-gray-500">run</dt>
+                  <dd className="font-mono text-gray-200">{overlay?.run_id}</dd>
+                </div>
+                <div className="flex items-center gap-2">
+                  <dt className="text-gray-500">lifecycle</dt>
+                  <dd className="text-gray-200">{overlay?.lifecycle}</dd>
+                </div>
+                <div className="flex items-center gap-2">
+                  <dt className="text-gray-500">artifact</dt>
+                  <dd className="text-gray-200">
+                    {overlay?.artifact_is_active ? "active" : "older than the active one"}
+                  </dd>
+                </div>
+                <div className="mt-1 flex items-center gap-2">
+                  <dt className="sr-only">key</dt>
+                  <dd className="flex items-center gap-2">
+                    <svg aria-hidden width="30" height="10">
+                      <path
+                        d="M0 5h26m-4-3 4 3-4 3"
+                        fill="none"
+                        stroke="#cbd5e1"
+                        strokeWidth={TRAVERSED_EDGE_WIDTH}
+                      />
+                    </svg>
+                    traversed
+                  </dd>
+                </div>
+                <div className="flex items-center gap-2">
+                  <dt className="sr-only">key</dt>
+                  <dd className="flex items-center gap-2">
+                    <svg aria-hidden width="30" height="10">
+                      <path
+                        d="M0 5h26m-4-3 4 3-4 3"
+                        fill="none"
+                        stroke="#cbd5e1"
+                        strokeWidth={1.5}
+                        strokeOpacity={UNTRAVERSED_EDGE_OPACITY}
+                      />
+                    </svg>
+                    not traversed
+                  </dd>
+                </div>
+                </dl>
+              </section>
+            </Panel>
+          )}
           {edgeKinds.length > 0 && (
             <Panel position="bottom-left">
               <ul
@@ -147,6 +283,16 @@ export default function PlaybookSemanticGraphCanvas({
       {nodes.length === 0 && (
         <p className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-gray-400">
           No rules match this event scope.
+        </p>
+      )}
+      {overlayMismatch && (
+        <p
+          role="status"
+          className="absolute right-2 top-2 max-w-[22rem] rounded border border-amber-600 bg-amber-950/90 px-2 py-1 text-[10px] text-amber-100"
+        >
+          Run state is not shown: this run executed artifact{" "}
+          <span className="font-mono">{overlay?.artifact?.artifact_sha256}</span>, which is not the
+          artifact projected here.
         </p>
       )}
       {droppedEdgeCount > 0 && (

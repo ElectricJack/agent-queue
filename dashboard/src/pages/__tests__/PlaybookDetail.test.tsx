@@ -56,6 +56,7 @@ vi.mock("../../api/hooks", () => ({
   usePlaybookGraph: () => ({ ...state.graph, refetch: vi.fn() }),
   usePlaybookV2Graph: () => ({ ...state.semanticGraph, refetch: vi.fn() }),
   usePlaybookActivationHealth: () => state.activationHealth,
+  usePlaybookArtifacts: () => ({ data: { artifacts: [] } }),
   usePlaybookArtifactDiff: () => ({ data: undefined }),
   usePlaybookPendingEvents: () => ({ data: { events: [] } }),
   useSetPlaybookActivation: () => ({ mutate: vi.fn() }),

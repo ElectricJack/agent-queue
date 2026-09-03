@@ -238,6 +238,31 @@ class PlaybookActivationHealthResponse(V2Model):
     by_health: dict[str, int] = {}  # ActivationHealthValue -> count
 
 
+class PlaybookArtifactSummaryDTO(V2Model):
+    """One stored artifact as the activation chooser lists it.
+
+    ``is_active`` is per *playbook*, not per scope: a playbook activated in
+    more than one scope has more than one active artifact, and every one of
+    them is flagged."""
+
+    artifact: ArtifactRefDTO
+    scope: str = "system"  # "system" | "project" | "agent_type" | "supervisor"
+    scope_identifier: str | None = None
+    size_bytes: int = 0
+    created_at: float | None = None  # epoch seconds
+    is_active: bool = False
+
+
+class ListPlaybookArtifactsResponse(V2Model):
+    success: bool = True
+    playbook_id: str = ""
+    artifacts: list[PlaybookArtifactSummaryDTO] = []
+    count: int = 0
+    #: The most recently activated hash across this playbook's scopes, so a
+    #: diff has a base without a second round trip.
+    active_artifact_sha256: str | None = None
+
+
 class SetPlaybookActivationResponse(V2Model):
     success: bool = True
     activation: ActivationStateDTO
@@ -773,6 +798,7 @@ class PlaybookRunOverlayResponse(V2Model):
     bindings: list[ExplanationRowDTO] = []
     operator_decision: OperatorDecisionDTO | None = None
     budget: RunBudgetDTO | None = None
+    diagnostics: list[GraphDiagnosticDTO] = []
     truncated: bool = False  # receipts capped (§5.4)
     receipt_total: int = 0
 
@@ -852,6 +878,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "playbook_v2_graph": PlaybookV2GraphResponse,
     "playbook_activation_health": PlaybookActivationHealthResponse,
     "playbook_activate": SetPlaybookActivationResponse,
+    "playbook_artifacts": ListPlaybookArtifactsResponse,
     "playbook_artifact_diff": PlaybookArtifactDiffResponse,
     "playbook_pending_events": ListPlaybookPendingEventsResponse,
     "playbook_pending_event_action": PlaybookPendingEventActionResponse,

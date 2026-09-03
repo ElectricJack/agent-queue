@@ -6,6 +6,7 @@ import type {
   GraphEdgeDTO,
   GraphNodeDTO,
   OutcomeExplanationDTO,
+  PlaybookRunOverlayResponse,
   PlaybookV2GraphResponse,
   RuleClusterDTO,
   SourceRefDTO,
@@ -740,4 +741,58 @@ export const tinyGraph: PlaybookV2GraphResponse = {
     grid_positions: { done: { x: 0, y: 0 } },
     cluster_bounds: { [R1]: { x: 0, y: 0, width: 1, height: 1 } },
   },
+};
+
+
+/** One completed run of the `sweep-on-spec-approved` rule against the exact
+ *  artifact above: it listed three downstream tasks, went round the foreach
+ *  body three times, and left through the loop's exit. The
+ *  `review-on-task-completed` cluster was never entered, which is what makes
+ *  this fixture useful — half the graph must stay visibly untouched. */
+export const runOverlay: PlaybookRunOverlayResponse = {
+  success: true,
+  run_id: "run-42",
+  artifact,
+  artifact_is_active: false,
+  rule_id: R2,
+  lifecycle: "completed",
+  current_step_id: null,
+  started_at: 1_756_000_100,
+  completed_at: 1_756_000_400,
+  nodes: [
+    { step_id: "list-downstream", state: "completed", visit_count: 1, last_outcome: "listed", receipt_ids: ["r-list"] },
+    {
+      step_id: "for-each-task",
+      state: "completed",
+      visit_count: 3,
+      last_outcome: "completed",
+      receipt_ids: ["r-loop"],
+      iterations: [
+        { index: 0, item_display: "task-a", outcome: "created", receipt_ids: ["r-a"] },
+        { index: 1, item_display: "task-b", outcome: "reused", receipt_ids: ["r-b"] },
+        { index: 2, item_display: "task-c", outcome: "created", receipt_ids: ["r-c"] },
+      ],
+    },
+    { step_id: "open-gate", state: "completed", visit_count: 3, last_outcome: "created", receipt_ids: ["r-a", "r-b", "r-c"] },
+    { step_id: "check-gate", state: "completed", visit_count: 3, last_outcome: "default", receipt_ids: [] },
+    { step_id: "sweep-done", state: "completed", visit_count: 1, last_outcome: "completed", receipt_ids: [] },
+  ],
+  edges: [
+    { edge_id: `${R2}::list-downstream::listed`, traversal_count: 1, last_traversed_at: 1_756_000_110 },
+    { edge_id: `${R2}::for-each-task::body`, traversal_count: 3, last_traversed_at: 1_756_000_300 },
+    { edge_id: `${R2}::open-gate::created`, traversal_count: 3, last_traversed_at: 1_756_000_320 },
+    { edge_id: `${R2}::check-gate::default`, traversal_count: 3, last_traversed_at: 1_756_000_340 },
+    { edge_id: `${R2}::for-each-task::completed`, traversal_count: 1, last_traversed_at: 1_756_000_390 },
+  ],
+  receipts: [],
+  bindings: [],
+  truncated: false,
+  receipt_total: 0,
+};
+
+/** The same run, reported against an artifact this projection is not of. */
+export const foreignRunOverlay: PlaybookRunOverlayResponse = {
+  ...runOverlay,
+  run_id: "run-43",
+  artifact: { ...artifact, artifact_sha256: `sha256:${"c3".repeat(32)}`, version: 4 },
 };

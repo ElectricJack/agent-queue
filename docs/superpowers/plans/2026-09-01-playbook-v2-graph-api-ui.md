@@ -1604,7 +1604,9 @@ Store them under `docs/superpowers/reports/2026-09-01-playbook-v2-pkg5-scenarios
 > exist. This is the second attempt to close the screenshot task
 > (`amber-rapids-37` item 3, then `fair-rapids-36`); both re-derived the same
 > result because the queue carries no dependency edge from the screenshot task
-> to the §16.2 successor. **One-line gate before the next attempt:**
+> to the §16.2 successor. That successor also lands T-4-T-9, T-27, T-28, T-32
+> and T-36-T-41; until it lands, milestone **M5 - Operator legible** (§13.1 note
+> above) is not claimable. **One-line gate before the next attempt:**
 > `ls src/playbooks/graph_projection.py`. If it is still missing, stop — nothing
 > in §13.3 is capturable and no daemon needs to be started.
 

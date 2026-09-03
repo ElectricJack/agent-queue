@@ -137,6 +137,12 @@ dev = [
     "pytest-xdist>=3.5",
     "ruff>=0.4.0",
     "pre-commit>=3.5.0",
+    # Pinned exactly: the whole packages/aq-client/ tree (README.md included)
+    # is a function of the generator version, so a floating version makes
+    # ./scripts/regenerate-api-client.sh non-idempotent.  Keep in sync with
+    # GENERATOR_VERSION in that script -- tests/test_api_client_contract.py
+    # fails when the two drift.
+    "openapi-python-client==0.29.0",
     # CVE-2022-40898: wheel <0.38.1 has a ReDoS in the wheel CLI
     "wheel>=0.38.1",
 ]

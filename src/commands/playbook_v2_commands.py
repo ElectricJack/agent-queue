@@ -1,5 +1,5 @@
-"""Playbook V2 semantic-graph commands — graph, health, diff, activation,
-pending events and run overlays.
+"""Playbook V2 semantic-graph commands — graph, health, artifact listing,
+diff, activation, pending events and run overlays.
 
 Package 5 of the Playbook V2 roadmap
 (``docs/superpowers/plans/2026-09-01-playbook-v2-graph-api-ui.md``) ships the
@@ -17,29 +17,17 @@ routes: ``src/api/codegen.py`` turns every categorised command into
 an MCP tool at once, and that is the only path the committed ``openapi.json``
 and both generated clients cover.
 
-**Current state.** Package 3 has landed on ``main``: the artifact store
-(``src/playbooks/artifact_store.py``), activation records
-(``src/playbooks/activation.py``, ``playbook_activations``) and
-``src/database/queries/playbook_artifact_queries.py``.  The typed artifact model
-(Package 2, ``src/playbooks/definition.py``), the explanation and contract
-registry (Package 1), and the engine, receipts, V2 runs and pending events
-(Package 4) have not — only their child plans have.  Every command below is
-therefore fully wired end to end (registration, HTTP route, CLI verb, generated
-clients, feature flags, argument validation, scope) and returns
-``V2_STORAGE_UNAVAILABLE_ERROR`` at the single seam where it would read that
-state.  The one exception is ``playbook_activation_health``: activation health
-needs nothing but Package 3's own rows and files, so with
-``playbooks.v2_storage_enabled`` on it reads real activations and computes
-health against the live contract and capability-profile registries.  ``_v2_storage_unavailable`` is that seam: the task that lands the
-projections (child plan §16.2, §16.3) replaces its body and fills in
-``graph_projection``, ``artifact_diff`` and ``run_overlay``, without touching
-the wire contract in ``src/api/models/playbook_v2.py``.
+Packages 1-4 now provide the strict artifact, contracts, activation store,
+engine, run snapshots, pending events and receipts.  This module is their
+operator-facing composition point; the three projectors remain pure and all I/O
+stays here.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -104,6 +92,13 @@ PLAYBOOK_V2_COMPILER_COMMANDS: frozenset[str] = frozenset(
     }
 )
 
+#: The activation chooser's read.  Deliberately its own constant rather than an
+#: eighth member of ``PLAYBOOK_V2_COMMANDS``: several API-contract tests pin
+#: that set to the child plan's seven §4.8 commands, and this command answers a
+#: question none of them do — *which artifacts could be activated*, including
+#: the inactive candidates an operator diffs before activating one.
+PLAYBOOK_V2_ARTIFACT_COMMANDS: frozenset[str] = frozenset({"playbook_artifacts"})
+
 V2_COMPILER_DISABLED_ERROR = "playbook v2 compiler is disabled"
 
 #: Activation scopes, matching ``ActivationStateDTO.scope``.
@@ -121,6 +116,10 @@ _VALID_PENDING_REASONS: frozenset[str] = frozenset(
 
 #: ``PendingAction`` — child plan §4.6.
 _VALID_PENDING_ACTIONS: frozenset[str] = frozenset({"dispatch", "discard"})
+
+#: Default page size for the artifact chooser — enough versions to cover a
+#: playbook's recent history without loading a whole retention window.
+_ARTIFACT_LIST_DEFAULT_LIMIT = 50
 
 #: Full ``sha256:<64 hex>`` form.  Hashes are never truncated on the wire
 #: (child plan §4 conventions), so a truncated hash is a client bug worth an
@@ -160,6 +159,34 @@ def _diagnostic_counts(diagnostics: list[Diagnostic]) -> dict[str, int]:
     return {
         severity: sum(d.severity == severity for d in diagnostics)
         for severity in ("error", "warning", "question", "info")
+    }
+
+
+def _artifact_summary(row: dict[str, Any], active_shas: set[str]) -> dict[str, Any]:
+    """Project one ``playbook_artifacts`` row into ``PlaybookArtifactSummaryDTO``.
+
+    Projected field-for-field rather than through ``ArtifactRef.from_row``: the
+    dataclass rejects a row whose ``schema_generation`` this build no longer
+    stores, and a chooser that hides an artifact is worse than one that shows an
+    operator a candidate they cannot activate — ``playbook_activate`` is where
+    that refusal belongs.
+    """
+    return {
+        "artifact": {
+            "playbook_id": row["playbook_id"],
+            "artifact_sha256": row["artifact_sha256"],
+            "schema_generation": int(row["schema_generation"]),
+            "contract_fingerprint": row["contract_fingerprint"],
+            "source_digest": row["source_digest"],
+            "compiler_build": row["compiler_build"],
+            "compiled_at": row.get("compiled_at"),
+            "version": int(row["version"]),
+        },
+        "scope": row.get("scope") or "system",
+        "scope_identifier": row.get("scope_identifier") or None,
+        "size_bytes": int(row.get("size_bytes") or 0),
+        "created_at": row.get("created_at"),
+        "is_active": row["artifact_sha256"] in active_shas,
     }
 
 
@@ -205,6 +232,22 @@ class PlaybookV2CommandsMixin:
             return False
         return hasattr(self.db, "list_playbook_activations") and hasattr(
             self.db, "get_playbook_artifact_row"
+        )
+
+    def _v2_artifact_storage_ready(self) -> bool:
+        """Whether the stored artifact rows can actually be listed here.
+
+        Same shape as :meth:`_v2_activation_storage_ready` and for the same
+        reason: the artifact *rows* are Package 3 state, so listing them does
+        not wait for the ``_v2_storage_unavailable`` seam, but a database
+        adapter without the V2 tables must still report the seam error rather
+        than raise.
+        """
+        playbooks = getattr(self.config, "playbooks", None)
+        if not bool(getattr(playbooks, "v2_storage_enabled", False)):
+            return False
+        return hasattr(self.db, "list_playbook_artifacts") and hasattr(
+            self.db, "list_playbook_activations"
         )
 
     def _v2_compiler_enabled(self) -> bool:
@@ -411,20 +454,59 @@ class PlaybookV2CommandsMixin:
         }
 
     def _v2_storage_unavailable(self) -> dict:
-        """The single seam onto Package 2-4 state.
-
-        Every command reaches this only after its arguments have validated and
-        both feature flags have passed — the point where it would load the
-        pinned artifact, its activation record and its receipts.  Those live in
-        ``src/playbooks/definition.py``, ``artifact_store.py``, ``activation.py``
-        and ``src/database/queries/playbook_{artifact,run}_queries.py``, none of
-        which exist on ``main`` yet.  The package that lands them replaces this
-        method with the real lookup and fills in the projections
-        (``graph_projection.project_graph``, ``artifact_diff.diff_artifacts``,
-        ``run_overlay.project_overlay``) behind the wire contract already frozen
-        in ``src/api/models/playbook_v2.py``.
-        """
+        """Compatibility response when the independently gated store is off."""
         return {"error": V2_STORAGE_UNAVAILABLE_ERROR}
+
+    def _v2_storage_ready(self, *methods: str) -> bool:
+        playbooks = getattr(self.config, "playbooks", None)
+        return bool(getattr(playbooks, "v2_storage_enabled", False)) and all(
+            hasattr(self.db, method) for method in methods
+        )
+
+    async def _v2_health_records(self):
+        from src.playbooks.activation import load_activation_health
+
+        contracts, profiles, _events = await self._v2_lookups()
+        records = await load_activation_health(self.db, contracts=contracts, profiles=profiles)
+        return records, contracts, profiles
+
+    @staticmethod
+    def _v2_activation_for(records, playbook_id: str, sha: str | None = None):
+        matches = [record for record in records if record.playbook_id == playbook_id]
+        if sha:
+            exact = [record for record in matches if record.active_artifact_sha256 == sha]
+            if exact:
+                return exact[0]
+        return matches[0] if matches else None
+
+    async def _v2_activation_payload(self, record) -> dict[str, Any]:
+        payload = record.as_dict()
+        if hasattr(self.db, "count_pending_events"):
+            payload["pending_event_count"] = await self.db.count_pending_events(
+                record.playbook_id, reasons=sorted(_VALID_PENDING_REASONS)
+            )
+        if hasattr(self.db, "count_active_runs"):
+            payload["running_count"] = await self.db.count_active_runs(record.playbook_id)
+        return payload
+
+    async def _v2_load_artifact(self, sha: str, playbook_id: str | None = None):
+        ref = await self.db.get_playbook_artifact(sha)
+        if ref is None:
+            return None, None, f"Playbook artifact '{sha}' not found"
+        if playbook_id is not None and ref.playbook_id != playbook_id:
+            return None, None, f"Artifact '{sha}' does not belong to playbook '{playbook_id}'"
+        try:
+            definition = self._v2_engine().services.artifact_store.load(sha)
+        except Exception as exc:  # noqa: BLE001 - storage failures are operator-facing
+            logger.warning("could not load V2 artifact %s", sha, exc_info=True)
+            return None, None, f"Playbook artifact '{sha}' is unavailable: {exc}"
+        return ref, definition, None
+
+    @staticmethod
+    def _v2_scope(definition: PlaybookDefinition) -> tuple[str, str]:
+        scope = definition.scope
+        identifier = getattr(scope, "project_id", None) or getattr(scope, "agent_type", None) or ""
+        return scope.type, identifier
 
     # ------------------------------------------------------------------
     # Reads
@@ -469,7 +551,35 @@ class PlaybookV2CommandsMixin:
         if direction not in ("TD", "LR"):
             return {"error": f"Invalid direction '{direction}'. Valid: TD, LR"}
 
-        return self._v2_storage_unavailable()
+        if not self._v2_storage_ready(
+            "list_playbook_activations", "get_playbook_artifact", "get_playbook_artifact_row"
+        ):
+            return self._v2_storage_unavailable()
+        records, contracts, profiles = await self._v2_health_records()
+        activation = self._v2_activation_for(records, playbook_id, artifact_sha256 or None)
+        selected_sha = artifact_sha256 or (
+            activation.active_artifact_sha256 if activation is not None else None
+        )
+        if not selected_sha:
+            return {"error": f"No active V2 artifact for playbook '{playbook_id}'"}
+        ref, definition, error = await self._v2_load_artifact(selected_sha, playbook_id)
+        if error:
+            return {"error": error}
+        from src.playbooks.graph_projection import project_graph
+
+        response = project_graph(
+            definition,
+            ref,
+            await self._v2_activation_payload(activation) if activation is not None else None,
+            event_type=_clean_str(args, "event_type") or None,
+            contracts=contracts,
+            profiles=profiles,
+            direction=direction,
+        )
+        if args.get("include_advanced", True) is False:
+            for node in response["nodes"]:
+                node["advanced"]["typed_step"] = {}
+        return response
 
     async def _cmd_playbook_activation_health(self, args: dict) -> dict:
         """List playbook activations with their computed health.
@@ -518,13 +628,14 @@ class PlaybookV2CommandsMixin:
         contracts, profiles, _events = await self._v2_lookups()
         records = await load_activation_health(self.db, contracts=contracts, profiles=profiles)
 
-        activations = [
-            record.as_dict()
+        matching = [
+            record
             for record in records
             if (not playbook_id or record.playbook_id == playbook_id)
             and (not scope or record.scope == scope)
             and (not health or record.health.value == health)
         ]
+        activations = [await self._v2_activation_payload(record) for record in matching]
         by_health: dict[str, int] = {}
         for activation in activations:
             by_health[activation["health"]] = by_health.get(activation["health"], 0) + 1
@@ -533,6 +644,74 @@ class PlaybookV2CommandsMixin:
             "activations": activations,
             "count": len(activations),
             "by_health": by_health,
+        }
+
+    async def _cmd_playbook_artifacts(self, args: dict) -> dict:
+        """List the stored artifacts of one playbook, active flagged.
+
+        The chooser behind the activation review.  ``playbook_activation_health``
+        names only the artifact a scope has *already* activated, so without this
+        read an operator has no way to name the newly compiled candidate they
+        want to diff and activate — the dashboard would be left diffing the
+        active artifact against itself.
+
+        Read-only, and it never loads an artifact's bytes: the rows carry the
+        whole identity the chooser shows, and the diff and graph commands do the
+        loading once a hash has been picked.
+
+        Args:
+            playbook_id: Required — the playbook whose artifacts to list.
+            limit: Max artifacts to return, newest version first. Default: 50.
+        """
+        if not self._v2_api_enabled():
+            return {"error": V2_API_DISABLED_ERROR}
+
+        playbook_id = _clean_str(args, "playbook_id")
+        if not playbook_id:
+            return {"error": "playbook_id is required"}
+
+        raw_limit = args.get("limit", _ARTIFACT_LIST_DEFAULT_LIMIT)
+        try:
+            limit = int(raw_limit)
+        except (TypeError, ValueError):
+            return {"error": "limit must be an integer"}
+        if limit < 1:
+            return {"error": "limit must be >= 1"}
+
+        if not self._v2_artifact_storage_ready():
+            return self._v2_storage_unavailable()
+
+        rows = await self.db.list_playbook_artifacts(playbook_id, limit=limit)
+        activations = [
+            row
+            for row in await self.db.list_playbook_activations()
+            if row.get("playbook_id") == playbook_id
+        ]
+        # One playbook can be activated in several scopes, so "active" is a set
+        # rather than a single hash.  ``active_artifact_sha256`` reports the
+        # most recently updated one, which is the row the health read shows
+        # first, and ``is_active`` stays true for every scope's choice.
+        active_shas = {
+            row["active_artifact_sha256"]
+            for row in activations
+            if row.get("active_artifact_sha256")
+        }
+        active_artifact_sha256 = next(
+            (
+                row["active_artifact_sha256"]
+                for row in sorted(
+                    activations, key=lambda row: row.get("updated_at") or 0, reverse=True
+                )
+                if row.get("active_artifact_sha256")
+            ),
+            None,
+        )
+        return {
+            "success": True,
+            "playbook_id": playbook_id,
+            "artifacts": [_artifact_summary(row, active_shas) for row in rows],
+            "count": len(rows),
+            "active_artifact_sha256": active_artifact_sha256,
         }
 
     async def _cmd_playbook_artifact_diff(self, args: dict) -> dict:
@@ -570,7 +749,33 @@ class PlaybookV2CommandsMixin:
             if invalid:
                 return {"error": invalid}
 
-        return self._v2_storage_unavailable()
+        if not self._v2_storage_ready(
+            "list_playbook_activations", "get_playbook_artifact", "get_playbook_artifact_row"
+        ):
+            return self._v2_storage_unavailable()
+        records, contracts, profiles = await self._v2_health_records()
+        activation = self._v2_activation_for(records, playbook_id)
+        base_sha256 = base_sha256 or (
+            activation.active_artifact_sha256 if activation is not None else None
+        )
+        target_ref, target, error = await self._v2_load_artifact(target_sha256, playbook_id)
+        if error:
+            return {"error": error}
+        base_ref = base = None
+        if base_sha256:
+            base_ref, base, error = await self._v2_load_artifact(base_sha256, playbook_id)
+            if error:
+                return {"error": error}
+        from src.playbooks.artifact_diff import diff_artifacts
+
+        return diff_artifacts(
+            base,
+            target,
+            base_ref=base_ref,
+            target_ref=target_ref,
+            contracts=contracts,
+            profiles=profiles,
+        )
 
     async def _cmd_playbook_pending_events(self, args: dict) -> dict:
         """List events held because no artifact could run them.
@@ -604,7 +809,42 @@ class PlaybookV2CommandsMixin:
         if limit < 1:
             return {"error": "limit must be >= 1"}
 
-        return self._v2_storage_unavailable()
+        if not self._v2_storage_ready("list_pending_events"):
+            return self._v2_storage_unavailable()
+        rows = await self.db.list_pending_events(
+            playbook_id=_clean_str(args, "playbook_id") or None,
+            reasons=[reason] if reason else sorted(_VALID_PENDING_REASONS),
+            include_resolved=False,
+            limit=limit,
+        )
+        events = []
+        for row in rows:
+            from src.playbooks.run_overlay import redact_event
+
+            safe_event = redact_event(dict(row.get("event") or {}), row["event_type"])
+            events.append(
+                {
+                    "pending_event_id": row["pending_event_id"],
+                    "playbook_id": row["playbook_id"],
+                    "event_type": row["event_type"],
+                    "event": safe_event,
+                    "received_at": row["received_at"],
+                    "reason": row["reason"],
+                    "attempts": row.get("attempts", 0),
+                    "last_error": row.get("last_error"),
+                    "expires_at": row.get("expires_at"),
+                }
+            )
+        by_reason: dict[str, int] = {}
+        for event in events:
+            by_reason[event["reason"]] = by_reason.get(event["reason"], 0) + 1
+        return {
+            "success": True,
+            "events": events,
+            "count": len(events),
+            "oldest_received_at": events[0]["received_at"] if events else None,
+            "by_reason": by_reason,
+        }
 
     async def _cmd_playbook_run_overlay(self, args: dict) -> dict:
         """Return one run's execution overlay, pinned to the artifact it ran.
@@ -635,7 +875,52 @@ class PlaybookV2CommandsMixin:
         if receipt_limit < 1:
             return {"error": "receipt_limit must be >= 1"}
 
-        return self._v2_storage_unavailable()
+        if not self._v2_storage_ready(
+            "load_run",
+            "list_receipts",
+            "count_receipts",
+            "get_playbook_artifact",
+            "list_playbook_activations",
+        ):
+            return self._v2_storage_unavailable()
+        run = await self.db.load_run(run_id)
+        if run is None:
+            return {"error": f"Playbook run '{run_id}' not found"}
+        ref, definition, error = await self._v2_load_artifact(run.artifact_sha256, run.playbook_id)
+        if error:
+            return {"error": error}
+        visible_receipt_kinds = ("step", "interrupted", "operator_decision")
+        receipt_total = await self.db.count_receipts(
+            run_id, receipt_kinds=visible_receipt_kinds
+        )
+        receipts = await self.db.list_receipts(
+            run_id,
+            limit=receipt_limit,
+            offset=max(0, receipt_total - receipt_limit),
+            receipt_kinds=visible_receipt_kinds,
+        )
+        records = await self.db.list_playbook_activations(enabled_only=False)
+        active_sha = next(
+            (
+                row.get("active_artifact_sha256")
+                for row in records
+                if row.get("playbook_id") == run.playbook_id and row.get("enabled")
+            ),
+            None,
+        )
+        from src.commands.contracts import CONTRACTS
+        from src.playbooks.run_overlay import project_overlay
+
+        return project_overlay(
+            run,
+            receipts,
+            definition,
+            ref,
+            active_sha256=active_sha,
+            contracts=CONTRACTS,
+            receipt_limit=receipt_limit,
+            receipt_total=receipt_total,
+        )
 
     # ------------------------------------------------------------------
     # Operator writes — separately feature-gated (child plan §7.3, §8)
@@ -684,7 +969,100 @@ class PlaybookV2CommandsMixin:
                 )
             }
 
-        return self._v2_storage_unavailable()
+        if not self._v2_storage_ready(
+            "list_playbook_activations",
+            "get_playbook_artifact",
+            "get_playbook_artifact_row",
+            "set_playbook_activation",
+        ):
+            return self._v2_storage_unavailable()
+        target_ref, target, error = await self._v2_load_artifact(artifact_sha256, playbook_id)
+        if error:
+            return {"error": error}
+        records, contracts, profiles = await self._v2_health_records()
+        _contracts, _profiles, events = await self._v2_lookups()
+        current = self._v2_activation_for(records, playbook_id)
+        current_sha = current.active_artifact_sha256 if current is not None else None
+        base_ref = base = None
+        if current_sha:
+            base_ref, base, error = await self._v2_load_artifact(current_sha, playbook_id)
+            if error:
+                return {"error": error}
+        from src.playbooks.artifact_diff import diff_artifacts
+
+        diff = diff_artifacts(
+            base,
+            target,
+            base_ref=base_ref,
+            target_ref=target_ref,
+            contracts=contracts,
+            profiles=profiles,
+        )
+        blockers = list(diff["activation_blockers"])
+        validation = validate_definition(
+            target,
+            inventory=None,
+            contracts=contracts,
+            profiles=profiles,
+            events=events,
+        )
+        blockers.extend(
+            diagnostic.message
+            for diagnostic in validation
+            if diagnostic.severity in {"error", "question"}
+        )
+        if diff["executable_change"] and acknowledge_diff != artifact_sha256:
+            blockers.append(f"executable change requires acknowledge_diff={artifact_sha256}")
+        if blockers:
+            activation = (
+                await self._v2_activation_payload(current)
+                if current is not None
+                else {
+                    "playbook_id": playbook_id,
+                    "scope": target.scope.type,
+                    "scope_identifier": self._v2_scope(target)[1] or None,
+                    "enabled": False,
+                    "active_artifact_sha256": None,
+                    "health": "disabled",
+                    "reasons": [],
+                }
+            )
+            return {
+                "success": True,
+                "activation": activation,
+                "previous_artifact_sha256": current_sha,
+                "changed": False,
+                "blocked": True,
+                "blockers": blockers,
+            }
+        scope, scope_identifier = self._v2_scope(target)
+        from src.commands.principal import current_principal
+
+        principal = current_principal()
+        actor = principal.describe() if principal is not None else "local"
+        enabled = args.get("enabled", True)
+        if not isinstance(enabled, bool):
+            return {"error": "enabled must be a boolean"}
+        await self.db.set_playbook_activation(
+            playbook_id=playbook_id,
+            scope=scope,
+            scope_identifier=scope_identifier,
+            artifact_sha256=artifact_sha256,
+            enabled=enabled,
+            activated_by=actor,
+            health="ready" if enabled else "disabled",
+            reasons="[]",
+        )
+        refreshed, _contracts, _profiles = await self._v2_health_records()
+        activation = self._v2_activation_for(refreshed, playbook_id, artifact_sha256)
+        return {
+            "success": True,
+            "activation": activation.as_dict(),
+            "previous_artifact_sha256": current_sha,
+            "changed": current_sha != artifact_sha256 or bool(current and current.enabled) != enabled,
+            "blocked": False,
+            "blockers": [],
+        }
 
     async def _cmd_playbook_pending_event_action(self, args: dict) -> dict:
         """Dispatch or discard held pending events.
@@ -723,4 +1101,50 @@ class PlaybookV2CommandsMixin:
         if not pending_event_ids:
             return {"error": "pending_event_ids must be a non-empty list of event ids"}
 
-        return self._v2_storage_unavailable()
+        if not self._v2_storage_ready("get_pending_events", "resolve_pending_event"):
+            return self._v2_storage_unavailable()
+        wanted = set(pending_event_ids)
+        rows = await self.db.get_pending_events(pending_event_ids)
+        found = {row["pending_event_id"]: row for row in rows if row["pending_event_id"] in wanted}
+        from src.commands.principal import ExecutionPrincipal, current_principal
+
+        principal = current_principal() or ExecutionPrincipal.service("playbook-pending-event")
+        actor = principal.describe()
+        dispatched: list[str] = []
+        discarded: list[str] = []
+        skipped: list[str] = []
+        errors: list[str] = []
+        for event_id in pending_event_ids:
+            row = found.get(event_id)
+            if row is None:
+                skipped.append(event_id)
+                continue
+            claimed = await self.db.resolve_pending_event(
+                event_id,
+                resolution=action,
+                resolved_by=actor,
+                now=time.time(),
+            )
+            if not claimed:
+                skipped.append(event_id)
+                continue
+            if action == "discard":
+                discarded.append(event_id)
+                continue
+            try:
+                result = await self._v2_engine().dispatch_event(
+                    row["event"], principal, playbook_ids=[row["playbook_id"]]
+                )
+                dispatched.extend(result.run_ids)
+            except Exception as exc:  # noqa: BLE001 - each event reports independently
+                logger.warning("pending V2 event %s dispatch failed", event_id, exc_info=True)
+                errors.append(f"{event_id}: {exc}")
+        return {
+            "success": not errors,
+            "action": action,
+            "requested": len(pending_event_ids),
+            "dispatched_run_ids": dispatched,
+            "discarded_ids": discarded,
+            "skipped": skipped,
+            "errors": errors,
+        }

@@ -1313,3 +1313,95 @@ async def test_every_live_artifact_row_has_its_file_whenever_the_row_lands(
 
     assert path.read_text() == "{}"
     await _assert_every_live_row_has_its_file(db)
+
+
+# -- the activation chooser: aq playbook artifacts ---------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_playbook_artifacts_returns_newest_version_first(db, tmp_path):
+    """The read the chooser is built on: inactive candidates included."""
+    await _store_versions(db, tmp_path, 3)
+    await _store_versions(db, tmp_path, 1, playbook_id="other")
+
+    rows = await db.list_playbook_artifacts("task-review")
+
+    assert [row["version"] for row in rows] == [3, 2, 1]
+    assert {row["playbook_id"] for row in rows} == {"task-review"}
+    assert (await db.list_playbook_artifacts("task-review", limit=2))[0]["version"] == 3
+    assert len(await db.list_playbook_artifacts("task-review", limit=2)) == 2
+    assert await db.list_playbook_artifacts("absent") == []
+
+
+@pytest.mark.asyncio
+async def test_artifacts_command_flags_the_active_one_and_lists_candidates(db, tmp_path):
+    """An operator must be able to name the *inactive* artifact they want to
+    review; activation health only ever names the active one."""
+    from tests.playbook_v2_helpers import StubContracts, StubProfiles
+
+    refs = await _store_versions(db, tmp_path, 3)
+    await db.set_playbook_activation(
+        playbook_id="task-review",
+        scope="system",
+        scope_identifier="",
+        artifact_sha256=refs[1].artifact_sha256,
+        enabled=True,
+        activated_by="operator",
+        health="ready",
+        reasons="[]",
+    )
+    handler = _v2_handler(db, (StubContracts(), StubProfiles(), None))
+
+    result = await handler._cmd_playbook_artifacts({"playbook_id": "task-review"})
+
+    assert result["success"] is True
+    assert result["playbook_id"] == "task-review"
+    assert result["count"] == 3
+    assert result["active_artifact_sha256"] == refs[1].artifact_sha256
+    assert [entry["artifact"]["version"] for entry in result["artifacts"]] == [3, 2, 1]
+    assert [entry["is_active"] for entry in result["artifacts"]] == [False, True, False]
+    newest = result["artifacts"][0]
+    assert newest["artifact"]["artifact_sha256"] == refs[2].artifact_sha256
+    assert newest["artifact"]["contract_fingerprint"] == refs[2].contract_fingerprint
+    assert newest["scope"] == "system"
+    assert newest["size_bytes"] == 2
+    assert newest["created_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_artifacts_command_reports_no_active_hash_before_first_activation(db, tmp_path):
+    from tests.playbook_v2_helpers import StubContracts, StubProfiles
+
+    await _store_versions(db, tmp_path, 2)
+    handler = _v2_handler(db, (StubContracts(), StubProfiles(), None))
+
+    result = await handler._cmd_playbook_artifacts({"playbook_id": "task-review"})
+
+    assert result["active_artifact_sha256"] is None
+    assert [entry["is_active"] for entry in result["artifacts"]] == [False, False]
+
+
+@pytest.mark.asyncio
+async def test_artifacts_command_honours_its_gates_and_arguments(db, tmp_path):
+    from src.commands.playbook_v2_commands import (
+        V2_API_DISABLED_ERROR,
+        V2_STORAGE_UNAVAILABLE_ERROR,
+    )
+    from tests.playbook_v2_helpers import StubContracts, StubProfiles
+
+    lookups = (StubContracts(), StubProfiles(), None)
+    handler = _v2_handler(db, lookups)
+
+    assert await handler._cmd_playbook_artifacts({}) == {"error": "playbook_id is required"}
+    assert await handler._cmd_playbook_artifacts({"playbook_id": "p", "limit": 0}) == {
+        "error": "limit must be >= 1"
+    }
+    assert await handler._cmd_playbook_artifacts({"playbook_id": "p", "limit": "many"}) == {
+        "error": "limit must be an integer"
+    }
+    assert await _v2_handler(db, lookups, v2_api=False)._cmd_playbook_artifacts(
+        {"playbook_id": "p"}
+    ) == {"error": V2_API_DISABLED_ERROR}
+    assert await _v2_handler(db, lookups, v2_storage=False)._cmd_playbook_artifacts(
+        {"playbook_id": "p"}
+    ) == {"error": V2_STORAGE_UNAVAILABLE_ERROR}

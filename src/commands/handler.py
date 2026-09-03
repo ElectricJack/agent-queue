@@ -50,6 +50,7 @@ from src.commands.mcp_commands import McpCommandsMixin
 from src.commands.notes_commands import NotesCommandsMixin
 from src.commands.playbook_commands import PlaybookCommandsMixin
 from src.commands.playbook_v2_commands import (
+    PLAYBOOK_V2_ARTIFACT_COMMANDS,
     PLAYBOOK_V2_COMMANDS,
     PLAYBOOK_V2_COMPILER_COMMANDS,
     PlaybookV2CommandsMixin,
@@ -196,10 +197,12 @@ PAUSED_PLAYBOOK_COMMANDS: frozenset[str] = frozenset(
         "advance_workflow_stage",
         "workflow_pipeline_view",
     }
-    # src/commands/playbook_v2_commands.py (7) -- the V2 semantic-graph
-    # surface pauses with the rest of the subsystem, on top of its own
-    # ``playbooks.v2_api`` / ``playbooks.v2_activation_writes`` flags.
+    # src/commands/playbook_v2_commands.py (7 + the artifact chooser) --
+    # the V2 semantic-graph surface pauses with the rest of the subsystem,
+    # on top of its own ``playbooks.v2_api`` /
+    # ``playbooks.v2_activation_writes`` flags.
     | PLAYBOOK_V2_COMMANDS
+    | PLAYBOOK_V2_ARTIFACT_COMMANDS
     | PLAYBOOK_V2_COMPILER_COMMANDS
 )
 

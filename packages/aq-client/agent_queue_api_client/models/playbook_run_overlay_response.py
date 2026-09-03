@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from ..models.artifact_ref_dto import ArtifactRefDTO
     from ..models.edge_overlay_dto import EdgeOverlayDTO
     from ..models.explanation_row_dto import ExplanationRowDTO
+    from ..models.graph_diagnostic_dto import GraphDiagnosticDTO
     from ..models.node_overlay_dto import NodeOverlayDTO
     from ..models.operator_decision_dto import OperatorDecisionDTO
     from ..models.playbook_run_overlay_response_trigger_event import PlaybookRunOverlayResponseTriggerEvent
@@ -49,6 +50,7 @@ class PlaybookRunOverlayResponse:
             bindings (list[ExplanationRowDTO] | Unset):
             operator_decision (None | OperatorDecisionDTO | Unset):
             budget (None | RunBudgetDTO | Unset):
+            diagnostics (list[GraphDiagnosticDTO] | Unset):
             truncated (bool | Unset):  Default: False.
             receipt_total (int | Unset):  Default: 0.
     """
@@ -70,6 +72,7 @@ class PlaybookRunOverlayResponse:
     bindings: list[ExplanationRowDTO] | Unset = UNSET
     operator_decision: None | OperatorDecisionDTO | Unset = UNSET
     budget: None | RunBudgetDTO | Unset = UNSET
+    diagnostics: list[GraphDiagnosticDTO] | Unset = UNSET
     truncated: bool | Unset = False
     receipt_total: int | Unset = 0
 
@@ -161,6 +164,13 @@ class PlaybookRunOverlayResponse:
         else:
             budget = self.budget
 
+        diagnostics: list[dict[str, Any]] | Unset = UNSET
+        if not isinstance(self.diagnostics, Unset):
+            diagnostics = []
+            for diagnostics_item_data in self.diagnostics:
+                diagnostics_item = diagnostics_item_data.to_dict()
+                diagnostics.append(diagnostics_item)
+
         truncated = self.truncated
 
         receipt_total = self.receipt_total
@@ -201,6 +211,8 @@ class PlaybookRunOverlayResponse:
             field_dict["operator_decision"] = operator_decision
         if budget is not UNSET:
             field_dict["budget"] = budget
+        if diagnostics is not UNSET:
+            field_dict["diagnostics"] = diagnostics
         if truncated is not UNSET:
             field_dict["truncated"] = truncated
         if receipt_total is not UNSET:
@@ -213,6 +225,7 @@ class PlaybookRunOverlayResponse:
         from ..models.artifact_ref_dto import ArtifactRefDTO
         from ..models.edge_overlay_dto import EdgeOverlayDTO
         from ..models.explanation_row_dto import ExplanationRowDTO
+        from ..models.graph_diagnostic_dto import GraphDiagnosticDTO
         from ..models.node_overlay_dto import NodeOverlayDTO
         from ..models.operator_decision_dto import OperatorDecisionDTO
         from ..models.playbook_run_overlay_response_trigger_event import PlaybookRunOverlayResponseTriggerEvent
@@ -345,6 +358,15 @@ class PlaybookRunOverlayResponse:
 
         budget = _parse_budget(d.pop("budget", UNSET))
 
+        _diagnostics = d.pop("diagnostics", UNSET)
+        diagnostics: list[GraphDiagnosticDTO] | Unset = UNSET
+        if _diagnostics is not UNSET:
+            diagnostics = []
+            for diagnostics_item_data in _diagnostics:
+                diagnostics_item = GraphDiagnosticDTO.from_dict(diagnostics_item_data)
+
+                diagnostics.append(diagnostics_item)
+
         truncated = d.pop("truncated", UNSET)
 
         receipt_total = d.pop("receipt_total", UNSET)
@@ -367,6 +389,7 @@ class PlaybookRunOverlayResponse:
             bindings=bindings,
             operator_decision=operator_decision,
             budget=budget,
+            diagnostics=diagnostics,
             truncated=truncated,
             receipt_total=receipt_total,
         )
