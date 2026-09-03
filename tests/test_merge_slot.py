@@ -743,15 +743,15 @@ class TestPhaseIntegrateLeaseGuardedPush:
 
             o.git._arun = spy_arun
 
-            # Also spy on apush_branch to catch the branch push.
+            # Also spy on apush_validated_delivery to catch the branch push.
             push_branch_calls: list[str] = []
-            orig_push = o.git.apush_branch
+            orig_push = o.git.apush_validated_delivery
 
             async def spy_push(*args, **kw):
-                push_branch_calls.append(args[1] if len(args) > 1 else kw.get("branch"))
+                push_branch_calls.append(args[3] if len(args) > 3 else kw.get("branch"))
                 return await orig_push(*args, **kw)
 
-            o.git.apush_branch = spy_push
+            o.git.apush_validated_delivery = spy_push
 
             ws = await o.db.get_workspace_for_task(task.id)
             ctx = _make_pipeline_ctx(task, agent, slot, ws.id)
@@ -874,7 +874,9 @@ class TestPhaseIntegratePushFailureRecordsReason:
             async def boom(*a, **kw):
                 raise RuntimeError("simulated push failure")
 
-            o.git.apush_branch = boom
+            # _phase_integrate delivers through apush_validated_delivery
+            # (pinned OID refspec), not apush_branch.
+            o.git.apush_validated_delivery = boom
 
             ws = await o.db.get_workspace_for_task(task.id)
             ctx = _make_pipeline_ctx(task, agent, slot, ws.id)
@@ -908,7 +910,13 @@ class TestPhaseIntegratePushFailureRecordsReason:
             orig_arun = o.git._arun
 
             async def arun_boom(args, cwd=None, **kw):
-                if args and args[0] == "push" and "main" in args:
+                # The pinned push uses an OID refspec (`<sha>:refs/heads/main`),
+                # so match the refspec rather than a bare branch-name argument.
+                if (
+                    args
+                    and args[0] == "push"
+                    and any(str(a).endswith("refs/heads/main") for a in args)
+                ):
                     raise RuntimeError("simulated network failure on default push")
                 return await orig_arun(args, cwd=cwd, **kw)
 

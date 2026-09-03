@@ -279,6 +279,9 @@ class TestTwoAgentsAcquireBranchIsolated:
         mock_git._arun = AsyncMock(return_value="")
         mock_git.aforce_clean_workspace = AsyncMock(return_value=True)
         mock_git.make_branch_name = GitManager.make_branch_name
+        mock_git.aget_git_path = AsyncMock(
+            return_value=os.path.join(clone, ".git", "info", "exclude")
+        )
         mock_git.slugify = GitManager.slugify
         mock_git.acreate_worktree = AsyncMock()
         mock_git.aremove_worktree = AsyncMock()
@@ -757,6 +760,9 @@ class TestThreeOrMoreAgentsConcurrent:
         mock_git._arun = AsyncMock(return_value="")
         mock_git.aforce_clean_workspace = AsyncMock(return_value=True)
         mock_git.make_branch_name = GitManager.make_branch_name
+        mock_git.aget_git_path = AsyncMock(
+            return_value=os.path.join(clone, ".git", "info", "exclude")
+        )
         mock_git.slugify = GitManager.slugify
         mock_git.acreate_worktree = AsyncMock()
         mock_git.aremove_worktree = AsyncMock()
@@ -1208,6 +1214,9 @@ class TestGitMutexRegistration:
         mock_git._arun = AsyncMock(return_value="")
         mock_git.aforce_clean_workspace = AsyncMock(return_value=True)
         mock_git.make_branch_name = GitManager.make_branch_name
+        mock_git.aget_git_path = AsyncMock(
+            return_value=os.path.join(clone, ".git", "info", "exclude")
+        )
         mock_git.set_lock_provider = MagicMock()
         orch.git = mock_git
 
@@ -1261,6 +1270,9 @@ class TestGitMutexRegistration:
         mock_git._arun = AsyncMock(return_value="")
         mock_git.aforce_clean_workspace = AsyncMock(return_value=True)
         mock_git.make_branch_name = GitManager.make_branch_name
+        mock_git.aget_git_path = AsyncMock(
+            return_value=os.path.join(clone, ".git", "info", "exclude")
+        )
         mock_git.set_lock_provider = MagicMock()
         orch.git = mock_git
 
