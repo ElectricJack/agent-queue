@@ -27,6 +27,7 @@ from src.api.scope import _FINAL_REVIEWER_COMMANDS, _TRIAGE_COMMANDS
 from src.commands.handler import CommandHandler
 from src.config import AppConfig, DiscordConfig
 from src.database import Database
+from src.git.manager import PullRequestIdentity
 from src.models import Agent, AgentProfile, AgentState, Project, SessionRecord, Task, TaskStatus
 from src.orchestrator import Orchestrator
 from src.vault import ensure_default_intelligence_classes
@@ -125,6 +126,11 @@ async def api(tmp_path, monkeypatch, request, generated_routers):
     }
     merge_pr = AsyncMock(return_value={"success": True, "sha": "merged"})
     monkeypatch.setattr(orch.git, "amerge_pr", merge_pr)
+    # ``pr_merge`` validates the PR's immutable identity first; the real
+    # implementation shells out to ``gh``.
+    monkeypatch.setattr(orch.git, "avalidate_pr_for_merge", AsyncMock(
+        return_value=PullRequestIdentity("org/repo", 1, "main", "a" * 40, "feature", "b" * 40)
+    ))
     monkeypatch.setattr(deps, "_command_handler", handler)
     monkeypatch.setattr(deps, "_orchestrator", orch)
     monkeypatch.setattr(deps, "_token_store", store)
@@ -254,7 +260,11 @@ async def test_final_reviewer_can_merge_its_review_branch_pr(api):
     assert result["sha"] == "merged"
     api.merge_pr.assert_awaited_once()
     assert api.merge_pr.await_args.args[1] == "https://example.invalid/pr/1"
-    assert api.merge_pr.await_args.kwargs == {"method": "squash"}
+    assert api.merge_pr.await_args.kwargs == {
+        "method": "squash",
+        "expected_head_oid": "b" * 40,
+        "expected_base_oid": "a" * 40,
+    }
 
 
 async def test_final_reviewer_can_call_git_diff(api):

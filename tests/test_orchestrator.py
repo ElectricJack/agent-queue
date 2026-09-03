@@ -152,6 +152,14 @@ async def session_orch(tmp_path):
     # Branch setup is not what these tests assert on, and the workspaces
     # below are bare directories rather than real clones.
     o.git = AsyncMock()
+    # ``_prepare_workspace`` resolves Git's exclude path and the verify phase
+    # inspects the delivery diff.  A bare AsyncMock answers both with a mock:
+    # truthy (read as a reserved-path finding) and, via ``__fspath__``, a
+    # relative directory that ``ensure_git_exclude_path`` creates in the CWD.
+    o.git.aget_git_path = AsyncMock(
+        side_effect=lambda checkout, path: os.path.join(checkout, ".git", path)
+    )
+    o.git.areserved_paths_in_diff = AsyncMock(return_value=[])
     o.harness_registry.upsert(
         Harness(
             id="claude",
@@ -1036,6 +1044,9 @@ class TestPrepareWorkspaceCleanDefault:
         mock_git.ahas_remote = AsyncMock(return_value=True)
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
         mock_git._arun = AsyncMock(return_value="")
+        mock_git.aget_git_path = AsyncMock(
+            side_effect=lambda checkout, path: os.path.join(checkout, ".git", path)
+        )
         orch.git = mock_git
 
         result = await orch._prepare_workspace(task, agent)
@@ -1065,6 +1076,9 @@ class TestPrepareWorkspaceCleanDefault:
         mock_git.aprepare_for_task = AsyncMock()
         mock_git.aswitch_to_branch = AsyncMock()
         mock_git._arun = AsyncMock(return_value="")
+        mock_git.aget_git_path = AsyncMock(
+            side_effect=lambda checkout, path: os.path.join(checkout, ".git", path)
+        )
         orch.git = mock_git
 
         await orch._prepare_workspace(task, agent)
@@ -1084,6 +1098,9 @@ class TestPrepareWorkspaceCleanDefault:
         mock_git.ahas_remote = AsyncMock(return_value=True)
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
         mock_git._arun = AsyncMock(return_value="")
+        mock_git.aget_git_path = AsyncMock(
+            side_effect=lambda checkout, path: os.path.join(checkout, ".git", path)
+        )
         orch.git = mock_git
 
         result = await orch._prepare_workspace(task, agent)
@@ -1138,9 +1155,10 @@ class TestPhaseVerifyNormalTask:
         mock_git.acount_commits_ahead = AsyncMock(return_value=1)
         mock_git._arun = AsyncMock(return_value="0")
         mock_git.acommit_all = AsyncMock(return_value=True)
-        mock_git.apush_branch = AsyncMock(return_value=None)
+        mock_git.apush_validated_delivery = AsyncMock(return_value="a" * 40)
         mock_git.aabort_in_progress_operations = AsyncMock()
         mock_git.aforce_clean_workspace = AsyncMock(return_value=True)
+        mock_git.areserved_paths_in_diff = AsyncMock(return_value=[])
         o.git = mock_git
 
         yield o
@@ -1450,7 +1468,7 @@ class TestPhaseVerifyNormalTask:
 
         result = await orch._phase_verify(ctx)
         assert result == PhaseResult.CONTINUE
-        orch.git.apush_branch.assert_awaited_once()
+        orch.git.apush_validated_delivery.assert_awaited_once()
 
     async def test_fails_when_ahead_and_auto_push_fails(self, pipeline_orch):
         """Falls back to failure when auto-push raises an exception."""
@@ -1471,7 +1489,7 @@ class TestPhaseVerifyNormalTask:
         # Auto-push rev-list returns "3" (ahead) — triggers push
         # Push fails, so scenario behind check gets "0", ahead check gets "3"
         orch.git._arun = AsyncMock(side_effect=["3", "0", "3"])
-        orch.git.apush_branch = AsyncMock(side_effect=Exception("push failed"))
+        orch.git.apush_validated_delivery = AsyncMock(side_effect=Exception("push failed"))
 
         ws = await orch.db.get_workspace("ws-1")
         ctx = self._make_ctx(orch, task, ws.workspace_path)
@@ -1519,9 +1537,10 @@ class TestPhaseVerifyApprovalTask:
         mock_git.acount_commits_ahead = AsyncMock(return_value=1)
         mock_git._arun = AsyncMock(return_value="0")
         mock_git.acommit_all = AsyncMock(return_value=True)
-        mock_git.apush_branch = AsyncMock(return_value=None)
+        mock_git.apush_validated_delivery = AsyncMock(return_value="a" * 40)
         mock_git.aabort_in_progress_operations = AsyncMock()
         mock_git.aforce_clean_workspace = AsyncMock(return_value=True)
+        mock_git.areserved_paths_in_diff = AsyncMock(return_value=[])
         o.git = mock_git
 
         yield o
@@ -1736,9 +1755,10 @@ class TestPhaseVerifyIntermediateSubtask:
         mock_git.acount_commits_ahead = AsyncMock(return_value=1)
         mock_git._arun = AsyncMock(return_value="0")
         mock_git.acommit_all = AsyncMock(return_value=True)
-        mock_git.apush_branch = AsyncMock(return_value=None)
+        mock_git.apush_validated_delivery = AsyncMock(return_value="a" * 40)
         mock_git.aabort_in_progress_operations = AsyncMock()
         mock_git.aforce_clean_workspace = AsyncMock(return_value=True)
+        mock_git.areserved_paths_in_diff = AsyncMock(return_value=[])
         o.git = mock_git
 
         yield o, sub1
@@ -2029,6 +2049,7 @@ class TestCompletionPipelineVerify:
         mock_git.acount_commits_ahead = AsyncMock(return_value=1)
         mock_git._arun = AsyncMock(return_value="0")
         mock_git.ahas_non_plan_changes = AsyncMock(return_value=False)
+        mock_git.areserved_paths_in_diff = AsyncMock(return_value=[])
         o.git = mock_git
 
         yield o
