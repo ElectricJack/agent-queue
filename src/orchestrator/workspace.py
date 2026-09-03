@@ -492,15 +492,8 @@ class WorkspaceMixin:
         try:
             if not await self.git.avalidate_checkout(workspace):
                 return
-            # ``info/exclude`` lives in the common dir.  For a linked checkout
-            # that is itself a worktree ``<workspace>/.git`` is a file
-            # pointing elsewhere, so resolve the base repository; everywhere
-            # else the workspace is its own common dir and no subprocess is
-            # needed.
-            base = workspace
-            if os.path.isfile(os.path.join(workspace, ".git")):
-                base = await self.git.aworktree_base_path(workspace) or workspace
-            WorktreeSlotManager.ensure_git_exclude(base)
+            exclude_path = await self.git.aget_git_path(workspace, "info/exclude")
+            WorktreeSlotManager.ensure_git_exclude_path(exclude_path)
         except (OSError, GitError) as e:  # pragma: no cover - defensive
             logger.warning("ensure_git_exclude failed for %s: %s", workspace, e)
 

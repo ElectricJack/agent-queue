@@ -184,8 +184,15 @@ class WorktreeSlotManager:
         No commit is involved, so this works for repos we do not own
         (design §2.4).
         """
-        info_dir = Path(base_path) / ".git" / "info"
-        exclude = info_dir / "exclude"
+        return WorktreeSlotManager.ensure_git_exclude_path(
+            Path(base_path) / ".git" / "info" / "exclude"
+        )
+
+    @staticmethod
+    def ensure_git_exclude_path(exclude_path: str | Path) -> bool:
+        """Idempotently maintain the managed block at an exact exclude path."""
+        exclude = Path(exclude_path)
+        info_dir = exclude.parent
         try:
             # git's shipped template is not guaranteed UTF-8 (it is cp1252 on
             # some Windows installs) and an operator's own rules may be in any

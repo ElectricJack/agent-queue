@@ -148,6 +148,30 @@ class TestGitManager:
 
 
 class TestCommitAll:
+    def test_pre_commit_hook_cannot_stage_daemon_state_in_unborn_repo(self, tmp_path):
+        """The initial commit is safe when a hook force-stages daemon state."""
+        repo = tmp_path / "unborn-hook"
+        _git(["init", "--initial-branch=main", str(repo)], cwd=str(tmp_path))
+        _git(["config", "user.name", "Test"], cwd=str(repo))
+        _git(["config", "user.email", "t@t.com"], cwd=str(repo))
+
+        reserved_paths = (".aq/claim.json", ".aq-worktree.json", ".codex/hooks.json")
+        for path in reserved_paths:
+            target = repo / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("daemon state\n")
+        _git(["add", *reserved_paths], cwd=str(repo))
+        (repo / "work.txt").write_text("real work\n")
+        hook = repo / ".git" / "hooks" / "pre-commit"
+        hook.write_text("#!/bin/sh\ngit add -f .aq/claim.json\n")
+        hook.chmod(0o755)
+
+        assert GitManager().commit_all(str(repo), "initial task work", exclude_plans=False)
+        assert _git(["show", "--pretty=", "--name-only", "HEAD"], cwd=str(repo)) == "work.txt"
+        assert set(_git(["ls-files", "--others", "--exclude-standard"], cwd=str(repo)).splitlines()) == set(
+            reserved_paths
+        )
+
     def test_omits_pre_staged_daemon_paths_in_unborn_repo(self, tmp_path):
         """Reserved runtime state cannot reach an initial commit either."""
         repo = tmp_path / "unborn"

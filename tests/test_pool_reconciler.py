@@ -149,11 +149,11 @@ class TestReconcilePools:
         workspace = tmp_path / "ws0"
         (workspace / ".git").mkdir(parents=True)
         orch.git.avalidate_checkout = AsyncMock(return_value=True)
-        orch.git.aworktree_base_path = AsyncMock(return_value=None)
+        orch.git.aget_git_path = AsyncMock(return_value=str(workspace / ".git" / "info" / "exclude"))
         calls: list[str] = []
         monkeypatch.setattr(
             WorktreeSlotManager,
-            "ensure_git_exclude",
+            "ensure_git_exclude_path",
             staticmethod(lambda path: calls.append(str(path)) or True),
         )
 
@@ -162,7 +162,7 @@ class TestReconcilePools:
         )
 
         assert session_id is not None
-        assert calls == [str(workspace)]
+        assert calls == [str(workspace / ".git" / "info" / "exclude")]
 
     async def test_starts_sessions_for_ready_work(self, orch, db):
         for t in ("t1", "t2", "t3"):

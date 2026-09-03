@@ -942,6 +942,18 @@ class GitManager:
                 "refusing to commit reserved daemon bookkeeping paths: " + ", ".join(paths)
             )
 
+    def _run_pre_commit_and_resanitize(self, checkout_path: str, *, no_verify: bool) -> None:
+        """Run the ordinary pre-commit hook once, then seal the commit index.
+
+        A hook may legitimately stage generated task files, so run it before
+        the final reserved-path check. The actual ``git commit`` is then
+        ``--no-verify`` so the hook cannot mutate the index after that check.
+        """
+        if not no_verify:
+            self._run(["hook", "run", "--ignore-missing", "pre-commit"], cwd=checkout_path)
+        self._unstage_daemon_bookkeeping(checkout_path)
+        self._refuse_cached_daemon_bookkeeping(checkout_path)
+
     async def _aunstage_daemon_bookkeeping(self, checkout_path: str) -> None:
         """Async counterpart to :meth:`_unstage_daemon_bookkeeping`."""
         await self._arun(
@@ -959,6 +971,15 @@ class GitManager:
             raise GitError(
                 "refusing to commit reserved daemon bookkeeping paths: " + ", ".join(paths)
             )
+
+    async def _arun_pre_commit_and_resanitize(
+        self, checkout_path: str, *, no_verify: bool
+    ) -> None:
+        """Async counterpart to :meth:`_run_pre_commit_and_resanitize`."""
+        if not no_verify:
+            await self._arun(["hook", "run", "--ignore-missing", "pre-commit"], cwd=checkout_path)
+        await self._aunstage_daemon_bookkeeping(checkout_path)
+        await self._arefuse_cached_daemon_bookkeeping(checkout_path)
 
     def commit_all(
         self,
@@ -983,9 +1004,11 @@ class GitManager:
         should pass ``exclude_plans=False`` to ensure all changes are
         committed.
 
-        Pass ``no_verify=True`` to skip pre-commit hooks (``--no-verify``).
-        This is intended for system-level auto-remediation commits where
-        hook failures would prevent workspace cleanup.
+        Pass ``no_verify=True`` to skip the preliminary pre-commit hook.
+        This is intended for system-level auto-remediation commits where hook
+        failures would prevent workspace cleanup. The final commit always
+        uses ``--no-verify`` after reserved paths are rechecked, preventing a
+        hook from staging daemon state between that check and commit.
         """
         self._unstage_daemon_bookkeeping(checkout_path)
         self._run(
@@ -999,7 +1022,7 @@ class GitManager:
                     self._run(["reset", "HEAD", "--", pattern], cwd=checkout_path)
                 except GitError:
                     pass  # Not staged or doesn't exist — fine
-        self._refuse_cached_daemon_bookkeeping(checkout_path)
+        self._run_pre_commit_and_resanitize(checkout_path, no_verify=no_verify)
         # git diff --cached --quiet exits 1 if there are staged changes
         result = subprocess.run(
             ["git", "diff", "--cached", "--quiet"],
@@ -1012,9 +1035,7 @@ class GitManager:
             return False  # Nothing to commit
         if result.returncode != 1:
             raise GitError(f"git diff --cached --quiet failed: {result.stderr.strip()}")
-        commit_args = ["commit", "-m", message]
-        if no_verify:
-            commit_args.append("--no-verify")
+        commit_args = ["commit", "--no-verify", "-m", message]
         self._run(commit_args, cwd=checkout_path)
         return True
 
@@ -1859,6 +1880,22 @@ class GitManager:
         # Bare repo, or a layout where the common dir *is* the repo.
         return str(common)
 
+    async def aget_git_path(self, checkout_path: str, path: str) -> str:
+        """Resolve a Git-internal *path* to an absolute filesystem path."""
+        try:
+            return await self._arun(
+                ["rev-parse", "--path-format=absolute", "--git-path", path],
+                cwd=checkout_path,
+            )
+        except GitError:
+            # ``--path-format=absolute`` is unavailable on older Git. The
+            # older ``--git-path`` still locates separate-git-dir layouts;
+            # make its relative result absolute against the checkout.
+            git_path = await self._arun(["rev-parse", "--git-path", path], cwd=checkout_path)
+            return git_path if os.path.isabs(git_path) else os.path.abspath(
+                os.path.join(checkout_path, git_path)
+            )
+
     async def ainit_repo(self, path: str) -> None:
         os.makedirs(path, exist_ok=True)
         await self._arun(["init"], cwd=path)
@@ -1943,9 +1980,11 @@ class GitManager:
         ``exclude_plans=False`` for system-level operations that need
         to commit all changes including plan files.
 
-        Pass ``no_verify=True`` to skip pre-commit hooks (``--no-verify``).
-        This is intended for system-level auto-remediation commits where
-        hook failures would prevent workspace cleanup.
+        Pass ``no_verify=True`` to skip the preliminary pre-commit hook.
+        This is intended for system-level auto-remediation commits where hook
+        failures would prevent workspace cleanup. The final commit always
+        uses ``--no-verify`` after reserved paths are rechecked, preventing a
+        hook from staging daemon state between that check and commit.
 
         When *event_bus* is provided, a ``git.commit`` event is emitted
         after a successful commit with the commit hash, branch, changed
@@ -1969,7 +2008,7 @@ class GitManager:
                     await self._arun(["reset", "HEAD", "--", pattern], cwd=checkout_path)
                 except GitError:
                     pass
-        await self._arefuse_cached_daemon_bookkeeping(checkout_path)
+        await self._arun_pre_commit_and_resanitize(checkout_path, no_verify=no_verify)
         result = await self._arun_subprocess(
             ["git", "diff", "--cached", "--quiet"],
             cwd=checkout_path,
@@ -1979,9 +2018,7 @@ class GitManager:
             return False
         if result.returncode != 1:
             raise GitError(f"git diff --cached --quiet failed: {result.stderr.strip()}")
-        commit_args = ["commit", "-m", message]
-        if no_verify:
-            commit_args.append("--no-verify")
+        commit_args = ["commit", "--no-verify", "-m", message]
         await self._arun(commit_args, cwd=checkout_path)
 
         # Emit git.commit event on success
@@ -2403,17 +2440,26 @@ class GitManager:
         except GitError:
             return ""
 
-    async def ahas_uncommitted_changes(self, checkout_path: str) -> bool:
-        """Return True if the workspace has staged or unstaged changes."""
+    async def ahas_uncommitted_changes(
+        self, checkout_path: str, *, strict: bool = False
+    ) -> bool | None:
+        """Return whether the workspace has staged or unstaged changes.
+
+        With ``strict=True``, return ``None`` when Git cannot determine the
+        status. Callers that use cleanliness as proof that work does not exist
+        must keep that state distinct from a clean checkout.
+        """
         try:
             output = await self._arun_subprocess(
                 ["git", "status", "--porcelain"],
                 cwd=checkout_path,
                 timeout=self._GIT_TIMEOUT,
             )
+            if output.returncode != 0:
+                return None if strict else False
             return bool(output.stdout and output.stdout.strip())
         except Exception:
-            return False
+            return None if strict else False
 
     async def astaged_patch(self, checkout_path: str) -> str:
         """The staged diff as an **appliable** patch.  Output is not stripped.

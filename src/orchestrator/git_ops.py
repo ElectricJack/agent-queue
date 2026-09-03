@@ -431,9 +431,8 @@ class GitOpsMixin:
                 return True
             if pr_mode:
                 current_branch = await self.git.aget_current_branch(workspace)
-                if (
-                    current_branch == default_branch
-                    and not await self.git.ahas_uncommitted_changes(workspace)
+                if current_branch == default_branch and await self._default_checkout_proves_no_work(
+                    workspace, default_branch
                 ):
                     return await self._assigned_branch_is_absent(
                         workspace, branch, default_branch
@@ -901,6 +900,7 @@ class GitOpsMixin:
                 and not has_uncommitted
                 and current_branch == default_branch
                 and task.branch_name
+                and await self._default_checkout_proves_no_work(workspace, default_branch)
             ):
                 branch_is_absent = await self._assigned_branch_is_absent(
                     workspace, pr_delivery_branch, default_branch
@@ -1169,6 +1169,24 @@ class GitOpsMixin:
             return await self.git.abranch_exists(workspace, branch) is False
         except Exception:
             return False
+
+    async def _default_checkout_proves_no_work(self, workspace: str, default_branch: str) -> bool:
+        """True only for a clean default checkout exactly at its remote tip.
+
+        An exclusive clone intentionally leaves task-branch creation to the
+        agent. Its assigned ref can therefore be absent on a genuine no-op,
+        but that absence cannot discard work auto-committed directly on the
+        default branch. Unknown status or ahead-count state remains
+        conservative and keeps delivery verification armed.
+        """
+        if await self.git.ahas_uncommitted_changes(workspace, strict=True) is not False:
+            return False
+        return (
+            await self.git.acount_commits_ahead(
+                workspace, default_branch, f"origin/{default_branch}"
+            )
+            == 0
+        )
 
     async def _auto_remediate_uncommitted(
         self,

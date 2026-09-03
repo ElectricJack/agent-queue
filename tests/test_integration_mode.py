@@ -756,6 +756,27 @@ class TestEmptyBranchSkipsThePrGate:
         assert await orch._phase_verify(ctx) == PhaseResult.STOP
         assert any("No open PR" in msg for msg in ctx.verification_issues)
 
+    async def test_status_failure_cannot_prove_an_absent_branch_is_clean(self, orch):
+        """A status error must keep the PR gate armed for an absent task branch."""
+        _task, ctx = await self._empty_branch_ctx(orch, "t-status", "aq/t-status")
+        orch.git.aget_current_branch = AsyncMock(return_value="main")
+        orch.git.acount_commits_ahead = AsyncMock(
+            side_effect=lambda _workspace, branch, base: (
+                0 if branch == "main" and base == "origin/main" else None
+            )
+        )
+        orch.git.abranch_exists = AsyncMock(return_value=False)
+        orch.git.afind_open_pr = AsyncMock(return_value=None)
+        orch.git.ais_ancestor = AsyncMock(return_value=False)
+
+        async def status_state(_workspace, *, strict=False):
+            return None if strict else False
+
+        orch.git.ahas_uncommitted_changes = AsyncMock(side_effect=status_state)
+
+        assert await orch._phase_verify(ctx) == PhaseResult.STOP
+        assert any("No open PR" in msg for msg in ctx.verification_issues)
+
     async def test_a_dirty_empty_branch_still_needs_a_pr(self, orch, monkeypatch):
         """Uncommitted work is work — the agent has to commit and PR it."""
         _task, ctx = await self._empty_branch_ctx(orch, "t-dirty-empty", "aq/t-dirty-empty")

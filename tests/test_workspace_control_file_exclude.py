@@ -170,3 +170,25 @@ class TestExclusiveCloneExcludesControlFiles:
         assert ".aq/claim.json" not in _git(["ls-files"], cwd=workspace)
         # The control files are still there for the daemon — excluded, not deleted.
         assert os.path.exists(os.path.join(workspace, ".aq", "claim.json"))
+
+    async def test_separate_git_dir_writes_the_exact_exclude_path(self, orch, tmp_path):
+        """A `.git` file must not make the helper append another `.git` directory."""
+        workspace = tmp_path / "workspace"
+        git_dir = tmp_path / "git-metadata"
+        subprocess.run(
+            [
+                "git",
+                "init",
+                "--initial-branch=main",
+                f"--separate-git-dir={git_dir}",
+                str(workspace),
+            ],
+            check=True,
+            capture_output=True,
+        )
+
+        await orch._ensure_control_files_excluded(str(workspace))
+
+        exact_exclude = git_dir / "info" / "exclude"
+        assert EXCLUDE_BEGIN in exact_exclude.read_text(encoding="utf-8")
+        assert not (git_dir / ".git" / "info" / "exclude").exists()

@@ -237,14 +237,21 @@ Removes a linked worktree.
 
 ### `commit_all(checkout_path, message)`
 
-Stages all changes and creates a commit. Returns `True` if a commit was made, `False` if the working tree was clean. Async counterpart: `acommit_all`.
+Stages task changes and creates a commit. Daemon-owned `.aq/`, `.aq-worktree.json`,
+and `.codex/` paths are excluded and rejected. Returns `True` if a commit was
+made, `False` if the working tree was clean. Async counterpart: `acommit_all`.
 
-1. Runs `git add -A` to stage all tracked and untracked changes.
+1. Clears any pre-staged daemon bookkeeping, then runs `git add -A` with
+   exclude pathspecs for `.aq/`, `.aq-worktree.json`, and `.codex/`.
 2. **Unstages plan files** — iterates over `_PLAN_FILE_EXCLUDES` (`.claude/plan.md`, `.claude/plans/`, `plan.md`) and runs `git reset HEAD -- <pattern>` for each. Errors are silently ignored (pattern may not be staged or may not exist). This prevents plan files from being committed to target repos.
-3. Runs `git diff --cached --quiet` directly via `subprocess.run` (sync) or `_arun_subprocess` (async) — bypassing `_run`/`_arun` — to check whether anything is staged. Exit code `0` means nothing staged.
-4. If nothing is staged, returns `False` without creating a commit.
-5. Otherwise runs `git commit -m <message>` and returns `True`.
-6. Raises `GitError` if the commit fails.
+3. Runs the ordinary pre-commit hook once unless `no_verify=True`, then
+   clears daemon bookkeeping again and refuses to commit if any reserved path
+   remains cached. The final commit uses `--no-verify` so a hook cannot stage
+   daemon state after this final check.
+4. Runs `git diff --cached --quiet` directly via `subprocess.run` (sync) or `_arun_subprocess` (async) — bypassing `_run`/`_arun` — to check whether anything is staged. Exit code `0` means nothing staged.
+5. If nothing is staged, returns `False` without creating a commit.
+6. Otherwise commits the sanitized index and returns `True`.
+7. Raises `GitError` if the commit fails.
 
 ### `push_branch(checkout_path, branch_name, *, force_with_lease=False)`
 
@@ -629,10 +636,10 @@ from a reasonably recent version of the codebase.
 
 ### P4. Atomic Post-Completion Commit
 
-After every task, the orchestrator commits all agent work before any merge, push,
-or PR operation. The `commit_all` method uses an add-all-then-check-staged pattern
-(`git add -A` followed by `git diff --cached --quiet`) to avoid race conditions
-between status checks and staging.
+After every task, the orchestrator commits task work before any merge, push, or
+PR operation. The `commit_all` method uses an add-all-then-check-staged pattern,
+with reserved daemon paths excluded and rejected at the final cached-index check,
+to avoid both staging races and daemon bookkeeping entering project history.
 
 **Maintained by:** `commit_all`, called from `_complete_workspace`.
 

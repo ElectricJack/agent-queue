@@ -258,6 +258,21 @@ class TestAsyncCreateBranch:
 
 class TestAsyncCommitAll:
     @pytest.mark.asyncio
+    async def test_pre_commit_hook_cannot_stage_daemon_state(self, clone, mgr):
+        """The async final commit cannot include state staged by a hook."""
+        reserved = pathlib.Path(clone, ".aq/claim.json")
+        reserved.parent.mkdir(parents=True)
+        reserved.write_text("daemon state\n")
+        pathlib.Path(clone, "work.txt").write_text("real work\n")
+        hook = pathlib.Path(clone, ".git", "hooks", "pre-commit")
+        hook.write_text("#!/bin/sh\ngit add -f .aq/claim.json\n")
+        hook.chmod(0o755)
+
+        assert await mgr.acommit_all(clone, "task work", exclude_plans=False)
+        assert _git(["show", "--pretty=", "--name-only", "HEAD"], cwd=clone) == "work.txt"
+        assert _git(["ls-files", "--others", "--exclude-standard"], cwd=clone) == ".aq/claim.json"
+
+    @pytest.mark.asyncio
     async def test_commit_with_changes(self, clone, mgr):
         pathlib.Path(clone, "newfile.txt").write_text("hello")
         committed = await mgr.acommit_all(clone, "add newfile")
