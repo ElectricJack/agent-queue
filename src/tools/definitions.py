@@ -1259,6 +1259,17 @@ _ALL_TOOL_DEFINITIONS = [
                         "Create as a child of this container; the id becomes <parent>.<n>"
                     ),
                 },
+                "root": {
+                    "type": "boolean",
+                    "description": (
+                        "Explicitly create at project level instead of under a "
+                        "container. Mutually exclusive with parent_id. Use it when "
+                        "filing cross-cutting work from inside a task so the "
+                        "placement reads as deliberate rather than as a forgotten "
+                        "parent_id (swarm-work-model §12)."
+                    ),
+                    "default": False,
+                },
                 "depends_on": {
                     "type": "array",
                     "items": {

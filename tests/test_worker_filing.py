@@ -264,3 +264,140 @@ async def test_local_task_creation_does_not_accept_spoofed_session_provenance(ha
     })
     created = await db.get_task(result["task_id"])
     assert created.created_by_kind is None and created.created_by_id is None
+
+
+class TestExplicitRootOptOut:
+    """§12 placement is three-valued: ``parent_id``, ``root``, or unstated.
+
+    Shipped guidance tells a worker holding a child task to group emergent
+    work under its epic with ``--parent``, which leaves a bare filing
+    indistinguishable from a forgotten flag.  ``--root`` is the explicit
+    opt-out for cross-cutting work; it must file at project level with the
+    same routing gate and ``discovered-from`` edge an unplaced filing gets,
+    without changing what omission means.
+    """
+
+    @staticmethod
+    async def _held_under_epic(db):
+        """A held task that is itself a child, so root is not the trivial answer."""
+        await db.create_task(Task(id="epic", project_id=PROJECT_ID, title="epic",
+                                  description="e", status=TaskStatus.DEFINED))
+        sid = await holding_session(db)
+        async with db.immediate() as conn:
+            await db.set_parent("held", "epic", conn=conn)
+        return sid
+
+    async def test_explicit_root_files_at_project_level_with_gate_and_edge(self, handler, db):
+        sid = await self._held_under_epic(db)
+
+        res = await scoped(handler, sid)._cmd_create_task({
+            "title": "cross-cutting: routing gate audit", "description": "d",
+            "root": True, "reason": "Held task surfaced work outside the epic",
+        })
+
+        assert res["success"] is True and res["gate_id"]
+        new = await db.get_task(res["task_id"])
+        # A root id, not ``epic.n`` / ``held.n``.
+        assert new.parent_task_id is None and "." not in new.id
+        assert new.status is TaskStatus.DEFINED and new.is_blocked is True
+        assert await db.get_typed_dependencies(new.id) == [("held", "discovered-from")]
+        assert (await db.get_typed_dependencies_detailed(new.id))[0]["description"] == (
+            "Held task surfaced work outside the epic"
+        )
+        assert [g["gate_type"] for g in await db.get_gates_for_task(new.id)] == ["routing"]
+        ev = created_events(handler)[-1]
+        assert (ev["created_by_kind"], ev["discovered_from"], ev["parent_task_id"]) == (
+            "session", "held", None)
+
+    async def test_omitted_placement_default_is_unchanged(self, handler, db):
+        """Omission must keep its historical meaning — a project-level filing
+        — so adding ``--root`` moves no existing caller."""
+        sid = await self._held_under_epic(db)
+
+        res = await scoped(handler, sid)._cmd_create_task({
+            "title": "unplaced", "description": "d", "reason": "Found while working",
+        })
+
+        assert res["success"] is True and res["gate_id"]
+        new = await db.get_task(res["task_id"])
+        assert new.parent_task_id is None and "." not in new.id
+        assert await db.get_typed_dependencies(new.id) == [("held", "discovered-from")]
+        assert [g["gate_type"] for g in await db.get_gates_for_task(new.id)] == ["routing"]
+
+    async def test_parent_still_wins_when_root_is_not_asked_for(self, handler, db):
+        """``--parent`` keeps filing inside the held subtree: no gate, child id."""
+        sid = await self._held_under_epic(db)
+
+        res = await scoped(handler, sid)._cmd_create_task({
+            "title": "sub", "description": "d", "parent_id": "held",
+            "reason": "Splits out of the held task",
+        })
+
+        assert res["success"] is True and res.get("gate_id") is None
+        assert res["task_id"] == "held.1"
+        assert (await db.get_task(res["task_id"])).parent_task_id == "held"
+
+    async def test_root_and_parent_together_are_refused_without_writing(self, handler, db):
+        sid = await self._held_under_epic(db)
+
+        res = await scoped(handler, sid)._cmd_create_task({
+            "title": "x", "description": "d", "parent_id": "held", "root": True,
+            "reason": "Contradictory placement",
+        })
+
+        assert res["success"] is False
+        assert res["code"] == "root_and_parent_conflict"
+        assert "--root" in res["error"] and "--parent" in res["error"]
+        # Refused before anything is reserved or written: epic + held only.
+        assert len(await db.list_tasks(PROJECT_ID)) == 2
+        assert (await db.get_task("held")).filed_count == 0
+
+    async def test_root_does_not_bypass_the_worker_filing_constraints(self, handler, db):
+        """Explicit root is a placement, not an authorization: the reason
+        requirement and the project pin still apply."""
+        sid = await self._held_under_epic(db)
+        h = scoped(handler, sid)
+
+        no_reason = await h._cmd_create_task({"title": "x", "description": "d", "root": True})
+        assert no_reason["success"] is False and no_reason["code"] == "reason_required"
+
+        other_project = await h._cmd_create_task({
+            "title": "x", "description": "d", "root": True, "project_id": "other",
+            "reason": "Cross-project attempt",
+        })
+        assert other_project["success"] is False and "pinned" in other_project["error"]
+        assert (await db.get_task("held")).filed_count == 0
+
+    async def test_root_and_parent_conflict_is_refused_for_elevated_callers_too(
+        self, handler, db
+    ):
+        """The contradiction is in the request, not in the caller's authority."""
+        handler._current_scope = {"kind": "local", "elevated": True}
+        await db.create_task(Task(id="epic", project_id=PROJECT_ID, title="epic",
+                                  description="e", status=TaskStatus.DEFINED))
+
+        res = await handler._cmd_create_task({
+            "title": "x", "description": "d", "project_id": PROJECT_ID,
+            "parent_id": "epic", "root": True,
+        })
+
+        assert res["success"] is False and res["code"] == "root_and_parent_conflict"
+        assert len(await db.list_tasks(PROJECT_ID)) == 1
+
+    async def test_explicit_root_overrides_a_parent_id_the_caller_never_typed(
+        self, handler, db
+    ):
+        """The CLI drops ``parent_id`` for ``--root``; the command must not
+        depend on that, so a params dict carrying both an explicit root and an
+        inherited parent (e.g. from the creation wizard) still lands at root.
+        """
+        handler._current_scope = {"kind": "local", "elevated": True}
+        await db.create_task(Task(id="epic", project_id=PROJECT_ID, title="epic",
+                                  description="e", status=TaskStatus.DEFINED))
+
+        res = await handler._cmd_create_task({
+            "title": "x", "description": "d", "project_id": PROJECT_ID, "root": True,
+        })
+
+        assert res["success"] is True
+        assert (await db.get_task(res["task_id"])).parent_task_id is None

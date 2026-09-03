@@ -202,6 +202,17 @@ def _create_task_graph(
     help="Create under this container (single task or graph)",
 )
 @click.option(
+    "--root",
+    "root",
+    is_flag=True,
+    default=False,
+    help=(
+        "Create at project level instead of under a container; mutually "
+        "exclusive with --parent. Say it explicitly when filing cross-cutting "
+        "work from inside a task."
+    ),
+)
+@click.option(
     "--reason",
     default=None,
     help=(
@@ -232,6 +243,7 @@ def task_create(
     from_spec: str | None,
     dry_run: bool,
     parent_id: str | None,
+    root: bool,
     reason: str | None,
     deliverables: tuple[str, ...],
 ) -> None:
@@ -244,8 +256,16 @@ def task_create(
     ``--graph FILE`` / ``--from-spec PATH`` create a whole dependency graph
     in one transaction instead of a single task; add ``--dry-run`` to see the
     validation report and the ids that would be assigned.
+
+    ``--parent`` and ``--root`` are mutually exclusive placements. Prefer
+    saying one of them outright when filing work discovered inside another
+    task: ``--parent`` keeps the new task grouped with the epic you are
+    working in, ``--root`` files cross-cutting work at project level.
     """
     api_url = ctx.obj.get("api_url") if ctx.obj else None
+
+    if parent_id and root:
+        raise click.UsageError("--parent and --root are mutually exclusive")
 
     if graph_file or from_spec:
         _create_task_graph(
@@ -300,7 +320,13 @@ def task_create(
     if intelligence_class:
         params["intelligence_class"] = intelligence_class
 
-    if parent_id and "parent_id" not in params:
+    if root:
+        # Explicit project-level placement wins over anything the wizard
+        # collected, and is sent on so the daemon can tell a deliberate
+        # cross-cutting filing from an omitted --parent.
+        params.pop("parent_id", None)
+        params["root"] = True
+    elif parent_id and "parent_id" not in params:
         params["parent_id"] = parent_id
     if reason and "reason" not in params:
         params["reason"] = reason

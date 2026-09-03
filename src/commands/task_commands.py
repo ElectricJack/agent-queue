@@ -1132,6 +1132,24 @@ class TaskCommandsMixin:
         return None
 
     async def _cmd_create_task(self, args: dict) -> dict:
+        # ----- Placement intent: container, explicit root, or unstated -----
+        # ``root`` (CLI ``--root``) is the explicit opt-out that matches
+        # ``aq task reparent --root``: it *asserts* project level rather than
+        # leaving it to be inferred from a missing ``--parent``. The two are
+        # contradictory, so a caller that passes both is refused before
+        # anything is read or written — for every caller kind, since the
+        # contradiction is in the request, not in the caller's authority.
+        explicit_root = bool(args.get("root"))
+        if explicit_root and args.get("parent_id"):
+            return {
+                "success": False,
+                "code": "root_and_parent_conflict",
+                "error": (
+                    "'root' and 'parent_id' are mutually exclusive (CLI: --root / "
+                    "--parent): pass --parent <container-id> to file inside a "
+                    "container, or --root to file cross-cutting work at project level"
+                ),
+            }
         # ----- Worker-filed work (swarm work model §12) --------------------
         # A session-scoped, non-elevated caller is a pool worker currently
         # holding a task. Its filings are pinned to its own project, forced
@@ -1176,6 +1194,22 @@ class TaskCommandsMixin:
                     "success": False,
                     "error": "parent must be the held task or one of its descendants",
                 }
+            # Placement for a worker filing is three-valued, not two:
+            #   ``parent_id``  — file inside the held task's subtree. No
+            #                    routing gate; the child inherits the
+            #                    container's routing (§12).
+            #   ``root=True``  — deliberately file cross-cutting work at
+            #                    project level: root id, ``discovered-from``
+            #                    edge back to the held task, routing gate.
+            #   neither        — unstated, and resolves to the same
+            #                    project-level filing as ``root``. Guidance
+            #                    (AGENTS.md, prime's ``emergent_work``) asks
+            #                    workers to say which they mean, so a reviewer
+            #                    can tell a deliberate cross-cutting filing
+            #                    from a forgotten ``--parent``. The default is
+            #                    deliberately left alone here: changing what
+            #                    omission means would silently re-home every
+            #                    existing filing path.
             if not str(args.get("reason") or "").strip():
                 return {
                     "success": False,
@@ -1463,7 +1497,10 @@ class TaskCommandsMixin:
                 return {"error": f"Dependency task '{dep_id}' not found"}
             edges.append((dep_id, dep_type, dep_reason))
 
-        parent_id = args.get("parent_id")
+        # An explicit root request is authoritative over any ``parent_id`` a
+        # wizard/params dict carried in; the contradictory *caller-supplied*
+        # combination was already refused at the top of this method.
+        parent_id = None if explicit_root else args.get("parent_id")
         if parent_id:
             parent = await self.db.get_task(parent_id)
             if parent is None:

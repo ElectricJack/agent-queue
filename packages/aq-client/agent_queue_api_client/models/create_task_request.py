@@ -53,6 +53,9 @@ class CreateTaskRequest:
             NOT need to be listed. When omitted, the task implicitly requires 'project-repo' — preserving today's single-
             workspace behavior. Each kind must resolve via project-scoped or system-wide vault/workspace-kinds/<id>.md.
         parent_id (None | str | Unset): Create as a child of this container; the id becomes <parent>.<n>
+        root (bool | Unset): Explicitly create at project level instead of under a container. Mutually exclusive with
+            parent_id. Use it when filing cross-cutting work from inside a task so the placement reads as deliberate rather
+            than as a forgotten parent_id (swarm-work-model §12). Default: False.
         depends_on (list[Any] | None | Unset): Task IDs or described dependency edges (optional).
         discovered_from (None | str | Unset): Task ID this work was discovered from (provenance, swarm-work-model §9; a
             worker-filed caller is restricted to the held task's subtree).
@@ -79,6 +82,7 @@ class CreateTaskRequest:
     workspace_mode: None | str | Unset = UNSET
     requires_kinds: list[Any] | None | Unset = UNSET
     parent_id: None | str | Unset = UNSET
+    root: bool | Unset = False
     depends_on: list[Any] | None | Unset = UNSET
     discovered_from: None | str | Unset = UNSET
     reason: None | str | Unset = UNSET
@@ -185,6 +189,8 @@ class CreateTaskRequest:
         else:
             parent_id = self.parent_id
 
+        root = self.root
+
         depends_on: list[Any] | None | Unset
         if isinstance(self.depends_on, Unset):
             depends_on = UNSET
@@ -251,6 +257,8 @@ class CreateTaskRequest:
             field_dict["requires_kinds"] = requires_kinds
         if parent_id is not UNSET:
             field_dict["parent_id"] = parent_id
+        if root is not UNSET:
+            field_dict["root"] = root
         if depends_on is not UNSET:
             field_dict["depends_on"] = depends_on
         if discovered_from is not UNSET:
@@ -421,6 +429,8 @@ class CreateTaskRequest:
 
         parent_id = _parse_parent_id(d.pop("parent_id", UNSET))
 
+        root = d.pop("root", UNSET)
+
         def _parse_depends_on(data: object) -> list[Any] | None | Unset:
             if data is None:
                 return data
@@ -483,6 +493,7 @@ class CreateTaskRequest:
             workspace_mode=workspace_mode,
             requires_kinds=requires_kinds,
             parent_id=parent_id,
+            root=root,
             depends_on=depends_on,
             discovered_from=discovered_from,
             reason=reason,

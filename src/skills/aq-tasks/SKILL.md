@@ -186,6 +186,11 @@ aq task create --from-spec <path> --dry-run   # validate first, always
 # Create under an existing container (single task or a --from-spec graph)
 aq task create --project <pid> --title "..." --description "..." \
   --profile worker-standard-medium-claude --parent <container_task_id>
+
+# Explicitly at project level — the opt-out for cross-cutting work filed from
+# inside an epic's child task.  Mutually exclusive with --parent.
+aq task create --project <pid> --title "..." --description "..." \
+  --root --reason "why this exists"
 ```
 
 Always pass at least `--project` and `--title` from a worker session: with

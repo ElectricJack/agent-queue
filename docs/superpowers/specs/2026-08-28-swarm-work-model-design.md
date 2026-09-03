@@ -746,6 +746,16 @@ close is skipped for pools; the token is revoked at drain.
   (`filing_requires_held_task`) — every worker-filed task has a provenance edge to the
   work that surfaced it, and an idle session has none to give. Anything a worker wants
   to file it files before closing;
+- **placement is three-valued**: `parent_id` (file inside `T`'s subtree), `root: true`
+  (CLI `--root`) — an *explicit* project-level filing — or neither. Both together are
+  refused with `root_and_parent_conflict` before anything is read or written. Explicit
+  root takes exactly the same path as an omitted parent: root id, `discovered-from` edge
+  back to `T`, routing gate in the same transaction. The distinction is intent, not
+  mechanics: a worker holding a child task is told by shipped guidance to group emergent
+  work under its epic with `--parent`, so a bare `create_task` with no placement is
+  indistinguishable from a forgotten `--parent`. `--root` is the opt-out that says
+  "cross-cutting, on purpose", and mirrors the `--root` on `aq task reparent`. Omission
+  keeps its historical meaning — a project-level filing — so no existing caller moves;
 - **quota:** at most `swarm.max_filings_per_task` (default 20) tasks filed from one held
   task, across all of its claims; beyond it `filing_quota_exceeded`. Durable routing gates
   stop gated work from *running*; the quota stops a looping worker from growing the queue
@@ -856,7 +866,7 @@ regenerate from it. `*` = new. Response models: add `src/api/models/task.py` ent
 
 | CLI | Command | Agent scope |
 |---|---|---|
-| `aq task create … [--parent <id>] [--discovered-from <id>]` | `create_task` | yes* (constrained, §12) |
+| `aq task create … [--parent <id> \| --root] [--discovered-from <id>]` | `create_task` | yes* (constrained, §12) |
 | `aq task claim [<id> \| --next] [--wait S]`* | `task_claim`* | yes |
 | `aq task close <id> --outcome … [--claim-next]` | `task_close` | yes |
 | `aq task children <id> [--recursive] [--status S] [--brief]`* | `task_children`* | yes |
