@@ -1119,9 +1119,9 @@ class PlaybookEngine:
                 and int(turn.get("iteration", -1)) == iteration
                 and int(turn.get("attempt", 1)) == attempt_number
             ]
-            effective_principal, _diagnostics = await resolve_profile_principal(
-                current_step, self.services, principal
-            )
+            effective_principal = (
+                await resolve_profile_principal(current_step, self.services, principal)
+            ).principal
             attempt = _Attempt(
                 snapshot=snapshot,
                 step_id=step_id,
