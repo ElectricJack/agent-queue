@@ -318,7 +318,20 @@ class ShadowCommandExecutor:
                 operation=operation,
                 diagnostics=(f"{step.command} has no contract",),
             )
-        return _unresolved(step, registration, operation, "shadow mode invokes nothing")
+        args, _resolved, error = _build_args(registration, ctx, key=None)
+        if args is None:
+            return _fail(
+                "input_resolution_failed", operation=operation, diagnostics=(error or "",)
+            )
+        unresolved = _unresolved(step, registration, operation, "shadow mode invokes nothing")
+        return ExecutorResult(
+            control=unresolved.control,
+            outcome=unresolved.outcome,
+            operation=unresolved.operation,
+            diagnostics=unresolved.diagnostics,
+            possible_outcomes=unresolved.possible_outcomes,
+            recorded_command_args=args.model_dump(mode="json"),
+        )
 
 
 def _unresolved(

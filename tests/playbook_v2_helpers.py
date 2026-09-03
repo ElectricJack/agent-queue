@@ -167,6 +167,11 @@ class StubInventory:
     def __init__(self, names: set[str]) -> None:
         self._names = set(names)
 
+    @property
+    def names(self) -> set[str]:
+        """A copy, so a test can derive a narrower inventory from a wider one."""
+        return set(self._names)
+
     def contains(self, name: str) -> bool:
         return name in self._names
 
@@ -686,6 +691,12 @@ def _invalid_artifacts() -> dict[str, dict[str, Any]]:
         ),
         "capability_not_subset": _mutate(
             _agent_task_twin(), lambda a: a["steps"]["delegate"].update(profile_id="wide")
+        ),
+        "narrowing_not_subset": _mutate(
+            _agent_task_twin(),
+            lambda a: a["steps"]["delegate"].update(
+                capability_narrowing={"aq_commands": ["other_command"]}
+            ),
         ),
         "delegation_runtime_checked": _mutate(
             _agent_task_twin(),

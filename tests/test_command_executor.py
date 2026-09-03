@@ -408,6 +408,12 @@ class TestAdapterProtocol:
                              "runner_transitions.py", "runner_events.py"}:
                 continue  # V1, deleted by Package 7
             text = path.read_text()
-            if "CommandResult" in text and path.name != "command.py":
+            # ``agent_task.py`` is the second — and, by design, last —
+            # dispatcher of a contracted command: it creates the child task
+            # through ``create_task`` (T-8, §4.5 step 2).  It reads exactly
+            # the declared ``outcome`` and ``value.task_id`` off the typed
+            # result and never infers success from a dict's shape, which is
+            # the property this test exists to protect.
+            if "CommandResult" in text and path.name not in {"command.py", "agent_task.py"}:
                 offenders.append(str(path))
         assert offenders == []

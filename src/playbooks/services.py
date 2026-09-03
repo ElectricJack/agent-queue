@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import time
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -14,6 +15,144 @@ if TYPE_CHECKING:
 
 #: Navigation tools the old chat loop special-cased; a playbook node never gets them.
 _EXCLUDED_TOOLS = frozenset({"load_tools", "reply_to_user"})
+
+
+def v2_engine_enabled(config: Any) -> bool:
+    """Whether production callers may enter the V2 engine.
+
+    The subsystem switch remains authoritative: accepting ``v2_engine`` while
+    playbooks as a whole are paused would make a no-op look like a successful
+    cutover.
+    """
+    playbooks = getattr(config, "playbooks", None)
+    return (
+        getattr(playbooks, "enabled", False) is True
+        and getattr(playbooks, "v2_engine", False) is True
+    )
+
+
+class DatabaseActivationSource:
+    """Project Package 3 activation rows into the engine's tiny read contract."""
+
+    def __init__(self, db: Any) -> None:
+        self._db = db
+
+    async def ready_activations(
+        self, _event_type: str, event: Any | None = None
+    ) -> list[Any]:
+        rows = await self._db.list_playbook_activations(enabled_only=True)
+        refs: list[Any] = []
+        event = event or {}
+        project_id = event.get("project_id")
+        agent_type = event.get("agent_type")
+        for row in rows:
+            health = getattr(row.get("health"), "value", row.get("health"))
+            artifact_sha256 = row.get("active_artifact_sha256")
+            if health != "ready" or not artifact_sha256:
+                continue
+            scope = row.get("scope")
+            identifier = row.get("scope_identifier") or ""
+            if scope == "project" and identifier != project_id:
+                continue
+            if scope == "agent_type" and (
+                project_id is None or identifier != agent_type
+            ):
+                continue
+            if scope not in {"system", "project", "agent_type"}:
+                continue
+            ref = await self._db.get_playbook_artifact(artifact_sha256)
+            if ref is not None:
+                refs.append(ref)
+        return refs
+
+    async def artifact_by_sha(self, artifact_sha256: str) -> Any | None:
+        """Resolve an immutable artifact independently of current activation."""
+        return await self._db.get_playbook_artifact(artifact_sha256)
+
+    async def artifact_for(
+        self, playbook_id: str, *, scope_identifier: str | None = None
+    ) -> Any | None:
+        """Return the best ready artifact for one synchronous caller."""
+        rows = await self._db.list_playbook_activations(enabled_only=True)
+        candidates = []
+        for row in rows:
+            health = getattr(row.get("health"), "value", row.get("health"))
+            if row.get("playbook_id") != playbook_id or health != "ready":
+                continue
+            scope = row.get("scope")
+            identifier = row.get("scope_identifier") or ""
+            if scope == "project" and scope_identifier != identifier:
+                continue
+            if scope not in {"project", "system"}:
+                continue
+            candidates.append((0 if scope == "project" else 1, row))
+        for _priority, row in sorted(candidates, key=lambda item: item[0]):
+            artifact_sha256 = row.get("active_artifact_sha256")
+            if artifact_sha256:
+                ref = await self._db.get_playbook_artifact(artifact_sha256)
+                if ref is not None:
+                    return ref
+        return None
+
+
+def build_v2_engine(
+    *, config: Any, db: Any, handler: Any, llm: Any = None, bus: Any = None
+) -> Any:
+    """Build the one production V2 engine from daemon-owned dependencies."""
+    from src.commands.authorization import CommandHandlerResolver
+    from src.commands.contracts import CONTRACTS
+    from src.playbooks.artifact_store import ArtifactStore
+    from src.playbooks.engine import PlaybookEngine
+    from src.playbooks.executors.base import EngineServices
+
+    cached = getattr(handler, "__dict__", {}).get("_v2_playbook_engine")
+    if cached is not None:
+        return cached
+
+    playbooks = config.playbooks
+    services = EngineServices(
+        contracts=CONTRACTS,
+        clock=time.time,
+        artifact_store=ArtifactStore(
+            config.compiled_root,
+            max_artifact_bytes=playbooks.v2_max_artifact_bytes,
+        ),
+        llm=llm,
+        handler=handler,
+        db=db,
+        bus=bus,
+        resolver=CommandHandlerResolver(handler),
+        authorization_mode=getattr(
+            getattr(config, "security", None), "capability_enforcement", "audit"
+        ),
+    )
+    engine = PlaybookEngine(
+        services=services,
+        runs=db,
+        waits=db,
+        activations=DatabaseActivationSource(db),
+        max_step_visits=playbooks.v2_dry_run_max_step_visits,
+        cancellation_grace_seconds=playbooks.cancellation_grace_seconds,
+    )
+    try:
+        setattr(handler, "_v2_playbook_engine", engine)
+    except (AttributeError, TypeError):
+        pass
+    return engine
+
+
+async def load_v2_snapshot(db: Any, run_id: str) -> Any | None:
+    """Load a V2 run without mistaking permissive test doubles for one."""
+    from src.playbooks.run_state import RunSnapshot
+
+    load_run = getattr(db, "load_run", None)
+    if not callable(load_run):
+        return None
+    try:
+        snapshot = await load_run(run_id)
+    except (AttributeError, TypeError):
+        return None
+    return snapshot if isinstance(snapshot, RunSnapshot) else None
 
 
 @dataclass

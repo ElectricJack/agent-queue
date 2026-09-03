@@ -105,10 +105,29 @@ Role runs the V2 propose/validate loop and returns review material without activ
 - Emit only `rules` and `steps`. Do not emit `id`, `version`, `scope`,
   `source_hash`, `compiled_at`, `enabled`, `triggers`, or `compiled_against` —
   the server owns them and discards compiler-supplied values with a diagnostic.
-- Every command name, profile id, event type, event field, binding name, and
-  outcome label must appear verbatim in backticks in the source Markdown or in
-  its frontmatter. If the prose does not name it, return a source-linked
-  question; never invent a default.
+- Every command name, profile id, event type, event field, binding name,
+  outcome label, and per-step capability narrowing entry must appear verbatim
+  in backticks in the source Markdown or in its frontmatter. If the prose does
+  not name it, return a source-linked question; never invent a default.
+- When the prose restricts what a delegated sub-agent may do — "the reviewer
+  may only run `task_comment`", "the fixer gets no AQ commands" — express it
+  as `capability_narrowing` on that `agent_task` step. It is the third term of
+  `parent ∩ child profile ∩ narrowing`, so it can only take capabilities away:
+
+  ```json
+  "capability_narrowing": {
+    "harness_tools": ["Read", "Grep"],
+    "aq_commands": [],
+    "plugin_tools": null
+  }
+  ```
+
+  Omit a namespace (or write `null`) to say the step narrows nothing there;
+  write `[]` to say *none*. Never name a capability the step's `profile_id`
+  does not grant — that is a `narrowing_not_subset` error, because an
+  intersection with a name nobody holds restricts nothing. If the prose asks
+  for a restriction the child profile cannot express, return a source-linked
+  question rather than a narrowing that silently does nothing.
 - Iterate against `playbook_v2_propose` and independently check a materialized
   artifact with `playbook_v2_validate`; a `question` blocks review exactly as
   an `error` does.

@@ -218,7 +218,9 @@ def build_llm(
 
 TOOL_PRINCIPAL = ExecutionPrincipal(
     kind=PrincipalKind.SESSION,
-    policy=CapabilityPolicy.from_namespaces(aq_commands=["ensure_task"]),
+    policy=CapabilityPolicy.from_namespaces(
+        aq_commands=["ensure_task", "playbook_admin"]
+    ),
 )
 
 

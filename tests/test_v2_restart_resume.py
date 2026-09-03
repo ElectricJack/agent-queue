@@ -20,20 +20,32 @@ saying the opposite.
 
 from __future__ import annotations
 
+import asyncio
+from dataclasses import replace
+import multiprocessing
+import os
+import signal
 from typing import Any
+from uuid import uuid4
 
 import pytest
 
 from src.commands.principal import TRUSTED_LOCAL
+from src.commands.principal import PrincipalKind
 from src.playbooks.engine import (
+    ChildTaskCompleted,
     EventArrived,
     HumanDecision,
+    OperatorResolution,
     PlaybookEngine,
+    TimerFired,
 )
 from src.playbooks.executors.base import EngineServices, ExecutionMode
 from src.playbooks.executors.foreach import collection_digest
 from src.playbooks.executors.wait import wait_id_for
 from src.playbooks.run_state import LoopFrame, RunLifecycle, RunSnapshot
+from src.playbooks.receipts import StepReceipt
+from src.playbooks.waits import WaitSpec
 from tests.fixtures.contracts.engine_contracts import (
     ENSURE_TASK,
     LIST_TASKS,
@@ -43,6 +55,7 @@ from tests.playbook_v2_engine_helpers import (
     InMemoryArtifactStore,
     RecordingBus,
     RecordingRunRepository,
+    SQLiteRunRepository,
     StubActivations,
     artifact_ref_for,
     event,
@@ -54,6 +67,12 @@ from tests.test_v2_engine import (
     downstream,
     ok,
 )
+
+
+def _persist_then_sigkill(database_path: str, snapshot: RunSnapshot) -> None:
+    """A real process dies after the named durable boundary has landed."""
+    asyncio.run(SQLiteRunRepository(database_path).create_run(snapshot))
+    os.kill(os.getpid(), signal.SIGKILL)
 
 
 def fresh_engine(
@@ -178,6 +197,176 @@ class TestRestartAtTheWaitBoundary:
         )
         assert again.outcome == "already_terminal"
         assert len(runs.receipts) == settled
+
+
+def interrupted_attempt(
+    snapshot: RunSnapshot, *, step_id: str, step_kind: str = "command"
+) -> StepReceipt:
+    """The durable half of an executor call that died before its boundary."""
+    return StepReceipt(
+        receipt_id=uuid4().hex,
+        run_id=snapshot.run_id,
+        artifact_sha256=snapshot.artifact_sha256,
+        rule_id=snapshot.rule_id,
+        step_id=step_id,
+        step_kind=step_kind,
+        outcome="skipped",
+        started_at=1_000.0,
+        snapshot_version=snapshot.version,
+        attempt=1,
+        idempotency_key=f"{snapshot.run_id}:{step_id}:-:1",
+        # No completion is deliberately the only signal of ambiguity.
+        completed_at=None,
+    )
+
+
+class TestAmbiguousInterruption:
+    async def _ambiguous_llm(self):
+        runs = RecordingRunRepository()
+        engine, _adapter, ref = fresh_engine("review-pipeline.artifact.json", runs=runs)
+        paused = await engine.run_rule(
+            ref, "review-on-task-completed", event("task-completed-code"), TRUSTED_LOCAL,
+            pause_before_start=True,
+        )
+        snapshot = replace(
+            paused.snapshot, lifecycle=RunLifecycle.RUNNING, current_step_id="classify-risk"
+        )
+        runs.snapshots[snapshot.run_id] = snapshot
+        runs.receipts.append(
+            interrupted_attempt(snapshot, step_id="classify-risk", step_kind="llm")
+        )
+        ambiguous = await engine.resume(
+            snapshot.run_id, EventArrived(event_id="restart"), TRUSTED_LOCAL
+        )
+        return engine, runs, ambiguous
+
+    @pytest.mark.asyncio
+    async def test_retry_safe_command_replays_with_the_same_attempt_key(self):
+        runs = RecordingRunRepository()
+        engine, adapter, ref = fresh_engine("review-pipeline.artifact.json", runs=runs)
+        paused = await engine.run_rule(
+            ref, "review-on-task-completed", event("task-completed-code"), TRUSTED_LOCAL,
+            pause_before_start=True,
+        )
+        snapshot = replace(paused.snapshot, lifecycle=RunLifecycle.RUNNING)
+        runs.snapshots[snapshot.run_id] = snapshot
+        runs.receipts.append(interrupted_attempt(snapshot, step_id="ensure-review-task"))
+        restarted, replay_adapter, _ref = fresh_engine(
+            "review-pipeline.artifact.json", runs=runs
+        )
+        replay_adapter.queue.append(ok("review-1"))
+        outcome = await restarted.resume(
+            snapshot.run_id, EventArrived(event_id="restart"), TRUSTED_LOCAL
+        )
+
+        replay = next(
+            receipt
+            for receipt in runs.receipts
+            if receipt.step_id == "ensure-review-task" and receipt.completed_at is not None
+        )
+        assert replay.idempotency_key == f"{snapshot.run_id}:ensure-review-task:-:1"
+        assert any(receipt.error_code == "interrupted" for receipt in runs.receipts)
+        assert outcome.snapshot.bindings["review"]["task_id"] == "review-1"
+
+    @pytest.mark.asyncio
+    async def test_durable_in_flight_marker_requires_an_operator_for_llm(self):
+        runs = RecordingRunRepository()
+        engine, _adapter, ref = fresh_engine(
+            "review-pipeline.artifact.json", runs=runs
+        )
+        paused = await engine.run_rule(
+            ref,
+            "review-on-task-completed",
+            event("task-completed-code"),
+            TRUSTED_LOCAL,
+            pause_before_start=True,
+        )
+        snapshot = replace(
+            paused.snapshot,
+            lifecycle=RunLifecycle.RUNNING,
+            current_step_id="classify-risk",
+            context=dict(paused.snapshot.context)
+            | {
+                "_in_flight_attempt": {
+                    "step_id": "classify-risk",
+                    "step_kind": "llm",
+                    "iteration": -1,
+                    "attempt": 1,
+                    "started_at": 1_000.0,
+                    "idempotency_key": (
+                        f"{paused.run_id}:classify-risk:-:1"
+                    ),
+                }
+            },
+        )
+        runs.snapshots[snapshot.run_id] = snapshot
+
+        recovered = await engine.resume(
+            snapshot.run_id, EventArrived(event_id="restart"), TRUSTED_LOCAL
+        )
+
+        assert recovered.outcome == "operator_decision_required"
+        assert recovered.snapshot.operator_decision is not None
+        assert "_in_flight_attempt" not in recovered.snapshot.context
+
+    @pytest.mark.asyncio
+    async def test_non_retry_safe_llm_pauses_for_an_operator(self):
+        _engine, _runs, outcome = await self._ambiguous_llm()
+
+        assert outcome.lifecycle is RunLifecycle.PAUSED
+        assert outcome.outcome == "operator_decision_required"
+        assert outcome.snapshot.operator_decision is not None
+        assert outcome.snapshot.bindings == {}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("kind", "payload"),
+        [
+            ("accept", {"outcome": "low", "value": {"risk": "low"}}),
+            ("accept_outcome", {"outcome": "low", "value": {"risk": "low"}}),
+            ("retry", {}),
+            ("fail", {}),
+            ("cancel", {}),
+        ],
+    )
+    async def test_each_operator_resolution_is_receipted(self, kind, payload):
+        engine, runs, ambiguous = await self._ambiguous_llm()
+
+        resolved = await engine.resume(
+            ambiguous.run_id, OperatorResolution(kind=kind, payload=payload), TRUSTED_LOCAL
+        )
+
+        assert resolved.snapshot.operator_decision is None
+        assert any(
+            receipt.result.get("operator_resolution") == kind for receipt in runs.receipts
+        )
+
+    @pytest.mark.asyncio
+    async def test_invalid_operator_resolution_preserves_the_pending_decision(self):
+        engine, runs, ambiguous = await self._ambiguous_llm()
+        receipt_count = len(runs.receipts)
+
+        rejected = await engine.resume(
+            ambiguous.run_id, OperatorResolution(kind="skip"), TRUSTED_LOCAL
+        )
+
+        assert rejected.outcome == "contract_violation"
+        assert rejected.snapshot.operator_decision is not None
+        assert runs.snapshots[ambiguous.run_id].operator_decision is not None
+        assert len(runs.receipts) == receipt_count
+
+    @pytest.mark.asyncio
+    async def test_a_playbook_principal_cannot_resolve_its_own_run(self):
+        engine, runs, ambiguous = await self._ambiguous_llm()
+        playbook = replace(TRUSTED_LOCAL, kind=PrincipalKind.PLAYBOOK)
+
+        denied = await engine.resume(
+            ambiguous.run_id, OperatorResolution(kind="fail"), playbook
+        )
+
+        assert denied.outcome == "unauthorized"
+        assert denied.snapshot.operator_decision is not None
+        assert runs.snapshots[ambiguous.run_id].operator_decision is not None
 
 
 def crashed_mid_loop(ref, *, index: int, items: list[str]) -> RunSnapshot:
@@ -347,3 +536,219 @@ class TestRestartIsModePreserving:
             ref, "sweep", event("spec-approved"), TRUSTED_LOCAL, pause_before_start=True
         )
         assert ExecutionMode(runs.snapshots[outcome.run_id].mode) is ExecutionMode.LIVE
+
+
+class TestRestartProcessBoundaries:
+    @staticmethod
+    def _kill_after_persist(database_path: str, snapshot: RunSnapshot) -> None:
+        child = multiprocessing.get_context("spawn").Process(
+            target=_persist_then_sigkill, args=(database_path, snapshot)
+        )
+        child.start()
+        child.join(timeout=15)
+        assert child.exitcode == -signal.SIGKILL
+
+    @pytest.mark.integration
+    @pytest.mark.asyncio
+    async def test_restart_mid_command_after_sigkill_replays_the_same_attempt(
+        self, tmp_path
+    ):
+        database_path = str(tmp_path / "restart-command.sqlite")
+        template = RecordingRunRepository()
+        engine, _adapter, ref = fresh_engine(
+            "review-pipeline.artifact.json", runs=template
+        )
+        paused = await engine.run_rule(
+            ref,
+            "review-on-task-completed",
+            event("task-completed-code"),
+            TRUSTED_LOCAL,
+            pause_before_start=True,
+        )
+        snapshot = replace(
+            paused.snapshot,
+            lifecycle=RunLifecycle.RUNNING,
+            context=dict(paused.snapshot.context)
+            | {
+                "_in_flight_attempt": {
+                    "step_id": "ensure-review-task",
+                    "step_kind": "command",
+                    "iteration": -1,
+                    "attempt": 1,
+                    "started_at": 1_000.0,
+                    "idempotency_key": (
+                        f"{paused.run_id}:ensure-review-task:-:1"
+                    ),
+                }
+            },
+        )
+        self._kill_after_persist(database_path, snapshot)
+
+        runs = SQLiteRunRepository(database_path)
+        restarted, adapter, _ref = fresh_engine(
+            "review-pipeline.artifact.json", runs=runs
+        )
+        adapter.queue.append(ok("review-after-restart"))
+        resumed = await restarted.resume(
+            snapshot.run_id, EventArrived(event_id="restart"), TRUSTED_LOCAL
+        )
+
+        replay = next(
+            receipt
+            for receipt in await runs.list_receipts(snapshot.run_id)
+            if receipt.step_id == "ensure-review-task"
+            and receipt.receipt_kind == "step"
+        )
+        assert replay.idempotency_key == (
+            f"{snapshot.run_id}:ensure-review-task:-:1"
+        )
+        assert resumed.snapshot.bindings["review"]["task_id"] == (
+            "review-after-restart"
+        )
+
+    @pytest.mark.integration
+    @pytest.mark.asyncio
+    async def test_restart_mid_llm_after_sigkill_requires_operator(self, tmp_path):
+        database_path = str(tmp_path / "restart-llm.sqlite")
+        template = RecordingRunRepository()
+        engine, _adapter, ref = fresh_engine(
+            "review-pipeline.artifact.json", runs=template
+        )
+        paused = await engine.run_rule(
+            ref,
+            "review-on-task-completed",
+            event("task-completed-code"),
+            TRUSTED_LOCAL,
+            pause_before_start=True,
+        )
+        snapshot = replace(
+            paused.snapshot,
+            lifecycle=RunLifecycle.RUNNING,
+            current_step_id="classify-risk",
+            context=dict(paused.snapshot.context)
+            | {
+                "_in_flight_attempt": {
+                    "step_id": "classify-risk",
+                    "step_kind": "llm",
+                    "iteration": -1,
+                    "attempt": 1,
+                    "started_at": 1_000.0,
+                    "idempotency_key": f"{paused.run_id}:classify-risk:-:1",
+                }
+            },
+        )
+        self._kill_after_persist(database_path, snapshot)
+
+        runs = SQLiteRunRepository(database_path)
+        restarted, _adapter, _ref = fresh_engine(
+            "review-pipeline.artifact.json", runs=runs
+        )
+        resumed = await restarted.resume(
+            snapshot.run_id, EventArrived(event_id="restart"), TRUSTED_LOCAL
+        )
+
+        assert resumed.outcome == "operator_decision_required"
+        assert resumed.snapshot.operator_decision is not None
+
+    @pytest.mark.integration
+    @pytest.mark.asyncio
+    async def test_restart_at_wait_deadline_after_sigkill_resumes_once(self, tmp_path):
+        database_path = str(tmp_path / "restart-wait.sqlite")
+        template = RecordingRunRepository()
+        engine, _adapter, ref = fresh_engine(
+            "wait-kinds.artifact.json", runs=template, waits=RecordingWaitRepository()
+        )
+        paused = await engine.run_rule(
+            ref, "sleep", event("task-created"), TRUSTED_LOCAL
+        )
+        assert paused.snapshot.wait is not None
+        self._kill_after_persist(database_path, paused.snapshot)
+
+        runs = SQLiteRunRepository(database_path)
+        restarted, _adapter, _ref = fresh_engine(
+            "wait-kinds.artifact.json", runs=runs
+        )
+        resumed = await restarted.resume(
+            paused.run_id,
+            TimerFired(paused.snapshot.wait.wait_id),
+            TRUSTED_LOCAL,
+        )
+
+        assert resumed.lifecycle is RunLifecycle.COMPLETED
+
+    @pytest.mark.integration
+    @pytest.mark.asyncio
+    async def test_restart_mid_loop_after_sigkill_uses_the_same_iteration(self, tmp_path):
+        database_path = str(tmp_path / "restart-loop.sqlite")
+        template_runs = RecordingRunRepository()
+        _engine, _adapter, ref = fresh_engine("sequential-loop.artifact.json", runs=template_runs)
+        snapshot = crashed_mid_loop(ref, index=1, items=["d-1", "d-2", "d-3"])
+        child = multiprocessing.get_context("spawn").Process(
+            target=_persist_then_sigkill, args=(database_path, snapshot)
+        )
+        child.start()
+        child.join(timeout=15)
+        assert child.exitcode == -signal.SIGKILL
+
+        runs = SQLiteRunRepository(database_path)
+        restarted, adapter, _ref = fresh_engine("sequential-loop.artifact.json", runs=runs)
+        adapter.queue.extend([ok("t-2"), ok("t-3")])
+        resumed = await restarted.resume(
+            snapshot.run_id, EventArrived(event_id="restart", payload={}), TRUSTED_LOCAL
+        )
+
+        assert resumed.lifecycle is RunLifecycle.COMPLETED
+        assert [args.title for args in adapter.args_for("ensure_task")] == [
+            "Gate: d-2",
+            "Gate: d-3",
+        ]
+
+    @pytest.mark.integration
+    @pytest.mark.asyncio
+    async def test_restart_after_agent_task_creation_does_not_create_a_second_child(self, tmp_path):
+        database_path = str(tmp_path / "restart-agent-task.sqlite")
+        template_runs = RecordingRunRepository()
+        _engine, _adapter, ref = fresh_engine("review-pipeline.artifact.json", runs=template_runs)
+        snapshot = RunSnapshot(
+            run_id="run-agent-task-killed",
+            playbook_id="default-pipeline",
+            artifact_sha256=ref.artifact_sha256,
+            rule_id="review-on-task-completed",
+            lifecycle=RunLifecycle.PAUSED,
+            current_step_id="escalate",
+            event=event("task-completed-code"),
+            context={"dispatch_id": "d-agent", "playbook_id": "default-pipeline", "rule_id": "review-on-task-completed"},
+            bindings={"review": {"task_id": "review-1", "created": True}},
+            agent_task_ids=("child-created-before-kill",),
+            wait=WaitSpec(
+                wait_id="wait-child-created-before-kill",
+                run_id="run-agent-task-killed",
+                step_id="escalate",
+                kind="agent_task",
+                match={"task_id": "child-created-before-kill"},
+                created_at=1_000.0,
+            ),
+            event_type="task.completed",
+            event_id="evt-agent",
+            dispatch_id="d-agent",
+            started_at=1_000.0,
+            updated_at=1_000.0,
+        )
+        child = multiprocessing.get_context("spawn").Process(
+            target=_persist_then_sigkill, args=(database_path, snapshot)
+        )
+        child.start()
+        child.join(timeout=15)
+        assert child.exitcode == -signal.SIGKILL
+
+        runs = SQLiteRunRepository(database_path)
+        restarted, adapter, _ref = fresh_engine("review-pipeline.artifact.json", runs=runs)
+        resumed = await restarted.resume(
+            snapshot.run_id,
+            ChildTaskCompleted(task_id="child-created-before-kill", status="completed"),
+            TRUSTED_LOCAL,
+        )
+
+        assert resumed.lifecycle is RunLifecycle.PAUSED
+        assert resumed.snapshot.agent_task_ids == ("child-created-before-kill",)
+        assert "create_task" not in adapter.names

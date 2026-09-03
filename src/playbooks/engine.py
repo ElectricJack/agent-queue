@@ -30,11 +30,13 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 from src.commands.authorization import authorize_command
+from src.commands.principal import PrincipalKind
 from src.commands.contracts.models import OutcomeClass
 from src.llm.client import LLMToolTurn, LLMToolTurnBoundaryError
 from src.llm.types import TokenUsage
 from src.playbooks.artifact_ref import ArtifactRef
 from src.playbooks.definition import (
+    AgentTaskStep,
     CommandStep,
     ForEachStep,
     LlmStep,
@@ -44,6 +46,12 @@ from src.playbooks.definition import (
     step_targets,
 )
 from src.playbooks.executors import executor_for
+from src.playbooks.executors.agent_task import (
+    cancel_child_task,
+    child_outcome_for_status,
+    narrow_for_child,
+    resolve_profile_policy,
+)
 from src.playbooks.executors.llm import resolve_profile_principal
 from src.playbooks.executors.base import (
     ENGINE_RESERVED_OUTCOMES,
@@ -54,6 +62,7 @@ from src.playbooks.executors.base import (
     ExecutorResult,
     StepContext,
     StepControl,
+    UnknownStepType,
 )
 from src.playbooks.executors.wait import WaitResumption, resolve_wait_result
 from src.playbooks.expressions import (
@@ -74,6 +83,7 @@ from src.playbooks.run_state import (
     SnapshotVersionConflict,
     StateLimitExceeded,
     bind_step_output,
+    canonical_json,
 )
 from src.playbooks.waits import EMPTY_WAIT_CHANGES, WaitChangeSet, WaitClaim, WaitSpec
 
@@ -178,8 +188,9 @@ class DispatchResult:
     pending: tuple[PendingEventRef, ...] = ()
     #: Rules whose run already existed for this dispatch — a replay.
     deduplicated: tuple[str, ...] = ()
-    #: Ordered ``(step_id, command_name)`` pairs, for shadow parity.
-    commands: tuple[tuple[str, str], ...] = ()
+    #: Ordered ``(step_id, command_name, canonical_args)`` records for
+    #: shadow parity.  They are in-memory observations, never invocations.
+    commands: tuple[tuple[str, str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -189,14 +200,61 @@ class RunOutcome:
     outcome: str
     snapshot: RunSnapshot | None = None
     receipts: tuple[StepReceipt, ...] = ()
-    #: Operator-facing refusal text, when there is one.  ``cancel`` on a
-    #: finished run reports it in V1's shape (``playbook_commands.py:544``) so
-    #: the command surface can hand the same sentence back and an operator
-    #: does not have to learn a second vocabulary for the same refusal.
+    commands: tuple[tuple[str, str, str], ...] = ()
+    result_value: Any | None = None
+    #: Operator-facing refusal text, when there is one.
     error: str | None = None
-    #: §4.9's ``acknowledged`` / ``grace_expired``, when this outcome ended a
-    #: run by cancelling it.  Mirrors the receipt's own projection.
+    #: Whether cancellation was acknowledged or its grace period expired.
     cancellation: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DryRunNode:
+    """One real-graph dry-run visit, including an honest unresolved boundary."""
+
+    step_id: str
+    status: str
+    outcome: str | None = None
+    target: str | None = None
+    reason: str | None = None
+    possible_outcomes: tuple[str, ...] = ()
+    #: Present for a selected rule omitted before traversal due to the global
+    #: path bound; regular nodes inherit their path's rule id.
+    rule_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DryRunPath:
+    """One bounded path through a selected rule's executable graph."""
+
+    rule_id: str
+    nodes: tuple[DryRunNode, ...]
+    status: str
+    completed: bool = False
+    #: Selected rules omitted by the global path bound.  A frontier belongs
+    #: inside a returned path so ``max_paths`` remains a hard result bound.
+    omitted_frontiers: tuple[DryRunNode, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class DryRunTree:
+    """The bounded real-graph answer returned by :meth:`PlaybookEngine.dry_run`."""
+
+    artifact_sha256: str
+    rules_selected: tuple[str, ...]
+    paths: tuple[DryRunPath, ...]
+    truncated: bool = False
+    step_visits: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class _DryRunCursor:
+    rule_id: str
+    step_id: str
+    scope: ResolutionScope
+    loop: LoopFrame | None
+    nodes: tuple[DryRunNode, ...] = ()
+    unresolved: bool = False
 
 
 class InMemoryRunRecorder:
@@ -210,6 +268,11 @@ class InMemoryRunRecorder:
     def __init__(self) -> None:
         self.snapshots: dict[str, RunSnapshot] = {}
         self.receipts: list[StepReceipt] = []
+        self.commands: list[tuple[str, str, str]] = []
+
+    def record_command(self, step_id: str, command: str, args: Mapping[str, Any]) -> None:
+        """Remember a shadow command without making an external call."""
+        self.commands.append((step_id, command, canonical_json(args).decode("utf-8")))
 
     async def create_run(self, snapshot: RunSnapshot) -> RunSnapshot:
         self.snapshots[snapshot.run_id] = snapshot
@@ -266,6 +329,13 @@ class _Attempt:
     wait_id: str | None = None
     loop_frame: LoopFrame | None = None
     clear_loop: bool = False
+    #: Set by the agent-task executor.  Persisted on the snapshot *before*
+    #: the run is observable as paused, so a paused run always knows what it
+    #: is waiting for.
+    child_task_id: str | None = None
+    #: Clear this run's registered waits at the boundary — what reconciling a
+    #: delivered child completion does.
+    clear_waits: bool = False
     usage: TokenUsage | None = None
     llm_calls: int = 0
     boundary_receipts: list[StepReceipt] = field(default_factory=list)
@@ -361,12 +431,12 @@ class PlaybookEngine:
         refs: Sequence[ArtifactRef] = []
         pending: list[PendingEventRef] = []
         if self.activations is not None:
-            refs = await self.activations.ready_activations(event_type)
+            refs = await self.activations.ready_activations(event_type, hydrated)
 
         selected: list[str] = []
         run_ids: list[str] = []
         deduplicated: list[str] = []
-        commands: list[tuple[str, str]] = []
+        commands: list[tuple[str, str, str]] = []
         coroutines: list[Any] = []
         rule_order: list[tuple[ArtifactRef, str]] = []
 
@@ -401,10 +471,7 @@ class PlaybookEngine:
             run_ids.append(outcome.run_id)
             if outcome.outcome == "deduplicated":
                 deduplicated.append(rule_id)
-            for receipt in outcome.receipts:
-                step = self._step_of(ref, receipt.step_id)
-                if isinstance(step, CommandStep):
-                    commands.append((receipt.step_id, step.command))
+            commands.extend(outcome.commands)
 
         return DispatchResult(
             dispatch_id=dispatch_id,
@@ -413,6 +480,277 @@ class PlaybookEngine:
             pending=tuple(pending),
             deduplicated=tuple(deduplicated),
             commands=tuple(commands),
+        )
+
+    async def dry_run(
+        self,
+        artifact_ref: ArtifactRef,
+        event: Mapping[str, Any],
+        principal: Any,
+        *,
+        invoke_ai: bool = False,
+        max_paths: int = 32,
+        max_step_visits: int = MAX_STEP_VISITS,
+    ) -> DryRunTree:
+        """Traverse the executable artifact with a bounded symbolic work list.
+
+        This intentionally does not call :meth:`run_rule`: dry-run has no
+        durable run identity, and routing an unresolved branch through the
+        live cursor would pause it after the first boundary.  It nevertheless
+        uses the same artifact, trigger selection, value resolution,
+        deterministic executors and transition fields as live execution.
+        """
+        if max_paths < 1 or max_step_visits < 1:
+            raise ValueError("dry-run bounds must be >= 1")
+        artifact = self._load(artifact_ref)
+        hydrated = await self._hydrate_event(event)
+        event_type = self._event_type(hydrated)
+        rules = tuple(
+            rule for rule in artifact.rules if self._trigger_matches(rule, event_type, hydrated)
+        )
+        work: list[_DryRunCursor] = []
+        paths: list[DryRunPath] = []
+        omitted_frontiers: list[DryRunNode] = []
+        truncated = False
+        dispatch_id = self._dispatch_id(hydrated)
+        for rule in rules:
+            scope = ResolutionScope(
+                event=dict(hydrated),
+                context=self._context(artifact, rule, dispatch_id),
+                bindings={},
+                loop={},
+            )
+            if len(work) + len(paths) >= max_paths:
+                # Keep the selected rule visible without manufacturing an
+                # extra returned path beyond the global bound.
+                omitted_frontiers.append(
+                    DryRunNode(
+                        rule.entry_step,
+                        "unresolved",
+                        reason="path_limit",
+                        rule_id=rule.id,
+                    )
+                )
+                truncated = True
+            else:
+                work.append(_DryRunCursor(rule.id, rule.entry_step, scope, None))
+
+        visits = 0
+        while work:
+            cursor = work.pop(0)
+            if visits >= max_step_visits:
+                paths.append(
+                    DryRunPath(
+                        cursor.rule_id,
+                        cursor.nodes
+                        + (DryRunNode(cursor.step_id, "unresolved", reason="visit_limit"),),
+                        "truncated",
+                    )
+                )
+                truncated = True
+                continue
+            visits += 1
+            step = artifact.steps.get(cursor.step_id)
+            if step is None:
+                raise UnknownStepType(f"step {cursor.step_id!r} is not in the artifact")
+            try:
+                inputs = {
+                    name: resolve_value(value, cursor.scope)
+                    for name, value in getattr(step, "inputs", {}).items()
+                }
+            except ValueResolutionError as exc:
+                paths.append(
+                    DryRunPath(
+                        cursor.rule_id,
+                        cursor.nodes
+                        + (
+                            DryRunNode(
+                                cursor.step_id, "unresolved", reason=exc.reason
+                            ),
+                        ),
+                        "unresolved",
+                    )
+                )
+                continue
+
+            executor_mode = (
+                ExecutionMode.LIVE if invoke_ai and step.type == "llm" else ExecutionMode.DRY_RUN
+            )
+            ctx = StepContext(
+                run_id=f"dry-run:{dispatch_id}:{cursor.rule_id}",
+                dispatch_id=dispatch_id,
+                artifact_ref=artifact_ref,
+                artifact=artifact,
+                rule_id=cursor.rule_id,
+                step_id=cursor.step_id,
+                principal=principal,
+                scope=cursor.scope,
+                services=self.services,
+                mode=ExecutionMode.DRY_RUN,
+                iteration_index=None if cursor.loop is None else cursor.loop.index,
+                inputs=inputs,
+                loop_frame=cursor.loop,
+            )
+            try:
+                result = await executor_for(step.type, executor_mode).execute(step, ctx)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # a preview/provider error is an honest boundary
+                result = ExecutorResult(
+                    control=StepControl.UNRESOLVED,
+                    outcome="runtime_error",
+                    diagnostics=(type(exc).__name__,),
+                    possible_outcomes=tuple(sorted(getattr(step, "transitions", {}))),
+                )
+
+            # A foreach collection supplied by a symbolic upstream result has
+            # no items to expand.  The live executor reports an input failure
+            # because a concrete run cannot continue; dry-run instead reports
+            # the honest unresolved loop boundary and never invents an empty
+            # collection or takes the failure edge.
+            if isinstance(step, ForEachStep) and result.outcome == "input_resolution_failed":
+                result = ExecutorResult(
+                    control=StepControl.UNRESOLVED,
+                    outcome="unavailable",
+                    operation=result.operation,
+                    diagnostics=("loop collection is unresolved",),
+                )
+
+            if result.control is StepControl.UNRESOLVED:
+                reason = "; ".join(result.diagnostics) or "unresolved boundary"
+                possible = result.possible_outcomes
+                if not possible:
+                    paths.append(
+                        DryRunPath(
+                            cursor.rule_id,
+                            cursor.nodes
+                            + (
+                                DryRunNode(
+                                    cursor.step_id, "unresolved", reason=reason
+                                ),
+                            ),
+                            "unresolved",
+                        )
+                    )
+                    continue
+                available = max_paths - len(paths) - len(work)
+                if len(possible) > available:
+                    paths.append(
+                        DryRunPath(
+                            cursor.rule_id,
+                            cursor.nodes
+                            + (
+                                DryRunNode(
+                                    cursor.step_id,
+                                    "unresolved",
+                                    reason="path_limit",
+                                    possible_outcomes=tuple(possible),
+                                ),
+                            ),
+                            "truncated",
+                        )
+                    )
+                    truncated = True
+                    continue
+                for outcome in possible:
+                    target = getattr(step, "transitions", {}).get(outcome)
+                    node = DryRunNode(
+                        cursor.step_id,
+                        "unresolved",
+                        outcome=outcome,
+                        target=target,
+                        reason=reason,
+                        possible_outcomes=tuple(possible),
+                    )
+                    if target is None:
+                        paths.append(
+                            DryRunPath(cursor.rule_id, cursor.nodes + (node,), "unresolved")
+                        )
+                    else:
+                        work.append(
+                            _DryRunCursor(
+                                cursor.rule_id,
+                                target,
+                                cursor.scope,
+                                cursor.loop,
+                                cursor.nodes + (node,),
+                                True,
+                            )
+                        )
+                continue
+
+            status = "simulated" if step.type == "command" else "resolved"
+            node = DryRunNode(cursor.step_id, status, outcome=result.outcome)
+            next_scope = cursor.scope
+            if result.value is not None and getattr(step, "save_result_as", None):
+                try:
+                    next_scope = next_scope.with_binding(step.save_result_as, result.value)
+                except ValueResolutionError as exc:
+                    paths.append(
+                        DryRunPath(
+                            cursor.rule_id,
+                            cursor.nodes
+                            + (DryRunNode(cursor.step_id, "unresolved", reason=exc.reason),),
+                            "unresolved",
+                        )
+                    )
+                    continue
+            next_loop = None if result.clear_loop else (result.loop_frame or cursor.loop)
+            if result.control is StepControl.TERMINATE:
+                paths.append(
+                    DryRunPath(
+                        cursor.rule_id,
+                        cursor.nodes + (node,),
+                        "unresolved" if cursor.unresolved else "resolved",
+                        completed=not cursor.unresolved,
+                    )
+                )
+                continue
+            target = (
+                result.goto_step_id
+                if result.control is StepControl.GOTO
+                else getattr(step, "transitions", {}).get(result.outcome)
+            )
+            if target is None:
+                paths.append(
+                    DryRunPath(
+                        cursor.rule_id,
+                        cursor.nodes
+                        + (
+                            DryRunNode(
+                                cursor.step_id,
+                                "unresolved",
+                                reason="outcome has no transition",
+                            ),
+                        ),
+                        "unresolved",
+                    )
+                )
+                continue
+            node = replace(node, target=target)
+            work.append(
+                _DryRunCursor(
+                    cursor.rule_id,
+                    target,
+                    next_scope,
+                    next_loop,
+                    cursor.nodes + (node,),
+                    cursor.unresolved,
+                )
+            )
+        if truncated:
+            # A bounded tree is an incomplete answer.  Even a path that
+            # happened to reach a terminal before another frontier hit a
+            # bound must not be reported as a completed dry-run result.
+            paths = [replace(path, status="truncated", completed=False) for path in paths]
+            if omitted_frontiers and paths:
+                paths[0] = replace(paths[0], omitted_frontiers=tuple(omitted_frontiers))
+        return DryRunTree(
+            artifact_sha256=artifact_ref.artifact_sha256,
+            rules_selected=tuple(rule.id for rule in rules),
+            paths=tuple(paths),
+            truncated=truncated,
+            step_visits=visits,
         )
 
     # ------------------------------------------------------------------
@@ -430,6 +768,7 @@ class PlaybookEngine:
         dispatch_id: str | None = None,
         deadline_at: float | None = None,
         pause_before_start: bool = False,
+        project_task: bool = True,
     ) -> RunOutcome:
         """Create one run for *rule_id* and walk it.
 
@@ -439,6 +778,10 @@ class PlaybookEngine:
         for later resumption both need a durable, addressable run at its
         entry step rather than a promise to make one.
         """
+        # Projection tasks are not yet created by the V2 engine.  Keeping the
+        # caller-owned choice in the public contract makes assignment-routing
+        # explicit and prevents a future projection layer from changing it.
+        _ = project_task
         artifact = self._load(artifact_ref)
         rule = next((r for r in artifact.rules if r.id == rule_id), None)
         if rule is None:
@@ -470,12 +813,33 @@ class PlaybookEngine:
             existing = await repository.find_run_for_dispatch(dispatch_id, rule.id)
             if existing is None:  # pragma: no cover - the index said it exists
                 raise
-            return RunOutcome(existing.run_id, existing.lifecycle, "deduplicated", existing)
+            result_value = None
+            list_receipts = getattr(repository, "list_receipts", None)
+            if callable(list_receipts):
+                receipts = await list_receipts(existing.run_id)
+                result_value = next(
+                    (
+                        receipt.result["value"]
+                        for receipt in reversed(receipts)
+                        if "value" in receipt.result
+                    ),
+                    None,
+                )
+            return RunOutcome(
+                existing.run_id,
+                existing.lifecycle,
+                "deduplicated",
+                existing,
+                result_value=result_value,
+            )
 
         await self._emit(EVENT_RUN_STARTED, snapshot)
         if pause_before_start:
             return RunOutcome(snapshot.run_id, snapshot.lifecycle, "paused", snapshot)
-        return await self._walk(snapshot, artifact, artifact_ref, principal, mode, repository)
+        outcome = await self._walk(snapshot, artifact, artifact_ref, principal, mode, repository)
+        if isinstance(repository, InMemoryRunRecorder):
+            return replace(outcome, commands=tuple(repository.commands))
+        return outcome
 
     # ------------------------------------------------------------------
     # §3.5 — resume
@@ -500,69 +864,23 @@ class PlaybookEngine:
         mode = ExecutionMode(snapshot.mode)
         artifact_ref = await self._ref_for(snapshot)
         artifact = self._load(artifact_ref)
-
         if snapshot.operator_decision is not None:
-            if not isinstance(cause, OperatorResolution):
-                return RunOutcome(
-                    run_id,
-                    RunLifecycle.PAUSED,
-                    "operator_decision_required",
-                    snapshot,
-                )
-            if cause.kind not in {"retry", "fail", "cancel"}:
-                return RunOutcome(run_id, RunLifecycle.PAUSED, "invalid_resolution", snapshot)
-            decision = snapshot.operator_decision
-            now = self.services.clock()
-            lifecycle = {
-                "retry": RunLifecycle.RUNNING,
-                "fail": RunLifecycle.FAILED,
-                "cancel": RunLifecycle.CANCELLED,
-            }[cause.kind]
-            resolved = replace(
-                snapshot,
-                lifecycle=lifecycle,
-                operator_decision=None,
-                error=None if cause.kind == "retry" else f"operator resolved: {cause.kind}",
-                error_code=None if cause.kind == "retry" else cause.kind,
-                updated_at=now,
-                completed_at=now if lifecycle in {RunLifecycle.FAILED, RunLifecycle.CANCELLED} else None,
+            return await self._resolve_operator_decision(
+                snapshot, cause, principal, artifact, artifact_ref, mode, repository
             )
-            resolution_receipt = StepReceipt(
-                receipt_id=uuid.uuid4().hex,
-                run_id=snapshot.run_id,
-                artifact_sha256=snapshot.artifact_sha256,
-                rule_id=snapshot.rule_id,
-                step_id=decision.step_id,
-                step_kind="llm",
-                receipt_kind="operator_decision",
-                turn_index=decision.turn_index,
-                operator_decision_id=decision.decision_id,
-                outcome="success" if cause.kind == "retry" else "failure",
-                started_at=now,
-                snapshot_version=snapshot.version + 1,
-                iteration=snapshot.loop.index if snapshot.loop else -1,
-                attempt=decision.attempt,
-                principal=self._principal_projection(principal),
-                result={"resolution": cause.kind},
-                completed_at=now,
+        snapshot, interrupted = await self._recover_interrupted_attempt(
+            snapshot, artifact, artifact_ref, principal, repository
+        )
+        if interrupted is not None:
+            if snapshot.lifecycle is RunLifecycle.PAUSED:
+                return RunOutcome(snapshot.run_id, snapshot.lifecycle, interrupted, snapshot)
+            # The interrupted receipt is a boundary of its own.  Re-load the
+            # durable snapshot shape before replaying the identical attempt.
+            snapshot = await repository.load_run(run_id) or snapshot
+        if isinstance(cause, ChildTaskCompleted):
+            return await self._resume_child_task(
+                snapshot, cause, principal, artifact, artifact_ref, mode, repository
             )
-            snapshot = await repository.commit_boundary(resolved, resolution_receipt)
-            if snapshot.is_terminal:
-                return RunOutcome(
-                    run_id,
-                    snapshot.lifecycle,
-                    cause.kind,
-                    snapshot,
-                    (resolution_receipt,),
-                )
-            walked = await self._walk(
-                snapshot, artifact, artifact_ref, principal, mode, repository
-            )
-            return replace(
-                walked,
-                receipts=(resolution_receipt,) + walked.receipts,
-            )
-
         current_step = artifact.steps.get(snapshot.current_step_id or "")
         if snapshot.lifecycle is RunLifecycle.RUNNING and isinstance(current_step, LlmStep):
             step_id = snapshot.current_step_id or ""
@@ -615,7 +933,6 @@ class PlaybookEngine:
                 attempt.snapshot,
                 tuple(attempt.boundary_receipts),
             )
-
         snapshot = replace(
             snapshot,
             lifecycle=RunLifecycle.RUNNING,
@@ -629,7 +946,380 @@ class PlaybookEngine:
             )
         return await self._walk(snapshot, artifact, artifact_ref, principal, mode, repository)
 
-    async def cancel(self, run_id: str, principal: Any, *, reason: str = "operator") -> RunOutcome:
+    async def _recover_interrupted_attempt(
+        self,
+        snapshot: RunSnapshot,
+        artifact: PlaybookDefinition,
+        artifact_ref: ArtifactRef,
+        principal: Any,
+        repository: Any,
+    ) -> tuple[RunSnapshot, str | None]:
+        """Turn an incomplete durable attempt into a replay or an operator stop.
+
+        An executor can have reached an external provider while its step
+        boundary has not committed.  That is the only restart ambiguity the
+        engine is allowed to infer; every other running snapshot simply
+        resumes at its current step.
+        """
+        if snapshot.lifecycle is not RunLifecycle.RUNNING or snapshot.current_step_id is None:
+            return snapshot, None
+        list_receipts = getattr(repository, "list_receipts", None)
+        if not callable(list_receipts):
+            return snapshot, None
+        receipts = await list_receipts(snapshot.run_id)
+        iteration = self._iteration_of(snapshot, snapshot.current_step_id)
+        started = [
+            receipt
+            for receipt in receipts
+            if receipt.step_id == snapshot.current_step_id
+            and receipt.iteration == iteration
+            and receipt.completed_at is None
+        ]
+        marker = snapshot.context.get("_in_flight_attempt")
+        if started:
+            receipt = max(started, key=lambda item: item.attempt)
+        elif isinstance(marker, Mapping) and marker.get("step_id") == snapshot.current_step_id:
+            receipt = StepReceipt(
+                receipt_id=uuid.uuid4().hex,
+                run_id=snapshot.run_id,
+                artifact_sha256=snapshot.artifact_sha256,
+                rule_id=snapshot.rule_id,
+                step_id=snapshot.current_step_id,
+                step_kind=str(marker.get("step_kind") or "command"),
+                outcome="skipped",
+                started_at=float(marker.get("started_at") or self.services.clock()),
+                snapshot_version=snapshot.version,
+                iteration=int(marker.get("iteration", iteration)),
+                attempt=int(marker.get("attempt", 1)),
+                idempotency_key=str(marker.get("idempotency_key") or ""),
+                completed_at=None,
+            )
+        else:
+            return snapshot, None
+        step = artifact.steps.get(snapshot.current_step_id)
+        if step is None:
+            return snapshot, None
+        now = self.services.clock()
+        decision_id = uuid.uuid4().hex
+        turn_index = max(
+            (
+                item.turn_index
+                for item in receipts
+                if item.step_id == receipt.step_id
+                and item.iteration == iteration
+                and item.attempt == receipt.attempt
+            ),
+            default=-1,
+        ) + 1
+        interrupted = replace(
+            receipt,
+            receipt_id=uuid.uuid4().hex,
+            receipt_kind="interrupted",
+            turn_index=turn_index,
+            operator_decision_id=decision_id,
+            outcome="failure",
+            error="attempt interrupted before its boundary committed",
+            error_code="interrupted",
+            completed_at=now,
+            duration_ms=max(0, int((now - receipt.started_at) * 1000)),
+            snapshot_version=snapshot.version + 1,
+        )
+        if self._retry_safe_after_interruption(step):
+            attempts = dict(snapshot.attempts)
+            attempts[f"{receipt.step_id}:{iteration}"] = max(0, receipt.attempt - 1)
+            replayable = replace(
+                snapshot,
+                attempts=attempts,
+                context={
+                    key: value
+                    for key, value in snapshot.context.items()
+                    if key != "_in_flight_attempt"
+                },
+                updated_at=now,
+            )
+            return await repository.commit_boundary(replayable, interrupted), "replay"
+
+        attempts = dict(snapshot.attempts)
+        attempts[f"{receipt.step_id}:{iteration}"] = receipt.attempt
+        decision = OperatorDecision(
+            step_id=receipt.step_id,
+            attempt=receipt.attempt,
+            reason="interrupted attempt may have reached an external side effect",
+            raised_at=now,
+            decision_id=decision_id,
+            turn_index=turn_index,
+        )
+        paused = replace(
+            snapshot,
+            lifecycle=RunLifecycle.PAUSED,
+            attempts=attempts,
+            context={
+                key: value
+                for key, value in snapshot.context.items()
+                if key != "_in_flight_attempt"
+            },
+            operator_decision=decision,
+            error="operator_decision_required",
+            error_code="operator_decision_required",
+            updated_at=now,
+        )
+        operator_receipt = replace(
+            interrupted,
+            outcome="operator_decision_required",
+            error=decision.reason,
+            error_code="operator_decision_required",
+        )
+        return await repository.commit_boundary(paused, operator_receipt), "operator_decision_required"
+
+    def _retry_safe_after_interruption(self, step: Any) -> bool:
+        if not isinstance(step, CommandStep):
+            return False
+        registration = self.services.contracts.get(step.command)
+        if registration is None:
+            return False
+        execution = registration.contract.execution
+        return execution.retry_safe or execution.idempotency.mode in {"natural", "keyed"}
+
+    async def _resolve_operator_decision(
+        self,
+        snapshot: RunSnapshot,
+        cause: ResumeCause,
+        principal: Any,
+        artifact: PlaybookDefinition,
+        artifact_ref: ArtifactRef,
+        mode: ExecutionMode,
+        repository: Any,
+    ) -> RunOutcome:
+        """Apply exactly one privileged, receipted ambiguity resolution (§4.8)."""
+        if not isinstance(cause, OperatorResolution):
+            return RunOutcome(snapshot.run_id, snapshot.lifecycle, "operator_decision_required", snapshot)
+        policy = getattr(principal, "policy", None)
+        authorized = (
+            getattr(principal, "kind", None) is not PrincipalKind.PLAYBOOK
+            and (
+                not getattr(principal, "enforced", False)
+                or (policy is not None and policy.allows("aq_commands", "playbook_admin"))
+            )
+        )
+        if not authorized:
+            return RunOutcome(snapshot.run_id, snapshot.lifecycle, "unauthorized", snapshot)
+        decision = snapshot.operator_decision
+        assert decision is not None  # narrowed by the caller
+        if cause.kind not in {"accept", "accept_outcome", "retry", "fail", "cancel"}:
+            return RunOutcome(
+                snapshot.run_id, snapshot.lifecycle, "contract_violation", snapshot
+            )
+        action = "accept" if cause.kind == "accept_outcome" else cause.kind
+        step = artifact.steps.get(decision.step_id)
+        if step is None:
+            return RunOutcome(snapshot.run_id, snapshot.lifecycle, "contract_violation", snapshot)
+        now = self.services.clock()
+        running = replace(
+            snapshot,
+            lifecycle=RunLifecycle.RUNNING,
+            operator_decision=None,
+            error=None,
+            error_code=None,
+            updated_at=now,
+            context=dict(snapshot.context) | {"_operator_resolution": cause.kind},
+        )
+        resolution_receipt = StepReceipt(
+            receipt_id=uuid.uuid4().hex,
+            run_id=snapshot.run_id,
+            artifact_sha256=snapshot.artifact_sha256,
+            rule_id=snapshot.rule_id,
+            step_id=decision.step_id,
+            step_kind=step.type,
+            receipt_kind="operator_decision",
+            turn_index=decision.turn_index,
+            operator_decision_id=decision.decision_id,
+            outcome="success" if action in {"accept", "retry"} else "failure",
+            started_at=now,
+            snapshot_version=snapshot.version + 1,
+            iteration=snapshot.loop.index if snapshot.loop else -1,
+            attempt=decision.attempt,
+            principal=self._principal_projection(principal),
+            result={"operator_resolution": cause.kind},
+            completed_at=now,
+        )
+        running = await repository.commit_boundary(running, resolution_receipt)
+        if action == "retry":
+            walked = await self._walk(running, artifact, artifact_ref, principal, mode, repository)
+            return replace(
+                walked,
+                receipts=(resolution_receipt,) + walked.receipts,
+            )
+        attempt = _Attempt(
+            snapshot=running,
+            step_id=decision.step_id,
+            step=step,
+            started_at=now,
+            principal=principal,
+            iteration=self._iteration_of(running, decision.step_id),
+            attempt=decision.attempt,
+        )
+        attempt.snapshot = replace(
+            running,
+            context={
+                key: value
+                for key, value in running.context.items()
+                if key != "_operator_resolution"
+            },
+        )
+        attempt.idempotency_key = idempotency_key(
+            running.run_id, decision.step_id, attempt.iteration, attempt.attempt
+        )
+        attempt.receipt_result = {"operator_resolution": cause.kind}
+        if action == "accept":
+            attempt.outcome = str(cause.payload.get("outcome", ""))
+            value = cause.payload.get("value")
+            if value is not None and getattr(step, "save_result_as", None):
+                try:
+                    attempt.snapshot = bind_step_output(
+                        attempt.snapshot,
+                        step_id=step.save_result_as,
+                        value=value,
+                        declared=value.keys(),
+                    )
+                except (AttributeError, StateLimitExceeded):
+                    attempt.outcome = "state_limit_exceeded"
+                    attempt.error = "operator value exceeds the state limit"
+            committed, receipt, outcome = await self._advance_on_outcome(
+                attempt, artifact, artifact_ref, repository
+            )
+        elif action in {"fail", "cancel"}:
+            attempt.outcome = "cancelled" if action == "cancel" else "runtime_error"
+            attempt.lifecycle = (
+                RunLifecycle.CANCELLED if action == "cancel" else RunLifecycle.FAILED
+            )
+            attempt.next_step_id = None
+            committed, receipt, outcome = await self._commit(attempt, artifact_ref, repository)
+        if receipt is not None:
+            await self._emit(EVENT_STEP_COMPLETED, committed, step_id=receipt.step_id)
+        if committed.is_terminal or committed.lifecycle is not RunLifecycle.RUNNING:
+            await self._emit(EVENT_RUN_FINISHED, committed, outcome=outcome)
+            return RunOutcome(
+                committed.run_id,
+                committed.lifecycle,
+                outcome,
+                committed,
+                (resolution_receipt, receipt),
+            )
+        walked = await self._walk(committed, artifact, artifact_ref, principal, mode, repository)
+        return replace(
+            walked,
+            receipts=(resolution_receipt, receipt) + walked.receipts
+            if receipt
+            else (resolution_receipt,) + walked.receipts,
+        )
+
+    async def _resume_child_task(
+        self,
+        snapshot: RunSnapshot,
+        cause: ChildTaskCompleted,
+        principal: Any,
+        artifact: PlaybookDefinition,
+        artifact_ref: ArtifactRef,
+        mode: ExecutionMode,
+        repository: Any,
+    ) -> RunOutcome:
+        """§4.5 step 5 — reconcile one child completion, exactly once.
+
+        The registered wait *is* the idempotency token.  The first delivery
+        clears it in the same boundary that takes the edge, so a second
+        delivery of the same ``(run_id, step_id, task_id)`` finds nothing to
+        reconcile and returns without a receipt and without a transition.
+        That is why this does not re-enter the executor: re-running an
+        ``AgentTaskStep`` would create a *second* child task, which is the
+        expensive form of a duplicate side effect.
+        """
+        wait = snapshot.wait
+        step_id = snapshot.current_step_id
+        step = artifact.steps.get(step_id) if step_id else None
+        if (
+            wait is None
+            or wait.kind != "agent_task"
+            or wait.match.get("task_id") != cause.task_id
+            or not isinstance(step, AgentTaskStep)
+        ):
+            logger.info(
+                "v2 run %s ignored a duplicate child completion for task %s",
+                snapshot.run_id,
+                cause.task_id,
+            )
+            return RunOutcome(
+                snapshot.run_id, snapshot.lifecycle, "duplicate_child_completion", snapshot
+            )
+
+        now = self.services.clock()
+        running = replace(
+            snapshot,
+            lifecycle=RunLifecycle.RUNNING,
+            context=dict(snapshot.context) | self._resume_context(cause),
+            updated_at=now,
+        )
+        iteration = self._iteration_of(running, step_id)
+        attempt = _Attempt(
+            snapshot=running,
+            step_id=step_id or "",
+            step=step,
+            started_at=now,
+            principal=principal,
+            iteration=iteration,
+            attempt=self._next_attempt(running, step_id or "", iteration),
+        )
+        attempt.idempotency_key = idempotency_key(
+            running.run_id, step_id or "", iteration, attempt.attempt
+        )
+        attempt.outcome = child_outcome_for_status(cause.status)
+        attempt.clear_waits = True
+        attempt.wait_id = wait.wait_id
+        attempt.wait_changes = WaitChangeSet(clear_run_waits=True)
+        attempt.receipt_result = {"child_task_id": cause.task_id, "child_status": cause.status}
+        if attempt.outcome == "runtime_error":
+            attempt.error = f"child status {cause.status!r} has no mapped outcome"
+        if attempt.outcome == "timed_out":
+            attempt.timed_out = True
+        if step.save_result_as:
+            try:
+                attempt.snapshot = bind_step_output(
+                    running,
+                    step_id=step.save_result_as,
+                    value={"task_id": cause.task_id, "status": cause.status},
+                    declared=("task_id", "status"),
+                )
+            except StateLimitExceeded:
+                attempt.outcome = "state_limit_exceeded"
+                attempt.error = "bound child result exceeds the state limit"
+
+        committed, receipt, outcome = await self._advance_on_outcome(
+            attempt, artifact, artifact_ref, repository
+        )
+        if receipt is not None:
+            await self._emit(EVENT_STEP_COMPLETED, committed, step_id=receipt.step_id)
+        if committed.is_terminal or committed.lifecycle is not RunLifecycle.RUNNING:
+            await self._emit(EVENT_RUN_FINISHED, committed, outcome=outcome)
+            return RunOutcome(
+                committed.run_id,
+                committed.lifecycle,
+                outcome,
+                committed,
+                tuple(r for r in (receipt,) if r is not None),
+            )
+        walked = await self._walk(committed, artifact, artifact_ref, principal, mode, repository)
+        return replace(
+            walked,
+            receipts=tuple(r for r in (receipt,) if r is not None) + walked.receipts,
+        )
+
+    async def cancel(
+        self,
+        run_id: str,
+        principal: Any,
+        *,
+        reason: str = "operator",
+        cancel_children: bool | None = None,
+    ) -> RunOutcome:
         """End a run, and mean it (§4.9).
 
         Four cases, and the enum is what separates them:
@@ -691,17 +1381,25 @@ class PlaybookEngine:
         if control is None:
             completed = await persist_intent()
             if completed is not None:
+                if completed.snapshot is not None:
+                    await self._cancel_children(completed.snapshot, principal, cancel_children)
                 return completed
             # No walk here.  Whichever process owns the run reads the intent
             # off the snapshot at its next boundary.
+            await self._cancel_children(snapshot, principal, cancel_children)
             return RunOutcome(run_id, snapshot.lifecycle, "cancel_requested", snapshot)
 
         async with control.lock:
             if self._settled_cancellation(control) is None:
                 completed = await persist_intent()
                 if completed is not None:
+                    if completed.snapshot is not None:
+                        await self._cancel_children(
+                            completed.snapshot, principal, cancel_children
+                        )
                     return completed
                 control.cancel_snapshot = snapshot
+                await self._cancel_children(snapshot, principal, cancel_children)
 
                 in_flight = control.in_flight
                 if in_flight is None and not control.signalled:
@@ -828,7 +1526,6 @@ class PlaybookEngine:
             reason=reason,
             requested_by=getattr(principal, "describe", lambda: "operator")(),
         )
-
     async def _request_cancel_latest(
         self,
         repository: Any,
@@ -902,6 +1599,45 @@ class PlaybookEngine:
             control.cancellation = cancellation
             control.settled.set()
         return committed, receipt, outcome
+
+    async def _cancel_children(
+        self, snapshot: RunSnapshot, principal: Any, cancel_children: bool | None
+    ) -> None:
+        """§4.9 and §7.4 — propagate cancellation without granting authority.
+
+        ``cancel_children=None`` means "use each ``AgentTaskStep``'s
+        ``cancel_child``", which the model defaults to ``False``: cancelling
+        a parent leaves shared or reused child work running unless someone
+        said otherwise.  The stop is dispatched as the **narrowed child**
+        principal, re-derived from the parent's *current* policy, so a parent
+        whose authority has since shrunk cannot reach the child through the
+        cancel path.
+        """
+        if not snapshot.agent_task_ids:
+            return
+        step = None
+        if snapshot.current_step_id:
+            artifact_ref = await self._ref_for(snapshot)
+            step = self._load(artifact_ref).steps.get(snapshot.current_step_id)
+        if not isinstance(step, AgentTaskStep):
+            return
+        if not (step.cancel_child if cancel_children is None else cancel_children):
+            return
+        policy, reason = await resolve_profile_policy(self.services, step.profile_id)
+        if policy is None:
+            logger.warning(
+                "v2 run %s could not cancel its child: %s", snapshot.run_id, reason
+            )
+            return
+        child_principal = narrow_for_child(
+            step, principal, policy, snapshot.current_step_id or ""
+        )
+        for task_id in snapshot.agent_task_ids:
+            cancelled, diagnostic = await cancel_child_task(
+                task_id, principal=child_principal, services=self.services
+            )
+            if not cancelled:
+                logger.warning("v2 run %s: %s", snapshot.run_id, diagnostic)
 
     # ------------------------------------------------------------------
     # The walk
@@ -977,7 +1713,22 @@ class PlaybookEngine:
                 # snapshot.  Sleeping on it would lose the only delivery.
                 snapshot = replace(snapshot, lifecycle=RunLifecycle.RUNNING)
         await self._emit(EVENT_RUN_FINISHED, snapshot, outcome=outcome)
-        return RunOutcome(snapshot.run_id, snapshot.lifecycle, outcome, snapshot, tuple(receipts))
+        result_value = next(
+            (
+                receipt.result["value"]
+                for receipt in reversed(receipts)
+                if "value" in receipt.result
+            ),
+            None,
+        )
+        return RunOutcome(
+            snapshot.run_id,
+            snapshot.lifecycle,
+            outcome,
+            snapshot,
+            tuple(receipts),
+            result_value=result_value,
+        )
 
     async def _advance_one_step(
         self,
@@ -1014,6 +1765,16 @@ class PlaybookEngine:
         attempt.idempotency_key = idempotency_key(
             snapshot.run_id, step_id, iteration, attempt.attempt
         )
+        resolution_kind = snapshot.context.get("_operator_resolution")
+        if resolution_kind is not None:
+            attempt.snapshot = replace(
+                snapshot,
+                context={
+                    key: value
+                    for key, value in snapshot.context.items()
+                    if key != "_operator_resolution"
+                },
+            )
 
         async def finish(boundary: Any) -> tuple[RunSnapshot, tuple[StepReceipt, ...], str]:
             committed, receipt, boundary_outcome = await boundary
@@ -1140,8 +1901,54 @@ class PlaybookEngine:
         # 6. Execute.  An unexpected exception is runtime_error carrying the
         #    exception *type*; a message can carry an argument value.
         executor = executor_for(step.type, mode)
+        mark_started = getattr(repository, "mark_attempt_started", None)
+        marker = {
+            "step_id": step_id,
+            "step_kind": step.type,
+            "iteration": iteration,
+            "attempt": attempt.attempt,
+            "started_at": attempt.started_at,
+            "idempotency_key": attempt.idempotency_key,
+        }
         if control is not None:
-            control.in_flight = (executor, step, ctx)
+            # Cancellation latches before waiting for this lock.  Publishing
+            # the durable marker and the in-process executor handle under the
+            # same lock closes the gap where cancel could observe neither.
+            async with control.lock:
+                if control.pending_cancel is not None:
+                    cancel_principal, reason = control.pending_cancel
+                    current = await repository.load_run(snapshot.run_id) or snapshot
+                    cancelling = await self._request_cancel_latest(
+                        repository,
+                        current,
+                        reason=reason,
+                        principal=cancel_principal,
+                    )
+                    control.cancel_snapshot = cancelling
+                    return await finish(
+                        self._commit_cancellation(
+                            self._cancellation_attempt(
+                                cancelling, step, step_id, cancel_principal
+                            ),
+                            artifact_ref,
+                            repository,
+                            control,
+                            cancellation=CANCELLATION_ACKNOWLEDGED,
+                        )
+                    )
+                if callable(mark_started) and isinstance(
+                    step, (CommandStep, LlmStep, AgentTaskStep)
+                ):
+                    marked = await mark_started(attempt.snapshot, marker)
+                    snapshot = marked
+                    attempt.snapshot = marked
+                control.in_flight = (executor, step, ctx)
+        elif callable(mark_started) and isinstance(
+            step, (CommandStep, LlmStep, AgentTaskStep)
+        ):
+            marked = await mark_started(attempt.snapshot, marker)
+            snapshot = marked
+            attempt.snapshot = marked
         try:
             result = await executor.execute(step, ctx)
         except asyncio.CancelledError:
@@ -1303,8 +2110,18 @@ class PlaybookEngine:
                         )
                     )
 
+        if (
+            mode is ExecutionMode.SHADOW
+            and isinstance(step, CommandStep)
+            and result.recorded_command_args is not None
+            and isinstance(repository, InMemoryRunRecorder)
+        ):
+            repository.record_command(step_id, step.command, result.recorded_command_args)
+
         attempt.receipt_inputs = result.receipt_inputs
-        attempt.receipt_result = result.receipt_result
+        attempt.receipt_result = dict(result.receipt_result)
+        if resolution_kind is not None:
+            attempt.receipt_result["operator_resolution"] = resolution_kind
         attempt.principal = result.effective_principal or attempt.principal
         attempt.idempotency_key = result.idempotency_key or attempt.idempotency_key
         attempt.usage = result.usage
@@ -1346,6 +2163,10 @@ class PlaybookEngine:
 
         # 9 and 10.
         if result.control is StepControl.TERMINATE:
+            if result.value is not None:
+                attempt.receipt_result = dict(attempt.receipt_result) | {
+                    "value": result.value
+                }
             attempt.lifecycle = _TERMINAL_LIFECYCLE.get(
                 result.terminal_outcome or "completed", RunLifecycle.COMPLETED
             )
@@ -1367,7 +2188,10 @@ class PlaybookEngine:
             attempt.lifecycle = RunLifecycle.PAUSED
             attempt.wait = wait
             attempt.wait_id = wait.wait_id
-            attempt.wait_changes = WaitChangeSet(register=(wait,))
+            attempt.wait_changes = WaitChangeSet(
+                register=(wait,), clear_run_waits=result.child_task_id is not None
+            )
+            attempt.child_task_id = result.child_task_id
             attempt.next_step_id = attempt.step_id
             return await finish(self._commit(attempt, artifact_ref, repository))
         if result.control is StepControl.UNRESOLVED:
@@ -1616,6 +2440,9 @@ class PlaybookEngine:
         }
         attempts = dict(snapshot.attempts)
         attempts[f"{attempt.step_id}:{attempt.iteration}"] = attempt.attempt
+        agent_task_ids = snapshot.agent_task_ids
+        if attempt.child_task_id and attempt.child_task_id not in agent_task_ids:
+            agent_task_ids = agent_task_ids + (attempt.child_task_id,)
         budget = snapshot.budget
         if isinstance(attempt.step, LlmStep) and attempt.usage is not None:
             durable_turns = [
@@ -1642,10 +2469,16 @@ class PlaybookEngine:
         next_snapshot = replace(
             snapshot,
             lifecycle=attempt.lifecycle,
+            agent_task_ids=agent_task_ids,
             current_step_id=attempt.next_step_id or attempt.step_id,
             wait=self._next_wait(attempt),
             loop=self._next_loop(attempt),
             attempts=attempts,
+            context={
+                key: value
+                for key, value in snapshot.context.items()
+                if key != "_in_flight_attempt"
+            },
             budget=budget,
             error=attempt.error,
             error_code=(
@@ -1687,10 +2520,11 @@ class PlaybookEngine:
             tokens_in=attempt.usage.input_tokens if attempt.usage is not None else 0,
             tokens_out=attempt.usage.output_tokens if attempt.usage is not None else 0,
         )
+        wait_changes = attempt.wait_changes
+        if attempt.clear_waits and wait_changes.is_empty:
+            wait_changes = WaitChangeSet(clear_run_waits=True)
         try:
-            committed = await repository.commit_boundary(
-                next_snapshot, receipt, attempt.wait_changes
-            )
+            committed = await repository.commit_boundary(next_snapshot, receipt, wait_changes)
         except SnapshotVersionConflict:
             # Two writers at one boundary means two engines think they own
             # the run.  The write is never retried: silently merging them is
@@ -1895,6 +2729,8 @@ class PlaybookEngine:
     def _next_wait(attempt: _Attempt) -> WaitSpec | None:
         if attempt.wait is not None:
             return attempt.wait
+        if attempt.clear_waits:
+            return None
         changes = attempt.wait_changes
         if changes.clear_wait_ids or changes.clear_run_waits:
             return None
@@ -2179,6 +3015,11 @@ class PlaybookEngine:
     async def _ref_for(self, snapshot: RunSnapshot) -> ArtifactRef:
         if self.activations is None:
             raise RuntimeError("resume requires an activation repository")
+        by_sha = getattr(self.activations, "artifact_by_sha", None)
+        if callable(by_sha):
+            ref = await by_sha(snapshot.artifact_sha256)
+            if ref is not None:
+                return ref
         for ref in await self.activations.ready_activations(snapshot.event_type):
             if ref.artifact_sha256 == snapshot.artifact_sha256:
                 return ref
@@ -2196,6 +3037,11 @@ class PlaybookEngine:
         An event before the commit would let a subscriber observe a step that
         a crash then un-happens.
         """
+        # Shadow and dry-run record only in memory.  In particular, a shadow
+        # run may execute against production data, so an event is itself a
+        # forbidden external side effect even when no command was invoked.
+        if snapshot.mode != ExecutionMode.LIVE.value:
+            return
         bus = self.services.bus
         if bus is None:
             return

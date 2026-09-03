@@ -396,6 +396,54 @@ class PlaybookRunQueryMixin:
             return None
         return deserialize_snapshot(row["snapshot"], version=int(row["snapshot_version"]))
 
+    async def mark_attempt_started(
+        self, snapshot: RunSnapshot, marker: Mapping[str, Any]
+    ) -> RunSnapshot:
+        """Durably fence external work before its first side effect.
+
+        This is an intent write rather than a completed boundary, so it has
+        no receipt.  The next ordinary boundary clears the marker; recovery
+        turns a marker left by process death into an interrupted receipt.
+        """
+        limits = self.playbook_state_limits()
+        advanced = replace(
+            snapshot,
+            version=snapshot.version + 1,
+            context=dict(snapshot.context) | {"_in_flight_attempt": dict(marker)},
+            updated_at=time.time(),
+        )
+        payload = serialize_snapshot(advanced, limits=limits)
+        async with self.immediate() as conn:
+            result = await conn.execute(
+                update(playbook_v2_runs)
+                .where(
+                    playbook_v2_runs.c.run_id == snapshot.run_id,
+                    playbook_v2_runs.c.snapshot_version == snapshot.version,
+                )
+                .values(
+                    snapshot_version=advanced.version,
+                    **_run_columns(advanced, payload),
+                )
+            )
+            if result.rowcount != 1:
+                row = (
+                    (
+                        await conn.execute(
+                            select(playbook_v2_runs.c.snapshot_version).where(
+                                playbook_v2_runs.c.run_id == snapshot.run_id
+                            )
+                        )
+                    )
+                    .mappings()
+                    .fetchone()
+                )
+                raise SnapshotVersionConflict(
+                    snapshot.run_id,
+                    snapshot.version,
+                    int(row["snapshot_version"]) if row else None,
+                )
+        return advanced
+
     async def commit_boundary(
         self,
         snapshot: RunSnapshot,
@@ -1182,6 +1230,9 @@ class PlaybookRunQueryMixin:
 
         Same CAS as :meth:`claim_for_event` with ``state='expired'``, so a
         wait that an event claims in the same instant is expired by nobody.
+        An expired row remains selectable while its run is still paused at
+        the registration version, making a crash between claim and resume
+        retryable on the next scheduler tick.
         """
         claims: list[WaitClaim] = []
         async with self.immediate() as conn:
@@ -1189,10 +1240,22 @@ class PlaybookRunQueryMixin:
                 (
                     await conn.execute(
                         select(playbook_waits)
+                        .join(
+                            playbook_v2_runs,
+                            playbook_v2_runs.c.run_id == playbook_waits.c.run_id,
+                        )
                         .where(
-                            playbook_waits.c.state == "active",
-                            playbook_waits.c.deadline_at.is_not(None),
-                            playbook_waits.c.deadline_at <= now,
+                            playbook_v2_runs.c.lifecycle == RunLifecycle.PAUSED.value,
+                            playbook_v2_runs.c.snapshot_version
+                            == playbook_waits.c.snapshot_version,
+                            or_(
+                                and_(
+                                    playbook_waits.c.state == "active",
+                                    playbook_waits.c.deadline_at.is_not(None),
+                                    playbook_waits.c.deadline_at <= now,
+                                ),
+                                playbook_waits.c.state == "expired",
+                            ),
                         )
                         .order_by(playbook_waits.c.deadline_at, playbook_waits.c.wait_id)
                         .limit(limit)
@@ -1202,6 +1265,16 @@ class PlaybookRunQueryMixin:
                 .fetchall()
             )
             for row in rows:
+                if row["state"] == "expired":
+                    claims.append(
+                        _row_to_claim(
+                            row,
+                            None,
+                            float(row["claimed_at"] or now),
+                            expired=True,
+                        )
+                    )
+                    continue
                 result = await conn.execute(
                     update(playbook_waits)
                     .where(

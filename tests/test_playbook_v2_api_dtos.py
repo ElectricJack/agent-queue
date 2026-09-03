@@ -132,6 +132,34 @@ class TestSerializationConventions:
         assert field.annotation is playbook_v2.ActivationStateDTO
 
 
+class TestDelegationNarrowing:
+    """The AI-node card's third intersection term (roadmap §2)."""
+
+    def test_delegation_projects_the_step_narrowing(self):
+        dto = playbook_v2.DelegationPolicyDTO(
+            child_profile_id="reviewer",
+            capability_narrowing=playbook_v2.CapabilityNarrowingDTO(
+                harness_tools=["Grep", "Read"], aq_commands=[]
+            ),
+        )
+        dumped = dto.model_dump()
+        assert dumped["capability_narrowing"]["harness_tools"] == ["Grep", "Read"]
+        # ``[]`` means none and ``None`` means "narrows nothing here"; the card
+        # has to be able to tell those apart, so both survive serialization.
+        assert dumped["capability_narrowing"]["aq_commands"] == []
+        assert dumped["capability_narrowing"]["plugin_tools"] is None
+
+    def test_a_step_without_narrowing_serializes_an_explicit_null(self):
+        dumped = playbook_v2.DelegationPolicyDTO(child_profile_id="reviewer").model_dump()
+        assert "capability_narrowing" in dumped
+        assert dumped["capability_narrowing"] is None
+
+    def test_the_narrowing_dto_covers_every_capability_namespace(self):
+        from src.profiles.capabilities import NAMESPACES
+
+        assert set(playbook_v2.CapabilityNarrowingDTO.model_fields) == set(NAMESPACES)
+
+
 class TestHealthAndEnums:
     def test_activation_health_carries_all_six_values(self):
         """Roadmap §4's five, plus the transient ``unavailable`` §2.1 adds."""
