@@ -6209,6 +6209,147 @@
         }
       }
     },
+    "/api/playbook/cutover-switch": {
+      "post": {
+        "tags": [
+          "playbook"
+        ],
+        "summary": "Move the fleet between the V1 and V2 playbook runtimes. Operator-only, and the highest-privilege operation in the subsystem. Switching to v2 is refused until the drain completes; switching back to v1 is the rollback and is refused once the rollback window has been closed.",
+        "description": "Move the fleet between the V1 and V2 playbook runtimes. Operator-only, and the highest-privilege operation in the subsystem. Switching to v2 is refused until the drain completes; switching back to v1 is the rollback and is refused once the rollback window has been closed.",
+        "operationId": "playbook_cutover_switch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaybookCutoverSwitchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybookCutoverSwitchResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/playbook/cutover-window-close": {
+      "post": {
+        "tags": [
+          "playbook"
+        ],
+        "summary": "Close the playbook rollback window, after which the V1 runtime may be deleted and rollback is no longer available. Operator-only. Recomputes every acceptance measure itself and refuses while any one of them blocks, naming it. There is deliberately no force flag.",
+        "description": "Close the playbook rollback window, after which the V1 runtime may be deleted and rollback is no longer available. Operator-only. Recomputes every acceptance measure itself and refuses while any one of them blocks, naming it. There is deliberately no force flag.",
+        "operationId": "playbook_cutover_window_close",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaybookCutoverWindowCloseRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybookCutoverWindowCloseResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/playbook/cutover-window-status": {
+      "post": {
+        "tags": [
+          "playbook"
+        ],
+        "summary": "Measure the rollback observation window and the cutover acceptance table. Read-only, and recomputed from source on every call -- it never reads a cached verdict. A measure whose evidence source is not yet wired is reported as not passing, never as fine.",
+        "description": "Measure the rollback observation window and the cutover acceptance table. Read-only, and recomputed from source on every call -- it never reads a cached verdict. A measure whose evidence source is not yet wired is reported as not passing, never as fine.",
+        "operationId": "playbook_cutover_window_status",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaybookCutoverWindowStatusRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybookCutoverWindowStatusResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/playbook/graph-view": {
       "post": {
         "tags": [
@@ -6657,6 +6798,194 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PlaybookRunOverlayResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/playbook/v1-admission-close": {
+      "post": {
+        "tags": [
+          "playbook"
+        ],
+        "summary": "Refuse new V1 playbook runs. Operator-only. Already-paused V1 runs stay resumable -- this closes the door, it does not strand what is already inside. Appends a v1_admission_closed audit row.",
+        "description": "Refuse new V1 playbook runs. Operator-only. Already-paused V1 runs stay resumable -- this closes the door, it does not strand what is already inside. Appends a v1_admission_closed audit row.",
+        "operationId": "playbook_v1_admission_close",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaybookV1AdmissionCloseRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybookV1AdmissionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/playbook/v1-admission-open": {
+      "post": {
+        "tags": [
+          "playbook"
+        ],
+        "summary": "Re-open V1 playbook admission. Operator-only. Refused while the fleet is on the V2 runtime: admission open under V2 would let a rollback silently start new V1 runs against unreviewed artifacts.",
+        "description": "Re-open V1 playbook admission. Operator-only. Refused while the fleet is on the V2 runtime: admission open under V2 would let a rollback silently start new V1 runs against unreviewed artifacts.",
+        "operationId": "playbook_v1_admission_open",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaybookV1AdmissionOpenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybookV1AdmissionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/playbook/v1-drain-status": {
+      "post": {
+        "tags": [
+          "playbook"
+        ],
+        "summary": "List every non-terminal V1 playbook run, each classified live (a coroutine owns it) or orphaned (the row outlived the process that started it, so only an operator write can clear it), with the options available for each. Read-only. Answers while playbooks are paused, because a paused fleet with running rows is exactly the one that needs draining. 'drained' requires admission closed AND zero active runs -- a zero count alone is a snapshot, not a gate.",
+        "description": "List every non-terminal V1 playbook run, each classified live (a coroutine owns it) or orphaned (the row outlived the process that started it, so only an operator write can clear it), with the options available for each. Read-only. Answers while playbooks are paused, because a paused fleet with running rows is exactly the one that needs draining. 'drained' requires admission closed AND zero active runs -- a zero count alone is a snapshot, not a gate.",
+        "operationId": "playbook_v1_drain_status",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaybookV1DrainStatusRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybookV1DrainStatusResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/playbook/v1-run-cancel": {
+      "post": {
+        "tags": [
+          "playbook"
+        ],
+        "summary": "Cancel one V1 playbook run during the drain -- a cancel that actually cancels. Operator-only. Unlike cancel_playbook_run it signals the running coroutine and waits for it to stop before writing the terminal row, so the run cannot overwrite its own cancellation on a later persistence write. A run that will not stop within 30s leaves the row untouched and the command fails.",
+        "description": "Cancel one V1 playbook run during the drain -- a cancel that actually cancels. Operator-only. Unlike cancel_playbook_run it signals the running coroutine and waits for it to stop before writing the terminal row, so the run cannot overwrite its own cancellation on a later persistence write. A run that will not stop within 30s leaves the row untouched and the command fails.",
+        "operationId": "playbook_v1_run_cancel",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaybookV1RunCancelRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybookV1RunCancelResponse"
                 }
               }
             }
@@ -17084,6 +17413,104 @@
           "project_id"
         ],
         "title": "CreateTaskResponse"
+      },
+      "CutoverEventDTO": {
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "title": "Event Id"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "at": {
+            "type": "number",
+            "title": "At"
+          },
+          "actor": {
+            "type": "string",
+            "title": "Actor"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          },
+          "detail": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Detail",
+            "default": {}
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "event_id",
+          "kind",
+          "at",
+          "actor",
+          "reason"
+        ],
+        "title": "CutoverEventDTO",
+        "description": "One row of the append-only cutover audit."
+      },
+      "CutoverWindowDTO": {
+        "properties": {
+          "switched_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Switched At"
+          },
+          "elapsed_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Elapsed Seconds"
+          },
+          "wall_clock_ok": {
+            "type": "boolean",
+            "title": "Wall Clock Ok",
+            "default": false
+          },
+          "wall_clock_gate_seconds": {
+            "type": "number",
+            "title": "Wall Clock Gate Seconds"
+          },
+          "volume_gate_runs": {
+            "type": "integer",
+            "title": "Volume Gate Runs"
+          },
+          "closed_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closed At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "wall_clock_gate_seconds",
+          "volume_gate_runs"
+        ],
+        "title": "CutoverWindowDTO"
       },
       "DaemonMetrics": {
         "properties": {
@@ -29038,6 +29465,343 @@
         "title": "PlaybookCutoverReportResponse",
         "description": "Read-only, signed-operator-ready evidence for the V1\u2192V2 cutover."
       },
+      "PlaybookCutoverSwitchRequest": {
+        "properties": {
+          "to": {
+            "type": "string",
+            "title": "To",
+            "description": "Which runtime the fleet should dispatch through."
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": "Why, at least 10 characters. Stored verbatim in the append-only cutover audit."
+          }
+        },
+        "type": "object",
+        "required": [
+          "to",
+          "reason"
+        ],
+        "title": "PlaybookCutoverSwitchRequest"
+      },
+      "PlaybookCutoverSwitchResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "runtime": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "v1",
+                  "v2"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Runtime"
+          },
+          "event": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CutoverEventDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "generated_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generated At"
+          },
+          "admission": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "open",
+                  "closed"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Admission"
+          },
+          "active": {
+            "items": {
+              "$ref": "#/components/schemas/V1RunSummaryDTO"
+            },
+            "type": "array",
+            "title": "Active",
+            "default": []
+          },
+          "live_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Live Count"
+          },
+          "orphaned_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Orphaned Count"
+          },
+          "oldest_age_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oldest Age Seconds"
+          },
+          "drained": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Drained"
+          },
+          "closed_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closed At"
+          },
+          "closed_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closed By"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "PlaybookCutoverSwitchResponse"
+      },
+      "PlaybookCutoverWindowCloseRequest": {
+        "properties": {
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": "Why, at least 10 characters. Stored verbatim in the append-only cutover audit."
+          }
+        },
+        "type": "object",
+        "required": [
+          "reason"
+        ],
+        "title": "PlaybookCutoverWindowCloseRequest"
+      },
+      "PlaybookCutoverWindowCloseResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "event": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CutoverEventDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "blocking_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Blocking Reasons",
+            "default": []
+          },
+          "measures": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Measures",
+            "default": []
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "PlaybookCutoverWindowCloseResponse"
+      },
+      "PlaybookCutoverWindowStatusRequest": {
+        "properties": {},
+        "type": "object",
+        "title": "PlaybookCutoverWindowStatusRequest"
+      },
+      "PlaybookCutoverWindowStatusResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "generated_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generated At"
+          },
+          "runtime": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "v1",
+                  "v2"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Runtime"
+          },
+          "admission": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "open",
+                  "closed"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Admission"
+          },
+          "measures": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Measures",
+            "default": []
+          },
+          "window": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CutoverWindowDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "blocking_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Blocking Reasons",
+            "default": []
+          },
+          "can_close": {
+            "type": "boolean",
+            "title": "Can Close",
+            "default": false
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "PlaybookCutoverWindowStatusResponse"
+      },
       "PlaybookGraphEdge": {
         "properties": {
           "source": {
@@ -30561,6 +31325,365 @@
         ],
         "title": "PlaybookTransitionDetail",
         "description": "One compiled transition as serialized by ``PlaybookTransition.to_dict``."
+      },
+      "PlaybookV1AdmissionCloseRequest": {
+        "properties": {
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": "Why, at least 10 characters. Stored verbatim in the append-only cutover audit."
+          }
+        },
+        "type": "object",
+        "required": [
+          "reason"
+        ],
+        "title": "PlaybookV1AdmissionCloseRequest"
+      },
+      "PlaybookV1AdmissionOpenRequest": {
+        "properties": {
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": "Why, at least 10 characters. Stored verbatim in the append-only cutover audit."
+          }
+        },
+        "type": "object",
+        "required": [
+          "reason"
+        ],
+        "title": "PlaybookV1AdmissionOpenRequest"
+      },
+      "PlaybookV1AdmissionResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "event": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CutoverEventDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "generated_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generated At"
+          },
+          "admission": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "open",
+                  "closed"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Admission"
+          },
+          "closed_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closed At"
+          },
+          "closed_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closed By"
+          },
+          "active": {
+            "items": {
+              "$ref": "#/components/schemas/V1RunSummaryDTO"
+            },
+            "type": "array",
+            "title": "Active",
+            "default": []
+          },
+          "live_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Live Count"
+          },
+          "orphaned_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Orphaned Count"
+          },
+          "oldest_age_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oldest Age Seconds"
+          },
+          "drained": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Drained"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "PlaybookV1AdmissionResponse",
+        "description": "The drain snapshot as it stands after an admission change."
+      },
+      "PlaybookV1DrainStatusRequest": {
+        "properties": {},
+        "type": "object",
+        "title": "PlaybookV1DrainStatusRequest"
+      },
+      "PlaybookV1DrainStatusResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "generated_at": {
+            "type": "number",
+            "title": "Generated At"
+          },
+          "admission": {
+            "type": "string",
+            "enum": [
+              "open",
+              "closed"
+            ],
+            "title": "Admission"
+          },
+          "closed_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closed At"
+          },
+          "closed_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closed By"
+          },
+          "active": {
+            "items": {
+              "$ref": "#/components/schemas/V1RunSummaryDTO"
+            },
+            "type": "array",
+            "title": "Active",
+            "default": []
+          },
+          "live_count": {
+            "type": "integer",
+            "title": "Live Count"
+          },
+          "orphaned_count": {
+            "type": "integer",
+            "title": "Orphaned Count"
+          },
+          "oldest_age_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oldest Age Seconds"
+          },
+          "drained": {
+            "type": "boolean",
+            "title": "Drained"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "generated_at",
+          "admission",
+          "live_count",
+          "orphaned_count",
+          "drained"
+        ],
+        "title": "PlaybookV1DrainStatusResponse",
+        "description": "``drained`` is a conjunction, deliberately: admission closed *and* no\nactive run.  A zero count on its own is a snapshot \u2014 a run can start\nimmediately after it is read \u2014 so it is never the gate by itself."
+      },
+      "PlaybookV1RunCancelRequest": {
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "title": "Run Id",
+            "description": "The V1 run to cancel."
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": "Why, at least 10 characters. Stored verbatim in the append-only cutover audit."
+          }
+        },
+        "type": "object",
+        "required": [
+          "run_id",
+          "reason"
+        ],
+        "title": "PlaybookV1RunCancelRequest"
+      },
+      "PlaybookV1RunCancelResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          },
+          "ownership": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "live",
+                  "orphaned"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ownership"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "PlaybookV1RunCancelResponse",
+        "description": "A cancel is only reported successful once the row is terminal *and* the\ncoroutine that could have overwritten it is gone."
       },
       "PlaybookV2GraphRequest": {
         "properties": {
@@ -41374,6 +42497,123 @@
           "source_hash"
         ],
         "title": "UpdatePlaybookSourceResponse"
+      },
+      "V1RunSummaryDTO": {
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "playbook_id": {
+            "type": "string",
+            "title": "Playbook Id"
+          },
+          "playbook_version": {
+            "type": "integer",
+            "title": "Playbook Version"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "current_node": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Node"
+          },
+          "started_at": {
+            "type": "number",
+            "title": "Started At"
+          },
+          "age_seconds": {
+            "type": "number",
+            "title": "Age Seconds"
+          },
+          "paused_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Paused At"
+          },
+          "waiting_for_event": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Waiting For Event"
+          },
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Id"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "ownership": {
+            "type": "string",
+            "enum": [
+              "live",
+              "orphaned"
+            ],
+            "title": "Ownership"
+          },
+          "options": {
+            "items": {
+              "type": "string",
+              "enum": [
+                "wait",
+                "resolve",
+                "cancel"
+              ]
+            },
+            "type": "array",
+            "title": "Options"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "run_id",
+          "playbook_id",
+          "playbook_version",
+          "status",
+          "started_at",
+          "age_seconds",
+          "ownership",
+          "options"
+        ],
+        "title": "V1RunSummaryDTO",
+        "description": "One active V1 run, as the drain sees it.\n\n``ownership`` is the field the whole drain turns on: ``live`` means a\ncoroutine still owns the run and it can finish by itself, ``orphaned``\nmeans the row outlived the process that started it and only an operator\nwrite will ever clear it.  ``options`` is never empty \u2014 ``cancel`` is\nalways available."
       },
       "ValidationError": {
         "properties": {

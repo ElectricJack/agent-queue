@@ -112,6 +112,9 @@ from .create_task_request import CreateTaskRequest
 from .create_task_response import CreateTaskResponse
 from .create_task_response_422 import CreateTaskResponse422
 from .create_task_response_depends_on_item import CreateTaskResponseDependsOnItem
+from .cutover_event_dto import CutoverEventDTO
+from .cutover_event_dto_detail import CutoverEventDTODetail
+from .cutover_window_dto import CutoverWindowDTO
 from .daemon_metrics import DaemonMetrics
 from .db_preflight_hierarchy_request import DbPreflightHierarchyRequest
 from .db_preflight_hierarchy_response_422 import DbPreflightHierarchyResponse422
@@ -599,6 +602,21 @@ from .playbook_cutover_report_response_evidence_errors_item import PlaybookCutov
 from .playbook_cutover_report_response_parity import PlaybookCutoverReportResponseParity
 from .playbook_cutover_report_response_pending_events import PlaybookCutoverReportResponsePendingEvents
 from .playbook_cutover_report_response_unresolved_item import PlaybookCutoverReportResponseUnresolvedItem
+from .playbook_cutover_switch_request import PlaybookCutoverSwitchRequest
+from .playbook_cutover_switch_response import PlaybookCutoverSwitchResponse
+from .playbook_cutover_switch_response_422 import PlaybookCutoverSwitchResponse422
+from .playbook_cutover_switch_response_admission_type_0 import PlaybookCutoverSwitchResponseAdmissionType0
+from .playbook_cutover_switch_response_runtime_type_0 import PlaybookCutoverSwitchResponseRuntimeType0
+from .playbook_cutover_window_close_request import PlaybookCutoverWindowCloseRequest
+from .playbook_cutover_window_close_response import PlaybookCutoverWindowCloseResponse
+from .playbook_cutover_window_close_response_422 import PlaybookCutoverWindowCloseResponse422
+from .playbook_cutover_window_close_response_measures_item import PlaybookCutoverWindowCloseResponseMeasuresItem
+from .playbook_cutover_window_status_request import PlaybookCutoverWindowStatusRequest
+from .playbook_cutover_window_status_response import PlaybookCutoverWindowStatusResponse
+from .playbook_cutover_window_status_response_422 import PlaybookCutoverWindowStatusResponse422
+from .playbook_cutover_window_status_response_admission_type_0 import PlaybookCutoverWindowStatusResponseAdmissionType0
+from .playbook_cutover_window_status_response_measures_item import PlaybookCutoverWindowStatusResponseMeasuresItem
+from .playbook_cutover_window_status_response_runtime_type_0 import PlaybookCutoverWindowStatusResponseRuntimeType0
 from .playbook_graph_edge import PlaybookGraphEdge
 from .playbook_graph_edge_edge_type import PlaybookGraphEdgeEdgeType
 from .playbook_graph_identity import PlaybookGraphIdentity
@@ -656,6 +674,20 @@ from .playbook_run_summary import PlaybookRunSummary
 from .playbook_summary import PlaybookSummary
 from .playbook_transition_detail import PlaybookTransitionDetail
 from .playbook_transition_detail_when_type_1 import PlaybookTransitionDetailWhenType1
+from .playbook_v1_admission_close_request import PlaybookV1AdmissionCloseRequest
+from .playbook_v1_admission_close_response_422 import PlaybookV1AdmissionCloseResponse422
+from .playbook_v1_admission_open_request import PlaybookV1AdmissionOpenRequest
+from .playbook_v1_admission_open_response_422 import PlaybookV1AdmissionOpenResponse422
+from .playbook_v1_admission_response import PlaybookV1AdmissionResponse
+from .playbook_v1_admission_response_admission_type_0 import PlaybookV1AdmissionResponseAdmissionType0
+from .playbook_v1_drain_status_request import PlaybookV1DrainStatusRequest
+from .playbook_v1_drain_status_response import PlaybookV1DrainStatusResponse
+from .playbook_v1_drain_status_response_422 import PlaybookV1DrainStatusResponse422
+from .playbook_v1_drain_status_response_admission import PlaybookV1DrainStatusResponseAdmission
+from .playbook_v1_run_cancel_request import PlaybookV1RunCancelRequest
+from .playbook_v1_run_cancel_response import PlaybookV1RunCancelResponse
+from .playbook_v1_run_cancel_response_422 import PlaybookV1RunCancelResponse422
+from .playbook_v1_run_cancel_response_ownership_type_0 import PlaybookV1RunCancelResponseOwnershipType0
 from .playbook_v2_graph_request import PlaybookV2GraphRequest
 from .playbook_v2_graph_response import PlaybookV2GraphResponse
 from .playbook_v2_graph_response_422 import PlaybookV2GraphResponse422
@@ -1079,6 +1111,9 @@ from .update_config_response_422 import UpdateConfigResponse422
 from .update_playbook_source_request import UpdatePlaybookSourceRequest
 from .update_playbook_source_response import UpdatePlaybookSourceResponse
 from .update_playbook_source_response_422 import UpdatePlaybookSourceResponse422
+from .v1_run_summary_dto import V1RunSummaryDTO
+from .v1_run_summary_dto_options_item import V1RunSummaryDTOOptionsItem
+from .v1_run_summary_dto_ownership import V1RunSummaryDTOOwnership
 from .validation_error import ValidationError
 from .validation_error_context import ValidationErrorContext
 from .wait_facts_dto import WaitFactsDTO
@@ -1212,6 +1247,9 @@ __all__ = (
     "CreateTaskResponse",
     "CreateTaskResponse422",
     "CreateTaskResponseDependsOnItem",
+    "CutoverEventDTO",
+    "CutoverEventDTODetail",
+    "CutoverWindowDTO",
     "DaemonMetrics",
     "DbPreflightHierarchyRequest",
     "DbPreflightHierarchyResponse422",
@@ -1691,6 +1729,21 @@ __all__ = (
     "PlaybookCutoverReportResponseParity",
     "PlaybookCutoverReportResponsePendingEvents",
     "PlaybookCutoverReportResponseUnresolvedItem",
+    "PlaybookCutoverSwitchRequest",
+    "PlaybookCutoverSwitchResponse",
+    "PlaybookCutoverSwitchResponse422",
+    "PlaybookCutoverSwitchResponseAdmissionType0",
+    "PlaybookCutoverSwitchResponseRuntimeType0",
+    "PlaybookCutoverWindowCloseRequest",
+    "PlaybookCutoverWindowCloseResponse",
+    "PlaybookCutoverWindowCloseResponse422",
+    "PlaybookCutoverWindowCloseResponseMeasuresItem",
+    "PlaybookCutoverWindowStatusRequest",
+    "PlaybookCutoverWindowStatusResponse",
+    "PlaybookCutoverWindowStatusResponse422",
+    "PlaybookCutoverWindowStatusResponseAdmissionType0",
+    "PlaybookCutoverWindowStatusResponseMeasuresItem",
+    "PlaybookCutoverWindowStatusResponseRuntimeType0",
     "PlaybookGraphEdge",
     "PlaybookGraphEdgeEdgeType",
     "PlaybookGraphIdentity",
@@ -1748,6 +1801,20 @@ __all__ = (
     "PlaybookSummary",
     "PlaybookTransitionDetail",
     "PlaybookTransitionDetailWhenType1",
+    "PlaybookV1AdmissionCloseRequest",
+    "PlaybookV1AdmissionCloseResponse422",
+    "PlaybookV1AdmissionOpenRequest",
+    "PlaybookV1AdmissionOpenResponse422",
+    "PlaybookV1AdmissionResponse",
+    "PlaybookV1AdmissionResponseAdmissionType0",
+    "PlaybookV1DrainStatusRequest",
+    "PlaybookV1DrainStatusResponse",
+    "PlaybookV1DrainStatusResponse422",
+    "PlaybookV1DrainStatusResponseAdmission",
+    "PlaybookV1RunCancelRequest",
+    "PlaybookV1RunCancelResponse",
+    "PlaybookV1RunCancelResponse422",
+    "PlaybookV1RunCancelResponseOwnershipType0",
     "PlaybookV2GraphRequest",
     "PlaybookV2GraphResponse",
     "PlaybookV2GraphResponse422",
@@ -2167,6 +2234,9 @@ __all__ = (
     "UpdatePlaybookSourceRequest",
     "UpdatePlaybookSourceResponse",
     "UpdatePlaybookSourceResponse422",
+    "V1RunSummaryDTO",
+    "V1RunSummaryDTOOptionsItem",
+    "V1RunSummaryDTOOwnership",
     "ValidationError",
     "ValidationErrorContext",
     "WaitFactsDTO",

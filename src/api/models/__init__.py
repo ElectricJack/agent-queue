@@ -59,6 +59,7 @@ def get_all_response_models() -> dict[str, type[BaseModel]]:
         message,
         playbook,
         graph,
+        playbook_cutover,
         playbook_migration,
         playbook_v2,
         plugin,
@@ -71,7 +72,7 @@ def get_all_response_models() -> dict[str, type[BaseModel]]:
     merged: dict[str, type[BaseModel]] = {}
     for mod in (
         task, project, agent, git, memory, files, system,
-        plugin, mcp, playbook, playbook_v2, playbook_migration, session, gate, message, discord, graph,
+        plugin, mcp, playbook, playbook_v2, playbook_migration, playbook_cutover, session, gate, message, discord, graph,
     ):
         merged.update(mod.RESPONSE_MODELS)
     return merged
