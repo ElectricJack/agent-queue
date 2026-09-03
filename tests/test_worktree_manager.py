@@ -13,7 +13,12 @@ Every git-touching test runs against a real repo with a real bare
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
 import subprocess
+import sys
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -957,3 +962,162 @@ class TestFindSlotHoldingBranch:
         # A base that cannot be queried means "no preference", not a failure:
         # dispatch must never hinge on an optimization.
         assert asyncio.run(mgr.find_slot_holding_branch(broken, [slot0], "aq/x")) is None
+
+
+# ───────────────── exclude block: locking + atomic replacement ─────────────
+
+
+_FOREIGN_RULE = "# operator's own rules\n*.swp\n"
+
+
+def _drift(exclude: Path) -> None:
+    """Atomically replace *exclude* with a foreign rule plus a stale block."""
+    stale = f"{_FOREIGN_RULE}{EXCLUDE_BEGIN}\n/stale/\n{EXCLUDE_END}\n"
+    tmp = exclude.with_name(f"exclude.drift.{threading.get_ident()}.tmp")
+    tmp.write_text(stale, encoding="utf-8")
+    os.replace(tmp, exclude)
+
+
+def _watch(exclude: Path, stop: threading.Event, bad: list[bytes]) -> None:
+    """Record every observation that is not a complete file."""
+    while not stop.is_set():
+        try:
+            data = exclude.read_bytes()
+        except FileNotFoundError:
+            bad.append(b"<missing>")
+            continue
+        if b"*.swp" not in data:
+            bad.append(data)
+
+
+class TestGitExcludeConcurrency:
+    def test_resolves_exclude_path_through_a_linked_worktree(
+        self, base_repo: Path, tmp_path: Path
+    ):
+        wt = tmp_path / "linked"
+        _git(["worktree", "add", "--detach", str(wt)], cwd=base_repo)
+        assert (wt / ".git").is_file()
+
+        assert WorktreeSlotManager.resolve_exclude_path(wt) == (
+            base_repo / ".git" / "info" / "exclude"
+        )
+        assert WorktreeSlotManager.ensure_git_exclude(wt) is True
+        text = (base_repo / ".git" / "info" / "exclude").read_text(
+            encoding="utf-8", errors="surrogateescape"
+        )
+        assert "/.aq/" in text
+        # Nothing was written into the worktree's private gitdir.
+        assert not (base_repo / ".git" / "worktrees" / "linked" / "info").exists()
+
+    def test_write_waits_for_the_exclude_lock(self, base_repo: Path):
+        import fcntl
+
+        exclude = base_repo / ".git" / "info" / "exclude"
+        lock_path = WorktreeSlotManager.exclude_lock_path(base_repo)
+        assert lock_path.parent == exclude.parent
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        holder = os.open(lock_path, os.O_RDWR | os.O_CREAT)
+        fcntl.flock(holder, fcntl.LOCK_EX)
+
+        results: list[bool] = []
+        t = threading.Thread(
+            target=lambda: results.append(WorktreeSlotManager.ensure_git_exclude(base_repo))
+        )
+        t.start()
+        t.join(0.5)
+        assert t.is_alive(), "writer did not wait for the lock"
+        assert not exclude.exists() or "/.aq/" not in exclude.read_text()
+
+        fcntl.flock(holder, fcntl.LOCK_UN)
+        os.close(holder)
+        t.join(5)
+        assert not t.is_alive()
+        assert results == [True]
+        assert "/.aq/" in exclude.read_text()
+
+    def test_threads_never_expose_a_truncated_file(self, base_repo: Path):
+        exclude = base_repo / ".git" / "info" / "exclude"
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        exclude.write_text(_FOREIGN_RULE, encoding="utf-8")
+
+        stop = threading.Event()
+        bad: list[bytes] = []
+        watcher = threading.Thread(target=_watch, args=(exclude, stop, bad))
+        watcher.start()
+
+        def hammer() -> None:
+            deadline = time.monotonic() + 1.0
+            while time.monotonic() < deadline:
+                _drift(exclude)
+                WorktreeSlotManager.ensure_git_exclude(base_repo)
+
+        writers = [threading.Thread(target=hammer) for _ in range(8)]
+        for w in writers:
+            w.start()
+        for w in writers:
+            w.join()
+        stop.set()
+        watcher.join()
+
+        assert bad == [], f"{len(bad)} incomplete observation(s), first: {bad[0]!r}"
+        text = exclude.read_text(encoding="utf-8")
+        assert "*.swp" in text
+        assert text.count("# >>> agent-queue managed") == 1
+        assert "/.aq/" in text
+        assert not list(exclude.parent.glob("*.tmp")), "temp files left behind"
+
+    def test_processes_never_expose_a_truncated_file(self, base_repo: Path):
+        exclude = base_repo / ".git" / "info" / "exclude"
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        exclude.write_text(_FOREIGN_RULE, encoding="utf-8")
+
+        script = (
+            "import os, sys, time\n"
+            "from pathlib import Path\n"
+            "from src.orchestrator.worktree_manager import (\n"
+            "    EXCLUDE_BEGIN, EXCLUDE_END, WorktreeSlotManager)\n"
+            "base = Path(sys.argv[1]); exclude = base / '.git' / 'info' / 'exclude'\n"
+            "stale = sys.argv[2] + EXCLUDE_BEGIN + '\\n/stale/\\n' + EXCLUDE_END + '\\n'\n"
+            "deadline = time.monotonic() + 1.0\n"
+            "while time.monotonic() < deadline:\n"
+            "    tmp = exclude.with_name(f'exclude.drift.{os.getpid()}.tmp')\n"
+            "    tmp.write_text(stale, encoding='utf-8'); os.replace(tmp, exclude)\n"
+            "    WorktreeSlotManager.ensure_git_exclude(base)\n"
+        )
+        stop = threading.Event()
+        bad: list[bytes] = []
+        watcher = threading.Thread(target=_watch, args=(exclude, stop, bad))
+        watcher.start()
+        procs = [
+            subprocess.Popen(
+                [sys.executable, "-c", script, str(base_repo), _FOREIGN_RULE],
+                cwd=str(Path(__file__).resolve().parent.parent),
+                stderr=subprocess.PIPE,
+            )
+            for _ in range(6)
+        ]
+        errs = [p.communicate()[1] for p in procs]
+        stop.set()
+        watcher.join()
+
+        assert all(p.returncode == 0 for p in procs), errs
+        assert bad == [], f"{len(bad)} incomplete observation(s), first: {bad[0]!r}"
+        text = exclude.read_text(encoding="utf-8")
+        assert "*.swp" in text
+        assert text.count("# >>> agent-queue managed") == 1
+
+    def test_verifies_the_replacement_landed(self, base_repo: Path, monkeypatch, caplog):
+        exclude = base_repo / ".git" / "info" / "exclude"
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        exclude.write_text(_FOREIGN_RULE, encoding="utf-8")
+
+        # A replace that silently does nothing: the post-write read must
+        # notice the block never landed instead of reporting success.
+        def lost_replace(src, dst, *a, **kw):
+            os.remove(src)
+
+        monkeypatch.setattr(os, "replace", lost_replace)
+        with caplog.at_level(logging.WARNING):
+            assert WorktreeSlotManager.ensure_git_exclude(base_repo) is False
+        assert exclude.read_text(encoding="utf-8") == _FOREIGN_RULE
+        assert any("verif" in r.getMessage() for r in caplog.records)
