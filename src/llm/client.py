@@ -16,7 +16,7 @@ from src.intelligence_classes import IntelligenceClass
 from src.llm.providers import create_provider
 from src.llm.providers.base import LLMProvider
 from src.llm.spec import LLMCallSpec, ResolvedCall, resolve_call
-from src.llm.types import ChatResponse, serialize_canonical
+from src.llm.types import ChatResponse, TokenUsage, serialize_canonical
 from src.llm_logger import LLMLogger
 
 logger = logging.getLogger(__name__)
@@ -29,6 +29,7 @@ class LLMRunResult:
     turns: int
     stopped_by: str  # "done" | "max_turns" | "cancelled"
     tool_calls_made: list[str] = field(default_factory=list)
+    usage: TokenUsage | None = None
 
 
 ProgressCallback = Callable[[str, str | None], Awaitable[None]]
@@ -54,6 +55,7 @@ class LLMResponse:
     text: str
     tool_calls: list[ToolCall] = field(default_factory=list)
     raw: ChatResponse | None = None
+    usage: TokenUsage | None = None
 
     @classmethod
     def from_chat_response(cls, resp: ChatResponse) -> "LLMResponse":
@@ -63,6 +65,7 @@ class LLMResponse:
                 ToolCall(id=t.id, name=t.name, args=dict(t.input or {})) for t in resp.tool_uses
             ],
             raw=resp,
+            usage=resp.usage,
         )
 
 
@@ -171,6 +174,7 @@ class LLMClient:
         offered = {t["name"] for t in tools}
         made: list[str] = []
         turns = 0
+        usage: TokenUsage | None = None
 
         async def _progress(kind: str, detail: str | None = None) -> None:
             if on_progress is not None:
@@ -179,21 +183,27 @@ class LLMClient:
         while True:
             if cancel_event is not None and cancel_event.is_set():
                 await _progress("cancelled")
-                return LLMRunResult("", transcript, turns, "cancelled", made)
+                return LLMRunResult(
+                    "", transcript, turns, "cancelled", made, usage or TokenUsage()
+                )
             if turns >= max_turns:
-                return LLMRunResult("", transcript, turns, "max_turns", made)
+                return LLMRunResult(
+                    "", transcript, turns, "max_turns", made, usage or TokenUsage()
+                )
 
             await _progress("thinking", None if turns == 0 else f"round {turns + 1}")
             resp = await self._create_message(
                 resolved, messages=transcript, system=system, tools=tools or None
             )
             turns += 1
+            call_usage = resp.usage or TokenUsage()
+            usage = call_usage if usage is None else usage + call_usage
 
             if not resp.has_tool_use:
                 await _progress("responding")
                 text = "\n".join(resp.text_parts).strip()
                 transcript.append({"role": "assistant", "content": text})
-                return LLMRunResult(text, transcript, turns, "done", made)
+                return LLMRunResult(text, transcript, turns, "done", made, usage)
 
             transcript.append({"role": "assistant", "content": resp.tool_uses})
             results: list[dict] = []

@@ -37,6 +37,7 @@ from src.playbooks.executors.command import (
 )
 from src.playbooks.executors.decision import DecisionExecutor
 from src.playbooks.executors.foreach import ForEachExecutor
+from src.playbooks.executors.llm import LiveLlmExecutor, SymbolicLlmExecutor
 from src.playbooks.executors.terminal import TerminalExecutor
 from src.playbooks.executors.wait import LiveWaitExecutor, ReportingWaitExecutor
 
@@ -57,6 +58,7 @@ EXECUTORS: Mapping[ExecutionMode, Mapping[str, Executor]] = {
     ExecutionMode.LIVE: {
         "agent_task": LiveAgentTaskExecutor(),
         "command": LiveCommandExecutor(),
+        "llm": LiveLlmExecutor(),
         "decision": DECISION_EXECUTOR,
         "foreach": FOREACH_EXECUTOR,
         "wait": LiveWaitExecutor(),
@@ -65,6 +67,7 @@ EXECUTORS: Mapping[ExecutionMode, Mapping[str, Executor]] = {
     ExecutionMode.DRY_RUN: {
         "agent_task": SYMBOLIC_AGENT_TASK_EXECUTOR,
         "command": PreviewCommandExecutor(),
+        "llm": SymbolicLlmExecutor(),
         "decision": DECISION_EXECUTOR,
         "foreach": FOREACH_EXECUTOR,
         "wait": REPORTING_WAIT_EXECUTOR,
@@ -73,6 +76,7 @@ EXECUTORS: Mapping[ExecutionMode, Mapping[str, Executor]] = {
     ExecutionMode.SHADOW: {
         "agent_task": SYMBOLIC_AGENT_TASK_EXECUTOR,
         "command": ShadowCommandExecutor(),
+        "llm": SymbolicLlmExecutor(),
         "decision": DECISION_EXECUTOR,
         "foreach": FOREACH_EXECUTOR,
         "wait": REPORTING_WAIT_EXECUTOR,
@@ -109,12 +113,14 @@ __all__ = [
     "LiveAgentTaskExecutor",
     "LiveCommandExecutor",
     "LiveWaitExecutor",
+    "LiveLlmExecutor",
     "PreviewCommandExecutor",
     "ReportingWaitExecutor",
     "ShadowCommandExecutor",
     "StepContext",
     "StepControl",
     "SymbolicAgentTaskExecutor",
+    "SymbolicLlmExecutor",
     "TerminalExecutor",
     "TokenUsage",
     "UnknownStepType",
