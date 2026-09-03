@@ -188,6 +188,7 @@ Maps to `MonitoringConfig`. The YAML key is `monitoring`.
 | YAML key | Type | Default | Description |
 |---|---|---|---|
 | `stuck_task_threshold_seconds` | `int` | `3600` | A task that has been in `IN_PROGRESS` state without any status change for longer than this threshold (in seconds) is considered stuck. Defaults to 1 hour. |
+| `failed_blocked_report_interval_seconds` | `int` | `3600` | Minimum seconds between two failed/blocked task reports for the same project. Defaults to 1 hour. |
 
 ### 4.8 `auto_task` Section
 
@@ -226,7 +227,7 @@ The subsystem is **disabled by default** — set `enabled: true` to activate it.
 | YAML key | Type | Default | Description |
 |---|---|---|---|
 | `enabled` | `bool` | `False` | Whether the memory subsystem is active. Must be explicitly set to `true` to enable. |
-| `embedding_provider` | `str` | `"openai"` | Embedding provider for vector generation. Valid values: `"openai"`, `"google"`, `"voyage"`, `"ollama"`, `"local"`. |
+| `embedding_provider` | `str` | `"ollama"` | Embedding provider for vector generation. Valid values: `"openai"`, `"google"`, `"voyage"`, `"ollama"`, `"local"`. |
 | `embedding_model` | `str` | `""` | Embedding model name. Empty string uses the provider's default model. |
 | `embedding_base_url` | `str` | `""` | Base URL for the embedding API. Primarily used for Ollama or custom embedding endpoints. |
 | `embedding_api_key` | `str` | `""` | API key for the embedding provider. Supports `${ENV_VAR}` substitution (e.g., `${OPENAI_API_KEY}`). |
@@ -259,7 +260,7 @@ The subsystem is **disabled by default** — set `enabled: true` to activate it.
 | `fact_extraction_enabled` | `bool` | `True` | Extract structured facts after task completion into staging files for consolidation. |
 | `index_knowledge` | `bool` | `True` | When `true`, the `knowledge/` directory is included in the vector index. |
 | `knowledge_topics` | `tuple[str, ...]` | `("architecture", "api-and-endpoints", "deployment", "dependencies", "gotchas", "conventions", "decisions")` | Default topic files in the knowledge base. |
-| `consolidation_enabled` | `bool` | `False` | Master switch for knowledge consolidation (daily + weekly). |
+| `consolidation_enabled` | `bool` | `True` | Master switch for knowledge consolidation (daily + weekly). |
 | `consolidation_schedule` | `str` | `"0 3 * * *"` | Cron expression for daily consolidation runs. |
 | `deep_consolidation_schedule` | `str` | `"0 4 * * 0"` | Cron expression for weekly deep consolidation. |
 | `consolidation_provider` | `str` | `""` | LLM provider for consolidation (defaults to `revision_provider`). |
@@ -273,6 +274,19 @@ The subsystem is **disabled by default** — set `enabled: true` to activate it.
 | `consolidation_max_batch_size` | `int` | `50` | Maximum staging files processed per consolidation run. |
 | `consolidation_similarity_threshold` | `float` | `0.7` | Similarity threshold for clustering related facts during consolidation. |
 | `consolidation_cooldown_minutes` | `int` | `30` | Minimum minutes between auto-triggered consolidation runs. |
+| `topic_detection_enabled` | `bool` | `True` | Detect topics from the task description and pre-filter the L2 knowledge files loaded for it. |
+| `topic_max_knowledge_files` | `int` | `3` | Maximum knowledge topic files injected per task. |
+| `topic_max_chars_per_file` | `int` | `2000` | Maximum characters taken from each injected knowledge topic file. |
+| `topic_memory_enabled` | `bool` | `True` | Load memories filtered by the detected topic (matched on memory frontmatter). |
+| `topic_memory_budget_chars` | `int` | `2000` | Character budget for topic-filtered memories (~500 tokens). |
+| `topic_memory_max_results` | `int` | `5` | Maximum topic-matched memory files loaded per task. |
+| `spec_watcher_enabled` | `bool` | `True` | Detect spec/doc changes in project workspaces and write reference stubs into the vault. |
+| `spec_watcher_poll_interval` | `int` | `60` | Seconds between workspace scans by the spec watcher. |
+| `spec_watcher_patterns` | `tuple[str, ...]` | `("specs/**/*.md", "docs/specs/**/*.md", "docs/**/*.md")` | Glob patterns the spec watcher scans, relative to the workspace root. A YAML list is accepted and converted to a tuple. |
+| `spec_watcher_max_excerpt_lines` | `int` | `30` | Lines of the source file included in a generated reference stub. |
+| `stub_enrichment_enabled` | `bool` | `True` | Enrich reference stubs with an LLM-written summary. |
+| `stub_enrichment_class` | `str` | `""` | Intelligence class used for stub enrichment. Empty uses `llm.default_class`. |
+| `stub_enrichment_max_source_chars` | `int` | `20000` | Maximum characters of the source document sent to the LLM (~5k tokens). |
 
 #### Storage Layout
 
@@ -315,6 +329,9 @@ Maps to `PlaybooksConfig`. The YAML key is `playbooks`.
 | `enabled` | `bool` | `False` | Whether the playbook/workflow subsystem is active. |
 | `v2_api` | `bool` | `False` | Playbook V2 semantic-graph **read** surface: `playbook_v2_graph`, `playbook_activation_health`, `playbook_artifacts`, `playbook_artifact_diff`, `playbook_pending_events`, `playbook_run_overlay`. Off returns `playbook v2 api is disabled (playbooks.v2_api=false)`. |
 | `v2_activation_writes` | `bool` | `False` | Playbook V2 operator **writes**: `playbook_activate` and `playbook_pending_event_action`. Gated separately from `v2_api` so the whole review surface stays readable with writes disabled. Off returns `playbook v2 activation writes are disabled (playbooks.v2_activation_writes=false)`. |
+| `v2_compiler_enabled` | `bool` | `False` | Review-only Package 2 compiler commands. Compilation, validation and shadow reports never persist or activate an artifact. |
+| `contract_intent` | `bool` | `True` | Add contract-derived intent to V1 graph-view nodes. Removed in Package 5. |
+| `cancellation_grace_seconds` | `int` | `30` | How long `PlaybookEngine.cancel` waits for an in-flight executor to acknowledge before ending the run itself. `0` means "do not wait": the run reaches `cancelled` immediately and the receipt records `grace_expired`. |
 
 > **Temporary — framework overhaul pause.** While `playbooks.enabled` is
 > `false` the `PlaybookManager`, `TimerService`, the playbook and
@@ -491,20 +508,56 @@ override → project policy `projects.integration_mode` → this).
 | YAML key | Type | Default | Description |
 |---|---|---|---|
 | `default_mode` | `str` | `"pull_request"` | Effective integration mode for tasks that inherit all the way down the chain. `"pull_request"`: the worker pushes its branch and opens a PR; the task completes unmerged and the default-pipeline playbook's review policy owns the merge. `"direct"`: the completion pipeline merges the task branch into the default branch on completion — set this only for deployments that explicitly run without a review policy. |
+| `merge_ci_policy` | `str` | `"warn"` | What `pr_merge` does when the PR's status-check rollup is not green. `"off"`: never asks (pre-2026-09-03 behaviour). `"warn"`: asks, merges regardless, and returns the verdict in the result's `ci` block and the daemon log. `"required"`: refuses to merge anything that is not green, including a rollup that cannot be read (fail closed). |
+| `merge_required_checks` | `list[str]` | `[]` | Check names that must be green, e.g. `["Tests (default)"]`. Empty means every check in the rollup — the strict reading. A required name the rollup never mentions is treated as not-yet-reported, which blocks under `required`. A bare string is accepted as a one-element list. |
 
 Validation (`IntegrationConfig.validate`): `default_mode` must be one of
-`INTEGRATION_MODES` (`direct`, `pull_request`).
+`INTEGRATION_MODES` (`direct`, `pull_request`); `merge_ci_policy` must be
+one of `MERGE_CI_POLICIES` (`off`, `warn`, `required`, defined in
+`src/git/ci_gate.py`); `merge_required_checks` must be a list of non-empty
+strings.
+
+`merge_ci_policy` exists because GitHub was never asked the question: `main`
+carries no required status check, so `gh pr merge` merged 29 of the last 30
+PRs with `Tests (default)` red — including #341, which landed the
+`packages/aq-client/README.md` regression its own CI run had caught. The
+shipped default is `warn` rather than `required` because enabling
+`required` while `main` is red stops every merge in the fleet at once, which
+is an operator's decision to make deliberately. See
+[the merge-gating guide](../guides/merge-gating.md) for the sequencing and
+for the branch-protection half of the fix, which config cannot supply.
 
 This section replaces the retired per-task `requires_approval` boolean
 (dropped by Alembic revision `c4d5e6f7a8b9`, which backfills it into
 `integration_mode` on `tasks` and `archived_tasks`).
 
-### 4.13 `streams` Section
+### 4.13 `chat_analyzer` Section
 
-Maps to `StreamsConfig` (`src/config.py`). The YAML key is `streams`. Governs
-the in-memory streamable-command registry (`src/api/streams.py`) behind the
-console-stream pane. See
-`docs/superpowers/specs/2026-08-22-pane-console-stream-design.md` §8.1/§8.4.
+Maps to `ChatAnalyzerConfig`. The YAML key is `chat_analyzer`.
+
+Thresholds for the Discord chat-analyzer suggester gate stack. There is no
+`chat_analyzer.enabled`: the real switch is `supervisor.observation.enabled`,
+which gates `ChatObserver` construction (see §4.9.1).
+
+| YAML key | Type | Default | Description |
+|---|---|---|---|
+| `min_confidence` | `float` | `0.6` | Minimum `intent_confidence × novelty × actionability` product a suggestion must reach before it is posted. Below it, the suggestion is dropped and tagged `gate="confidence"`. Must be in `[0, 1]`. |
+| `in_flight_min_confidence` | `float` | `0.85` | Elevated minimum that replaces `min_confidence` while the project has at least one `IN_PROGRESS` task. Suppressions are tagged `gate="in_flight_active_task"`. Set it `>= min_confidence` for the escalation to mean anything. Must be in `[0, 1]`. |
+| `dismiss_cooldown_seconds` | `int` | `600` | Seconds of silence in a `(project_id, channel_id)` pair after a user dismisses a suggestion. `0` disables the gate. Suppressions are tagged `gate="dismiss_cooldown"`. Must be `>= 0`. |
+
+> **Inert today.** The gate stack that read these three values is not in the
+> tree; only the reader half survives (`get_chat_analyzer_metrics`,
+> `src/database/queries/chat_queries.py`, the `chat_analyzer_suggestions`
+> table). The keys load and validate, but nothing consumes them until the
+> suggester is restored. Tracked separately from grand-glacier-97, which made
+> them reachable rather than deciding their fate.
+
+### 4.14 `streams` Section
+
+Maps to `StreamsConfig`. The YAML key is `streams`. Backs the console-stream
+pane view — see
+[`../superpowers/specs/2026-08-22-pane-console-stream-design.md`](../superpowers/specs/2026-08-22-pane-console-stream-design.md)
+§8.1/§8.4.
 
 | YAML key | Type | Default | Description |
 |---|---|---|---|
@@ -519,6 +572,24 @@ Validation (`StreamsConfig.validate`): `buffer_max_lines`, `buffer_max_bytes`,
 `retention_seconds`, `kill_grace_seconds` and `max_concurrent_per_session` must
 all be positive. `client_reconnect_attempts` is unvalidated because `0` is a
 meaningful setting.
+
+### 4.15 `metrics` Section
+
+Maps to `MetricsConfig`. The YAML key is `metrics`. Full behaviour in
+[`design/fleet-metrics.md`](design/fleet-metrics.md).
+
+| YAML key | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | `bool` | `True` | Whether the fleet-metrics sampler runs. |
+| `interval_seconds` | `float` | `1.0` | Cheap-tier sample period — grouped counts, load average, `/proc/meminfo`. Must be `> 0`. |
+| `slow_interval_seconds` | `float` | `5.0` | Period for the series that range-scan an append-only table (token ledger, sub-agent fold); their values are carried forward between slow ticks. Must be `> 0` and `>= interval_seconds`. |
+| `flush_interval_seconds` | `float` | `5.0` | Seconds of samples buffered before one batched commit. Must be `> 0`. |
+| `rollup_interval_seconds` | `float` | `60.0` | Period of the 1s→1m roll-up pass. Must be `> 0`. |
+| `token_window_seconds` | `float` | `300.0` | Trailing window token *rates* are measured over before scaling to per minute. Long enough to smooth a harness flushing a whole turn's usage in one write. Must be `>= 60`. |
+| `subagent_window_seconds` | `float` | `3600.0` | Trailing window sub-agent *spawns* are counted over before scaling to per hour. Must be `>= 60`. |
+| `retain_seconds_1s` | `int` | `3600` | Retention horizon for per-second samples. Must be `>= 0`. |
+| `retain_seconds_1m` | `int` | `2592000` | Retention horizon for per-minute roll-ups (30 days). Must be `>= 0`. |
+| `retain_seconds_1h` | `int` | `31536000` | Retention horizon for per-hour roll-ups (365 days). Must be `>= 0`. |
 
 ---
 
@@ -538,7 +609,9 @@ meaningful setting.
 
 ### 5.2 Section Presence vs. Absence
 
-Each config section is optional. If a section key is absent from the YAML, the corresponding `AppConfig` field retains its default-constructed value. For substrate sections, the loader passes only explicitly supplied fields to the dataclass, so a partial section (for example, `sessions` with only `lease_ttl_seconds`) receives exactly the same defaults as no section at all.
+Each config section is optional. If a section key is absent from the YAML, the corresponding `AppConfig` field retains its default-constructed value. The loader passes only explicitly supplied fields to the dataclass, so a partial section (for example, `sessions` with only `lease_ttl_seconds`) receives exactly the same defaults as no section at all. A key written with no value at all (`level:` alone on its line) parses as `None`, asserts nothing, and is treated as not supplied.
+
+Two helpers do this: `_present_kwargs(section, spec)` takes a hand-written `{name: coercion}` spec, and `_dataclass_kwargs(cls, section)` reads that spec off `dataclasses.fields(cls)` instead. The second exists because a hand-written list is how a declared field becomes an unreachable key — the operator writes it, nothing happens, and nothing says so. That is what happened to `playbooks.v2_api` and four siblings (steady-ridge-97) and to 54 more fields across `chat_analyzer`, `streams`, `logging`, `monitoring`, `memory` and `metrics` (grand-glacier-97). `tests/test_config_section_roundtrip.py` writes a non-default value for every scalar field of every section, loads the file and compares, so a new gap fails there rather than shipping.
 
 ### 5.3 Unrecognized Keys
 
@@ -546,7 +619,9 @@ Unrecognized top-level YAML keys are silently ignored. Unrecognized keys within 
 
 ### 5.4 Type Coercion
 
-No explicit type coercion is performed. Values are assigned directly from the YAML-parsed Python object. YAML's own type inference handles basic scalar types: unquoted integers become Python `int`, unquoted `true`/`false` become Python `bool`, and quoted values become `str`. If a YAML author provides a string where an integer is expected, the dataclass field will hold a string value; there is no schema validation.
+Sections loaded through `_dataclass_kwargs` are coerced to the type their field declares: `bool`, `int`, `float` and `str` are passed through the corresponding builtin, and `list[T]` / `tuple[T, ...]` of those scalars are rebuilt as the declared container (so `spec_watcher_patterns` written as a YAML list becomes a tuple). Any other annotation — a nested dataclass, a `dict`, a union — is assigned exactly as YAML parsed it. Sections still built from a hand-written keyword list coerce only where that list says so.
+
+Coercion is not validation: `int("abc")` raises, and `bool("false")` is `True`. Range and enum checks belong to each section's `validate()` (§5.5).
 
 ### 5.5 Error Conditions
 

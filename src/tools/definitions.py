@@ -5035,7 +5035,10 @@ _ALL_TOOL_DEFINITIONS = [
             "``allowed_tools`` (final-reviewer only in the dv2-phase2 "
             "configuration).  Returns the merged SHA on success (best-effort "
             "— callers who need the authoritative SHA should query the branch "
-            "head after this command returns)."
+            "head after this command returns).  The PR's status-check rollup "
+            "is consulted first according to ``integration.merge_ci_policy``; "
+            "the verdict comes back in the ``ci`` block, and under the "
+            "``required`` policy a non-green rollup refuses the merge."
         ),
         "input_schema": {
             "type": "object",
@@ -5055,6 +5058,17 @@ _ALL_TOOL_DEFINITIONS = [
                     "enum": ["squash", "merge", "rebase"],
                     "description": "Merge strategy (default: squash).",
                     "default": "squash",
+                },
+                "force": {
+                    "type": "boolean",
+                    "description": (
+                        "Merge even when ``integration.merge_ci_policy: required`` "
+                        "would refuse because the PR's checks are red, still "
+                        "running, or unreadable.  For a human who has looked at "
+                        "the failure and judged it unrelated — the override is "
+                        "recorded in the result and the log."
+                    ),
+                    "default": False,
                 },
             },
             "required": ["project_id", "pr_url"],

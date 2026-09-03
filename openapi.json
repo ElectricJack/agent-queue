@@ -4289,8 +4289,8 @@
         "tags": [
           "git"
         ],
-        "summary": "Merge a GitHub pull request via ``gh pr merge``.  Only callable by profiles that whitelist ``pr_merge`` in ``allowed_tools`` (final-reviewer only in the dv2-phase2 configuration).  Returns the merged SHA on success (best-effort \u2014 callers who need the authoritative SHA should query the branch head after this command returns).",
-        "description": "Merge a GitHub pull request via ``gh pr merge``.  Only callable by profiles that whitelist ``pr_merge`` in ``allowed_tools`` (final-reviewer only in the dv2-phase2 configuration).  Returns the merged SHA on success (best-effort \u2014 callers who need the authoritative SHA should query the branch head after this command returns).",
+        "summary": "Merge a GitHub pull request via ``gh pr merge``.  Only callable by profiles that whitelist ``pr_merge`` in ``allowed_tools`` (final-reviewer only in the dv2-phase2 configuration).  Returns the merged SHA on success (best-effort \u2014 callers who need the authoritative SHA should query the branch head after this command returns).  The PR's status-check rollup is consulted first according to ``integration.merge_ci_policy``; the verdict comes back in the ``ci`` block, and under the ``required`` policy a non-green rollup refuses the merge.",
+        "description": "Merge a GitHub pull request via ``gh pr merge``.  Only callable by profiles that whitelist ``pr_merge`` in ``allowed_tools`` (final-reviewer only in the dv2-phase2 configuration).  Returns the merged SHA on success (best-effort \u2014 callers who need the authoritative SHA should query the branch head after this command returns).  The PR's status-check rollup is consulted first according to ``integration.merge_ci_policy``; the verdict comes back in the ``ci`` block, and under the ``required`` policy a non-green rollup refuses the merge.",
         "operationId": "pr_merge",
         "requestBody": {
           "content": {
@@ -31628,6 +31628,67 @@
         "title": "PoolStatusRow",
         "description": "One (project, profile) worker-pool row \u2014 swarm-work-model \u00a711."
       },
+      "PrMergeCiVerdict": {
+        "properties": {
+          "policy": {
+            "type": "string",
+            "title": "Policy",
+            "default": ""
+          },
+          "state": {
+            "type": "string",
+            "title": "State",
+            "default": ""
+          },
+          "summary": {
+            "type": "string",
+            "title": "Summary",
+            "default": ""
+          },
+          "failing": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Failing",
+            "default": []
+          },
+          "pending": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Pending",
+            "default": []
+          },
+          "missing": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Missing",
+            "default": []
+          },
+          "blocked": {
+            "type": "boolean",
+            "title": "Blocked",
+            "default": false
+          },
+          "forced": {
+            "type": "boolean",
+            "title": "Forced",
+            "default": false
+          },
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "PrMergeCiVerdict",
+        "description": "What the PR head's status checks said, and what the policy did about it.\n\nPresent on every ``pr_merge`` response unless\n``integration.merge_ci_policy`` is ``off`` (in which case CI is never\nconsulted).  Under ``warn`` the merge happens regardless and this block\nis the record of what landed; under ``required`` a ``blocked`` verdict\nis why ``success`` is false."
+      },
       "PrMergeRequest": {
         "properties": {
           "project_id": {
@@ -31645,6 +31706,12 @@
             "title": "Method",
             "description": "Merge strategy (default: squash).",
             "default": "squash"
+          },
+          "force": {
+            "type": "boolean",
+            "title": "Force",
+            "description": "Merge even when ``integration.merge_ci_policy: required`` would refuse because the PR's checks are red, still running, or unreadable.  For a human who has looked at the failure and judged it unrelated \u2014 the override is recorded in the result and the log.",
+            "default": false
           }
         },
         "type": "object",
@@ -31687,6 +31754,16 @@
               }
             ],
             "title": "Error"
+          },
+          "ci": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PrMergeCiVerdict"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",

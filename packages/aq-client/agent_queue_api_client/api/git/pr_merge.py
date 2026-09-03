@@ -68,12 +68,16 @@ def sync_detailed(
     """Merge a GitHub pull request via ``gh pr merge``.  Only callable by profiles that whitelist
     ``pr_merge`` in ``allowed_tools`` (final-reviewer only in the dv2-phase2 configuration).  Returns
     the merged SHA on success (best-effort — callers who need the authoritative SHA should query the
-    branch head after this command returns).
+    branch head after this command returns).  The PR's status-check rollup is consulted first according
+    to ``integration.merge_ci_policy``; the verdict comes back in the ``ci`` block, and under the
+    ``required`` policy a non-green rollup refuses the merge.
 
      Merge a GitHub pull request via ``gh pr merge``.  Only callable by profiles that whitelist
     ``pr_merge`` in ``allowed_tools`` (final-reviewer only in the dv2-phase2 configuration).  Returns
     the merged SHA on success (best-effort — callers who need the authoritative SHA should query the
-    branch head after this command returns).
+    branch head after this command returns).  The PR's status-check rollup is consulted first according
+    to ``integration.merge_ci_policy``; the verdict comes back in the ``ci`` block, and under the
+    ``required`` policy a non-green rollup refuses the merge.
 
     Args:
         body (PrMergeRequest):
@@ -105,12 +109,16 @@ def sync(
     """Merge a GitHub pull request via ``gh pr merge``.  Only callable by profiles that whitelist
     ``pr_merge`` in ``allowed_tools`` (final-reviewer only in the dv2-phase2 configuration).  Returns
     the merged SHA on success (best-effort — callers who need the authoritative SHA should query the
-    branch head after this command returns).
+    branch head after this command returns).  The PR's status-check rollup is consulted first according
+    to ``integration.merge_ci_policy``; the verdict comes back in the ``ci`` block, and under the
+    ``required`` policy a non-green rollup refuses the merge.
 
      Merge a GitHub pull request via ``gh pr merge``.  Only callable by profiles that whitelist
     ``pr_merge`` in ``allowed_tools`` (final-reviewer only in the dv2-phase2 configuration).  Returns
     the merged SHA on success (best-effort — callers who need the authoritative SHA should query the
-    branch head after this command returns).
+    branch head after this command returns).  The PR's status-check rollup is consulted first according
+    to ``integration.merge_ci_policy``; the verdict comes back in the ``ci`` block, and under the
+    ``required`` policy a non-green rollup refuses the merge.
 
     Args:
         body (PrMergeRequest):
@@ -137,12 +145,16 @@ async def asyncio_detailed(
     """Merge a GitHub pull request via ``gh pr merge``.  Only callable by profiles that whitelist
     ``pr_merge`` in ``allowed_tools`` (final-reviewer only in the dv2-phase2 configuration).  Returns
     the merged SHA on success (best-effort — callers who need the authoritative SHA should query the
-    branch head after this command returns).
+    branch head after this command returns).  The PR's status-check rollup is consulted first according
+    to ``integration.merge_ci_policy``; the verdict comes back in the ``ci`` block, and under the
+    ``required`` policy a non-green rollup refuses the merge.
 
      Merge a GitHub pull request via ``gh pr merge``.  Only callable by profiles that whitelist
     ``pr_merge`` in ``allowed_tools`` (final-reviewer only in the dv2-phase2 configuration).  Returns
     the merged SHA on success (best-effort — callers who need the authoritative SHA should query the
-    branch head after this command returns).
+    branch head after this command returns).  The PR's status-check rollup is consulted first according
+    to ``integration.merge_ci_policy``; the verdict comes back in the ``ci`` block, and under the
+    ``required`` policy a non-green rollup refuses the merge.
 
     Args:
         body (PrMergeRequest):
@@ -172,12 +184,16 @@ async def asyncio(
     """Merge a GitHub pull request via ``gh pr merge``.  Only callable by profiles that whitelist
     ``pr_merge`` in ``allowed_tools`` (final-reviewer only in the dv2-phase2 configuration).  Returns
     the merged SHA on success (best-effort — callers who need the authoritative SHA should query the
-    branch head after this command returns).
+    branch head after this command returns).  The PR's status-check rollup is consulted first according
+    to ``integration.merge_ci_policy``; the verdict comes back in the ``ci`` block, and under the
+    ``required`` policy a non-green rollup refuses the merge.
 
      Merge a GitHub pull request via ``gh pr merge``.  Only callable by profiles that whitelist
     ``pr_merge`` in ``allowed_tools`` (final-reviewer only in the dv2-phase2 configuration).  Returns
     the merged SHA on success (best-effort — callers who need the authoritative SHA should query the
-    branch head after this command returns).
+    branch head after this command returns).  The PR's status-check rollup is consulted first according
+    to ``integration.merge_ci_policy``; the verdict comes back in the ``ci`` block, and under the
+    ``required`` policy a non-green rollup refuses the merge.
 
     Args:
         body (PrMergeRequest):

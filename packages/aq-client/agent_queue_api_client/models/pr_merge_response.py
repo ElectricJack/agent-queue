@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
+
+if TYPE_CHECKING:
+    from ..models.pr_merge_ci_verdict import PrMergeCiVerdict
+
 
 T = TypeVar("T", bound="PrMergeResponse")
 
@@ -20,15 +24,19 @@ class PrMergeResponse:
         pr_url (str | Unset):  Default: ''.
         sha (None | str | Unset):
         error (None | str | Unset):
+        ci (None | PrMergeCiVerdict | Unset):
     """
 
     success: bool | Unset = False
     pr_url: str | Unset = ""
     sha: None | str | Unset = UNSET
     error: None | str | Unset = UNSET
+    ci: None | PrMergeCiVerdict | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.pr_merge_ci_verdict import PrMergeCiVerdict
+
         success = self.success
 
         pr_url = self.pr_url
@@ -45,6 +53,14 @@ class PrMergeResponse:
         else:
             error = self.error
 
+        ci: dict[str, Any] | None | Unset
+        if isinstance(self.ci, Unset):
+            ci = UNSET
+        elif isinstance(self.ci, PrMergeCiVerdict):
+            ci = self.ci.to_dict()
+        else:
+            ci = self.ci
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({})
@@ -56,11 +72,15 @@ class PrMergeResponse:
             field_dict["sha"] = sha
         if error is not UNSET:
             field_dict["error"] = error
+        if ci is not UNSET:
+            field_dict["ci"] = ci
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.pr_merge_ci_verdict import PrMergeCiVerdict
+
         d = dict(src_dict)
         success = d.pop("success", UNSET)
 
@@ -84,11 +104,29 @@ class PrMergeResponse:
 
         error = _parse_error(d.pop("error", UNSET))
 
+        def _parse_ci(data: object) -> None | PrMergeCiVerdict | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                ci_type_0 = PrMergeCiVerdict.from_dict(data)
+
+                return ci_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(None | PrMergeCiVerdict | Unset, data)
+
+        ci = _parse_ci(d.pop("ci", UNSET))
+
         pr_merge_response = cls(
             success=success,
             pr_url=pr_url,
             sha=sha,
             error=error,
+            ci=ci,
         )
 
         pr_merge_response.additional_properties = d
