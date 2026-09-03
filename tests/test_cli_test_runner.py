@@ -403,3 +403,63 @@ class TestPyprojectKeepsSerialPytestWorking:
             check=False,
         )
         assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+class TestPerfSuiteStaysOutOfTheDefaultRun:
+    """Nothing under ``tests/perf/`` may escape the ``perf`` marker.
+
+    The marker is what routes these suites into CI's ``postgres-integration``
+    job (``-m "integration or perf"``) and out of ``Tests (default)``, which
+    runs ``-n auto --dist loadfile`` — i.e. with every core busy.  A
+    latency budget measured on a saturated box fails on load, not on a
+    regression.
+
+    ``tests/perf/test_layout_api_statements.py`` and
+    ``test_layout_statements.py`` both shipped with
+    ``pytestmark = pytest.mark.skipif(...)``, which *replaced* rather than
+    added to the marker.  The consequence was invisible until it wasn't:
+    the tiles p95 budget ran in the default job on every push and started
+    flaking there, while never running in the job built for it.  A module
+    that forgets the marker again should fail here instead.
+    """
+
+    def test_no_unmarked_tests_under_tests_perf(self):
+        import os
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent.parent
+        env = os.environ.copy()
+        # Collection alone must not reach for a live Postgres: without a DSN
+        # the perf modules still import (their skipif does the rest), and
+        # AQ_REQUIRE_POSTGRES_TESTS would otherwise turn that into an error.
+        env.pop("POSTGRES_TEST_DSN", None)
+        env.pop("AQ_REQUIRE_POSTGRES_TESTS", None)
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-p",
+                "no:xdist",
+                "--co",
+                "-q",
+                "-m",
+                "not perf",
+                "tests/perf",
+            ],
+            cwd=root,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=300,
+            check=False,
+        )
+        # pytest exits 5 when the run collected nothing, which is the whole
+        # assertion: `-m "not perf"` is what CI's default job selects.
+        assert proc.returncode == 5, (
+            "tests under tests/perf/ are selected by the default suite's "
+            f"-m 'not perf'; add pytest.mark.perf to their pytestmark\n"
+            f"{proc.stdout}{proc.stderr}"
+        )

@@ -1,4 +1,14 @@
-"""tiles latency on PostgreSQL (spec §9)."""
+"""tiles latency on PostgreSQL (spec §9).
+
+Every budget here is wall-clock, so every test takes ``perf_strict``
+(``tests/perf/conftest.py``) and the module is marked ``perf``: without
+both, a latency assertion runs in CI's ``Tests (default)`` job under
+``-n auto --dist loadfile`` and fails on a saturated box rather than on a
+regression.  Run them deliberately, serially, on a quiet machine, with
+``POSTGRES_TEST_DSN`` and ``AQ_PERF_STRICT=1`` in the environment::
+
+    aq test --aq-all-markers -p no:xdist -s tests/perf/test_layout_api_statements.py
+"""
 
 from __future__ import annotations
 
@@ -15,7 +25,10 @@ from src.task_graph.layout.driver import LayoutDriver
 from tests.pg_dsn import ensure_worker_postgres_dsn
 
 DSN = ensure_worker_postgres_dsn()
-pytestmark = pytest.mark.skipif(not DSN, reason="POSTGRES_TEST_DSN not set")
+pytestmark = [
+    pytest.mark.perf,
+    pytest.mark.skipif(not DSN, reason="POSTGRES_TEST_DSN not set"),
+]
 
 SAMPLES = 50
 BUDGET = 0.1
@@ -57,7 +70,7 @@ async def _p95(ac, payload, label: str) -> float:
     return p95
 
 
-async def test_tiles_p95_under_100ms_with_big_collapsed_epic_visible(pg):
+async def test_tiles_p95_under_100ms_with_big_collapsed_epic_visible(perf_strict, pg):
     app = FastAPI()
     app.include_router(build_graph_layout_router(db=pg))
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
@@ -68,7 +81,7 @@ async def test_tiles_p95_under_100ms_with_big_collapsed_epic_visible(pg):
     assert p95 < BUDGET, f"p95 {p95:.3f}s"
 
 
-async def test_tiles_focus_root_p95_under_100ms(pg):
+async def test_tiles_focus_root_p95_under_100ms(perf_strict, pg):
     """Focus on the 1,000-task epic: cost must track the open containers.
 
     ``root`` disables the rect cap and ``max_depth``, so before the

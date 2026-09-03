@@ -373,7 +373,7 @@ class TestClaimStatementBudgets:
 
 class TestClaimLatency:
     @pytest.mark.perf
-    async def test_claim_release_p99_latency(self, any_db, tmp_path):
+    async def test_claim_release_p99_latency(self, perf_strict, any_db, tmp_path):
         """Claim/release p99 over 50 iterations at 5,000 tasks (SQLite).
 
         The spec's ``<= 50 ms`` (§15.2, ``task_claim --next, DB portion``
@@ -382,12 +382,9 @@ class TestClaimLatency:
         82-127 ms across runs (38 + 17 statements); after it the same loop
         runs well inside the ``<= 60 ms`` budget below.  ``xdist`` load
         makes wall-clock latency flaky under parallel test execution, so
-        this only runs with ``AQ_PERF_STRICT=1`` set.
+        this only runs with ``AQ_PERF_STRICT=1`` set (the ``perf_strict``
+        fixture, shared with the layout budgets).
         """
-        import os
-
-        if os.environ.get("AQ_PERF_STRICT") != "1":
-            pytest.skip("AQ_PERF_STRICT not set")
         if any_db._engine.dialect.name == "sqlite":
             # Ruling P3-5: PostgreSQL is the production backend and SQLite is
             # deprecated.  Under ``NullPool`` (P2-16, required for claim
