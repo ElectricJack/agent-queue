@@ -498,6 +498,9 @@ class TestStaticSections:
         # the guidance must say so rather than tell workers to pass the epic id.
         assert "sibling under that same parent by default" in body
         assert "--parent <your-task-id>" in body
+        assert "--root" in body
+        assert "receives a routing gate" in body
+        assert "--parent` and `--root` cannot be combined" in body
 
     async def test_emergent_work_is_omitted_when_the_profile_denies_create_task(
         self, db, config, task

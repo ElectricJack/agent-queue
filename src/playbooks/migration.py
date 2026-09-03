@@ -1286,6 +1286,37 @@ _PARITY_PROVENANCE_FIELDS: tuple[str, ...] = (
     "corpus",
 )
 
+#: Repository paths are part of the evidence identity, not descriptive labels.
+#: Accepting any non-empty value lets an unrelated suite, V1 source, or corpus
+#: borrow clean counters and certify this cutover.
+_PARITY_PROVENANCE: Mapping[str, str] = {
+    "suite": "tests/test_playbook_shadow_parity.py",
+    "v1_source": "tests/fixtures/playbooks/v1/default-pipeline.md",
+    "corpus": "tests/fixtures/playbooks/v2/events/",
+}
+
+#: The exact event identities in the reviewed corpus.  The report is committed
+#: evidence, so this closed mapping deliberately makes a corpus edit require a
+#: corresponding review of the production gate rather than silently widening
+#: what a stale report may claim to have observed.
+_PARITY_CORPUS_EVENTS: Mapping[str, str] = {
+    "evt-parity-0001": "task.completed",
+    "evt-parity-0002": "task.completed",
+    "evt-parity-0003": "task.completed",
+    "evt-parity-0004": "task.completed",
+    "evt-parity-0005": "task.completed",
+    "evt-parity-0006": "task.completed",
+    "evt-parity-0007": "spec.approved",
+    "evt-parity-0008": "proposal.ready",
+    "evt-parity-0009": "gate.resolved",
+    "evt-parity-0010": "gate.resolved",
+    "evt-parity-0011": "task.completed",
+    "evt-parity-0012": "task.completed",
+    "evt-parity-0013": "assignment.route.requested",
+    "evt-parity-0014": "timer.24h",
+    "evt-parity-0015": "task.failed",
+}
+
 #: The counters the parity claim is made of.  ``unexplained`` already blocks
 #: when it is non-zero; the other three exist so that "nothing unexplained"
 #: cannot be satisfied by a record that observed nothing.
@@ -1307,6 +1338,101 @@ def _parity_counter(parity: Mapping[str, Any], field: str) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         return None
     return value
+
+
+def _parity_event_evidence(events: Any) -> tuple[list[str], dict[str, int]]:
+    """Validate and classify the report's event-level evidence.
+
+    Event classes are derived exactly as the recording harness derives them:
+    no findings is identical, any unexplained finding makes the whole event
+    unexplained, and otherwise the event is an expected difference.
+    """
+    counts = {"identical": 0, "expected": 0, "unexplained": 0}
+    if not isinstance(events, list) or not events:
+        return ["the shadow-parity record carries no per-event evidence"], counts
+
+    problems: list[str] = []
+    seen_event_ids: set[str] = set()
+    for index, event in enumerate(events):
+        if not isinstance(event, Mapping):
+            problems.append(
+                f"the shadow-parity record's per-event entry {index + 1} is not an object"
+            )
+            continue
+
+        event_id = event.get("event_id")
+        if not isinstance(event_id, str) or not event_id.strip():
+            problems.append("the shadow-parity record has per-event entries that name no event")
+            continue
+        if event_id in seen_event_ids:
+            problems.append(f"the shadow-parity record has duplicate event id {event_id!r}")
+        else:
+            seen_event_ids.add(event_id)
+
+        expected_type = _PARITY_CORPUS_EVENTS.get(event_id)
+        if expected_type is None:
+            problems.append(f"the shadow-parity record has unknown event id {event_id!r}")
+        elif event.get("event_type") != expected_type:
+            problems.append(
+                f"the shadow-parity record's event {event_id!r} has event_type "
+                f"{event.get('event_type')!r}, expected {expected_type!r}"
+            )
+
+        findings = event.get("findings")
+        if not isinstance(findings, list):
+            problems.append(
+                f"the shadow-parity record's event {event_id!r} has no findings list"
+            )
+            continue
+
+        classes: list[str] = []
+        seen_fields: set[str] = set()
+        for finding_index, finding in enumerate(findings):
+            prefix = f"the shadow-parity record's event {event_id!r} finding {finding_index + 1}"
+            if not isinstance(finding, Mapping):
+                problems.append(f"{prefix} is not an object")
+                continue
+
+            field = finding.get("field")
+            if field not in _PARITY_FIELDS:
+                problems.append(f"{prefix} has unknown finding field {field!r}")
+            elif field in seen_fields:
+                problems.append(f"{prefix} duplicates finding field {field!r}")
+            else:
+                seen_fields.add(field)
+
+            classification = finding.get("classification")
+            if classification not in ("expected_v2_semantics", "unexplained"):
+                problems.append(
+                    f"{prefix} has unknown finding classification {classification!r}"
+                )
+                continue
+            classes.append(classification)
+
+            rationale_id = finding.get("rationale_id")
+            if classification == "expected_v2_semantics":
+                if field == "authorization":
+                    problems.append(f"{prefix}: authorization differences are never waivable")
+                if not isinstance(rationale_id, str) or rationale_id not in EXPECTED_DIFFERENCES:
+                    problems.append(
+                        f"{prefix} names unknown expected-difference rationale {rationale_id!r}"
+                    )
+            elif rationale_id is not None:
+                problems.append(f"{prefix}: only an expected difference may carry a rationale id")
+
+        if not findings:
+            counts["identical"] += 1
+        elif "unexplained" in classes:
+            counts["unexplained"] += 1
+        elif "expected_v2_semantics" in classes:
+            counts["expected"] += 1
+
+    missing = sorted(set(_PARITY_CORPUS_EVENTS) - seen_event_ids)
+    if missing:
+        problems.append(
+            "the shadow-parity record omits canonical corpus event ids " + ", ".join(missing)
+        )
+    return problems, counts
 
 
 def _parity_binding_problems(
@@ -1398,6 +1524,11 @@ def validate_parity_evidence(
         value = parity.get(field)
         if not isinstance(value, str) or not value.strip():
             problems.append(f"the shadow-parity record has no {field}")
+        elif field in _PARITY_PROVENANCE and value != _PARITY_PROVENANCE[field]:
+            problems.append(
+                f"the shadow-parity record has unexpected {field} {value!r}; "
+                f"expected {_PARITY_PROVENANCE[field]!r}"
+            )
     artifact_sha = parity.get("artifact_sha256")
     if isinstance(artifact_sha, str) and artifact_sha.strip() and not SHA256_RE.match(artifact_sha):
         problems.append(
@@ -1426,18 +1557,20 @@ def validate_parity_evidence(
             )
 
     events = parity.get("events")
-    if not isinstance(events, list) or not events:
-        problems.append("the shadow-parity record carries no per-event evidence")
-    elif any(
-        not isinstance(event, Mapping) or not str(event.get("event_id") or "").strip()
-        for event in events
-    ):
-        problems.append("the shadow-parity record has per-event entries that name no event")
-    elif observations is not None and len(events) != observations:
+    event_problems, event_counts = _parity_event_evidence(events)
+    problems.extend(event_problems)
+    if isinstance(events, list) and observations is not None and len(events) != observations:
         problems.append(
             f"the shadow-parity record lists {len(events)} events for "
             f"{observations} observations"
         )
+    if len(counters) == len(_PARITY_COUNTER_FIELDS) and isinstance(events, list) and events:
+        recorded_counts = {field: counters[field] for field in event_counts}
+        if event_counts != recorded_counts:
+            problems.append(
+                "the shadow-parity record's event classifications do not match its counters "
+                f"(derived {event_counts!r}; recorded {recorded_counts!r})"
+            )
 
     problems.extend(_parity_binding_problems(parity, artifacts))
     return problems
@@ -1528,7 +1661,11 @@ def build_cutover_report(
 
     parity_record: Mapping[str, Any] = parity if isinstance(parity, Mapping) else {}
     parity_problems = validate_parity_evidence(parity, artifacts=rendered_artifacts)
-    unexplained = _parity_counter(parity_record, "unexplained") or 0
+    _event_problems, event_counts = _parity_event_evidence(parity_record.get("events"))
+    unexplained = max(
+        _parity_counter(parity_record, "unexplained") or 0,
+        event_counts["unexplained"],
+    )
     # §3.7: an activation is rollback-ready only when a human approved the exact
     # bytes that are live *and* the V1 artifact it would roll back to still
     # exists.  Evidence that is merely absent counts as absent, never as fine —

@@ -31,6 +31,7 @@ def test_builtin_argument_models_are_closed_but_preserve_handler_options() -> No
     assert CreateTaskArgs(title="T", requires_kinds=["project-repo"]).requires_kinds == [
         "project-repo"
     ]
+    assert CreateTaskArgs(title="T", root=True).model_dump(exclude_none=True)["root"] is True
     for args_model in (MemorySaveArgs, MemorySearchArgs):
         assert "project_id" in args_model.model_json_schema()["required"]
 

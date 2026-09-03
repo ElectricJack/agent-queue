@@ -1019,6 +1019,7 @@ class TaskCommandsMixin:
         held_id: str,
         parent_id: str | None,
         parent_explicit: bool,
+        explicit_root: bool,
         discovered_from: str | None,
         edges: list[tuple[str, str, str | None]],
         reason: str,
@@ -1035,15 +1036,15 @@ class TaskCommandsMixin:
 
         ``parent_id`` arrives already defaulted by ``_cmd_create_task``: a
         worker holding a child task files a *sibling* (parent = the held
-        task's own parent) unless it named a parent itself, which
-        ``parent_explicit`` records. Both the default and the authorisation
-        it rests on are **recomputed here under the row lock**, because the
-        pre-check ran before this transaction opened and a reparent that
-        commits in between would otherwise file the task under a container
-        the held task no longer authorises (or under its former parent).
-        When the worker named no parent the default follows the held task to
-        wherever it now lives; when it named one that is no longer in scope
-        the filing is refused with :class:`_FilingScope`.
+        task's own parent) unless it named a parent itself or requested an
+        explicit root. Both the default and the authorisation it rests on are
+        **recomputed here under the row lock**, because the pre-check ran
+        before this transaction opened and a reparent that commits in between
+        would otherwise file the task under a container the held task no
+        longer authorises (or under its former parent). When placement was
+        unstated the default follows the held task to wherever it now lives;
+        an explicit root remains a root; and a named parent that is no longer
+        in scope is refused with :class:`_FilingScope`.
 
         Returns ``(task_id, gate_id, discovered_from_origin,
         depth_cap_fallback, parent_id)`` — the last being the parent
@@ -1088,7 +1089,7 @@ class TaskCommandsMixin:
             allowed = {held_id} | set(await self.db.subtree_ids(held_id, conn=conn))
             if discovered_from and discovered_from not in allowed:
                 raise _FilingScope(_DISCOVERED_FROM_SCOPE_ERROR)
-            if not parent_explicit:
+            if not parent_explicit and not explicit_root:
                 # The sibling default is re-resolved, not re-authorised: it
                 # follows the held task to its current parent (``None`` for a
                 # held task that is now a root, which files a root the same
@@ -1224,6 +1225,13 @@ class TaskCommandsMixin:
         return None
 
     async def _cmd_create_task(self, args: dict) -> dict:
+        explicit_root = bool(args.get("root"))
+        if explicit_root and args.get("parent_id"):
+            return {
+                "success": False,
+                "error": "--root and parent_id are mutually exclusive",
+            }
+
         # ----- Worker-filed work (swarm work model §12) --------------------
         # A session-scoped, non-elevated caller is a pool worker currently
         # holding a task. Its filings are pinned to its own project, forced
@@ -1266,8 +1274,9 @@ class TaskCommandsMixin:
             if args.get("discovered_from") and args["discovered_from"] not in allowed:
                 return {"success": False, "error": _DISCOVERED_FROM_SCOPE_ERROR}
             # §12: emergent work found while holding a *child* task T is
-            # organised as T's sibling — the new task defaults to T's own
-            # parent (the shared container/epic) and keeps a
+            # organised as T's sibling — unless the caller explicitly asks
+            # for a root, the new task defaults to T's own parent (the shared
+            # container/epic) and keeps a
             # ``discovered-from`` edge back to T. The worker may name exactly
             # that immediate parent explicitly; nothing further up or across
             # the tree opens up. A root-held task keeps root filing.
@@ -1279,7 +1288,7 @@ class TaskCommandsMixin:
             # locked, so a reparent that commits after this read cannot land
             # the filing outside the held task's scope.
             parent_explicit = bool(args.get("parent_id"))
-            if not parent_explicit and held_parent_id:
+            if not explicit_root and not parent_explicit and held_parent_id:
                 args["parent_id"] = held_parent_id
             allowed_parents = allowed | ({held_parent_id} if held_parent_id else set())
             if parent_explicit and args["parent_id"] not in allowed_parents:
@@ -1659,6 +1668,7 @@ class TaskCommandsMixin:
                     held_id=held_id,
                     parent_id=parent_id,
                     parent_explicit=parent_explicit,
+                    explicit_root=explicit_root,
                     discovered_from=args.get("discovered_from"),
                     edges=edges,
                     reason=spawn_reason or "",

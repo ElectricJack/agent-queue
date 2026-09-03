@@ -43,6 +43,11 @@ def request_model(command):
     return _make_input_model(command, schema)
 
 
+def test_create_root_survives_typed_api_request_model():
+    body = request_model("create_task")(title="Cross-cutting work", root=True)
+    assert body.model_dump(exclude_none=True)["root"] is True
+
+
 async def test_unrouted_create_preserves_existing_policy_without_pipeline(setup):
     handler, db = setup
     result = await handler._cmd_create_task({"project_id": "p", "title": "Legacy ready work"})

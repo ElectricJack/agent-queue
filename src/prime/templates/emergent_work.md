@@ -22,6 +22,7 @@ If the current task is a child of a container or epic (`parent_task_id` is set),
 task is placed as your sibling under that same parent by default, so it stays grouped with
 the epic; `--parent <container-id>` naming that same parent is accepted but not required.
 Pass `--parent <your-task-id>` only when the work belongs *under* your own task. Nothing
-further up or across the tree can be selected. Review/exit-gate work and other cross-cutting
-work that does not belong to the epic's deliverable still lands as your sibling: say in its
-description that it belongs at project level so the epic owner or triage can reparent it.
+further up or across the tree can be selected as a parent. Pass `--root` when review,
+exit-gate, or other cross-cutting work does not belong to the epic's deliverable. The root
+filing keeps its `discovered-from` edge to the task you hold and receives a routing gate;
+`--parent` and `--root` cannot be combined.
