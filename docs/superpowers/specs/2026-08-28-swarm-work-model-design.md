@@ -767,6 +767,8 @@ close is skipped for pools; the token is revoked at drain.
   descendant's membership depends on every intermediate ancestor, so locking only `T`
   and the named leaf would not exclude an intermediate-ancestor move; the shared project
   lock does. On SQLite `immediate()`'s writer lock already serialises the two transactions.
+  All parented-task creation follows the same lock order — project hierarchy row first,
+  then task rows (including child-ordinal reservation) — to avoid lock inversion.
   Without this exclusion a
   `set_parent` committing between the pre-check and the write would file the task under a
   container `T` no longer authorises. Consequences: the **sibling default follows `T`** to

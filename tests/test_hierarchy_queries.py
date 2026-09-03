@@ -102,6 +102,33 @@ async def test_set_parent_takes_project_hierarchy_lock(db, monkeypatch):
         lock.assert_awaited_once_with(conn, PROJECT_ID)
 
 
+async def test_create_task_under_locks_project_before_child_ordinal(db, monkeypatch):
+    """Project lock must precede the parent-row ordinal reservation."""
+    from src.database.queries import hierarchy_queries
+
+    await mktask(db, "parent", TaskStatus.IN_PROGRESS)
+    real_child_task_id = hierarchy_queries.child_task_id
+    lock = AsyncMock()
+    monkeypatch.setattr(db, "lock_hierarchy_project", lock)
+
+    async def checked_child_task_id(conn, parent_id):
+        assert lock.await_count == 1
+        return await real_child_task_id(conn, parent_id)
+
+    monkeypatch.setattr(hierarchy_queries, "child_task_id", checked_child_task_id)
+    task = Task(
+        id="",
+        project_id=PROJECT_ID,
+        title="child",
+        description="child",
+        status=TaskStatus.DEFINED,
+    )
+
+    await db.create_task_under(task, "parent")
+
+    assert lock.await_count == 2  # create_task_under, then set_parent (same transaction)
+
+
 async def test_set_parent_rejects_blocking_dependency_cycle_on_both_backends(any_db):
     """DB-3: a drifted blocking edge must not let a reparent close a cycle.
 

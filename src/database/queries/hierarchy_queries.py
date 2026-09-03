@@ -673,6 +673,9 @@ class HierarchyQueryMixin:
         ``discovered-from`` edge.  Returns ``(task_id, capped)``.
         """
         async with self._engine.begin() as conn:
+            # Lock order is project hierarchy row, then task rows. Worker
+            # filing takes the same order before reserving a child ordinal.
+            await self.lock_hierarchy_project(conn, task.project_id)
             task_id, capped = await child_task_id(conn, parent_id)
             task.id = task_id
             task.parent_task_id = None  # set_parent owns the pointer

@@ -773,6 +773,62 @@ async def test_lock_filing_scope_blocks_intermediate_ancestor_reparent_on_postgr
         await db.close()
 
 
+@pytest.mark.skipif(POSTGRES_TEST_DSN is None, reason="POSTGRES_TEST_DSN not set")
+async def test_create_task_under_waits_before_child_ordinal_on_postgres(monkeypatch):
+    """Ordinary child creation cannot invert filing's project/task lock order."""
+    import asyncio
+
+    from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
+    from src.database.queries import hierarchy_queries
+
+    db = PostgreSQLDatabaseAdapter(POSTGRES_TEST_DSN)
+    await db.initialize()
+    await db.reset_for_tests()
+    try:
+        await db.create_project(Project(id=PROJECT_ID, name="p"))
+        for tid in ("held", "parent"):
+            await db.create_task(Task(
+                id=tid,
+                project_id=PROJECT_ID,
+                title=tid,
+                description=tid,
+                status=TaskStatus.IN_PROGRESS,
+            ))
+
+        real_child_task_id = hierarchy_queries.child_task_id
+        creator_reached_ordinal = asyncio.Event()
+
+        async def observed_child_task_id(conn, parent_id):
+            if asyncio.current_task().get_name() == "ordinary-child-creator":
+                creator_reached_ordinal.set()
+            return await real_child_task_id(conn, parent_id)
+
+        monkeypatch.setattr(hierarchy_queries, "child_task_id", observed_child_task_id)
+        created = Task(
+            id="",
+            project_id=PROJECT_ID,
+            title="ordinary child",
+            description="ordinary child",
+            status=TaskStatus.DEFINED,
+        )
+        async with db.immediate() as conn:
+            assert await db.lock_filing_scope(conn, ["held"]) == {"held": None}
+            creator = asyncio.create_task(
+                db.create_task_under(created, "parent"),
+                name="ordinary-child-creator",
+            )
+            # create_task_under must wait on the project row before it can
+            # update and lock the parent's ordinal row.
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(creator_reached_ordinal.wait(), timeout=0.5)
+            reserved_id, capped = await real_child_task_id(conn, "parent")
+            assert reserved_id == "parent.1" and capped is False
+        await asyncio.wait_for(creator, timeout=5)
+        assert created.id == "parent.2"
+    finally:
+        await db.close()
+
+
 def _cli_client(captured_args: dict):
     client = AsyncMock()
     client.__aenter__ = AsyncMock(return_value=client)
