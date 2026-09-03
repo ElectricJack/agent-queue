@@ -539,6 +539,44 @@ class TestAsyncCommitAll:
         assert set(received[0]["changed_files"]) == {"a.txt", "b.txt"}
 
 
+class TestAsyncReservedDeliveryDiff:
+    @pytest.mark.asyncio
+    async def test_reports_forced_add_and_changed_previously_tracked_paths(self, clone, mgr):
+        repo = pathlib.Path(clone)
+        tracked = repo / ".codex" / "settings.json"
+        tracked.parent.mkdir()
+        tracked.write_text('{"base": true}\n')
+        _git(["add", ".codex/settings.json"], cwd=clone)
+        _git(["commit", "-m", "track project codex settings"], cwd=clone)
+        _git(["switch", "-c", "task/reserved"], cwd=clone)
+        tracked.write_text('{"task": true}\n')
+        forced = repo / ".aq" / "claim.json"
+        forced.parent.mkdir()
+        forced.write_text("daemon state\n")
+        _git(["add", "-f", ".aq/claim.json", ".codex/settings.json"], cwd=clone)
+        _git(["commit", "-m", "bad delivery"], cwd=clone)
+
+        assert await mgr.areserved_paths_in_diff(clone, "main", "task/reserved") == [
+            ".aq/claim.json",
+            ".codex/settings.json",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_ignores_reserved_path_tracked_but_unchanged_from_base(self, clone, mgr):
+        repo = pathlib.Path(clone)
+        tracked = repo / ".codex" / "settings.json"
+        tracked.parent.mkdir()
+        tracked.write_text('{"base": true}\n')
+        _git(["add", ".codex/settings.json"], cwd=clone)
+        _git(["commit", "-m", "track project codex settings"], cwd=clone)
+        _git(["switch", "-c", "task/legitimate"], cwd=clone)
+        (repo / "work.txt").write_text("real work\n")
+        _git(["add", "work.txt"], cwd=clone)
+        _git(["commit", "-m", "task work"], cwd=clone)
+
+        assert await mgr.areserved_paths_in_diff(clone, "main", "task/legitimate") == []
+
+
 class TestAsyncPrepareForTask:
     @pytest.mark.asyncio
     async def test_creates_branch(self, clone, mgr):

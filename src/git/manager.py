@@ -1022,13 +1022,15 @@ class GitManager:
         exclude_plans: bool = True,
         no_verify: bool = False,
     ) -> bool:
-        """Stage all changes and commit. Returns True if a commit was made, False if nothing to commit.
+        """Stage task changes and commit, returning whether a commit was made.
 
         Uses add-all-then-check-staged pattern, while excluding daemon-owned
         bookkeeping from the initial add and clearing any such paths that
         were already staged.  ``git diff --cached --quiet`` then checks
         whether anything is actually staged.  This avoids the race condition
-        of checking status before staging.
+        of checking status before staging.  ``False`` means no legitimate
+        staged task change remained after sanitization; excluded daemon or
+        plan paths may still be modified in the working tree.
 
         Plan files (``.claude/plan.md``, ``plan.md``, ``.claude/plans/``)
         are automatically unstaged to prevent them from being committed to
@@ -2483,6 +2485,31 @@ class GitManager:
             return await self._arun(["status"], cwd=checkout_path)
         except GitError:
             return ""
+
+    async def areserved_paths_in_diff(
+        self,
+        checkout_path: str,
+        base_ref: str,
+        tip_ref: str,
+    ) -> list[str]:
+        """Return daemon-owned paths changed by a delivery tip.
+
+        The comparison starts at the merge-base so an unchanged reserved
+        path already tracked by the target branch is harmless, while an
+        addition, deletion, or modification made by task commits is caught.
+        Unlike preview helpers, Git failures propagate: callers use this as
+        a fail-closed delivery gate before merge, push, or PR acceptance.
+        """
+        base_ref = _validate_rev(base_ref, field="delivery base")
+        tip_ref = _validate_rev(tip_ref, field="delivery tip")
+        merge_base = await self._arun(
+            ["merge-base", base_ref, tip_ref], cwd=checkout_path
+        )
+        changed = await self._arun(
+            ["diff", "--name-only", "-z", merge_base, tip_ref, "--"],
+            cwd=checkout_path,
+        )
+        return sorted(self._daemon_bookkeeping_paths(changed))
 
     async def aget_current_branch(self, checkout_path: str) -> str:
         try:

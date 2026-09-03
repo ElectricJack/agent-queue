@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.config import AppConfig
+from src.git.manager import GitError
 from src.models import (
     Agent,
     AgentProfile,
@@ -69,6 +70,7 @@ async def orch(tmp_path):
     mock_git.ais_ancestor = AsyncMock(return_value=False)
     # Default: the task branch carries work, so the PR gate applies.
     mock_git.acount_commits_ahead = AsyncMock(return_value=1)
+    mock_git.areserved_paths_in_diff = AsyncMock(return_value=[])
     mock_git._arun = AsyncMock(return_value="0")
     mock_git.acommit_all = AsyncMock(return_value=True)
     mock_git.apush_branch = AsyncMock(return_value=None)
@@ -179,6 +181,64 @@ class TestExecutionRulesByMode:
 
 
 class TestPhaseVerifyByMode:
+    async def test_skip_verification_cannot_opt_out_of_reserved_delivery_gate(self, orch):
+        task = _pr_task("t-skip-reserved", skip_verification=True)
+        await orch.db.create_task(task)
+        orch.git.areserved_paths_in_diff = AsyncMock(return_value=[".codex/settings.json"])
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = _ctx(orch, task, ws.workspace_path)
+        ctx.close_session_live = True
+
+        assert await orch._phase_verify(ctx) == PhaseResult.STOP
+        assert any("reserved daemon" in issue.lower() for issue in ctx.verification_issues)
+        orch.git.afind_open_pr.assert_not_awaited()
+
+    async def test_pr_mode_rejects_reserved_delivery_before_pr_acceptance(self, orch):
+        task = _pr_task("t-pr-reserved")
+        await orch.db.create_task(task)
+        orch.git.areserved_paths_in_diff = AsyncMock(
+            return_value=[".aq/claim.json", ".codex/settings.json"]
+        )
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = _ctx(orch, task, ws.workspace_path)
+        ctx.close_session_live = True
+
+        assert await orch._phase_verify(ctx) == PhaseResult.STOP
+        assert any("reserved daemon" in issue.lower() for issue in ctx.verification_issues)
+        orch.git.afind_open_pr.assert_not_awaited()
+        orch.git.apush_branch.assert_not_awaited()
+
+    async def test_direct_mode_rejects_reserved_delivery_before_auto_merge(self, orch):
+        task = _direct_task("t-direct-reserved")
+        await orch.db.create_task(task)
+        orch.git.areserved_paths_in_diff = AsyncMock(return_value=[".aq-worktree.json"])
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = _ctx(orch, task, ws.workspace_path)
+        ctx.close_session_live = True
+
+        assert await orch._phase_verify(ctx) == PhaseResult.STOP
+        merge_calls = [
+            c for c in orch.git._arun.await_args_list if c.args and "merge" in c.args[0]
+        ]
+        assert merge_calls == []
+        orch.git.apush_branch.assert_not_awaited()
+
+    async def test_delivery_diff_error_blocks_mutation_conservatively(self, orch):
+        task = _direct_task("t-direct-diff-error")
+        await orch.db.create_task(task)
+        orch.git.areserved_paths_in_diff = AsyncMock(
+            side_effect=GitError("cannot read delivery diff")
+        )
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = _ctx(orch, task, ws.workspace_path)
+
+        assert await orch._phase_verify(ctx) == PhaseResult.STOP
+        merge_calls = [
+            c for c in orch.git._arun.await_args_list if c.args and "merge" in c.args[0]
+        ]
+        assert merge_calls == []
+        orch.git.apush_branch.assert_not_awaited()
+
     async def test_pr_mode_requires_open_pr_and_never_merges(self, orch):
         task = _pr_task()
         await orch.db.create_task(task)
@@ -328,6 +388,22 @@ class TestPhaseIntegrateByMode:
         result = await self._run_integrate(orch, task, monkeypatch)
         assert result == PhaseResult.CONTINUE
         orch.git.amerge_branch.assert_awaited_once()
+
+    async def test_reserved_delivery_never_acquires_merge_slot(self, orch, monkeypatch):
+        from src.orchestrator import git_ops
+
+        task = _direct_task("t-int-reserved")
+        await orch.db.create_task(task)
+        orch.git.areserved_paths_in_diff = AsyncMock(return_value=[".codex/config.json"])
+        acquire = AsyncMock(return_value=True)
+        monkeypatch.setattr(git_ops, "acquire_merge_slot", acquire)
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = _ctx(orch, task, ws.workspace_path)
+
+        assert await orch._phase_integrate(ctx) == PhaseResult.STOP
+        acquire.assert_not_awaited()
+        orch.git.apush_branch.assert_not_awaited()
+        orch.git.amerge_branch.assert_not_awaited()
 
 
 class TestEmptyBranchSkipsIntegration:
@@ -648,7 +724,13 @@ class TestNoCodeTasksSkipThePrGate:
     async def test_no_code_task_still_sweeps_uncommitted_changes(self, orch, monkeypatch):
         """Skipping the gate must not leave a dirty slot for the next task."""
         task, ctx = await self._no_pr_ctx(orch, "t-dirty", "aq/t-dirty", profile_id="reviewer")
-        orch.git.ahas_uncommitted_changes = AsyncMock(return_value=True)
+
+        async def status_state(_workspace, *, strict=False):
+            # The initial sweep sees the dirty tree; the post-sweep strict
+            # check proves remediation left it clean.
+            return False if strict else True
+
+        orch.git.ahas_uncommitted_changes = AsyncMock(side_effect=status_state)
         sweep = AsyncMock(return_value=False)
         monkeypatch.setattr(orch, "_auto_remediate_uncommitted", sweep)
 
@@ -670,6 +752,17 @@ class TestNoCodeTasksSkipThePrGate:
 
         assert await orch._phase_verify(ctx) == PhaseResult.STOP
         assert ctx.verification_retry_in_session is True
+
+    async def test_no_code_profile_cannot_bypass_reserved_delivery_gate(self, orch):
+        """Read-only intent cannot hide daemon paths already committed by the task."""
+        _task, ctx = await self._no_pr_ctx(
+            orch, "t-no-code-reserved", "aq/t-no-code-reserved", profile_id="reviewer"
+        )
+        orch.git.areserved_paths_in_diff = AsyncMock(return_value=[".aq/claim.json"])
+
+        assert await orch._phase_verify(ctx) == PhaseResult.STOP
+        assert any("reserved daemon" in issue.lower() for issue in ctx.verification_issues)
+        orch.git.afind_open_pr.assert_not_awaited()
 
     async def test_no_code_task_skips_integration(self, orch, monkeypatch):
         """Nothing to rebase, push or merge — integrate is not run either.
