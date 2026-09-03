@@ -62,7 +62,7 @@ def _append(path: Path, entries: list[dict]) -> None:
 
 
 async def _make_session(db, work_dir: str, session_key: str,
-                         *, session_id="s1", task_id="t1") -> SessionRecord:
+                         *, session_id="s1", task_id="t1", started_at: float | None = None) -> SessionRecord:
     if task_id:
         await db.create_task(
             Task(id=task_id, project_id="p1", title="T", description="d")
@@ -78,7 +78,7 @@ async def _make_session(db, work_dir: str, session_key: str,
         work_dir=work_dir,
         epoch="e",
         instance_token="tok",
-        started_at=time.time(),
+        started_at=started_at if started_at is not None else time.time(),
         task_id=task_id,
         state="running",
         session_key=session_key,
@@ -368,11 +368,15 @@ def _make_codex_transcript(base_dir: Path, work_dir: str, uuid=CODEX_UUID) -> Pa
     src = Path(__file__).parent / "fixtures" / "transcripts" / "codex" / "basic.jsonl"
     body = src.read_text().replace('"cwd":"/tmp/wd"', f'"cwd":"{work_dir}"')
     lines = body.splitlines()
-    meta = json.loads(lines[0])
-    meta["timestamp"] = time.time()
-    meta["payload"]["timestamp"] = meta["timestamp"]
-    lines[0] = json.dumps(meta)
-    path.write_text("\n".join(lines) + "\n")
+    now = time.time()
+    refreshed: list[str] = []
+    for line in lines:
+        record = json.loads(line)
+        record["timestamp"] = now
+        if record.get("type") == "session_meta":
+            record["payload"]["timestamp"] = now
+        refreshed.append(json.dumps(record))
+    path.write_text("\n".join(refreshed) + "\n")
     return path
 
 
@@ -501,6 +505,109 @@ async def test_a_relaunched_session_does_not_replay_the_transcript(tmp_path, db,
     assert [p["message"] for p in fresh_bus.payloads("notify.task_message")] == [
         "second turn"
     ]
+
+
+@pytest.mark.asyncio
+async def test_uncheckpointed_adoption_skips_entries_before_session_started_at(tmp_path, db, bus):
+    """A daemon seeing an old file for the first time must not bill its history."""
+    work_dir = "/work/old-adoption"
+    path = _make_transcript(tmp_path, work_dir, "sk-old-adoption")
+    started_at = time.time()
+    old_stamp = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(started_at - 300))
+    _append(path, [{
+        "type": "assistant", "uuid": "old-a1", "parentUuid": None,
+        "timestamp": old_stamp,
+        "message": {"role": "assistant", "model": "m",
+                    "content": [{"type": "text", "text": "old turn"}],
+                    "usage": {"input_tokens": 40, "output_tokens": 10}},
+    }])
+    row = await _make_session(
+        db, work_dir, "sk-old-adoption", session_id="s-old-adoption", task_id="t-old-adoption"
+    )
+    await db.create_agent(Agent(
+        id="agent-old-adoption", name="old-adoption", profile_id="claude-agent",
+        state=AgentState.IDLE,
+    ))
+    await db.transition_task(
+        "t-old-adoption", TaskStatus.IN_PROGRESS, assigned_agent_id="agent-old-adoption"
+    )
+
+    await TranscriptWatcher(db=db, bus=bus, base_dir=tmp_path).tick()
+
+    assert row.started_at > started_at - 1
+    assert await db.get_cost_rollup(project_id="p1") == []
+    assert bus.payloads("notify.task_message") == []
+    assert (await db.get_transcript_checkpoint(str(path)))["byte_offset"] == path.stat().st_size
+
+
+@pytest.mark.asyncio
+async def test_uncheckpointed_adoption_drops_old_turns_even_when_file_has_new_output(
+    tmp_path, db, bus
+):
+    """A current append must not make an old transcript look safe to replay."""
+    work_dir = "/work/mixed-adoption"
+    path = _make_transcript(tmp_path, work_dir, "sk-mixed-adoption")
+    started_at = time.time()
+    old_stamp = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(started_at - 300))
+    new_stamp = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(started_at + 1))
+    _append(path, [
+        {
+            "type": "assistant", "uuid": "mixed-old", "parentUuid": None,
+            "timestamp": old_stamp,
+            "message": {"role": "assistant", "model": "m",
+                        "content": [{"type": "text", "text": "old turn"}],
+                        "usage": {"input_tokens": 40, "output_tokens": 10}},
+        },
+        {
+            "type": "assistant", "uuid": "mixed-new", "parentUuid": "mixed-old",
+            "timestamp": new_stamp,
+            "message": {"role": "assistant", "model": "m",
+                        "content": [{"type": "text", "text": "new turn"}],
+                        "usage": {"input_tokens": 4, "output_tokens": 1}},
+        },
+    ])
+    await _make_session(
+        db, work_dir, "sk-mixed-adoption", session_id="s-mixed-adoption", task_id="t-mixed-adoption"
+    )
+
+    await TranscriptWatcher(db=db, bus=bus, base_dir=tmp_path).tick()
+
+    assert sum(row["tokens_used"] for row in await db.get_cost_rollup(project_id="p1")) == 5
+    assert [payload["message"] for payload in bus.payloads("notify.task_message")] == ["new turn"]
+
+
+@pytest.mark.asyncio
+async def test_uncheckpointed_startup_guard_skips_large_historical_batch(tmp_path, db, bus):
+    """A missing checkpoint cannot turn a daemon restart into a ledger spike."""
+    work_dir = "/work/startup-guard"
+    path = _make_transcript(tmp_path, work_dir, "sk-startup-guard")
+    old_stamp = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(time.time() - 300))
+    _append(path, [
+        {
+            "type": "assistant", "uuid": f"old-a{i}", "parentUuid": None,
+            "timestamp": old_stamp,
+            "message": {"role": "assistant", "model": "m",
+                        "content": [{"type": "text", "text": f"old turn {i}"}],
+                        "usage": {"input_tokens": 1, "output_tokens": 1}},
+        }
+        for i in range(3)
+    ])
+    await _make_session(
+        db,
+        work_dir,
+        "sk-startup-guard",
+        session_id="s-startup-guard",
+        task_id="t-startup-guard",
+        started_at=time.time() - 600,
+    )
+
+    await TranscriptWatcher(
+        db=db, bus=bus, base_dir=tmp_path, startup_replay_limit=2
+    ).tick()
+
+    assert await db.get_cost_rollup(project_id="p1") == []
+    assert bus.payloads("notify.task_message") == []
+    assert (await db.get_transcript_checkpoint(str(path)))["byte_offset"] == path.stat().st_size
 
 
 @pytest.mark.asyncio

@@ -40,6 +40,13 @@ class GoogleProvider(LLMProvider):
     def model_name(self) -> str:
         return self._model
 
+    @property
+    def reports_usage(self) -> bool:
+        # Gemini exposes usage metadata for supported models; a missing value
+        # on an individual response remains unreported and is checked by the
+        # executor after the call.
+        return True
+
     async def create_message(
         self,
         *,

@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import uuid
 
-from src.llm.types import ChatResponse, TextBlock, ToolUseBlock
+from src.llm.types import ChatResponse, TextBlock, TokenUsage, ToolUseBlock
 
 
 def convert_tools(anthropic_tools: list[dict]) -> list[dict]:
@@ -133,4 +133,16 @@ def parse_response(response: object) -> ChatResponse:
                 )
             )
 
-    return ChatResponse(content=content)
+    usage = getattr(response, "usage", None)
+    return ChatResponse(
+        content=content,
+        usage=(
+            TokenUsage(
+                input_tokens=usage.prompt_tokens,
+                output_tokens=usage.completion_tokens,
+                reported=True,
+            )
+            if usage is not None
+            else None
+        ),
+    )

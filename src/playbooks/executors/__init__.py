@@ -33,6 +33,7 @@ from src.playbooks.executors.command import (
 )
 from src.playbooks.executors.decision import DecisionExecutor
 from src.playbooks.executors.foreach import ForEachExecutor
+from src.playbooks.executors.llm import LiveLlmExecutor, SymbolicLlmExecutor
 from src.playbooks.executors.terminal import TerminalExecutor
 from src.playbooks.executors.wait import LiveWaitExecutor, ReportingWaitExecutor
 
@@ -47,6 +48,7 @@ REPORTING_WAIT_EXECUTOR = ReportingWaitExecutor()
 EXECUTORS: Mapping[ExecutionMode, Mapping[str, Executor]] = {
     ExecutionMode.LIVE: {
         "command": LiveCommandExecutor(),
+        "llm": LiveLlmExecutor(),
         "decision": DECISION_EXECUTOR,
         "foreach": FOREACH_EXECUTOR,
         "wait": LiveWaitExecutor(),
@@ -54,6 +56,7 @@ EXECUTORS: Mapping[ExecutionMode, Mapping[str, Executor]] = {
     },
     ExecutionMode.DRY_RUN: {
         "command": PreviewCommandExecutor(),
+        "llm": SymbolicLlmExecutor(),
         "decision": DECISION_EXECUTOR,
         "foreach": FOREACH_EXECUTOR,
         "wait": REPORTING_WAIT_EXECUTOR,
@@ -61,6 +64,7 @@ EXECUTORS: Mapping[ExecutionMode, Mapping[str, Executor]] = {
     },
     ExecutionMode.SHADOW: {
         "command": ShadowCommandExecutor(),
+        "llm": SymbolicLlmExecutor(),
         "decision": DECISION_EXECUTOR,
         "foreach": FOREACH_EXECUTOR,
         "wait": REPORTING_WAIT_EXECUTOR,
@@ -95,12 +99,15 @@ __all__ = [
     "ExecutorResult",
     "ForEachExecutor",
     "LiveCommandExecutor",
+    "LiveLlmExecutor",
     "LiveWaitExecutor",
     "PreviewCommandExecutor",
     "ReportingWaitExecutor",
     "ShadowCommandExecutor",
     "StepContext",
     "StepControl",
+    "SymbolicLlmExecutor",
+    "SymbolicLlmExecutor",
     "TerminalExecutor",
     "TokenUsage",
     "UnknownStepType",
