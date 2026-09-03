@@ -98,7 +98,6 @@ class ProfileSummary(BaseModel):
     id: str
     name: str
     description: str = ""
-    model: str = ""
     harness: str | None = None
     default_class: str = ""
     allowed_tools: list[str] = []
@@ -175,7 +174,6 @@ class ProfileDetail(BaseModel):
     id: str
     name: str
     description: str = ""
-    model: str = ""
     harness: str | None = None
     default_class: str = ""
     permission_mode: str = ""

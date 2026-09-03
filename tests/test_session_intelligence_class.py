@@ -97,7 +97,7 @@ def test_compose_argv_falls_back_to_profile_default_class(tmp_path):
     assert argv[argv.index("--model") + 1] == "claude-opus-4-1"
 
 
-def test_compose_argv_unknown_class_falls_back_to_profile_model(tmp_path):
+def test_compose_argv_unknown_class_does_not_use_retired_profile_model(tmp_path):
     from src.sessions.spec import SessionSpecBuilder
 
     harness = SimpleNamespace(
@@ -128,8 +128,8 @@ def test_compose_argv_unknown_class_falls_back_to_profile_model(tmp_path):
         resume_key=None, prompt=None, session_name="s",
         files=[], task_intelligence_class="bogus-class-name",
     )
-    # Unknown class → fall back to profile.model (no launch failure)
-    assert argv[argv.index("--model") + 1] == "claude-sonnet-4-6"
+    # Unknown class cannot revive a retired profile-level model pin.
+    assert "--model" not in argv
 
 
 def test_provider_inference_from_harness_command():

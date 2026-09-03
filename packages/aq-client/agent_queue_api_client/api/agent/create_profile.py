@@ -65,12 +65,12 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: CreateProfileRequest,
 ) -> Response[CreateProfileResponse | CreateProfileResponse422]:
-    """Create a new agent profile. Profiles configure agents with specific tools, MCP servers, model
-    overrides, and system prompt additions. Assign profiles to tasks (profile_id) or set as project
+    """Create a new agent profile. Profiles configure agents with specific tools, MCP servers, intelligence
+    classes, and system prompt additions. Assign profiles to tasks (profile_id) or set as project
     defaults (default_profile_id).
 
-     Create a new agent profile. Profiles configure agents with specific tools, MCP servers, model
-    overrides, and system prompt additions. Assign profiles to tasks (profile_id) or set as project
+     Create a new agent profile. Profiles configure agents with specific tools, MCP servers, intelligence
+    classes, and system prompt additions. Assign profiles to tasks (profile_id) or set as project
     defaults (default_profile_id).
 
     Args:
@@ -100,12 +100,12 @@ def sync(
     client: AuthenticatedClient | Client,
     body: CreateProfileRequest,
 ) -> CreateProfileResponse | CreateProfileResponse422 | None:
-    """Create a new agent profile. Profiles configure agents with specific tools, MCP servers, model
-    overrides, and system prompt additions. Assign profiles to tasks (profile_id) or set as project
+    """Create a new agent profile. Profiles configure agents with specific tools, MCP servers, intelligence
+    classes, and system prompt additions. Assign profiles to tasks (profile_id) or set as project
     defaults (default_profile_id).
 
-     Create a new agent profile. Profiles configure agents with specific tools, MCP servers, model
-    overrides, and system prompt additions. Assign profiles to tasks (profile_id) or set as project
+     Create a new agent profile. Profiles configure agents with specific tools, MCP servers, intelligence
+    classes, and system prompt additions. Assign profiles to tasks (profile_id) or set as project
     defaults (default_profile_id).
 
     Args:
@@ -130,12 +130,12 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: CreateProfileRequest,
 ) -> Response[CreateProfileResponse | CreateProfileResponse422]:
-    """Create a new agent profile. Profiles configure agents with specific tools, MCP servers, model
-    overrides, and system prompt additions. Assign profiles to tasks (profile_id) or set as project
+    """Create a new agent profile. Profiles configure agents with specific tools, MCP servers, intelligence
+    classes, and system prompt additions. Assign profiles to tasks (profile_id) or set as project
     defaults (default_profile_id).
 
-     Create a new agent profile. Profiles configure agents with specific tools, MCP servers, model
-    overrides, and system prompt additions. Assign profiles to tasks (profile_id) or set as project
+     Create a new agent profile. Profiles configure agents with specific tools, MCP servers, intelligence
+    classes, and system prompt additions. Assign profiles to tasks (profile_id) or set as project
     defaults (default_profile_id).
 
     Args:
@@ -163,12 +163,12 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: CreateProfileRequest,
 ) -> CreateProfileResponse | CreateProfileResponse422 | None:
-    """Create a new agent profile. Profiles configure agents with specific tools, MCP servers, model
-    overrides, and system prompt additions. Assign profiles to tasks (profile_id) or set as project
+    """Create a new agent profile. Profiles configure agents with specific tools, MCP servers, intelligence
+    classes, and system prompt additions. Assign profiles to tasks (profile_id) or set as project
     defaults (default_profile_id).
 
-     Create a new agent profile. Profiles configure agents with specific tools, MCP servers, model
-    overrides, and system prompt additions. Assign profiles to tasks (profile_id) or set as project
+     Create a new agent profile. Profiles configure agents with specific tools, MCP servers, intelligence
+    classes, and system prompt additions. Assign profiles to tasks (profile_id) or set as project
     defaults (default_profile_id).
 
     Args:

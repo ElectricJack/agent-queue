@@ -2153,6 +2153,16 @@ class Orchestrator(
         except Exception:
             logger.warning("YAML inline mcp_servers migration failed", exc_info=True)
 
+        # Profiles now select a launch model solely through default_class and
+        # harness.  Migrate legacy Config.model keys before the strict parser
+        # below scans the vault.
+        from src.profiles.model_pin_migration import migrate_vault_profile_model_pins
+
+        try:
+            migrate_vault_profile_model_pins(self.config.vault_root)
+        except Exception:
+            logger.warning("Vault profile model-pin migration failed", exc_info=True)
+
         # Startup scan: sync any existing profile.md files from the vault
         # to the database.  The VaultWatcher's initial check() only takes
         # a snapshot (no dispatch), so pre-existing profile files would

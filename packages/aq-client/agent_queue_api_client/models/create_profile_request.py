@@ -18,7 +18,7 @@ class CreateProfileRequest:
         id (str): Profile slug ID (e.g. 'reviewer', 'web-developer')
         name (str): Human-readable display name
         description (None | str | Unset): What this profile is for (optional)
-        model (None | str | Unset): Model override (optional, empty = use default)
+        default_class (None | str | Unset): Default intelligence class id (optional)
         permission_mode (None | str | Unset): Permission mode override (optional)
         allowed_tools (list[Any] | None | Unset): Tool whitelist (e.g. ['Read', 'Glob', 'Grep', 'Bash'])
         mcp_servers (list[Any] | None | Unset): MCP server names from the registry (e.g. ['playwright']). A legacy name
@@ -29,7 +29,7 @@ class CreateProfileRequest:
     id: str
     name: str
     description: None | str | Unset = UNSET
-    model: None | str | Unset = UNSET
+    default_class: None | str | Unset = UNSET
     permission_mode: None | str | Unset = UNSET
     allowed_tools: list[Any] | None | Unset = UNSET
     mcp_servers: list[Any] | None | Unset = UNSET
@@ -47,11 +47,11 @@ class CreateProfileRequest:
         else:
             description = self.description
 
-        model: None | str | Unset
-        if isinstance(self.model, Unset):
-            model = UNSET
+        default_class: None | str | Unset
+        if isinstance(self.default_class, Unset):
+            default_class = UNSET
         else:
-            model = self.model
+            default_class = self.default_class
 
         permission_mode: None | str | Unset
         if isinstance(self.permission_mode, Unset):
@@ -93,8 +93,8 @@ class CreateProfileRequest:
         )
         if description is not UNSET:
             field_dict["description"] = description
-        if model is not UNSET:
-            field_dict["model"] = model
+        if default_class is not UNSET:
+            field_dict["default_class"] = default_class
         if permission_mode is not UNSET:
             field_dict["permission_mode"] = permission_mode
         if allowed_tools is not UNSET:
@@ -122,14 +122,14 @@ class CreateProfileRequest:
 
         description = _parse_description(d.pop("description", UNSET))
 
-        def _parse_model(data: object) -> None | str | Unset:
+        def _parse_default_class(data: object) -> None | str | Unset:
             if data is None:
                 return data
             if isinstance(data, Unset):
                 return data
             return cast(None | str | Unset, data)
 
-        model = _parse_model(d.pop("model", UNSET))
+        default_class = _parse_default_class(d.pop("default_class", UNSET))
 
         def _parse_permission_mode(data: object) -> None | str | Unset:
             if data is None:
@@ -187,7 +187,7 @@ class CreateProfileRequest:
             id=id,
             name=name,
             description=description,
-            model=model,
+            default_class=default_class,
             permission_mode=permission_mode,
             allowed_tools=allowed_tools,
             mcp_servers=mcp_servers,
