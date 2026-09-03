@@ -1,0 +1,188 @@
+{
+  "schema_version": 2,
+  "id": "two-rules-one-event",
+  "version": 1,
+  "scope": {
+    "type": "system"
+  },
+  "source_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+  "compiled_at": "2026-09-01T00:00:00Z",
+  "purpose": "routine",
+  "rules": [
+    {
+      "id": "review",
+      "name": "Review the task",
+      "trigger": {
+        "event_type": "task.completed",
+        "filter": {
+          "review_task": false
+        }
+      },
+      "entry_step": "ensure-review-task",
+      "source": {
+        "path": "system/playbooks/pkg4.md",
+        "start_line": 10,
+        "end_line": 12
+      }
+    },
+    {
+      "id": "sweep",
+      "name": "Sweep downstream",
+      "trigger": {
+        "event_type": "task.completed"
+      },
+      "entry_step": "list-downstream",
+      "source": {
+        "path": "system/playbooks/pkg4.md",
+        "start_line": 20,
+        "end_line": 22
+      }
+    }
+  ],
+  "steps": {
+    "ensure-review-task": {
+      "type": "command",
+      "rule": "review",
+      "title": "Ensure a review task",
+      "command": "ensure_task",
+      "inputs": {
+        "project_id": {
+          "type": "event_ref",
+          "path": "project_id"
+        },
+        "title": {
+          "type": "template",
+          "parts": [
+            {
+              "type": "literal",
+              "value": "Review: "
+            },
+            {
+              "type": "event_ref",
+              "path": "title"
+            }
+          ]
+        }
+      },
+      "save_result_as": "review",
+      "transitions": {
+        "created": "review-done",
+        "reused": "review-done",
+        "rejected": "review-failed",
+        "runtime_error": "review-failed"
+      },
+      "source": {
+        "path": "system/playbooks/pkg4.md",
+        "start_line": 13,
+        "end_line": 16
+      }
+    },
+    "review-done": {
+      "type": "terminal",
+      "rule": "review",
+      "title": "Reviewed",
+      "outcome": "completed",
+      "source": {
+        "path": "system/playbooks/pkg4.md",
+        "start_line": 17,
+        "end_line": 17
+      }
+    },
+    "review-failed": {
+      "type": "terminal",
+      "rule": "review",
+      "title": "Review failed",
+      "outcome": "failed",
+      "source": {
+        "path": "system/playbooks/pkg4.md",
+        "start_line": 18,
+        "end_line": 18
+      }
+    },
+    "list-downstream": {
+      "type": "command",
+      "rule": "sweep",
+      "title": "List downstream tasks",
+      "command": "list_tasks",
+      "inputs": {
+        "project_id": {
+          "type": "event_ref",
+          "path": "project_id"
+        }
+      },
+      "save_result_as": "downstream",
+      "transitions": {
+        "listed": "check-empty",
+        "runtime_error": "sweep-failed"
+      },
+      "source": {
+        "path": "system/playbooks/pkg4.md",
+        "start_line": 23,
+        "end_line": 25
+      }
+    },
+    "check-empty": {
+      "type": "decision",
+      "rule": "sweep",
+      "title": "Anything downstream?",
+      "cases": [
+        {
+          "when": {
+            "type": "comparison",
+            "op": "gt",
+            "left": {
+              "type": "binding_ref",
+              "binding": "downstream",
+              "path": "count"
+            },
+            "right": {
+              "type": "literal",
+              "value": 0
+            }
+          },
+          "goto": "sweep-done",
+          "label": "has tasks"
+        }
+      ],
+      "default": "sweep-empty",
+      "source": {
+        "path": "system/playbooks/pkg4.md",
+        "start_line": 26,
+        "end_line": 28
+      }
+    },
+    "sweep-done": {
+      "type": "terminal",
+      "rule": "sweep",
+      "title": "Swept",
+      "outcome": "completed",
+      "source": {
+        "path": "system/playbooks/pkg4.md",
+        "start_line": 29,
+        "end_line": 29
+      }
+    },
+    "sweep-empty": {
+      "type": "terminal",
+      "rule": "sweep",
+      "title": "Nothing to sweep",
+      "outcome": "completed",
+      "source": {
+        "path": "system/playbooks/pkg4.md",
+        "start_line": 30,
+        "end_line": 30
+      }
+    },
+    "sweep-failed": {
+      "type": "terminal",
+      "rule": "sweep",
+      "title": "Sweep failed",
+      "outcome": "failed",
+      "source": {
+        "path": "system/playbooks/pkg4.md",
+        "start_line": 31,
+        "end_line": 31
+      }
+    }
+  }
+}

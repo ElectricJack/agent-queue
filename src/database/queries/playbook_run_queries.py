@@ -45,6 +45,7 @@ from src.playbooks.run_state import (
     DEFAULT_STATE_LIMITS,
     TERMINAL_LIFECYCLES,
     DuplicateAttempt,
+    DuplicateRun,
     DuplicateWait,
     IllegalLifecycleTransition,
     PendingEventIntegrityError,
@@ -347,9 +348,32 @@ class PlaybookRunQueryMixin:
             "started_at": snapshot.started_at,
             **_run_columns(snapshot, payload),
         }
-        async with self.immediate() as conn:
-            await conn.execute(insert(playbook_v2_runs).values(**values))
+        try:
+            async with self.immediate() as conn:
+                await conn.execute(insert(playbook_v2_runs).values(**values))
+        except IntegrityError as exc:
+            # ``uq_playbook_v2_runs_dispatch_rule``: one matching event
+            # creates at most one run per rule.  Named rather than left as a
+            # driver-specific message so the engine can report the existing
+            # run as deduplicated instead of failing the dispatch.
+            if snapshot.dispatch_id:
+                raise DuplicateRun(snapshot.dispatch_id, snapshot.rule_id) from exc
+            raise
         return snapshot
+
+    async def find_run_for_dispatch(
+        self, dispatch_id: str, rule_id: str
+    ) -> RunSnapshot | None:
+        """The run this (dispatch, rule) pair already has, if any."""
+        stmt = select(playbook_v2_runs).where(
+            playbook_v2_runs.c.dispatch_id == dispatch_id,
+            playbook_v2_runs.c.rule_id == rule_id,
+        )
+        async with self._engine.connect() as conn:
+            row = (await conn.execute(stmt)).mappings().fetchone()
+        if row is None:
+            return None
+        return deserialize_snapshot(row["snapshot"], version=int(row["snapshot_version"]))
 
     async def load_run(self, run_id: str) -> RunSnapshot | None:
         async with self._engine.connect() as conn:
