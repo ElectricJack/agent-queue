@@ -14,7 +14,7 @@ hashes, POSIX-second floats.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
@@ -130,9 +130,27 @@ class PlaybookReleaseCheckResponse(V2Model):
     error: str | None = None
 
 
+class PlaybookCutoverReportResponse(V2Model):
+    """Read-only, signed-operator-ready evidence for the V1→V2 cutover."""
+
+    success: bool
+    generated_at: float
+    contract_fingerprint: str
+    artifacts: list[dict[str, Any]] = []
+    unresolved: list[dict[str, Any]] = []
+    acknowledged_disabled: list[dict[str, Any]] = []
+    pending_events: dict[str, Any]
+    active_v1_runs: dict[str, Any]
+    parity: dict[str, Any]
+    rollback_ready: bool
+    cutover_eligible: bool
+    blocking_reasons: list[str] = []
+
+
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "playbook_migration_inventory": PlaybookMigrationInventoryResponse,
     "playbook_migration_acknowledge": PlaybookMigrationAckResponse,
     "playbook_migration_unacknowledge": PlaybookMigrationAckResponse,
     "playbook_release_check": PlaybookReleaseCheckResponse,
+    "playbook_cutover_report": PlaybookCutoverReportResponse,
 }

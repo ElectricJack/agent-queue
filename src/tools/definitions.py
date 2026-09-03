@@ -149,6 +149,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "playbook_migration_inventory": "playbook",
     "playbook_migration_acknowledge": "playbook",
     "playbook_release_check": "playbook",
+    "playbook_cutover_report": "playbook",
     "playbook_migration_unacknowledge": "playbook",
     # plugin — installation, configuration, lifecycle
     "plugin_list": "plugin",
@@ -5330,6 +5331,15 @@ _ALL_TOOL_DEFINITIONS = [
             "names each command whose execution fingerprint moved. Offline and "
             "read-only: no network, no LLM, no compile. A presentation-only label "
             "change does not trip it."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "playbook_cutover_report",
+        "description": (
+            "Render the read-only V2 cutover evidence report: enabled artifacts and "
+            "hashes, contract fingerprint, unresolved migration entries, pending events, "
+            "active V1 runs, recorded shadow parity, and rollback readiness."
         ),
         "input_schema": {"type": "object", "properties": {}},
     },

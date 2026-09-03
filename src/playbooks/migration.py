@@ -250,6 +250,150 @@ class MigrationInventory:
 
 
 # ---------------------------------------------------------------------------
+# §5.4 — deterministic V1/V2 shadow comparison
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class CommandInvocation:
+    """One command a shadow arm would have invoked, after normalisation."""
+
+    order: int
+    command: str
+    args_canonical: str
+
+
+@dataclass(frozen=True, slots=True)
+class AuthzDecision:
+    """The dispatch-boundary decision for one command."""
+
+    command: str
+    principal_kind: str
+    allowed: bool
+    reason: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowObservation:
+    """The comparable, side-effect-free record of one V1 or V2 event arm."""
+
+    arm: Literal["v1", "v2"]
+    event_id: str
+    event_type: str
+    rules_selected: tuple[str, ...]
+    node_path: tuple[str, ...]
+    commands: tuple[CommandInvocation, ...]
+    routing_outputs: Mapping[str, Any]
+    terminal: str
+    authorization: tuple[AuthzDecision, ...]
+
+
+DifferenceClass = Literal["identical", "expected_v2_semantics", "unexplained"]
+
+
+@dataclass(frozen=True, slots=True)
+class ParityFinding:
+    """One visible difference between the two arms of a shadow observation."""
+
+    field: Literal[
+        "rules_selected", "node_path", "commands", "routing_outputs", "terminal", "authorization"
+    ]
+    v1: Any
+    v2: Any
+    classification: DifferenceClass
+    rationale_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.classification == "expected_v2_semantics":
+            if self.field == "authorization":
+                raise ValueError("authorization differences are never waivable")
+            if self.rationale_id not in EXPECTED_DIFFERENCES:
+                raise ValueError(f"unknown expected-difference rationale {self.rationale_id!r}")
+        elif self.rationale_id is not None:
+            raise ValueError("only an expected difference may carry a rationale id")
+
+
+#: The only intentional semantic deviations a parity report may name.  Keeping
+#: this closed and in the executable comparison module prevents a report from
+#: becoming a free-form waiver document.
+EXPECTED_DIFFERENCES: Mapping[str, str] = {
+    "run-per-rule": (
+        "V2 has one run per matching rule while V1 shared one run per event; run identity "
+        "is deliberately excluded from the observation."
+    ),
+    "rule-failure-isolation": (
+        "A V2 rule failure does not abort sibling rules, whereas V1 stopped the shared event run."
+    ),
+    "loop-frame-shape": (
+        "V2 stores loop state in a typed frame rather than V1's transient outputs dictionary; "
+        "per-iteration commands remain comparable."
+    ),
+    "unassigned-ref-rejected": (
+        "V2 rejects an unassigned binding at compile time where V1 substituted an empty or null value."
+    ),
+    "terminal-vocabulary": (
+        "V2 distinguishes timed_out and cancelled from V1's failed terminal vocabulary."
+    ),
+}
+
+
+_PARITY_FIELDS: tuple[str, ...] = (
+    "rules_selected",
+    "node_path",
+    "commands",
+    "routing_outputs",
+    "terminal",
+    "authorization",
+)
+
+
+def _terminal_difference_is_expected(v1: str, v2: str) -> bool:
+    """Only V2's new non-completed terminals are a vocabulary difference."""
+    return v1 != "completed" and v2 in {"timed_out", "cancelled"}
+
+
+def compare(v1: ShadowObservation, v2: ShadowObservation) -> tuple[ParityFinding, ...]:
+    """Compare the closed observation surface and leave unknown differences loud.
+
+    This function intentionally has no heuristic to turn a changed command,
+    route, or authorization result into an expected difference.  New semantic
+    intent needs an explicit reviewed rationale and an observation exercising
+    it; otherwise cutover remains blocked.
+    """
+    if v1.arm != "v1" or v2.arm != "v2":
+        raise ValueError("compare requires a v1 observation followed by a v2 observation")
+    if (v1.event_id, v1.event_type) != (v2.event_id, v2.event_type):
+        raise ValueError("compare requires observations for the same event id and type")
+
+    findings: list[ParityFinding] = []
+    for field in _PARITY_FIELDS:
+        left = getattr(v1, field)
+        right = getattr(v2, field)
+        if left == right:
+            continue
+        if field == "terminal" and _terminal_difference_is_expected(left, right):
+            findings.append(
+                ParityFinding(
+                    field="terminal",
+                    v1=left,
+                    v2=right,
+                    classification="expected_v2_semantics",
+                    rationale_id="terminal-vocabulary",
+                )
+            )
+        else:
+            findings.append(
+                ParityFinding(
+                    field=field,  # type: ignore[arg-type]
+                    v1=left,
+                    v2=right,
+                    classification="unexplained",
+                )
+            )
+    return tuple(findings)
+
+
+# ---------------------------------------------------------------------------
 # Source enumeration
 # ---------------------------------------------------------------------------
 
@@ -923,6 +1067,112 @@ def audit_capabilities(definition: Any, policy: Any) -> tuple[CapabilityFinding,
 
 
 # ---------------------------------------------------------------------------
+# §5.5 — cutover evidence report
+# ---------------------------------------------------------------------------
+
+
+def build_cutover_report(
+    *,
+    contract_fingerprint: str,
+    artifacts: Sequence[Mapping[str, Any]],
+    unresolved: Sequence[Mapping[str, Any]],
+    acknowledged_disabled: Sequence[Mapping[str, Any]],
+    pending_events: Sequence[Mapping[str, Any]],
+    active_v1_runs: Sequence[Mapping[str, Any]],
+    parity: Mapping[str, Any],
+    now: float | None = None,
+) -> dict[str, Any]:
+    """Render the complete, serialisable Package 6 cutover evidence.
+
+    The report only assembles evidence collected by the caller; it never
+    compiles, activates, replays, or otherwise alters fleet state.
+    """
+    generated_at = time.time() if now is None else now
+    rendered_artifacts = [
+        {
+            "playbook_id": row.get("playbook_id"),
+            "scope": row.get("scope", "system"),
+            "scope_identifier": row.get("scope_identifier"),
+            "artifact_sha256": row.get("artifact_sha256"),
+            "source_sha256": row.get("source_sha256"),
+            "activation_health": row.get("activation_health", row.get("health")),
+            "reviewed_by": row.get("reviewed_by"),
+            "reviewed_at": row.get("reviewed_at"),
+        }
+        for row in artifacts
+    ]
+    by_playbook: dict[str, int] = {}
+    received: list[float] = []
+    for event in pending_events:
+        playbook_id = str(event.get("playbook_id") or "unknown")
+        by_playbook[playbook_id] = by_playbook.get(playbook_id, 0) + 1
+        timestamp = event.get("received_at")
+        if isinstance(timestamp, (int, float)):
+            received.append(float(timestamp))
+
+    runs: list[dict[str, Any]] = []
+    running = paused = 0
+    run_started: list[float] = []
+    for row in active_v1_runs:
+        status = str(row.get("status") or "")
+        if status == "running":
+            running += 1
+        elif status == "paused":
+            paused += 1
+        else:
+            continue
+        runs.append(dict(row))
+        timestamp = row.get("started_at")
+        if isinstance(timestamp, (int, float)):
+            run_started.append(float(timestamp))
+
+    unexplained = int(parity.get("unexplained") or 0)
+    rollback_ready = bool(rendered_artifacts) and all(
+        row.get("v1_available", False) for row in artifacts
+    )
+    blocking_reasons: list[str] = []
+    if unresolved:
+        blocking_reasons.append(f"{len(unresolved)} unresolved migration inventory entries")
+    unhealthy = [row for row in rendered_artifacts if row.get("activation_health") != "ready"]
+    if unhealthy:
+        blocking_reasons.append(f"{len(unhealthy)} enabled activations are not ready")
+    if pending_events:
+        blocking_reasons.append(f"{len(pending_events)} pending events require an operator decision")
+    if runs:
+        blocking_reasons.append(f"{len(runs)} active V1 runs must drain before cutover")
+    if unexplained:
+        blocking_reasons.append(f"{unexplained} unexplained shadow-parity findings")
+    if parity.get("recorded") is False:
+        blocking_reasons.append("no committed shadow-parity report is available")
+    if not rollback_ready:
+        blocking_reasons.append("rollback artifacts are incomplete")
+
+    return {
+        "success": True,
+        "generated_at": generated_at,
+        "contract_fingerprint": contract_fingerprint,
+        "artifacts": rendered_artifacts,
+        "unresolved": [dict(row) for row in unresolved],
+        "acknowledged_disabled": [dict(row) for row in acknowledged_disabled],
+        "pending_events": {
+            "total": len(pending_events),
+            "oldest_age_seconds": max(0.0, generated_at - min(received)) if received else None,
+            "by_playbook": dict(sorted(by_playbook.items())),
+        },
+        "active_v1_runs": {
+            "running": running,
+            "paused": paused,
+            "oldest_age_seconds": max(0.0, generated_at - min(run_started)) if run_started else None,
+            "runs": runs,
+        },
+        "parity": dict(parity),
+        "rollback_ready": rollback_ready,
+        "cutover_eligible": not blocking_reasons,
+        "blocking_reasons": blocking_reasons,
+    }
+
+
+# ---------------------------------------------------------------------------
 # §5.5 — the release check
 # ---------------------------------------------------------------------------
 
@@ -1110,16 +1360,23 @@ __all__ = [
     "REASON_CODES",
     "REVIEWED_FIXTURE_ROOT",
     "SHA256_RE",
+    "EXPECTED_DIFFERENCES",
+    "AuthzDecision",
     "CapabilityFinding",
+    "CommandInvocation",
     "InventoryEntry",
     "MigrationInventory",
     "MigrationReason",
     "MigrationReasonError",
+    "ParityFinding",
     "PlaybookDisposition",
+    "ShadowObservation",
     "SourceRef",
     "StaleArtifact",
     "audit_capabilities",
     "build_inventory",
+    "build_cutover_report",
+    "compare",
     "current_command_fingerprints",
     "find_embedded_action_block",
     "release_check",

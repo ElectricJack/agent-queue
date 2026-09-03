@@ -6162,6 +6162,53 @@
         }
       }
     },
+    "/api/playbook/cutover-report": {
+      "post": {
+        "tags": [
+          "playbook"
+        ],
+        "summary": "Render the read-only V2 cutover evidence report: enabled artifacts and hashes, contract fingerprint, unresolved migration entries, pending events, active V1 runs, recorded shadow parity, and rollback readiness.",
+        "description": "Render the read-only V2 cutover evidence report: enabled artifacts and hashes, contract fingerprint, unresolved migration entries, pending events, active V1 runs, recorded shadow parity, and rollback readiness.",
+        "operationId": "playbook_cutover_report",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaybookCutoverReportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybookCutoverReportResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/playbook/graph-view": {
       "post": {
         "tags": [
@@ -28738,6 +28785,99 @@
           "playbook_id"
         ],
         "title": "PlaybookArtifactsRequest"
+      },
+      "PlaybookCutoverReportRequest": {
+        "properties": {},
+        "type": "object",
+        "title": "PlaybookCutoverReportRequest"
+      },
+      "PlaybookCutoverReportResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "generated_at": {
+            "type": "number",
+            "title": "Generated At"
+          },
+          "contract_fingerprint": {
+            "type": "string",
+            "title": "Contract Fingerprint"
+          },
+          "artifacts": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Artifacts",
+            "default": []
+          },
+          "unresolved": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Unresolved",
+            "default": []
+          },
+          "acknowledged_disabled": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Acknowledged Disabled",
+            "default": []
+          },
+          "pending_events": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Pending Events"
+          },
+          "active_v1_runs": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Active V1 Runs"
+          },
+          "parity": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Parity"
+          },
+          "rollback_ready": {
+            "type": "boolean",
+            "title": "Rollback Ready"
+          },
+          "cutover_eligible": {
+            "type": "boolean",
+            "title": "Cutover Eligible"
+          },
+          "blocking_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Blocking Reasons",
+            "default": []
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success",
+          "generated_at",
+          "contract_fingerprint",
+          "pending_events",
+          "active_v1_runs",
+          "parity",
+          "rollback_ready",
+          "cutover_eligible"
+        ],
+        "title": "PlaybookCutoverReportResponse",
+        "description": "Read-only, signed-operator-ready evidence for the V1\u2192V2 cutover."
       },
       "PlaybookGraphEdge": {
         "properties": {
