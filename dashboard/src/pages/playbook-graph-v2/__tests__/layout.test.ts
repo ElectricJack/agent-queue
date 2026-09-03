@@ -57,6 +57,24 @@ describe("layoutSemanticGraph", () => {
     expect(new Set(pair.map((e) => e.id)).size).toBe(2);
     expect(pair.map((e) => e.data!.edgeKind)).toEqual(["decision_case", "decision_default"]);
     expect(pair.map((e) => e.label)).toEqual(["already open", "otherwise"]);
+    expect(pair.map((e) => e.selectable)).toEqual([true, true]);
+  });
+
+  it("makes every edge selectable and focusable without making it editable", () => {
+    const result = layoutSemanticGraph(graph);
+    expect(result.edges).not.toHaveLength(0);
+    for (const edge of result.edges) {
+      // Explicit per-edge flags, not the flow-level defaults: the canvas keeps
+      // `elementsSelectable` off so the cards stay read-only, and xyflow reads
+      // `edge.selectable ?? elementsSelectable`.
+      expect(edge.selectable).toBe(true);
+      expect(edge.focusable).toBe(true);
+      // Focusable + a button role is what turns xyflow's Enter/Space/Escape
+      // handling into something a screen reader announces as operable.
+      expect(edge.ariaRole).toBe("button");
+      expect(edge.deletable).toBe(false);
+      expect(edge.reconnectable).toBe(false);
+    }
   });
 
   it("anchors each edge on the outcome port of its source card", () => {

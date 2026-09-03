@@ -5,6 +5,7 @@ import {
   NEUTRAL_EDGE_STYLE,
   STEP_KIND_LABELS,
   STEP_KIND_TONES,
+  selectedEdgeStyle,
   type SemanticEdgeKind,
   type SemanticStepKind,
 } from "../types";
@@ -39,6 +40,19 @@ describe("semantic graph style maps", () => {
     const dashes = EDGE_KINDS.map((kind) => String(EDGE_KIND_STYLES[kind]!.strokeDasharray));
     expect(new Set(dashes).size).toBe(EDGE_KINDS.length);
     expect(dashes).not.toContain(String(NEUTRAL_EDGE_STYLE.strokeDasharray));
+  });
+
+  it("emphasises a selected edge without dropping the kind it encodes", () => {
+    for (const kind of [...EDGE_KINDS, "unknown"]) {
+      const base = EDGE_KIND_STYLES[kind] ?? NEUTRAL_EDGE_STYLE;
+      const selected = selectedEdgeStyle(base);
+      expect(selected.strokeWidth).toBeGreaterThan(base.strokeWidth as number);
+      // Dash and colour are what say which kind this is; selection may not
+      // repaint an edge into looking like a different transition.
+      expect(selected.strokeDasharray).toBe(base.strokeDasharray);
+      expect(selected.stroke).toBe(base.stroke);
+      expect(String(selected.filter)).toContain(String(base.stroke));
+    }
   });
 
   it("labels every edge kind and every step kind", () => {

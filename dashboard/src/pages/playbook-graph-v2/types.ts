@@ -91,6 +91,22 @@ export const NEUTRAL_EDGE_STYLE: CSSProperties = {
   strokeDasharray: "4 4",
 };
 
+/** Selection emphasis for one transition edge.
+ *
+ *  The dash pattern is what carries the edge kind, so a selected edge keeps it
+ *  and gains weight plus a halo in its own colour instead. React Flow's
+ *  `.react-flow__edge.selected` rule cannot do this for us: it recolours the
+ *  path through a CSS variable, and every edge here already carries an inline
+ *  stroke that wins over it. */
+export function selectedEdgeStyle(base: CSSProperties): CSSProperties {
+  const width = typeof base.strokeWidth === "number" ? base.strokeWidth : 1.5;
+  return {
+    ...base,
+    strokeWidth: width * 2,
+    filter: `drop-shadow(0 0 5px ${String(base.stroke ?? "#e2e8f0")})`,
+  };
+}
+
 export const EDGE_KIND_LABELS: Record<string, string> = {
   success: "success",
   failure: "failure",
