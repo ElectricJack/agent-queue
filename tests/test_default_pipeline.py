@@ -23,15 +23,50 @@ def test_default_pipeline_ships(tmp_path):
     assert pipeline.is_file(), f"default-pipeline.md not seeded at {pipeline}"
 
 
-def test_default_pipeline_compiles():
-    """The shipped default-pipeline.md must compile with zero errors."""
-    src = (
-        Path(__file__).parent.parent
-        / "src" / "prompts" / "default_playbooks" / "default-pipeline.md"
+SHIPPED_PIPELINE = (
+    Path(__file__).parent.parent
+    / "src" / "prompts" / "default_playbooks" / "default-pipeline.md"
+)
+
+#: The pre-Package-6 source, kept so the V1 behaviour it encodes stays asserted.
+FROZEN_V1_PIPELINE = (
+    Path(__file__).parent / "fixtures" / "playbooks" / "v1" / "default-pipeline.md"
+)
+
+PIPELINE_RULE_IDS = {
+    "per-task-review",
+    "per-branch-final-review",
+    "spec-ingest-on-approve",
+    "proposal-ready-gate",
+    "commit-on-gate-resolve",
+}
+
+
+def test_shipped_pipeline_has_no_embedded_action_block():
+    """Package 6: the shipped source is prose, so the V1 compiler cannot use it.
+
+    This is the intended end state, not a regression.  V2 compiles the prose to
+    a reviewed artifact (`tests/fixtures/playbooks/v2/default-pipeline/`); the
+    V1 compiler has nothing left to read, and says so rather than silently
+    producing an empty pipeline.
+    """
+    assert SHIPPED_PIPELINE.is_file(), f"Source file missing: {SHIPPED_PIPELINE}"
+    result = compile_pipeline(SHIPPED_PIPELINE.read_text(encoding="utf-8"))
+    assert not result.success, (
+        "the shipped pipeline still compiles under V1, so it still carries an "
+        "embedded action graph — see tests/test_shipped_playbook_sources.py"
     )
-    assert src.is_file(), f"Source file missing: {src}"
-    md = src.read_text(encoding="utf-8")
-    r = compile_pipeline(md)
+
+
+def test_frozen_v1_pipeline_still_compiles():
+    """The frozen V1 graph — the artifact's behavioural baseline — still compiles.
+
+    Every assertion here was previously made against the shipped Markdown.  It
+    moved rather than disappeared, because the V1 arm of the shadow-parity
+    comparison and the reviewed V2 artifact are both derived from this file.
+    """
+    assert FROZEN_V1_PIPELINE.is_file(), f"Source file missing: {FROZEN_V1_PIPELINE}"
+    r = compile_pipeline(FROZEN_V1_PIPELINE.read_text(encoding="utf-8"))
     assert r.success, r.errors
     d = r.playbook.to_dict()
     assert d["kind"] == "pipeline"
@@ -42,14 +77,23 @@ def test_default_pipeline_compiles():
     }
     assert not any("task-created-routing" in entry for entry in entries)
     assert not any("worker-filed-triage" in entry for entry in entries)
-    expected = {
-        "per-task-review",
-        "per-branch-final-review",
-        "spec-ingest-on-approve",
-        "proposal-ready-gate",
-        "commit-on-gate-resolve",
-    }
-    assert all(any(entry.startswith(f"{rule_id}-") for entry in entries) for rule_id in expected)
+    assert all(
+        any(entry.startswith(f"{rule_id}-") for entry in entries)
+        for rule_id in PIPELINE_RULE_IDS
+    )
+
+
+def test_reviewed_artifact_keeps_the_pinned_rule_set():
+    """The rule set survived the rewrite — asserted where it now lives."""
+    import json
+
+    artifact = json.loads(
+        (
+            Path(__file__).parent
+            / "fixtures" / "playbooks" / "v2" / "default-pipeline" / "artifact.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert {rule["id"] for rule in artifact["rules"]} == PIPELINE_RULE_IDS
 
 
 def test_triage_profile_ships(tmp_path):

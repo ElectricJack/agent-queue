@@ -25,11 +25,10 @@ from src.models import (
     TaskStatus,
 )
 from src.orchestrator import Orchestrator
-from src.playbooks.pipeline_compiler import compile_pipeline
 from src.playbooks.manager import PlaybookManager
+from src.playbooks.pipeline_compiler import compile_pipeline
 from src.playbooks.pipeline_runner import PipelineRunner
 from tests.pg_dsn import ensure_worker_postgres_dsn
-
 
 POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
 
@@ -350,7 +349,8 @@ async def test_reusable_triage_survives_auto_archive(setup):
 async def test_shipped_pipeline_does_not_create_legacy_triage_work(setup):
     handler, db, _ = setup
     await db.create_task(Task(id="unrouted", project_id="p", title="New work", description=""))
-    markdown = Path("src/prompts/default_playbooks/default-pipeline.md").read_text()
+    # Frozen pre-Package-6 V1 graph; the shipped source is prose now.
+    markdown = Path("tests/fixtures/playbooks/v1/default-pipeline.md").read_text()
     compiled = compile_pipeline(markdown)
     assert compiled.success
     result = await PipelineRunner(
@@ -466,7 +466,7 @@ async def test_legacy_draining_duplicate_blocks_reuse_until_session_stops(setup)
 def install_default_pipeline(orch):
     manager = PlaybookManager(config=orch.config)
     compiled = compile_pipeline(
-        Path("src/prompts/default_playbooks/default-pipeline.md").read_text()
+        Path("tests/fixtures/playbooks/v1/default-pipeline.md").read_text()
     )
     assert compiled.success
     pb = compiled.playbook

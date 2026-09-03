@@ -283,6 +283,7 @@ def test_commands_are_registered_on_the_command_handler():
         "playbook_migration_inventory",
         "playbook_migration_acknowledge",
         "playbook_migration_unacknowledge",
+        "playbook_cutover_report",
     ):
         assert callable(getattr(CommandHandler, f"_cmd_{name}", None)), name
         assert _TOOL_CATEGORIES.get(name) == "playbook", name
@@ -295,5 +296,6 @@ def test_response_models_are_registered():
         "playbook_migration_inventory",
         "playbook_migration_acknowledge",
         "playbook_migration_unacknowledge",
+        "playbook_cutover_report",
     ):
         assert name in RESPONSE_MODELS, name

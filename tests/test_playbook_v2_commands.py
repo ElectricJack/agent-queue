@@ -49,6 +49,21 @@ def _copy_source(tmp_path: Path, name: str) -> Path:
     return target
 
 
+def _copy_frozen_v1_pipeline(tmp_path: Path) -> Path:
+    """A vault copy of the pre-Package-6 `default-pipeline.md`.
+
+    The lowering assertions below are about how a *machine graph* maps to
+    source lines, and the shipped Markdown is a prose authoring source now.
+    The frozen snapshot is byte-identical to the file those line numbers were
+    recorded against — see `tests/fixtures/playbooks/v1/README.md`.
+    """
+    target = tmp_path / "vault" / "system" / "playbooks" / "default-pipeline.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    source = Path("tests/fixtures/playbooks/v1/default-pipeline.md")
+    target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+    return target
+
+
 def test_all_three_commands_have_tool_and_category_entries():
     definitions = {definition["name"] for definition in _ALL_TOOL_DEFINITIONS}
     assert PLAYBOOK_V2_COMPILER_COMMANDS <= definitions
@@ -100,7 +115,7 @@ async def test_propose_returns_review_material_without_installing(tmp_path):
 
 
 async def test_shadow_compile_reports_every_vault_source_and_writes_nothing(tmp_path):
-    pipeline = _copy_source(tmp_path, "default-pipeline.md")
+    pipeline = _copy_frozen_v1_pipeline(tmp_path)
     prose = tmp_path / "vault" / "system" / "playbooks" / "prose.md"
     prose.write_text(
         "---\nid: prose\nscope: system\ntriggers: [task.completed]\n---\nNeeds a proposal.\n",
@@ -119,7 +134,7 @@ async def test_shadow_compile_reports_every_vault_source_and_writes_nothing(tmp_
 
 
 def test_default_pipeline_source_refs_point_to_exact_json_key_lines(tmp_path):
-    path = _copy_source(tmp_path, "default-pipeline.md")
+    path = _copy_frozen_v1_pipeline(tmp_path)
     source = PlaybookSource.load(path, vault_root=tmp_path / "vault")
     assert isinstance(source, PlaybookSource)
     body, diagnostics = lower_pipeline(source)
@@ -134,7 +149,7 @@ def test_default_pipeline_source_refs_point_to_exact_json_key_lines(tmp_path):
 
 
 def test_duplicate_terminal_keys_map_to_their_owning_rule_lines(tmp_path):
-    path = _copy_source(tmp_path, "default-pipeline.md")
+    path = _copy_frozen_v1_pipeline(tmp_path)
     source = PlaybookSource.load(path, vault_root=tmp_path / "vault")
     assert isinstance(source, PlaybookSource)
     body, diagnostics = lower_pipeline(source)

@@ -6162,6 +6162,53 @@
         }
       }
     },
+    "/api/playbook/cutover-report": {
+      "post": {
+        "tags": [
+          "playbook"
+        ],
+        "summary": "Render the read-only V2 cutover evidence report: enabled artifacts and hashes, contract fingerprint, unresolved migration entries, pending events, active V1 runs, recorded shadow parity, and rollback readiness.",
+        "description": "Render the read-only V2 cutover evidence report: enabled artifacts and hashes, contract fingerprint, unresolved migration entries, pending events, active V1 runs, recorded shadow parity, and rollback readiness.",
+        "operationId": "playbook_cutover_report",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaybookCutoverReportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybookCutoverReportResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/playbook/graph-view": {
       "post": {
         "tags": [
@@ -6516,6 +6563,53 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ListPlaybookPendingEventsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/playbook/release-check": {
+      "post": {
+        "tags": [
+          "playbook"
+        ],
+        "summary": "Check that every reviewed V2 artifact still matches the command contracts it was compiled against. Compares the checked-in reviewed fixtures and every enabled activation against the live registry, and names each command whose execution fingerprint moved. Offline and read-only: no network, no LLM, no compile. A presentation-only label change does not trip it.",
+        "description": "Check that every reviewed V2 artifact still matches the command contracts it was compiled against. Compares the checked-in reviewed fixtures and every enabled activation against the live registry, and names each command whose execution fingerprint moved. Offline and read-only: no network, no LLM, no compile. A presentation-only label change does not trip it.",
+        "operationId": "playbook_release_check",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaybookReleaseCheckRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybookReleaseCheckResponse"
                 }
               }
             }
@@ -28692,6 +28786,99 @@
         ],
         "title": "PlaybookArtifactsRequest"
       },
+      "PlaybookCutoverReportRequest": {
+        "properties": {},
+        "type": "object",
+        "title": "PlaybookCutoverReportRequest"
+      },
+      "PlaybookCutoverReportResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "generated_at": {
+            "type": "number",
+            "title": "Generated At"
+          },
+          "contract_fingerprint": {
+            "type": "string",
+            "title": "Contract Fingerprint"
+          },
+          "artifacts": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Artifacts",
+            "default": []
+          },
+          "unresolved": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Unresolved",
+            "default": []
+          },
+          "acknowledged_disabled": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Acknowledged Disabled",
+            "default": []
+          },
+          "pending_events": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Pending Events"
+          },
+          "active_v1_runs": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Active V1 Runs"
+          },
+          "parity": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Parity"
+          },
+          "rollback_ready": {
+            "type": "boolean",
+            "title": "Rollback Ready"
+          },
+          "cutover_eligible": {
+            "type": "boolean",
+            "title": "Cutover Eligible"
+          },
+          "blocking_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Blocking Reasons",
+            "default": []
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success",
+          "generated_at",
+          "contract_fingerprint",
+          "pending_events",
+          "active_v1_runs",
+          "parity",
+          "rollback_ready",
+          "cutover_eligible"
+        ],
+        "title": "PlaybookCutoverReportResponse",
+        "description": "Read-only, signed-operator-ready evidence for the V1\u2192V2 cutover."
+      },
       "PlaybookGraphEdge": {
         "properties": {
           "source": {
@@ -29650,6 +29837,64 @@
         },
         "type": "object",
         "title": "PlaybookPendingEventsRequest"
+      },
+      "PlaybookReleaseCheckRequest": {
+        "properties": {},
+        "type": "object",
+        "title": "PlaybookReleaseCheckRequest"
+      },
+      "PlaybookReleaseCheckResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "checked": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Checked",
+            "default": []
+          },
+          "registry_fingerprint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Registry Fingerprint"
+          },
+          "stale": {
+            "items": {
+              "$ref": "#/components/schemas/StaleArtifactDTO"
+            },
+            "type": "array",
+            "title": "Stale",
+            "default": []
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "PlaybookReleaseCheckResponse",
+        "description": "Whether every reviewed artifact still matches the live command surface."
       },
       "PlaybookRunOverlayRequest": {
         "properties": {
@@ -36669,6 +36914,80 @@
         },
         "type": "object",
         "title": "SpecApproveResponse"
+      },
+      "StaleArtifactDTO": {
+        "properties": {
+          "playbook_id": {
+            "type": "string",
+            "title": "Playbook Id"
+          },
+          "origin": {
+            "type": "string",
+            "enum": [
+              "fixture",
+              "activation"
+            ],
+            "title": "Origin"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "command",
+              "profile"
+            ],
+            "title": "Kind"
+          },
+          "dependency": {
+            "type": "string",
+            "title": "Dependency"
+          },
+          "change": {
+            "type": "string",
+            "enum": [
+              "changed",
+              "removed"
+            ],
+            "title": "Change"
+          },
+          "reviewed_fingerprint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewed Fingerprint"
+          },
+          "current_fingerprint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Fingerprint"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "playbook_id",
+          "origin",
+          "kind",
+          "dependency",
+          "change",
+          "message"
+        ],
+        "title": "StaleArtifactDTO",
+        "description": "One reviewed artifact whose compiled-against surface has moved."
       },
       "StallMetrics": {
         "properties": {

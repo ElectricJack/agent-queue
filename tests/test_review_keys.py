@@ -63,13 +63,41 @@ def test_non_string_dedup_keys_are_not_reviews(dedup_key):
     assert is_pipeline_review_task(dedup_key) is False
 
 
-def test_default_pipeline_source_uses_these_prefixes():
-    """The markdown is the source of truth; the constants must not drift from it."""
-    from tests.conftest import DEFAULT_PIPELINE_PATH
+def _reviewed_pipeline_artifact() -> dict:
+    """The reviewed V2 artifact for `default-pipeline`.
 
-    src = DEFAULT_PIPELINE_PATH.read_text(encoding="utf-8")
-    assert f'"dedup_key": "{REVIEW_TASK_DEDUP_PREFIX}{{{{event.task_id}}}}"' in src
-    assert f'"dedup_key": "{BRANCH_REVIEW_DEDUP_PREFIX}{{{{event.task.branch_name}}}}"' in src
+    Since Package 6 the shipped Markdown is prose and no longer contains the
+    literal `"dedup_key": ...` JSON these constants used to be checked against.
+    The artifact is the stronger pin anyway: it is what an activation executes.
+    """
+    import json
+    from pathlib import Path as _Path
+
+    return json.loads(
+        (
+            _Path(__file__).parent
+            / "fixtures" / "playbooks" / "v2" / "default-pipeline" / "artifact.json"
+        ).read_text(encoding="utf-8")
+    )
+
+
+def _dedup_key_prefix(artifact: dict, step_id: str) -> str:
+    parts = artifact["steps"][step_id]["inputs"]["dedup_key"]["parts"]
+    assert parts[0]["type"] == "literal", parts
+    return parts[0]["value"]
+
+
+def test_reviewed_pipeline_artifact_uses_these_prefixes():
+    """The reviewed artifact is the source of truth; the constants must not drift."""
+    artifact = _reviewed_pipeline_artifact()
+    assert (
+        _dedup_key_prefix(artifact, "per-task-review--create-review")
+        == REVIEW_TASK_DEDUP_PREFIX
+    )
+    assert (
+        _dedup_key_prefix(artifact, "per-branch-final-review--ensure-final")
+        == BRANCH_REVIEW_DEDUP_PREFIX
+    )
 
 
 @pytest.mark.parametrize(
@@ -131,13 +159,15 @@ def test_shipped_review_profiles_exist_with_these_ids():
         )
 
 
-def test_default_pipeline_source_pins_the_review_profiles():
-    """The markdown is the source of truth for the profile ids too."""
-    from tests.conftest import DEFAULT_PIPELINE_PATH
-
-    src = DEFAULT_PIPELINE_PATH.read_text(encoding="utf-8")
-    for profile_id in REVIEW_PROFILE_IDS:
-        assert f'"profile_id": "{profile_id}"' in src
+def test_reviewed_pipeline_artifact_pins_the_review_profiles():
+    """The reviewed artifact is the source of truth for the profile ids too."""
+    artifact = _reviewed_pipeline_artifact()
+    pinned = {
+        step["inputs"]["profile_id"]["value"]
+        for step in artifact["steps"].values()
+        if isinstance(step.get("inputs"), dict) and "profile_id" in step["inputs"]
+    }
+    assert set(REVIEW_PROFILE_IDS) <= pinned
 
 
 @pytest.mark.parametrize(

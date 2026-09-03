@@ -1,0 +1,7 @@
+[
+  {
+    "code": "requires_agent_proposal",
+    "message": "prose playbook with no V1 machine graph: a semantic body requires a compiler-agent run a human reviews",
+    "severity": "question"
+  }
+]

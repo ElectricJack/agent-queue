@@ -1,0 +1,15 @@
+[
+  {
+    "code": "unknown_event",
+    "message": "rule 'assignment-route' triggers on 'assignment.route.requested', which is not a registered event type",
+    "rule_id": "assignment-route",
+    "severity": "error"
+  },
+  {
+    "code": "unknown_profile",
+    "message": "'assignment-routing' is not a known profile",
+    "rule_id": "assignment-route",
+    "severity": "error",
+    "step_id": "assignment-route--choose"
+  }
+]
