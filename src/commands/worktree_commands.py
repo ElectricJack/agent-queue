@@ -35,7 +35,9 @@ class WorktreeCommandsMixin:
                                             "detail": str}, ...]}
 
         Kinds emitted:
-        * ``exclude_missing`` — base's ``.git/info/exclude`` lacks the block.
+        * ``exclude_missing`` — Git's exact exclude file lacks the block.
+        * ``exclude_unverifiable`` — resolving or reading that exact path
+          failed, so doctor cannot claim the workspace is protected.
         * ``stale_registration`` — git worktree list has an entry whose
           directory no longer exists.
         * ``dirty_unlocked_slot`` — slot dir has uncommitted work but is
@@ -133,15 +135,22 @@ class WorktreeCommandsMixin:
 
             for base in bases:
                 base_path = base.workspace_path
-                exclude = Path(base_path) / ".git" / "info" / "exclude"
-                needs_repair = True
-                if exclude.exists():
-                    try:
-                        text = exclude.read_text(encoding="utf-8", errors="replace")
-                        if "agent-queue managed" in text:
-                            needs_repair = False
-                    except OSError:
-                        pass
+                try:
+                    exclude = Path(
+                        await self.orchestrator.git.aget_git_path(
+                            base_path, "info/exclude"
+                        )
+                    )
+                    needs_repair = not mgr.git_exclude_is_current_path(exclude)
+                except Exception as exc:
+                    findings.append(
+                        {
+                            "kind": "exclude_unverifiable",
+                            "workspace_id": base.id,
+                            "detail": f"managed exclude path cannot be verified: {exc}",
+                        }
+                    )
+                    continue
                 if needs_repair:
                     findings.append(
                         {

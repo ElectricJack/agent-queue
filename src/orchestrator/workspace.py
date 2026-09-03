@@ -417,7 +417,8 @@ class WorkspaceMixin:
                 if await self.git.avalidate_checkout(workspace):
                     # The daemon's own control files (``.aq/claim.json``, the
                     # worktree sentinel, ``.agent-queue-lock``) live untracked
-                    # inside this checkout.  Only ``.git/info/exclude`` keeps
+                    # inside this checkout.  Only Git's resolved
+                    # ``info/exclude`` keeps
                     # them out of ``git status`` — and therefore out of the
                     # verify phase's ``git add -A`` auto-commit — and until
                     # now only worktree-slot provisioning wrote that block.
@@ -477,32 +478,25 @@ class WorkspaceMixin:
 
         return workspace
 
-    async def _ensure_control_files_excluded(self, workspace: str) -> None:
-        """Write the managed ``.git/info/exclude`` block into *workspace*.
+    async def _ensure_control_files_excluded(self, workspace: str) -> bool:
+        """Write and verify the managed block at Git's exact exclude path.
 
         Worktree slots get this from :class:`WorktreeSlotManager` at
         provisioning; an exclusive clone or linked checkout (``worktrees.enabled:
         false``) has to get it here, or ``.aq/claim.json`` and friends end up in
         ``auto-commit: uncommitted changes from task <id>`` and — in direct
-        mode — on the project's default branch.  Best-effort: the block is
-        hygiene, not a precondition for launching the agent.
+        mode — on the project's default branch.  Resolution uses
+        ``git rev-parse --path-format=absolute --git-path info/exclude`` with
+        the older-Git fallback in :class:`GitManager`, so separate Git dirs
+        and linked worktrees are covered.  Failure is fatal to handoff: an
+        agent or pool session must never receive an unprotected checkout.
         """
         from src.orchestrator.worktree_manager import WorktreeSlotManager
 
-        try:
-            if not await self.git.avalidate_checkout(workspace):
-                return
-            # ``info/exclude`` lives in the common dir.  For a linked checkout
-            # that is itself a worktree ``<workspace>/.git`` is a file
-            # pointing elsewhere, so resolve the base repository; everywhere
-            # else the workspace is its own common dir and no subprocess is
-            # needed.
-            base = workspace
-            if os.path.isfile(os.path.join(workspace, ".git")):
-                base = await self.git.aworktree_base_path(workspace) or workspace
-            WorktreeSlotManager.ensure_git_exclude(base)
-        except (OSError, GitError) as e:  # pragma: no cover - defensive
-            logger.warning("ensure_git_exclude failed for %s: %s", workspace, e)
+        if not await self.git.avalidate_checkout(workspace):
+            raise GitError(f"cannot install managed excludes: {workspace} is not a checkout")
+        exclude_path = await self.git.aget_git_path(workspace, "info/exclude")
+        return WorktreeSlotManager.ensure_git_exclude_path(exclude_path)
 
     @staticmethod
     def _project_slot_cap(project) -> int:

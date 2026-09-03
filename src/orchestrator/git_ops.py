@@ -426,9 +426,20 @@ class GitOpsMixin:
         if not pr_mode and not await self._task_is_worktree_mode(ctx):
             return False
         try:
-            return await self._abranch_has_no_commits(
-                workspace, branch, ctx.default_branch or "main"
-            )
+            default_branch = ctx.default_branch or "main"
+            if await self.git.ahas_uncommitted_changes(workspace, strict=True) is not False:
+                return False
+            if await self._abranch_has_no_commits(workspace, branch, default_branch):
+                return True
+            if pr_mode:
+                current_branch = await self.git.aget_current_branch(workspace)
+                if current_branch == default_branch and await self._default_checkout_proves_no_work(
+                    workspace, default_branch
+                ):
+                    return await self._assigned_branch_is_absent(
+                        workspace, branch, default_branch
+                    )
+            return False
         except Exception as e:
             logger.warning(
                 "Task %s: empty-branch check failed (assuming it has work): %s",
@@ -524,7 +535,12 @@ class GitOpsMixin:
         # A no-code task (reviewer stage, ``--work-outcome no-op``) has
         # nothing to integrate — running it would only force-push an empty
         # ``aq/<id>`` branch to origin.
-        if await self._task_produces_no_code(ctx):
+        no_code = await self._task_produces_no_code(ctx)
+        known_clean = (
+            bool(ctx.workspace_path)
+            and await self.git.ahas_uncommitted_changes(ctx.workspace_path, strict=True) is False
+        )
+        if no_code and known_clean:
             logger.info(
                 "Task %s: no-code task (profile=%s, work_outcome=%s), skipping integration",
                 ctx.task.id,
@@ -582,26 +598,31 @@ class GitOpsMixin:
             await self._sweep_uncommitted_before_skip(ctx)
             return PhaseResult.CONTINUE
 
-        # Skip verification if the task opted out (e.g. research/investigation tasks)
-        if task.skip_verification:
-            logger.info("Task %s: skip_verification=True, skipping git verification", task.id)
-            return PhaseResult.CONTINUE
+        # Opting out suppresses the normal branch/PR policy checks, but it
+        # cannot suppress the repository-wide reserved-path invariant.
+        skip_verification = task.skip_verification
+        if skip_verification:
+            logger.info(
+                "Task %s: skip_verification=True, checking reserved delivery paths",
+                task.id,
+            )
+            await self._sweep_uncommitted_before_skip(ctx)
 
         # A task that produces no code — a read-only profile or any task
         # closed with ``--work-outcome no-op`` — has
         # nothing to push, PR or merge.  The require-a-PR gate below would
         # only burn its verification retries and append misleading feedback
         # to a clean review verdict.  Sweep dirty state and pass.
-        if await self._task_produces_no_code(ctx):
+        no_code = not skip_verification and await self._task_produces_no_code(ctx)
+        if skip_verification or no_code:
             logger.info(
                 "Task %s: no-code task (profile=%s, work_outcome=%s), "
-                "skipping git verification",
+                "checking cleanliness before skipping git verification",
                 task.id,
                 task.profile_id,
                 ctx.work_outcome or "-",
             )
             await self._sweep_uncommitted_before_skip(ctx)
-            return PhaseResult.CONTINUE
 
         if not workspace or not await self.git.avalidate_checkout(workspace):
             return PhaseResult.CONTINUE
@@ -610,6 +631,32 @@ class GitOpsMixin:
         has_remote = await self.git.ahas_remote(workspace)
         current_branch = await self.git.aget_current_branch(workspace)
         has_uncommitted = await self.git.ahas_uncommitted_changes(workspace)
+
+        # A no-code declaration or explicit policy-check opt-out may skip the
+        # normal branch/PR checks only after both the index is known clean and
+        # the actual checked-out delivery tip passes the reserved-path gate.
+        shortcut_delivery_failure: tuple[str, bool] | None = None
+        shortcut_delivery_ref: str | None = None
+        if no_code:
+            if (
+                await self.git.ahas_uncommitted_changes(workspace, strict=True) is False
+                and current_branch
+            ):
+                shortcut_delivery_ref = current_branch
+                shortcut_delivery_failure = await self._reserved_delivery_failure(
+                    workspace,
+                    default_branch,
+                    shortcut_delivery_ref,
+                    has_remote=has_remote,
+                )
+                if shortcut_delivery_failure is None:
+                    return PhaseResult.CONTINUE
+            else:
+                logger.warning(
+                    "Task %s: git verification shortcut refused because workspace cleanliness "
+                    "or delivery tip is unknown",
+                    task.id,
+                )
 
         # Determine which scenario we're in
         is_intermediate = task.is_plan_subtask and not await self._is_last_subtask(task)
@@ -632,6 +679,15 @@ class GitOpsMixin:
         # committed; the integration phase rebases + pushes + merges.
         # Worktree-execution spec §6.5.
         is_worktree_task = await self._task_is_worktree_mode(ctx)
+
+        # Failures are (message, fixable) tuples. Fixable means the agent can
+        # resolve the issue (uncommitted changes, missing merge/push/PR).
+        # Unfixable issues (behind origin, diverged history) block immediately.
+        failures: list[tuple[str, bool]] = []
+        delivery_guard_ref = shortcut_delivery_ref
+        delivery_guard_blocked = shortcut_delivery_failure is not None
+        if shortcut_delivery_failure:
+            failures.append(shortcut_delivery_failure)
 
         # ── Auto-remediate: commit uncommitted changes ──────────────────
         # Agents frequently forget to commit their work before completing.
@@ -657,6 +713,28 @@ class GitOpsMixin:
                 agent_id=ctx.agent.id,
             )
 
+        # Before any automatic merge or push, prove that the task's delivery
+        # diff does not modify daemon-owned paths.  A direct-mode agent may
+        # already have merged onto the default branch; PR/worktree agents
+        # normally leave their delivery tip checked out instead.
+        if not has_uncommitted:
+            candidate_delivery_ref: str | None = None
+            if current_branch and current_branch != default_branch:
+                candidate_delivery_ref = current_branch
+            elif current_branch == default_branch:
+                candidate_delivery_ref = default_branch
+            if candidate_delivery_ref and candidate_delivery_ref != delivery_guard_ref:
+                delivery_guard_ref = candidate_delivery_ref
+                delivery_failure = await self._reserved_delivery_failure(
+                    workspace,
+                    default_branch,
+                    delivery_guard_ref,
+                    has_remote=has_remote,
+                )
+                if delivery_failure:
+                    failures.append(delivery_failure)
+                    delivery_guard_blocked = True
+
         # ── Auto-remediate: merge to default branch ────────────────────
         # For normal tasks (not intermediate, not PR workflow), the agent
         # should have merged to the default branch.  If they forgot, do
@@ -672,6 +750,7 @@ class GitOpsMixin:
             and not has_uncommitted
             and current_branch != default_branch
             and current_branch == task.branch_name
+            and not delivery_guard_blocked
         ):
             try:
                 await self.git._arun(["checkout", default_branch], cwd=workspace)
@@ -742,6 +821,7 @@ class GitOpsMixin:
             and not has_uncommitted
             and current_branch != default_branch
             and task.branch_name
+            and not delivery_guard_blocked
         ):
             try:
                 # Checkout default branch
@@ -795,7 +875,7 @@ class GitOpsMixin:
         # ── Auto-remediate: push unpushed commits ───────────────────────
         # After auto-committing/merging (or if agent committed but forgot
         # to push), push to the remote to avoid unnecessary retries.
-        if has_remote and not has_uncommitted:
+        if has_remote and not has_uncommitted and not delivery_guard_blocked:
             # Determine the expected branch for this task type
             if is_intermediate or pr_mode:
                 expected_push_branch = task.branch_name if is_intermediate else pr_delivery_branch
@@ -847,11 +927,6 @@ class GitOpsMixin:
         except Exception:
             pass
 
-        # Failures are (message, fixable) tuples. Fixable means the agent can
-        # resolve the issue (uncommitted changes, missing merge/push/PR).
-        # Unfixable issues (behind origin, diverged history) block immediately.
-        failures: list[tuple[str, bool]] = []
-
         if is_intermediate:
             # Intermediate subtask: should be on task branch with work committed
             if has_uncommitted:
@@ -882,9 +957,26 @@ class GitOpsMixin:
                         True,  # fixable — agent can commit and push
                     )
                 )
-            if not has_uncommitted and await self._abranch_has_no_commits(
-                workspace, pr_delivery_branch, default_branch
+            strict_clean = await self.git.ahas_uncommitted_changes(workspace, strict=True) is False
+            branch_has_no_commits = (
+                strict_clean
+                and not has_uncommitted
+                and await self._abranch_has_no_commits(
+                    workspace, pr_delivery_branch, default_branch
+                )
+            )
+            branch_is_absent = False
+            if (
+                not branch_has_no_commits
+                and not has_uncommitted
+                and current_branch == default_branch
+                and task.branch_name
+                and await self._default_checkout_proves_no_work(workspace, default_branch)
             ):
+                branch_is_absent = await self._assigned_branch_is_absent(
+                    workspace, pr_delivery_branch, default_branch
+                )
+            if branch_has_no_commits or branch_is_absent:
                 if (
                     task.branch_name
                     and current_branch != default_branch
@@ -911,7 +1003,32 @@ class GitOpsMixin:
                     pr_delivery_branch = None
             if pr_delivery_branch:
                 ctx.delivery_branch = pr_delivery_branch
-                if has_remote:
+                if pr_delivery_branch != delivery_guard_ref:
+                    branch_exists: bool | None = True
+                    if current_branch == default_branch:
+                        branch_exists = await self.git.abranch_exists(
+                            workspace, pr_delivery_branch
+                        )
+                    if branch_exists is None:
+                        failures.append(
+                            (
+                                f"Could not verify whether delivery branch "
+                                f"`{pr_delivery_branch}` exists.",
+                                False,
+                            )
+                        )
+                        delivery_guard_blocked = True
+                    elif branch_exists:
+                        delivery_failure = await self._reserved_delivery_failure(
+                            workspace,
+                            default_branch,
+                            pr_delivery_branch,
+                            has_remote=has_remote,
+                        )
+                        if delivery_failure:
+                            failures.append(delivery_failure)
+                            delivery_guard_blocked = True
+                if has_remote and not delivery_guard_blocked:
                     pr_url = await self.git.afind_open_pr(
                         workspace,
                         pr_delivery_branch,
@@ -1131,6 +1248,83 @@ class GitOpsMixin:
             if count is not None:
                 return count == 0
         return False
+
+    async def _reserved_delivery_failure(
+        self,
+        workspace: str,
+        default_branch: str,
+        delivery_ref: str,
+        *,
+        has_remote: bool,
+    ) -> tuple[str, bool] | None:
+        """Return a fail-closed verification issue for a delivery diff.
+
+        Only changes made since the delivery tip diverged from its target are
+        inspected.  Thus a reserved path tracked but unchanged on the target
+        remains valid, while task-authored additions, modifications, and
+        deletions are all rejected before merge, push, or PR acceptance.
+        """
+        base_ref = f"origin/{default_branch}" if has_remote else default_branch
+        try:
+            paths = await self.git.areserved_paths_in_diff(
+                workspace, base_ref, delivery_ref
+            )
+        except Exception as e:
+            logger.error(
+                "Delivery guard could not inspect %s..%s in %s: %s",
+                base_ref,
+                delivery_ref,
+                workspace,
+                e,
+            )
+            return (
+                f"Could not verify the delivery diff `{delivery_ref}` against "
+                f"`{base_ref}`. Git reported: {e}",
+                False,
+            )
+        if not paths:
+            return None
+        return (
+            "Task delivery changes reserved daemon bookkeeping paths: "
+            + ", ".join(f"`{path}`" for path in paths)
+            + ". Remove those paths from the task's commits before delivery.",
+            True,
+        )
+
+    async def _assigned_branch_is_absent(
+        self, workspace: str, branch: str, default_branch: str
+    ) -> bool:
+        """True only when a clean-default checkout's assigned branch is absent.
+
+        A missing ref and a Git failure both make ``acount_commits_ahead``
+        return ``None``. Check the ref separately only after both counts are
+        unknown; a real Git error remains unknown and keeps the PR gate armed.
+        """
+        for base in (f"origin/{default_branch}", default_branch):
+            if await self.git.acount_commits_ahead(workspace, branch, base) is not None:
+                return False
+        try:
+            return await self.git.abranch_exists(workspace, branch) is False
+        except Exception:
+            return False
+
+    async def _default_checkout_proves_no_work(self, workspace: str, default_branch: str) -> bool:
+        """True only for a clean default checkout exactly at its remote tip.
+
+        An exclusive clone intentionally leaves task-branch creation to the
+        agent. Its assigned ref can therefore be absent on a genuine no-op,
+        but that absence cannot discard work auto-committed directly on the
+        default branch. Unknown status or ahead-count state remains
+        conservative and keeps delivery verification armed.
+        """
+        if await self.git.ahas_uncommitted_changes(workspace, strict=True) is not False:
+            return False
+        return (
+            await self.git.acount_commits_ahead(
+                workspace, default_branch, f"origin/{default_branch}"
+            )
+            == 0
+        )
 
     async def _auto_remediate_uncommitted(
         self,
@@ -1453,7 +1647,10 @@ class GitOpsMixin:
         # remote.  Verification already accepts such a branch without a PR
         # (``_abranch_has_no_commits`` in ``_phase_verify``); integration
         # agrees with it.
-        if await self._abranch_has_no_commits(workspace, branch, default_branch):
+        if (
+            await self.git.ahas_uncommitted_changes(workspace, strict=True) is False
+            and await self._abranch_has_no_commits(workspace, branch, default_branch)
+        ):
             logger.info(
                 "Task %s: branch '%s' has no commits ahead of '%s' — "
                 "skipping integration",
@@ -1462,6 +1659,22 @@ class GitOpsMixin:
                 default_branch,
             )
             return PhaseResult.CONTINUE
+
+        # Defense in depth: verification normally catches this first, but an
+        # integration retry or direct caller must never merge or push a task
+        # tip whose delivery diff changes daemon-owned bookkeeping.
+        has_remote = await self.git.ahas_remote(workspace)
+        delivery_failure = await self._reserved_delivery_failure(
+            workspace,
+            default_branch,
+            branch,
+            has_remote=has_remote,
+        )
+        if delivery_failure:
+            message, _fixable = delivery_failure
+            logger.error("Task %s: refusing integration: %s", task.id, message)
+            ctx.verification_issues.append(message)
+            return PhaseResult.STOP
 
         ttl = float(self.config.worktrees.merge_slot_ttl_seconds)
         acquired = await acquire_merge_slot(self.db, task.project_id, task.id, ttl)
@@ -1488,7 +1701,6 @@ class GitOpsMixin:
             await renew_merge_slot(self.db, task.project_id, task.id, ttl)
 
             # ── Step 2: fetch + rebase in the slot ────────────────────
-            has_remote = await self.git.ahas_remote(workspace)
             if has_remote:
                 try:
                     await self.git._arun(["fetch", "origin"], cwd=workspace)
