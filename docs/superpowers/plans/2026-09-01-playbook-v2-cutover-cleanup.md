@@ -541,6 +541,48 @@ alongside `v2_engine: true` is still a validation error.
 none of them is completable inside an agent session. They need a named release
 operator (and a second distinct person for G2).
 
+#### 3.8.3 Reconciliation, 2026-09-03 — commit 3's window measurement has landed
+
+The fail-closed placeholder for measures 1–15 is gone (`solid-harbor.68`,
+resolving High finding 2 of `solid-harbor.57`). `src/playbooks/cutover_window.py`
+evaluates all sixteen §3.5 rows and the three window conditions from a
+`WindowEvidence` the command collects in `_cutover_window_evidence`;
+`tests/test_playbook_cutover_window.py` carries T-11 and the sixteen-way T-12
+parametrisation over `tests/fixtures/playbooks/cutover/window-measures.json`, and
+`tests/perf/test_playbook_v2_perf.py` the §11.2 corpus. Deviations from the
+letter of §3.5 and §10, each recorded per §3.6's rule:
+
+- **Durable sources, not sampler counters.** §10.1's `playbook.dispatch_ms` /
+  `playbook.resume_ms` series and the in-memory `capability.denied` counter
+  would reset on the first daemon restart of a 72 h window. Measure 4 reads
+  `capability.denied` rows the handler now writes to the events table
+  (§10.2's payload, minus arguments); measure 5 reads `playbook.snapshot_conflict`
+  rows `commit_boundary` writes after its transaction rolls back; measure 6
+  reads `started_at − event._received_at`, a stamp the V2 dispatch entry
+  (`core.py`) adds to the event so it survives in the snapshot; measure 7 joins
+  the claimed wait to its causing inbox row. No sampler series were added.
+- **The baseline is recorded at the switch.** `_cutover_record_drain_completed`
+  had no caller, so measure 6 could never pass; `playbook_cutover_switch --to v2`
+  now writes `drain_completed` (with `v1_baseline`) before `switched_to_v2`.
+- **Measure 13's evidence is the rehearsal.** The manual scenario review has no
+  durable home of its own, and `CUTOVER_EVENT_KINDS` is a closed check
+  constraint; `playbook_cutover_window_rehearsal --dashboard-tti-ms` records
+  it on the `window_coverage_rehearsal` row. At window close the review must be
+  *recorded* (fail-closed), but per the table's "—" it is not re-thresholded.
+- **Measure 11 has its own read.** "Reported, no gate" can only fail on
+  unreadable evidence, so it reads cancelled agent-task receipts by run rather
+  than sharing the grouped-receipt read; T-12's row for it plants that read.
+- **Measure 12 is a live probe**, five `playbook_v2_graph` calls against the
+  largest enabled artifact, because a stored number would not notice a
+  recompiled artifact. It is `evidence unreadable` while `playbooks.v2_api` is
+  off.
+- **§11.2's synthetic bound stays 25 rules / 170 nodes.** The shipped pipeline
+  has grown to 19 nodes since the bound was derived; the perf test pins the
+  synthetic case as an upper bound (≥ 5× both counts) rather than an exact
+  multiple.
+- **T-9 and T-10 (the routing-admission port) are not part of this change**;
+  they remain open under commit 3.
+
 ### 3.9 Human coordination points
 
 Roadmap §7 makes this package operator-led. Three gates, each a real `gate_create` row (`src/commands/gate_commands.py:20`, `gate_type="human"`, `GATE_TYPES` at `src/database/tables.py:248`) so the pause is visible in the same place as every other human gate, and each recorded as a cutover event (§6).

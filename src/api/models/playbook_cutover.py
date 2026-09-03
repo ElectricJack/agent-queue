@@ -175,11 +175,30 @@ class PlaybookCutoverSwitchResponse(V2Model):
 
 
 class CutoverWindowDTO(V2Model):
+    """The observation window (§3.5): wall clock, coverage and volume.
+
+    ``since``/``until``/``observed_at`` are the durable bounds every measure
+    was read over — ``since`` is the ``switched_to_v2`` audit row's timestamp,
+    never a clock the daemon could have restarted.
+    """
+
     switched_at: float | None = None
+    since: float | None = None
+    until: float | None = None
+    observed_at: float | None = None
     elapsed_seconds: float | None = None
     wall_clock_ok: bool = False
     wall_clock_gate_seconds: float
+    coverage_ok: bool = False
+    #: Enabled playbooks with no V2 run since the switch.
+    coverage_missing: list[str] = []
+    enabled_playbooks: list[str] = []
+    volume_ok: bool = False
     volume_gate_runs: int
+    v2_run_count: int = 0
+    v2_runs_by_playbook: dict[str, int] = {}
+    #: When the last ``window_coverage_rehearsal`` ran, if one has.
+    rehearsal_at: float | None = None
     closed_at: float | None = None
 
 
@@ -195,6 +214,10 @@ class PlaybookCutoverWindowStatusResponse(V2Model):
     measures: list[dict[str, Any]] = []
     window: CutoverWindowDTO | None = None
     blocking_reasons: list[str] = []
+    #: ``source: error`` for every evidence source that could not be read.
+    #: Each one also fails the measures it feeds; listed here so the operator
+    #: sees the read failure itself and not only its consequences.
+    evidence_errors: list[str] = []
     can_close: bool = False
     error: str | None = None
 
@@ -206,6 +229,25 @@ class PlaybookCutoverWindowCloseResponse(V2Model):
     #: refusing call itself rather than read from a cached verdict.
     blocking_reasons: list[str] = []
     measures: list[dict[str, Any]] = []
+    window: CutoverWindowDTO | None = None
+    evidence_errors: list[str] = []
+    error: str | None = None
+
+
+class PlaybookCutoverWindowRehearsalResponse(V2Model):
+    """One synthetic live dispatch per enabled playbook, recorded in the audit."""
+
+    success: bool
+    event: CutoverEventDTO | None = None
+    #: Every enabled, ready playbook the rehearsal addressed.
+    playbooks: list[str] = []
+    #: ``playbook_id -> run ids`` the rehearsal started.
+    runs: dict[str, list[str]] = {}
+    #: Playbooks whose synthetic event produced no run (a guard rejected it,
+    #: or the dispatch failed — see ``errors``).  Coverage is still measured
+    #: from the run table, so these stay uncovered until real traffic arrives.
+    uncovered: list[str] = []
+    errors: dict[str, str] = {}
     error: str | None = None
 
 
@@ -219,5 +261,6 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "playbook_cutover_authorize": PlaybookCutoverAuthorizeResponse,
     "playbook_cutover_switch": PlaybookCutoverSwitchResponse,
     "playbook_cutover_window_status": PlaybookCutoverWindowStatusResponse,
+    "playbook_cutover_window_rehearsal": PlaybookCutoverWindowRehearsalResponse,
     "playbook_cutover_window_close": PlaybookCutoverWindowCloseResponse,
 }

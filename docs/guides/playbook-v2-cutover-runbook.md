@@ -2,10 +2,10 @@
 
 Operator guide for the commands that move a fleet off the V1 playbook runtime.
 
-> **Scope.** This covers the **drain** — Package 7 commit 1, which has shipped.
-> The switch itself already works via `playbooks.v2_engine`. The rollback
-> observation window (commit 3) and the V1 runtime deletion (commit 4) are not
-> yet implemented; the sections below say so where it matters.
+> **Scope.** This covers the **drain** (Package 7 commit 1) and the **rollback
+> observation window** (commit 3), both shipped. The switch itself works via
+> `playbooks.v2_engine`. The V1 runtime deletion (commit 4) is not yet
+> implemented and is gated on the window closing.
 >
 > Design: [`docs/superpowers/plans/2026-09-01-playbook-v2-cutover-cleanup.md`](../superpowers/plans/2026-09-01-playbook-v2-cutover-cleanup.md).
 
@@ -30,9 +30,9 @@ during a drain; it joins the cancelled task *before* writing the terminal row.
 
 ## The commands
 
-All ten work while `playbooks.enabled=false`. That is deliberate: a fleet
+All eleven work while `playbooks.enabled=false`. That is deliberate: a fleet
 that paused the subsystem with runs still `running` is exactly the one that
-needs draining. All ten are operator-only, and every write takes a mandatory
+needs draining. All eleven are operator-only, and every write takes a mandatory
 `--reason` of at least 10 characters, stored verbatim in an append-only audit
 table.
 
@@ -43,11 +43,12 @@ table.
 | `aq playbook v1-admission-open --reason TEXT` | The inverse. Refused while the fleet is on V2 |
 | `aq playbook v1-run-cancel --run-id ID --reason TEXT` | Cancel one run, live or orphaned |
 | `aq playbook cutover-gate-status` | Readiness table, the G1 sign-off and the G2 signatures on record, and what still blocks the switch |
-| `aq playbook cutover-drain-signoff --signed-by NAME --reason TEXT` | **Gate G1.** A named human signs off the drain, after the command re-verifies readiness |
+| `aq playbook cutover-drain-signoff --signed-by NAME --reason TEXT` | **Gate G1.** A named human signs off the drain, after the command re-verifies readiness. The row carries the V1 latency baseline the window's latency gates are anchored to |
 | `aq playbook cutover-authorize --role author\|release_operator --signed-by NAME --reason TEXT` | **Gate G2.** One named human authorizes the switch in one role; two different people are needed |
 | `aq playbook cutover-switch --to v1\|v2 --reason TEXT` | Move the fleet between runtimes. `--to v2` is refused without G1, G2 and a clean readiness table |
-| `aq playbook cutover-window-status` | The acceptance table and the observation window |
-| `aq playbook cutover-window-close --reason TEXT` | Close the rollback window. Not yet usable — see below |
+| `aq playbook cutover-window-status` | The sixteen acceptance measures, each with its source, what was observed and when, plus the observation window |
+| `aq playbook cutover-window-rehearsal --reason TEXT [--dashboard-tti-ms N]` | One synthetic live event per enabled playbook, so an idle fleet can satisfy the window's coverage condition; also records the manual dashboard review |
+| `aq playbook cutover-window-close --reason TEXT` | Close the rollback window. Refuses, naming every blocker, until all sixteen measures and all three window conditions hold |
 
 ## Procedure
 
@@ -163,6 +164,9 @@ people. The sign-off is evidence about the past; the switch checks the
 present, so a V1 run or a pending event that appeared after G1 blocks it. On
 success it sets `playbooks.v2_engine: true` and records `switched_to_v2` with
 the sign-off id, both authorizations and the readiness table it verified.
+The `switched_to_v2` timestamp is the start of the observation window; the
+V1 latency baseline every window latency gate is expressed against is the
+one the G1 `drain_completed` row carries.
 
 A sign-off and its authorizations cover **one attempt**. `switched_to_v2`,
 `rolled_back_to_v1` and `v1_admission_reopened` each end the attempt: to
@@ -192,21 +196,73 @@ disagrees with the audit log as `runtime flipped outside the cutover command`.
 Rollback stops being available once the window is closed, which is the point of
 closing it.
 
-## The observation window — not yet usable
+## The observation window
 
-`cutover-window-close` **will refuse today, by design.** Of the sixteen
-acceptance measures, only active-V1-runs, the runtime/audit-log agreement and
-the wall-clock floor are wired; the other fifteen report `pass: false` with a
-`blocking` note naming the source that will supply them (Package 7 commit 3).
+`cutover-window-close` refuses until **all three** window conditions and
+**all sixteen** §3.5 acceptance measures hold, and it recomputes every one of
+them from source when called — it never trusts the last `cutover-window-status`.
 
-This is fail-closed on purpose: a gate that treated "not measured" as "fine"
-would be the same silent success the whole drain design exists to prevent. Read
-`cutover-window-status` for the current picture; do not delete the V1 runtime
-until the window actually closes.
+The three window conditions, all measured from durable rows so a daemon restart
+inside the window changes nothing:
+
+- **Wall clock** — ≥ 72 h since the `switched_to_v2` audit row.
+- **Coverage** — every enabled playbook has ≥ 1 V2 run in `playbook_v2_runs`
+  since the switch.
+- **Volume** — ≥ 200 V2 runs since the switch, rehearsal runs included.
+
+An idle fleet reaches 72 h having proved nothing, which is what the rehearsal
+is for:
+
+```bash
+aq playbook cutover-window-rehearsal \
+  --reason "window coverage rehearsal 2026-09-03" \
+  --dashboard-tti-ms 900
+```
+
+It dispatches one synthetic **live** event per enabled playbook through the V2
+engine (a dry run writes no row and would prove nothing), records a
+`window_coverage_rehearsal` audit row naming every playbook, the runs it
+started and any it could not (`uncovered` — a guard rejected the synthetic
+event, or the dispatch failed), and stores the manual dashboard
+time-to-interactive review you pass with `--dashboard-tti-ms`. Coverage is
+still measured from the run table, never from this row. Name the rehearsal in
+the close reason, so a window closed on synthetic traffic says so.
+
+`cutover-window-status` renders the sixteen measures as
+`{measure, name, source, observed, gate, pass, observed_at, blocking?}`. Every
+row names a real source:
+
+| # | Measure | Source |
+|---:|---|---|
+| 1–3 | Shadow parity (rule selection, command arguments, terminal outcomes) | The committed `tests/fixtures/playbooks/v2/parity-report.json`, which must bind to the artifact each deterministic playbook actually activates |
+| 4 | Authorization denials | `capability.denied` rows in the events table since the switch (`shadow=false` gates; shadow denials are reported) |
+| 5 | Snapshot-version conflicts | `playbook.snapshot_conflict` rows since the switch, over receipt boundaries |
+| 6 | Dispatch latency p95 | `playbook_v2_runs.started_at − event._received_at`, against the `drain_completed` baseline |
+| 7 | Wait-resume latency p95 | `playbook_waits.claimed_at − received_at` of the causing event |
+| 8–9 | LLM budget / structured-output failures | `playbook_step_receipts`, `step_kind=llm`, by `error_code` |
+| 10 | Agent-task orphans | Active `agent_task` waits older than twice their own timeout |
+| 11 | Agent-task cancellations | Cancelled `agent_task` receipts, by run (reported, no gate) |
+| 12 | Graph API latency p95 | Five live `playbook_v2_graph` probes against the largest enabled artifact |
+| 13 | Dashboard time-to-interactive | The manual review recorded by the last rehearsal |
+| 14–15 | Pending events, count and maximum age | `playbook_pending_events`, unresolved, operator-visible reasons |
+| 16 | Active V1 runs | The drain |
+
+Every source is **fail-closed**: one that cannot be read is reported as
+`evidence unreadable` and fails every measure it feeds, and a rate over zero
+steps is reported as *not measured*, never as a zero failure rate. The refusal
+names each blocker:
+
+```
+window cannot close: 3 blocking condition(s)
+  coverage: playbook 'coding-reflection' has dispatched 0 v2 runs since the switch
+  measure 6 (event->run dispatch latency p95): dispatch latency p95 2410ms exceeds gate (<= 1.25 x baseline 640ms, <= 1000ms)
+  measure 14 (pending-event count): pending events: 9 (gate <= 5)
+```
 
 There is deliberately no `--force`. An operator who wants to close early edits
 the config themselves and owns it, and the audit table records that they did
-not use the gate.
+not use the gate. When the window does close, the `rollback_window_closed` row
+carries the full measured table and the window bounds it was closed on.
 
 ## The audit trail
 

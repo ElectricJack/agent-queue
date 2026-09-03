@@ -34,6 +34,7 @@ class PlaybookCutoverWindowStatusResponse:
         measures (list[PlaybookCutoverWindowStatusResponseMeasuresItem] | Unset):
         window (CutoverWindowDTO | None | Unset):
         blocking_reasons (list[str] | Unset):
+        evidence_errors (list[str] | Unset):
         can_close (bool | Unset):  Default: False.
         error (None | str | Unset):
     """
@@ -45,6 +46,7 @@ class PlaybookCutoverWindowStatusResponse:
     measures: list[PlaybookCutoverWindowStatusResponseMeasuresItem] | Unset = UNSET
     window: CutoverWindowDTO | None | Unset = UNSET
     blocking_reasons: list[str] | Unset = UNSET
+    evidence_errors: list[str] | Unset = UNSET
     can_close: bool | Unset = False
     error: None | str | Unset = UNSET
 
@@ -94,6 +96,10 @@ class PlaybookCutoverWindowStatusResponse:
         if not isinstance(self.blocking_reasons, Unset):
             blocking_reasons = self.blocking_reasons
 
+        evidence_errors: list[str] | Unset = UNSET
+        if not isinstance(self.evidence_errors, Unset):
+            evidence_errors = self.evidence_errors
+
         can_close = self.can_close
 
         error: None | str | Unset
@@ -119,6 +125,8 @@ class PlaybookCutoverWindowStatusResponse:
             field_dict["window"] = window
         if blocking_reasons is not UNSET:
             field_dict["blocking_reasons"] = blocking_reasons
+        if evidence_errors is not UNSET:
+            field_dict["evidence_errors"] = evidence_errors
         if can_close is not UNSET:
             field_dict["can_close"] = can_close
         if error is not UNSET:
@@ -207,6 +215,8 @@ class PlaybookCutoverWindowStatusResponse:
 
         blocking_reasons = cast(list[str], d.pop("blocking_reasons", UNSET))
 
+        evidence_errors = cast(list[str], d.pop("evidence_errors", UNSET))
+
         can_close = d.pop("can_close", UNSET)
 
         def _parse_error(data: object) -> None | str | Unset:
@@ -226,6 +236,7 @@ class PlaybookCutoverWindowStatusResponse:
             measures=measures,
             window=window,
             blocking_reasons=blocking_reasons,
+            evidence_errors=evidence_errors,
             can_close=can_close,
             error=error,
         )

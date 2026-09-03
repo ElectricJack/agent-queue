@@ -869,6 +869,15 @@ class Orchestrator(
                     bus=self.bus,
                 )
 
+                # Stamp the event's arrival before the fire-and-forget hop so
+                # the run's snapshot carries it: Package 7 §3.5 measure 6
+                # (dispatch latency) reads ``started_at - event._received_at``
+                # from durable rows, because an in-memory timer would not
+                # survive a restart inside the 72 h observation window.  A
+                # copy, so a replayed event sees its own arrival.
+                if "_received_at" not in event_data:
+                    event_data = {**event_data, "_received_at": time.time()}
+
                 # The manager admitted exactly this playbook (shadowing,
                 # cooldown, concurrency).  Constrain the engine to it: an
                 # unfiltered dispatch would start every scope-matching

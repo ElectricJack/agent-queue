@@ -117,6 +117,7 @@ from .cutover_authorization_dto_role_type_0 import CutoverAuthorizationDTORoleTy
 from .cutover_event_dto import CutoverEventDTO
 from .cutover_event_dto_detail import CutoverEventDTODetail
 from .cutover_window_dto import CutoverWindowDTO
+from .cutover_window_dtov2_runs_by_playbook import CutoverWindowDTOV2RunsByPlaybook
 from .daemon_metrics import DaemonMetrics
 from .db_preflight_hierarchy_request import DbPreflightHierarchyRequest
 from .db_preflight_hierarchy_response_422 import DbPreflightHierarchyResponse422
@@ -626,6 +627,11 @@ from .playbook_cutover_window_close_request import PlaybookCutoverWindowCloseReq
 from .playbook_cutover_window_close_response import PlaybookCutoverWindowCloseResponse
 from .playbook_cutover_window_close_response_422 import PlaybookCutoverWindowCloseResponse422
 from .playbook_cutover_window_close_response_measures_item import PlaybookCutoverWindowCloseResponseMeasuresItem
+from .playbook_cutover_window_rehearsal_request import PlaybookCutoverWindowRehearsalRequest
+from .playbook_cutover_window_rehearsal_response import PlaybookCutoverWindowRehearsalResponse
+from .playbook_cutover_window_rehearsal_response_422 import PlaybookCutoverWindowRehearsalResponse422
+from .playbook_cutover_window_rehearsal_response_errors import PlaybookCutoverWindowRehearsalResponseErrors
+from .playbook_cutover_window_rehearsal_response_runs import PlaybookCutoverWindowRehearsalResponseRuns
 from .playbook_cutover_window_status_request import PlaybookCutoverWindowStatusRequest
 from .playbook_cutover_window_status_response import PlaybookCutoverWindowStatusResponse
 from .playbook_cutover_window_status_response_422 import PlaybookCutoverWindowStatusResponse422
@@ -1267,6 +1273,7 @@ __all__ = (
     "CutoverEventDTO",
     "CutoverEventDTODetail",
     "CutoverWindowDTO",
+    "CutoverWindowDTOV2RunsByPlaybook",
     "DaemonMetrics",
     "DbPreflightHierarchyRequest",
     "DbPreflightHierarchyResponse422",
@@ -1768,6 +1775,11 @@ __all__ = (
     "PlaybookCutoverWindowCloseResponse",
     "PlaybookCutoverWindowCloseResponse422",
     "PlaybookCutoverWindowCloseResponseMeasuresItem",
+    "PlaybookCutoverWindowRehearsalRequest",
+    "PlaybookCutoverWindowRehearsalResponse",
+    "PlaybookCutoverWindowRehearsalResponse422",
+    "PlaybookCutoverWindowRehearsalResponseErrors",
+    "PlaybookCutoverWindowRehearsalResponseRuns",
     "PlaybookCutoverWindowStatusRequest",
     "PlaybookCutoverWindowStatusResponse",
     "PlaybookCutoverWindowStatusResponse422",

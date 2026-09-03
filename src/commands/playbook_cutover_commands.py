@@ -3,15 +3,15 @@
 Playbook V2 Package 7 §3.3
 (``docs/superpowers/plans/2026-09-01-playbook-v2-cutover-cleanup.md``).
 
-Ten commands, all operator-only and all exempt from
+Eleven commands, all operator-only and all exempt from
 ``PAUSED_PLAYBOOK_COMMANDS``.  That exemption is the one place this package
 widens a surface, and it is deliberate: ``playbooks.enabled`` defaults to
 ``False``, and a fleet that paused the subsystem with runs still ``running``
 must still be able to see and clear them.  Draining is exactly the operation
 you need when the subsystem is off.
 
-Seven of them are the §3.3 drain, switch and window commands.  The other three
-are the §3.9 human gates the switch refuses without:
+Eight of them are the §3.3 drain, switch, window and rehearsal commands.  The
+other three are the §3.9 human gates the switch refuses without:
 
 * ``playbook_cutover_gate_status`` — read-only: the readiness table, the
   current G1 sign-off and the G2 authorizations, and what still blocks;
@@ -42,13 +42,24 @@ Three compensations make the widening safe, each asserted in
   success, and there is no delete or update path;
 * the ``actor`` is taken from the server-side execution principal, never from
   the request body — a switch that can name its own author is not attributable.
+
+The rollback window (§3.5) is measured by :mod:`src.playbooks.cutover_window`
+from evidence this module collects in :meth:`_cutover_window_evidence`; every
+source is durable — audit rows, V2 run rows, receipts, waits, the events
+table, the committed parity report — because the window is 72 hours long and
+the daemon restarts inside it.  ``tests/test_playbook_cutover_window.py``
+plants one failing source per measure and proves the close names it.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
+import uuid
+from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 
 from src.playbooks.cutover import (
@@ -66,6 +77,13 @@ from src.playbooks.cutover import (
     readiness_check,
     v1_admission_closed,
     v1_latency_baseline,
+)
+from src.playbooks.cutover_window import (
+    PENDING_EVENT_REASONS,
+    WINDOW_MIN_SECONDS,
+    WINDOW_MIN_V2_RUNS,
+    WindowEvidence,
+    evaluate_window,
 )
 
 logger = logging.getLogger(__name__)
@@ -86,58 +104,19 @@ SIGNER_REQUIRED_ERROR = (
 #: the bound exists so a pathological table cannot stall the switch.
 _GATE_EVENT_LIMIT: int = 10_000
 
-#: Wall-clock floor for the rollback observation window (§3.5).
-WINDOW_MIN_SECONDS: float = 72 * 3600.0
+#: How many live ``playbook_v2_graph`` calls measure 12's p95 is taken over.
+GRAPH_PROBE_SAMPLES: int = 5
 
-#: Volume floor for the rollback observation window (§3.5), rehearsal runs
-#: included.  Wall clock alone is refused because an idle fleet reaches 72 h
-#: having proved nothing.
-WINDOW_MIN_V2_RUNS: int = 200
+#: Upper bound on the audit rows one window read pulls from ``events``.
+_WINDOW_EVENT_LIMIT: int = 10_000
 
-#: The §3.5 acceptance measures whose evidence sources this commit does not
-#: yet read.  They are reported, and they do not pass — a window-close gate
-#: that treated "not measured" as "fine" would be the silent failure the whole
-#: drain design exists to prevent.  Package 7 commit 3 wires them.
-_UNWIRED_MEASURES: tuple[tuple[int, str, str], ...] = (
-    (1, "shadow rule-selection agreement", "tests/fixtures/playbooks/v2/parity-report.json"),
-    (2, "command-argument agreement after canonicalisation", "parity-report.json"),
-    (3, "unexplained terminal-outcome differences", "parity-report.json"),
-    (4, "authorization denials by command and profile", "capability.denied counter"),
-    (5, "duplicate receipt / snapshot-version conflicts", "RunRepository.commit_boundary"),
-    (6, "event->run dispatch latency p95", "playbook.dispatch_ms"),
-    (7, "wait-resume latency p95", "playbook.resume_ms"),
-    (8, "LLM budget failures", "receipts with outcome budget_exceeded"),
-    (9, "structured-output failures", "receipts with outcome output_invalid"),
-    (10, "agent-task orphan rate", "agent-task steps with no terminal receipt"),
-    (11, "agent-task cancellation rate", "receipts with outcome cancelled"),
-    (12, "graph API latency p95", "playbook_v2_graph"),
-    (13, "dashboard semantic-tab time-to-interactive", "manual scenario review"),
-    (14, "pending-event count", "playbook_pending_events"),
-    (15, "pending-event maximum age", "playbook_pending_events"),
-)
-
-
-def _measure(
-    number: int,
-    name: str,
-    source: str,
-    observed: Any,
-    gate: str,
-    passed: bool,
-    blocking: str | None = None,
-) -> dict[str, Any]:
-    """One row of the §3.5 acceptance table, as the operator reads it."""
-    row = {
-        "measure": number,
-        "name": name,
-        "source": source,
-        "observed": observed,
-        "gate": gate,
-        "pass": passed,
-    }
-    if blocking:
-        row["blocking"] = blocking
-    return row
+__all__ = [
+    "GRAPH_PROBE_SAMPLES",
+    "REASON_TOO_SHORT_ERROR",
+    "WINDOW_MIN_SECONDS",
+    "WINDOW_MIN_V2_RUNS",
+    "PlaybookCutoverCommandsMixin",
+]
 
 
 class PlaybookCutoverCommandsMixin:
@@ -935,54 +914,199 @@ class PlaybookCutoverCommandsMixin:
         )
         return {"success": True, "runtime": target, "event": event}
 
-    async def _cmd_playbook_cutover_window_status(self, args: dict) -> dict:
-        """The §3.5 acceptance table, measured, plus the observation window.
+    # ------------------------------------------------------------------
+    # Rollback window — evidence collection
+    # ------------------------------------------------------------------
 
-        Read-only, and it recomputes from source every time — nothing here
-        reads a cached verdict, because a gate that trusts a stored ``pass``
-        is not a gate.
+    def _cutover_clock(self) -> float:
+        return time.time()
 
-        Measures whose evidence sources this commit does not yet read are
-        reported with ``pass: false`` and a ``blocking`` note naming what
-        supplies them.  "Not measured" is never rendered as "fine": that is
-        precisely the silent success the drain design exists to prevent.
+    def _cutover_parity_path(self) -> Path:
+        """The committed shadow-parity record (Package 6), repository-relative."""
+        from src.playbooks.migration import REVIEWED_FIXTURE_ROOT
+
+        return Path(REVIEWED_FIXTURE_ROOT) / "parity-report.json"
+
+    async def _cutover_probe_graph_latency_ms(
+        self, playbook_id: str, *, samples: int = GRAPH_PROBE_SAMPLES
+    ) -> list[float]:
+        """Time ``playbook_v2_graph`` against one playbook's active artifact.
+
+        Live probes rather than a stored series: measure 12 is a property of
+        the artifact the fleet is running *now*, and a gate that read last
+        week's number would not notice a recompiled artifact.
         """
-        now = time.time()
+        graph = getattr(self, "_cmd_playbook_v2_graph", None)
+        if graph is None:
+            raise RuntimeError("playbook_v2_graph is not available on this handler")
+        latencies: list[float] = []
+        for _ in range(samples):
+            started = time.perf_counter()
+            result = await graph({"playbook_id": playbook_id, "include_advanced": False})
+            elapsed = (time.perf_counter() - started) * 1000.0
+            if isinstance(result, dict) and result.get("error"):
+                raise RuntimeError(str(result["error"]))
+            latencies.append(elapsed)
+        return latencies
+
+    async def _cutover_window_evidence(
+        self, *, now: float, switched_at: float | None, drain: Any | None,
+        drain_error: str | None,
+    ) -> WindowEvidence:
+        """Read every §3.5 source over ``[switched_at, now]``, failing closed.
+
+        A source that raises is recorded under its key in ``errors`` and its
+        value left ``None``; :func:`evaluate_window` turns that into a
+        blocking row for every measure the source feeds.  Nothing here
+        substitutes a default for a read that did not happen.
+        """
+        since = switched_at if switched_at is not None else 0.0
+        errors: dict[str, str] = {}
+
+        async def read(key: str, factory: Callable[[], Awaitable[Any]]) -> Any:
+            try:
+                return await factory()
+            except Exception as exc:
+                logger.warning("cutover window: %s unreadable", key, exc_info=True)
+                errors[key] = str(exc) or exc.__class__.__name__
+                return None
+
+        async def parity() -> dict[str, Any]:
+            path = self._cutover_parity_path()
+            record = json.loads(await asyncio.to_thread(path.read_text, encoding="utf-8"))
+            if not isinstance(record, dict):
+                raise TypeError(f"{path}: not an object")
+            return record
+
+        async def audit_rows(event_type: str) -> list[dict[str, Any]]:
+            rows = await self.db.get_recent_events(
+                limit=_WINDOW_EVENT_LIMIT, event_type=event_type, since=since
+            )
+            decoded: list[dict[str, Any]] = []
+            for row in rows:
+                raw = row.get("payload") or "{}"
+                try:
+                    payload = json.loads(raw) if isinstance(raw, str) else dict(raw)
+                except (TypeError, ValueError):
+                    payload = {"_unparsed": raw}
+                if not isinstance(payload, dict):
+                    payload = {"_unparsed": raw}
+                payload.setdefault("at", row.get("timestamp"))
+                decoded.append(payload)
+            return decoded
+
+        async def baseline() -> dict[str, Any] | None:
+            completed = await self.db.latest_playbook_cutover_event("drain_completed")
+            if completed is None:
+                return None
+            recorded = completed.get("detail", {}).get("v1_baseline")
+            return dict(recorded) if isinstance(recorded, dict) else None
+
+        async def rehearsal() -> dict[str, Any] | None:
+            event = await self.db.latest_playbook_cutover_event("window_coverage_rehearsal")
+            if event is None:
+                return None
+            detail = event.get("detail", {})
+            return {
+                "at": event["at"],
+                "actor": event["actor"],
+                "playbooks": list(detail.get("playbooks") or []),
+                "dashboard_tti_ms": detail.get("dashboard_tti_ms"),
+            }
+
+        parity_record = await read("parity", parity)
+        activations = await read(
+            "activations",
+            lambda: self.db.list_playbook_activations_with_artifacts(enabled_only=True),
+        )
+        v2_runs = await read("v2_runs", lambda: self.db.count_v2_runs_by_playbook(since))
+        denials = await read("denials", lambda: audit_rows("capability.denied"))
+        conflicts = await read("conflicts", lambda: audit_rows("playbook.snapshot_conflict"))
+        dispatch = await read(
+            "dispatch_latency", lambda: self.db.v2_dispatch_latencies_ms(since)
+        )
+        resume = await read("resume_latency", lambda: self.db.wait_resume_latencies_ms(since))
+        v1_baseline = await read("v1_baseline", baseline)
+        receipts = await read("receipts", lambda: self.db.count_step_receipts_since(since))
+        orphans = await read("waits", lambda: self.db.agent_task_wait_orphans(now))
+        cancellations = await read(
+            "cancellations", lambda: self.db.agent_task_cancellations_since(since)
+        )
+        pending = await read(
+            "pending", lambda: self.db.pending_event_summary(reasons=PENDING_EVENT_REASONS)
+        )
+        rehearsed = await read("rehearsal", rehearsal)
+
+        graph_target: str | None = None
+        graph_latencies: list[float] | None = None
+        if activations:
+            # The largest enabled artifact, so the gate does not quietly
+            # weaken as a small playbook happens to sort first.
+            largest = max(
+                activations,
+                key=lambda row: (int(row.get("size_bytes") or 0), str(row.get("playbook_id"))),
+            )
+            graph_target = str(largest.get("playbook_id"))
+            graph_latencies = await read(
+                "graph", lambda: self._cutover_probe_graph_latency_ms(graph_target)
+            )
+
+        dashboard_tti = None
+        if rehearsed and rehearsed.get("dashboard_tti_ms") is not None:
+            dashboard_tti = {
+                "ms": float(rehearsed["dashboard_tti_ms"]),
+                "recorded_at": rehearsed["at"],
+                "actor": rehearsed["actor"],
+            }
+        if drain_error is not None:
+            errors["v1_runs"] = drain_error
+
+        return WindowEvidence(
+            now=now,
+            switched_at=switched_at,
+            parity=parity_record,
+            enabled_activations=activations,
+            v2_runs_by_playbook=v2_runs,
+            denials=denials,
+            conflicts=conflicts,
+            dispatch_latencies_ms=dispatch,
+            resume_latencies_ms=resume,
+            v1_baseline=v1_baseline,
+            step_counts=receipts,
+            agent_task_orphans=orphans,
+            agent_task_cancellations=cancellations,
+            graph_latencies_ms=graph_latencies,
+            graph_target=graph_target,
+            dashboard_tti=dashboard_tti,
+            pending=pending,
+            active_v1_runs=len(drain.active) if drain is not None else None,
+            rehearsal=rehearsed,
+            errors=errors,
+        )
+
+    async def _cutover_window_verdict(self) -> dict[str, Any]:
+        """The §3.5 table and the window, recomputed from source right now."""
+        now = self._cutover_clock()
         switched = await self.db.latest_playbook_cutover_event("switched_to_v2")
         closed = await self.db.latest_playbook_cutover_event("rollback_window_closed")
         runtime = playbook_runtime(self.config)
-        drain = await self._cutover_drain()
 
-        blocking: list[str] = []
-        measures = [
-            _measure(
-                16,
-                "active V1 runs",
-                "DrainStatus.active",
-                len(drain.active),
-                "0 — hard",
-                not drain.active,
-                None if not drain.active else "the drain has not reached zero",
-            )
-        ]
-        for number, name, source in _UNWIRED_MEASURES:
-            measures.append(
-                _measure(
-                    number,
-                    name,
-                    source,
-                    None,
-                    "see child plan §3.5",
-                    False,
-                    "not measured — Package 7 commit 3 wires this source",
-                )
-            )
-        measures.sort(key=lambda row: row["measure"])
-        blocking.extend(
-            f"measure {row['measure']} ({row['name']}): {row.get('blocking', 'failed its gate')}"
-            for row in measures
-            if not row["pass"]
+        drain = None
+        drain_error: str | None = None
+        try:
+            drain = await self._cutover_drain()
+        except Exception as exc:
+            logger.warning("cutover window: v1 drain unreadable", exc_info=True)
+            drain_error = str(exc) or exc.__class__.__name__
+
+        evidence = await self._cutover_window_evidence(
+            now=now,
+            switched_at=switched["at"] if switched else None,
+            drain=drain,
+            drain_error=drain_error,
         )
+        verdict = evaluate_window(evidence)
+        blocking = list(verdict.blocking_reasons)
 
         # A runtime that disagrees with the audit log is a hand-edited config.
         # By design an operator can roll back at 3am without a gate row, so
@@ -994,45 +1118,48 @@ class PlaybookCutoverCommandsMixin:
         if runtime != expected_runtime:
             blocking.append("runtime flipped outside the cutover command")
 
-        elapsed = (now - switched["at"]) if switched else None
-        window = {
-            "switched_at": switched["at"] if switched else None,
-            "elapsed_seconds": elapsed,
-            "wall_clock_ok": bool(elapsed is not None and elapsed >= WINDOW_MIN_SECONDS),
-            "wall_clock_gate_seconds": WINDOW_MIN_SECONDS,
-            "volume_gate_runs": WINDOW_MIN_V2_RUNS,
-            "closed_at": closed["at"] if closed else None,
-        }
-        if switched is None:
-            blocking.append("no switched_to_v2 event — the window has not started")
-        elif not window["wall_clock_ok"]:
-            blocking.append(
-                f"observation window is {elapsed:.0f}s old; {WINDOW_MIN_SECONDS:.0f}s required"
-            )
-
+        window = {**verdict.window, "closed_at": closed["at"] if closed else None}
         return {
             "success": True,
             "generated_at": now,
             "runtime": runtime,
-            "admission": drain.admission,
-            "measures": measures,
+            "admission": drain.admission if drain is not None else None,
+            "measures": verdict.measures,
             "window": window,
             "blocking_reasons": blocking,
+            "evidence_errors": verdict.evidence_errors,
             "can_close": not blocking and closed is None,
         }
+
+    # ------------------------------------------------------------------
+    # Rollback window — commands
+    # ------------------------------------------------------------------
+
+    async def _cmd_playbook_cutover_window_status(self, args: dict) -> dict:
+        """The §3.5 acceptance table, measured, plus the observation window.
+
+        Read-only, and it recomputes from source every time — nothing here
+        reads a cached verdict, because a gate that trusts a stored ``pass``
+        is not a gate.  Every row names its source, what was observed and
+        when; a source that could not be read is reported as ``evidence
+        unreadable`` and fails the measures it feeds.  "Not measured" is
+        never rendered as "fine".
+        """
+        return await self._cutover_window_verdict()
 
     async def _cmd_playbook_cutover_window_close(self, args: dict) -> dict:
         """Close the rollback window.  Refuses unless every gate passes.
 
         After this the V1 runtime may be deleted and rollback is no longer
         available, so the command recomputes §3.5 itself rather than reading a
-        stored verdict, and it names every measure that stands in the way.
-        There is deliberately no ``--force``: an operator who wants to close
-        early edits the config themselves and owns it, and the audit table
-        records that they did not use the gate.
+        stored verdict, and it names every measure and window condition that
+        stands in the way.  There is deliberately no ``--force``: an operator
+        who wants to close early edits the config themselves and owns it, and
+        the audit table records that they did not use the gate.
 
         Args:
-            reason: Required — at least 10 chars.
+            reason: Required — at least 10 chars.  Name the rehearsal when the
+                coverage came from synthetic traffic.
         """
         reason, error = self._cutover_reason(args)
         if error:
@@ -1045,20 +1172,175 @@ class PlaybookCutoverCommandsMixin:
                 "error": f"the rollback window was already closed at {closed['at']}",
             }
 
-        status = await self._cmd_playbook_cutover_window_status({})
-        if status.get("blocking_reasons"):
+        status = await self._cutover_window_verdict()
+        blocking = status["blocking_reasons"]
+        if blocking:
             return {
                 "success": False,
-                "error": "refusing to close the rollback window",
-                "blocking_reasons": status["blocking_reasons"],
+                "error": f"window cannot close: {len(blocking)} blocking condition(s)",
+                "blocking_reasons": blocking,
                 "measures": status["measures"],
+                "window": status["window"],
+                "evidence_errors": status["evidence_errors"],
             }
 
         event = await self.db.append_playbook_cutover_event(
             kind="rollback_window_closed",
             actor=self._cutover_actor(),
             reason=reason,
-            detail={"measures": status["measures"], "window": status["window"]},
+            detail={
+                "measures": status["measures"],
+                "window": status["window"],
+                "evidence_errors": status["evidence_errors"],
+            },
         )
         logger.warning("Playbook rollback window closed by %s: %s", event["actor"], reason)
-        return {"success": True, "event": event}
+        return {
+            "success": True,
+            "event": event,
+            "measures": status["measures"],
+            "window": status["window"],
+            "evidence_errors": status["evidence_errors"],
+        }
+
+    def _cutover_rehearsal_engine(self) -> Any:
+        """The production V2 engine, built from the daemon's own dependencies."""
+        from src.playbooks.services import build_v2_engine
+
+        orchestrator = getattr(self, "orchestrator", None)
+        return build_v2_engine(
+            config=self.config,
+            db=self.db,
+            handler=self,
+            llm=getattr(orchestrator, "llm", None),
+            bus=getattr(orchestrator, "bus", None),
+        )
+
+    async def _cmd_playbook_cutover_window_rehearsal(self, args: dict) -> dict:
+        """Dispatch one synthetic event per enabled playbook (§3.5 coverage).
+
+        On an idle fleet the coverage condition — every enabled playbook has
+        dispatched at least one V2 run since the switch — is satisfied by this
+        rehearsal, which is recorded as a ``window_coverage_rehearsal`` audit
+        row so a window closed on synthetic traffic says so.  Runs are live:
+        a dry run writes no row and would prove nothing.  Coverage itself is
+        still measured from the run table, never from this event.
+
+        The rehearsal is also where the manual dashboard review (§3.5 measure
+        13) is recorded, because it is the one operator-driven step of the
+        window and the review is done alongside it.
+
+        Args:
+            reason: Required — at least 10 chars.
+            dashboard_tti_ms: Optional — the semantic-tab time-to-interactive
+                the operator measured in the manual scenario review.
+        """
+        reason, error = self._cutover_reason(args)
+        if error:
+            return error
+        tti = args.get("dashboard_tti_ms")
+        if tti is not None and (isinstance(tti, bool) or not isinstance(tti, (int, float))):
+            return {
+                "success": False,
+                "error": "dashboard_tti_ms must be a number of milliseconds",
+            }
+
+        switched = await self.db.latest_playbook_cutover_event("switched_to_v2")
+        if switched is None:
+            return {
+                "success": False,
+                "error": (
+                    "no switched_to_v2 event — run playbook_cutover_switch --to v2 before "
+                    "rehearsing the window"
+                ),
+            }
+        if playbook_runtime(self.config) != "v2":
+            return {
+                "success": False,
+                "error": "the fleet is on v1; a rehearsal dispatches through the v2 engine",
+            }
+
+        from src.commands.principal import ExecutionPrincipal
+
+        activations = await self.db.list_playbook_activations_with_artifacts(enabled_only=True)
+        targets = sorted(
+            (
+                row
+                for row in activations
+                if str(getattr(row.get("health"), "value", row.get("health"))) == "ready"
+                and (row.get("active_artifact_sha256") or row.get("artifact_sha256"))
+            ),
+            key=lambda row: (str(row.get("playbook_id")), str(row.get("scope_identifier") or "")),
+        )
+        engine = self._cutover_rehearsal_engine()
+        store = engine.services.artifact_store
+        principal = ExecutionPrincipal.service("playbook-cutover-rehearsal")
+        now = self._cutover_clock()
+
+        runs: dict[str, list[str]] = {}
+        uncovered: list[str] = []
+        errors: dict[str, str] = {}
+        for row in targets:
+            playbook_id = str(row.get("playbook_id"))
+            sha = row.get("active_artifact_sha256") or row.get("artifact_sha256")
+            run_ids = runs.setdefault(playbook_id, [])
+            try:
+                definition = store.load(sha)
+            except Exception as exc:
+                errors[playbook_id] = f"artifact {sha} unreadable: {exc}"
+                continue
+            for rule in definition.rules:
+                event: dict[str, Any] = {
+                    **dict(rule.trigger.filter or {}),
+                    "event_id": f"rehearsal-{uuid.uuid4().hex[:12]}",
+                    "type": rule.trigger.event_type,
+                    "_event_type": rule.trigger.event_type,
+                    "_rehearsal": True,
+                    "_received_at": time.time(),
+                }
+                identifier = str(row.get("scope_identifier") or "")
+                if row.get("scope") == "project" and identifier:
+                    event["project_id"] = identifier
+                elif row.get("scope") == "agent_type" and identifier:
+                    event["agent_type"] = identifier
+                try:
+                    result = await engine.dispatch_event(
+                        event, principal, playbook_ids={playbook_id}
+                    )
+                except Exception as exc:
+                    errors[playbook_id] = f"rule {rule.id}: {exc.__class__.__name__}: {exc}"
+                    continue
+                run_ids.extend(str(run_id) for run_id in result.run_ids)
+                if run_ids:
+                    break  # one run is what coverage asks of each playbook
+            if not run_ids:
+                uncovered.append(playbook_id)
+
+        detail: dict[str, Any] = {
+            "playbooks": sorted(runs),
+            "runs": runs,
+            "uncovered": uncovered,
+            "errors": errors,
+            "recorded_at": now,
+        }
+        if tti is not None:
+            detail["dashboard_tti_ms"] = float(tti)
+        event = await self.db.append_playbook_cutover_event(
+            kind="window_coverage_rehearsal",
+            actor=self._cutover_actor(),
+            reason=reason,
+            detail=detail,
+        )
+        logger.info(
+            "Playbook window coverage rehearsal by %s: %d playbook(s), %d uncovered: %s",
+            event["actor"], len(runs), len(uncovered), reason,
+        )
+        return {
+            "success": True,
+            "event": event,
+            "playbooks": sorted(runs),
+            "runs": runs,
+            "uncovered": uncovered,
+            "errors": errors,
+        }
+

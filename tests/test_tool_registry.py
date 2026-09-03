@@ -929,6 +929,7 @@ _PLAYBOOK_COMMANDS = [
     "playbook_cutover_authorize",
     "playbook_cutover_switch",
     "playbook_cutover_window_status",
+    "playbook_cutover_window_rehearsal",
     "playbook_cutover_window_close",
 ]
 

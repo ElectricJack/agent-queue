@@ -6444,13 +6444,60 @@
         }
       }
     },
+    "/api/playbook/cutover-window-rehearsal": {
+      "post": {
+        "tags": [
+          "playbook"
+        ],
+        "summary": "Dispatch one synthetic live event per enabled playbook so an idle fleet can satisfy the observation window's coverage condition. Operator-only. Records a window_coverage_rehearsal audit row naming every enabled playbook, the runs it started and any it could not; a window later closed on this traffic says so. Also where the manual dashboard time-to-interactive review (measure 13) is recorded.",
+        "description": "Dispatch one synthetic live event per enabled playbook so an idle fleet can satisfy the observation window's coverage condition. Operator-only. Records a window_coverage_rehearsal audit row naming every enabled playbook, the runs it started and any it could not; a window later closed on this traffic says so. Also where the manual dashboard time-to-interactive review (measure 13) is recorded.",
+        "operationId": "playbook_cutover_window_rehearsal",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaybookCutoverWindowRehearsalRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybookCutoverWindowRehearsalResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/playbook/cutover-window-status": {
       "post": {
         "tags": [
           "playbook"
         ],
-        "summary": "Measure the rollback observation window and the cutover acceptance table. Read-only, and recomputed from source on every call -- it never reads a cached verdict. A measure whose evidence source is not yet wired is reported as not passing, never as fine.",
-        "description": "Measure the rollback observation window and the cutover acceptance table. Read-only, and recomputed from source on every call -- it never reads a cached verdict. A measure whose evidence source is not yet wired is reported as not passing, never as fine.",
+        "summary": "Measure the rollback observation window and the cutover acceptance table. Read-only, and recomputed from source on every call -- it never reads a cached verdict. Every measure names its evidence source, what was observed and when; a source that cannot be read is reported as unreadable and fails the measures it feeds, never as fine. The window needs 72h since the switch, one V2 run per enabled playbook, and 200 V2 runs in total.",
+        "description": "Measure the rollback observation window and the cutover acceptance table. Read-only, and recomputed from source on every call -- it never reads a cached verdict. Every measure names its evidence source, what was observed and when; a source that cannot be read is reported as unreadable and fails the measures it feeds, never as fine. The window needs 72h since the switch, one V2 run per enabled playbook, and 200 V2 runs in total.",
         "operationId": "playbook_cutover_window_status",
         "requestBody": {
           "content": {
@@ -17676,6 +17723,39 @@
             ],
             "title": "Switched At"
           },
+          "since": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Since"
+          },
+          "until": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Until"
+          },
+          "observed_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed At"
+          },
           "elapsed_seconds": {
             "anyOf": [
               {
@@ -17696,9 +17776,59 @@
             "type": "number",
             "title": "Wall Clock Gate Seconds"
           },
+          "coverage_ok": {
+            "type": "boolean",
+            "title": "Coverage Ok",
+            "default": false
+          },
+          "coverage_missing": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Coverage Missing",
+            "default": []
+          },
+          "enabled_playbooks": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Enabled Playbooks",
+            "default": []
+          },
+          "volume_ok": {
+            "type": "boolean",
+            "title": "Volume Ok",
+            "default": false
+          },
           "volume_gate_runs": {
             "type": "integer",
             "title": "Volume Gate Runs"
+          },
+          "v2_run_count": {
+            "type": "integer",
+            "title": "V2 Run Count",
+            "default": 0
+          },
+          "v2_runs_by_playbook": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "V2 Runs By Playbook",
+            "default": {}
+          },
+          "rehearsal_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rehearsal At"
           },
           "closed_at": {
             "anyOf": [
@@ -17718,7 +17848,8 @@
           "wall_clock_gate_seconds",
           "volume_gate_runs"
         ],
-        "title": "CutoverWindowDTO"
+        "title": "CutoverWindowDTO",
+        "description": "The observation window (\u00a73.5): wall clock, coverage and volume.\n\n``since``/``until``/``observed_at`` are the durable bounds every measure\nwas read over \u2014 ``since`` is the ``switched_to_v2`` audit row's timestamp,\nnever a clock the daemon could have restarted."
       },
       "DaemonMetrics": {
         "properties": {
@@ -30180,6 +30311,24 @@
             "title": "Measures",
             "default": []
           },
+          "window": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CutoverWindowDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "evidence_errors": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Evidence Errors",
+            "default": []
+          },
           "error": {
             "anyOf": [
               {
@@ -30198,6 +30347,103 @@
           "success"
         ],
         "title": "PlaybookCutoverWindowCloseResponse"
+      },
+      "PlaybookCutoverWindowRehearsalRequest": {
+        "properties": {
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": "Why, at least 10 characters. Stored verbatim in the append-only cutover audit."
+          },
+          "dashboard_tti_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dashboard Tti Ms",
+            "description": "The semantic-tab time-to-interactive measured in the manual scenario review, in milliseconds. Optional; the window cannot close until one rehearsal has recorded it."
+          }
+        },
+        "type": "object",
+        "required": [
+          "reason"
+        ],
+        "title": "PlaybookCutoverWindowRehearsalRequest"
+      },
+      "PlaybookCutoverWindowRehearsalResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "event": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CutoverEventDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "playbooks": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Playbooks",
+            "default": []
+          },
+          "runs": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "type": "object",
+            "title": "Runs",
+            "default": {}
+          },
+          "uncovered": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Uncovered",
+            "default": []
+          },
+          "errors": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Errors",
+            "default": {}
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "PlaybookCutoverWindowRehearsalResponse",
+        "description": "One synthetic live dispatch per enabled playbook, recorded in the audit."
       },
       "PlaybookCutoverWindowStatusRequest": {
         "properties": {},
@@ -30277,6 +30523,14 @@
             },
             "type": "array",
             "title": "Blocking Reasons",
+            "default": []
+          },
+          "evidence_errors": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Evidence Errors",
             "default": []
           },
           "can_close": {
