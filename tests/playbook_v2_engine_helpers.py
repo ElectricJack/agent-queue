@@ -227,10 +227,10 @@ class RecordingRunRepository:
         self.cleared_runs: list[str] = []
         self._conflict_at = conflict_on_commit
         self._fail_with = fail_commit_with
-        self.dispatch_keys: set[tuple[str | None, str]] = set()
+        self.dispatch_keys: set[tuple[str, str | None, str]] = set()
 
     async def create_run(self, snapshot: RunSnapshot) -> RunSnapshot:
-        key = (snapshot.dispatch_id, snapshot.rule_id)
+        key = (snapshot.playbook_id, snapshot.dispatch_id, snapshot.rule_id)
         if snapshot.dispatch_id is not None and key in self.dispatch_keys:
             # The shipped ``uq_playbook_v2_runs_dispatch_rule`` partial unique
             # index, expressed as the failure the engine has to handle.
@@ -244,10 +244,14 @@ class RecordingRunRepository:
         return self.snapshots.get(run_id)
 
     async def find_run_for_dispatch(
-        self, dispatch_id: str, rule_id: str
+        self, playbook_id: str, dispatch_id: str, rule_id: str
     ) -> RunSnapshot | None:
         for snapshot in self.snapshots.values():
-            if snapshot.dispatch_id == dispatch_id and snapshot.rule_id == rule_id:
+            if (
+                snapshot.playbook_id == playbook_id
+                and snapshot.dispatch_id == dispatch_id
+                and snapshot.rule_id == rule_id
+            ):
                 return snapshot
         return None
 
@@ -365,7 +369,7 @@ class SQLiteRunRepository:
         return pickle.loads(row[0]) if row is not None else None
 
     async def find_run_for_dispatch(
-        self, dispatch_id: str, rule_id: str
+        self, playbook_id: str, dispatch_id: str, rule_id: str
     ) -> RunSnapshot | None:
         with self._connection() as connection:
             rows = connection.execute("SELECT snapshot FROM test_v2_runs").fetchall()
@@ -373,7 +377,8 @@ class SQLiteRunRepository:
             (
                 snapshot
                 for (payload,) in rows
-                if (snapshot := pickle.loads(payload)).dispatch_id == dispatch_id
+                if (snapshot := pickle.loads(payload)).playbook_id == playbook_id
+                and snapshot.dispatch_id == dispatch_id
                 and snapshot.rule_id == rule_id
             ),
             None,

@@ -359,19 +359,20 @@ class PlaybookRunQueryMixin:
                 await conn.execute(insert(playbook_v2_runs).values(**values))
         except IntegrityError as exc:
             # ``uq_playbook_v2_runs_dispatch_rule``: one matching event
-            # creates at most one run per rule.  Named rather than left as a
-            # driver-specific message so the engine can report the existing
-            # run as deduplicated instead of failing the dispatch.
+            # creates at most one run per playbook rule.  Named rather than
+            # left as a driver-specific message so the engine can report the
+            # existing run as deduplicated instead of failing the dispatch.
             if snapshot.dispatch_id:
                 raise DuplicateRun(snapshot.dispatch_id, snapshot.rule_id) from exc
             raise
         return snapshot
 
     async def find_run_for_dispatch(
-        self, dispatch_id: str, rule_id: str
+        self, playbook_id: str, dispatch_id: str, rule_id: str
     ) -> RunSnapshot | None:
-        """The run this (dispatch, rule) pair already has, if any."""
+        """The run this (playbook, dispatch, rule) tuple already has, if any."""
         stmt = select(playbook_v2_runs).where(
+            playbook_v2_runs.c.playbook_id == playbook_id,
             playbook_v2_runs.c.dispatch_id == dispatch_id,
             playbook_v2_runs.c.rule_id == rule_id,
         )

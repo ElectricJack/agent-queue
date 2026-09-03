@@ -272,8 +272,8 @@ class TestRulePerRunDispatch:
 
     @pytest.mark.asyncio
     async def test_the_dispatch_id_is_derived_from_the_event_id(self):
-        """§2.5 item 9 — replay collides on the shipped (dispatch_id, rule_id)
-        unique index rather than on a pre-read."""
+        """§2.5 item 9 — replay collides on the shipped playbook-scoped
+        dispatch/rule index rather than on a pre-read."""
         engine, adapter, _runs, _bus, _ref = build()
         adapter.queue.extend([ok(), listed()])
         first = await engine.dispatch_event(event("task-completed-code"), TRUSTED_LOCAL)

@@ -977,7 +977,7 @@ onto another artifact would render its history against a graph it never ran.
 | `snapshot_bytes` | INTEGER | NOT NULL DEFAULT 0 | Byte length of `snapshot`, capped by `playbooks.v2_max_snapshot_bytes` |
 | `event_type` | TEXT | NOT NULL DEFAULT '' | Trigger event type |
 | `event_id` | TEXT | nullable | Trigger event id |
-| `dispatch_id` | TEXT | nullable | One dispatch creates at most one run per rule |
+| `dispatch_id` | TEXT | nullable | One dispatch creates at most one run per playbook rule |
 | `parent_run_id` | TEXT | nullable | Parent run for a nested execution |
 | `parent_step_id` | TEXT | nullable | Step of the parent run that spawned this one |
 | `deadline_at` | REAL | nullable | Whole-run deadline |
@@ -992,9 +992,11 @@ onto another artifact would render its history against a graph it never ran.
 | `completed_at` | REAL | nullable | NULL until terminal |
 
 A partial unique index `uq_playbook_v2_runs_dispatch_rule` on
-`(dispatch_id, rule_id)` where `dispatch_id IS NOT NULL` makes "one matching
-event may create multiple rule runs, but each run executes exactly one rule"
-unforgeable — a retried dispatch cannot duplicate them.
+`(playbook_id, dispatch_id, rule_id)` where `dispatch_id IS NOT NULL` makes
+"one matching event may create multiple playbook rule runs, but each run
+executes exactly one rule" unforgeable — a retried dispatch cannot duplicate
+a run within one playbook, while a second matching playbook still gets its
+own run.
 
 ### Table: `playbook_step_receipts`
 

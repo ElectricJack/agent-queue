@@ -1174,7 +1174,7 @@ playbook_v2_runs = Table(
     ),
     Index(
         "uq_playbook_v2_runs_dispatch_rule",
-        "dispatch_id", "rule_id",
+        "playbook_id", "dispatch_id", "rule_id",
         unique=True,
         sqlite_where=text("dispatch_id IS NOT NULL"),
         postgresql_where=text("dispatch_id IS NOT NULL"),

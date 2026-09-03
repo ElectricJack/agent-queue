@@ -312,7 +312,9 @@ class InMemoryRunRecorder:
     async def load_run(self, run_id: str) -> RunSnapshot | None:
         return self.snapshots.get(run_id)
 
-    async def find_run_for_dispatch(self, dispatch_id: str, rule_id: str) -> RunSnapshot | None:
+    async def find_run_for_dispatch(
+        self, playbook_id: str, dispatch_id: str, rule_id: str
+    ) -> RunSnapshot | None:
         return None
 
     async def commit_boundary(
@@ -965,7 +967,7 @@ class PlaybookEngine:
         try:
             snapshot = await repository.create_run(snapshot)
         except DuplicateRun:
-            existing = await repository.find_run_for_dispatch(dispatch_id, rule.id)
+            existing = await repository.find_run_for_dispatch(artifact.id, dispatch_id, rule.id)
             if existing is None:  # pragma: no cover - the index said it exists
                 raise
             result_value = None
@@ -3172,9 +3174,10 @@ class PlaybookEngine:
     def _dispatch_id(event: Mapping[str, Any]) -> str:
         """Deterministic in the event id — §2.5 item 9.
 
-        Sibling rule runs share it, and a replay of the same event collides
-        on ``uq_playbook_v2_runs_dispatch_rule`` rather than on a pre-read
-        that a concurrent dispatch could race.
+        Sibling rule runs and matching playbooks share it, while a replay of
+        the same event within one playbook collides on
+        ``uq_playbook_v2_runs_dispatch_rule`` rather than on a pre-read that
+        a concurrent dispatch could race.
         """
         event_id = event.get("event_id")
         if not event_id:
