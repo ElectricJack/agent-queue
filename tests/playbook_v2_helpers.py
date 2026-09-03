@@ -152,15 +152,24 @@ class StubProfiles:
         table: dict[str, Any] | None = None,
         *,
         routing: dict[str, Any] | None = None,
+        direct_routing: dict[str, Any] | None = None,
     ) -> None:
         self._table = stub_policies() if table is None else table
         self._routing = stub_routing() if routing is None else routing
+        # The direct path agrees with the session surface by default: the stub
+        # profiles are claude-harnessed and ``llm.provider`` defaults to
+        # anthropic.  Pass ``direct_routing`` to make the two disagree, which
+        # is what a non-claude harness does in the real daemon.
+        self._direct_routing = self._routing if direct_routing is None else direct_routing
 
     def policy(self, profile_id: str) -> Any | None:
         return self._table.get(profile_id)
 
     def routing(self, profile_id: str) -> Any | None:
         return self._routing.get(profile_id)
+
+    def direct_routing(self, profile_id: str) -> Any | None:
+        return self._direct_routing.get(profile_id)
 
 
 STUB_EVENTS: dict[str, dict[str, Any]] = {
