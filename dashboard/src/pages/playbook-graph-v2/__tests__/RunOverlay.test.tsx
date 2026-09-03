@@ -95,12 +95,12 @@ describe("run overlay on the semantic graph", () => {
     const result = layoutSemanticGraph(graph, runOverlay);
     const body = result.edges.find((e) => e.id === "sweep-on-spec-approved::for-each-task::body")!;
     expect(body.data!.traversalCount).toBe(3);
-    expect(body.label).toBe("each task ×3");
+    expect(body.label).toBe("Each item ×3");
     expect(String(body.ariaLabel)).toContain("traversed 3 times in this run");
 
     // A single traversal adds no count: "×1" is noise, not information.
     const listed = result.edges.find((e) => e.id === "sweep-on-spec-approved::list-downstream::listed")!;
-    expect(listed.label).toBe("listed");
+    expect(listed.label).toBe("Listed");
     expect(String(listed.ariaLabel)).toContain("traversed 1 time in this run");
 
     render(<PlaybookSemanticGraphCanvas graph={graph} overlay={runOverlay} onSelectNode={vi.fn()} />);
