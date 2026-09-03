@@ -30,8 +30,12 @@ function keyData() {
 describe("StepNodeCard", () => {
   it("renders the compact contract for a command step", () => {
     card(ensureReviewTask);
+    // The authored title names this use of ``ensure_task``; the contract still
+    // supplies the command's effect summary and presentation details.
     expect(screen.getByText("Ensure a review task")).toBeInTheDocument();
-    expect(screen.getByText("Invoke ensure_task")).toBeInTheDocument();
+    expect(
+      screen.getByText("Create the task, or reuse the one already keyed by this deduplication key."),
+    ).toBeInTheDocument();
     expect(screen.getByText("command")).toBeInTheDocument();
   });
 
@@ -95,14 +99,16 @@ describe("StepNodeCard", () => {
     // them would push its outcome ports off a fixed-height node.
     expect(ensureReviewTask.explanation.inputs).toHaveLength(3);
     card(ensureReviewTask);
+    // Required rows come first, so the contract's one *optional* argument is
+    // what overflows even though the step declares it first.
     expect(keyData().map((item) => item.getAttribute("data-input"))).toEqual([
-      "Project Id",
       "Title",
+      "Deduplication key",
       null, // "+1 more"
       null, // the output binding
     ]);
     const overflow = screen.getByText("+1 more");
-    expect(overflow).toHaveAttribute("title", "Dedup Key: (unresolved)");
+    expect(overflow).toHaveAttribute("title", "Project: this event's project_id");
   });
 
   it("names the binding each step writes, and nothing when it writes none", () => {

@@ -964,6 +964,8 @@ One mixin, seven `_cmd_*` coroutines, added to `CommandHandler`'s bases immediat
 
 Every card shows its outcome ports as labelled anchors on the card edge, and every port is the `source_port` of exactly one edge. `out_degree` mismatching the rendered port count is a test failure, not a visual glitch.
 
+`explanation.title` is the **authored step title** for every kind, commands included — the card and the canvas node name one step, so they must not disagree. A command contract's `presentation.title` names the *command* ("Ensure a task exists"), not this use of it ("Ensure a review task"), and is only the fallback for a step that declares no title of its own (`calm-lantern-83`).
+
 ### 6.3 Layout and cluster rendering
 
 `layout.ts` scales `GridPositionDTO` to pixels exactly as V1 does (`playbook-graph/layout.ts:29` `toPixels`), then adds, for each `ClusterBoundsDTO`, an xyflow node of `type: "ruleCluster"` sized to the bounds plus padding, with `zIndex` below the step nodes and `selectable: false`. Step nodes set `parentId` to their cluster and use cluster-relative positions — xyflow's built-in parenting keeps a cluster visually cohesive without a second layout engine. **Do not introduce dagre here**: the backend owns rank and order (V1's stated invariant, `playbook-graph/layout.ts:38`), and a client-side re-layout would make the rendered graph a second interpretation of the artifact.
@@ -2096,3 +2098,49 @@ backend suites share and would move the committed fixture's bytes.
 Run overlays stay hand-built here: `project_graph` does not produce them.
 They are pinned to the projected `artifact` so the canvas' artifact-identity
 check runs against the real hash.
+
+### 16.13 the stub registry takes the contract path on 2026-09-03 (task keen-harbor-76)
+
+What §16.12 filed. `tests.playbook_v2_helpers` now carries a `StubRegistry` of
+`CommandRegistration`s on `StubContracts._registry`, because
+`graph_projection.py` reads presentation, idempotency and `sensitive_args` off
+a *registration* — `ContractInfo` alone leaves every command on the
+unregistered branch no matter what the lookup table knows, which is why adding
+contracts to `STUB_CONTRACTS` was never on its own the fix.
+
+The registrations are copied from the live `CONTRACTS` rather than hand-built,
+so the projected fixture carries the argument labels, outcome labels and
+idempotency modes the daemon serves. Two deliberate deviations:
+
+* `ensure_task` is copied with `dedup_key` declared sensitive. No shipped
+  command declares a sensitive argument, so the stub is the only place the
+  projection's redaction branch can come from. `ContractInfo` is derived from
+  the *unmodified* registration, because `sensitive_args` is inside the
+  execution fingerprint and a fingerprint that moved would make the §10.1
+  artifact — and its receipts fixture, which pins `ensure_task`'s real
+  fingerprint — report `stale_contract` against this stub.
+* `list_tasks` stays unregistered (`UNREGISTERED_GOLDEN_COMMAND`). Registering
+  all three would take the unregistered branch away from the dashboard exactly
+  as registering none took the contract branch. `list-downstream` is now the
+  node that carries `unknown_command`, `renderer: "canonical"` and unresolved
+  values, and `test_the_stub_registry_covers_one_branch_per_command_node` pins
+  that the artifact's commands partition into the two sets.
+
+The §10.1 artifact's `ensure-review-task` step gained an `idempotency_key` and
+a `retry` policy. Both are inert at runtime — the command executor keys
+receipts off `receipts.idempotency_key(...)` and only the LLM executor reads
+`step.retry` — but they are the only source of the Advanced panel's key-template
+and retry rows, which no step in the artifact had previously exercised.
+`GOLDEN_DIGEST` in `test_playbook_v2_definition.py` moved with the artifact.
+
+`contractedEnsureReviewTask` is gone from `__tests__/fixtures.ts`;
+`unroutedEscalateNode` is the only derived node left. `AdvancedNodeDetail`,
+`SemanticNodeInspector`, `StepNodeCard`, `PlaybookSemanticGraphView` and
+`layout` now assert both branches against projected bytes.
+
+One thing the honest projection exposed, filed rather than fixed here: a
+registered command's card is titled by `presentation.title` while the canvas
+node beside it is titled by the authored step title, so `ensure-review-task`
+reads "Ensure a task exists" on the card and "Ensure a review task" on the
+canvas. That is production behaviour — the daemon projects with
+`RegistryContractLookup` — which the all-canonical fixture had been hiding.

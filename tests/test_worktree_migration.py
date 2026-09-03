@@ -315,7 +315,7 @@ def test_downgrade_then_reupgrade_reapplies_the_backfill(tmp_path: Path):
         engine.dispose()
 
 
-# The single-head guard moved to ``tests/test_alembic_chain.py``.  It needs no
+# The single-head guard moved to ``tests/test_migration_single_head.py``.  It needs no
 # database, and this module's ``pytestmark = pytest.mark.migration`` kept it out
 # of the default selection — which is how ``main`` acquired two heads unnoticed.
 

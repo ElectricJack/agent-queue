@@ -178,13 +178,17 @@ class TestSerializationConventions:
             explanation = node["explanation"]
             assert explanation["effect_summary"], node["id"]
             assert explanation["outcomes"], node["id"]
-            if node["step_kind"] != "command":
-                # A command's effect clauses come from its contract; the stub
-                # registry knows none of this artifact's commands, so those
-                # nodes carry an ``unknown_command`` diagnostic instead.
-                assert explanation["effects"], node["id"]
-            else:
+            if node["diagnostics"]:
+                # A command's effect clauses come from its contract.  The stub
+                # registry deliberately leaves ``list_tasks`` unregistered so
+                # the fixture carries one node down the branch that has no
+                # contract to read: no clauses, and a diagnostic saying why.
+                assert node["id"] == "list-downstream", node["id"]
                 assert [item["code"] for item in node["diagnostics"]] == ["unknown_command"]
+                assert explanation["renderer"] == "canonical"
+                assert explanation["effects"] == []
+            else:
+                assert explanation["effects"], node["id"]
 
         def displays(step_id: str) -> dict[str, str]:
             return {

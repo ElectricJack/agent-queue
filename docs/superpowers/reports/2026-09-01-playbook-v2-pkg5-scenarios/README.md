@@ -4,7 +4,7 @@ Evidence for [`docs/superpowers/plans/2026-09-01-playbook-v2-graph-api-ui.md`
 §13.3](../../plans/2026-09-01-playbook-v2-graph-api-ui.md) — the seven
 screenshots milestone **M5 — Operator legible** requires.
 
-Captured 2026-09-03 against `cc7ba7e2`.
+Captured 2026-09-03 against `117ca12e`.
 
 ## The gate that used to block this
 
@@ -63,15 +63,6 @@ storage, activation-write or pending-event paths; those are covered by
 | 2 | Convergence — `classify-risk:low` and `escalate:completed` both entering `await-approval`, both labels legible | [`02-convergence.png`](02-convergence.png) | Zoomed, with the `low` edge selected so it is raised above the crowded label band. `Low` (from `classify-risk`) and `Completed` (from `escalate`) both terminate on `await-approval`. |
 | 3 | Loop — `for-each-task` with its body, `loop_back` from `check-gate`, and the traversal count from an overlay | [`03-loop.png`](03-loop.png) | `spec.approved` scope with `run-7` overlaid. `Each item` is the `loop body` edge into `open-gate`; `check-gate`'s `case` and `default` edges return to `for-each-task`; `open-gate` reports `5 visits, 5 iterations` and the `Created ×4` edge count. |
 | 4 | AI node — `classify-risk` selected, inspector showing `profile_id`, capability namespaces, capability fingerprint, budget and output schema | [`04-ai-node.png`](04-ai-node.png) | Inspector with Advanced expanded: profile `reviewer`, tool use `disabled`, capability fingerprint `sha256:e6a5745b…`, capabilities (`harness tools` none, `aq commands demo_command`, `plugin tools` none), budget (2 calls / 1024 output / 8000 total / 120s) and the `risk: low\|high` output schema. |
-| 5 | Invalid node — an artifact whose `gate_create` contract fingerprint was bumped: `stale_contract` diagnostics visible, graph still fully drawn | [`05-stale-contract.png`](05-stale-contract.png) | Header health badge `stale_contract`; Activation reads `Health: stale contract` with the `Command contract changed` reason; the diff panel carries the blocker `Command contract changed for 'gate_create'`. All 13 nodes and both rule clusters still draw. |
+| 5 | Invalid node — an artifact whose `gate_create` contract fingerprint was bumped: `stale_contract` diagnostics visible, graph still fully drawn | [`05-stale-contract.png`](05-stale-contract.png) | Header health badge `stale_contract`; Activation reads `Health: stale contract` with the `Command contract changed` reason; the diff panel carries the blocker `Command contract changed for 'gate_create'`; **Activate displayed artifact** is disabled. All 13 nodes and both rule clusters still draw. |
 | 6 | Diff review — v5 → v6, executable and presentation-only changes separated, activate disabled until acknowledged | [`06-diff-review.png`](06-diff-review.png) | v6 chosen in the artifact chooser against active v5. "3 semantic and 1 presentation changes": executable `check-gate/cases/1` and `ensure-review-task/inputs/title/parts/0/value`; presentation-only `classify-risk/title`. "I reviewed the executable diff" is unchecked and **Activate displayed artifact** is disabled. |
 | 7 | Run overlay — a completed run of the v5 artifact while v6 is active: the "older artifact" banner plus the traversed path | [`07-run-overlay-old-artifact.png`](07-run-overlay-old-artifact.png) | v6 active, `run-7` selected. The canvas badge reads `artifact older than the active one`; the overlay panel banner reads "This run used an older artifact: sha256:c2f96f3fa308…"; traversed edges are drawn solid against untraversed grey, and the five loop iterations are listed individually. |
-
-## Observation filed separately
-
-Scenario 5's **Activate displayed artifact** button is enabled even though the
-diff reports `activation_blocked` with a `stale_contract` blocker. The server
-refuses the activation (`test_activate_requires_acknowledge_diff_for_executable_change`
-and the activation command's own checks), so this is a UI affordance gap, not a
-correctness hole — `ActivationPanel` gates only on `executableChange` and never
-reads `diff.activation_blocked`. Filed as emergent work rather than fixed here.

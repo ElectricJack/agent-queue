@@ -6,7 +6,10 @@ Child plan ``docs/superpowers/plans/2026-09-01-playbook-v2-typed-model-compiler.
 * the stub ``ContractLookup`` / ``ProfileLookup`` / ``EventSchemaLookup`` /
   ``IdentifierInventory`` implementations §3.3 calls for — they are the same
   protocols the production adapters implement, populated from a small literal
-  table so a suite can build a capability lattice without touching the vault;
+  table so a suite can build a capability lattice without touching the vault.
+  ``StubContracts`` also carries a ``_registry`` of ``CommandRegistration``s,
+  because the projection reads presentation, idempotency and ``sensitive_args``
+  off a registration rather than off a ``ContractInfo``;
 * the valid twin and the one-defect mutations behind
   ``tests/fixtures/playbooks/v2/invalid/<code>.json`` (§9.3), kept next to the
   suite that reads them so a fixture and its intent cannot drift apart;
@@ -104,12 +107,113 @@ STUB_CONTRACTS: dict[str, ContractInfo] = {
     ),
 }
 
+#: The §10.1 commands the stub models.  ``project_graph`` has two branches per
+#: command node — a registered one that reads presentation, idempotency and
+#: redaction off the contract, and an unregistered one that renders canonically
+#: and emits an ``unknown_command`` diagnostic — and the projected fixture is
+#: the only place either is asserted from real output.  Registering every
+#: command would take the second branch away from the dashboard exactly as
+#: registering none took the first (``keen-harbor-76``).
+REGISTERED_GOLDEN_COMMANDS = ("ensure_task", "gate_create")
+
+#: The one the stub deliberately does **not** model, so ``list-downstream``
+#: carries the unregistered branch.
+UNREGISTERED_GOLDEN_COMMAND = "list_tasks"
+
+#: The sensitive arguments the stub declares on the commands it models.  No
+#: shipped command declares one, so the stub is the only place ``sensitive_args``
+#: can come from — and without one the projection's redaction branch is
+#: unreachable from any fixture, which is why the dashboard had to hand-author a
+#: node it could not project (child plan §16.10 deviation 1).
+STUB_SENSITIVE_ARGS: dict[str, frozenset[str]] = {"ensure_task": frozenset({"dedup_key"})}
+
+
+class StubRegistry:
+    """Just enough of Package 1's ``ContractRegistry`` for the projection.
+
+    ``graph_projection`` reaches past ``ContractLookup.get`` for the facts a
+    :class:`ContractInfo` does not carry — argument and outcome labels, the
+    idempotency mode, ``sensitive_args`` — by asking the lookup for a
+    ``CommandRegistration`` on its ``_registry``.  A lookup that answers only
+    ``get`` therefore projects *every* command down the unregistered branch, no
+    matter how much its ``ContractInfo`` table knows.
+    """
+
+    def __init__(self, table: dict[str, Any]) -> None:
+        self._table = dict(table)
+
+    def get(self, name: str) -> Any | None:
+        return self._table.get(name)
+
+    def require(self, name: str) -> Any:
+        registration = self._table.get(name)
+        if registration is None:
+            raise KeyError(name)
+        return registration
+
+
+def _golden_registrations() -> dict[str, Any]:
+    """The registered §10.1 commands, modelled from the live registry.
+
+    Copied rather than hand-built so the projected fixture carries the same
+    argument labels, outcome labels and idempotency modes the daemon serves;
+    :data:`STUB_SENSITIVE_ARGS` is the one deliberate deviation from it.
+    """
+    from dataclasses import replace
+
+    from src.commands.contracts.registry import CONTRACTS
+
+    table: dict[str, Any] = {}
+    for name in REGISTERED_GOLDEN_COMMANDS:
+        registration = CONTRACTS.require(name)
+        sensitive = STUB_SENSITIVE_ARGS.get(name)
+        if sensitive:
+            contract = registration.contract
+            execution = contract.execution.model_copy(update={"sensitive_args": sensitive})
+            registration = replace(
+                registration, contract=contract.model_copy(update={"execution": execution})
+            )
+        table[name] = registration
+    return table
+
+
+STUB_REGISTRATIONS: dict[str, Any] = _golden_registrations()
+
+
+def _registered_contract_infos() -> dict[str, ContractInfo]:
+    """``ContractInfo`` for the registered §10.1 commands.
+
+    Derived from the *unmodified* registrations, not from
+    :data:`STUB_REGISTRATIONS`: ``sensitive_args`` is inside the execution
+    fingerprint, so declaring one would make every artifact compiled against
+    the real registry — the §10.1 golden and its receipts among them — report a
+    ``stale_contract`` against this stub.  The declaration exists for the
+    projection's redaction branch, and it is the only thing it changes.
+    """
+    from src.commands.contracts.registry import CONTRACTS
+    from src.playbooks.validation import RegistryContractLookup
+
+    pristine = {name: CONTRACTS.require(name) for name in REGISTERED_GOLDEN_COMMANDS}
+    lookup = RegistryContractLookup(StubRegistry(pristine))
+    return {name: info for name in pristine if (info := lookup.get(name)) is not None}
+
+
+STUB_CONTRACTS.update(_registered_contract_infos())
+
 
 class StubContracts:
-    """§3.3's ``ContractLookup`` seam, backed by :data:`STUB_CONTRACTS`."""
+    """§3.3's ``ContractLookup`` seam, backed by :data:`STUB_CONTRACTS`.
+
+    ``_registry`` is the second seam: it answers with the
+    ``CommandRegistration`` of every name the table knows *and* the suite
+    models, so a narrowed table narrows both lookups together.
+    """
 
     def __init__(self, table: dict[str, ContractInfo] | None = None) -> None:
         self._table = STUB_CONTRACTS if table is None else table
+        self._registry = StubRegistry(
+            {name: item for name, item in STUB_REGISTRATIONS.items() if name in self._table}
+        )
 
     def get(self, name: str) -> ContractInfo | None:
         return self._table.get(name)
@@ -152,15 +256,24 @@ class StubProfiles:
         table: dict[str, Any] | None = None,
         *,
         routing: dict[str, Any] | None = None,
+        direct_routing: dict[str, Any] | None = None,
     ) -> None:
         self._table = stub_policies() if table is None else table
         self._routing = stub_routing() if routing is None else routing
+        # The direct path agrees with the session surface by default: the stub
+        # profiles are claude-harnessed and ``llm.provider`` defaults to
+        # anthropic.  Pass ``direct_routing`` to make the two disagree, which
+        # is what a non-claude harness does in the real daemon.
+        self._direct_routing = self._routing if direct_routing is None else direct_routing
 
     def policy(self, profile_id: str) -> Any | None:
         return self._table.get(profile_id)
 
     def routing(self, profile_id: str) -> Any | None:
         return self._routing.get(profile_id)
+
+    def direct_routing(self, profile_id: str) -> Any | None:
+        return self._direct_routing.get(profile_id)
 
 
 STUB_EVENTS: dict[str, dict[str, Any]] = {

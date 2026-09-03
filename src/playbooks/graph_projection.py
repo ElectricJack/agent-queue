@@ -286,8 +286,15 @@ def _command_explanation(
             "required": True,
             "description": None,
         }
+    # The compact card and the canvas node name *one* step, so the card takes
+    # the authored step title — the more specific of the two names ("Ensure a
+    # review task", not the command's generic "Ensure a task exists").  A
+    # contract's ``presentation.title`` names the command, not this use of it,
+    # so it is only the fallback for a step that declares no title of its own.
+    authored_title = step.title if isinstance(step.title, str) and step.title.strip() else ""
     return {
-        "title": presentation.title if presentation is not None else step.title,
+        "title": authored_title
+        or (presentation.title if presentation is not None else step.command),
         "effect_summary": (
             presentation.summary if presentation is not None else f"Invoke {step.command}"
         ),
@@ -754,14 +761,24 @@ def _canonical_explanation(step_id: str, step: Any, definition: PlaybookDefiniti
     }
 
 
-def _routing(profiles: Any, profile_id: str) -> Any | None:
+def _routing(profiles: Any, step: Any, profile_id: str) -> Any | None:
     """The profile's resolved intelligence class / provider / model.
 
-    ``routing`` is part of the ``ProfileLookup`` protocol, but a caller may
-    still pass an older stub that only answers ``policy``; such a lookup
-    reports no routing rather than raising.
+    Which question to ask depends on the step, because the two surfaces do
+    not agree on the provider: an :class:`AgentTaskStep` launches a session,
+    where the profile's harness names the CLI and so fixes the provider,
+    while an :class:`LlmStep` is a headless direct-path call with no CLI,
+    where ``llm.provider`` fixes it.  Asking ``routing`` for an ``LlmStep``
+    is what made the card claim a provider and model slice the executor
+    never used.
+
+    Both methods are part of the ``ProfileLookup`` protocol, but a caller may
+    still pass an older stub that answers only ``policy``, or only the
+    session-surface ``routing``; such a lookup reports no routing rather
+    than raising.
     """
-    lookup = getattr(profiles, "routing", None)
+    method = "direct_routing" if isinstance(step, LlmStep) else "routing"
+    lookup = getattr(profiles, method, None)
     return lookup(profile_id) if callable(lookup) else None
 
 
@@ -769,7 +786,7 @@ def _ai_detail(step: Any, profiles: Any) -> dict | None:
     if not isinstance(step, (LlmStep, AgentTaskStep)):
         return None
     policy = profiles.policy(step.profile_id) if profiles is not None else None
-    routing = _routing(profiles, step.profile_id) if profiles is not None else None
+    routing = _routing(profiles, step, step.profile_id) if profiles is not None else None
     capabilities = {
         "harness_tools": sorted(getattr(policy, "harness_tools", ())),
         "aq_commands": sorted(getattr(policy, "aq_commands", ())),
