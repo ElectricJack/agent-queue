@@ -231,27 +231,110 @@ Removes a linked worktree.
 - If that fails (e.g. the worktree has untracked or modified files), retries with `git worktree remove --force <worktree_path>`.
 - Raises `GitError` only if the force removal also fails.
 
+### `get_git_path(checkout_path, path)`
+
+Resolves a Git-internal path such as `info/exclude` or `hooks` to its exact
+absolute filesystem location. It first runs
+`git rev-parse --path-format=absolute --git-path <path>` and falls back to
+`git rev-parse --git-path <path>` plus absolute-path normalization for older
+Git versions. Callers must use this API instead of assuming
+`<checkout>/.git/<path>`: that assumption is false for separate Git dirs and
+linked worktrees.
+
+Every workspace handoff—new slot, resumed slot, adopted slot, exclusive task
+workspace, and pool session—installs and verifies the managed `info/exclude`
+block through this resolved path. `False` from the block writer means the
+exact block was already correct; resolution, write, read-back, or verification
+failures raise and abort or roll back the handoff. `workspace doctor` reports
+an unverifiable exact path separately from a missing/drifted block.
+
 ---
 
 ## 6. Committing and Pushing
 
-### `commit_all(checkout_path, message)`
+### `commit_all(checkout_path, message, *, exclude_plans=True, no_verify=False)`
 
-Stages all changes and creates a commit. Returns `True` if a commit was made, `False` if the working tree was clean. Async counterpart: `acommit_all`.
+Stages task changes and creates a commit. Daemon-owned `.aq/`, `.aq-worktree.json`,
+and `.codex/` paths are excluded and rejected. Returns `True` if a commit was
+made. `False` means no legitimate staged task change remains after sanitizing
+the index; excluded daemon or plan paths may still be modified in the working
+tree. Async counterpart: `acommit_all`.
 
-1. Runs `git add -A` to stage all tracked and untracked changes.
+1. Clears any pre-staged daemon bookkeeping, then runs `git add -A` with
+   exclude pathspecs for `.aq/`, `.aq-worktree.json`, and `.codex/`.
 2. **Unstages plan files** — iterates over `_PLAN_FILE_EXCLUDES` (`.claude/plan.md`, `.claude/plans/`, `plan.md`) and runs `git reset HEAD -- <pattern>` for each. Errors are silently ignored (pattern may not be staged or may not exist). This prevents plan files from being committed to target repos.
-3. Runs `git diff --cached --quiet` directly via `subprocess.run` (sync) or `_arun_subprocess` (async) — bypassing `_run`/`_arun` — to check whether anything is staged. Exit code `0` means nothing staged.
-4. If nothing is staged, returns `False` without creating a commit.
-5. Otherwise runs `git commit -m <message>` and returns `True`.
-6. Raises `GitError` if the commit fails.
+3. Refuses to proceed if any reserved path remains cached, then runs
+   `git diff --cached --quiet` directly via `subprocess.run` (sync) or
+   `_arun_subprocess` (async). If no legitimate change remains, returns
+   `False` before any hook is invoked.
+4. Otherwise invokes one normal `git commit`. With `no_verify=False`, Git
+   drives its native `pre-commit`, `prepare-commit-msg`, `commit-msg`, and
+   `post-commit` lifecycle exactly once. A temporary hooks overlay delegates
+   each installed executable hook once and restores only the reserved index
+   entries to `HEAD` after every hook boundary, preventing a hook from adding
+   daemon state to the actual commit.
+5. A `finally` cleanup repeats that reserved-only index restoration and
+   verification on success or failure. Legitimate staged changes and all
+   working-tree content are preserved when a hook rejects the commit.
+6. With `no_verify=True`, an empty hooks overlay plus Git's `--no-verify`
+   makes auto-remediation fully hook-free, including hooks Git does not
+   suppress with `--no-verify` alone.
+7. Returns `True` after a successful commit; raises `GitError` on commit or
+   reserved-index cleanup failure.
+
+### Reserved delivery diff gate
+
+Commit-time sealing prevents new daemon state from entering commits made by
+`commit_all`, but it cannot repair task branches that already contain a
+forced-added or previously tracked reserved path. Before any automatic merge,
+push, integration, or PR acceptance, the orchestrator diffs the delivery tip
+from its merge-base with `origin/<default>` (or the local default when no
+remote exists) and rejects changed `.aq/**`, `.aq-worktree.json`, or
+`.codex/**` paths. A reserved path merely tracked and unchanged on the base is
+not rejected. Git errors are unknown—not clean—and stop delivery. No-code and
+`skip_verification` shortcuts cannot bypass this invariant.
+
+### Immutable PR merge and exact-tip push guard
+
+`aq pr merge` first resolves the PR's base/head names and object IDs, inspects
+the complete paginated PR-files (merge-base) diff, and resolves the identity a
+second time. Any unreadable or malformed identity/diff, changed identity, or
+changed `.aq/**`, `.aq-worktree.json`, or `.codex/**` path fails closed.
+The eventual `gh pr merge` carries `--match-head-commit <head-oid>` and also
+checks the expected base/head pair immediately before invoking `gh`; a changed
+PR can therefore never turn a review of one head into a merge of another.
+`force=true` may waive only `integration.merge_ci_policy`; it cannot waive
+identity or path safety.
+
+Every daemon push resolves its source ref immediately beforehand and sends an
+object-ID refspec (`<oid>:refs/heads/<branch>`), rather than a mutable local
+branch name. After daemon rebase or merge operations,
+`apush_validated_delivery` resolves `HEAD` once, checks that exact OID with the
+reserved delivery-diff gate, and pushes that same OID. Hook or local-ref
+movement consequently cannot substitute a different tip after validation.
+
+### `apush_validated_ref(checkout_path, source_ref, branch, *, force_with_lease=False)`
+
+Resolves `source_ref` to a commit OID and pushes that OID to `origin/branch`.
+It raises `GitError` when the source cannot be resolved to a full commit OID;
+callers must treat that as a delivery failure rather than falling back to a
+branch-name push. `apush_branch` and `apush_head_to` use the same exact-OID
+refspec contract.
+
+### `apush_validated_delivery(checkout_path, base_ref, source_ref, branch, ...)`
+
+The daemon-only delivery primitive. It resolves `source_ref` once, uses that
+OID as the delivery-diff tip against `base_ref`, rejects reserved paths, then
+pushes the identical OID. Callers that have just merged or rebased must use it
+instead of separate diff and push calls.
 
 ### `push_branch(checkout_path, branch_name, *, force_with_lease=False)`
 
 Pushes a local branch to the `origin` remote.
 
-- Constructs the command as `git push origin <branch_name>`.
-- When `force_with_lease=True`, inserts `--force-with-lease` into the command: `git push origin --force-with-lease <branch_name>`. This makes push idempotent for retries: if the branch was already pushed in a previous attempt, a second push with amended/additional commits succeeds as long as no other user pushed to the same branch in the meantime. It is safe for task branches because they are owned by a single agent and are never concurrently updated by others.
+- Resolves `branch_name` once and constructs `git push origin
+  <resolved-oid>:refs/heads/<branch_name>`.
+- When `force_with_lease=True`, inserts `--force-with-lease` into the command before the exact OID refspec. This makes push idempotent for retries: if the branch was already pushed in a previous attempt, a second push with amended/additional commits succeeds as long as no other user pushed to the same branch in the meantime. It is safe for task branches because they are owned by a single agent and are never concurrently updated by others.
 - The `force_with_lease` parameter is keyword-only to prevent accidental positional use.
 - Used with `force_with_lease=True` by the orchestrator when pushing task branches for PR creation (task branches are agent-owned and safe to force-push).
 - Raises `GitError` on failure (e.g. non-fast-forward without the flag, authentication error, or remote ref updated by another clone when using `--force-with-lease`).
@@ -552,6 +635,7 @@ Every public method on `GitManager` has an async counterpart prefixed with `a`. 
 | `remove_worktree` | `aremove_worktree` |
 | `init_repo` | `ainit_repo` |
 | `get_diff` | `aget_diff` |
+| `get_git_path` | `aget_git_path` |
 | `get_changed_files` | `aget_changed_files` |
 | `commit_all` | `acommit_all` |
 | `create_pr` | `acreate_pr` |
@@ -627,25 +711,27 @@ from a reasonably recent version of the codebase.
 
 **Maintained by:** `prepare_for_task` (fetch + pull/reset on default branch).
 
-### P4. Atomic Post-Completion Commit
+### P4. Sealed Commit and Delivery
 
-After every task, the orchestrator commits all agent work before any merge, push,
-or PR operation. The `commit_all` method uses an add-all-then-check-staged pattern
-(`git add -A` followed by `git diff --cached --quiet`) to avoid race conditions
-between status checks and staging.
+When auto-remediation commits task work, `commit_all` uses an
+add-all-then-check-staged pattern, native hooks, and reserved-only cleanup at
+every hook boundary. The delivery gate separately inspects already-committed
+changes before merge, push, integration, or PR acceptance. Together these
+prevent daemon bookkeeping from entering delivered project history.
 
-**Maintained by:** `commit_all`, called from `_complete_workspace`.
+**Maintained by:** `commit_all`, `acommit_all`, and the orchestrator's delivery
+verification/integration phases.
 
 ### P5. Graceful Degradation on Git Errors
 
-Git operations that may legitimately fail (no remote configured, no upstream tracking
-branch, network errors during fetch) are caught and suppressed. The outer
-`_prepare_workspace` wraps all git operations in a catch-all that logs but still
-returns a valid workspace path. An agent can always start work even if branch setup
-fails.
+Git operations that may legitimately fail (no remote configured, no upstream
+tracking branch, network errors during fetch) are caught where a conservative
+fallback is safe. Security and delivery invariants fail closed: a workspace is
+not handed to a task or pool session unless its exact managed exclude block is
+verified, and an unreadable delivery diff is never treated as clean.
 
 **Maintained by:** `try/except GitError: pass` patterns in `prepare_for_task`,
-`switch_to_branch`, and the catch-all in `_prepare_workspace`.
+`switch_to_branch`, plus fail-closed workspace preparation and delivery guards.
 
 ### P6. Dual Completion Paths (PR vs Direct Merge)
 

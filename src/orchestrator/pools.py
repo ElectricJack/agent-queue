@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 import uuid
 
@@ -416,6 +417,12 @@ class PoolsMixin:
                 return None
 
             work_dir = workspace.workspace_path
+
+            # An exclusive-clone pool bypasses slot setup, but may later write
+            # `.aq/claim.json`; install the same managed excludes before its
+            # session receives the checkout.
+            if kind.is_git_repo and os.path.exists(os.path.join(work_dir, ".git")):
+                await self._ensure_control_files_excluded(work_dir)
 
             # Same guard as the task-launch path: a pool session may not run
             # in the base checkout (see :mod:`src.orchestrator.base_workspace`).

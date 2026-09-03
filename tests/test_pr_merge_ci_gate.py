@@ -264,6 +264,7 @@ def _handler(db, config, rollup) -> CommandHandler:
     o.git = MagicMock()
     o.git.apr_check_rollup = AsyncMock(return_value=rollup)
     o.git.amerge_pr = AsyncMock(return_value={"success": True, "sha": "s" * 40, "error": None})
+    o.git.avalidate_pr_for_merge = AsyncMock(return_value=MagicMock(head_oid="h" * 40))
     o.git.apr_base_ref = AsyncMock(return_value=None)
     return CommandHandler(o, config)
 
@@ -354,6 +355,21 @@ async def test_force_overrides_the_required_policy_and_is_recorded(db, tmp_path)
     assert result["ci"]["forced"] is True
     assert result["ci"]["blocked"] is False
     handler.orchestrator.git.amerge_pr.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_force_never_overrides_reserved_pr_delivery_content(db, tmp_path):
+    handler = _handler(db, _config(tmp_path, merge_ci_policy="required"), RED_ROLLUP)
+    handler.orchestrator.git.avalidate_pr_for_merge = AsyncMock(
+        side_effect=ValueError("PR changes reserved daemon bookkeeping paths: .aq/claim.json")
+    )
+
+    result = await _merge(handler, force=True)
+
+    assert result["success"] is False
+    assert ".aq/claim.json" in result["error"]
+    handler.orchestrator.git.apr_check_rollup.assert_not_awaited()
+    handler.orchestrator.git.amerge_pr.assert_not_awaited()
 
 
 @pytest.mark.asyncio
