@@ -1,0 +1,18 @@
+{
+  "_event_type": "task.completed",
+  "event_id": "evt-parity-0004",
+  "project_id": "agent-queue",
+  "task": {
+    "branch_name": "aq/solid-harbor.12",
+    "dedup_key": null,
+    "id": "solid-harbor.12",
+    "parent_task_id": "solid-harbor",
+    "pr_url": null,
+    "project_id": "agent-queue",
+    "status": "COMPLETED",
+    "title": "Add pool carve-out reconciliation"
+  },
+  "task_id": "solid-harbor.12",
+  "title": "Add pool carve-out reconciliation",
+  "type": "task.completed"
+}

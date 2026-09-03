@@ -1,0 +1,6 @@
+{
+  "_event_type": "timer.24h",
+  "event_id": "evt-parity-0014",
+  "project_id": "agent-queue",
+  "type": "timer.24h"
+}

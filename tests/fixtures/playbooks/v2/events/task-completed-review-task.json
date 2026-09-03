@@ -1,0 +1,18 @@
+{
+  "_event_type": "task.completed",
+  "event_id": "evt-parity-0011",
+  "project_id": "agent-queue",
+  "task": {
+    "branch_name": "aq/solid-harbor.12",
+    "dedup_key": "review:task:solid-harbor.11",
+    "id": "solid-harbor.12",
+    "parent_task_id": "solid-harbor",
+    "pr_url": null,
+    "project_id": "agent-queue",
+    "status": "COMPLETED",
+    "title": "Review: earlier task"
+  },
+  "task_id": "solid-harbor.12",
+  "title": "Review: earlier task",
+  "type": "task.completed"
+}

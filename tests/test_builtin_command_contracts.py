@@ -3,13 +3,20 @@
 import pytest
 
 from src.commands.contracts import CONTRACTS
-from src.commands.contracts.builtin import CreateTaskArgs, EnsureTaskArgs, _outcome_of
+from src.commands.contracts.builtin import (
+    CreateTaskArgs,
+    EnsureTaskArgs,
+    MemorySaveArgs,
+    MemorySearchArgs,
+    _outcome_of,
+)
 from src.playbooks.pipeline_compiler import PIPELINE_COMMAND_WHITELIST
 
 
 def test_all_pipeline_commands_have_one_contract_registration() -> None:
-    assert CONTRACTS.names() == PIPELINE_COMMAND_WHITELIST
-    assert len(CONTRACTS.names()) == 11
+    assert PIPELINE_COMMAND_WHITELIST <= CONTRACTS.names()
+    assert len(PIPELINE_COMMAND_WHITELIST) == 11
+    assert len(CONTRACTS.names()) == 19
 
 
 def test_builtin_contract_capabilities_are_the_command_names() -> None:
@@ -24,6 +31,8 @@ def test_builtin_argument_models_are_closed_but_preserve_handler_options() -> No
     assert CreateTaskArgs(title="T", requires_kinds=["project-repo"]).requires_kinds == [
         "project-repo"
     ]
+    for args_model in (MemorySaveArgs, MemorySearchArgs):
+        assert "project_id" in args_model.model_json_schema()["required"]
 
 
 def test_legacy_shapes_map_to_declared_outcomes_without_success_key_heuristics() -> None:
@@ -39,6 +48,10 @@ def test_legacy_shapes_map_to_declared_outcomes_without_success_key_heuristics()
         == "not_running"
     )
     assert _outcome_of("stop_task", {"error": "Task 't-1' not found"}) == "rejected"
+    assert (
+        _outcome_of("read_project_memory_file", {"error": "File not found", "missing": True})
+        == "missing"
+    )
 
 
 def test_presentation_is_authored_and_names_only_real_fields() -> None:

@@ -47,8 +47,9 @@ from src.playbooks.executors.base import (
     UnknownStepType,
 )
 from src.playbooks.executors.foreach import ITERATING_OUTCOME
+from src.playbooks.executors.llm import _published_tools, resolve_profile_principal
 from src.playbooks.executors.wait import UNRESOLVED_REASON
-from src.playbooks.expressions import BindingRef, ResolutionScope
+from src.playbooks.expressions import BindingRef, EventRef, Exists, ResolutionScope
 from src.playbooks.receipts import RECEIPT_OUTCOMES, transition_id
 from src.playbooks.run_state import (
     LoopFrame,
@@ -186,6 +187,56 @@ def _llm_step() -> LlmStep:
     )
 
 
+@pytest.mark.asyncio
+async def test_trusted_service_llm_is_narrowed_to_an_enforced_profile_principal():
+    resolution = await resolve_profile_principal(
+        _llm_step(),
+        SimpleNamespace(db=_ProfileStore(), resolver=_Resolver()),
+        ExecutionPrincipal.service("timer"),
+    )
+
+    assert resolution.principal is not None
+    assert resolution.principal.kind is PrincipalKind.PLAYBOOK
+    assert resolution.principal.profile_id == "worker"
+    assert resolution.principal.policy.aq_commands == frozenset({"ensure_task"})
+
+
+def test_contracted_plugin_tools_are_published_under_the_plugin_namespace():
+    from src.commands.contracts import CONTRACTS
+
+    class PluginResolver:
+        def is_builtin(self, _name: str) -> bool:
+            return False
+
+        def is_plugin(self, name: str) -> bool:
+            return name == "git_diff"
+
+        def plugin_command_names(self) -> frozenset[str]:
+            return frozenset({"git_diff"})
+
+    step = _llm_step().model_copy(
+        update={
+            "tool_use": _llm_step().tool_use.model_copy(
+                update={"aq_commands": [], "plugin_tools": ["git_diff"]}
+            )
+        }
+    )
+    principal = ExecutionPrincipal(
+        kind=PrincipalKind.PLAYBOOK,
+        policy=CapabilityPolicy.from_namespaces(plugin_tools=["git_diff"]),
+    )
+    ctx = SimpleNamespace(
+        principal=principal,
+        services=SimpleNamespace(
+            contracts=CONTRACTS,
+            resolver=PluginResolver(),
+            authorization_mode="enforce",
+        ),
+    )
+
+    assert [tool["name"] for tool in _published_tools(step, ctx)] == ["git_diff"]
+
+
 def build_llm(
     provider: FakeProvider,
     *,
@@ -246,6 +297,56 @@ class TestRulePerRunDispatch:
         result = await engine.dispatch_event(event("task-completed-docs"), TRUSTED_LOCAL)
         # ``review_task: True`` fails rule 1's filter; rule 2 has no filter.
         assert result.rules_selected == ("sweep",)
+
+    @pytest.mark.asyncio
+    async def test_a_false_rule_guard_rejects_the_rule(self):
+        """§4.2 — the guard is V1's ``when`` clause, evaluated before dispatch.
+
+        V1 skipped a rule whose ``when`` was false (``core.py`` ``_eval_pipeline_when``).
+        Selecting it here would start a run V1 never started, which Package 6's
+        parity harness reads as a rule-selection difference.
+        """
+        engine, adapter, _runs, _bus, ref = build()
+        artifact = engine.services.artifact_store.load(ref.artifact_sha256)
+        guarded = artifact.rules[0].model_copy(
+            update={
+                "guard": Exists(
+                    type="exists",
+                    value=EventRef(type="event_ref", path="task.pr_url"),
+                    mode="truthy",
+                )
+            }
+        )
+        artifact = artifact.model_copy(update={"rules": [guarded, *artifact.rules[1:]]})
+        engine.services.artifact_store.put(artifact)
+        engine.activations = StubActivations([artifact_ref_for(artifact)])
+        adapter.queue.append(listed())
+
+        result = await engine.dispatch_event(event("task-completed-code"), TRUSTED_LOCAL)
+
+        assert guarded.id not in result.rules_selected
+
+    @pytest.mark.asyncio
+    async def test_a_true_rule_guard_keeps_the_rule(self):
+        engine, adapter, _runs, _bus, ref = build()
+        artifact = engine.services.artifact_store.load(ref.artifact_sha256)
+        guarded = artifact.rules[0].model_copy(
+            update={
+                "guard": Exists(
+                    type="exists",
+                    value=EventRef(type="event_ref", path="task_id"),
+                    mode="truthy",
+                )
+            }
+        )
+        artifact = artifact.model_copy(update={"rules": [guarded, *artifact.rules[1:]]})
+        engine.services.artifact_store.put(artifact)
+        engine.activations = StubActivations([artifact_ref_for(artifact)])
+        adapter.queue.extend([ok(), listed()])
+
+        result = await engine.dispatch_event(event("task-completed-code"), TRUSTED_LOCAL)
+
+        assert guarded.id in result.rules_selected
 
     @pytest.mark.asyncio
     async def test_sibling_failure_does_not_fail_the_other_run(self):

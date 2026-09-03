@@ -334,6 +334,14 @@ EXPECTED_DIFFERENCES: Mapping[str, str] = {
     "terminal-vocabulary": (
         "V2 distinguishes timed_out and cancelled from V1's failed terminal vocabulary."
     ),
+    "null-template-part-rendered": (
+        "A template part that resolves to null renders as the literal 'null' in V2 and as an "
+        "empty string in V1. V1's ``_substitute`` blanked the hole silently "
+        "(src/playbooks/pipeline_runner.py:48-63); V2's ``_render`` states it, because "
+        "'a template can never silently render a hole' (src/playbooks/expressions.py:429-431). "
+        "It is admissible only when the two argument sets are otherwise identical key for key "
+        "and value for value, so it can never absorb a changed, added or dropped argument."
+    ),
 }
 
 
@@ -350,6 +358,56 @@ _PARITY_FIELDS: tuple[str, ...] = (
 def _terminal_difference_is_expected(v1: str, v2: str) -> bool:
     """Only V2's new non-completed terminals are a vocabulary difference."""
     return v1 != "completed" and v2 in {"timed_out", "cancelled"}
+
+
+def _null_rendering_only(left: str, right: str) -> bool:
+    """``right`` is ``left`` with one or more blanked holes rendered as ``null``.
+
+    Deliberately structural rather than textual: both sides are parsed, the key
+    sets must match exactly, and only ``(str, str)`` values may differ.  A
+    changed, added or dropped argument therefore cannot reach this rule.
+    """
+    try:
+        a = json.loads(left)
+        b = json.loads(right)
+    except ValueError:
+        return False
+    if not isinstance(a, dict) or not isinstance(b, dict) or a.keys() != b.keys():
+        return False
+    changed = False
+    for key, value in a.items():
+        other = b[key]
+        if value == other:
+            continue
+        if not isinstance(value, str) or not isinstance(other, str):
+            return False
+        if other.replace("null", "") != value:
+            return False
+        changed = True
+    return changed
+
+
+def _command_difference_is_expected(
+    v1: Sequence[CommandInvocation], v2: Sequence[CommandInvocation]
+) -> bool:
+    """The one command-level rationale: a null template part, and nothing else.
+
+    The comparison stays a projection everywhere else — a different command, a
+    different order, an extra or missing invocation, or any argument change
+    that is not exactly V1's blanked hole is ``unexplained``.
+    """
+    if len(v1) != len(v2):
+        return False
+    saw_difference = False
+    for left, right in zip(v1, v2, strict=True):
+        if (left.order, left.command) != (right.order, right.command):
+            return False
+        if left.args_canonical == right.args_canonical:
+            continue
+        if not _null_rendering_only(left.args_canonical, right.args_canonical):
+            return False
+        saw_difference = True
+    return saw_difference
 
 
 def compare(v1: ShadowObservation, v2: ShadowObservation) -> tuple[ParityFinding, ...]:
@@ -379,6 +437,16 @@ def compare(v1: ShadowObservation, v2: ShadowObservation) -> tuple[ParityFinding
                     v2=right,
                     classification="expected_v2_semantics",
                     rationale_id="terminal-vocabulary",
+                )
+            )
+        elif field == "commands" and _command_difference_is_expected(left, right):
+            findings.append(
+                ParityFinding(
+                    field="commands",
+                    v1=left,
+                    v2=right,
+                    classification="expected_v2_semantics",
+                    rationale_id="null-template-part-rendered",
                 )
             )
         else:
@@ -602,6 +670,24 @@ async def _safe_call(obj: Any, name: str, *, default: Any, **kwargs: Any) -> Any
         logger.warning("migration inventory: %s.%s failed", type(obj).__name__, name, exc_info=True)
         return default
     return default if result is None else result
+
+
+async def _activation_rows(activation_repo: Any) -> list[Any]:
+    """Activation rows carrying their artifact's identity columns.
+
+    An activation row on its own names an artifact hash and nothing else, so
+    the drift checks below — is the artifact still compiled against this
+    contract fingerprint, and against the source bytes on disk? — have no
+    evidence to compare.  The joined read supplies it; a repository that
+    predates the join (or a narrower test double) still degrades to the
+    unjoined rows rather than to no report at all.
+    """
+    rows = await _safe_call(
+        activation_repo, "list_playbook_activations_with_artifacts", default=None
+    )
+    if rows is None:
+        rows = await _safe_call(activation_repo, "list_playbook_activations", default=[])
+    return list(rows)
 
 
 def _activation_key(row: Mapping[str, Any]) -> tuple[str, str, str]:
@@ -890,9 +976,7 @@ async def build_inventory(
         except Exception:  # pragma: no cover - defensive
             logger.warning("migration inventory: compiled store scan failed", exc_info=True)
 
-    activation_rows = await _safe_call(
-        activation_repo, "list_playbook_activations", default=[]
-    )
+    activation_rows = await _activation_rows(activation_repo)
     activations = {
         _activation_key(row): row for row in activation_rows if isinstance(row, Mapping)
     }
@@ -1065,10 +1149,14 @@ def audit_capabilities(definition: Any, policy: Any) -> tuple[CapabilityFinding,
     return tuple(findings)
 
 
-
 # ---------------------------------------------------------------------------
 # §5.5 — cutover evidence report
 # ---------------------------------------------------------------------------
+
+
+def _playbook_ids(rows: Sequence[Mapping[str, Any]]) -> str:
+    """A short, stable ``a, b, c`` list for an operator-facing blocking reason."""
+    return ", ".join(sorted({str(row.get("playbook_id") or "?") for row in rows}))
 
 
 def build_cutover_report(
@@ -1080,14 +1168,30 @@ def build_cutover_report(
     pending_events: Sequence[Mapping[str, Any]],
     active_v1_runs: Sequence[Mapping[str, Any]],
     parity: Mapping[str, Any],
+    evidence_errors: Sequence[Mapping[str, Any]] = (),
     now: float | None = None,
 ) -> dict[str, Any]:
     """Render the complete, serialisable Package 6 cutover evidence.
 
     The report only assembles evidence collected by the caller; it never
     compiles, activates, replays, or otherwise alters fleet state.
+
+    *evidence_errors* are the reads the caller could **not** perform, one
+    ``{"source": ..., "error": ...}`` mapping each.  They exist because an
+    unread evidence source and an empty one are not the same fact: a failed
+    ``list_pending_events`` call rendered as zero pending events would let this
+    report certify a fleet it never looked at.  Every entry is therefore a
+    blocking reason, and the sections it fed are marked ``unavailable``.
     """
     generated_at = time.time() if now is None else now
+    unread = [
+        {
+            "source": str(row.get("source") or "unknown"),
+            "error": str(row.get("error") or "unavailable"),
+        }
+        for row in evidence_errors
+    ]
+    unread_sources = {row["source"] for row in unread}
     rendered_artifacts = [
         {
             "playbook_id": row.get("playbook_id"),
@@ -1098,6 +1202,7 @@ def build_cutover_report(
             "activation_health": row.get("activation_health", row.get("health")),
             "reviewed_by": row.get("reviewed_by"),
             "reviewed_at": row.get("reviewed_at"),
+            "v1_available": bool(row.get("v1_available", False)),
         }
         for row in artifacts
     ]
@@ -1127,15 +1232,51 @@ def build_cutover_report(
             run_started.append(float(timestamp))
 
     unexplained = int(parity.get("unexplained") or 0)
-    rollback_ready = bool(rendered_artifacts) and all(
-        row.get("v1_available", False) for row in artifacts
+    # §3.7: an activation is rollback-ready only when a human approved the exact
+    # bytes that are live *and* the V1 artifact it would roll back to still
+    # exists.  Evidence that is merely absent counts as absent, never as fine —
+    # a report assembled from rows that could not be joined would otherwise
+    # declare a fleet cutover-eligible on the strength of four nulls.
+    incomplete = [
+        row
+        for row in rendered_artifacts
+        if not row.get("artifact_sha256") or not row.get("source_sha256")
+    ]
+    unreviewed = [
+        row
+        for row in rendered_artifacts
+        if not row.get("reviewed_by") or not row.get("reviewed_at")
+    ]
+    # The claim is also withheld when the activation rows or V1 store could not
+    # be read: absence of evidence from an unavailable source is not evidence of
+    # rollback readiness.
+    rollback_ready = (
+        bool(rendered_artifacts)
+        and not unreviewed
+        and all(row.get("v1_available", False) for row in artifacts)
+        and not (unread_sources & {"activations", "v1_store"})
     )
     blocking_reasons: list[str] = []
+    for row in unread:
+        blocking_reasons.append(
+            f"evidence source {row['source']!r} could not be read ({row['error']}); "
+            "cutover cannot be certified against evidence that was never collected"
+        )
     if unresolved:
         blocking_reasons.append(f"{len(unresolved)} unresolved migration inventory entries")
     unhealthy = [row for row in rendered_artifacts if row.get("activation_health") != "ready"]
     if unhealthy:
         blocking_reasons.append(f"{len(unhealthy)} enabled activations are not ready")
+    if incomplete:
+        blocking_reasons.append(
+            f"{len(incomplete)} enabled activations have incomplete artifact evidence "
+            f"({_playbook_ids(incomplete)})"
+        )
+    if unreviewed:
+        blocking_reasons.append(
+            f"{len(unreviewed)} enabled activations have no recorded review of the live "
+            f"artifact ({_playbook_ids(unreviewed)})"
+        )
     if pending_events:
         blocking_reasons.append(f"{len(pending_events)} pending events require an operator decision")
     if runs:
@@ -1158,14 +1299,17 @@ def build_cutover_report(
             "total": len(pending_events),
             "oldest_age_seconds": max(0.0, generated_at - min(received)) if received else None,
             "by_playbook": dict(sorted(by_playbook.items())),
+            "unavailable": "pending_events" in unread_sources,
         },
         "active_v1_runs": {
             "running": running,
             "paused": paused,
             "oldest_age_seconds": max(0.0, generated_at - min(run_started)) if run_started else None,
             "runs": runs,
+            "unavailable": "active_v1_runs" in unread_sources,
         },
         "parity": dict(parity),
+        "evidence_errors": unread,
         "rollback_ready": rollback_ready,
         "cutover_eligible": not blocking_reasons,
         "blocking_reasons": blocking_reasons,
@@ -1239,6 +1383,38 @@ def _reviewed_fixture_artifacts(fixture_root: Path) -> dict[str, Any]:
         except Exception as exc:  # pragma: no cover - a malformed fixture is a test failure
             logger.warning("release check: unreadable fixture %s: %s", artifact_path, exc)
     return artifacts
+
+
+def reviewed_artifact_evidence(
+    fixture_root: Path | str = REVIEWED_FIXTURE_ROOT,
+) -> dict[str, dict[str, Any]]:
+    """``{playbook_id: review frontmatter}`` for every *approved* reviewed fixture.
+
+    The human decision record is the only place ``reviewed_by`` and
+    ``reviewed_at`` exist — no table stores them (§3.4) — so the cutover report
+    reads them from the same files the release check reads artifacts from.
+
+    Only ``decision: approved`` is returned.  A rejected or undecided review is
+    not weaker evidence than none, it is evidence of the opposite, and the
+    report's caller must not be able to mistake one for the other.
+    """
+    root = Path(fixture_root)
+    evidence: dict[str, dict[str, Any]] = {}
+    if not root.is_dir():
+        return evidence
+    for directory in sorted(p for p in root.iterdir() if p.is_dir()):
+        review_path = directory / "review.md"
+        if not review_path.is_file():
+            continue
+        try:
+            frontmatter = _review_frontmatter(review_path)
+        except Exception:  # pragma: no cover - a malformed review is a test failure
+            logger.warning("cutover report: unreadable review %s", review_path, exc_info=True)
+            continue
+        if frontmatter.get("decision") != "approved":
+            continue
+        evidence[str(frontmatter.get("playbook_id") or directory.name)] = frontmatter
+    return evidence
 
 
 def _review_frontmatter(path: Path) -> dict[str, Any]:
@@ -1456,6 +1632,7 @@ __all__ = [
     "profile_fingerprints_for",
     "release_check",
     "required_capabilities",
+    "reviewed_artifact_evidence",
     "shipped_profile_fingerprints",
     "shipped_profile_lookup",
 ]

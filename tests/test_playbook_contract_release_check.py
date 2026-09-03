@@ -339,17 +339,13 @@ def test_an_enabled_stale_activation_does_block() -> None:
     assert row["origin"] == "activation"
 
 
-def test_rejected_fixtures_are_not_checked() -> None:
-    """A recorded negative is not held to the live contract surface.
-
-    Reporting drift in a playbook nothing may run would make the gate noisy in
-    exactly the case where a human has already written down what is wrong.
-    """
+def test_every_shipped_fixture_is_checked() -> None:
+    """All enabled shipped fixtures participate in the contract release gate."""
     from tests.playbook_fixture_activation import activatable_fixture_ids
 
     report = release_check(contract_registry=CONTRACTS, fixture_root=FIXTURE_ROOT)
     assert set(report["checked"]) == set(activatable_fixture_ids(FIXTURE_ROOT))
-    assert "memory-consolidation" not in report["checked"]
+    assert "memory-consolidation" in report["checked"]
 
 
 def test_check_is_offline(monkeypatch: pytest.MonkeyPatch) -> None:

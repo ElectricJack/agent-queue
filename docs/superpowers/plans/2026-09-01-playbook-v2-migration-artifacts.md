@@ -389,26 +389,18 @@ As with §3.8.1 the drafted text above is left intact so the delta stays legible
 |---|---|---|
 | §2 and §5.2 T-6 give dispositions to `src/prompts/example_playbooks/` (10 files) and `src/prompts/default_rules/` (6 files) | **Neither directory exists.** `src/prompts/` holds `default_playbooks/`, `default_agent_type_playbooks/`, `default_intelligence_classes/` and four loose `.md` prompts | `EXCLUDED_SAMPLE_ROOTS` in `tests/test_shipped_playbook_sources.py` is the empty tuple, kept so a reintroduced sample root is *classified* rather than swept into the installed corpus. No READMEs were written for directories that are gone, and no follow-up task was filed for content that no longer exists |
 | §5.3 T-7 assertion 4 reads `definition.compiled_from.source_digest` | `PlaybookDefinition` has **`source_hash`**; there is no `compiled_from` field | Asserted against `source_hash` |
-| §3.4 locks `decision: approved \| rejected`, and T-7 assertion 3 asserts `approved` for all four | Only `default-pipeline` can be made activatable today (see below) | The vocabulary is **not** extended. The other three are recorded `rejected` — §3.4's own words for it are "a recorded negative — no activation may reference it" — with an added `blocked_on` key naming the prerequisite. T-7 assertion 3 becomes: every fixture carries a locked decision; an approved one carries a validating artifact; a non-approved one carries `blocked_on` and **no** artifact at all |
+| §3.4 locks `decision: approved \| rejected`, and T-7 assertion 3 asserts `approved` for all four | The first fixture pass exposed missing event, profile, and LLM-tool contracts | The prerequisites now ship: `assignment.route.requested` has the emitter's exact schema; prose sources name resolvable profiles; LLM tool commands have typed contracts and profile ceilings. All four enabled shipped fixtures are `approved`; the synthetic rejected-fixture test keeps the negative path locked |
 | §5.2 T-5's "the V1 pipeline compiler stops being able to compile the shipped source" leaves nothing for the V1 arm of §3.5's shadow harness, nor for Package 2's deterministic lowering tests | Both still need a machine graph, and so does the reviewed artifact | The pre-rewrite source is frozen byte-for-byte at `tests/fixtures/playbooks/v1/default-pipeline.md`. The reviewed V2 artifact is `lower_pipeline` applied to it, which makes V1-equivalence true by construction; every V1 assertion that read the shipped Markdown was repointed there rather than deleted |
 | §5.5 T-14's `release_check` compares "`compiled_against.commands` **and** `compiled_against.profiles`" | Activation rows carry an aggregate `contract_fingerprint`, not per-command values; a per-command comparison needs the artifact loaded from `ArtifactStore` | **Both halves ship as T-14 drafted them** (`nimble-apex-17`; the earlier deferral is superseded). `profile_fingerprints` now defaults to `shipped_profile_fingerprints()` — the profiles a fixture was compiled against — and each activation row carries a `current_profiles` map the daemon resolves from its *live* registry, so neither side is held to the other's view of the profile set. Deferring it had left `release_check(profile_fingerprints=None)` skipping the profile comparison entirely, with no caller ever passing the argument |
 
-**Two compiler questions this slice could not resolve inside Package 6**, both
-recorded in `tests/fixtures/playbooks/v2/default-assignment-routing/review.md`
-and escalated to the roadmap owner on the task thread:
-
-- `assignment.route.requested` is dispatched for real at
-  `src/orchestrator/assignment_routing.py:458` but is **absent from
-  `src/event_schemas.py`**, so `validate_definition` raises `unknown_event`.
-  Registering it is Package 1's surface, and would newly subject a live
-  dispatch path to schema validation — a behaviour change needing its own test
-  and review, not a side effect of a fixture commit.
-- The source's `role: assignment-routing` names a profile
-  `src/profiles/defaults/` does not ship, and V2 requires every `llm` step to
-  name a resolvable one. Under V1 `role` was a label and the model came from
-  `llm_config.intelligence_class`, so nothing ever needed it to exist.
-  Authoring one from Package 6 would be a capability grant written by a
-  fixture, which §4.1 forbids.
+**Compiler-question resolution (`agile-impact-36`).** Assignment routing keeps
+its V1 `role` discriminator and independently names `playbook-compiler`, whose
+`default_class: fast-low` matches the old direct-call configuration. The event
+registry now describes the payload the coordinator already emits. The two
+prose-only LLM playbooks retain their complete prose as schema-bound prompts;
+their review records name every accepted structural difference, tool contract,
+profile, budget, and output schema. LLM tool contracts participate in
+`compiled_against.commands`, so release checks cannot overlook their drift.
 
 **Operational note that outlives this slice.** After Commit 2 the shipped
 `default-pipeline.md` compiles under neither runtime. No *running* fleet loses
@@ -688,6 +680,44 @@ ruff check tests/test_default_playbook_v2_artifacts.py src/playbooks/migration.p
 ---
 
 ### 5.4 Commit 4 — `test: compare v1 and v2 shadow decisions`
+
+> **Reconciliation, implementation commit (2026-09-03, task `fresh-harbor-83`).** §3.8
+> requires deviations found when the package is implemented to be recorded here rather
+> than substituted silently. Five, all forced by the live tree:
+>
+> 1. **The engine did not evaluate `rule.guard`.** `PlaybookEngine._trigger_matches`
+>    matched trigger type and the literal filter only, so V2 selected rules V1's
+>    `_eval_pipeline_when` rejected — assertion 2 could not hold. `_guard_admits` /
+>    `_rule_selected` now evaluate the guard at dispatch and in `dry_run`
+>    (`tests/test_v2_engine.py::TestRulePerRunDispatch::test_a_false_rule_guard_rejects_the_rule`).
+> 2. **The engine did not flag `review_task`.** `core.py` calls
+>    `flag_review_task_event` right after hydrating; `_hydrate_event` had lifted only
+>    the hydration, so a V2 review task's own completion re-entered the review rule.
+>    Fixed in `_hydrate_event`; the corpus event `task-completed-review-task` is the
+>    regression test.
+> 3. **The lowered `foreach` collection was a literal string.** V1 wrote
+>    `for_each.source` as a bare reference, which `pipeline_lowering._value` (a `{{ }}`
+>    parser) turned into `{"type": "literal", "value": "outputs.downstream.tasks"}` — a
+>    loop that iterates nothing. `_bare_ref` fixes it and the reviewed artifact fixture
+>    was re-recorded (see that fixture's `review.md` Q4).
+> 4. **Shadow stops at the binding frontier.** `ShadowCommandExecutor` records a step's
+>    arguments and returns `UNRESOLVED` with no value, so a step reading a
+>    `save_result_as` binding fails input resolution and the symbolic path ends. Shadow
+>    alone observes each rule's *first* event-derived command and cannot reach the loop
+>    iterations this section's corpus is written to exercise. Past that frontier the V2
+>    arm is **projected** from the artifact — the artifact's own typed steps,
+>    transitions, loop collection and item binding, resolved with the engine's own
+>    `resolve_value`/`ResolutionScope`, taking each boundary outcome from the same
+>    scripted oracle the V1 arm's recording handler answers with — and the projection is
+>    pinned to the engine by
+>    `test_projection_agrees_with_the_engine_at_the_shadow_frontier`. Assertion 3 is
+>    stated over that combined observation.
+> 5. **`EXPECTED_DIFFERENCES` gains a sixth entry, `null-template-part-rendered`**, and
+>    assertion 5 is stated as `RATIONALE_COVERAGE` — one named, executable demonstration
+>    per rationale — because three of the five original rationales are folded away by a
+>    declared canonicalisation or by V1's uniform failure handling and can never appear
+>    as a corpus *finding*. No contract marks an argument `free_text`, so §3.5.1 rule 3
+>    is a no-op here.
 
 #### T-10 — `tests/test_playbook_shadow_parity.py` (red)
 

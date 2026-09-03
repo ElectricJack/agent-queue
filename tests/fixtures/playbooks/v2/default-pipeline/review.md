@@ -1,6 +1,6 @@
 ---
 playbook_id: default-pipeline
-artifact_sha256: "sha256:fd28a4ca3a4f0be27fd8253e132699bd5757461e2b07c78d842dfecfc2fd4cea"
+artifact_sha256: "sha256:7c3c162f2bc084618d8778579cfd3f2e44311eabc0fdf8ff427810f19334d7bd"
 source_sha256: "sha256:4c5af240e58db3c4a3ce6012dd933305965054a6afeb59827952efd1ecdab123"
 contract_fingerprint: "sha256:64868157d0d987401d13d954e0bd3edc0c01fc427c626b2947d760a57cc855fe"
 reviewed_by: "aq task solid-harbor.52, re-recorded by nimble-apex-17 (worker-standard-high-claude); operator sign-off is this fixture's PR review"
@@ -53,6 +53,19 @@ each one to the prose as a backticked identifier in the sentence that describes
 what it does**, rather than relaxing `enforce_inventory`. That is the whole
 point of the inventory rule (spec, "Metadata ownership"): the source, not the
 compiler, grants an executable name.
+
+**Q4 — the lowered `foreach` collection was a literal string, not a reference.**
+V1 wrote `for_each.source` as a *bare* reference (`outputs.downstream.tasks`,
+read directly by `pipeline_runner._resolve_ref`), and
+`pipeline_lowering._value` only recognises `{{ }}` interpolations, so the first
+recording of this artifact carried
+`"collection": {"type": "literal", "value": "outputs.downstream.tasks"}` — a
+loop that iterates a string instead of the downstream task list. Package 6's
+executable parity harness is what found it: the corpus's loop events emitted
+`gate_create` on the V1 arm and nothing on the V2 arm. **Decision: fix the
+lowering (`_bare_ref` in `src/playbooks/pipeline_lowering.py`) and re-record,
+rather than register an expected difference.** A gate the V2 pipeline would
+never raise is a behaviour change, not an intended V2 semantic.
 
 ## Semantic diff versus the V1 graph
 
@@ -117,9 +130,10 @@ because the compiler only snapshotted a profile a step runs *as*, so widening
 the approved artifact. What was reviewed here is not just "the three ids exist"
 but *what those three profiles were allowed to do* on the day of approval, so a
 capability change to any of them now shows up as `stale_contract` in activation
-health and as drift in `aq playbook release-check`. Nothing else in the artifact
-moved: `compiled_at`, `source_hash`, every rule and every step are byte-identical
-to the first recording, and `contract_fingerprint` is unchanged because it covers
+health and as drift in `aq playbook release-check`. Relative to the post-Q4
+recording above, only `compiled_against.profiles` moved: `compiled_at`,
+`source_hash`, every rule and every step are byte-identical, and
+`contract_fingerprint` is unchanged because it covers
 `compiled_against.commands` alone.
 
 Deliberately, the `ensure_task` steps pin `profile_id` but no

@@ -468,7 +468,10 @@ def business_outcomes(step: Any, *, contract_outcomes: frozenset[str] | None = N
     if isinstance(step, CommandStep):
         return contract_outcomes if contract_outcomes is not None else frozenset()
     if isinstance(step, LlmStep):
-        return frozenset(_outcome_enum(step) or ())
+        # A schema-only LLM step has one deterministic business outcome. The
+        # live executor already returns ``completed`` when no outcome field is
+        # declared; expose that edge to validation as well.
+        return frozenset(_outcome_enum(step) or ("completed",))
     if isinstance(step, AgentTaskStep):
         if not step.wait_for_completion:
             return frozenset({"dispatched"})

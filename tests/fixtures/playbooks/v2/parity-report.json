@@ -1,0 +1,188 @@
+{
+  "artifact_sha256": "sha256:7c3c162f2bc084618d8778579cfd3f2e44311eabc0fdf8ff427810f19334d7bd",
+  "canonicalisation": [
+    "sensitive arguments are replaced with the contract's redaction marker, key retained",
+    "ids the oracle mints during an observation become <gen:N> in first-appearance order, per arm",
+    "no contract marks an argument free_text, so whitespace normalisation is a no-op",
+    "loop body step ids fold into their foreach parent; step ids compare as <rule>-<title>",
+    "bound results project onto the declared result-model fields both arms share"
+  ],
+  "corpus": "tests/fixtures/playbooks/v2/events/",
+  "coverage_limits": [
+    "Per-run command comparison covers the deterministic playbooks only (default-pipeline); default-assignment-routing, memory-consolidation, coding-reflection are compared structurally (id, kind, role, scope, triggers, cooldown, budget, llm config, output schema) because their V1 behaviour is an LLM call and is not reproducible.",
+    "Agreement is proved over the events in tests/fixtures/playbooks/v2/events/, one per (rule, guard-outcome) pair of the deterministic playbook, not over all possible events.",
+    "Past the shadow binding frontier the V2 arm is projected from the artifact with the engine's own resolver, taking each boundary outcome from the same scripted oracle the V1 arm answers with; test_projection_agrees_with_the_engine_at_the_shadow_frontier pins the projection to the engine wherever shadow resolves."
+  ],
+  "deterministic_playbooks": [
+    "default-pipeline"
+  ],
+  "events": [
+    {
+      "commands": 0,
+      "event_id": "evt-parity-0013",
+      "event_type": "assignment.route.requested",
+      "findings": [],
+      "rules_selected": []
+    },
+    {
+      "commands": 1,
+      "event_id": "evt-parity-0009",
+      "event_type": "gate.resolved",
+      "findings": [],
+      "rules_selected": [
+        "commit-on-gate-resolve"
+      ]
+    },
+    {
+      "commands": 1,
+      "event_id": "evt-parity-0010",
+      "event_type": "gate.resolved",
+      "findings": [],
+      "rules_selected": [
+        "commit-on-gate-resolve"
+      ]
+    },
+    {
+      "commands": 1,
+      "event_id": "evt-parity-0008",
+      "event_type": "proposal.ready",
+      "findings": [],
+      "rules_selected": [
+        "proposal-ready-gate"
+      ]
+    },
+    {
+      "commands": 1,
+      "event_id": "evt-parity-0007",
+      "event_type": "spec.approved",
+      "findings": [],
+      "rules_selected": [
+        "spec-ingest-on-approve"
+      ]
+    },
+    {
+      "commands": 2,
+      "event_id": "evt-parity-0006",
+      "event_type": "task.completed",
+      "findings": [
+        {
+          "classification": "expected_v2_semantics",
+          "field": "commands",
+          "rationale_id": "null-template-part-rendered"
+        }
+      ],
+      "rules_selected": [
+        "per-task-review"
+      ]
+    },
+    {
+      "commands": 0,
+      "event_id": "evt-parity-0003",
+      "event_type": "task.completed",
+      "findings": [],
+      "rules_selected": []
+    },
+    {
+      "commands": 0,
+      "event_id": "evt-parity-0012",
+      "event_type": "task.completed",
+      "findings": [],
+      "rules_selected": []
+    },
+    {
+      "commands": 3,
+      "event_id": "evt-parity-0005",
+      "event_type": "task.completed",
+      "findings": [
+        {
+          "classification": "expected_v2_semantics",
+          "field": "commands",
+          "rationale_id": "null-template-part-rendered"
+        }
+      ],
+      "rules_selected": [
+        "per-task-review"
+      ]
+    },
+    {
+      "commands": 0,
+      "event_id": "evt-parity-0011",
+      "event_type": "task.completed",
+      "findings": [],
+      "rules_selected": []
+    },
+    {
+      "commands": 11,
+      "event_id": "evt-parity-0002",
+      "event_type": "task.completed",
+      "findings": [],
+      "rules_selected": [
+        "per-task-review",
+        "per-branch-final-review"
+      ]
+    },
+    {
+      "commands": 3,
+      "event_id": "evt-parity-0001",
+      "event_type": "task.completed",
+      "findings": [
+        {
+          "classification": "expected_v2_semantics",
+          "field": "commands",
+          "rationale_id": "null-template-part-rendered"
+        }
+      ],
+      "rules_selected": [
+        "per-task-review"
+      ]
+    },
+    {
+      "commands": 5,
+      "event_id": "evt-parity-0004",
+      "event_type": "task.completed",
+      "findings": [
+        {
+          "classification": "expected_v2_semantics",
+          "field": "commands",
+          "rationale_id": "null-template-part-rendered"
+        }
+      ],
+      "rules_selected": [
+        "per-task-review"
+      ]
+    },
+    {
+      "commands": 0,
+      "event_id": "evt-parity-0015",
+      "event_type": "task.failed",
+      "findings": [],
+      "rules_selected": []
+    },
+    {
+      "commands": 0,
+      "event_id": "evt-parity-0014",
+      "event_type": "timer.24h",
+      "findings": [],
+      "rules_selected": []
+    }
+  ],
+  "expected": 4,
+  "expected_differences": {
+    "loop-frame-shape": "test_loop_frame_shape_is_exercised \u2014 task-completed-with-downstream iterates a typed foreach frame plus a body step where V1 had one node, with identical per-iteration commands",
+    "null-template-part-rendered": "the corpus itself \u2014 every task.completed event with a null pr_url produces this finding on per-task-review--create-review",
+    "rule-failure-isolation": "test_rule_failure_isolation_is_exercised \u2014 a raising first rule ends V1's whole dispatch and leaves V2's sibling rule running",
+    "run-per-rule": "test_run_per_rule_is_exercised \u2014 task-completed-with-branch-and-pr starts two independent V2 runs for the one event V1 covered with a single run row",
+    "terminal-vocabulary": "test_terminal_vocabulary_is_the_narrow_expected_difference \u2014 compare() maps V2's timed_out/cancelled onto V1's failed",
+    "unassigned-ref-rejected": "test_unassigned_ref_rejected_is_exercised \u2014 V1 substitutes an unassigned reference to None/'' where V2's resolver raises"
+  },
+  "identical": 11,
+  "observations": 15,
+  "structural_only_playbooks": [
+    "default-assignment-routing",
+    "memory-consolidation",
+    "coding-reflection"
+  ],
+  "suite": "tests/test_playbook_shadow_parity.py",
+  "unexplained": 0,
+  "v1_source": "tests/fixtures/playbooks/v1/default-pipeline.md"
+}

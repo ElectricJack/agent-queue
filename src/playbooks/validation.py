@@ -1537,6 +1537,28 @@ def _contracts_and_outcomes(context: _Context) -> None:
         if isinstance(step, LlmStep):
             _check_output_schema(context, step_id, step)
             _check_llm_outcomes(context, step_id, step)
+            for tool_name in (*step.tool_use.aq_commands, *step.tool_use.plugin_tools):
+                tool_contract = context.contracts.get(tool_name)
+                if tool_contract is None:
+                    context.emit(
+                        "unknown_command",
+                        f"LLM tool {tool_name!r} is not a registered command contract",
+                        rule_id=step.rule,
+                        step_id=step_id,
+                        field="/tool_use",
+                    )
+                    continue
+                recorded = definition.compiled_against.commands.get(tool_name)
+                if recorded != tool_contract.execution_fingerprint:
+                    context.emit(
+                        "stale_contract",
+                        f"the artifact was compiled against {recorded or 'no'} fingerprint "
+                        f"for LLM tool {tool_name!r}; the registry now serves "
+                        f"{tool_contract.execution_fingerprint}",
+                        rule_id=step.rule,
+                        step_id=step_id,
+                        field="/tool_use",
+                    )
 
         transitions = getattr(step, "transitions", None)
         if transitions is None or not resolved:
@@ -1631,6 +1653,8 @@ def _check_llm_outcomes(context: _Context, step_id: str, step: LlmStep) -> None:
     """§6.6 — the check that forbids hidden natural-language AI transitions."""
     branching = set(step.transitions) - RESERVED_OUTCOMES - LLM_RESERVED_OUTCOMES
     branching.discard(RUNTIME_ERROR_KEY)
+    if not step.outcome_field:
+        branching.discard("completed")
     if not branching:
         return
     enum = _outcome_enum_of(step)

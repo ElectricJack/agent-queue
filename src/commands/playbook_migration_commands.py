@@ -23,7 +23,13 @@ import logging
 from pathlib import Path
 
 from src.database.queries.playbook_migration_queries import MIN_ACK_REASON_LENGTH
-from src.playbooks.migration import build_cutover_report, build_inventory, release_check
+from src.playbooks.migration import (
+    REVIEWED_FIXTURE_ROOT,
+    build_cutover_report,
+    build_inventory,
+    release_check,
+    reviewed_artifact_evidence,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +38,30 @@ REASON_TOO_SHORT_ERROR = (
     f"an acknowledgement reason must be at least {MIN_ACK_REASON_LENGTH} characters — "
     "an empty waiver is not a waiver"
 )
+
+
+def _unread_evidence(source: str, exc: BaseException, detail: str = "") -> dict[str, str]:
+    """One evidence source the cutover report could not read.
+
+    Returned rather than swallowed: :func:`build_cutover_report` turns each of
+    these into a blocking reason, so a failed query is never rendered as an
+    empty — that is, clean — result.
+    """
+    return {"source": source, "error": f"{detail}{type(exc).__name__}: {exc}"}
+
+
+def _active_sha(row: dict) -> str:
+    """The artifact hash one activation row activates, or ``""``.
+
+    ``playbook_activations`` stores the reference as ``active_artifact_sha256``;
+    the joined read carries the artifact table's ``artifact_sha256`` alongside
+    it.  Reading only the latter is what made every live activation invisible to
+    the release check, so both names are accepted and the activation's own
+    column is the authority.
+    """
+    if not isinstance(row, dict):
+        return ""
+    return str(row.get("active_artifact_sha256") or row.get("artifact_sha256") or "")
 
 
 class PlaybookMigrationCommandsMixin:
@@ -46,6 +76,17 @@ class PlaybookMigrationCommandsMixin:
         if configured:
             return str(Path(configured).resolve())
         return str((Path(self.config.data_dir) / "vault").resolve())
+
+    def _reviewed_fixture_root(self) -> Path:
+        """Where the reviewed decision records and the parity record live.
+
+        Repository-relative, deliberately: both are checked-in files, and the
+        cutover report is produced from a checkout so that it can be signed
+        against bytes a reviewer can read.  A daemon started somewhere else
+        finds neither, and the report then blocks for missing review evidence
+        instead of inventing approval it cannot see.
+        """
+        return Path(REVIEWED_FIXTURE_ROOT)
 
     def _migration_store(self):
         """The compiled V1 store, or ``None`` when the vault cannot be opened.
@@ -73,6 +114,33 @@ class PlaybookMigrationCommandsMixin:
             ack_repo=self.db,
             pending_repo=self.db,
         )
+
+    async def _enabled_activations(
+        self, *, evidence_errors: list[dict[str, str]] | None = None
+    ) -> list[dict]:
+        """Enabled activation rows joined to the artifact each one activates.
+
+        Both §5.5 reports need the artifact's identity — its hash and the
+        source digest it was compiled from — and neither lives on the
+        activation row.  A repository without the joined read degrades to the
+        unjoined rows, which report less rather than reporting nothing.
+        """
+        try:
+            rows = await self.db.list_playbook_activations_with_artifacts(enabled_only=True)
+        except AttributeError:  # pragma: no cover - repositories predating the join
+            try:
+                rows = await self.db.list_playbook_activations()
+            except Exception as exc:
+                logger.warning("migration report: activation rows unavailable", exc_info=True)
+                if evidence_errors is not None:
+                    evidence_errors.append(_unread_evidence("activations", exc))
+                return []
+        except Exception as exc:  # pragma: no cover - defensive live-daemon reporting
+            logger.warning("migration report: activation rows unavailable", exc_info=True)
+            if evidence_errors is not None:
+                evidence_errors.append(_unread_evidence("activations", exc))
+            return []
+        return [row for row in rows if isinstance(row, dict) and row.get("enabled", True)]
 
     @staticmethod
     def _migration_principal_identity() -> str:
@@ -221,11 +289,7 @@ class PlaybookMigrationCommandsMixin:
         and activation rows carry no such column of their own.
         """
         rows: list[dict] = []
-        try:
-            activations = await self.db.list_playbook_activations()
-        except Exception:  # pragma: no cover - defensive
-            logger.warning("release check: activation rows unavailable", exc_info=True)
-            return rows
+        activations = await self._enabled_activations()
         try:
             acknowledged = {
                 (
@@ -254,12 +318,7 @@ class PlaybookMigrationCommandsMixin:
             logger.warning("release check: profile registry unavailable", exc_info=True)
             profile_lookup = None
         for row in activations:
-            if not isinstance(row, dict) or not row.get("enabled", True):
-                continue
-            # `playbook_activations` names the column `active_artifact_sha256`;
-            # reading `artifact_sha256` here silently skipped every row, which
-            # is why no activation had ever reached the gate.
-            sha = str(row.get("active_artifact_sha256") or "")
+            sha = _active_sha(row)
             if not sha:
                 continue
             try:
@@ -309,6 +368,7 @@ class PlaybookMigrationCommandsMixin:
         try:
             return release_check(
                 contract_registry=CONTRACTS,
+                fixture_root=self._reviewed_fixture_root(),
                 activations=await self._release_check_activations(),
             )
         except Exception as exc:  # pragma: no cover - defensive
@@ -318,19 +378,20 @@ class PlaybookMigrationCommandsMixin:
     async def _cutover_report_inputs(self) -> dict:
         """Collect report inputs without turning the report into an operation.
 
-        Missing optional read surfaces are rendered as unavailable evidence;
-        the report remains honest and blocks cutover rather than failing open.
+        A read that fails is recorded as an unavailable evidence source, never
+        as an empty result: an empty ``pending_events`` list means "the fleet
+        has no pending events", and a failed query that returned one would let
+        the report certify a fleet nobody looked at.  Every recorded failure
+        becomes a blocking reason in :func:`build_cutover_report`, so the
+        report fails closed.
         """
         from src.commands.contracts import CONTRACTS
-        from src.playbooks.migration import REVIEWED_FIXTURE_ROOT
 
+        evidence_errors: list[dict[str, str]] = []
+
+        fixture_root = self._reviewed_fixture_root()
         inventory = await self._migration_inventory()
-        try:
-            activation_rows = await self.db.list_playbook_activations()
-        except Exception:  # pragma: no cover - defensive live-daemon reporting
-            logger.warning("cutover report: activation rows unavailable", exc_info=True)
-            activation_rows = []
-        enabled = [row for row in activation_rows if isinstance(row, dict) and row.get("enabled", True)]
+        enabled = await self._enabled_activations(evidence_errors=evidence_errors)
 
         store = self._migration_store()
         try:
@@ -338,23 +399,41 @@ class PlaybookMigrationCommandsMixin:
                 str(getattr(playbook, "id", "") or "")
                 for _scope, _identifier, playbook in (store.list_all() if store is not None else [])
             }
-        except Exception:  # pragma: no cover - read-only fallback
+        except Exception as exc:  # pragma: no cover - read-only fallback
             logger.warning("cutover report: V1 store unavailable", exc_info=True)
+            evidence_errors.append(_unread_evidence("v1_store", exc))
             v1_ids = set()
-        artifacts = [
-            {
-                **row,
-                "source_sha256": row.get("source_digest"),
-                "activation_health": row.get("health"),
-                "v1_available": str(row.get("playbook_id") or "") in v1_ids,
-            }
-            for row in enabled
-        ]
+
+        # ``reviewed_by``/``reviewed_at`` exist only in the human decision
+        # records (§3.4), and a review is evidence about *specific bytes*: one
+        # that names a different artifact hash than the row activates is
+        # evidence that the live artifact was never reviewed, so it is dropped
+        # rather than reported as approval of whatever is running now.
+        reviews = reviewed_artifact_evidence(fixture_root)
+        artifacts = []
+        for row in enabled:
+            playbook_id = str(row.get("playbook_id") or "")
+            sha = _active_sha(row)
+            review = reviews.get(playbook_id) or {}
+            if not sha or str(review.get("artifact_sha256") or "") != sha:
+                review = {}
+            artifacts.append(
+                {
+                    **row,
+                    "artifact_sha256": sha or None,
+                    "source_sha256": row.get("source_digest"),
+                    "activation_health": row.get("health"),
+                    "reviewed_by": review.get("reviewed_by"),
+                    "reviewed_at": review.get("reviewed_at"),
+                    "v1_available": playbook_id in v1_ids,
+                }
+            )
 
         try:
             pending_events = await self.db.list_pending_events(limit=10_000)
-        except Exception:  # pragma: no cover - defensive live-daemon reporting
+        except Exception as exc:  # pragma: no cover - defensive live-daemon reporting
             logger.warning("cutover report: pending events unavailable", exc_info=True)
+            evidence_errors.append(_unread_evidence("pending_events", exc))
             pending_events = []
 
         def _run_row(run):
@@ -371,10 +450,13 @@ class PlaybookMigrationCommandsMixin:
                 active_v1_runs.extend(
                     _run_row(run) for run in await self.db.list_playbook_runs(status=status, limit=10_000)
                 )
-            except Exception:  # pragma: no cover - defensive live-daemon reporting
+            except Exception as exc:  # pragma: no cover - defensive live-daemon reporting
                 logger.warning("cutover report: active V1 runs unavailable", exc_info=True)
+                evidence_errors.append(
+                    _unread_evidence("active_v1_runs", exc, detail=f"status={status}: ")
+                )
 
-        parity_path = Path(REVIEWED_FIXTURE_ROOT) / "parity-report.json"
+        parity_path = fixture_root / "parity-report.json"
         try:
             import json
 
@@ -395,7 +477,9 @@ class PlaybookMigrationCommandsMixin:
         acknowledged_disabled = []
         try:
             acknowledgements = await self.db.list_playbook_migration_acks()
-        except Exception:  # pragma: no cover - optional reporting detail
+        except Exception as exc:  # pragma: no cover - optional reporting detail
+            logger.warning("cutover report: acknowledgements unavailable", exc_info=True)
+            evidence_errors.append(_unread_evidence("acknowledgements", exc))
             acknowledgements = []
         for entry in inventory.entries:
             if entry.disposition != "disabled" or entry.acknowledged_by is None:
@@ -425,6 +509,7 @@ class PlaybookMigrationCommandsMixin:
             "pending_events": pending_events,
             "active_v1_runs": active_v1_runs,
             "parity": parity,
+            "evidence_errors": evidence_errors,
         }
 
     async def _cmd_playbook_cutover_report(self, args: dict) -> dict:

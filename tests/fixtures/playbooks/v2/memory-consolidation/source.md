@@ -3,6 +3,7 @@ id: memory-consolidation
 triggers:
   - timer.24h
 scope: system
+profile_id: supervisor
 llm_config:
   provider: gemini
   model: gemini-2.5-pro
@@ -45,8 +46,8 @@ Branch on the incoming event:
 3. **Timer run** — `event.type == "timer.24h"` (or any
    non-manual type). Call `list_projects`, filter to `ACTIVE`, then
    for each one:
-   - Call `read_file` with
-     `path: "aq://vault/projects/<project_id>/memory/consolidation.md"`.
+   - Call `read_project_memory_file` with `project_id` and
+     `path: "consolidation.md"`.
      If the response has `error` containing "File not found", treat
      as `last_consolidated: null`. Otherwise parse the
      `last_consolidated` value from the YAML frontmatter at the top
@@ -136,4 +137,5 @@ End the step with:
 ## Step 3 — No-op terminal
 
 Log a single line summarising how many tasks were created. End the
-playbook.
+playbook. The triggering `tick_time` and `interval` are supplied to the
+`supervisor` profile along with these instructions.
