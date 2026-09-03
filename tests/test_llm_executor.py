@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 import hashlib
+from types import SimpleNamespace
 from typing import Any
 
 from src.commands.contracts.registry import ContractRegistry
@@ -58,8 +59,15 @@ def llm_step(**overrides: Any) -> LlmStep:
     return LlmStep.model_validate(payload)
 
 
-def context(provider: FakeProvider) -> StepContext:
+def context(
+    provider: FakeProvider,
+    *,
+    db: Any = None,
+    principal: ExecutionPrincipal = TRUSTED_LOCAL,
+) -> StepContext:
     artifact = minimal_artifact()
+    if db is None:
+        db = ProfileStore(profile(aq_commands=[]))
     return StepContext(
         run_id="run-1",
         dispatch_id="dispatch-1",
@@ -67,13 +75,34 @@ def context(provider: FakeProvider) -> StepContext:
         artifact=artifact,
         rule_id="r",
         step_id="classify",
-        principal=TRUSTED_LOCAL,
+        principal=principal,
         scope=ResolutionScope(),
         services=EngineServices(
             contracts=ContractRegistry(),
             llm=LLMClient.with_provider(provider, config=LLMConfig()),
             clock=lambda: 100.0,
+            db=db,
         ),
+    )
+
+
+class ProfileStore:
+    """Small authoritative profile store for runtime-policy tests."""
+
+    def __init__(self, profile: Any) -> None:
+        self.profile = profile
+
+    async def get_profile(self, _profile_id: str) -> Any:
+        return self.profile
+
+
+def profile(*, aq_commands: list[str]) -> Any:
+    return SimpleNamespace(
+        id="worker",
+        allowed_tools=[],
+        harness_tools=[],
+        aq_commands=aq_commands,
+        plugin_tools=[],
     )
 
 
@@ -86,6 +115,28 @@ async def test_total_token_budget_refuses_an_unreporting_provider_before_call() 
 
     assert result.outcome == "budget_exceeded"
     assert result.diagnostics == ("provider does not report usage",)
+    assert provider.calls == []
+
+
+async def test_named_profile_that_widens_the_invoker_is_rejected_before_provider_io() -> None:
+    """Removing runtime narrowing would let a broader named profile invoke a model."""
+    provider = FakeProvider()
+    provider.add_text('{"risk": "high"}', usage=TokenUsage(10, 2, True))
+    principal = ExecutionPrincipal(
+        kind=PrincipalKind.PLAYBOOK,
+        policy=CapabilityPolicy.from_namespaces(aq_commands=["ensure_task"]),
+    )
+
+    result = await LiveLlmExecutor().execute(
+        llm_step(),
+        context(
+            provider,
+            db=ProfileStore(profile(aq_commands=["ensure_task", "list_tasks"])),
+            principal=principal,
+        ),
+    )
+
+    assert result.outcome == "unauthorized"
     assert provider.calls == []
 
 

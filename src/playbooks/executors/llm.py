@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 import hashlib
 import json
 from typing import Any, ClassVar
@@ -11,6 +12,7 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
 from src.commands.authorization import authorize_command, denial_result
+from src.commands.principal import check_delegation
 from src.llm.spec import LLMCallSpec
 from src.llm.types import TokenUsage
 from src.playbooks.definition import LLM_RESERVED_OUTCOMES, LlmStep, _outcome_enum
@@ -23,6 +25,7 @@ from src.playbooks.executors.base import (
     project_step_receipt,
 )
 from src.playbooks.receipts import idempotency_key
+from src.profiles.capabilities import capability_policy_for
 
 
 def _attempt_key(ctx: StepContext) -> str:
@@ -132,6 +135,38 @@ def _published_tools(step: LlmStep, ctx: StepContext) -> list[dict[str, Any]]:
     return tools
 
 
+async def _profile_principal(step: LlmStep, ctx: StepContext) -> tuple[Any | None, tuple[str, ...]]:
+    """Resolve the named profile from the server authority and only narrow.
+
+    The database is the authority that command dispatch itself uses to resolve
+    a profile policy.  An executor must never derive this policy from an LLM
+    class, the artifact fingerprint, or prompt data; all three are insufficient
+    to prove that the requested profile remains a subset of the caller.
+    """
+    get_profile = getattr(ctx.services.db, "get_profile", None)
+    if not callable(get_profile):
+        return None, ("profile authority unavailable",)
+    try:
+        profile = await get_profile(step.profile_id)
+        if profile is None:
+            return None, ("named profile unavailable",)
+        resolver = ctx.services.resolver
+        plugin_command_names = (
+            resolver.plugin_command_names() if resolver is not None else frozenset()
+        )
+        policy = capability_policy_for(profile, plugin_command_names=plugin_command_names)
+        parent_policy = ctx.principal.policy
+        widening = check_delegation(parent_policy, policy)
+    except Exception:  # noqa: BLE001 - authority failures must fail closed
+        return None, ("profile authority unavailable",)
+    if widening:
+        return None, ("named profile exceeds invoking principal",)
+    return replace(
+        ctx.principal.narrow(policy, reason=f"llm-profile:{step.profile_id}"),
+        profile_id=step.profile_id,
+    ), ()
+
+
 class LiveLlmExecutor:
     """Execute one profile-selected call under all declared hard budgets."""
 
@@ -144,6 +179,11 @@ class LiveLlmExecutor:
             return _result(step, ctx, outcome="cancelled", diagnostics=("cancellation requested",))
         if ctx.services.llm is None:
             return _result(step, ctx, outcome="unavailable", diagnostics=("LLM client unavailable",))
+
+        principal, diagnostics = await _profile_principal(step, ctx)
+        if principal is None:
+            return _result(step, ctx, outcome="unauthorized", diagnostics=diagnostics)
+        ctx = replace(ctx, principal=principal)
 
         spec = _spec(step, ctx)
         try:
