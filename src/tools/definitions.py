@@ -5348,7 +5348,9 @@ _ALL_TOOL_DEFINITIONS = [
         "description": (
             "Render the read-only V2 cutover evidence report: enabled artifacts and "
             "hashes, contract fingerprint, unresolved migration entries, pending events, "
-            "active V1 runs, recorded shadow parity, and rollback readiness."
+            "active V1 runs, recorded shadow parity, and rollback readiness. Any "
+            "evidence source the daemon could not read is reported in "
+            "evidence_errors and blocks cutover; it is never shown as clean."
         ),
         "input_schema": {"type": "object", "properties": {}},
     },

@@ -593,6 +593,7 @@ from .playbook_cutover_report_response_acknowledged_disabled_item import (
 )
 from .playbook_cutover_report_response_active_v1_runs import PlaybookCutoverReportResponseActiveV1Runs
 from .playbook_cutover_report_response_artifacts_item import PlaybookCutoverReportResponseArtifactsItem
+from .playbook_cutover_report_response_evidence_errors_item import PlaybookCutoverReportResponseEvidenceErrorsItem
 from .playbook_cutover_report_response_parity import PlaybookCutoverReportResponseParity
 from .playbook_cutover_report_response_pending_events import PlaybookCutoverReportResponsePendingEvents
 from .playbook_cutover_report_response_unresolved_item import PlaybookCutoverReportResponseUnresolvedItem
@@ -1679,6 +1680,7 @@ __all__ = (
     "PlaybookCutoverReportResponseAcknowledgedDisabledItem",
     "PlaybookCutoverReportResponseActiveV1Runs",
     "PlaybookCutoverReportResponseArtifactsItem",
+    "PlaybookCutoverReportResponseEvidenceErrorsItem",
     "PlaybookCutoverReportResponseParity",
     "PlaybookCutoverReportResponsePendingEvents",
     "PlaybookCutoverReportResponseUnresolvedItem",

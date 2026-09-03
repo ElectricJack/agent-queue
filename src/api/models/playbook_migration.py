@@ -142,6 +142,10 @@ class PlaybookCutoverReportResponse(V2Model):
     pending_events: dict[str, Any]
     active_v1_runs: dict[str, Any]
     parity: dict[str, Any]
+    #: Evidence the daemon could not read, one ``{"source", "error"}`` each.
+    #: Non-empty means the report is incomplete, so every entry is also a
+    #: blocking reason: an unread source is not a clean one.
+    evidence_errors: list[dict[str, Any]] = []
     rollback_ready: bool
     cutover_eligible: bool
     blocking_reasons: list[str] = []

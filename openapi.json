@@ -6167,8 +6167,8 @@
         "tags": [
           "playbook"
         ],
-        "summary": "Render the read-only V2 cutover evidence report: enabled artifacts and hashes, contract fingerprint, unresolved migration entries, pending events, active V1 runs, recorded shadow parity, and rollback readiness.",
-        "description": "Render the read-only V2 cutover evidence report: enabled artifacts and hashes, contract fingerprint, unresolved migration entries, pending events, active V1 runs, recorded shadow parity, and rollback readiness.",
+        "summary": "Render the read-only V2 cutover evidence report: enabled artifacts and hashes, contract fingerprint, unresolved migration entries, pending events, active V1 runs, recorded shadow parity, and rollback readiness. Any evidence source the daemon could not read is reported in evidence_errors and blocks cutover; it is never shown as clean.",
+        "description": "Render the read-only V2 cutover evidence report: enabled artifacts and hashes, contract fingerprint, unresolved migration entries, pending events, active V1 runs, recorded shadow parity, and rollback readiness. Any evidence source the daemon could not read is reported in evidence_errors and blocks cutover; it is never shown as clean.",
         "operationId": "playbook_cutover_report",
         "requestBody": {
           "content": {
@@ -28846,6 +28846,15 @@
             "additionalProperties": true,
             "type": "object",
             "title": "Parity"
+          },
+          "evidence_errors": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Evidence Errors",
+            "default": []
           },
           "rollback_ready": {
             "type": "boolean",
