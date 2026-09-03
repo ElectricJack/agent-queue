@@ -621,14 +621,14 @@ STRUCTURAL_SOURCES: Mapping[str, str] = {
     "coding-reflection": "src/prompts/default_agent_type_playbooks/claude-opus/reflection.md",
 }
 
-#: The frontmatter keys a structural comparison covers: what the playbook is
-#: subscribed to, what it runs as, and what it may spend.  Prose is not
-#: compared — an LLM playbook's behaviour is not a function of its wording in
-#: any way a test can assert.
-STRUCTURAL_FIELDS: tuple[str, ...] = (
+#: Source fields retained across the reviewed copy.  This is only the source
+#: half of structural parity; :func:`structural_parity` also projects the V2
+#: artifact itself below.
+STRUCTURAL_SOURCE_FIELDS: tuple[str, ...] = (
     "id",
     "kind",
     "role",
+    "profile_id",
     "scope",
     "triggers",
     "cooldown",
@@ -637,6 +637,149 @@ STRUCTURAL_FIELDS: tuple[str, ...] = (
     "transition_llm_config",
     "output_schema",
 )
+
+
+#: The reviewed interpretation of each prose-only source's rule topology.
+#: Triggers and profiles come from the shipped source frontmatter.  The
+#: remaining values are the explicit capabilities, budgets, schemas and edges
+#: recorded in each review's semantic decision.  They deliberately live here,
+#: rather than being read back from either ``review.md`` or ``artifact.json``:
+#: review capabilities are only an upper bound (§4.1), while these exact
+#: expectations must be able to detect artifact drift.
+STRUCTURAL_RULES: Mapping[str, tuple[tuple[str, str, Mapping[str, str], Mapping[str, str]], ...]] = {
+    "default-assignment-routing": (
+        (
+            "assignment-route",
+            "assignment-route--choose",
+            {
+                "completed": "assignment-route--done",
+                "runtime_error": "assignment-route--done",
+            },
+            {"assignment-route--done": "completed"},
+        ),
+    ),
+    "memory-consolidation": (
+        (
+            "memory-consolidation",
+            "memory-consolidation--run",
+            {
+                "completed": "memory-consolidation--done",
+                "runtime_error": "memory-consolidation--failed",
+            },
+            {
+                "memory-consolidation--done": "completed",
+                "memory-consolidation--failed": "failed",
+            },
+        ),
+    ),
+    "coding-reflection": (
+        (
+            "reflect-completed",
+            "reflect-completed--run",
+            {
+                "completed": "reflect-completed--done",
+                "runtime_error": "reflect-completed--failed",
+            },
+            {
+                "reflect-completed--done": "completed",
+                "reflect-completed--failed": "failed",
+            },
+        ),
+        (
+            "reflect-failed",
+            "reflect-failed--run",
+            {
+                "completed": "reflect-failed--done",
+                "runtime_error": "reflect-failed--failed",
+            },
+            {
+                "reflect-failed--done": "completed",
+                "reflect-failed--failed": "failed",
+            },
+        ),
+    ),
+}
+
+STRUCTURAL_PURPOSES: Mapping[str, str] = {
+    "default-assignment-routing": "assignment_routing",
+    "memory-consolidation": "routine",
+    "coding-reflection": "routine",
+}
+
+STRUCTURAL_BUDGETS: Mapping[str, Mapping[str, int]] = {
+    "default-assignment-routing": {
+        "max_calls": 1,
+        "max_output_tokens": 4096,
+        "max_total_tokens": 4096,
+        "timeout_seconds": 300,
+    },
+    "memory-consolidation": {
+        "max_calls": 50,
+        "max_output_tokens": 4096,
+        "max_total_tokens": 65536,
+        "timeout_seconds": 900,
+    },
+    "coding-reflection": {
+        "max_calls": 20,
+        "max_output_tokens": 4096,
+        "max_total_tokens": 32768,
+        "timeout_seconds": 600,
+    },
+}
+
+STRUCTURAL_CAPABILITIES: Mapping[str, Mapping[str, Any]] = {
+    "default-assignment-routing": {
+        "enabled": False,
+        "aq_commands": [],
+        "harness_tools": [],
+        "plugin_tools": [],
+    },
+    "memory-consolidation": {
+        "enabled": True,
+        "aq_commands": ["create_task", "list_projects", "render_prompt"],
+        "harness_tools": [],
+        "plugin_tools": ["count_project_memory_files", "read_project_memory_file"],
+    },
+    "coding-reflection": {
+        "enabled": True,
+        "aq_commands": ["get_task"],
+        "harness_tools": [],
+        "plugin_tools": ["git_diff", "memory_save", "memory_search"],
+    },
+}
+
+STRUCTURAL_OUTPUT_SCHEMAS: Mapping[str, Mapping[str, Any]] = {
+    "default-assignment-routing": {"additionalProperties": True, "type": "object"},
+    "memory-consolidation": {
+        "additionalProperties": False,
+        "properties": {
+            "tasks_created": {
+                "items": {
+                    "additionalProperties": False,
+                    "properties": {
+                        "project_id": {"type": "string"},
+                        "task_id": {"type": "string"},
+                    },
+                    "required": ["project_id", "task_id"],
+                    "type": "object",
+                },
+                "type": "array",
+            }
+        },
+        "required": ["tasks_created"],
+        "type": "object",
+    },
+    "coding-reflection": {
+        "additionalProperties": False,
+        "properties": {
+            "insights_saved": {"minimum": 0, "type": "integer"},
+            "skipped": {"type": "boolean"},
+            "summary": {"type": "string"},
+        },
+        "required": ["insights_saved", "skipped", "summary"],
+        "type": "object",
+    },
+}
 
 
 def _frontmatter(text: str) -> dict[str, Any]:
@@ -649,16 +792,144 @@ def _frontmatter(text: str) -> dict[str, Any]:
     return yaml.safe_load(body) or {}
 
 
-def structural_parity(playbook_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
-    """``(v1, v2)`` structural projections for one non-deterministic playbook."""
-    shipped = _frontmatter((REPO_ROOT / STRUCTURAL_SOURCES[playbook_id]).read_text("utf-8"))
-    reviewed = _frontmatter(
-        (REPO_ROOT / "tests" / "fixtures" / "playbooks" / "v2" / playbook_id / "source.md").read_text("utf-8")
-    )
-    def project(data: Mapping[str, Any]) -> dict[str, Any]:
-        return {key: data.get(key) for key in STRUCTURAL_FIELDS}
+def _scope_projection(scope: object) -> dict[str, str]:
+    if scope == "system":
+        return {"type": "system"}
+    prefix = "agent-type:"
+    if isinstance(scope, str) and scope.startswith(prefix):
+        return {"type": "agent_type", "agent_type": scope.removeprefix(prefix)}
+    raise ValueError(f"unsupported structural-parity scope: {scope!r}")
 
-    return project(shipped), project(reviewed)
+
+def _capability_projection(capabilities: Mapping[str, Any]) -> dict[str, Any]:
+    aq_commands = sorted(capabilities.get("aq_commands", ()))
+    harness_tools = sorted(capabilities.get("harness_tools", ()))
+    plugin_tools = sorted(capabilities.get("plugin_tools", ()))
+    return {
+        "enabled": bool(aq_commands or harness_tools or plugin_tools),
+        "aq_commands": aq_commands,
+        "harness_tools": harness_tools,
+        "plugin_tools": plugin_tools,
+    }
+
+
+def _expected_artifact_projection(
+    playbook_id: str,
+    source: Mapping[str, Any],
+) -> dict[str, Any]:
+    topology = STRUCTURAL_RULES[playbook_id]
+    triggers = tuple(source.get("triggers", ()))
+    if len(topology) != len(triggers):
+        raise ValueError(f"{playbook_id}: reviewed rule count does not match source triggers")
+
+    rules = []
+    trigger_projection = {}
+    steps = {}
+    profiles = {}
+    budgets = {}
+    capabilities = {}
+    output_schemas = {}
+    transitions = {}
+    for trigger, (rule_id, entry_step, edges, terminals) in zip(triggers, topology, strict=True):
+        rules.append({"id": rule_id, "entry_step": entry_step})
+        trigger_projection[rule_id] = {"event_type": trigger}
+        steps[entry_step] = {"type": "llm", "rule": rule_id}
+        profiles[entry_step] = source["profile_id"]
+        budgets[entry_step] = dict(STRUCTURAL_BUDGETS[playbook_id])
+        capabilities[entry_step] = STRUCTURAL_CAPABILITIES[playbook_id]
+        output_schemas[entry_step] = STRUCTURAL_OUTPUT_SCHEMAS[playbook_id]
+        transitions[entry_step] = dict(edges)
+        for terminal_step, outcome in terminals.items():
+            steps[terminal_step] = {"type": "terminal", "rule": rule_id, "outcome": outcome}
+
+    return {
+        "id": source["id"],
+        "purpose": STRUCTURAL_PURPOSES[playbook_id],
+        "scope": _scope_projection(source["scope"]),
+        "rules": rules,
+        "triggers": trigger_projection,
+        "steps": steps,
+        "profiles": profiles,
+        "budgets": budgets,
+        "capabilities": capabilities,
+        "output_schemas": output_schemas,
+        "transitions": transitions,
+    }
+
+
+def _actual_artifact_projection(artifact: Mapping[str, Any]) -> dict[str, Any]:
+    rules = artifact.get("rules", ())
+    steps = artifact.get("steps", {})
+    return {
+        "id": artifact.get("id"),
+        "purpose": artifact.get("purpose"),
+        "scope": artifact.get("scope"),
+        "rules": [
+            {"id": rule.get("id"), "entry_step": rule.get("entry_step")} for rule in rules
+        ],
+        "triggers": {rule.get("id"): rule.get("trigger") for rule in rules},
+        "steps": {
+            step_id: {
+                key: step.get(key)
+                for key in ("type", "rule", "outcome")
+                if key in step
+            }
+            for step_id, step in steps.items()
+        },
+        "profiles": {
+            step_id: step.get("profile_id")
+            for step_id, step in steps.items()
+            if step.get("type") == "llm"
+        },
+        "budgets": {
+            step_id: step.get("budget")
+            for step_id, step in steps.items()
+            if step.get("type") == "llm"
+        },
+        "capabilities": {
+            step_id: _capability_projection(step.get("tool_use", {}))
+            for step_id, step in steps.items()
+            if step.get("type") == "llm"
+        },
+        "output_schemas": {
+            step_id: step.get("output_schema")
+            for step_id, step in steps.items()
+            if step.get("type") == "llm"
+        },
+        "transitions": {
+            step_id: step.get("transitions")
+            for step_id, step in steps.items()
+            if step.get("type") == "llm"
+        },
+    }
+
+
+def structural_parity(
+    playbook_id: str,
+    *,
+    artifact: Mapping[str, Any] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """``(v1, v2)`` source and artifact projections for one LLM playbook."""
+    fixture = REPO_ROOT / "tests" / "fixtures" / "playbooks" / "v2" / playbook_id
+    shipped = _frontmatter((REPO_ROOT / STRUCTURAL_SOURCES[playbook_id]).read_text("utf-8"))
+    reviewed = _frontmatter((fixture / "source.md").read_text("utf-8"))
+    artifact_data = artifact
+    if artifact_data is None:
+        artifact_data = json.loads((fixture / "artifact.json").read_text("utf-8"))
+
+    def source_projection(data: Mapping[str, Any]) -> dict[str, Any]:
+        return {key: data.get(key) for key in STRUCTURAL_SOURCE_FIELDS}
+
+    return (
+        {
+            "source": source_projection(shipped),
+            "artifact": _expected_artifact_projection(playbook_id, shipped),
+        },
+        {
+            "source": source_projection(reviewed),
+            "artifact": _actual_artifact_projection(artifact_data),
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -702,7 +973,8 @@ COVERAGE_LIMITS: tuple[str, ...] = (
         "Per-run command comparison covers the deterministic playbooks only "
         f"({', '.join(DETERMINISTIC_PLAYBOOKS)}); "
         f"{', '.join(STRUCTURAL_ONLY_PLAYBOOKS)} are compared structurally "
-        "(id, kind, role, scope, triggers, cooldown, budget, llm config, output schema) "
+        "(source metadata plus artifact rules, triggers, step topology, profiles, budgets, "
+        "capabilities, output schemas, and transitions) "
         "because their V1 behaviour is an LLM call and is not reproducible."
     ),
     (
