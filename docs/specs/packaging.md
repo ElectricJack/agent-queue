@@ -165,8 +165,9 @@ dev = [
     "pytest>=9.0.3",
     "pytest-asyncio>=0.23",
     "pytest-xdist>=3.5",
-    "ruff>=0.4.0",
+    "ruff==0.16.5",
     "pre-commit>=3.5.0",
+    "openapi-python-client==0.29.0",
     # CVE-2022-40898: wheel <0.38.1 has a ReDoS in the wheel CLI
     "wheel>=0.38.1",
 ]
@@ -179,8 +180,18 @@ dev = [
 - **`wheel>=0.38.1`** — duplicated from the build-system requires so that the
   patched wheel is present at runtime (some plugins, e.g. `aq-vibecop`, invoke
   the wheel CLI).
-- **`ruff>=0.4.0`** — formatter + linter. Configuration lives in the `tool.ruff`
-  tables (§4.2).
+- **`ruff==0.16.5`** — formatter + linter. Configuration lives in the `tool.ruff`
+  tables (§4.2). Pinned exactly, not as a floor: the client generator's post
+  hooks format `packages/aq-client/agent_queue_api_client/` with whichever
+  ruff is on PATH, and formatter output is a function of the ruff release, so
+  the committed client is reproducible only on one exact version. The pin is
+  mirrored by `RUFF_VERSION` in `scripts/regenerate-api-client.sh` (which
+  refuses to regenerate on any other release) and
+  `tests/test_api_client_contract.py` fails when the two drift. Bump both and
+  regenerate the client in the same commit.
+- **`openapi-python-client==0.29.0`** — the typed-client generator, pinned
+  exactly for the same reason and mirrored by `GENERATOR_VERSION` in the same
+  script.
 
 ### 3.5 Console scripts
 

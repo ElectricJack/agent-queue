@@ -29,6 +29,11 @@ project_name_override: agent-queue-api-client
 # package directory is the only Python in the tree, so this changes nothing
 # about the .py output). Guarded by
 # test_generated_client_readme_does_not_depend_on_the_ambient_formatter.
+#
+# The .py output is a function of the ruff *release* (0.9.1 and 0.16.5 write
+# different modules from the same spec), which is why ruff is pinned exactly:
+# RUFF_VERSION in scripts/regenerate-api-client.sh, which refuses any other
+# release, and `ruff==` in pyproject.toml's dev extra, which installs it.
 post_hooks:
   - "ruff check --fix-only agent_queue_api_client"
   - "ruff format agent_queue_api_client"
