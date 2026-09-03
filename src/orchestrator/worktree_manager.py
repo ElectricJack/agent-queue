@@ -19,7 +19,8 @@ What lives here (P1 + P2)
   a ``task_context`` row rather than stashing it.  ``git stash`` is
   deliberately never used: the stash stack is shared by every worktree of a
   repository, so a pop in one slot can restore another slot's work.
-* :meth:`ensure_git_exclude` — the idempotent ``.git/info/exclude`` marker.
+* :meth:`ensure_git_exclude` — the idempotent Git-resolved ``info/exclude``
+  marker (including separate-Git-dir and linked-worktree layouts).
 * Sentinel I/O (``<slot>/.aq-worktree.json``).
 
 Deliberately **not** here yet: ``adopt_existing``, ``reap_slot`` and
@@ -60,8 +61,8 @@ class AdoptReport:
 
     * ``adopted`` — workspace ids for slots whose row + directory + sentinel
       all check out on boot.
-    * ``repaired`` — workspace ids for bases whose ``.git/info/exclude``
-      block was missing or drifted and has now been rewritten.
+    * ``repaired`` — workspace ids for bases whose exact Git-resolved
+      ``info/exclude`` block was missing or drifted and is now verified.
     * ``pruned`` — worktree paths (or "prune" sentinel) that had a stale
       ``.git/worktrees`` registration and were pruned.
     * ``exclude_failures`` — bases whose exact managed exclude path could not
@@ -78,11 +79,11 @@ logger = logging.getLogger(__name__)
 #: Directory (relative to the base repo) that holds every slot.
 SLOTS_DIRNAME = Path(".aq") / "worktrees"
 
-#: Marker block written to ``<base>/.git/info/exclude`` (design §2.4).
+#: Marker block written to Git's resolved ``info/exclude`` (design §2.4).
 EXCLUDE_BEGIN = "# >>> agent-queue managed — do not edit between markers >>>"
 EXCLUDE_END = "# <<< agent-queue managed <<<"
 #: Design §2.4 specifies ``/.aq/``.  The sentinel is listed alongside it:
-#: ``.git/info/exclude`` lives in the *common* dir and is therefore shared by
+#: Git's ``info/exclude`` lives in the *common* dir and is therefore shared by
 #: every worktree of the repository, so one line here keeps ``git status``
 #: clean in every slot.  Without it the sentinel shows up as untracked in each
 #: slot and gets swept into the salvage patch.
@@ -1301,11 +1302,12 @@ class WorktreeSlotManager:
         """Boot-time adoption.  Design §6, spec §6.4.
 
         Cross-checks ``git worktree list --porcelain`` in each base of the
-        project against slot rows and their sentinels; repairs the exclude
-        block; runs ``git worktree prune`` for stale registrations; and
-        re-registers rows for intact directories.  Does **not** delete slot
-        directories or branches — the whole point of adoption is that the
-        directory is durable state.
+        project against slot rows and their sentinels; resolves, repairs, and
+        verifies the exact Git exclude path; runs ``git worktree prune`` for
+        stale registrations; and re-registers rows for intact directories.
+        A base whose exclude cannot be verified is not adopted.  This method
+        does **not** delete slot directories or branches — the whole point of
+        adoption is that the directory is durable state.
         """
         report = AdoptReport()
 

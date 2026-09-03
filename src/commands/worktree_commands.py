@@ -35,7 +35,9 @@ class WorktreeCommandsMixin:
                                             "detail": str}, ...]}
 
         Kinds emitted:
-        * ``exclude_missing`` — base's ``.git/info/exclude`` lacks the block.
+        * ``exclude_missing`` — Git's exact exclude file lacks the block.
+        * ``exclude_unverifiable`` — resolving or reading that exact path
+          failed, so doctor cannot claim the workspace is protected.
         * ``stale_registration`` — git worktree list has an entry whose
           directory no longer exists.
         * ``dirty_unlocked_slot`` — slot dir has uncommitted work but is

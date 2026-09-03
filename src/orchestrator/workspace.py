@@ -417,7 +417,8 @@ class WorkspaceMixin:
                 if await self.git.avalidate_checkout(workspace):
                     # The daemon's own control files (``.aq/claim.json``, the
                     # worktree sentinel, ``.agent-queue-lock``) live untracked
-                    # inside this checkout.  Only ``.git/info/exclude`` keeps
+                    # inside this checkout.  Only Git's resolved
+                    # ``info/exclude`` keeps
                     # them out of ``git status`` — and therefore out of the
                     # verify phase's ``git add -A`` auto-commit — and until
                     # now only worktree-slot provisioning wrote that block.
@@ -478,14 +479,17 @@ class WorkspaceMixin:
         return workspace
 
     async def _ensure_control_files_excluded(self, workspace: str) -> bool:
-        """Write the managed ``.git/info/exclude`` block into *workspace*.
+        """Write and verify the managed block at Git's exact exclude path.
 
         Worktree slots get this from :class:`WorktreeSlotManager` at
         provisioning; an exclusive clone or linked checkout (``worktrees.enabled:
         false``) has to get it here, or ``.aq/claim.json`` and friends end up in
         ``auto-commit: uncommitted changes from task <id>`` and — in direct
-        mode — on the project's default branch.  Failure is fatal to handoff:
-        an agent or pool session must never receive an unprotected checkout.
+        mode — on the project's default branch.  Resolution uses
+        ``git rev-parse --path-format=absolute --git-path info/exclude`` with
+        the older-Git fallback in :class:`GitManager`, so separate Git dirs
+        and linked worktrees are covered.  Failure is fatal to handoff: an
+        agent or pool session must never receive an unprotected checkout.
         """
         from src.orchestrator.worktree_manager import WorktreeSlotManager
 
