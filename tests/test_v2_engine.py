@@ -48,7 +48,7 @@ from src.playbooks.executors.base import (
 )
 from src.playbooks.executors.foreach import ITERATING_OUTCOME
 from src.playbooks.executors.wait import UNRESOLVED_REASON
-from src.playbooks.expressions import BindingRef, ResolutionScope
+from src.playbooks.expressions import BindingRef, EventRef, Exists, ResolutionScope
 from src.playbooks.receipts import RECEIPT_OUTCOMES, transition_id
 from src.playbooks.run_state import (
     LoopFrame,
@@ -246,6 +246,56 @@ class TestRulePerRunDispatch:
         result = await engine.dispatch_event(event("task-completed-docs"), TRUSTED_LOCAL)
         # ``review_task: True`` fails rule 1's filter; rule 2 has no filter.
         assert result.rules_selected == ("sweep",)
+
+    @pytest.mark.asyncio
+    async def test_a_false_rule_guard_rejects_the_rule(self):
+        """§4.2 — the guard is V1's ``when`` clause, evaluated before dispatch.
+
+        V1 skipped a rule whose ``when`` was false (``core.py`` ``_eval_pipeline_when``).
+        Selecting it here would start a run V1 never started, which Package 6's
+        parity harness reads as a rule-selection difference.
+        """
+        engine, adapter, _runs, _bus, ref = build()
+        artifact = engine.services.artifact_store.load(ref.artifact_sha256)
+        guarded = artifact.rules[0].model_copy(
+            update={
+                "guard": Exists(
+                    type="exists",
+                    value=EventRef(type="event_ref", path="task.pr_url"),
+                    mode="truthy",
+                )
+            }
+        )
+        artifact = artifact.model_copy(update={"rules": [guarded, *artifact.rules[1:]]})
+        engine.services.artifact_store.put(artifact)
+        engine.activations = StubActivations([artifact_ref_for(artifact)])
+        adapter.queue.append(listed())
+
+        result = await engine.dispatch_event(event("task-completed-code"), TRUSTED_LOCAL)
+
+        assert guarded.id not in result.rules_selected
+
+    @pytest.mark.asyncio
+    async def test_a_true_rule_guard_keeps_the_rule(self):
+        engine, adapter, _runs, _bus, ref = build()
+        artifact = engine.services.artifact_store.load(ref.artifact_sha256)
+        guarded = artifact.rules[0].model_copy(
+            update={
+                "guard": Exists(
+                    type="exists",
+                    value=EventRef(type="event_ref", path="task_id"),
+                    mode="truthy",
+                )
+            }
+        )
+        artifact = artifact.model_copy(update={"rules": [guarded, *artifact.rules[1:]]})
+        engine.services.artifact_store.put(artifact)
+        engine.activations = StubActivations([artifact_ref_for(artifact)])
+        adapter.queue.extend([ok(), listed()])
+
+        result = await engine.dispatch_event(event("task-completed-code"), TRUSTED_LOCAL)
+
+        assert guarded.id in result.rules_selected
 
     @pytest.mark.asyncio
     async def test_sibling_failure_does_not_fail_the_other_run(self):

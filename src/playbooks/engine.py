@@ -68,6 +68,7 @@ from src.playbooks.executors.wait import WaitResumption, resolve_wait_result
 from src.playbooks.expressions import (
     ResolutionScope,
     ValueResolutionError,
+    evaluate_condition,
     resolve_value,
 )
 from src.playbooks.receipts import (
@@ -91,6 +92,7 @@ from src.playbooks.run_state import (
     canonical_json,
 )
 from src.playbooks.waits import EMPTY_WAIT_CHANGES, WaitChangeSet, WaitClaim, WaitSpec
+from src.review_keys import flag_review_task_event
 
 logger = logging.getLogger(__name__)
 
@@ -507,7 +509,7 @@ class PlaybookEngine:
                 await self._queue_pending(ref.playbook_id, hydrated)
                 continue
             for rule in artifact.rules:
-                if not self._trigger_matches(rule, event_type, hydrated):
+                if not self._rule_selected(rule, event_type, hydrated):
                     continue
                 selected.append(rule.id)
                 rule_order.append((ref, rule.id))
@@ -563,7 +565,7 @@ class PlaybookEngine:
         hydrated = await self._hydrate_event(event)
         event_type = self._event_type(hydrated)
         rules = tuple(
-            rule for rule in artifact.rules if self._trigger_matches(rule, event_type, hydrated)
+            rule for rule in artifact.rules if self._rule_selected(rule, event_type, hydrated)
         )
         dispatch_id = self._dispatch_id(hydrated)
         return await self._traverse_symbolic(
@@ -3207,6 +3209,33 @@ class PlaybookEngine:
                 return False
         return True
 
+    def _guard_admits(self, rule: Rule, event: Mapping[str, Any]) -> bool:
+        """Evaluate the rule's delivery guard against the hydrated event.
+
+        The guard is the typed lowering of V1's ``when`` clause, which
+        ``src/orchestrator/core.py`` evaluated *before* starting a runner.  A
+        rule whose guard is false was never dispatched under V1 and must not
+        be selected here either: Package 6's parity harness compares
+        ``rules_selected`` between the two arms, and selecting a
+        guard-rejected rule is a behaviour change, not a reporting detail.
+
+        The guard reads the event only — no bindings exist before the entry
+        step — so a reference it cannot resolve means the guard is false, the
+        same answer V1's ``truthy: false`` clause gave for a missing field.
+        """
+        if rule.guard is None:
+            return True
+        try:
+            return evaluate_condition(rule.guard, ResolutionScope(event=event))
+        except ValueResolutionError:
+            return False
+
+    def _rule_selected(
+        self, rule: Rule, event_type: str, event: Mapping[str, Any]
+    ) -> bool:
+        """Subscription match *and* delivery guard — one selection answer."""
+        return self._trigger_matches(rule, event_type, event) and self._guard_admits(rule, event)
+
     async def _hydrate_event(self, event: Mapping[str, Any]) -> dict[str, Any]:
         """Attach ``event.task`` so a rule can reference any task attribute.
 
@@ -3235,6 +3264,14 @@ class PlaybookEngine:
                     hydrated.get("task_id"),
                     exc_info=True,
                 )
+        # ``core.py`` flags a pipeline-created review task as ``review_task``
+        # right after hydrating, whatever the emitter sent, and every review
+        # rule guards on it.  Omitting it here let a V2 review task's own
+        # completion re-enter the review rule — the loop the flag exists to
+        # stop.  Package 6's parity corpus is what surfaced it.
+        task_dict = hydrated.get("task")
+        if isinstance(task_dict, dict):
+            flag_review_task_event(hydrated, task_dict.get("dedup_key"))
         return hydrated
 
     def _context(

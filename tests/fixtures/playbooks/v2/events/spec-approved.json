@@ -1,0 +1,7 @@
+{
+  "_event_type": "spec.approved",
+  "event_id": "evt-parity-0007",
+  "project_id": "agent-queue",
+  "spec_path": "docs/specs/design/workspaces-v2.md",
+  "type": "spec.approved"
+}

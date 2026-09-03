@@ -1,0 +1,13 @@
+{
+  "_event_type": "assignment.route.requested",
+  "batch_key": "agent-queue:routing:1",
+  "event_id": "evt-parity-0013",
+  "project_id": "agent-queue",
+  "tasks": [
+    {
+      "id": "solid-harbor.12",
+      "title": "Add pool carve-out reconciliation"
+    }
+  ],
+  "type": "assignment.route.requested"
+}

@@ -112,6 +112,33 @@ def _value(value: Any, loops: set[str] = frozenset()) -> Any:
     return {"type": "template", "parts": parts}
 
 
+def _bare_ref(value: Any) -> Any:
+    """Lower a ``for_each.source``, which is a bare reference, not a template.
+
+    V1 wrote the loop collection as ``outputs.downstream.tasks`` with no
+    ``{{ }}`` around it (``pipeline_runner._resolve_ref`` reads it directly),
+    so passing it through :func:`_value` produced a *literal string* and the
+    lowered foreach iterated nothing a V1 run iterated.  Package 6's parity
+    harness is what surfaced it: the loop events emitted ``gate_create`` under
+    V1 and nothing under V2.
+    """
+    if not isinstance(value, str):
+        return _value(value)
+    namespace, _, path = value.partition(".")
+    if not path:
+        return _value(value)
+    if namespace == "event":
+        return {"type": "event_ref", "path": path}
+    if namespace == "outputs":
+        binding, _, rest = path.partition(".")
+        return {
+            "type": "binding_ref",
+            "binding": binding,
+            **({"path": rest} if rest else {}),
+        }
+    return _value(value)
+
+
 def _condition(raw: Any) -> Any | None:
     if not isinstance(raw, Mapping):
         return None
@@ -261,7 +288,7 @@ def lower_pipeline(
                     "rule": rule_id,
                     "title": node_id,
                     "source": source_ref,
-                    "collection": _value(loop.get("source")),
+                    "collection": _bare_ref(loop.get("source")),
                     "item_binding": loop_name,
                     "failure_policy": "collect",
                     "body_entry": base_id,

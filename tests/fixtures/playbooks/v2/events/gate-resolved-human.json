@@ -1,0 +1,9 @@
+{
+  "_event_type": "gate.resolved",
+  "await_id": "prop-7f31",
+  "event_id": "evt-parity-0009",
+  "gate_id": "gate-441",
+  "gate_type": "human",
+  "project_id": "agent-queue",
+  "type": "gate.resolved"
+}

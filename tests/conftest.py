@@ -281,6 +281,22 @@ SHIPPED_PIPELINE_PATH = (
 )
 
 
+def pytest_addoption(parser) -> None:
+    """``--parity-record`` refreshes Package 6's committed shadow-parity report.
+
+    Declared here because pytest only collects ``pytest_addoption`` from a
+    root conftest.  Refreshing the evidence is an act, so it takes a flag
+    somebody had to type; CI never passes it, and
+    ``test_parity_report_is_current`` fails instead.
+    """
+    parser.addoption(
+        "--parity-record",
+        action="store_true",
+        default=False,
+        help="rewrite tests/fixtures/playbooks/v2/parity-report.json from a fresh run",
+    )
+
+
 @pytest.fixture
 def command_handler_factory(tmp_path: Path):
     """Factory that creates a fresh CommandHandler backed by a real DB."""
@@ -367,10 +383,19 @@ class PipelineEngine:
     behave identically to the runtime dispatch path).
     """
 
-    def __init__(self, compiled, handler, db=None):
+    def __init__(self, compiled, handler, db=None, *, runner_db=None, abort_on_rule_failure=False):
         self._compiled = compiled
         self._handler = handler
         self._db = db
+        #: Optional recorder handed to every ``PipelineRunner`` as its ``db``.
+        #: ``PipelineRunner`` touches it only from ``_set_current_node``, so a
+        #: double with ``update_playbook_run`` records the executed node path
+        #: without a database.  Package 6's parity harness needs that path.
+        self._runner_db = runner_db
+        #: Reproduce ``src/orchestrator/core.py``'s ``break`` on the first rule
+        #: that does not complete.  Off by default so the suites that predate
+        #: it keep running every rule.
+        self._abort_on_rule_failure = abort_on_rule_failure
         self._dispatched: set[tuple[str, str]] = set()  # (event_type, event_id)
 
     async def dispatch(
@@ -379,13 +404,21 @@ class PipelineEngine:
         payload: dict,
         *,
         event_id: str | None = None,
-    ) -> None:
+    ) -> list:
+        """Run every matching rule and return ``[(entry_node, RunResult), ...]``.
+
+        The return value is additive — callers that predate Package 6 ignore
+        it — and is what lets the parity harness read V1's rule selection,
+        terminal status and outputs off a real dispatch instead of inferring
+        them.
+        """
         from src.playbooks.pipeline_runner import PipelineRunner
 
         # Idempotency: same event_id dispatched twice is a no-op.
+        records: list = []
         key = (event_type, event_id) if event_id else None
         if key and key in self._dispatched:
-            return
+            return records
         if key:
             self._dispatched.add(key)
 
@@ -415,12 +448,14 @@ class PipelineEngine:
         pipeline_rules = graph.get("pipeline_rules") or {}
         if not pipeline_rules:
             # Single-graph pipeline — run directly.
-            runner = PipelineRunner(graph=graph, event=hydrated, handler=self._handler)
-            await runner.run()
-            return
+            runner = PipelineRunner(
+                graph=graph, event=hydrated, handler=self._handler, db=self._runner_db
+            )
+            records.append((None, await runner.run()))
+            return records
 
         if event_type not in pipeline_rules:
-            return  # No rule for this trigger
+            return records  # No rule for this trigger
 
         rule_metas = pipeline_rules[event_type]
         # pipeline_rules[trigger] may be a single meta (legacy) or a list.
@@ -448,8 +483,17 @@ class PipelineEngine:
             for nid, node in run_graph["nodes"].items():
                 node["entry"] = nid == rule_entry
 
-            runner = PipelineRunner(graph=run_graph, event=hydrated, handler=self._handler)
-            await runner.run()
+            runner = PipelineRunner(
+                graph=run_graph, event=hydrated, handler=self._handler, db=self._runner_db
+            )
+            result = await runner.run()
+            records.append((rule_entry, result))
+            if self._abort_on_rule_failure and result.status != "completed":
+                # ``src/orchestrator/core.py``: one run row per event, so the
+                # first rule that does not complete ends the dispatch.
+                break
+
+        return records
 
 
 @pytest.fixture
