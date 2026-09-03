@@ -1227,7 +1227,8 @@ playbook_step_receipts = Table(
         name="ck_playbook_step_receipts_outcome",
     ),
     CheckConstraint(
-        "receipt_kind IN ('step', 'tool_turn', 'interrupted', 'operator_decision')",
+        "receipt_kind IN ('step', 'tool_turn', 'llm_call', 'interrupted', "
+        "'operator_decision')",
         name="ck_playbook_step_receipts_kind",
     ),
     CheckConstraint(

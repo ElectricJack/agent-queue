@@ -30,7 +30,8 @@ def upgrade() -> None:
         batch.add_column(sa.Column("operator_decision_id", sa.Text(), nullable=True))
         batch.create_check_constraint(
             "ck_playbook_step_receipts_kind",
-            "receipt_kind IN ('step', 'tool_turn', 'interrupted', 'operator_decision')",
+            "receipt_kind IN ('step', 'tool_turn', 'llm_call', 'interrupted', "
+            "'operator_decision')",
         )
         batch.create_check_constraint(
             "ck_playbook_step_receipts_turn_index",

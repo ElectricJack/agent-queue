@@ -50,7 +50,12 @@ from src.playbooks.executors.foreach import ITERATING_OUTCOME
 from src.playbooks.executors.wait import UNRESOLVED_REASON
 from src.playbooks.expressions import BindingRef, ResolutionScope
 from src.playbooks.receipts import RECEIPT_OUTCOMES, transition_id
-from src.playbooks.run_state import LoopFrame, RunLifecycle, StateLimitExceeded
+from src.playbooks.run_state import (
+    LoopFrame,
+    RunLifecycle,
+    SnapshotVersionConflict,
+    StateLimitExceeded,
+)
 from src.playbooks.waits import (
     EMPTY_WAIT_CHANGES,
     WaitClaim,
@@ -521,6 +526,62 @@ class TestLlmToolTurnBoundaries:
         assert [receipt.error_code for receipt in runs.receipts] == ["interrupted"]
 
     @pytest.mark.asyncio
+    async def test_cancellation_wins_a_race_with_a_tool_turn_boundary(self):
+        class CasBoundaryRepository(RecordingRunRepository):
+            def __init__(self):
+                super().__init__()
+                self.boundary_started = asyncio.Event()
+                self.release_boundary = asyncio.Event()
+                self.cancel_written = asyncio.Event()
+
+            async def commit_boundary(self, snapshot, receipt, wait_changes=EMPTY_WAIT_CHANGES):
+                if receipt.receipt_kind == "tool_turn":
+                    self.boundary_started.set()
+                    await self.release_boundary.wait()
+                current = self.snapshots[snapshot.run_id]
+                if current.version != snapshot.version:
+                    raise SnapshotVersionConflict(
+                        snapshot.run_id, snapshot.version, current.version
+                    )
+                return await super().commit_boundary(snapshot, receipt, wait_changes)
+
+            async def request_cancel(self, *args, **kwargs):
+                snapshot = await super().request_cancel(*args, **kwargs)
+                self.cancel_written.set()
+                return snapshot
+
+        provider = FakeProvider()
+        provider.add_tool_call(
+            "ensure_task",
+            {"project_id": "p", "title": "one"},
+            usage=TokenUsage(10, 2, True),
+        )
+        provider.add_text('{"risk":"low"}', usage=TokenUsage(5, 1, True))
+        runs = CasBoundaryRepository()
+        engine, adapter, _runs, ref = build_llm(provider, runs=runs)
+        adapter.queue.append(ok())
+
+        walk = asyncio.create_task(engine.run_rule(ref, "r", {}, TOOL_PRINCIPAL))
+        await runs.boundary_started.wait()
+        run_id = next(iter(runs.snapshots))
+        cancelling = asyncio.create_task(engine.cancel(run_id, TOOL_PRINCIPAL))
+        await runs.cancel_written.wait()
+        runs.release_boundary.set()
+
+        outcome, cancelled = await asyncio.gather(walk, cancelling)
+
+        assert outcome.lifecycle is RunLifecycle.CANCELLED
+        assert cancelled.lifecycle is RunLifecycle.CANCELLED
+        assert runs.snapshots[run_id].lifecycle is RunLifecycle.CANCELLED
+        assert [receipt.receipt_kind for receipt in runs.receipts] == [
+            "tool_turn",
+            "step",
+        ]
+        assert [receipt.error_code for receipt in runs.receipts] == [None, "cancelled"]
+        assert runs.receipts[1].result["cancellation"] == "acknowledged"
+        assert runs.snapshots[run_id].budget.llm_calls == 1
+
+    @pytest.mark.asyncio
     async def test_multi_turn_tool_loop_commits_one_receipt_per_completed_turn(self):
         provider = FakeProvider()
         provider.add_tool_call(
@@ -612,6 +673,7 @@ class TestLlmToolTurnBoundaries:
         assert interrupted.lifecycle is RunLifecycle.PAUSED
         assert resumed_provider.calls == []
         assert [r.receipt_kind for r in runs.receipts] == ["tool_turn", "interrupted"]
+        assert runs.receipts[-1].principal["profile_id"] == "worker"
 
         resumed = await restarted.resume(
             run_id,
@@ -766,13 +828,65 @@ class TestLlmToolTurnBoundaries:
         assert outcome.lifecycle is RunLifecycle.COMPLETED
         assert [
             r.turn_index for r in runs.receipts if r.receipt_kind == "tool_turn"
-        ] == [0, 1]
+        ] == [0, 2]
+        assert [
+            (r.receipt_kind, r.turn_index)
+            for r in runs.receipts
+            if r.receipt_kind != "step"
+        ] == [("tool_turn", 0), ("llm_call", 1), ("tool_turn", 2)]
+        assert all(r.outcome == "success" for r in runs.receipts[:-1])
         retry_messages = provider.calls[2].messages
         assert [message["role"] for message in retry_messages[-2:]] == [
             "assistant",
             "user",
         ]
         assert "Return only JSON" in retry_messages[-1]["content"]
+
+    @pytest.mark.asyncio
+    async def test_schema_retry_calls_remain_budgeted_after_interruption_and_restart(self):
+        class CancelThirdCall(FakeProvider):
+            @property
+            def reports_usage(self) -> bool:
+                return True
+
+            async def create_message(self, **kwargs):
+                if len(self.calls) == 2:
+                    raise asyncio.CancelledError
+                return await super().create_message(**kwargs)
+
+        first = CancelThirdCall()
+        first.add_tool_call(
+            "ensure_task",
+            {"project_id": "p", "title": "one"},
+            usage=TokenUsage(1, 0, True),
+        )
+        first.add_text("not json", usage=TokenUsage(1, 0, True))
+        engine, adapter, runs, ref = build_llm(first)
+        adapter.queue.append(ok())
+
+        paused = await engine.run_rule(ref, "r", {}, TOOL_PRINCIPAL)
+
+        assert paused.lifecycle is RunLifecycle.PAUSED
+        assert [r.receipt_kind for r in runs.receipts] == [
+            "tool_turn",
+            "llm_call",
+            "interrupted",
+        ]
+        assert runs.snapshots[paused.run_id].budget.llm_calls == 3
+        assert runs.snapshots[paused.run_id].budget.total_tokens == 2
+
+        resumed_provider = FakeProvider()
+        resumed_provider.add_text('{"risk":"low"}', usage=TokenUsage(1, 0, True))
+        restarted, _adapter, _runs, _ref = build_llm(resumed_provider, runs=runs)
+        outcome = await restarted.resume(
+            paused.run_id, OperatorResolution(kind="retry"), TOOL_PRINCIPAL
+        )
+
+        assert outcome.lifecycle is RunLifecycle.FAILED
+        assert resumed_provider.calls == []
+        assert [r.error_code for r in runs.receipts if r.step_kind == "llm"][-1] == (
+            "budget_exceeded"
+        )
 
 
 class TestReceipts:

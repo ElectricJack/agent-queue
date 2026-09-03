@@ -31,6 +31,7 @@ class LLMRunResult:
     stopped_by: str  # "done" | "max_turns" | "cancelled" | "interrupted"
     tool_calls_made: list[str] = field(default_factory=list)
     usage: TokenUsage | None = None
+    last_usage: TokenUsage | None = None
 
 
 ProgressCallback = Callable[[str, str | None], Awaitable[None]]
@@ -46,7 +47,7 @@ class LLMToolTurn:
     An interrupted partial turn deliberately carries no delta.
     """
 
-    kind: Literal["tool_turn", "interrupted"]
+    kind: Literal["tool_turn", "llm_call", "interrupted"]
     turn_index: int
     tool_call_ids: tuple[str, ...]
     results_digest: str
@@ -60,6 +61,10 @@ ToolTurnCallback = Callable[[LLMToolTurn], Awaitable[None]]
 
 class LLMToolTurnBoundaryError(RuntimeError):
     """A durable turn callback failed; this is not a provider failure."""
+
+    def __init__(self, message: str, turn: LLMToolTurn):
+        super().__init__(message)
+        self.turn = turn
 
 
 def _json_safe(obj: Any) -> str:
@@ -220,7 +225,7 @@ class LLMClient:
                     await on_tool_turn(turn)
                 except Exception as exc:
                     raise LLMToolTurnBoundaryError(
-                        "durable LLM tool-turn callback failed"
+                        "durable LLM tool-turn callback failed", turn
                     ) from exc
 
         async def _within_deadline(operation: Callable[[], Awaitable[Any]]) -> Any:
@@ -286,7 +291,9 @@ class LLMClient:
                 await _progress("responding")
                 text = "\n".join(resp.text_parts).strip()
                 transcript.append({"role": "assistant", "content": text})
-                return LLMRunResult(text, transcript, turns, "done", made, usage)
+                return LLMRunResult(
+                    text, transcript, turns, "done", made, usage, call_usage
+                )
 
             transcript.append({"role": "assistant", "content": resp.tool_uses})
             results: list[dict] = []
@@ -303,6 +310,8 @@ class LLMClient:
                         result = await _within_deadline(
                             lambda: execute(call.name, dict(call.input or {}))
                         )
+                    except TimeoutError:
+                        raise
                     except asyncio.CancelledError:
                         if on_tool_turn is None:
                             raise
@@ -316,7 +325,7 @@ class LLMClient:
                             )
                         )
                         return LLMRunResult(
-                            "", transcript, turns, "interrupted", made, usage
+                            "", transcript, turns, "interrupted", made, usage, call_usage
                         )
                     except Exception as exc:
                         logger.warning(

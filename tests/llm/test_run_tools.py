@@ -192,3 +192,26 @@ async def test_caller_timeout_without_a_durable_callback_is_not_an_interruption(
     with pytest.raises(TimeoutError):
         async with asyncio.timeout(0.01):
             await _client(BlockingProvider()).run_tools("go", TOOLS, _exec)
+
+
+async def test_tool_dispatch_deadline_propagates_in_durable_mode():
+    fake = FakeProvider()
+    fake.add_tool_call("list_tasks")
+    seen: list[LLMToolTurn] = []
+
+    async def blocked_tool(_name, _args):
+        await asyncio.Event().wait()
+
+    async def on_tool_turn(turn: LLMToolTurn) -> None:
+        seen.append(turn)
+
+    with pytest.raises(TimeoutError):
+        await _client(fake).run_tools(
+            "go",
+            TOOLS,
+            blocked_tool,
+            on_tool_turn=on_tool_turn,
+            timeout_seconds=0.01,
+        )
+
+    assert seen == []

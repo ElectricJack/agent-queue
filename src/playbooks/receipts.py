@@ -37,6 +37,7 @@ RECEIPT_OUTCOMES: tuple[str, ...] = (
 RECEIPT_KINDS: tuple[str, ...] = (
     "step",
     "tool_turn",
+    "llm_call",
     "interrupted",
     "operator_decision",
 )

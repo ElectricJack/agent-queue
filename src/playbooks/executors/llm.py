@@ -13,7 +13,7 @@ from jsonschema.exceptions import ValidationError
 
 from src.commands.authorization import authorize_command, denial_result
 from src.commands.principal import check_delegation
-from src.llm.client import LLMToolTurnBoundaryError
+from src.llm.client import LLMToolTurn, LLMToolTurnBoundaryError
 from src.llm.spec import LLMCallSpec
 from src.llm.types import TokenUsage
 from src.playbooks.definition import LLM_RESERVED_OUTCOMES, LlmStep, _outcome_enum
@@ -129,7 +129,7 @@ def _resume_state(
     messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
     usage: TokenUsage | None = None
     for turn in turns:
-        if turn.get("kind", "tool_turn") == "tool_turn":
+        if turn.get("kind", "tool_turn") in {"tool_turn", "llm_call"}:
             messages.extend(dict(message) for message in turn.get("transcript_delta", ()))
         raw_usage = turn.get("usage") or {}
         turn_usage = TokenUsage(
@@ -170,7 +170,9 @@ def _published_tools(step: LlmStep, ctx: StepContext) -> list[dict[str, Any]]:
     return tools
 
 
-async def _profile_principal(step: LlmStep, ctx: StepContext) -> tuple[Any | None, tuple[str, ...]]:
+async def resolve_profile_principal(
+    step: LlmStep, services: Any, invoking_principal: Any
+) -> tuple[Any | None, tuple[str, ...]]:
     """Resolve the named profile from the server authority and only narrow.
 
     The database is the authority that command dispatch itself uses to resolve
@@ -178,26 +180,26 @@ async def _profile_principal(step: LlmStep, ctx: StepContext) -> tuple[Any | Non
     class, the artifact fingerprint, or prompt data; all three are insufficient
     to prove that the requested profile remains a subset of the caller.
     """
-    get_profile = getattr(ctx.services.db, "get_profile", None)
+    get_profile = getattr(services.db, "get_profile", None)
     if not callable(get_profile):
         return None, ("profile authority unavailable",)
     try:
         profile = await get_profile(step.profile_id)
         if profile is None:
             return None, ("named profile unavailable",)
-        resolver = ctx.services.resolver
+        resolver = services.resolver
         plugin_command_names = (
             resolver.plugin_command_names() if resolver is not None else frozenset()
         )
         policy = capability_policy_for(profile, plugin_command_names=plugin_command_names)
-        parent_policy = ctx.principal.policy
+        parent_policy = invoking_principal.policy
         widening = check_delegation(parent_policy, policy)
     except Exception:  # noqa: BLE001 - authority failures must fail closed
         return None, ("profile authority unavailable",)
     if widening:
         return None, ("named profile exceeds invoking principal",)
     return replace(
-        ctx.principal.narrow(policy, reason=f"llm-profile:{step.profile_id}"),
+        invoking_principal.narrow(policy, reason=f"llm-profile:{step.profile_id}"),
         profile_id=step.profile_id,
     ), ()
 
@@ -215,7 +217,9 @@ class LiveLlmExecutor:
         if ctx.services.llm is None:
             return _result(step, ctx, outcome="unavailable", diagnostics=("LLM client unavailable",))
 
-        principal, diagnostics = await _profile_principal(step, ctx)
+        principal, diagnostics = await resolve_profile_principal(
+            step, ctx.services, ctx.principal
+        )
         if principal is None:
             return _result(step, ctx, outcome="unauthorized", diagnostics=diagnostics)
         ctx = replace(ctx, principal=principal)
@@ -326,7 +330,23 @@ class LiveLlmExecutor:
                         return _result(step, ctx, outcome="invalid_output", usage=usage)
                     correction = "Return only JSON that validates against the declared schema."
                     if tools:
-                        messages.append({"role": "user", "content": correction})
+                        correction_message = {"role": "user", "content": correction}
+                        messages.append(correction_message)
+                        await persist_turn(
+                            LLMToolTurn(
+                                kind="llm_call",
+                                turn_index=next_turn_index,
+                                tool_call_ids=(),
+                                results_digest=hashlib.sha256(
+                                    response_text.encode()
+                                ).hexdigest(),
+                                usage=run.last_usage or TokenUsage(),
+                                transcript_delta=(
+                                    dict(run.transcript[-1]),
+                                    correction_message,
+                                ),
+                            )
+                        )
                     else:
                         prompt = f"{prompt}\n{correction}"
                     continue
@@ -366,4 +386,4 @@ class SymbolicLlmExecutor:
         )
 
 
-__all__ = ["LiveLlmExecutor", "SymbolicLlmExecutor"]
+__all__ = ["LiveLlmExecutor", "SymbolicLlmExecutor", "resolve_profile_principal"]

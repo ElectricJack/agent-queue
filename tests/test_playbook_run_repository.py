@@ -374,7 +374,7 @@ async def test_commit_boundary_advances_the_version_and_writes_one_receipt(db):
     assert receipts[0].selected_transition == "on-task-completed::ensure-task::success"
 
 
-async def test_one_llm_attempt_accepts_ordered_tool_turn_and_interrupted_boundaries(db):
+async def test_one_llm_attempt_accepts_ordered_call_and_interrupted_boundaries(db):
     snapshot = await db.create_run(make_snapshot(current_step_id="classify"))
     first = make_receipt(
         snapshot,
@@ -387,13 +387,22 @@ async def test_one_llm_attempt_accepts_ordered_tool_turn_and_interrupted_boundar
     snapshot = await db.commit_boundary(
         replace(snapshot, llm_turns=({"turn_index": 0},)), first
     )
+    schema_retry = make_receipt(
+        snapshot,
+        receipt_id="turn-1-call",
+        step_id="classify",
+        step_kind="llm",
+        receipt_kind="llm_call",
+        turn_index=1,
+    )
+    snapshot = await db.commit_boundary(snapshot, schema_retry)
     interrupted = make_receipt(
         snapshot,
-        receipt_id="turn-1-interrupted",
+        receipt_id="turn-2-interrupted",
         step_id="classify",
         step_kind="llm",
         receipt_kind="interrupted",
-        turn_index=1,
+        turn_index=2,
         operator_decision_id="decision-1",
     )
     snapshot = await db.commit_boundary(snapshot, interrupted)
@@ -401,7 +410,8 @@ async def test_one_llm_attempt_accepts_ordered_tool_turn_and_interrupted_boundar
     receipts = await db.list_receipts(snapshot.run_id)
     assert [(r.receipt_kind, r.turn_index) for r in receipts] == [
         ("tool_turn", 0),
-        ("interrupted", 1),
+        ("llm_call", 1),
+        ("interrupted", 2),
     ]
     assert {r.idempotency_key for r in receipts} == {"run-1:classify:-:1"}
     assert receipts[-1].operator_decision_id == "decision-1"
