@@ -169,7 +169,14 @@ def verify_round_trip(profile: AgentProfile, markdown: str) -> tuple[bool, list[
     if rebuilt.get("name", "") != profile.name:
         diffs.append(f"name: DB={profile.name!r}, markdown={rebuilt.get('name', '')!r}")
 
-    # Check config fields
+    # Check config fields.  ``model`` is not among them: the key was removed
+    # from ``## Config`` and the launch model is derived from the profile's
+    # intelligence class and harness instead.
+    if rebuilt.get("default_class", "") != profile.default_class:
+        diffs.append(
+            f"default_class: DB={profile.default_class!r}, "
+            f"markdown={rebuilt.get('default_class', '')!r}"
+        )
     if rebuilt.get("permission_mode", "") != profile.permission_mode:
         diffs.append(
             f"permission_mode: DB={profile.permission_mode!r}, "
@@ -224,6 +231,7 @@ def _render_profile_markdown(profile: AgentProfile) -> str:
         name=profile.name,
         description=profile.description,
         permission_mode=profile.permission_mode,
+        default_class=profile.default_class,
         allowed_tools=profile.allowed_tools if profile.allowed_tools else None,
         mcp_servers=profile.mcp_servers if profile.mcp_servers else None,
         system_prompt_suffix=profile.system_prompt_suffix,

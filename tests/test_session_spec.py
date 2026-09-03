@@ -9,6 +9,7 @@ from dataclasses import dataclass, replace
 
 import pytest
 
+from src.intelligence_classes import IntelligenceClass
 from src.sessions.env import AQ_MARKER_KEYS, STARTUP_PROMPT_DELIVERED, build_session_env
 from src.sessions.harness_parser import Harness, ResumeSpec
 from src.sessions.spec import (
@@ -28,7 +29,7 @@ class _Task:
 @dataclass
 class _Profile:
     id: str = "claude-opus"
-    model: str = ""
+    default_class: str = ""
     effort: str = ""
     harness: str = "claude"
     permission_mode: str = ""
@@ -62,6 +63,21 @@ CLAUDE = Harness(
 @pytest.fixture
 def builder():
     return SessionSpecBuilder(_Cfg())
+
+
+def _classy_builder():
+    """A builder whose ``deep`` intelligence class resolves to ``opus``."""
+    return SessionSpecBuilder(
+        _Cfg(),
+        intelligence_classes={
+            "deep": IntelligenceClass(
+                id="deep",
+                name="Deep",
+                description="",
+                mapping={"anthropic": {"model": "opus"}},
+            )
+        },
+    )
 
 
 def _build(builder, harness=CLAUDE, profile=None, **kw):
@@ -343,15 +359,23 @@ class TestArgvComposition:
         spec = _build(builder)
         assert "aq task heartbeat" in spec.prompt
 
-    def test_model_flag_only_when_the_profile_sets_a_model(self, builder):
+    def test_model_flag_only_when_the_class_resolves_a_model(self, builder):
+        """The launch model comes from the profile's intelligence class.
+
+        A profile cannot pin one: the ``model`` Config key was removed, so with
+        no class (or a class the registry does not know) there is no --model.
+        """
         assert "--model" not in _build(builder).command
-        spec = _build(builder, profile=_Profile(model="opus"))
+        assert "--model" not in _build(builder, profile=_Profile(default_class="deep")).command
+        spec = _build(_classy_builder(), profile=_Profile(default_class="deep"))
         argv = list(spec.command)
         assert argv[argv.index("--model") + 1] == "opus"
 
-    def test_model_flag_skipped_when_the_harness_has_none(self, builder):
+    def test_model_flag_skipped_when_the_harness_has_none(self):
         harness = replace(CLAUDE, model_flag="")
-        spec = _build(builder, harness=harness, profile=_Profile(model="opus"))
+        spec = _build(
+            _classy_builder(), harness=harness, profile=_Profile(default_class="deep")
+        )
         assert "opus" not in spec.command
 
     def test_effort_flag(self, builder):

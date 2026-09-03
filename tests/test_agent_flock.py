@@ -9,6 +9,7 @@ from src.commands.handler import CommandHandler
 from src.config import AppConfig, DiscordConfig
 from src.database import Database
 from src.event_bus import EventBus
+from src.intelligence_classes import IntelligenceClass
 from src.models import Agent, AgentProfile, Project
 from src.sessions.harness_parser import Harness
 from src.sessions.harness_registry import HarnessRegistry
@@ -27,12 +28,20 @@ async def handler(tmp_path):
     registry = HarnessRegistry()
     registry.upsert(Harness(id="claude", name="Claude", command="claude"))
     registry.upsert(Harness(id="codex", name="Codex", command="codex"))
+    # A profile carries an intelligence class, never a model pin: the class and
+    # the harness resolve the launch model.
+    classes = {
+        "standard-medium": IntelligenceClass(
+            id="standard-medium", name="Standard", description="",
+            mapping={"anthropic": {"model": "profile-model"}},
+        )
+    }
     orchestrator = SimpleNamespace(
         db=db, bus=EventBus(validate_events=False), harness_registry=registry,
-        session_spec_builder=SessionSpecBuilder(config),
+        session_spec_builder=SessionSpecBuilder(config, intelligence_classes=classes),
     )
     await db.create_profile(AgentProfile(
-        id="coder", name="Coder", harness="claude", model="profile-model",
+        id="coder", name="Coder", harness="claude", default_class="standard-medium",
     ))
     result = CommandHandler(orchestrator, config)
     result.set_active_project(None)
@@ -84,7 +93,7 @@ async def test_edit_does_not_mutate_shared_profile(handler):
     assert "error" not in result
     assert result["model"] == "personal-model"
     assert result["name"] == "Ada 2"
-    assert (await handler.db.get_profile("coder")).model == "profile-model"
+    assert (await handler.db.get_profile("coder")).default_class == "standard-medium"
 
 
 @pytest.mark.parametrize("command", ["create_agent", "edit_agent", "delete_agent", "start_agent_terminal"])

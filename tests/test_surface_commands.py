@@ -215,6 +215,7 @@ class TestTaskShow:
             "pr_url": "https://github.com/example/repo/pull/17",
             "summary": "Completion details now survive close.",
             "notes": "Ready for review.",
+            "deliverables": [],
             "completed_at": 1234.5,
         }
 

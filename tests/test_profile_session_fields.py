@@ -96,7 +96,7 @@ class TestParsing:
         assert mapped["workspaces"] == ["vault", "readonly-dir"]
 
     def test_lifecycle_defaults_to_task(self):
-        parsed = parse_profile(_profile('{"model": "x"}'))
+        parsed = parse_profile(_profile('{"default_class": "standard-medium"}'))
         assert parsed.is_valid
         assert "lifecycle" not in parsed_profile_to_agent_profile(parsed)
         assert AgentProfile(id="p", name="p").lifecycle == "task"
@@ -171,7 +171,7 @@ class TestSync:
         assert (await db.get_profile("supervisor")).idle_timeout == 60
 
     async def test_task_lifecycle_profiles_default_cleanly(self, db):
-        parsed = parse_profile(_profile('{"model": "claude-sonnet"}', profile_id="coding"))
+        parsed = parse_profile(_profile('{"default_class": "standard-medium"}', profile_id="coding"))
         await sync_profile_to_db(parsed, db)
         stored = await db.get_profile("coding")
         assert stored.lifecycle == "task"

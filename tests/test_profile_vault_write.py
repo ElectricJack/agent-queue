@@ -54,7 +54,7 @@ class TestAgentProfileToMarkdown:
             id="coding",
             name="Coding Agent",
             description="A general-purpose coding agent",
-            model="claude-sonnet-4-6",
+            default_class="standard-medium",
             permission_mode="auto",
             allowed_tools=["Read", "Write", "Edit", "Bash"],
             mcp_servers={
@@ -74,7 +74,7 @@ class TestAgentProfileToMarkdown:
         assert parsed.frontmatter.id == "coding"
         assert parsed.frontmatter.name == "Coding Agent"
         assert parsed.frontmatter.extra.get("description") == "A general-purpose coding agent"
-        assert parsed.config["model"] == "claude-sonnet-4-6"
+        assert parsed.config["default_class"] == "standard-medium"
         assert parsed.config["permission_mode"] == "auto"
         assert parsed.tools["allowed"] == ["Read", "Write", "Edit", "Bash"]
         assert "github" in parsed.mcp_servers
@@ -117,7 +117,7 @@ class TestAgentProfileToMarkdown:
         md = agent_profile_to_markdown(
             id="minimal",
             name="Minimal",
-            model="",
+            default_class="",
             allowed_tools=[],
             mcp_servers={},
             install={},
@@ -331,7 +331,7 @@ class TestFullRoundTrip:
             id="coding",
             name="Coding Agent",
             description="General coder",
-            model="claude-sonnet-4-6",
+            default_class="standard-medium",
             permission_mode="auto",
             allowed_tools=["Read", "Write", "Edit"],
             mcp_servers={"gh": {"command": "npx", "args": ["gh-mcp"]}},
@@ -351,7 +351,7 @@ class TestFullRoundTrip:
             id=d["id"],
             name=d["name"],
             description=d.get("description", ""),
-            model=d.get("model", ""),
+            default_class=d.get("default_class", ""),
             permission_mode=d.get("permission_mode", ""),
             allowed_tools=d.get("allowed_tools", []),
             mcp_servers=d.get("mcp_servers", {}),
@@ -364,7 +364,7 @@ class TestFullRoundTrip:
         assert parsed2.is_valid
         assert parsed2.frontmatter.id == "coding"
         assert parsed2.frontmatter.name == "Coding Agent"
-        assert parsed2.config["model"] == "claude-sonnet-4-6"
+        assert parsed2.config["default_class"] == "standard-medium"
         assert parsed2.tools["allowed"] == ["Read", "Write", "Edit"]
         assert "gh" in parsed2.mcp_servers
         assert "coder" in parsed2.role
@@ -400,7 +400,7 @@ class TestCommandVaultWrite:
         """create_profile should write a markdown file to the vault."""
         result = await handler.execute(
             "create_profile",
-            {"id": "test-reviewer", "name": "Reviewer", "model": "claude-sonnet-4-6"},
+            {"id": "test-reviewer", "name": "Reviewer", "default_class": "standard-medium"},
         )
         assert result.get("created") == "test-reviewer"
 
@@ -413,7 +413,7 @@ class TestCommandVaultWrite:
         parsed = parse_profile(content)
         assert parsed.is_valid
         assert parsed.frontmatter.id == "test-reviewer"
-        assert parsed.config["model"] == "claude-sonnet-4-6"
+        assert parsed.config["default_class"] == "standard-medium"
 
     async def test_create_syncs_to_db(self, handler):
         """create_profile should sync the vault file to DB immediately."""
@@ -443,7 +443,7 @@ class TestCommandVaultWrite:
             {
                 "profile_id": "test-reviewer",
                 "name": "Senior Reviewer",
-                "model": "claude-sonnet-4-6",
+                "default_class": "standard-medium",
             },
         )
 
@@ -451,7 +451,7 @@ class TestCommandVaultWrite:
             content = f.read()
         parsed = parse_profile(content)
         assert parsed.frontmatter.name == "Senior Reviewer"
-        assert parsed.config["model"] == "claude-sonnet-4-6"
+        assert parsed.config["default_class"] == "standard-medium"
 
     async def test_edit_syncs_to_db(self, handler):
         """edit_profile should sync updated file to DB."""
@@ -473,7 +473,7 @@ class TestCommandVaultWrite:
             {
                 "id": "coder",
                 "name": "Coder",
-                "model": "claude-sonnet-4-6",
+                "default_class": "standard-medium",
                 "allowed_tools": ["Read", "Write"],
             },
         )
@@ -483,7 +483,7 @@ class TestCommandVaultWrite:
         )
 
         profile = await handler.db.get_profile("coder")
-        assert profile.model == "claude-sonnet-4-6"
+        assert profile.default_class == "standard-medium"
         assert profile.allowed_tools == ["Read", "Write"]
         assert profile.description == "Updated description"
 
@@ -529,7 +529,7 @@ agent_profile:
   id: imported
   name: "Imported Profile"
   allowed_tools: [Read, Write]
-  model: "claude-sonnet-4-6"
+  default_class: "standard-medium"
 """
         result = await handler.execute("import_profile", {"source": yaml_text})
         assert result.get("imported") is True
@@ -543,7 +543,7 @@ agent_profile:
         parsed = parse_profile(content)
         assert parsed.is_valid
         assert parsed.frontmatter.id == "imported"
-        assert parsed.config["model"] == "claude-sonnet-4-6"
+        assert parsed.config["default_class"] == "standard-medium"
 
     async def test_import_syncs_to_db(self, handler):
         """import_profile should sync the vault file to DB."""
@@ -566,7 +566,7 @@ agent_profile:
             AgentProfile(
                 id="legacy",
                 name="Legacy Profile",
-                model="claude-sonnet-4-6",
+                default_class="standard-medium",
                 allowed_tools=["Read"],
             )
         )
@@ -586,7 +586,7 @@ agent_profile:
             content = f.read()
         parsed = parse_profile(content)
         assert parsed.frontmatter.name == "Legacy Profile"
-        assert parsed.config["model"] == "claude-sonnet-4-6"
+        assert parsed.config["default_class"] == "standard-medium"
         assert parsed.frontmatter.extra.get("description") == "Now vault-backed"
 
     async def test_create_with_install(self, handler):

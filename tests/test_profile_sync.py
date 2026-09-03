@@ -56,7 +56,7 @@ name: Test Agent
 
 ## Config
 ```json
-{"model": "claude-sonnet-4-6"}
+{"default_class": "standard-medium"}
 ```
 """
 
@@ -76,7 +76,7 @@ within a project workspace.
 ## Config
 ```json
 {
-  "model": "claude-sonnet-4-6",
+  "default_class": "standard-medium",
   "permission_mode": "auto",
   "max_tokens_per_task": 100000
 }
@@ -130,7 +130,7 @@ name: Unnamed Agent
 
 ## Config
 ```json
-{"model": "claude-sonnet-4-6"}
+{"default_class": "standard-medium"}
 ```
 """
 
@@ -304,7 +304,7 @@ class TestSyncProfileToDb:
         profile = await db.get_profile("test-agent")
         assert profile is not None
         assert profile.name == "Test Agent"
-        assert profile.model == "claude-sonnet-4-6"
+        assert profile.default_class == "standard-medium"
 
     @pytest.mark.asyncio
     async def test_update_existing_profile(self, db):
@@ -314,7 +314,7 @@ class TestSyncProfileToDb:
             AgentProfile(
                 id="test-agent",
                 name="Old Name",
-                model="old-model",
+                default_class="old-class",
             )
         )
 
@@ -328,7 +328,7 @@ class TestSyncProfileToDb:
         # Verify updated fields
         profile = await db.get_profile("test-agent")
         assert profile.name == "Test Agent"
-        assert profile.model == "claude-sonnet-4-6"
+        assert profile.default_class == "standard-medium"
 
     @pytest.mark.asyncio
     async def test_full_profile_all_fields(self, db):
@@ -342,7 +342,7 @@ class TestSyncProfileToDb:
 
         profile = await db.get_profile("coding")
         assert profile.name == "Coding Agent"
-        assert profile.model == "claude-sonnet-4-6"
+        assert profile.default_class == "standard-medium"
         assert profile.permission_mode == "auto"
         assert profile.allowed_tools == ["Read", "Write", "Edit", "Bash", "Glob", "Grep"]
         # Profile.mcp_servers is now a list of registry names; the inline
@@ -375,7 +375,7 @@ class TestSyncProfileToDb:
             AgentProfile(
                 id="broken",
                 name="Original",
-                model="original-model",
+                default_class="original-class",
             )
         )
 
@@ -388,7 +388,7 @@ class TestSyncProfileToDb:
         # Original profile should be unchanged
         profile = await db.get_profile("broken")
         assert profile.name == "Original"
-        assert profile.model == "original-model"
+        assert profile.default_class == "original-class"
 
     @pytest.mark.asyncio
     async def test_missing_id_uses_fallback(self, db):
@@ -424,7 +424,7 @@ id: nameless
 
 ## Config
 ```json
-{"model": "test"}
+{"default_class": "test"}
 ```
 """
         parsed = parse_profile(text)
@@ -505,7 +505,7 @@ name: No Tools Agent
 
 ## Config
 ```json
-{"model": "test"}
+{"default_class": "test"}
 ```
 """
         parsed = parse_profile(text)
@@ -517,7 +517,7 @@ name: No Tools Agent
 
     @pytest.mark.asyncio
     async def test_profile_with_no_config_section(self, db):
-        """Profile without a Config section syncs with empty model/permission_mode."""
+        """Profile without a Config section syncs with empty default_class/permission_mode."""
         text = """\
 ---
 id: no-config
@@ -532,7 +532,7 @@ You do things.
 
         assert result.success is True
         profile = await db.get_profile("no-config")
-        assert profile.model == ""
+        assert profile.default_class == ""
         assert profile.permission_mode == ""
         assert "## Role" in profile.system_prompt_suffix
 
@@ -616,7 +616,7 @@ class TestOnProfileChanged:
         profile = await db.get_profile("coding")
         assert profile is not None
         assert profile.name == "Coding Agent"
-        assert profile.model == "claude-sonnet-4-6"
+        assert profile.default_class == "standard-medium"
 
     @pytest.mark.asyncio
     async def test_modified_profile_updates_db(self, db, tmp_path):
@@ -855,7 +855,7 @@ class TestProfileSyncEndToEnd:
         profile = await db.get_profile("coding")
         assert profile is not None
         assert profile.name == "Coding Agent"
-        assert profile.model == "claude-sonnet-4-6"
+        assert profile.default_class == "standard-medium"
         assert profile.permission_mode == "auto"
         assert "github" in profile.mcp_servers
 
@@ -951,7 +951,7 @@ name: {agent_type.title()} Agent
 
 ## Config
 ```json
-{{"model": "claude-sonnet-4-6"}}
+{{"default_class": "standard-medium"}}
 ```
 """
             _create_file(
@@ -1026,24 +1026,24 @@ class TestUpsertProfile:
 
     @pytest.mark.asyncio
     async def test_upsert_creates_new(self, db):
-        profile = AgentProfile(id="new", name="New Profile", model="test-model")
+        profile = AgentProfile(id="new", name="New Profile", default_class="test-class")
         action = await db.upsert_profile(profile)
         assert action == "created"
 
         fetched = await db.get_profile("new")
         assert fetched.name == "New Profile"
-        assert fetched.model == "test-model"
+        assert fetched.default_class == "test-class"
 
     @pytest.mark.asyncio
     async def test_upsert_updates_existing(self, db):
-        await db.create_profile(AgentProfile(id="existing", name="Old", model="old"))
-        profile = AgentProfile(id="existing", name="Updated", model="new-model")
+        await db.create_profile(AgentProfile(id="existing", name="Old", default_class="old"))
+        profile = AgentProfile(id="existing", name="Updated", default_class="new-class")
         action = await db.upsert_profile(profile)
         assert action == "updated"
 
         fetched = await db.get_profile("existing")
         assert fetched.name == "Updated"
-        assert fetched.model == "new-model"
+        assert fetched.default_class == "new-class"
 
     @pytest.mark.asyncio
     async def test_upsert_preserves_created_at(self, db):
@@ -1082,7 +1082,7 @@ class TestUpsertProfile:
                 id="full",
                 name="Original",
                 description="old desc",
-                model="old-model",
+                default_class="old-class",
                 permission_mode="plan",
                 allowed_tools=["Read"],
                 mcp_servers=["old"],
@@ -1094,7 +1094,7 @@ class TestUpsertProfile:
             id="full",
             name="New Name",
             description="new desc",
-            model="new-model",
+            default_class="new-class",
             permission_mode="auto",
             allowed_tools=["Read", "Write", "Edit"],
             mcp_servers=["new"],
@@ -1106,7 +1106,7 @@ class TestUpsertProfile:
         fetched = await db.get_profile("full")
         assert fetched.name == "New Name"
         assert fetched.description == "new desc"
-        assert fetched.model == "new-model"
+        assert fetched.default_class == "new-class"
         assert fetched.permission_mode == "auto"
         assert fetched.allowed_tools == ["Read", "Write", "Edit"]
         assert fetched.mcp_servers == ["new"]
@@ -1169,7 +1169,7 @@ class TestProfileSyncNotifications:
     ):
         """Bad JSON preserves existing DB row AND sends notification."""
         # Seed good profile
-        await db.create_profile(AgentProfile(id="broken", name="Original", model="original-model"))
+        await db.create_profile(AgentProfile(id="broken", name="Original", default_class="original-class"))
 
         profile_path = tmp_path / "agent-types" / "broken" / "profile.md"
         _create_file(str(profile_path), INVALID_JSON_PROFILE)
@@ -1184,7 +1184,7 @@ class TestProfileSyncNotifications:
         # Previous config retained
         profile = await db.get_profile("broken")
         assert profile.name == "Original"
-        assert profile.model == "original-model"
+        assert profile.default_class == "original-class"
 
         # Notification sent
         assert len(event_collector) == 1
@@ -1343,7 +1343,7 @@ well-documented code.
 ## Config
 ```json
 {
-  "model": "claude-sonnet-4-6",
+  "default_class": "standard-medium",
   "permission_mode": "auto",
   "max_tokens_per_task": 200000
 }
@@ -1408,7 +1408,7 @@ class TestRoadmap4110:
         """(a) Config section JSON is parsed with all three known keys."""
         result = parse_profile(ROADMAP_FULL_PROFILE)
         assert result.is_valid
-        assert result.config["model"] == "claude-sonnet-4-6"
+        assert result.config["default_class"] == "standard-medium"
         assert result.config["permission_mode"] == "auto"
         assert result.config["max_tokens_per_task"] == 200000
 
@@ -1480,14 +1480,14 @@ class TestRoadmap4110:
     # -------------------------------------------------------------------
 
     @pytest.mark.asyncio
-    async def test_b_config_model_syncs_to_db(self, db):
-        """(b) Config 'model' value syncs to the agent_profiles.model column."""
+    async def test_b_config_default_class_syncs_to_db(self, db):
+        """(b) Config 'default_class' syncs to the agent_profiles.default_class column."""
         parsed = parse_profile(ROADMAP_FULL_PROFILE)
         result = await sync_profile_to_db(parsed, db)
         assert result.success
 
         profile = await db.get_profile("full-agent")
-        assert profile.model == "claude-sonnet-4-6"
+        assert profile.default_class == "standard-medium"
 
     @pytest.mark.asyncio
     async def test_b_config_permission_mode_syncs_to_db(self, db):
@@ -1762,14 +1762,14 @@ You are a focused agent.
 
 ## Config
 ```json
-{"model": "claude-sonnet-4-6", "permission_mode": "plan"}
+{"default_class": "standard-medium", "permission_mode": "plan"}
 ```
 """
         parsed = parse_profile(text)
         assert parsed.is_valid
         # Present sections have content
         assert "focused agent" in parsed.role
-        assert parsed.config["model"] == "claude-sonnet-4-6"
+        assert parsed.config["default_class"] == "standard-medium"
         assert parsed.config["permission_mode"] == "plan"
         # Missing sections use defaults
         assert parsed.tools == {}
@@ -1782,7 +1782,7 @@ You are a focused agent.
         assert result.success
 
         profile = await db.get_profile("partial-rc")
-        assert profile.model == "claude-sonnet-4-6"
+        assert profile.default_class == "standard-medium"
         assert profile.permission_mode == "plan"
         assert profile.allowed_tools == []
         assert profile.mcp_servers == []
@@ -1824,7 +1824,7 @@ name: Tools MCP Only
         assert result.success
 
         profile = await db.get_profile("partial-tm")
-        assert profile.model == ""
+        assert profile.default_class == ""
         assert profile.permission_mode == ""
         assert profile.allowed_tools == ["Read", "Bash"]
         # Inline configs are migrated out to the registry; only the name
@@ -1858,7 +1858,7 @@ name: Rules Only
         assert result.success
 
         profile = await db.get_profile("rules-only")
-        assert profile.model == ""
+        assert profile.default_class == ""
         assert profile.allowed_tools == []
         assert profile.mcp_servers == []
         assert "## Rules" in profile.system_prompt_suffix
@@ -1890,7 +1890,7 @@ name: Bare Profile
 
         profile = await db.get_profile("bare")
         assert profile.name == "Bare Profile"
-        assert profile.model == ""
+        assert profile.default_class == ""
         assert profile.permission_mode == ""
         assert profile.allowed_tools == []
         assert profile.mcp_servers == []
@@ -1911,7 +1911,7 @@ name: Bare Profile
         profile_dict = parsed_profile_to_agent_profile(parsed)
         assert profile_dict["id"] == "full-agent"
         assert profile_dict["name"] == "Full Integration Agent"
-        assert profile_dict["model"] == "claude-sonnet-4-6"
+        assert profile_dict["default_class"] == "standard-medium"
         assert profile_dict["permission_mode"] == "auto"
         assert profile_dict["allowed_tools"] == ["Read", "Write", "Edit", "Bash", "Glob", "Grep"]
         assert len(profile_dict["mcp_servers"]) == 2
@@ -1933,7 +1933,7 @@ name: Bare Profile
         # Step 5: Verify ALL fields match the original parsed content
         assert profile.id == "full-agent"
         assert profile.name == "Full Integration Agent"
-        assert profile.model == "claude-sonnet-4-6"
+        assert profile.default_class == "standard-medium"
         assert profile.permission_mode == "auto"
         assert profile.allowed_tools == ["Read", "Write", "Edit", "Bash", "Glob", "Grep"]
 
@@ -1956,7 +1956,7 @@ name: Bare Profile
 
         # Read back and verify key fields
         profile = await db.get_profile("full-agent")
-        assert profile.model == "claude-sonnet-4-6"
+        assert profile.default_class == "standard-medium"
         assert profile.permission_mode == "auto"
         assert profile.allowed_tools == ["Read", "Write", "Edit", "Bash", "Glob", "Grep"]
         assert "github" in profile.mcp_servers
@@ -1974,7 +1974,7 @@ name: Partial Round-Trip
 
 ## Config
 ```json
-{"model": "claude-sonnet-4-6"}
+{"default_class": "standard-medium"}
 ```
 
 ## Role
@@ -1986,7 +1986,7 @@ You handle code reviews.
         profile = await db.get_profile("partial-rt")
         assert profile.id == "partial-rt"
         assert profile.name == "Partial Round-Trip"
-        assert profile.model == "claude-sonnet-4-6"
+        assert profile.default_class == "standard-medium"
         assert profile.permission_mode == ""  # Not specified → default
         assert profile.allowed_tools == []  # No Tools section → empty
         assert profile.mcp_servers == []  # No MCP Servers → empty
@@ -2012,7 +2012,7 @@ You handle code reviews.
         profile = await db.get_profile("full-agent")
         assert profile is not None
         assert profile.name == "Full Integration Agent"
-        assert profile.model == "claude-sonnet-4-6"
+        assert profile.default_class == "standard-medium"
         assert profile.permission_mode == "auto"
         assert profile.allowed_tools == ["Read", "Write", "Edit", "Bash", "Glob", "Grep"]
         assert len(profile.mcp_servers) == 2
@@ -2060,7 +2060,7 @@ name: Version One
 
 ## Config
 ```json
-{"model": "old-model", "permission_mode": "plan"}
+{"default_class": "old-class", "permission_mode": "plan"}
 ```
 
 ## Tools
@@ -2077,7 +2077,7 @@ Original role.
 
         p1 = await db.get_profile("evolving")
         assert p1.name == "Version One"
-        assert p1.model == "old-model"
+        assert p1.default_class == "old-class"
         assert p1.permission_mode == "plan"
         assert p1.allowed_tools == ["Read"]
 
@@ -2090,7 +2090,7 @@ name: Version Two
 
 ## Config
 ```json
-{"model": "new-model", "permission_mode": "auto"}
+{"default_class": "new-class", "permission_mode": "auto"}
 ```
 
 ## Tools
@@ -2115,7 +2115,7 @@ Updated role.
 
         p2 = await db.get_profile("evolving")
         assert p2.name == "Version Two"
-        assert p2.model == "new-model"
+        assert p2.default_class == "new-class"
         assert p2.permission_mode == "auto"
         assert p2.allowed_tools == ["Read", "Write", "Bash"]
         assert p2.mcp_servers == ["linter"]
@@ -2135,14 +2135,14 @@ name: Stable Profile
 
 ## Config
 ```json
-{"model": "good-model"}
+{"default_class": "good-class"}
 ```
 """,
             db,
         )
 
         original = await db.get_profile("stable")
-        assert original.model == "good-model"
+        assert original.default_class == "good-class"
 
         # Attempt to sync invalid version
         bad_text = """\
@@ -2162,15 +2162,15 @@ name: Broken Stable
         # Original row preserved unchanged
         preserved = await db.get_profile("stable")
         assert preserved.name == "Stable Profile"
-        assert preserved.model == "good-model"
+        assert preserved.default_class == "good-class"
 
     @pytest.mark.asyncio
     async def test_g_upsert_only_one_row_after_create_update_cycle(self, db):
         """(g) Create → update → update produces exactly one row with latest values."""
         texts = [
-            '---\nid: cycle\nname: V1\n---\n\n## Config\n```json\n{"model": "m1"}\n```\n',
-            '---\nid: cycle\nname: V2\n---\n\n## Config\n```json\n{"model": "m2"}\n```\n',
-            '---\nid: cycle\nname: V3\n---\n\n## Config\n```json\n{"model": "m3"}\n```\n',
+            '---\nid: cycle\nname: V1\n---\n\n## Config\n```json\n{"default_class": "m1"}\n```\n',
+            '---\nid: cycle\nname: V2\n---\n\n## Config\n```json\n{"default_class": "m2"}\n```\n',
+            '---\nid: cycle\nname: V3\n---\n\n## Config\n```json\n{"default_class": "m3"}\n```\n',
         ]
 
         actions = []
@@ -2186,7 +2186,7 @@ name: Broken Stable
         matching = [p for p in profiles if p.id == "cycle"]
         assert len(matching) == 1
         assert matching[0].name == "V3"
-        assert matching[0].model == "m3"
+        assert matching[0].default_class == "m3"
 
 
 # ---------------------------------------------------------------------------
@@ -2213,7 +2213,7 @@ name: Bad Config Agent
 
 ## Config
 ```json
-{model: "claude-sonnet-4-6", trailing_comma: true,}
+{default_class: "standard-medium", trailing_comma: true,}
 ```
 """
 
@@ -2225,7 +2225,7 @@ name: Bad MCP Agent
 
 ## Config
 ```json
-{"model": "claude-sonnet-4-6"}
+{"default_class": "standard-medium"}
 ```
 
 ## MCP Servers
@@ -2377,7 +2377,7 @@ class TestRoadmap4111:
             AgentProfile(
                 id="bad-config",
                 name="Original Good Agent",
-                model="original-model",
+                default_class="original-class",
                 permission_mode="plan",
                 allowed_tools=["Read", "Write"],
                 mcp_servers=["github"],
@@ -2393,7 +2393,7 @@ class TestRoadmap4111:
         # ALL previous fields must be retained — no partial update
         profile = await db.get_profile("bad-config")
         assert profile.name == "Original Good Agent"
-        assert profile.model == "original-model"
+        assert profile.default_class == "original-class"
         assert profile.permission_mode == "plan"
         assert profile.allowed_tools == ["Read", "Write"]
         assert profile.mcp_servers == ["github"]
@@ -2406,7 +2406,7 @@ class TestRoadmap4111:
             AgentProfile(
                 id="bad-mcp",
                 name="Original MCP Agent",
-                model="good-model",
+                default_class="good-class",
             )
         )
 
@@ -2416,7 +2416,7 @@ class TestRoadmap4111:
 
         profile = await db.get_profile("bad-mcp")
         assert profile.name == "Original MCP Agent"
-        assert profile.model == "good-model"
+        assert profile.default_class == "good-class"
 
     @pytest.mark.asyncio
     async def test_b_retained_and_notified_via_watcher(
@@ -2425,7 +2425,7 @@ class TestRoadmap4111:
         """(b) Via watcher pipeline: DB retained AND notification sent on failure."""
         # Seed good profile
         await db.create_profile(
-            AgentProfile(id="bad-config", name="Stable Agent", model="stable-model")
+            AgentProfile(id="bad-config", name="Stable Agent", default_class="stable-class")
         )
 
         profile_path = tmp_path / "agent-types" / "bad-config" / "profile.md"
@@ -2441,7 +2441,7 @@ class TestRoadmap4111:
         # DB preserved
         profile = await db.get_profile("bad-config")
         assert profile.name == "Stable Agent"
-        assert profile.model == "stable-model"
+        assert profile.default_class == "stable-class"
 
         # Notification sent
         assert len(event_collector) == 1
@@ -2454,7 +2454,7 @@ class TestRoadmap4111:
             AgentProfile(
                 id="garbled",
                 name="Clean Agent",
-                model="clean-model",
+                default_class="clean-class",
                 allowed_tools=["Bash"],
             )
         )
@@ -2466,7 +2466,7 @@ class TestRoadmap4111:
         # All original fields intact
         profile = await db.get_profile("garbled")
         assert profile.name == "Clean Agent"
-        assert profile.model == "clean-model"
+        assert profile.default_class == "clean-class"
         assert profile.allowed_tools == ["Bash"]
 
     # -------------------------------------------------------------------
@@ -2484,7 +2484,7 @@ name: Warning Tools Agent
 
 ## Config
 ```json
-{"model": "claude-sonnet-4-6"}
+{"default_class": "standard-medium"}
 ```
 
 ## Tools
@@ -2517,7 +2517,7 @@ You are a helpful agent.
         # Other sections synced correctly despite tool warnings
         profile = await db.get_profile("warn-tools")
         assert profile is not None
-        assert profile.model == "claude-sonnet-4-6"
+        assert profile.default_class == "standard-medium"
         assert "myserver" in profile.mcp_servers
         assert "helpful agent" in profile.system_prompt_suffix
         assert "- Follow best practices" in profile.system_prompt_suffix
@@ -2710,7 +2710,7 @@ name: All Unknown
 
         profile = await db.get_profile("empty-agent")
         assert profile is not None
-        assert profile.model == ""
+        assert profile.default_class == ""
         assert profile.allowed_tools == []
         assert profile.mcp_servers == []
 
@@ -3040,7 +3040,7 @@ class TestScanAndSyncExistingProfiles:
         profile = await db.get_profile("coding")
         assert profile is not None
         assert profile.name == "Coding Agent"
-        assert profile.model == "claude-sonnet-4-6"
+        assert profile.default_class == "standard-medium"
 
     @pytest.mark.asyncio
     async def test_syncs_multiple_profiles(self, db, tmp_path):
@@ -3055,7 +3055,7 @@ name: {agent_type.title()} Agent
 
 ## Config
 ```json
-{{"model": "claude-sonnet-4-6"}}
+{{"default_class": "standard-medium"}}
 ```
 """
             _create_file(str(vault / "agent-types" / agent_type / "profile.md"), text)
@@ -3178,7 +3178,7 @@ name: No ID Agent
 
 ## Config
 ```json
-{"model": "claude-sonnet-4-6"}
+{"default_class": "standard-medium"}
 ```
 """
         _create_file(str(vault / "agent-types" / "derived" / "profile.md"), text)
@@ -3224,7 +3224,7 @@ name: No ID Agent
 
         profile = await db.get_profile("coding")
         assert profile.name == "Coding Agent"
-        assert profile.model == "claude-sonnet-4-6"
+        assert profile.default_class == "standard-medium"
         assert profile.permission_mode == "auto"
         assert "Read" in profile.allowed_tools
         assert "github" in profile.mcp_servers
@@ -3363,8 +3363,8 @@ class TestRetiredRuntimeKeyStrip:
 # Tests (a)-(f) per docs/specs/design/roadmap.md §4.1.12:
 #   (a) Edit profile.md Role section — DB updates with new Role text
 #       within one watcher cycle
-#   (b) Edit profile.md Config JSON (change model) — DB reflects new
-#       model value
+#   (b) Edit profile.md Config JSON (change default_class) — DB reflects
+#       the new class value
 #   (c) Rapid edits to profile.md (3 edits in 500ms) trigger only one
 #       sync due to debounce
 #   (d) Creating a new profile.md in vault triggers initial sync and DB
@@ -3406,7 +3406,7 @@ You are a backend engineer.
 
 ## Config
 ```json
-{"model": "claude-sonnet-4-6"}
+{"default_class": "standard-medium"}
 ```
 """
         _create_file(str(profile_path), initial_text)
@@ -3436,7 +3436,7 @@ You build end-to-end features with thorough test coverage.
 
 ## Config
 ```json
-{"model": "claude-sonnet-4-6"}
+{"default_class": "standard-medium"}
 ```
 """
         with open(str(profile_path), "w") as f:
@@ -3456,7 +3456,7 @@ You build end-to-end features with thorough test coverage.
 
     @pytest.mark.asyncio
     async def test_a_role_edit_preserves_other_fields(self, db, tmp_path):
-        """(a) Editing Role preserves model, tools, and other DB fields."""
+        """(a) Editing Role preserves default_class, tools, and other DB fields."""
         vault = tmp_path / "vault"
         profile_path = vault / "agent-types" / "test" / "profile.md"
 
@@ -3471,7 +3471,7 @@ Original role text.
 
 ## Config
 ```json
-{"model": "claude-sonnet-4-6", "permission_mode": "auto"}
+{"default_class": "standard-medium", "permission_mode": "auto"}
 ```
 
 ## Tools
@@ -3497,18 +3497,18 @@ Original role text.
         profile = await db.get_profile("test")
         assert "New role text" in profile.system_prompt_suffix
         # Other fields preserved
-        assert profile.model == "claude-sonnet-4-6"
+        assert profile.default_class == "standard-medium"
         assert profile.permission_mode == "auto"
         assert profile.allowed_tools == ["Read", "Write", "Edit"]
 
     # -------------------------------------------------------------------
-    # (b) Edit profile.md Config JSON (change model) — DB reflects new
-    #     model value
+    # (b) Edit profile.md Config JSON (change default_class) — DB reflects
+    #     the new class value
     # -------------------------------------------------------------------
 
     @pytest.mark.asyncio
-    async def test_b_edit_config_model_updates_db(self, db, tmp_path):
-        """(b) Changing the model in Config JSON updates the DB model field."""
+    async def test_b_edit_config_default_class_updates_db(self, db, tmp_path):
+        """(b) Changing default_class in Config JSON updates the DB column."""
         vault = tmp_path / "vault"
         profile_path = vault / "agent-types" / "coding" / "profile.md"
 
@@ -3523,7 +3523,7 @@ You are a software engineer.
 
 ## Config
 ```json
-{"model": "claude-sonnet-4-6"}
+{"default_class": "standard-medium"}
 ```
 """
         _create_file(str(profile_path), initial_text)
@@ -3534,13 +3534,13 @@ You are a software engineer.
         _touch(str(profile_path))
         await watcher.check()
 
-        # Verify initial model
+        # Verify initial class
         profile = await db.get_profile("coding")
         assert profile is not None
-        assert profile.model == "claude-sonnet-4-6"
+        assert profile.default_class == "standard-medium"
 
-        # Change model to opus
-        updated_text = initial_text.replace("claude-sonnet-4-6", "claude-opus-4")
+        # Change class to deep-high
+        updated_text = initial_text.replace("standard-medium", "deep-high")
         with open(str(profile_path), "w") as f:
             f.write(updated_text)
         _touch(str(profile_path))
@@ -3549,7 +3549,7 @@ You are a software engineer.
         assert len(changes) >= 1
 
         profile = await db.get_profile("coding")
-        assert profile.model == "claude-opus-4"
+        assert profile.default_class == "deep-high"
 
     @pytest.mark.asyncio
     async def test_b_edit_config_permission_mode_updates_db(self, db, tmp_path):
@@ -3565,7 +3565,7 @@ name: Test Agent
 
 ## Config
 ```json
-{"model": "claude-sonnet-4-6", "permission_mode": "plan"}
+{"default_class": "standard-medium", "permission_mode": "plan"}
 ```
 """
         _create_file(str(profile_path), initial_text)
@@ -3604,7 +3604,7 @@ Specialist in database optimization.
 
 ## Config
 ```json
-{"model": "claude-sonnet-4-6"}
+{"default_class": "standard-medium"}
 ```
 """
         _create_file(str(profile_path), initial_text)
@@ -3615,15 +3615,15 @@ Specialist in database optimization.
         _touch(str(profile_path))
         await watcher.check()
 
-        # Change model
-        updated_text = initial_text.replace("claude-sonnet-4-6", "claude-opus-4")
+        # Change class
+        updated_text = initial_text.replace("standard-medium", "deep-high")
         with open(str(profile_path), "w") as f:
             f.write(updated_text)
         _touch(str(profile_path))
         await watcher.check()
 
         profile = await db.get_profile("test")
-        assert profile.model == "claude-opus-4"
+        assert profile.default_class == "deep-high"
         assert "database optimization" in profile.system_prompt_suffix
 
     # -------------------------------------------------------------------
@@ -3651,7 +3651,7 @@ name: Rapid Agent
 
 ## Config
 ```json
-{"model": "model-v1"}
+{"default_class": "class-v1"}
 ```
 """,
         )
@@ -3668,7 +3668,7 @@ name: Rapid Agent
         _touch(str(profile_path))
         await watcher.check()
 
-        # Edit 2: change model to v2
+        # Edit 2: change class to v2
         with open(str(profile_path), "w") as f:
             f.write("""\
 ---
@@ -3678,13 +3678,13 @@ name: Rapid Agent
 
 ## Config
 ```json
-{"model": "model-v2"}
+{"default_class": "class-v2"}
 ```
 """)
         _touch(str(profile_path))
         await watcher.check()
 
-        # Edit 3: change model to v3 (the final value)
+        # Edit 3: change class to v3 (the final value)
         with open(str(profile_path), "w") as f:
             f.write("""\
 ---
@@ -3694,7 +3694,7 @@ name: Rapid Agent
 
 ## Config
 ```json
-{"model": "model-v3"}
+{"default_class": "class-v3"}
 ```
 """)
         _touch(str(profile_path))
@@ -3707,10 +3707,10 @@ name: Rapid Agent
         # Force flush — should dispatch exactly once
         await watcher._flush_pending(force=True)
 
-        # DB should reflect the final state (model-v3)
+        # DB should reflect the final state (class-v3)
         profile = await db.get_profile("rapid")
         assert profile is not None
-        assert profile.model == "model-v3"
+        assert profile.default_class == "class-v3"
 
     @pytest.mark.asyncio
     async def test_c_rapid_edits_deduplicated_to_single_change(self, db, tmp_path):
@@ -3763,7 +3763,7 @@ name: Instant Agent
 
 ## Config
 ```json
-{"model": "fast-model"}
+{"default_class": "fast-low"}
 ```
 """,
         )
@@ -3782,7 +3782,7 @@ name: Instant Agent
 
 ## Config
 ```json
-{"model": "updated-model"}
+{"default_class": "updated-class"}
 ```
 """)
         _touch(str(profile_path))
@@ -3791,7 +3791,7 @@ name: Instant Agent
         # Should be dispatched immediately
         profile = await db.get_profile("instant")
         assert profile is not None
-        assert profile.model == "updated-model"
+        assert profile.default_class == "updated-class"
 
     # -------------------------------------------------------------------
     # (d) Creating a new profile.md in vault triggers initial sync and
@@ -3825,7 +3825,7 @@ A brand new agent for testing.
 
 ## Config
 ```json
-{"model": "claude-sonnet-4-6", "permission_mode": "auto"}
+{"default_class": "standard-medium", "permission_mode": "auto"}
 ```
 
 ## Tools
@@ -3843,7 +3843,7 @@ A brand new agent for testing.
         profile = await db.get_profile("new-agent")
         assert profile is not None
         assert profile.name == "New Agent"
-        assert profile.model == "claude-sonnet-4-6"
+        assert profile.default_class == "standard-medium"
         assert profile.permission_mode == "auto"
         assert profile.allowed_tools == ["Read", "Write"]
         assert "brand new agent" in profile.system_prompt_suffix
@@ -3927,7 +3927,7 @@ name: Keeper Agent
 
 ## Config
 ```json
-{"model": "claude-sonnet-4-6"}
+{"default_class": "standard-medium"}
 ```
 
 ## Role
@@ -3944,7 +3944,7 @@ An agent whose config should persist after file deletion.
         # Verify profile exists in DB
         profile = await db.get_profile("keeper")
         assert profile is not None
-        assert profile.model == "claude-sonnet-4-6"
+        assert profile.default_class == "standard-medium"
         assert "persist after file deletion" in profile.system_prompt_suffix
 
         # Delete the file
@@ -3956,7 +3956,7 @@ An agent whose config should persist after file deletion.
         profile = await db.get_profile("keeper")
         assert profile is not None
         assert profile.name == "Keeper Agent"
-        assert profile.model == "claude-sonnet-4-6"
+        assert profile.default_class == "standard-medium"
         assert "persist after file deletion" in profile.system_prompt_suffix
 
     @pytest.mark.asyncio
@@ -3973,7 +3973,7 @@ name: Full Delete Test
 
 ## Config
 ```json
-{"model": "claude-sonnet-4-6", "permission_mode": "auto"}
+{"default_class": "standard-medium", "permission_mode": "auto"}
 ```
 
 ## Tools
@@ -4008,7 +4008,7 @@ You handle complex tasks.
         # Verify full profile in DB
         profile = await db.get_profile("full-del")
         assert profile is not None
-        assert profile.model == "claude-sonnet-4-6"
+        assert profile.default_class == "standard-medium"
         assert profile.allowed_tools == ["Read", "Write", "Edit"]
         assert "github" in profile.mcp_servers
 
@@ -4020,7 +4020,7 @@ You handle complex tasks.
         profile = await db.get_profile("full-del")
         assert profile is not None
         assert profile.name == "Full Delete Test"
-        assert profile.model == "claude-sonnet-4-6"
+        assert profile.default_class == "standard-medium"
         assert profile.permission_mode == "auto"
         assert profile.allowed_tools == ["Read", "Write", "Edit"]
         assert "github" in profile.mcp_servers
@@ -4043,7 +4043,7 @@ name: Phoenix Agent
 
 ## Config
 ```json
-{"model": "old-model"}
+{"default_class": "old-class"}
 ```
 """,
         )
@@ -4054,14 +4054,14 @@ name: Phoenix Agent
         _touch(str(profile_path))
         await watcher.check()
 
-        assert (await db.get_profile("phoenix")).model == "old-model"
+        assert (await db.get_profile("phoenix")).default_class == "old-class"
 
         # Delete
         os.remove(str(profile_path))
         await watcher.check()
 
         # Still in DB
-        assert (await db.get_profile("phoenix")).model == "old-model"
+        assert (await db.get_profile("phoenix")).default_class == "old-class"
 
         # Re-create with new content
         _create_file(
@@ -4074,7 +4074,7 @@ name: Phoenix Agent Reborn
 
 ## Config
 ```json
-{"model": "new-model"}
+{"default_class": "new-class"}
 ```
 """,
         )
@@ -4082,7 +4082,7 @@ name: Phoenix Agent Reborn
 
         profile = await db.get_profile("phoenix")
         assert profile.name == "Phoenix Agent Reborn"
-        assert profile.model == "new-model"
+        assert profile.default_class == "new-class"
 
     # -------------------------------------------------------------------
     # (f) Concurrent edits to two different agents' profile.md files sync
@@ -4106,7 +4106,7 @@ name: Agent A
 
 ## Config
 ```json
-{"model": "model-a-v1"}
+{"default_class": "class-a-v1"}
 ```
 
 ## Role
@@ -4123,7 +4123,7 @@ name: Agent B
 
 ## Config
 ```json
-{"model": "model-b-v1"}
+{"default_class": "class-b-v1"}
 ```
 
 ## Role
@@ -4146,8 +4146,8 @@ Agent B does task B.
         profile_b = await db.get_profile("agent-b")
         assert profile_a is not None
         assert profile_b is not None
-        assert profile_a.model == "model-a-v1"
-        assert profile_b.model == "model-b-v1"
+        assert profile_a.default_class == "class-a-v1"
+        assert profile_b.default_class == "class-b-v1"
 
         # Now edit both concurrently (different changes)
         with open(str(path_a), "w") as f:
@@ -4159,7 +4159,7 @@ name: Agent A Updated
 
 ## Config
 ```json
-{"model": "model-a-v2"}
+{"default_class": "class-a-v2"}
 ```
 
 ## Role
@@ -4176,7 +4176,7 @@ name: Agent B Updated
 
 ## Config
 ```json
-{"model": "model-b-v2"}
+{"default_class": "class-b-v2"}
 ```
 
 ## Role
@@ -4191,10 +4191,10 @@ Agent B now does task B-prime.
         profile_a = await db.get_profile("agent-a")
         profile_b = await db.get_profile("agent-b")
         assert profile_a.name == "Agent A Updated"
-        assert profile_a.model == "model-a-v2"
+        assert profile_a.default_class == "class-a-v2"
         assert "A-prime" in profile_a.system_prompt_suffix
         assert profile_b.name == "Agent B Updated"
-        assert profile_b.model == "model-b-v2"
+        assert profile_b.default_class == "class-b-v2"
         assert "B-prime" in profile_b.system_prompt_suffix
 
     @pytest.mark.asyncio
@@ -4214,7 +4214,7 @@ name: Alpha
 
 ## Config
 ```json
-{"model": "alpha-model"}
+{"default_class": "alpha-class"}
 ```
 """,
         )
@@ -4228,7 +4228,7 @@ name: Beta
 
 ## Config
 ```json
-{"model": "beta-model"}
+{"default_class": "beta-class"}
 ```
 """,
         )
@@ -4250,7 +4250,7 @@ name: Alpha Changed
 
 ## Config
 ```json
-{"model": "alpha-model-v2"}
+{"default_class": "alpha-class-v2"}
 ```
 """)
         _touch(str(path_a))
@@ -4259,12 +4259,12 @@ name: Alpha Changed
         # Alpha changed
         profile_a = await db.get_profile("alpha")
         assert profile_a.name == "Alpha Changed"
-        assert profile_a.model == "alpha-model-v2"
+        assert profile_a.default_class == "alpha-class-v2"
 
         # Beta unchanged
         profile_b = await db.get_profile("beta")
         assert profile_b.name == "Beta"
-        assert profile_b.model == "beta-model"
+        assert profile_b.default_class == "beta-class"
 
     @pytest.mark.asyncio
     async def test_f_agent_and_supervisor_profiles_sync_independently(self, db, tmp_path):
@@ -4289,7 +4289,7 @@ name: Coding Agent
 
 ## Config
 ```json
-{"model": "agent-model"}
+{"default_class": "agent-class"}
 ```
 """,
         )
@@ -4303,7 +4303,7 @@ name: Supervisor
 
 ## Config
 ```json
-{"model": "supervisor-model"}
+{"default_class": "supervisor-class"}
 ```
 """,
         )
@@ -4320,8 +4320,8 @@ name: Supervisor
         sup = await db.get_profile("supervisor")
         assert coding is not None
         assert sup is not None
-        assert coding.model == "agent-model"
-        assert sup.model == "supervisor-model"
+        assert coding.default_class == "agent-class"
+        assert sup.default_class == "supervisor-class"
 
         # Edit both simultaneously
         with open(str(agent_path), "w") as f:
@@ -4333,7 +4333,7 @@ name: Coding Agent v2
 
 ## Config
 ```json
-{"model": "agent-model-v2"}
+{"default_class": "agent-class-v2"}
 ```
 """)
         _touch(str(agent_path))
@@ -4347,7 +4347,7 @@ name: Supervisor v2
 
 ## Config
 ```json
-{"model": "supervisor-model-v2"}
+{"default_class": "supervisor-class-v2"}
 ```
 """)
         _touch(str(sup_path))
@@ -4357,9 +4357,9 @@ name: Supervisor v2
         coding = await db.get_profile("coding")
         sup = await db.get_profile("supervisor")
         assert coding.name == "Coding Agent v2"
-        assert coding.model == "agent-model-v2"
+        assert coding.default_class == "agent-class-v2"
         assert sup.name == "Supervisor v2"
-        assert sup.model == "supervisor-model-v2"
+        assert sup.default_class == "supervisor-class-v2"
 
     @pytest.mark.asyncio
     async def test_f_concurrent_debounced_edits(self, db, tmp_path):
@@ -4378,7 +4378,7 @@ name: DA
 
 ## Config
 ```json
-{"model": "da-v1"}
+{"default_class": "da-v1"}
 ```
 """,
         )
@@ -4392,7 +4392,7 @@ name: DB
 
 ## Config
 ```json
-{"model": "db-v1"}
+{"default_class": "db-v1"}
 ```
 """,
         )
@@ -4420,8 +4420,8 @@ name: DB
         profile_b = await db.get_profile("db")
         assert profile_a is not None
         assert profile_b is not None
-        assert profile_a.model == "da-v1"
-        assert profile_b.model == "db-v1"
+        assert profile_a.default_class == "da-v1"
+        assert profile_b.default_class == "db-v1"
 
 
 # ---------------------------------------------------------------------------
@@ -4567,7 +4567,7 @@ name: Custom DevOps Agent
 
 ## Config
 ```json
-{"model": "claude-sonnet-4-6"}
+{"default_class": "standard-medium"}
 ```
 """
         profile_path = tmp_path / "vault" / "agent-types" / "custom-devops" / "profile.md"
@@ -4667,7 +4667,7 @@ name: {agent_type.title()} Agent
 
 ## Config
 ```json
-{{"model": "claude-sonnet-4-6"}}
+{{"default_class": "standard-medium"}}
 ```
 """
             profile_path = tmp_path / "vault" / "agent-types" / agent_type / "profile.md"
@@ -4833,7 +4833,7 @@ You are the orchestrator.
 
 ## Config
 ```json
-{"model": "claude-sonnet-4-6"}
+{"default_class": "standard-medium"}
 ```
 """
         profile_path = tmp_path / "vault" / "orchestrator" / "profile.md"
@@ -4872,7 +4872,7 @@ name: Code Review Agent
 
 ## Config
 ```json
-{"model": "claude-sonnet-4-6"}
+{"default_class": "standard-medium"}
 ```
 """
         profile_path = tmp_path / "vault" / "agent-types" / "code-review" / "profile.md"
@@ -4949,24 +4949,24 @@ name: Alpha Agent
 
 ## Config
 ```json
-{"model": "claude-sonnet-4-6"}
+{"default_class": "standard-medium"}
 ```
 """
         _create_file(str(profile_path), valid)
 
         first = await scan_and_sync_existing_profiles(str(vault), db)
         assert [r.success for r in first] == [True]
-        assert (await db.get_profile("alpha")).model == "claude-sonnet-4-6"
+        assert (await db.get_profile("alpha")).default_class == "standard-medium"
 
         # Corrupt the Config block: unterminated JSON.
-        profile_path.write_text(valid.replace('{"model": "claude-sonnet-4-6"}', '{"model": '))
+        profile_path.write_text(valid.replace('{"default_class": "standard-medium"}', '{"default_class": '))
 
         second = await scan_and_sync_existing_profiles(str(vault), db)
 
         assert sum(1 for r in second if not r.success) >= 1
         surviving = await db.get_profile("alpha")
         assert surviving is not None, "parse failure pruned the row the spec says to keep"
-        assert surviving.model == "claude-sonnet-4-6"
+        assert surviving.default_class == "standard-medium"
 
     @pytest.mark.asyncio
     async def test_prune_deletes_row_when_profile_file_removed(self, db, tmp_path, caplog):
@@ -4983,7 +4983,7 @@ name: {agent_type.title()} Agent
 
 ## Config
 ```json
-{{"model": "claude-sonnet-4-6"}}
+{{"default_class": "standard-medium"}}
 ```
 """,
             )
@@ -4999,7 +4999,7 @@ name: {agent_type.title()} Agent
         assert await db.get_profile("gone") is None
         kept = await db.get_profile("kept")
         assert kept is not None
-        assert kept.model == "claude-sonnet-4-6"
+        assert kept.default_class == "standard-medium"
         assert "Pruned orphan profile row: gone" in caplog.text
 
     @pytest.mark.parametrize(

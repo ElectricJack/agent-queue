@@ -70,7 +70,7 @@ def sample_profile():
         id="coding",
         name="Coding Agent",
         description="A general-purpose coding agent",
-        model="claude-sonnet-4-6",
+        default_class="standard-medium",
         permission_mode="auto",
         allowed_tools=["Read", "Write", "Edit", "Bash"],
         mcp_servers=["github"],
@@ -122,13 +122,13 @@ class TestVerifyRoundTrip:
         assert not ok
         assert any("id:" in d for d in diffs)
 
-    def test_detects_model_mismatch(self, sample_profile):
-        """Should detect if the model field differs."""
+    def test_detects_default_class_mismatch(self, sample_profile):
+        """Should detect if the default_class field differs."""
         markdown = _render_profile_markdown(sample_profile)
-        markdown = markdown.replace("claude-sonnet-4-6", "gpt-4")
+        markdown = markdown.replace("standard-medium", "deep-high")
         ok, diffs = verify_round_trip(sample_profile, markdown)
         assert not ok
-        assert any("model:" in d for d in diffs)
+        assert any("default_class:" in d for d in diffs)
 
     def test_detects_tools_mismatch(self, sample_profile):
         """Should detect if allowed_tools differ."""
@@ -203,10 +203,10 @@ class TestRenderProfileMarkdown:
         assert "name: Coding Agent" in markdown
 
     def test_renders_config_section(self, sample_profile):
-        """Should include ## Config with model and permission_mode."""
+        """Should include ## Config with default_class and permission_mode."""
         markdown = _render_profile_markdown(sample_profile)
         assert "## Config" in markdown
-        assert "claude-sonnet-4-6" in markdown
+        assert "standard-medium" in markdown
         assert "auto" in markdown
 
     def test_renders_tools_section(self, sample_profile):
@@ -360,7 +360,7 @@ class TestMigrateDbProfilesToVault:
         assert parsed.is_valid
         assert parsed.frontmatter.id == "coding"
         assert parsed.frontmatter.name == "Coding Agent"
-        assert parsed.config["model"] == "claude-sonnet-4-6"
+        assert parsed.config["default_class"] == "standard-medium"
 
     async def test_multiple_profiles(self, db, data_dir, sample_profile, minimal_profile):
         """Multiple profiles should all be migrated."""
@@ -488,7 +488,7 @@ class TestMigrateDbProfilesToVault:
         assert parsed.frontmatter.id == "coding"
         assert parsed.frontmatter.name == "Coding Agent"
         assert parsed.frontmatter.extra.get("description") == "A general-purpose coding agent"
-        assert parsed.config["model"] == "claude-sonnet-4-6"
+        assert parsed.config["default_class"] == "standard-medium"
         assert parsed.config["permission_mode"] == "auto"
         assert parsed.tools["allowed"] == ["Read", "Write", "Edit", "Bash"]
         # Profile mcp_servers is now a list of registry names; inline
@@ -575,7 +575,7 @@ class TestCommandHandlerMigrateProfiles:
             AgentProfile(
                 id="test-agent",
                 name="Test Agent",
-                model="claude-sonnet-4-6",
+                default_class="standard-medium",
             )
         )
 
@@ -610,13 +610,13 @@ class TestCommandHandlerMigrateProfiles:
 
     async def test_migrate_force_via_command(self, handler):
         """force=True should overwrite existing vault files."""
-        await handler.db.create_profile(AgentProfile(id="test", name="Test", model="old-model"))
+        await handler.db.create_profile(AgentProfile(id="test", name="Test", default_class="old-class"))
 
         # First migration
         await handler.execute("migrate_profiles", {})
 
         # Update DB profile
-        await handler.db.update_profile("test", model="new-model")
+        await handler.db.update_profile("test", default_class="new-class")
 
         # Second migration with force
         result = await handler.execute("migrate_profiles", {"force": True})
@@ -630,7 +630,7 @@ class TestCommandHandlerMigrateProfiles:
         vault_path = handler._vault_profile_path("test")
         with open(vault_path) as f:
             content = f.read()
-        assert "new-model" in content
+        assert "new-class" in content
 
     async def test_migrate_empty_db(self, handler):
         """No user-added profiles → success with only baseline profiles."""
