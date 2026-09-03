@@ -4,6 +4,7 @@ import DiagnosticsBanner from "./DiagnosticsBanner";
 import EventScopeSelector, { ALL_EVENTS } from "./EventScopeSelector";
 import PlaybookSemanticGraphCanvas from "./PlaybookSemanticGraphCanvas";
 import SemanticNodeInspector from "./SemanticNodeInspector";
+import type { RunOverlayInput } from "./types";
 
 function Notice({ children }: { children: ReactNode }) {
   return (
@@ -22,6 +23,10 @@ export interface PlaybookSemanticGraphViewProps {
   playbookId: string;
   /** Pin the view to one artifact instead of whichever is active. */
   artifactSha?: string;
+  /** Run state to overlay. Drawn only on the artifact the run pinned, so a
+   *  caller must pin `artifactSha` to `overlay.artifact.artifact_sha256`; the
+   *  canvas refuses the overlay rather than mis-attributing it if it does not. */
+  overlay?: RunOverlayInput;
 }
 
 /** Semantic graph tab body: event scope, canvas, inspector and diagnostics.
@@ -33,6 +38,7 @@ export interface PlaybookSemanticGraphViewProps {
 export default function PlaybookSemanticGraphView({
   playbookId,
   artifactSha,
+  overlay,
 }: PlaybookSemanticGraphViewProps) {
   const [eventType, setEventType] = useState<string>(ALL_EVENTS);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -137,6 +143,7 @@ export default function PlaybookSemanticGraphView({
             graph={data}
             selectedNodeId={selectedNodeId}
             onSelectNode={onSelectNode}
+            overlay={overlay}
           />
         </div>
         {selected && (

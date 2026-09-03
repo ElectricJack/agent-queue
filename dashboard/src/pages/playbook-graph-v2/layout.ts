@@ -1,10 +1,12 @@
 import { MarkerType, type Edge, type Node } from "@xyflow/react";
 import type {
   ClusterBoundsDTO,
+  EdgeOverlayDTO,
   GraphEdgeDTO,
   GraphLayoutDTO,
   GraphNodeDTO,
   GridPositionDTO,
+  NodeOverlayDTO,
   RuleClusterDTO,
 } from "../../api/client";
 import {
@@ -20,7 +22,10 @@ import {
   RULE_CLUSTER_NODE_TYPE,
   ROW_GAP,
   SEMANTIC_NODE_TYPE,
+  TRAVERSED_EDGE_WIDTH,
+  UNTRAVERSED_EDGE_OPACITY,
   type RuleClusterNodeData,
+  type RunOverlayInput,
   type SemanticGraphNodeData,
 } from "./types";
 
@@ -33,9 +38,19 @@ export interface SemanticGraphLayoutResult {
   edges: Edge[];
   /** Edges omitted because one endpoint is absent from the node list. */
   droppedEdgeCount: number;
+  /** True when a run overlay was supplied *and* it pinned this exact
+   *  artifact, so its state was drawn. */
+  overlayApplied: boolean;
+  /** True when a run overlay was supplied and it pinned a *different*
+   *  artifact, so nothing of it was drawn. The canvas says so out loud rather
+   *  than silently showing a graph with no run state on it. */
+  overlayMismatch: boolean;
 }
 
 export interface SemanticGraphInput {
+  /** The artifact this projection is of. An overlay is only ever drawn on the
+   *  artifact whose hash matches it. */
+  artifact?: { artifact_sha256: string };
   nodes?: GraphNodeDTO[];
   edges?: GraphEdgeDTO[];
   rules?: RuleClusterDTO[];
@@ -43,7 +58,31 @@ export interface SemanticGraphInput {
   diagnostics?: { rule_id?: string | null; step_id?: string | null }[];
 }
 
-const EMPTY: SemanticGraphLayoutResult = { nodes: [], edges: [], droppedEdgeCount: 0 };
+const EMPTY: SemanticGraphLayoutResult = {
+  nodes: [],
+  edges: [],
+  droppedEdgeCount: 0,
+  overlayApplied: false,
+  overlayMismatch: false,
+};
+
+/** Run state may be drawn only on the exact artifact the run executed.
+ *
+ *  A run pins its artifact; the projection carries the hash it was compiled
+ *  from. Any drift between the two — a refetch still in flight, a run of an
+ *  artifact that has since been superseded, a caller that forgot to pin —
+ *  means the step and edge ids in the overlay are ids of a *different*
+ *  program, and decorating this graph with them would assert an execution
+ *  path that never happened. So the two hashes must be identical, and there
+ *  is deliberately no partial or best-effort match. */
+export function overlayAppliesTo(
+  graph: SemanticGraphInput | undefined,
+  overlay: RunOverlayInput | undefined,
+): boolean {
+  const executed = overlay?.artifact?.artifact_sha256;
+  const projected = graph?.artifact?.artifact_sha256;
+  return Boolean(executed && projected && executed === projected);
+}
 
 export function toPixels(grid: GridPositionDTO): { x: number; y: number } {
   return {
@@ -85,9 +124,19 @@ export function clusterPixelBounds(bounds: ClusterBoundsDTO): {
  *  independently addressable, which V1's positional ids could not do. */
 export function layoutSemanticGraph(
   graph: SemanticGraphInput | undefined,
+  overlay?: RunOverlayInput,
 ): SemanticGraphLayoutResult {
+  const overlayApplied = overlayAppliesTo(graph, overlay);
+  const overlayMismatch = Boolean(overlay) && !overlayApplied;
+  const nodeOverlay = new Map<string, NodeOverlayDTO>(
+    overlayApplied ? (overlay?.nodes ?? []).map((row) => [row.step_id, row]) : [],
+  );
+  const edgeOverlay = new Map<string, EdgeOverlayDTO>(
+    overlayApplied ? (overlay?.edges ?? []).map((row) => [row.edge_id, row]) : [],
+  );
+
   const apiNodes = graph?.nodes ?? [];
-  if (apiNodes.length === 0) return EMPTY;
+  if (apiNodes.length === 0) return { ...EMPTY, overlayApplied, overlayMismatch };
 
   const grid = graph?.layout?.grid_positions ?? {};
   const clusterBounds = graph?.layout?.cluster_bounds ?? {};
@@ -141,7 +190,7 @@ export function layoutSemanticGraph(
       connectable: false,
       deletable: false,
       zIndex: 1,
-      data: { node },
+      data: { node, overlay: nodeOverlay.get(node.id), overlayApplied },
     };
   });
 
@@ -154,15 +203,32 @@ export function layoutSemanticGraph(
       continue;
     }
     const kindLabel = EDGE_KIND_LABELS[apiEdge.kind] ?? "transition";
-    const style = EDGE_KIND_STYLES[apiEdge.kind] ?? NEUTRAL_EDGE_STYLE;
+    const kindStyle = EDGE_KIND_STYLES[apiEdge.kind] ?? NEUTRAL_EDGE_STYLE;
+    // The dash pattern is never touched by the overlay — weight and opacity
+    // carry "was this taken", the dashes keep carrying the edge kind.
+    const traversalCount = overlayApplied ? (edgeOverlay.get(apiEdge.id)?.traversal_count ?? 0) : 0;
+    const traversed = traversalCount > 0;
+    const style = !overlayApplied
+      ? kindStyle
+      : traversed
+        ? { ...kindStyle, strokeWidth: TRAVERSED_EDGE_WIDTH, strokeOpacity: 1 }
+        : { ...kindStyle, strokeOpacity: UNTRAVERSED_EDGE_OPACITY };
+    const baseLabel = apiEdge.label || apiEdge.outcome;
+    const runNote = !overlayApplied
+      ? ""
+      : traversed
+        ? `, traversed ${traversalCount} time${traversalCount === 1 ? "" : "s"} in this run`
+        : ", not traversed in this run";
     edges.push({
       id: apiEdge.id,
       source: apiEdge.source,
       target: apiEdge.target,
       sourceHandle: `out-${apiEdge.source_port}`,
       targetHandle: "in",
-      label: apiEdge.label || apiEdge.outcome,
-      ariaLabel: `${kindLabel} edge from ${apiEdge.source} to ${apiEdge.target} on outcome ${apiEdge.outcome}`,
+      // A loop that went round more than once says so on the edge itself; one
+      // traversal adds no count, because "×1" reads as noise next to "×7".
+      label: traversalCount > 1 ? `${baseLabel} ×${traversalCount}` : baseLabel,
+      ariaLabel: `${kindLabel} edge from ${apiEdge.source} to ${apiEdge.target} on outcome ${apiEdge.outcome}${runNote}`,
       markerEnd: {
         type: MarkerType.ArrowClosed,
         width: 16,
@@ -178,10 +244,22 @@ export function layoutSemanticGraph(
       focusable: false,
       deletable: false,
       reconnectable: false,
-      zIndex: 2,
-      data: { edgeKind: apiEdge.kind, outcome: apiEdge.outcome, condition: apiEdge.condition ?? null },
+      zIndex: traversed ? 3 : 2,
+      data: {
+        edgeKind: apiEdge.kind,
+        outcome: apiEdge.outcome,
+        condition: apiEdge.condition ?? null,
+        traversalCount,
+        traversed,
+      },
     });
   }
 
-  return { nodes: [...clusters, ...steps], edges, droppedEdgeCount };
+  return {
+    nodes: [...clusters, ...steps],
+    edges,
+    droppedEdgeCount,
+    overlayApplied,
+    overlayMismatch,
+  };
 }

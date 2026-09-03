@@ -1,5 +1,10 @@
 import type { CSSProperties } from "react";
-import type { GraphNodeDTO, RuleClusterDTO } from "../../api/client";
+import type {
+  GraphNodeDTO,
+  NodeOverlayDTO,
+  PlaybookRunOverlayResponse,
+  RuleClusterDTO,
+} from "../../api/client";
 
 /** Fixed card geometry. The backend owns rank and order (`GraphLayoutDTO`);
  *  the frontend owns pixels and nothing else. */
@@ -106,9 +111,64 @@ export const EDGE_KIND_LABELS: Record<string, string> = {
   terminal: "terminal",
 };
 
+/** The run facts the canvas overlays, structurally a subset of the run-overlay
+ *  response so a caller can hand the response straight through.
+ *
+ *  `artifact` is the artifact the run *executed*, and it is the only artifact
+ *  its state may be drawn on: an overlay is applied to a projection only when
+ *  the two hashes are identical (`overlayAppliesTo` in `layout.ts`). */
+export type RunOverlayInput = Pick<
+  PlaybookRunOverlayResponse,
+  "run_id" | "artifact" | "artifact_is_active" | "lifecycle" | "current_step_id" | "nodes" | "edges"
+>;
+
+export type NodeRunState = NonNullable<NodeOverlayDTO["state"]>;
+
+/** `NodeRunState` in words. The state is never carried by colour alone — every
+ *  visited card prints this label. */
+export const NODE_RUN_STATE_LABELS: Record<string, string> = {
+  not_visited: "not visited",
+  running: "running",
+  completed: "completed",
+  failed: "failed",
+  paused: "paused",
+  cancelled: "cancelled",
+  timed_out: "timed out",
+  skipped: "skipped",
+};
+
+/** Ring tone per run state, layered over the step-kind tone so a card still
+ *  says what kind of step it is while it says what the run did to it. */
+export const NODE_RUN_STATE_RINGS: Record<string, string> = {
+  running: "ring-2 ring-sky-300",
+  completed: "ring-2 ring-emerald-300",
+  failed: "ring-2 ring-rose-400",
+  paused: "ring-2 ring-amber-300",
+  cancelled: "ring-2 ring-slate-400",
+  timed_out: "ring-2 ring-orange-400",
+  skipped: "ring-2 ring-gray-500",
+};
+
+/** A step this run never reached stays on the canvas — the graph is the
+ *  artifact, not the run — but recedes so the executed path reads first. */
+export const UNVISITED_NODE_CLASS = "opacity-40";
+
+/** Traversed transitions thicken; untraversed ones fade by the same amount a
+ *  never-visited card does. Neither changes the edge's dash pattern, so the
+ *  edge kind stays readable under an overlay. */
+export const TRAVERSED_EDGE_WIDTH = 3.5;
+export const UNTRAVERSED_EDGE_OPACITY = 0.25;
+
 export interface SemanticGraphNodeData extends Record<string, unknown> {
   node: GraphNodeDTO;
   onSelect?: (nodeId: string) => void;
+  /** This step's row of the applied run overlay, absent when no run is
+   *  overlaid or when the run pinned a different artifact. */
+  overlay?: NodeOverlayDTO;
+  /** True when a run overlay is applied to the projection at all, which is
+   *  what lets a card distinguish "no run selected" from "this run never
+   *  reached me". */
+  overlayApplied?: boolean;
 }
 
 export interface RuleClusterNodeData extends Record<string, unknown> {
