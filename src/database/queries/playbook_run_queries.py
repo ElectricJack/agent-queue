@@ -595,6 +595,11 @@ class PlaybookRunQueryMixin:
                 raise SnapshotVersionConflict(
                     run_id, expected_version, int(row["snapshot_version"])
                 )
+            # A paused run owns active durable waits.  Cancelling it directly
+            # must retire those waits before this transaction commits, or a
+            # later event can claim a terminal run after a restart.
+            if target is RunLifecycle.CANCELLED:
+                await self.clear_for_run(run_id, conn=conn)
         return advanced
 
     async def list_runs(
