@@ -458,8 +458,11 @@ async def test_pool_lifecycle_is_global_durable_and_guarded(pool_handler, tmp_pa
     """Lifecycle lives on the system profile and a later sync must not revert it."""
     import time
 
+    from src.event_bus import EventBus
     from src.models import SessionRecord
     from src.profiles.parser import parse_profile
+
+    pool_handler.orchestrator.bus = EventBus(env="dev")
 
     await pool_handler.db.create_session(
         SessionRecord(
@@ -510,6 +513,28 @@ async def test_pool_lifecycle_is_global_durable_and_guarded(pool_handler, tmp_pa
     assert refused == {
         "success": False,
         "error": "cannot set lifecycle to pool while swarm.enabled is false",
+    }
+
+
+async def test_pool_lifecycle_event_includes_the_request_project(pool_handler):
+    """A project-scoped API call emits a schema-valid lifecycle event."""
+    from src.event_bus import EventBus
+
+    events = []
+    bus = EventBus(env="dev")
+    bus.subscribe("pool.lifecycle_changed", events.append)
+    pool_handler.orchestrator.bus = bus
+
+    changed = await pool_handler._cmd_pool_set_lifecycle(
+        {"project_id": PROJECT_ID, "profile_id": "worker", "lifecycle": "task"}
+    )
+
+    assert changed["success"] is True
+    assert len(events) == 1
+    assert {key: events[0][key] for key in ("project_id", "profile_id", "lifecycle")} == {
+        "project_id": PROJECT_ID,
+        "profile_id": "worker",
+        "lifecycle": "task",
     }
 
 

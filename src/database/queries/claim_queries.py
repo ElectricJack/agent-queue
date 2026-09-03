@@ -55,6 +55,11 @@ PREPARE_BACKOFF_UNTIL_KEY = "claim_prepare_backoff_until"
 PREPARE_BACKOFF_ATTEMPTS_KEY = "claim_prepare_backoff_attempts"
 PREPARE_BACKOFF_INITIAL_SECONDS = 120.0
 PREPARE_BACKOFF_MAX_SECONDS = 300.0
+CLAIM_PREPARATION_METADATA_KEYS = (
+    "manual_pause_checkpoint",
+    PREPARE_BACKOFF_UNTIL_KEY,
+    PREPARE_BACKOFF_ATTEMPTS_KEY,
+)
 
 
 class ClaimQueryMixin:
@@ -134,6 +139,21 @@ class ClaimQueryMixin:
         )
         async with self._engine.connect() as conn:
             return (await conn.execute(stmt)).scalar_one_or_none() is not None
+
+    async def clear_claim_preparation_metadata(self, task_id: str) -> None:
+        """Clear successful-preparation state with one metadata delete.
+
+        The pause checkpoint and prepare-backoff keys all become stale at the
+        same activation boundary.  Clearing them together preserves that
+        invariant without opening one short transaction for each key.
+        """
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                delete(task_metadata).where(
+                    task_metadata.c.task_id == task_id,
+                    task_metadata.c.key.in_(CLAIM_PREPARATION_METADATA_KEYS),
+                )
+            )
 
     async def release_claim_slot(self, conn, session_id: str) -> None:
         await conn.execute(

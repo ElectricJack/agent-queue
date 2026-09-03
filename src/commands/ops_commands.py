@@ -457,10 +457,23 @@ class OpsCommandsMixin:
                         "reason": "lifecycle_changed",
                     },
                 )
-        await self.orchestrator.bus.emit(
-            "pool.lifecycle_changed",
-            {"profile_id": profile_id, "lifecycle": lifecycle},
-        )
+        # The profile edit is global, but lifecycle events are project-routed.
+        # A compatibility caller supplies the affected project; an unscoped
+        # global command fans out to every project so each emitted payload
+        # remains schema-valid without making the configuration project-local.
+        event_project_id = args.get("project_id") or (self._current_scope or {}).get("project_id")
+        project_ids = [event_project_id] if event_project_id else [
+            project.id for project in await self.db.list_projects()
+        ]
+        for project_id in project_ids:
+            await self.orchestrator.bus.emit(
+                "pool.lifecycle_changed",
+                {
+                    "project_id": project_id,
+                    "profile_id": profile_id,
+                    "lifecycle": lifecycle,
+                },
+            )
         return {
             "success": True,
             "profile_id": profile_id,
@@ -546,13 +559,16 @@ class OpsCommandsMixin:
             "terminated": terminated,
             "warnings": warnings,
         }
-        await self.orchestrator.bus.emit(
-            "pool.bounds_changed",
-            {
-                "profile_id": profile_id,
-                "min_active": profile.min_active,
-                "max_active": profile.max_active,
-                "project_caps": project_caps,
-            },
-        )
+        for project_cap in project_caps:
+            await self.orchestrator.bus.emit(
+                "pool.bounds_changed",
+                {
+                    "project_id": project_cap["project_id"],
+                    "profile_id": profile_id,
+                    "min_active": profile.min_active,
+                    "max_active": profile.max_active,
+                    "project_cap": project_cap["max_concurrent_agents"],
+                    "effective_max_active": project_cap["effective_max_active"],
+                },
+            )
         return response
