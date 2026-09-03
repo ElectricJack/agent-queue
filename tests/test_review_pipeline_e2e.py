@@ -58,6 +58,12 @@ def orchestrator_factory(tmp_path):
         o.db = db
         o.git = MagicMock()
         o.git.arev_parse = AsyncMock(return_value="")
+        # ``pr_merge`` validates the PR's immutable identity before merging.
+        o.git.avalidate_pr_for_merge = AsyncMock(
+            return_value=PullRequestIdentity(
+                "org/repo", 1, "main", "a" * 40, "feature", "b" * 40, 1
+            )
+        )
         o.bus = MagicMock()
         o.bus.emit = AsyncMock()
         o.command_handler = CommandHandler(o, cfg)

@@ -276,7 +276,7 @@ async def test_final_reviewer_can_merge_its_review_branch_pr(api):
     assert api.merge_pr.await_args.kwargs == {
         "method": "squash",
         "expected_head_oid": PR_IDENTITY.head_oid,
-        "expected_base_oid": PR_IDENTITY.base_oid,
+        "expected_base_ref": PR_IDENTITY.base_ref,
     }
 
 
