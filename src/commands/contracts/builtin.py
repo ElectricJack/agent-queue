@@ -45,6 +45,7 @@ class CreateTaskArgs(CommandArgs):
     requires_kinds: list[Any] | None = None
     depends_on: str | list[Any] | None = None
     parent_id: str | None = None
+    root: bool | None = None
     labels: list[str] | None = None
     reason: str | None = None
     discovered_from: str | None = None
@@ -534,6 +535,7 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
             "requires_kinds": "Required workspace kinds",
             "depends_on": "Depends on",
             "parent_id": "Parent task",
+            "root": "Create at project root",
             "labels": "Labels",
             "reason": "Reason",
             "discovered_from": "Discovered from",

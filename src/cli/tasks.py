@@ -205,6 +205,12 @@ def _create_task_graph(
     ),
 )
 @click.option(
+    "--root",
+    is_flag=True,
+    default=False,
+    help="For a worker filing: create at project root instead of beside the held task",
+)
+@click.option(
     "--reason",
     default=None,
     help=(
@@ -235,6 +241,7 @@ def task_create(
     from_spec: str | None,
     dry_run: bool,
     parent_id: str | None,
+    root: bool,
     reason: str | None,
     deliverables: tuple[str, ...],
 ) -> None:
@@ -250,6 +257,10 @@ def task_create(
     """
     api_url = ctx.obj.get("api_url") if ctx.obj else None
 
+    if root and parent_id:
+        raise click.UsageError("--root and --parent are mutually exclusive")
+    if root and (graph_file or from_spec):
+        raise click.UsageError("--root only applies to single-task creation")
     if graph_file or from_spec:
         _create_task_graph(
             ctx,
@@ -305,6 +316,8 @@ def task_create(
 
     if parent_id and "parent_id" not in params:
         params["parent_id"] = parent_id
+    if root:
+        params["root"] = True
     if reason and "reason" not in params:
         params["reason"] = reason
     if deliverables:

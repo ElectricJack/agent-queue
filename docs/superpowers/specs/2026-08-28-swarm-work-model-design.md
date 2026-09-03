@@ -746,7 +746,11 @@ close is skipped for pools; the token is revoked at drain.
   has a parent, the new task defaults to `T.parent_task_id`**: emergent work found while
   executing a child of an epic is organised as that child's *sibling*, grouped under the
   same epic (this is what `AGENTS.md` and the prime "Emergent work" section tell workers
-  to do; the server now does it for them). If `T` is a root, the filing is a root. A
+  to do; the server now does it for them). An explicit `root=true` (`aq task create
+  --root`) opts out of that sibling default for cross-cutting work and creates a project
+  root; `root` and `parent_id` are mutually exclusive and the conflict is rejected before
+  the filing quota or any other state is mutated. If `T` is a root, the filing is a root
+  with or without the explicit flag. A
   `discovered-from` edge to `T` (or to the explicit `discovered_from`, which must also
   be `T` or a descendant) is written **in the same transaction as the parent-child edge**,
   carrying the required `reason`, so placement and provenance never disagree — except
@@ -781,7 +785,10 @@ close is skipped for pools; the token is revoked at drain.
 `parent_task_id`, `discovered_from`, `routing_gate_id` (schema registry updated; required
 triple unchanged). For a worker filing `parent_task_id` is the parent actually written
 (the shared epic for a sibling filing, `null` for a root or depth-cap fallback) and
-`discovered_from` is the origin task, so a subscriber sees both halves of the placement. The shipped `default-pipeline.md` rule:
+`discovered_from` is the origin task, so a subscriber sees both halves of the placement.
+An explicit root filing therefore reports `parent_task_id: null` and `discovered_from: T`,
+exactly like a root filing made while holding a root task. The shipped
+`default-pipeline.md` rule:
 
 ```yaml
 - id: worker-filed-triage
@@ -871,7 +878,7 @@ regenerate from it. `*` = new. Response models: add `src/api/models/task.py` ent
 
 | CLI | Command | Agent scope |
 |---|---|---|
-| `aq task create … [--parent <id>] [--discovered-from <id>]` | `create_task` | yes* (constrained, §12) |
+| `aq task create … [--parent <id> \| --root] [--discovered-from <id>]` | `create_task` | yes* (constrained, §12) |
 | `aq task claim [<id> \| --next] [--wait S]`* | `task_claim`* | yes |
 | `aq task close <id> --outcome … [--claim-next]` | `task_close` | yes |
 | `aq task children <id> [--recursive] [--status S] [--brief]`* | `task_children`* | yes |
