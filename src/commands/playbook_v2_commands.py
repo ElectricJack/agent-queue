@@ -83,6 +83,46 @@ PENDING_EVENT_REASON_TOO_SHORT_ERROR = (
     "an event dropped without a recorded reason is a silently lost event"
 )
 
+#: Why an ``automatic`` replay declined to consume a backlog.  Operators and
+#: the dashboard read these verbatim, so keep them in step with
+#: ``PlaybooksConfig.v2_pending_event_replay_on_activation``.
+PENDING_EVENT_REPLAY_UNREVIEWED_REFUSAL = (
+    "automatic replay is refused for a question_required activation — an "
+    "unreviewed playbook may not auto-consume a backlog"
+)
+PENDING_EVENT_REPLAY_DISABLED_REFUSAL = (
+    "automatic replay is refused for a disabled activation — a playbook that "
+    "is not running may not consume a backlog"
+)
+PENDING_EVENT_REPLAY_BLOCKED_REFUSAL = (
+    "automatic replay is refused because the activation was blocked"
+)
+
+
+def _pending_event_replay_refusal(health: str, *, enabled: bool) -> str | None:
+    """Fail-closed gate: which healths may auto-consume a backlog.
+
+    Only a ``ready``, enabled activation may.  ``question_required`` gets its
+    own message because the plan
+    (``docs/superpowers/plans/2026-09-01-playbook-v2-migration-artifacts.md``
+    §5.5 T-16) names that state specifically, and it is also the one
+    ``PlaybooksConfig.validate(activation_healths=...)`` refuses in config.
+    Every other non-``ready`` health is refused too — replaying a backlog into
+    a stale, invalid or unavailable artifact is the same unreviewed
+    consumption with a different label.
+    """
+    if health == "question_required":
+        return PENDING_EVENT_REPLAY_UNREVIEWED_REFUSAL
+    if not enabled or health == "disabled":
+        return PENDING_EVENT_REPLAY_DISABLED_REFUSAL
+    if health != "ready":
+        return (
+            f"automatic replay requires a ready activation; this one is "
+            f"'{health}'"
+        )
+    return None
+
+
 #: The seven command names this mixin owns, in child-plan §4.8 order.  Imported
 #: by ``src/commands/handler.py`` (feature pause) and by the tests that pin the
 #: registration surface.
@@ -1070,6 +1110,13 @@ class PlaybookV2CommandsMixin:
                 "changed": False,
                 "blocked": True,
                 "blockers": blockers,
+                "pending_event_replay": self._v2_replay_report(
+                    refused_reason=(
+                        PENDING_EVENT_REPLAY_BLOCKED_REFUSAL
+                        if self._v2_replay_policy() == "automatic"
+                        else None
+                    )
+                ),
             }
         scope, scope_identifier = self._v2_scope(target)
         from src.commands.principal import current_principal
@@ -1091,6 +1138,7 @@ class PlaybookV2CommandsMixin:
         )
         refreshed, _contracts, _profiles = await self._v2_health_records()
         activation = self._v2_activation_for(refreshed, playbook_id, artifact_sha256)
+        replay = await self._v2_replay_on_activation(playbook_id, activation)
         return {
             "success": True,
             "activation": activation.as_dict(),
@@ -1098,7 +1146,105 @@ class PlaybookV2CommandsMixin:
             "changed": current_sha != artifact_sha256 or bool(current and current.enabled) != enabled,
             "blocked": False,
             "blockers": [],
+            "pending_event_replay": replay,
         }
+
+    def _v2_replay_policy(self) -> str:
+        """``manual`` or ``automatic`` — the configured activation replay policy."""
+        playbooks = getattr(self.config, "playbooks", None)
+        policy = getattr(playbooks, "v2_pending_event_replay_on_activation", "manual")
+        return str(policy or "manual")
+
+    def _v2_replay_report(
+        self, *, replayed: bool = False, refused_reason: str | None = None, **extra: Any
+    ) -> dict[str, Any]:
+        report: dict[str, Any] = {
+            "policy": self._v2_replay_policy(),
+            "replayed": replayed,
+            "refused_reason": refused_reason,
+            "considered": 0,
+            "dispatched_run_ids": [],
+            "skipped": [],
+            "errors": [],
+        }
+        report.update(extra)
+        return report
+
+    async def _v2_replay_on_activation(self, playbook_id: str, activation: Any) -> dict[str, Any]:
+        """Consume the backlog held behind a freshly activated artifact.
+
+        ``playbooks.v2_pending_event_replay_on_activation`` decides whether
+        activating an artifact also drains the events held behind it.
+        ``manual`` (the default) does nothing here and leaves the backlog to
+        ``playbook_pending_event_action``; ``automatic`` replays it, and the
+        report says which happened, so an operator never has to infer the
+        policy from an empty queue.
+
+        The replay is deliberately *not* a shortcut: every held row goes
+        through :meth:`_v2_replay_held_event`, so the artifact that was just
+        activated re-runs its own rule matching and ``when`` guards, the held
+        payload's server-owned keys are stripped, and a failed dispatch
+        restores the row instead of consuming it.  Rows are taken oldest
+        first — arrival order is replay order (§6.6) — and bounded by the same
+        ``v2_max_pending_events_per_playbook`` quota that bounds the queue, so
+        an activation cannot become an unbounded dispatch storm.
+
+        Fail-closed: the gate reads the health recomputed *after* the write,
+        not the value the write asked for, and refuses anything that is not a
+        ready, enabled activation.  A refusal is not an activation failure —
+        the artifact is live either way — so it is reported rather than
+        raised, and the backlog stays operable by hand.
+        """
+        if self._v2_replay_policy() != "automatic":
+            return self._v2_replay_report()
+
+        health = "unavailable" if activation is None else activation.health.value
+        enabled = bool(activation is not None and activation.enabled)
+        refusal = _pending_event_replay_refusal(health, enabled=enabled)
+        if refusal:
+            return self._v2_replay_report(refused_reason=refusal)
+
+        if not self._v2_storage_ready(
+            "list_pending_events",
+            "claim_pending_event_dispatch",
+            "renew_pending_event_dispatch_claim",
+            "finalize_pending_event_dispatch",
+            "record_pending_event_dispatch_failure",
+        ):
+            return self._v2_replay_report(refused_reason=V2_STORAGE_UNAVAILABLE_ERROR)
+
+        playbooks = getattr(self.config, "playbooks", None)
+        limit = int(getattr(playbooks, "v2_max_pending_events_per_playbook", 1000) or 1000)
+        rows = await self.db.list_pending_events(
+            playbook_id=playbook_id,
+            reasons=sorted(_VALID_PENDING_REASONS),
+            include_resolved=False,
+            limit=max(1, limit),
+        )
+
+        from src.commands.principal import ExecutionPrincipal, current_principal
+
+        principal = current_principal() or ExecutionPrincipal.service("playbook-pending-event")
+        actor = principal.describe()
+        dispatched: list[str] = []
+        skipped: list[str] = []
+        errors: list[str] = []
+        for row in rows:
+            claimed, run_ids, error = await self._v2_replay_held_event(row, principal, actor)
+            if not claimed:
+                skipped.append(row["pending_event_id"])
+                continue
+            if error:
+                errors.append(f"{row['pending_event_id']}: {error}")
+                continue
+            dispatched.extend(run_ids)
+        return self._v2_replay_report(
+            replayed=True,
+            considered=len(rows),
+            dispatched_run_ids=dispatched,
+            skipped=skipped,
+            errors=errors,
+        )
 
     @staticmethod
     def _v2_replayable_event(event: Any) -> dict[str, Any]:
@@ -1149,6 +1295,78 @@ class PlaybookV2CommandsMixin:
                 dispatch.cancel()
                 with suppress(BaseException):
                     await dispatch
+
+    async def _v2_replay_held_event(
+        self, row: dict[str, Any], principal: Any, actor: str
+    ) -> tuple[bool, tuple[str, ...], str | None]:
+        """Claim one held row, replay it, and release the claim if it fails.
+
+        The single replay primitive behind both the operator's
+        ``playbook_pending_event_action dispatch`` and the automatic
+        replay ``playbook_activate`` performs, so the two paths cannot
+        drift: a replay is always a fresh dispatch through the durable
+        claim, and a failed dispatch always restores the row instead of
+        consuming it (Package 6 §4.3).
+
+        Returns ``(claimed, run_ids, error)``.  ``claimed`` is ``False``
+        when another operator already holds the row and nothing was
+        attempted — the caller reports that as skipped rather than as a
+        failure.  Cancellation and non-``Exception`` failures propagate
+        after the claim has been released.
+        """
+        event_id = row["pending_event_id"]
+        claimed_at = time.time()
+        claim_token = await self.db.claim_pending_event_dispatch(
+            event_id,
+            claimed_by=actor,
+            now=claimed_at,
+            stale_before=claimed_at - PENDING_EVENT_DISPATCH_LEASE_SECONDS,
+        )
+        if claim_token is None:
+            return False, (), None
+        try:
+            result = await self._v2_dispatch_pending_event(row, principal, claim_token)
+            finalized = await self.db.finalize_pending_event_dispatch(
+                event_id,
+                claim_token=claim_token,
+                resolved_by=actor,
+                now=time.time(),
+            )
+            if not finalized:
+                raise RuntimeError("pending event dispatch claim was lost before finalization")
+            return True, tuple(result.run_ids), None
+        except BaseException as exc:  # noqa: BLE001 - cancellation must release the claim
+            cancelled = isinstance(exc, asyncio.CancelledError)
+            error = "dispatch cancelled" if cancelled else str(exc)
+            if not cancelled:
+                logger.warning("pending V2 event %s dispatch failed", event_id, exc_info=True)
+            try:
+                cancelled_during_recovery = None
+                recovery = asyncio.create_task(
+                    self.db.record_pending_event_dispatch_failure(
+                        event_id,
+                        claim_token=claim_token,
+                        error=error,
+                    )
+                )
+                restored = await asyncio.shield(recovery)
+            except asyncio.CancelledError as recovery_cancel:
+                cancelled_during_recovery = recovery_cancel
+                restored = await recovery
+            except Exception as restore_exc:  # noqa: BLE001 - report both failures
+                logger.exception(
+                    "pending V2 event %s could not restore its failed dispatch",
+                    event_id,
+                )
+                error = f"{error}; failed to restore pending event: {restore_exc}"
+            else:
+                if not restored:
+                    error = f"{error}; failed dispatch no longer owns pending event claim"
+            if cancelled_during_recovery is not None:
+                raise cancelled_during_recovery
+            if not isinstance(exc, Exception):
+                raise
+            return True, (), error
 
     async def _cmd_playbook_pending_event_action(self, args: dict) -> dict:
         """Dispatch or discard held pending events.
@@ -1244,59 +1462,14 @@ class PlaybookV2CommandsMixin:
                     continue
                 discarded.append(event_id)
                 continue
-            claimed_at = time.time()
-            claim_token = await self.db.claim_pending_event_dispatch(
-                event_id,
-                claimed_by=actor,
-                now=claimed_at,
-                stale_before=claimed_at - PENDING_EVENT_DISPATCH_LEASE_SECONDS,
-            )
-            if claim_token is None:
+            claimed, run_ids, error = await self._v2_replay_held_event(row, principal, actor)
+            if not claimed:
                 skipped.append(event_id)
                 continue
-            try:
-                result = await self._v2_dispatch_pending_event(row, principal, claim_token)
-                finalized = await self.db.finalize_pending_event_dispatch(
-                    event_id,
-                    claim_token=claim_token,
-                    resolved_by=actor,
-                    now=time.time(),
-                )
-                if not finalized:
-                    raise RuntimeError("pending event dispatch claim was lost before finalization")
-                dispatched.extend(result.run_ids)
-            except BaseException as exc:  # noqa: BLE001 - cancellation must release the claim
-                cancelled = isinstance(exc, asyncio.CancelledError)
-                error = "dispatch cancelled" if cancelled else str(exc)
-                if not cancelled:
-                    logger.warning("pending V2 event %s dispatch failed", event_id, exc_info=True)
-                try:
-                    cancelled_during_recovery = None
-                    recovery = asyncio.create_task(
-                        self.db.record_pending_event_dispatch_failure(
-                            event_id,
-                            claim_token=claim_token,
-                            error=error,
-                        )
-                    )
-                    restored = await asyncio.shield(recovery)
-                except asyncio.CancelledError as recovery_cancel:
-                    cancelled_during_recovery = recovery_cancel
-                    restored = await recovery
-                except Exception as restore_exc:  # noqa: BLE001 - report both failures
-                    logger.exception(
-                        "pending V2 event %s could not restore its failed dispatch",
-                        event_id,
-                    )
-                    error = f"{error}; failed to restore pending event: {restore_exc}"
-                else:
-                    if not restored:
-                        error = f"{error}; failed dispatch no longer owns pending event claim"
-                if cancelled_during_recovery is not None:
-                    raise cancelled_during_recovery
-                if not isinstance(exc, Exception):
-                    raise
+            if error:
                 errors.append(f"{event_id}: {error}")
+                continue
+            dispatched.extend(run_ids)
         return {
             "success": not errors,
             "action": action,

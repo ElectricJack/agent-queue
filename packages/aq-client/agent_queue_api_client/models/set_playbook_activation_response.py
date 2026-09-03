@@ -9,6 +9,7 @@ from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.activation_state_dto import ActivationStateDTO
+    from ..models.pending_event_replay_dto import PendingEventReplayDTO
 
 
 T = TypeVar("T", bound="SetPlaybookActivationResponse")
@@ -26,6 +27,16 @@ class SetPlaybookActivationResponse:
         changed (bool | Unset):  Default: False.
         blocked (bool | Unset):  Default: False.
         blockers (list[str] | Unset):
+        pending_event_replay (PendingEventReplayDTO | Unset): What ``playbooks.v2_pending_event_replay_on_activation``
+            did here.
+
+            Always present on an activation response, including under the default
+            ``manual`` policy, so an empty backlog and a policy that never looked at
+            one are distinguishable without reading the daemon's config.
+            ``refused_reason`` is the fail-closed path: the policy is ``automatic``
+            but the activation was not a ready, enabled one — most importantly
+            ``question_required``, where an unreviewed playbook may not auto-consume
+            a backlog.
     """
 
     activation: ActivationStateDTO
@@ -34,6 +45,7 @@ class SetPlaybookActivationResponse:
     changed: bool | Unset = False
     blocked: bool | Unset = False
     blockers: list[str] | Unset = UNSET
+    pending_event_replay: PendingEventReplayDTO | Unset = UNSET
 
     def to_dict(self) -> dict[str, Any]:
         activation = self.activation.to_dict()
@@ -54,6 +66,10 @@ class SetPlaybookActivationResponse:
         if not isinstance(self.blockers, Unset):
             blockers = self.blockers
 
+        pending_event_replay: dict[str, Any] | Unset = UNSET
+        if not isinstance(self.pending_event_replay, Unset):
+            pending_event_replay = self.pending_event_replay.to_dict()
+
         field_dict: dict[str, Any] = {}
 
         field_dict.update(
@@ -71,12 +87,15 @@ class SetPlaybookActivationResponse:
             field_dict["blocked"] = blocked
         if blockers is not UNSET:
             field_dict["blockers"] = blockers
+        if pending_event_replay is not UNSET:
+            field_dict["pending_event_replay"] = pending_event_replay
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.activation_state_dto import ActivationStateDTO
+        from ..models.pending_event_replay_dto import PendingEventReplayDTO
 
         d = dict(src_dict)
         activation = ActivationStateDTO.from_dict(d.pop("activation"))
@@ -98,6 +117,13 @@ class SetPlaybookActivationResponse:
 
         blockers = cast(list[str], d.pop("blockers", UNSET))
 
+        _pending_event_replay = d.pop("pending_event_replay", UNSET)
+        pending_event_replay: PendingEventReplayDTO | Unset
+        if isinstance(_pending_event_replay, Unset):
+            pending_event_replay = UNSET
+        else:
+            pending_event_replay = PendingEventReplayDTO.from_dict(_pending_event_replay)
+
         set_playbook_activation_response = cls(
             activation=activation,
             success=success,
@@ -105,6 +131,7 @@ class SetPlaybookActivationResponse:
             changed=changed,
             blocked=blocked,
             blockers=blockers,
+            pending_event_replay=pending_event_replay,
         )
 
         return set_playbook_activation_response

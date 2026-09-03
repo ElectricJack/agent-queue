@@ -4,6 +4,13 @@
 ``active_artifact_sha256`` must have an artifact row, a file on disk, and a
 file whose contents hash to the name it is stored under.
 
+``playbooks.pending_event_replay_policy``: the one production caller that hands
+live activation health to ``PlaybooksConfig.validate()``.  A config file is
+validated before any database is open, so ``AppConfig.validate()`` can only
+check the vocabulary of ``v2_pending_event_replay_on_activation``; whether
+``automatic`` points at an activation that may not auto-consume a backlog is a
+question about *rows*, and this is where the daemon asks it.
+
 ``playbooks.activation_stale``: every enabled activation must still agree with
 the live registries — the command execution contracts *and* the capability
 profiles it was compiled against — and must still read the exact artifact it
@@ -33,6 +40,7 @@ OWNER = "playbook-v2"
 CHECK_ID = "playbooks.artifact_integrity"
 STALE_CHECK_ID = "playbooks.activation_stale"
 RELEASE_CHECK_ID = "playbooks.stale_artifacts"
+REPLAY_POLICY_CHECK_ID = "playbooks.pending_event_replay_policy"
 
 
 def _digest(path: Path) -> str:
@@ -246,9 +254,84 @@ async def _check_stale_artifacts(ctx: DoctorContext) -> CheckResult:
     )
 
 
+async def _check_pending_event_replay_policy(ctx: DoctorContext) -> CheckResult:
+    """``automatic`` replay against a ``question_required`` activation.
+
+    ``PlaybooksConfig.validate(activation_healths=...)`` already knows how to
+    refuse that combination and how to name the offending playbooks; without a
+    caller that has the rows, the refusal never fires on a running daemon.
+    This is that caller — read-only, and with no fix, because the two repairs
+    (review the playbook, or set the policy back to ``manual``) are both
+    operator decisions.
+    """
+    playbooks = getattr(ctx.config, "playbooks", None)
+    if playbooks is None:
+        return CheckResult(
+            id=REPLAY_POLICY_CHECK_ID,
+            severity=Severity.INFO,
+            detail="no playbooks config section",
+        )
+    policy = getattr(playbooks, "v2_pending_event_replay_on_activation", "manual")
+    if policy != "automatic":
+        return CheckResult(
+            id=REPLAY_POLICY_CHECK_ID,
+            severity=Severity.OK,
+            detail=(
+                f"playbooks.v2_pending_event_replay_on_activation is '{policy}'; "
+                "activation never consumes a backlog on its own"
+            ),
+            data={"policy": policy},
+        )
+    db = ctx.db
+    if db is None or not hasattr(db, "list_playbook_activations"):
+        return CheckResult(
+            id=REPLAY_POLICY_CHECK_ID,
+            severity=Severity.INFO,
+            detail="V2 artifact tables are not available",
+            data={"policy": policy},
+        )
+
+    from src.playbooks.activation import load_activation_health
+
+    contracts, profiles = await _lookups(ctx)
+    records = await load_activation_health(db, contracts=contracts, profiles=profiles)
+    healths = {record.playbook_id: record.health.value for record in records}
+    errors = [
+        error
+        for error in playbooks.validate(activation_healths=healths)
+        if error.field == "v2_pending_event_replay_on_activation"
+    ]
+    if not errors:
+        return CheckResult(
+            id=REPLAY_POLICY_CHECK_ID,
+            severity=Severity.OK,
+            detail=(
+                f"'automatic' replay is admissible for {len(healths)} activation(s)"
+            ),
+            data={"policy": policy, "checked": len(healths)},
+        )
+    unreviewed = sorted(
+        playbook_id
+        for playbook_id, health in healths.items()
+        if health == "question_required"
+    )
+    return CheckResult(
+        id=REPLAY_POLICY_CHECK_ID,
+        severity=Severity.ERROR,
+        detail="; ".join(error.message for error in errors),
+        data={"policy": policy, "checked": len(healths), "question_required": unreviewed},
+    )
+
+
 def playbook_v2_checks() -> list[DoctorCheck]:
     return [
         DoctorCheck(id=CHECK_ID, run=_check_artifact_integrity, fix=None, owner=OWNER),
         DoctorCheck(id=STALE_CHECK_ID, run=_check_activation_stale, fix=None, owner=OWNER),
         DoctorCheck(id=RELEASE_CHECK_ID, run=_check_stale_artifacts, fix=None, owner=OWNER),
+        DoctorCheck(
+            id=REPLAY_POLICY_CHECK_ID,
+            run=_check_pending_event_replay_policy,
+            fix=None,
+            owner=OWNER,
+        ),
     ]

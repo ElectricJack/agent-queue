@@ -876,8 +876,16 @@ class PlaybooksConfig:
     v2_pending_event_on_overflow: str = "drop_oldest"
     #: Whether activating an artifact consumes the backlog held behind it.
     #: ``manual`` requires ``playbook_pending_event_action``; ``automatic``
-    #: is refused for any activation still ``question_required``, because an
-    #: unreviewed playbook may not auto-consume a backlog.
+    #: makes ``playbook_activate`` replay that playbook's held events, oldest
+    #: first and bounded by ``v2_max_pending_events_per_playbook``, through
+    #: the same durable claim and fresh dispatch the operator command uses —
+    #: so guards re-run and a failed replay restores its row.  It is refused
+    #: for any activation still ``question_required``, because an unreviewed
+    #: playbook may not auto-consume a backlog; enforcement lives in
+    #: ``PlaybookV2CommandsMixin._v2_replay_on_activation`` (which fails
+    #: closed on anything that is not a ready, enabled activation) and the
+    #: ``playbooks.pending_event_replay_policy`` doctor check, which is what
+    #: passes ``activation_healths`` here on a running daemon.
     v2_pending_event_replay_on_activation: str = "manual"
     v2_receipt_retention_days: int = 90
     v2_artifact_retention_days: int = 90
