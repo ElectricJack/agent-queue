@@ -1171,6 +1171,39 @@ its computed disposition.
 | `acknowledged_by` | TEXT | NOT NULL | Server-derived principal that granted the waiver |
 | `acknowledged_at` | REAL | NOT NULL | Unix timestamp |
 
+### Table: `playbook_cutover_events`
+
+Append-only audit of the Playbook V1 → V2 cutover (Playbook V2 roadmap,
+Package 7). One row per operator action that changed which runtime the fleet
+dispatches through, or that moved the drain forward.
+
+There is no update and no delete path, deliberately: the point of the table is
+that an operator cannot rewrite the record of which runtime the fleet was on at
+a given moment. `actor` is the caller's server-derived principal, never a
+request-body field, and `reason` is a mandatory justification of at least 10
+characters enforced in the command layer.
+
+It also does load-bearing work rather than sitting inert: `cutover-window-status`
+compares the newest `switched_to_v2` / `rolled_back_to_v1` row against the live
+`playbooks.v2_engine` value, so a runtime flipped by hand-editing the config —
+which an operator must be able to do at 3am, without a gate row — is surfaced as
+a disagreement instead of going unnoticed.
+
+The table **outlives the commands that write it.** Package 7's V1-removal commit
+deletes the drain and switch surface but keeps this table: the record of who
+switched the fleet and when is worth more than the code that wrote it.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `event_id` | TEXT | PRIMARY KEY | uuid4 hex |
+| `kind` | TEXT | NOT NULL, CHECK | One of `v1_admission_closed`, `v1_admission_reopened`, `drain_completed`, `switched_to_v2`, `rolled_back_to_v1`, `window_coverage_rehearsal`, `rollback_window_closed` |
+| `at` | REAL | NOT NULL | Unix timestamp, matching `playbook_runs.started_at` |
+| `actor` | TEXT | NOT NULL | Server-derived operator principal |
+| `reason` | TEXT | NOT NULL | Operator's justification; at least 10 characters |
+| `detail` | TEXT | NOT NULL DEFAULT '{}' | JSON blob; per-kind payload (drain counts, V1 latency baseline, measured gates) |
+
+Indexed on `(kind, at)` — every read is "the newest event of one kind".
+
 ### Table: `task_completion_records`
 
 Append-only audit records for accepted task-close operations.  This deliberately

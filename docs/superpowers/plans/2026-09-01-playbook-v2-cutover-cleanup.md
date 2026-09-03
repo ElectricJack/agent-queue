@@ -8,7 +8,7 @@
 
 **Drafting status.** This plan was written against the live tree at `origin/main` `1b835131`, on the supervisor's instruction (task `solid-harbor.55`) to draft child plans in parallel ahead of their packages. Everything in §1 and §2 is a fact about the **current** tree and was verified by reading it.
 
-**Package 0 has partially landed.** `src/commands/principal.py`, `src/commands/authorization.py`, `src/profiles/capabilities.py`, `SecurityConfig.capability_enforcement` (`src/config.py:1137`, default `"audit"`), the `## Capabilities` profile block (`src/profiles/parser.py:165`, `:688-710`), and Alembic revision `3b560dbd527c` are all in `origin/main`. Packages 1–6 are not. **Reconciled 2026-09-02 against `origin/main` `f0e03446`: they are still not, and none of them has landed so much as one line of implementation — see §3.8.1. Package 7 is therefore blocked and must not be started until Packages 1–6 have passed their exit gates.** §3.8 therefore splits into *observed* symbols (Package 0, cited with live line numbers) and *expected* symbols (Packages 1–6, cited by the module the roadmap assigns). The implementation task **must** begin by reconciling the expected half against the tree and amending this document in its first commit; it must not silently substitute a differently-named symbol, and must not ship a local reimplementation of an earlier package's interface.
+**Package 0 has partially landed.** `src/commands/principal.py`, `src/commands/authorization.py`, `src/profiles/capabilities.py`, `SecurityConfig.capability_enforcement` (`src/config.py:1137`, default `"audit"`), the `## Capabilities` profile block (`src/profiles/parser.py:165`, `:688-710`), and Alembic revision `3b560dbd527c` are all in `origin/main`. Packages 1–6 are not. **Reconciled 2026-09-02 against `origin/main` `f0e03446`: they are still not, and none of them has landed so much as one line of implementation — see §3.8.1. Package 7 is therefore blocked and must not be started until Packages 1–6 have passed their exit gates.** **Superseded 2026-09-03: Packages 1–6 have landed — see §3.8.2, which is the current reconciliation.** §3.8 therefore splits into *observed* symbols (Package 0, cited with live line numbers) and *expected* symbols (Packages 1–6, cited by the module the roadmap assigns). The implementation task **must** begin by reconciling the expected half against the tree and amending this document in its first commit; it must not silently substitute a differently-named symbol, and must not ship a local reimplementation of an earlier package's interface.
 
 ---
 
@@ -433,6 +433,10 @@ Three constraints, each with a test in §5.3:
 
 #### 3.8.1 Reconciliation, 2026-09-02 — every expected symbol is absent, and Package 7 is blocked
 
+> **SUPERSEDED 2026-09-03 by §3.8.2.** Packages 1–6 have since landed and
+> commit 1 has shipped. This subsection is kept as the record of what was true
+> on 2026-09-02; do not act on its verdict.
+
 §3.8 requires the implementation task to reconcile the *Expected* half of the table against the live tree in its first commit. Task `solid-harbor.56` ran that reconciliation against `origin/main` `f0e03446` on 2026-09-02. The outcome is not a set of renames: **no row in the Expected table exists in any form, because no implementation package has merged.** This subsection is the required amendment.
 
 **What has actually merged.** Packages 1, 2 and 3 have merged PRs, and all three are documentation only:
@@ -469,6 +473,73 @@ The *Observed* half of §3.8 (Package 0) re-verified clean: `src/commands/princi
 - **Three of the five commits are operator work, not code.** §3.9's G1, G2 and G3 are human gates, and §3.5's observation window has a 72-hour wall-clock floor plus coverage and volume floors. Commit 3 cannot be completed inside an agent session even once the prerequisites land; it needs a named release operator and elapsed calendar time.
 
 **Scheduling requirement for the roadmap owner.** Package 7 must not be dispatched again until, at minimum: Packages 1–6 have merged implementations and passed their exit gates; Package 6 has produced `playbook_cutover_report --json` with `blocking_reasons: []` and `rollback_ready: true`; and a named release operator is available for G1/G2/G3. A future Package 7 worker that finds this subsection still accurate should re-verify the table above and stop rather than partially implement — a half-built cutover surface is more dangerous than none, because `drained: true` from an incomplete drain is exactly the silent failure §1.2 exists to prevent.
+
+#### 3.8.2 Reconciliation, 2026-09-03 — Packages 1–6 have landed; commit 1 is done and commit 2 was already done
+
+Re-run against `origin/main` `01ab7ea1`. **§3.8.1's verdict no longer holds** and
+is superseded by this subsection. Every expected symbol it recorded as absent is
+now present:
+
+| Expected symbol / artifact (§3.8) | Owning package | Live tree, `01ab7ea1` |
+|---|---|---|
+| `src/playbooks/expressions.py`, `definition.py` | 2 | present |
+| `src/playbooks/artifact_store.py`, `activation.py`, `run_state.py`, `receipts.py` | 3 | present |
+| `playbook_pending_events` table + queries | 3 | present (`src/database/queries/playbook_run_queries.py:1661`) |
+| `src/playbooks/engine.py`, `src/playbooks/executors/` | 4 | present (9 executor modules) |
+| `src/commands/playbook_v2_commands.py` | 5 | present |
+| `src/playbooks/migration.py`, `src/commands/playbook_migration_commands.py` | 6 | present |
+| `PlaybooksConfig.v2_api`, `.v2_activation_writes` | 5 | present (`src/config.py:923`, `:936`) |
+
+**The selector shipped under a different name, and that changes this plan's
+commit sequence.** §3.4 specified `PlaybooksConfig.runtime` with values
+`"v1" | "v2"`. What actually landed is the boolean `PlaybooksConfig.v2_engine`
+(`src/config.py:927`) plus `v2_engine_enabled()`
+(`src/playbooks/services.py:21`), and **all six §1.4 entry points already
+consult it**: `orchestrator/core.py:854`, `orchestrator/assignment_routing.py:434`,
+`playbooks/resume_handler.py:199`, `workflow_stage_resume_handler.py:215`, and
+`commands/playbook_commands.py:1038` / `:1204`.
+
+Two consequences:
+
+- **Commit 2 ("switch all playbook entry points to v2") is already landed**, by
+  Packages 4–6, under the `v2_engine` name. It is not re-done here.
+- `playbook_runtime()` in `src/playbooks/cutover.py` is the plan's *name* for
+  the answer `v2_engine_enabled()` already gives. It deliberately does not
+  introduce a second, competing selector — that would be exactly the
+  "reimplementation of an earlier package's interface" §3.8 forbids. No
+  `PlaybooksConfig.runtime` field is added; §3.6 D1-c's row for it reads
+  `v2_engine` instead.
+
+**One deviation from §3.4's letter.** §3.4 requires `validate()` to reject
+`runtime="v2"` with `v1_admission="open"`. Enforced literally against a live
+tree where `v2_engine` predates `v1_admission`, that rule refuses to boot any
+daemon that turned `v2_engine` on before the rule existed — a self-inflicted
+outage the plan could not have foreseen, because it assumed both fields arrived
+together in commit 2. The reconciliation: an **unset** `v1_admission` on a fleet
+already running `v2_engine` resolves to `closed` in the loader. That is the
+truthful description of such a fleet — nothing dispatches V1 there — and the
+interlock stays load-bearing, because an **explicit** `v1_admission: open`
+alongside `v2_engine: true` is still a validation error.
+
+**Two further deviations, both recorded per §3.6's "add a row and say why" rule:**
+
+- §6 writes `server_default` with the value already wrapped in single quotes,
+  which CLAUDE.md forbids: SQLAlchemy quotes it again, so the emitted DDL
+  carries a triple-quoted default. Shipped with the bare value instead, and
+  verified as `DEFAULT '{}'` on SQLite and `'{}'::text` on PostgreSQL.
+- §5.1 T-4 requires all seven §3.3 commands to answer on a paused fleet, but
+  §3.5's sixteen acceptance measures are sourced from artifacts commit 3 wires.
+  `playbook_cutover_window_status` therefore ships measuring what exists today
+  (measure 16, the runtime/event-log disagreement, and the wall-clock floor) and
+  reporting the other fifteen with `pass: false` and a `blocking` note naming
+  their source. `playbook_cutover_window_close` refuses while any measure does
+  not pass, so the gate is **fail-closed**: an unwired source blocks the window
+  rather than being silently treated as satisfied.
+
+**What remains of Package 7, and who can do it.** Commit 1 is complete. Commits
+3, 4 and 5 are gated on §3.9's human gates and a ≥72 h observation window, and
+none of them is completable inside an agent session. They need a named release
+operator (and a second distinct person for G2).
 
 ### 3.9 Human coordination points
 
@@ -1070,5 +1141,6 @@ The roadmap's boundary: *"Before the observation window closes, revert the coord
 - **`src/prompts/example_playbooks/` and `src/prompts/default_rules/`** (16 files referenced by no Python code). Package 6 documented them; Package 7 allowlists them in T-14's scan and does not delete them (§4.5). Their disposition — delete, convert to V2 prose, or wire into an install path — is still open and belongs to whoever owns shipped sample content.
 - **`src/doctor/integration_checks.py:46-53`'s hardcoded `_review_dedup_key`.** Package 6 §14 raised it for Package 7. This plan does **not** carry it: it is a doctor check reading a dedup key, not a cutover step, and changing it during the switch adds a variable to the one release that can least afford one. It should be filed as follow-up work against the reviewed artifact, after M8.
 - **Behavioural parity for LLM playbooks.** Package 6 gives `memory-consolidation` and `coding-reflection` structural parity only. §3.5's acceptance table gates them on run counts and failure rates, not on output equivalence. If output equivalence matters, it needs recorded-transcript replay, which no package currently owns.
-- **Package 7 scheduling.** The package was dispatched on 2026-09-02 (task `solid-harbor.56`) while Packages 1–6 were still unimplemented; see §3.8.1. Whatever scheduled it treated the merged child-plan PRs as package completions. The roadmap owner should make the Package 7 dispatch depend on the Packages 1–6 **exit gates** rather than on their plan PRs.
+- **Package 7 scheduling.** The package was dispatched on 2026-09-02 (task `solid-harbor.56`) while Packages 1–6 were still unimplemented; see §3.8.1. Whatever scheduled it treated the merged child-plan PRs as package completions. The roadmap owner should make the Package 7 dispatch depend on the Packages 1–6 **exit gates** rather than on their plan PRs. **Resolved by events, 2026-09-03:** Packages 1–6 landed (§3.8.2) and commit 1 has shipped. The scheduling defect itself is unfixed — nothing in the task graph ever held `solid-harbor.56` behind those packages; it simply stopped mattering once they merged. The dependency should still be added before a comparable package is dispatched.
+- **Gates G1/G2/G3 have no named operator.** Commits 3–5 cannot start without one, and G2 needs a second, distinct person. This is now the only thing standing between the shipped drain surface and the V1 deletion, and it is not work an agent can do.
 - **`capability.denied` as a bus event** (§10.2) is a Package 0 surface that Package 7 is completing. If Package 0's owner would rather ship it there, this plan's §10.2 becomes a reconciliation note instead of an implementation step.
