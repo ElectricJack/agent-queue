@@ -291,3 +291,65 @@ async def test_a_loop_persists_one_receipt_per_iteration_boundary(db):
     stored = await db.load_run(outcome.run_id)
     assert stored.loop is None
     assert stored.bindings["sweep_result"]["succeeded"] == 2
+
+
+@pytest.mark.asyncio
+async def test_cancelling_a_paused_run_retires_its_wait_row(db):
+    """T-9 §4.9's paused row, against the database that has to enforce it.
+
+    The double can show that the engine *asks* for ``clear_run_waits``; only
+    the database shows that the wait row and the terminal snapshot land in
+    one transaction.  A cancelled run whose ``playbook_waits`` row is still
+    ``active`` is claimable by a later event, and after a restart nothing
+    remembers that the run it points at is over.
+    """
+    engine, _adapter, ref = await build_for(db, "wait-kinds.artifact.json")
+    outcome = await engine.run_rule(ref, "gate", event("task-completed-code"), TRUSTED_LOCAL)
+    assert outcome.lifecycle is RunLifecycle.PAUSED
+    assert await db.list_active(outcome.run_id) != []
+
+    cancelled = await engine.cancel(outcome.run_id, TRUSTED_LOCAL, reason="operator")
+
+    assert cancelled.lifecycle is RunLifecycle.CANCELLED
+    assert await db.list_active(outcome.run_id) == []
+    stored = await db.load_run(outcome.run_id)
+    assert stored.lifecycle is RunLifecycle.CANCELLED
+    assert stored.wait is None
+    assert stored.cancel_requested_at is not None
+    assert stored.completed_at is not None
+
+    gate = [r for r in await db.list_receipts(outcome.run_id) if r.step_id == "await-approval"]
+    # The suspension's receipt and the cancellation's, on the same step
+    # instance — so the four-part attempt identity is what keeps the second
+    # one off ``uq_playbook_step_receipts_attempt``.
+    assert sorted(r.attempt for r in gate) == [1, 2]
+    cancellation = max(gate, key=lambda r: r.attempt)
+    assert cancellation.outcome == "cancelled"
+    assert cancellation.cancelled_at is not None
+    assert cancellation.result["cancellation"] == "acknowledged"
+    assert cancellation.snapshot_version == stored.version
+
+
+@pytest.mark.asyncio
+async def test_cancelling_a_terminal_run_is_refused_by_the_engine(db):
+    """The refusal never reaches ``request_cancel``'s CAS (§4.9)."""
+    engine, adapter, ref = await build_for(db, "two-rules-one-event.artifact.json")
+    adapter.queue.append(
+        CommandResult(
+            outcome="created",
+            value=EnsureTaskResult(task_id="t-1", created=True),
+            summary="ensured",
+        )
+    )
+    outcome = await engine.run_rule(ref, "review", event("task-completed-code"), TRUSTED_LOCAL)
+    assert outcome.lifecycle is RunLifecycle.COMPLETED
+    before = await db.list_receipts(outcome.run_id)
+
+    refused = await engine.cancel(outcome.run_id, TRUSTED_LOCAL)
+
+    assert refused.outcome == "already_terminal"
+    assert refused.error == f"Run '{outcome.run_id}' already completed"
+    stored = await db.load_run(outcome.run_id)
+    assert stored.lifecycle is RunLifecycle.COMPLETED
+    assert stored.cancel_requested_at is None
+    assert len(await db.list_receipts(outcome.run_id)) == len(before)

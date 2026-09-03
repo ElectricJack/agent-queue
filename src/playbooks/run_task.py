@@ -14,6 +14,11 @@ logger = logging.getLogger(__name__)
 
 _RUN_STATUS_TO_TASK_STATUS = {
     "running": TaskStatus.IN_PROGRESS,
+    # A run that has been asked to stop but has not yet stopped still occupies
+    # its projection task, so ``cancelling`` maps where ``running`` does.
+    # Showing it as finished would let the graph promote work behind a run that
+    # is still executing a step.
+    "cancelling": TaskStatus.IN_PROGRESS,
     "paused": TaskStatus.PAUSED,
     "completed": TaskStatus.COMPLETED,
     "failed": TaskStatus.FAILED,

@@ -241,3 +241,28 @@ def test_graph_layout_nested_block_wins_over_top_level(tmp_path):
         "graph_layout": {"incremental_debounce_ms": 999},
     }))
     assert load_config(str(p)).graph_layout.incremental_debounce_ms == 250
+
+
+# ---------------------------------------------------------------------------
+# PlaybooksConfig.cancellation_grace_seconds — Playbook V2 Package 4 §9
+# ---------------------------------------------------------------------------
+
+
+def test_playbooks_config_rejects_a_negative_cancellation_grace():
+    from src.config import PlaybooksConfig
+
+    errors = PlaybooksConfig(cancellation_grace_seconds=-1).validate()
+    assert [e.field for e in errors] == ["cancellation_grace_seconds"]
+
+
+def test_playbooks_config_accepts_a_zero_cancellation_grace():
+    """Zero is "do not wait", not a misconfiguration.
+
+    An operator who wants a cancellation to land immediately — accepting that
+    the receipt will say ``grace_expired`` — has to be able to say so, so the
+    bound is ``>= 0`` rather than ``> 0`` like the size limits above it.
+    """
+    from src.config import PlaybooksConfig
+
+    assert PlaybooksConfig(cancellation_grace_seconds=0).validate() == []
+    assert PlaybooksConfig().cancellation_grace_seconds == 30

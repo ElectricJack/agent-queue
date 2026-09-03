@@ -13,6 +13,7 @@ here that would fail against the live V1 runner:
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 from typing import Any
 
@@ -613,7 +614,11 @@ class RecordingWaitRepository:
         return WaitRegistration(wait_id=wait.wait_id, matched_immediately=matched)
 
     async def clear_for_run(self, run_id, *, conn=None):
-        return 0
+        retired = [w for w in self.active.values() if w.run_id == run_id]
+        for wait in retired:
+            self.active.pop(wait.wait_id, None)
+            self.cleared.append(wait.wait_id)
+        return len(retired)
 
     async def expire_due(self, now, *, limit=100):
         claims, self.due = self.due, []
@@ -641,6 +646,8 @@ class WaitAwareRepository(RecordingRunRepository):
     async def commit_boundary(self, snapshot, receipt, wait_changes=EMPTY_WAIT_CHANGES):
         self.wait_changes.append(wait_changes)
         stored = await super().commit_boundary(snapshot, receipt, wait_changes)
+        if wait_changes.clear_run_waits:
+            await self.waits.clear_for_run(snapshot.run_id)
         if wait_changes.clear_wait_ids:
             self.waits.cleared.extend(wait_changes.clear_wait_ids)
             for wait_id in wait_changes.clear_wait_ids:
@@ -1291,3 +1298,246 @@ class TestSequentialLoops:
         result = await ForEachExecutor().execute(step, ctx)
         assert result.outcome == "contract_violation"
         assert "changed" in result.diagnostics[0]
+
+
+# --------------------------------------------------------------------------
+# T-9 — cancellation is real (child plan §4.9)
+#
+# §5.2 names these tests in ``tests/test_v2_cancellation.py``; per §2.6 item
+# 12 the roadmap's Package 4 file list is the scope authority and creates no
+# such file, so the names are kept verbatim and live here.
+# --------------------------------------------------------------------------
+
+
+class HeldExecutor:
+    """A live command executor a test can hold inside ``execute``.
+
+    The engine's cancellation path is only reachable while a step is
+    genuinely in flight, and "in flight" is not something a scripted return
+    value can express — so the double blocks on an event the test owns.
+    """
+
+    step_type = "command"
+    mode = ExecutionMode.LIVE
+    no_side_effects = False
+
+    def __init__(self) -> None:
+        self.gate = asyncio.Event()
+        self.entered = asyncio.Event()
+        self.calls = 0
+
+    async def execute(self, step, ctx):
+        self.calls += 1
+        self.entered.set()
+        await self.gate.wait()
+        return ExecutorResult(
+            control=StepControl.ADVANCE,
+            outcome="created",
+            value={"task_id": "t-1", "created": True},
+            receipt_result={"task_id": "t-1", "created": True},
+        )
+
+
+class CancellableExecutor(HeldExecutor):
+    """``HeldExecutor`` that also implements the optional protocol (§3.1)."""
+
+    def __init__(self, *, acknowledge: bool = True) -> None:
+        super().__init__()
+        self.acknowledge = acknowledge
+        self.cancels = 0
+
+    async def request_cancel(self, step, ctx) -> None:
+        self.cancels += 1
+        if self.acknowledge:
+            self.gate.set()
+
+
+def held_executor_table(executor):
+    """``executor_for`` with *executor* substituted for live commands."""
+    real = executor_for
+
+    def _for(step_type: str, mode: ExecutionMode):
+        if step_type == "command" and ExecutionMode(mode) is ExecutionMode.LIVE:
+            return executor
+        return real(step_type, mode)
+
+    return _for
+
+
+async def start_held_run(engine, ref, runs, executor, monkeypatch, rule: str = "review"):
+    """Walk *rule* until its command is inside ``execute``, and hand it back."""
+    monkeypatch.setattr(
+        "src.playbooks.engine.executor_for", held_executor_table(executor)
+    )
+    walk = asyncio.create_task(
+        engine.run_rule(ref, rule, event("task-completed-code"), TRUSTED_LOCAL)
+    )
+    await asyncio.wait_for(executor.entered.wait(), timeout=2)
+    run_id = next(iter(runs.snapshots))
+    return walk, run_id
+
+
+class TestCancellation:
+    @pytest.mark.asyncio
+    async def test_cancel_a_paused_run_is_immediate(self):
+        """§4.9's paused row: one boundary, one receipt, wait deregistered."""
+        engine, runs, waits, ref = wait_engine()
+        outcome = await engine.run_rule(ref, "gate", event("task-completed-code"), TRUSTED_LOCAL)
+        assert outcome.lifecycle is RunLifecycle.PAUSED
+        assert list(waits.active)
+
+        before = runs.commit_calls
+        cancelled = await engine.cancel(outcome.run_id, TRUSTED_LOCAL, reason="operator")
+
+        assert cancelled.lifecycle is RunLifecycle.CANCELLED
+        assert runs.commit_calls == before + 1
+        assert runs.snapshots[outcome.run_id].lifecycle is RunLifecycle.CANCELLED
+        # The wait went with the run, in that same boundary: a cancelled run
+        # whose wait is still active is claimable by a later event.
+        assert runs.wait_changes[-1].clear_run_waits is True
+        assert waits.active == {}
+        receipt = runs.receipts[-1]
+        assert receipt.outcome == "cancelled"
+        assert receipt.cancelled_at is not None
+        assert receipt.result["cancellation"] == "acknowledged"
+
+    @pytest.mark.asyncio
+    async def test_cancel_during_a_live_command_does_not_get_overwritten(
+        self, monkeypatch
+    ):
+        """The regression test for ``playbook_commands.py:511-519``'s docstring.
+
+        V1 says of itself that a live run "will finish its current node and
+        then, on its next persistence write, silently overwrite the
+        ``cancelled`` status back to ``running``".  Here the command is held
+        mid-flight, the run is cancelled, and the command is then released:
+        the run must still be ``cancelled``, and the step's own result must
+        not have routed an edge.
+        """
+        engine, _adapter, runs, _bus, ref = build()
+        executor = HeldExecutor()
+        walk, run_id = await start_held_run(engine, ref, runs, executor, monkeypatch)
+
+        cancelling = asyncio.create_task(engine.cancel(run_id, TRUSTED_LOCAL))
+        await asyncio.sleep(0)
+        executor.gate.set()
+
+        cancelled = await asyncio.wait_for(cancelling, timeout=2)
+        outcome = await asyncio.wait_for(walk, timeout=2)
+
+        assert cancelled.lifecycle is RunLifecycle.CANCELLED
+        assert outcome.lifecycle is RunLifecycle.CANCELLED
+        assert runs.snapshots[run_id].lifecycle is RunLifecycle.CANCELLED
+        # Not ``completed``, and no transition was selected off the step that
+        # was in flight — the run stopped, it did not finish.
+        assert [r.outcome for r in runs.receipts] == ["cancelled"]
+        assert runs.receipts[-1].selected_transition is None
+
+    @pytest.mark.asyncio
+    async def test_in_flight_executor_gets_one_cancel_signal(self, monkeypatch):
+        """§4.9 — at most one ``request_cancel`` per in-flight step."""
+        engine, _adapter, runs, _bus, ref = build()
+        executor = CancellableExecutor(acknowledge=True)
+        walk, run_id = await start_held_run(engine, ref, runs, executor, monkeypatch)
+
+        first, second = await asyncio.wait_for(
+            asyncio.gather(
+                engine.cancel(run_id, TRUSTED_LOCAL),
+                engine.cancel(run_id, TRUSTED_LOCAL),
+            ),
+            timeout=2,
+        )
+        await asyncio.wait_for(walk, timeout=2)
+
+        assert executor.cancels == 1
+        assert first.lifecycle is RunLifecycle.CANCELLED
+        assert second.lifecycle is RunLifecycle.CANCELLED
+        assert runs.receipts[-1].result["cancellation"] == "acknowledged"
+        # Two callers, one boundary: cancelling twice does not receipt twice.
+        assert [r.outcome for r in runs.receipts] == ["cancelled"]
+
+    @pytest.mark.asyncio
+    async def test_grace_expiry_still_reaches_cancelled(self, monkeypatch):
+        """The executor never gives the run back; the run ends anyway."""
+        engine, _adapter, runs, _bus, ref = build()
+        engine.cancellation_grace_seconds = 0.05
+        executor = CancellableExecutor(acknowledge=False)
+        walk, run_id = await start_held_run(engine, ref, runs, executor, monkeypatch)
+
+        cancelled = await asyncio.wait_for(
+            engine.cancel(run_id, TRUSTED_LOCAL), timeout=2
+        )
+
+        assert executor.cancels == 1
+        assert cancelled.lifecycle is RunLifecycle.CANCELLED
+        assert cancelled.cancellation == "grace_expired"
+        assert runs.snapshots[run_id].lifecycle is RunLifecycle.CANCELLED
+        assert runs.receipts[-1].result["cancellation"] == "grace_expired"
+
+        # The step is still running — the engine ends runs, it does not kill
+        # work it did not start — and when it finally returns it writes
+        # nothing, because the run is already settled.
+        executor.gate.set()
+        outcome = await asyncio.wait_for(walk, timeout=2)
+        assert outcome.lifecycle is RunLifecycle.CANCELLED
+        assert [r.outcome for r in runs.receipts] == ["cancelled"]
+
+    @pytest.mark.asyncio
+    async def test_cancel_a_terminal_run_is_refused(self):
+        """Same sentence as ``playbook_commands.py:544``."""
+        engine, adapter, runs, _bus, ref = build()
+        adapter.queue.append(ok())
+        outcome = await engine.run_rule(ref, "review", event("task-completed-code"), TRUSTED_LOCAL)
+        assert outcome.lifecycle is RunLifecycle.COMPLETED
+
+        before = runs.commit_calls
+        refused = await engine.cancel(outcome.run_id, TRUSTED_LOCAL)
+
+        assert refused.outcome == "already_terminal"
+        assert refused.error == f"Run '{outcome.run_id}' already completed"
+        assert runs.commit_calls == before
+        assert runs.cancel_reasons == []
+
+    @pytest.mark.asyncio
+    async def test_cancelling_an_unknown_run_is_refused(self):
+        engine, _adapter, _runs, _bus, _ref = build()
+        outcome = await engine.cancel("no-such-run", TRUSTED_LOCAL)
+        assert outcome.outcome == "unknown_run"
+
+    @pytest.mark.asyncio
+    async def test_a_run_cancelled_between_walks_stops_at_its_next_boundary(self):
+        """§4.9's "running, nothing in flight" row, across a restart.
+
+        The intent is durable and the walk that reads it is a *different* one,
+        which is the property that makes cancellation survive the process
+        that was asked for it going away.
+        """
+        engine, adapter, runs, _bus, ref = build()
+        adapter.queue.append(ok())
+        outcome = await engine.run_rule(
+            ref, "review", event("task-completed-code"), TRUSTED_LOCAL, pause_before_start=True
+        )
+        stored = runs.snapshots[outcome.run_id]
+        runs.snapshots[outcome.run_id] = replace(stored, lifecycle=RunLifecycle.RUNNING)
+
+        cancelled = await engine.cancel(outcome.run_id, TRUSTED_LOCAL, reason="operator")
+        assert cancelled.lifecycle is RunLifecycle.CANCELLING
+        assert cancelled.outcome == "cancel_requested"
+        assert runs.cancel_reasons[-1][1] == "operator"
+
+        resumed = await engine.resume(
+            outcome.run_id, EventArrived(event_id="x", payload={}), TRUSTED_LOCAL
+        )
+        assert resumed.lifecycle is RunLifecycle.CANCELLED
+        assert [r.outcome for r in runs.receipts] == ["cancelled"]
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_run_projects_onto_an_occupied_task(self):
+        """``cancelling`` is not a finished run (§4.9's ``run_task`` clause)."""
+        from src.models import TaskStatus
+        from src.playbooks.run_task import playbook_status_to_task_status
+
+        assert playbook_status_to_task_status("cancelling") is TaskStatus.IN_PROGRESS
+        assert playbook_status_to_task_status("cancelling") is playbook_status_to_task_status(
+            "running"
+        )
