@@ -27,6 +27,7 @@ import pytest
 from src.commands.handler import CommandHandler
 from src.config import AppConfig, DiscordConfig
 from src.database import Database
+from src.git.manager import PullRequestIdentity
 from src.models import AgentProfile, Project, TaskStatus
 from src.orchestrator import Orchestrator
 
@@ -201,6 +202,18 @@ async def test_full_review_chain_end_to_end(
     )
     orch.git.amerge_pr = AsyncMock(
         return_value={"success": True, "sha": "f" * 40, "error": None}
+    )
+    # ``pr_merge`` resolves the immutable PR identity first and fails closed
+    # when it cannot; no ``gh`` runs here, so hand it the answer.
+    orch.git.avalidate_pr_for_merge = AsyncMock(
+        return_value=PullRequestIdentity(
+            repository="o/r",
+            number=99,
+            base_ref="main",
+            base_oid="a" * 40,
+            head_ref=branch,
+            head_oid="b" * 40,
+        )
     )
     merge_result = await h.execute(
         "pr_merge", {"project_id": "p", "pr_url": pr_url}
