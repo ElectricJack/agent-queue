@@ -288,9 +288,9 @@ class _RunControl:
     """
 
     run_id: str
-    #: Serialises the two writers of the cancellation boundary: the walk, when
-    #: its executor gives the run back, and ``cancel`` itself, when the grace
-    #: window expires first.  Exactly one of them writes it.
+    #: Serialises cancellation intent/finalization with a completed LLM turn
+    #: entering durable storage.  Once a turn callback owns this lock, grace
+    #: expiry cannot overtake and discard that completed turn.
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     #: Set once that boundary is durable, by whichever side wrote it.
     settled: asyncio.Event = field(default_factory=asyncio.Event)
@@ -305,6 +305,10 @@ class _RunControl:
     #: engine at most one signal per in-flight step, so a second ``cancel``
     #: call joins the first one's grace window instead of signalling again.
     signalled: bool = False
+    #: Set before ``cancel`` waits for ``lock``.  A completed LLM callback
+    #: that already owns the lock uses this request to persist cancellation
+    #: itself rather than returning control for another provider call.
+    pending_cancel: tuple[Any, str] | None = None
     cancellation: str | None = None
     final: RunSnapshot | None = None
     receipt: StepReceipt | None = None
@@ -577,7 +581,10 @@ class PlaybookEngine:
                 step_id=step_id,
                 step=current_step,
                 started_at=self.services.clock(),
-                principal=effective_principal or principal,
+                # Do not attribute an ambiguous prior call to a broader
+                # caller when the configured profile cannot be re-resolved.
+                # A null projection is the fail-closed audit identity.
+                principal=effective_principal,
                 iteration=iteration,
                 attempt=attempt_number,
                 idempotency_key=idempotency_key(
@@ -646,42 +653,61 @@ class PlaybookEngine:
         repository = self.runs
         if repository is None:
             raise RuntimeError("cancel requires a run repository")
+        control = self._live.get(run_id)
+        # Latch synchronously, before the first repository await.  A tool-turn
+        # callback already in progress observes this even if its commit wins
+        # the scheduler race with cancel's initial snapshot read.
+        if control is not None and control.pending_cancel is None:
+            control.pending_cancel = (principal, reason)
         snapshot = await repository.load_run(run_id)
         if snapshot is None:
             return RunOutcome(run_id, RunLifecycle.FAILED, "unknown_run")
         if snapshot.is_terminal:
             return self._already_terminal(snapshot)
 
-        if snapshot.lifecycle is RunLifecycle.PAUSED:
-            return await self._cancel_paused(snapshot, repository, principal, reason)
-
-        control = self._live.get(run_id)
-        # Already ``cancelling`` means the intent is durable and some caller
-        # is already inside the grace window.  Recording it a second time
-        # would advance the run row underneath that caller's walk, and the
-        # walk's own boundary would then lose its CAS.
-        if snapshot.lifecycle is not RunLifecycle.CANCELLING:
-            try:
-                snapshot = await self._request_cancel(
+        async def persist_intent() -> RunOutcome | None:
+            nonlocal snapshot
+            while True:
+                if snapshot.is_terminal:
+                    return self._already_terminal(snapshot)
+                if snapshot.lifecycle is RunLifecycle.PAUSED:
+                    return await self._cancel_paused(
+                        snapshot, repository, principal, reason
+                    )
+                # Already ``cancelling`` means another caller made the intent
+                # durable.  Rewriting it would only advance the version under
+                # the walk a second time.
+                if snapshot.lifecycle is RunLifecycle.CANCELLING:
+                    return None
+                snapshot = await self._request_cancel_latest(
                     repository, snapshot, reason=reason, principal=principal
                 )
-            except IllegalLifecycleTransition:
-                refreshed = await repository.load_run(run_id)
-                return self._already_terminal(refreshed or snapshot)
+
         if control is None:
+            completed = await persist_intent()
+            if completed is not None:
+                return completed
             # No walk here.  Whichever process owns the run reads the intent
             # off the snapshot at its next boundary.
             return RunOutcome(run_id, snapshot.lifecycle, "cancel_requested", snapshot)
-        control.cancel_snapshot = snapshot
 
-        in_flight = control.in_flight
-        if in_flight is None and not control.signalled:
-            return RunOutcome(run_id, snapshot.lifecycle, "cancel_requested", snapshot)
-        if in_flight is not None and not control.signalled:
-            control.signalled = True
-            executor, step, ctx = in_flight
-            if isinstance(executor, Cancellable):
-                await executor.request_cancel(step, ctx)
+        async with control.lock:
+            if self._settled_cancellation(control) is None:
+                completed = await persist_intent()
+                if completed is not None:
+                    return completed
+                control.cancel_snapshot = snapshot
+
+                in_flight = control.in_flight
+                if in_flight is None and not control.signalled:
+                    return RunOutcome(
+                        run_id, snapshot.lifecycle, "cancel_requested", snapshot
+                    )
+                if in_flight is not None and not control.signalled:
+                    control.signalled = True
+                    executor, step, ctx = in_flight
+                    if isinstance(executor, Cancellable):
+                        await executor.request_cancel(step, ctx)
         return await self._await_cancellation(control, principal, repository)
 
     async def _await_cancellation(
@@ -797,6 +823,27 @@ class PlaybookEngine:
             reason=reason,
             requested_by=getattr(principal, "describe", lambda: "operator")(),
         )
+
+    async def _request_cancel_latest(
+        self,
+        repository: Any,
+        snapshot: RunSnapshot,
+        *,
+        reason: str,
+        principal: Any,
+    ) -> RunSnapshot:
+        """Persist intent against the latest live version, or return its new state."""
+        while snapshot.lifecycle is RunLifecycle.RUNNING:
+            try:
+                return await self._request_cancel(
+                    repository, snapshot, reason=reason, principal=principal
+                )
+            except (SnapshotVersionConflict, IllegalLifecycleTransition):
+                refreshed = await repository.load_run(snapshot.run_id)
+                if refreshed is None:  # pragma: no cover - live runs are not deleted
+                    raise RuntimeError(f"run {snapshot.run_id!r} disappeared")
+                snapshot = refreshed
+        return snapshot
 
     @staticmethod
     def _already_terminal(snapshot: RunSnapshot) -> RunOutcome:
@@ -1035,7 +1082,33 @@ class PlaybookEngine:
             )
 
         async def on_tool_turn(turn: LLMToolTurn) -> None:
-            await self._commit_llm_turn(attempt, turn, artifact_ref, repository)
+            if control is None:
+                await self._commit_llm_turn(attempt, turn, artifact_ref, repository)
+                return
+            async with control.lock:
+                await self._commit_llm_turn(attempt, turn, artifact_ref, repository)
+                if control.pending_cancel is not None:
+                    cancel_principal, reason = control.pending_cancel
+                    cancelling = await self._request_cancel_latest(
+                        repository,
+                        attempt.snapshot,
+                        reason=reason,
+                        principal=cancel_principal,
+                    )
+                    control.cancel_snapshot = cancelling
+                    if cancelling.lifecycle is RunLifecycle.CANCELLING:
+                        await self._commit_cancellation(
+                            self._cancellation_attempt(
+                                cancelling, step, step_id, cancel_principal
+                            ),
+                            artifact_ref,
+                            repository,
+                            control,
+                            cancellation=CANCELLATION_ACKNOWLEDGED,
+                        )
+                    # Stop the client before it can issue a provider request
+                    # beyond the completed and now durable turn.
+                    raise asyncio.CancelledError
 
         ctx = StepContext(
             run_id=snapshot.run_id,

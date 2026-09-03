@@ -559,13 +559,18 @@ class TestLlmToolTurnBoundaries:
         provider.add_text('{"risk":"low"}', usage=TokenUsage(5, 1, True))
         runs = CasBoundaryRepository()
         engine, adapter, _runs, ref = build_llm(provider, runs=runs)
+        engine.cancellation_grace_seconds = 0.01
         adapter.queue.append(ok())
 
         walk = asyncio.create_task(engine.run_rule(ref, "r", {}, TOOL_PRINCIPAL))
         await runs.boundary_started.wait()
         run_id = next(iter(runs.snapshots))
         cancelling = asyncio.create_task(engine.cancel(run_id, TOOL_PRINCIPAL))
-        await runs.cancel_written.wait()
+        # Hold the completed turn in storage beyond the grace interval.  Its
+        # callback owns the per-run writer lock, so cancellation intent (and
+        # therefore the grace clock) cannot overtake it.
+        await asyncio.sleep(0.03)
+        assert not runs.cancel_written.is_set()
         runs.release_boundary.set()
 
         outcome, cancelled = await asyncio.gather(walk, cancelling)
@@ -609,6 +614,28 @@ class TestLlmToolTurnBoundaries:
         assert [r.snapshot_version for r in turns] == [1, 2]
         assert {r.principal["profile_id"] for r in turns} == {"worker"}
         assert outcome.lifecycle is RunLifecycle.COMPLETED
+
+    @pytest.mark.asyncio
+    async def test_tool_turn_at_call_limit_does_not_invent_a_schema_retry_call(self):
+        provider = FakeProvider()
+        provider.add_tool_call(
+            "ensure_task",
+            {"project_id": "p", "title": "one"},
+            usage=TokenUsage(10, 2, True),
+        )
+        step = _llm_step()
+        step = step.model_copy(
+            update={"budget": step.budget.model_copy(update={"max_calls": 1})}
+        )
+        engine, adapter, runs, ref = build_llm(provider, step=step)
+        adapter.queue.append(ok())
+
+        outcome = await engine.run_rule(ref, "r", {}, TOOL_PRINCIPAL)
+
+        assert outcome.lifecycle is RunLifecycle.FAILED
+        assert [r.receipt_kind for r in runs.receipts] == ["tool_turn", "step", "step"]
+        assert runs.receipts[1].error_code == "budget_exceeded"
+        assert runs.snapshots[outcome.run_id].budget.llm_calls == 1
 
     @pytest.mark.asyncio
     async def test_interrupted_tool_call_receipts_and_pauses_without_a_final_step_receipt(self):
@@ -691,6 +718,43 @@ class TestLlmToolTurnBoundaries:
             "interrupted",
             "operator_decision",
         ]
+
+    @pytest.mark.asyncio
+    async def test_restart_recovery_does_not_fall_back_to_the_broader_caller(self):
+        class ProcessCrash(BaseException):
+            pass
+
+        class CrashProvider(FakeProvider):
+            @property
+            def reports_usage(self) -> bool:
+                return True
+
+            async def create_message(self, **_kwargs):
+                raise ProcessCrash
+
+        class MissingProfileStore:
+            async def get_profile(self, _profile_id):
+                return None
+
+        engine, _adapter, runs, ref = build_llm(CrashProvider())
+        with pytest.raises(ProcessCrash):
+            await engine.run_rule(ref, "r", {}, TOOL_PRINCIPAL)
+        run_id = next(iter(runs.snapshots))
+
+        restarted, _adapter, _runs, _ref = build_llm(FakeProvider(), runs=runs)
+        restarted.services = replace(restarted.services, db=MissingProfileStore())
+        outcome = await restarted.resume(
+            run_id, EventArrived(event_id="recovery"), TOOL_PRINCIPAL
+        )
+
+        assert outcome.lifecycle is RunLifecycle.PAUSED
+        assert runs.receipts[-1].receipt_kind == "interrupted"
+        assert runs.receipts[-1].principal == {
+            "kind": None,
+            "profile_id": None,
+            "session_id": None,
+            "capability_fingerprint": "",
+        }
 
     @pytest.mark.asyncio
     async def test_interrupted_call_counts_against_the_restart_call_budget(self):

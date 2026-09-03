@@ -311,6 +311,8 @@ class LiveLlmExecutor:
                         diagnostics=("LLM call interrupted",),
                         control=StepControl.OPERATOR_DECISION,
                     )
+                if tools and run.stopped_by == "max_turns":
+                    return _result(step, ctx, outcome="budget_exceeded", usage=usage)
                 if denied:
                     return _result(step, ctx, outcome="unauthorized", usage=usage)
                 if step.budget.max_total_tokens is not None and not usage.reported:
