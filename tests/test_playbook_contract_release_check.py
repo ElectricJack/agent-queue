@@ -14,12 +14,14 @@ into the approved recording.
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
 
 from src.commands.contracts import CONTRACTS
 from src.playbooks.migration import (
+    EXPECTED_REVIEWED_FIXTURE_IDS,
     REVIEWED_FIXTURE_ROOT,
     current_command_fingerprints,
     profile_fingerprints_for,
@@ -432,6 +434,68 @@ def test_default_fixture_root_is_the_checked_in_one() -> None:
     """The default argument must point at the fixtures, not at a temp directory."""
     assert (REPO_ROOT / REVIEWED_FIXTURE_ROOT).is_dir()
     assert release_check(contract_registry=CONTRACTS)["checked"]
+
+
+def test_missing_fixture_root_blocks_the_release_check(tmp_path: Path) -> None:
+    missing = tmp_path / "reviewed-fixtures"
+
+    report = release_check(
+        contract_registry=CONTRACTS,
+        fixture_root=missing,
+        profile_fingerprints={},
+    )
+
+    assert report["success"] is False
+    assert report["checked"] == []
+    assert report["evidence_errors"] == [
+        {
+            "source": "reviewed_fixtures",
+            "error": f"fixture root is missing or is not a directory: {missing}",
+        }
+    ]
+    assert any(str(missing) in reason for reason in report["blocking_reasons"])
+
+
+def test_empty_fixture_root_names_every_missing_review(tmp_path: Path) -> None:
+    report = release_check(
+        contract_registry=CONTRACTS,
+        fixture_root=tmp_path,
+        profile_fingerprints={},
+    )
+
+    assert report["success"] is False
+    assert report["checked"] == []
+    assert {row["source"] for row in report["evidence_errors"]} == {
+        f"reviewed_fixture:{playbook_id}"
+        for playbook_id in EXPECTED_REVIEWED_FIXTURE_IDS
+    }
+    assert all(
+        "required fixture directory is missing" in row["error"]
+        for row in report["evidence_errors"]
+    )
+
+
+def test_malformed_approved_fixture_blocks_the_release_check(tmp_path: Path) -> None:
+    fixture_root = tmp_path / "reviewed-fixtures"
+    shutil.copytree(FIXTURE_ROOT, fixture_root)
+    broken = fixture_root / CHANGED_PLAYBOOK / "artifact.json"
+    broken.write_text("{not valid JSON", encoding="utf-8")
+
+    report = release_check(
+        contract_registry=CONTRACTS,
+        fixture_root=fixture_root,
+        profile_fingerprints=shipped_profile_fingerprints(),
+    )
+
+    assert report["success"] is False
+    assert CHANGED_PLAYBOOK not in report["checked"]
+    error = next(
+        row
+        for row in report["evidence_errors"]
+        if row["source"] == f"reviewed_fixture:{CHANGED_PLAYBOOK}"
+    )
+    assert "artifact.json is unreadable or malformed" in error["error"]
+    assert any(CHANGED_PLAYBOOK in reason for reason in report["blocking_reasons"])
 
 
 def test_current_command_fingerprints_covers_the_whole_registry() -> None:
