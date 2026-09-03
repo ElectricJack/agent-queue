@@ -40,6 +40,16 @@ REASON_TOO_SHORT_ERROR = (
 )
 
 
+def _unread_evidence(source: str, exc: BaseException, detail: str = "") -> dict[str, str]:
+    """One evidence source the cutover report could not read.
+
+    Returned rather than swallowed: :func:`build_cutover_report` turns each of
+    these into a blocking reason, so a failed query is never rendered as an
+    empty — that is, clean — result.
+    """
+    return {"source": source, "error": f"{detail}{type(exc).__name__}: {exc}"}
+
+
 def _active_sha(row: dict) -> str:
     """The artifact hash one activation row activates, or ``""``.
 
@@ -105,7 +115,9 @@ class PlaybookMigrationCommandsMixin:
             pending_repo=self.db,
         )
 
-    async def _enabled_activations(self) -> list[dict]:
+    async def _enabled_activations(
+        self, *, evidence_errors: list[dict[str, str]] | None = None
+    ) -> list[dict]:
         """Enabled activation rows joined to the artifact each one activates.
 
         Both §5.5 reports need the artifact's identity — its hash and the
@@ -117,12 +129,16 @@ class PlaybookMigrationCommandsMixin:
             rows = await self.db.list_playbook_activations_with_artifacts(enabled_only=True)
         except AttributeError:  # pragma: no cover - repositories predating the join
             try:
-                rows = await self.db.list_playbook_activations(enabled_only=True)
-            except Exception:
+                rows = await self.db.list_playbook_activations()
+            except Exception as exc:
                 logger.warning("migration report: activation rows unavailable", exc_info=True)
+                if evidence_errors is not None:
+                    evidence_errors.append(_unread_evidence("activations", exc))
                 return []
-        except Exception:  # pragma: no cover - defensive live-daemon reporting
+        except Exception as exc:  # pragma: no cover - defensive live-daemon reporting
             logger.warning("migration report: activation rows unavailable", exc_info=True)
+            if evidence_errors is not None:
+                evidence_errors.append(_unread_evidence("activations", exc))
             return []
         return [row for row in rows if isinstance(row, dict) and row.get("enabled", True)]
 
@@ -326,14 +342,20 @@ class PlaybookMigrationCommandsMixin:
     async def _cutover_report_inputs(self) -> dict:
         """Collect report inputs without turning the report into an operation.
 
-        Missing optional read surfaces are rendered as unavailable evidence;
-        the report remains honest and blocks cutover rather than failing open.
+        A read that fails is recorded as an unavailable evidence source, never
+        as an empty result: an empty ``pending_events`` list means "the fleet
+        has no pending events", and a failed query that returned one would let
+        the report certify a fleet nobody looked at.  Every recorded failure
+        becomes a blocking reason in :func:`build_cutover_report`, so the
+        report fails closed.
         """
         from src.commands.contracts import CONTRACTS
 
+        evidence_errors: list[dict[str, str]] = []
+
         fixture_root = self._reviewed_fixture_root()
         inventory = await self._migration_inventory()
-        enabled = await self._enabled_activations()
+        enabled = await self._enabled_activations(evidence_errors=evidence_errors)
 
         store = self._migration_store()
         try:
@@ -341,8 +363,9 @@ class PlaybookMigrationCommandsMixin:
                 str(getattr(playbook, "id", "") or "")
                 for _scope, _identifier, playbook in (store.list_all() if store is not None else [])
             }
-        except Exception:  # pragma: no cover - read-only fallback
+        except Exception as exc:  # pragma: no cover - read-only fallback
             logger.warning("cutover report: V1 store unavailable", exc_info=True)
+            evidence_errors.append(_unread_evidence("v1_store", exc))
             v1_ids = set()
 
         # ``reviewed_by``/``reviewed_at`` exist only in the human decision
@@ -372,8 +395,9 @@ class PlaybookMigrationCommandsMixin:
 
         try:
             pending_events = await self.db.list_pending_events(limit=10_000)
-        except Exception:  # pragma: no cover - defensive live-daemon reporting
+        except Exception as exc:  # pragma: no cover - defensive live-daemon reporting
             logger.warning("cutover report: pending events unavailable", exc_info=True)
+            evidence_errors.append(_unread_evidence("pending_events", exc))
             pending_events = []
 
         def _run_row(run):
@@ -390,8 +414,11 @@ class PlaybookMigrationCommandsMixin:
                 active_v1_runs.extend(
                     _run_row(run) for run in await self.db.list_playbook_runs(status=status, limit=10_000)
                 )
-            except Exception:  # pragma: no cover - defensive live-daemon reporting
+            except Exception as exc:  # pragma: no cover - defensive live-daemon reporting
                 logger.warning("cutover report: active V1 runs unavailable", exc_info=True)
+                evidence_errors.append(
+                    _unread_evidence("active_v1_runs", exc, detail=f"status={status}: ")
+                )
 
         parity_path = fixture_root / "parity-report.json"
         try:
@@ -414,7 +441,9 @@ class PlaybookMigrationCommandsMixin:
         acknowledged_disabled = []
         try:
             acknowledgements = await self.db.list_playbook_migration_acks()
-        except Exception:  # pragma: no cover - optional reporting detail
+        except Exception as exc:  # pragma: no cover - optional reporting detail
+            logger.warning("cutover report: acknowledgements unavailable", exc_info=True)
+            evidence_errors.append(_unread_evidence("acknowledgements", exc))
             acknowledgements = []
         for entry in inventory.entries:
             if entry.disposition != "disabled" or entry.acknowledged_by is None:
@@ -444,6 +473,7 @@ class PlaybookMigrationCommandsMixin:
             "pending_events": pending_events,
             "active_v1_runs": active_v1_runs,
             "parity": parity,
+            "evidence_errors": evidence_errors,
         }
 
     async def _cmd_playbook_cutover_report(self, args: dict) -> dict:

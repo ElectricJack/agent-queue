@@ -67,11 +67,13 @@ def sync_detailed(
 ) -> Response[PlaybookCutoverReportResponse | PlaybookCutoverReportResponse422]:
     """Render the read-only V2 cutover evidence report: enabled artifacts and hashes, contract fingerprint,
     unresolved migration entries, pending events, active V1 runs, recorded shadow parity, and rollback
-    readiness.
+    readiness. Any evidence source the daemon could not read is reported in evidence_errors and blocks
+    cutover; it is never shown as clean.
 
      Render the read-only V2 cutover evidence report: enabled artifacts and hashes, contract fingerprint,
     unresolved migration entries, pending events, active V1 runs, recorded shadow parity, and rollback
-    readiness.
+    readiness. Any evidence source the daemon could not read is reported in evidence_errors and blocks
+    cutover; it is never shown as clean.
 
     Args:
         body (PlaybookCutoverReportRequest):
@@ -102,11 +104,13 @@ def sync(
 ) -> PlaybookCutoverReportResponse | PlaybookCutoverReportResponse422 | None:
     """Render the read-only V2 cutover evidence report: enabled artifacts and hashes, contract fingerprint,
     unresolved migration entries, pending events, active V1 runs, recorded shadow parity, and rollback
-    readiness.
+    readiness. Any evidence source the daemon could not read is reported in evidence_errors and blocks
+    cutover; it is never shown as clean.
 
      Render the read-only V2 cutover evidence report: enabled artifacts and hashes, contract fingerprint,
     unresolved migration entries, pending events, active V1 runs, recorded shadow parity, and rollback
-    readiness.
+    readiness. Any evidence source the daemon could not read is reported in evidence_errors and blocks
+    cutover; it is never shown as clean.
 
     Args:
         body (PlaybookCutoverReportRequest):
@@ -132,11 +136,13 @@ async def asyncio_detailed(
 ) -> Response[PlaybookCutoverReportResponse | PlaybookCutoverReportResponse422]:
     """Render the read-only V2 cutover evidence report: enabled artifacts and hashes, contract fingerprint,
     unresolved migration entries, pending events, active V1 runs, recorded shadow parity, and rollback
-    readiness.
+    readiness. Any evidence source the daemon could not read is reported in evidence_errors and blocks
+    cutover; it is never shown as clean.
 
      Render the read-only V2 cutover evidence report: enabled artifacts and hashes, contract fingerprint,
     unresolved migration entries, pending events, active V1 runs, recorded shadow parity, and rollback
-    readiness.
+    readiness. Any evidence source the daemon could not read is reported in evidence_errors and blocks
+    cutover; it is never shown as clean.
 
     Args:
         body (PlaybookCutoverReportRequest):
@@ -165,11 +171,13 @@ async def asyncio(
 ) -> PlaybookCutoverReportResponse | PlaybookCutoverReportResponse422 | None:
     """Render the read-only V2 cutover evidence report: enabled artifacts and hashes, contract fingerprint,
     unresolved migration entries, pending events, active V1 runs, recorded shadow parity, and rollback
-    readiness.
+    readiness. Any evidence source the daemon could not read is reported in evidence_errors and blocks
+    cutover; it is never shown as clean.
 
      Render the read-only V2 cutover evidence report: enabled artifacts and hashes, contract fingerprint,
     unresolved migration entries, pending events, active V1 runs, recorded shadow parity, and rollback
-    readiness.
+    readiness. Any evidence source the daemon could not read is reported in evidence_errors and blocks
+    cutover; it is never shown as clean.
 
     Args:
         body (PlaybookCutoverReportRequest):

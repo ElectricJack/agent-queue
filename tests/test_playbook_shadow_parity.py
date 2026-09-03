@@ -19,6 +19,7 @@ disagrees with the committed record.
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -153,6 +154,7 @@ def test_cutover_report_makes_every_gate_and_operational_backlog_visible() -> No
         "total": 2,
         "oldest_age_seconds": 10.0,
         "by_playbook": {"default-pipeline": 2},
+        "unavailable": False,
     }
     assert report["active_v1_runs"]["running"] == 1
     assert report["active_v1_runs"]["paused"] == 1
@@ -270,6 +272,199 @@ async def test_cutover_report_command_uses_only_collected_evidence() -> None:
     assert report["success"] is True
     assert report["cutover_eligible"] is True
     assert report["blocking_reasons"] == []
+
+
+# ---------------------------------------------------------------------------
+# The report must fail *closed* when it cannot read its own evidence
+# ---------------------------------------------------------------------------
+
+
+class _CleanEvidence:
+    """A repository where every cutover evidence read reports a clean fleet.
+
+    Construct it with ``method_name=SomeError(...)`` to make exactly that read
+    raise while everything else stays clean — the shape that used to be
+    indistinguishable from "nothing to report".
+    """
+
+    def __init__(self, **raises: BaseException) -> None:
+        self._raises = raises
+
+    def _maybe_raise(self, name: str) -> None:
+        exc = self._raises.get(name)
+        if exc is not None:
+            raise exc
+
+    async def list_playbook_activations(self) -> list[dict]:
+        self._maybe_raise("list_playbook_activations")
+        fixture_root = PARITY_REPORT.parent / "default-pipeline"
+        artifact = json.loads((fixture_root / "artifact.json").read_text(encoding="utf-8"))
+        return [
+            {
+                "playbook_id": "default-pipeline",
+                "scope": "system",
+                "enabled": True,
+                "artifact_sha256": (fixture_root / "artifact.sha256")
+                .read_text(encoding="utf-8")
+                .strip(),
+                "source_digest": artifact["source_hash"],
+                "health": "ready",
+            }
+        ]
+
+    async def list_pending_events(self, limit: int | None = None) -> list[dict]:
+        self._maybe_raise("list_pending_events")
+        return []
+
+    async def list_playbook_runs(
+        self, status: str | None = None, limit: int | None = None
+    ) -> list[dict]:
+        self._maybe_raise("list_playbook_runs")
+        return []
+
+    async def list_playbook_migration_acks(self) -> list[dict]:
+        self._maybe_raise("list_playbook_migration_acks")
+        return []
+
+
+class _EvidenceHandler(PlaybookMigrationCommandsMixin):
+    """The real ``_cutover_report_inputs`` over a controllable repository."""
+
+    def __init__(self, db: _CleanEvidence, *, store_raises: BaseException | None = None) -> None:
+        self.db = db
+        self._store_raises = store_raises
+
+    async def _migration_inventory(self):
+        return SimpleNamespace(entries=(), blocking=lambda: ())
+
+    def _migration_store(self):
+        def _list_all():
+            if self._store_raises is not None:
+                raise self._store_raises
+            return [("system", None, SimpleNamespace(id="default-pipeline"))]
+
+        return SimpleNamespace(list_all=_list_all)
+
+
+@pytest.fixture
+def _at_repo_root(monkeypatch):
+    """``REVIEWED_FIXTURE_ROOT`` is repo-relative; pin cwd so parity is read."""
+    monkeypatch.chdir(PARITY_REPORT.parents[4])
+
+
+@pytest.mark.asyncio
+async def test_cutover_report_is_eligible_when_every_evidence_read_succeeds(
+    _at_repo_root,
+) -> None:
+    """The control: a genuinely clean fleet still certifies."""
+    report = await _EvidenceHandler(_CleanEvidence())._cmd_playbook_cutover_report({})
+
+    assert report["evidence_errors"] == []
+    assert report["blocking_reasons"] == []
+    assert report["cutover_eligible"] is True
+    assert report["pending_events"]["unavailable"] is False
+    assert report["active_v1_runs"]["unavailable"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "source"),
+    [
+        ("list_pending_events", "pending_events"),
+        ("list_playbook_runs", "active_v1_runs"),
+        ("list_playbook_activations", "activations"),
+        ("list_playbook_migration_acks", "acknowledgements"),
+    ],
+)
+async def test_cutover_report_blocks_when_an_evidence_read_raises(
+    _at_repo_root, method: str, source: str
+) -> None:
+    """One failed query, everything else clean, and cutover is refused.
+
+    The regression: these exceptions used to become empty lists, which the
+    report then read as "no pending events" and "no active V1 runs" — the
+    exact evidence it exists to weigh.
+    """
+    handler = _EvidenceHandler(_CleanEvidence(**{method: RuntimeError("database is locked")}))
+
+    report = await handler._cmd_playbook_cutover_report({})
+
+    assert report["cutover_eligible"] is False
+    assert source in {row["source"] for row in report["evidence_errors"]}
+    assert all("database is locked" in row["error"] for row in report["evidence_errors"])
+    assert any(
+        f"{source!r} could not be read" in reason and "database is locked" in reason
+        for reason in report["blocking_reasons"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_cutover_report_marks_the_section_an_unreadable_source_fed(
+    _at_repo_root,
+) -> None:
+    """A section built from an unread source says so, not just the summary."""
+    pending = await _EvidenceHandler(
+        _CleanEvidence(list_pending_events=RuntimeError("boom"))
+    )._cmd_playbook_cutover_report({})
+    assert pending["pending_events"] == {
+        "total": 0,
+        "oldest_age_seconds": None,
+        "by_playbook": {},
+        "unavailable": True,
+    }
+    assert pending["active_v1_runs"]["unavailable"] is False
+
+    runs = await _EvidenceHandler(
+        _CleanEvidence(list_playbook_runs=RuntimeError("boom"))
+    )._cmd_playbook_cutover_report({})
+    assert runs["active_v1_runs"]["unavailable"] is True
+    assert runs["pending_events"]["unavailable"] is False
+    # One entry per status queried: the report names each read it lost.
+    assert [row["source"] for row in runs["evidence_errors"]] == [
+        "active_v1_runs",
+        "active_v1_runs",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_cutover_report_withholds_rollback_readiness_it_cannot_evidence(
+    _at_repo_root,
+) -> None:
+    """No V1 store read means no claim that a rollback target exists."""
+    handler = _EvidenceHandler(_CleanEvidence(), store_raises=RuntimeError("vault gone"))
+
+    report = await handler._cmd_playbook_cutover_report({})
+
+    assert report["rollback_ready"] is False
+    assert report["cutover_eligible"] is False
+    assert "v1_store" in {row["source"] for row in report["evidence_errors"]}
+
+
+def test_cutover_report_evidence_errors_default_to_none_recorded() -> None:
+    """Callers that pass no ``evidence_errors`` are unaffected."""
+    report = build_cutover_report(
+        contract_fingerprint="sha256:" + "a" * 64,
+        artifacts=(
+            {
+                "playbook_id": "p",
+                "artifact_sha256": "sha256:" + "b" * 64,
+                "source_sha256": "sha256:" + "c" * 64,
+                "activation_health": "ready",
+                "reviewed_by": "operator",
+                "reviewed_at": "2026-09-03",
+                "v1_available": True,
+            },
+        ),
+        unresolved=(),
+        acknowledged_disabled=(),
+        pending_events=(),
+        active_v1_runs=(),
+        parity={"observations": 1, "identical": 1, "expected": 0, "unexplained": 0},
+        now=100.0,
+    )
+
+    assert report["evidence_errors"] == []
+    assert report["cutover_eligible"] is True
 
 
 # ===========================================================================

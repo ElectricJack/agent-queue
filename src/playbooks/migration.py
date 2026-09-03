@@ -1168,14 +1168,30 @@ def build_cutover_report(
     pending_events: Sequence[Mapping[str, Any]],
     active_v1_runs: Sequence[Mapping[str, Any]],
     parity: Mapping[str, Any],
+    evidence_errors: Sequence[Mapping[str, Any]] = (),
     now: float | None = None,
 ) -> dict[str, Any]:
     """Render the complete, serialisable Package 6 cutover evidence.
 
     The report only assembles evidence collected by the caller; it never
     compiles, activates, replays, or otherwise alters fleet state.
+
+    *evidence_errors* are the reads the caller could **not** perform, one
+    ``{"source": ..., "error": ...}`` mapping each.  They exist because an
+    unread evidence source and an empty one are not the same fact: a failed
+    ``list_pending_events`` call rendered as zero pending events would let this
+    report certify a fleet it never looked at.  Every entry is therefore a
+    blocking reason, and the sections it fed are marked ``unavailable``.
     """
     generated_at = time.time() if now is None else now
+    unread = [
+        {
+            "source": str(row.get("source") or "unknown"),
+            "error": str(row.get("error") or "unavailable"),
+        }
+        for row in evidence_errors
+    ]
+    unread_sources = {row["source"] for row in unread}
     rendered_artifacts = [
         {
             "playbook_id": row.get("playbook_id"),
@@ -1231,10 +1247,21 @@ def build_cutover_report(
         for row in rendered_artifacts
         if not row.get("reviewed_by") or not row.get("reviewed_at")
     ]
-    rollback_ready = bool(rendered_artifacts) and not unreviewed and all(
-        row.get("v1_available", False) for row in artifacts
+    # The claim is also withheld when the activation rows or V1 store could not
+    # be read: absence of evidence from an unavailable source is not evidence of
+    # rollback readiness.
+    rollback_ready = (
+        bool(rendered_artifacts)
+        and not unreviewed
+        and all(row.get("v1_available", False) for row in artifacts)
+        and not (unread_sources & {"activations", "v1_store"})
     )
     blocking_reasons: list[str] = []
+    for row in unread:
+        blocking_reasons.append(
+            f"evidence source {row['source']!r} could not be read ({row['error']}); "
+            "cutover cannot be certified against evidence that was never collected"
+        )
     if unresolved:
         blocking_reasons.append(f"{len(unresolved)} unresolved migration inventory entries")
     unhealthy = [row for row in rendered_artifacts if row.get("activation_health") != "ready"]
@@ -1272,14 +1299,17 @@ def build_cutover_report(
             "total": len(pending_events),
             "oldest_age_seconds": max(0.0, generated_at - min(received)) if received else None,
             "by_playbook": dict(sorted(by_playbook.items())),
+            "unavailable": "pending_events" in unread_sources,
         },
         "active_v1_runs": {
             "running": running,
             "paused": paused,
             "oldest_age_seconds": max(0.0, generated_at - min(run_started)) if run_started else None,
             "runs": runs,
+            "unavailable": "active_v1_runs" in unread_sources,
         },
         "parity": dict(parity),
+        "evidence_errors": unread,
         "rollback_ready": rollback_ready,
         "cutover_eligible": not blocking_reasons,
         "blocking_reasons": blocking_reasons,

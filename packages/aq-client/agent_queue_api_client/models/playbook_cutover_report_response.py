@@ -13,6 +13,9 @@ if TYPE_CHECKING:
     )
     from ..models.playbook_cutover_report_response_active_v1_runs import PlaybookCutoverReportResponseActiveV1Runs
     from ..models.playbook_cutover_report_response_artifacts_item import PlaybookCutoverReportResponseArtifactsItem
+    from ..models.playbook_cutover_report_response_evidence_errors_item import (
+        PlaybookCutoverReportResponseEvidenceErrorsItem,
+    )
     from ..models.playbook_cutover_report_response_parity import PlaybookCutoverReportResponseParity
     from ..models.playbook_cutover_report_response_pending_events import PlaybookCutoverReportResponsePendingEvents
     from ..models.playbook_cutover_report_response_unresolved_item import PlaybookCutoverReportResponseUnresolvedItem
@@ -37,6 +40,7 @@ class PlaybookCutoverReportResponse:
         artifacts (list[PlaybookCutoverReportResponseArtifactsItem] | Unset):
         unresolved (list[PlaybookCutoverReportResponseUnresolvedItem] | Unset):
         acknowledged_disabled (list[PlaybookCutoverReportResponseAcknowledgedDisabledItem] | Unset):
+        evidence_errors (list[PlaybookCutoverReportResponseEvidenceErrorsItem] | Unset):
         blocking_reasons (list[str] | Unset):
     """
 
@@ -51,6 +55,7 @@ class PlaybookCutoverReportResponse:
     artifacts: list[PlaybookCutoverReportResponseArtifactsItem] | Unset = UNSET
     unresolved: list[PlaybookCutoverReportResponseUnresolvedItem] | Unset = UNSET
     acknowledged_disabled: list[PlaybookCutoverReportResponseAcknowledgedDisabledItem] | Unset = UNSET
+    evidence_errors: list[PlaybookCutoverReportResponseEvidenceErrorsItem] | Unset = UNSET
     blocking_reasons: list[str] | Unset = UNSET
 
     def to_dict(self) -> dict[str, Any]:
@@ -91,6 +96,13 @@ class PlaybookCutoverReportResponse:
                 acknowledged_disabled_item = acknowledged_disabled_item_data.to_dict()
                 acknowledged_disabled.append(acknowledged_disabled_item)
 
+        evidence_errors: list[dict[str, Any]] | Unset = UNSET
+        if not isinstance(self.evidence_errors, Unset):
+            evidence_errors = []
+            for evidence_errors_item_data in self.evidence_errors:
+                evidence_errors_item = evidence_errors_item_data.to_dict()
+                evidence_errors.append(evidence_errors_item)
+
         blocking_reasons: list[str] | Unset = UNSET
         if not isinstance(self.blocking_reasons, Unset):
             blocking_reasons = self.blocking_reasons
@@ -115,6 +127,8 @@ class PlaybookCutoverReportResponse:
             field_dict["unresolved"] = unresolved
         if acknowledged_disabled is not UNSET:
             field_dict["acknowledged_disabled"] = acknowledged_disabled
+        if evidence_errors is not UNSET:
+            field_dict["evidence_errors"] = evidence_errors
         if blocking_reasons is not UNSET:
             field_dict["blocking_reasons"] = blocking_reasons
 
@@ -127,6 +141,9 @@ class PlaybookCutoverReportResponse:
         )
         from ..models.playbook_cutover_report_response_active_v1_runs import PlaybookCutoverReportResponseActiveV1Runs
         from ..models.playbook_cutover_report_response_artifacts_item import PlaybookCutoverReportResponseArtifactsItem
+        from ..models.playbook_cutover_report_response_evidence_errors_item import (
+            PlaybookCutoverReportResponseEvidenceErrorsItem,
+        )
         from ..models.playbook_cutover_report_response_parity import PlaybookCutoverReportResponseParity
         from ..models.playbook_cutover_report_response_pending_events import PlaybookCutoverReportResponsePendingEvents
         from ..models.playbook_cutover_report_response_unresolved_item import (
@@ -179,6 +196,17 @@ class PlaybookCutoverReportResponse:
 
                 acknowledged_disabled.append(acknowledged_disabled_item)
 
+        _evidence_errors = d.pop("evidence_errors", UNSET)
+        evidence_errors: list[PlaybookCutoverReportResponseEvidenceErrorsItem] | Unset = UNSET
+        if _evidence_errors is not UNSET:
+            evidence_errors = []
+            for evidence_errors_item_data in _evidence_errors:
+                evidence_errors_item = PlaybookCutoverReportResponseEvidenceErrorsItem.from_dict(
+                    evidence_errors_item_data
+                )
+
+                evidence_errors.append(evidence_errors_item)
+
         blocking_reasons = cast(list[str], d.pop("blocking_reasons", UNSET))
 
         playbook_cutover_report_response = cls(
@@ -193,6 +221,7 @@ class PlaybookCutoverReportResponse:
             artifacts=artifacts,
             unresolved=unresolved,
             acknowledged_disabled=acknowledged_disabled,
+            evidence_errors=evidence_errors,
             blocking_reasons=blocking_reasons,
         )
 
