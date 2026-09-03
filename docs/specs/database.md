@@ -1134,6 +1134,34 @@ either producer path from growing the table without bound.
 | `resolved_by` | TEXT | nullable | Server-derived principal that resolved it |
 | `resolution` | TEXT | nullable, CHECK | One of: dispatched, discarded, expired |
 
+### Table: `playbook_migration_acks`
+
+An operator's written waiver that a V1 playbook cannot be migrated to V2 and the
+fleet may cut over without it (Playbook V2 roadmap, Package 6). One row per
+`(playbook_id, scope, scope_identifier)` entry in the migration inventory, with
+system- and supervisor-scoped rows storing `''` rather than NULL because a
+nullable primary-key column is illegal on PostgreSQL.
+
+The waiver is keyed by `source_sha256`, the hash of the playbook's authoring
+Markdown: any edit to the source silently invalidates the waiver rather than
+letting it outlive its justification, and the entry returns to its computed
+disposition. `acknowledged_by` is the caller's server-derived principal — the
+command layer never reads it from a request body.
+`ck_playbook_migration_acks_reason` enforces a substantive reason
+(>= 12 characters), because this is the one mechanism capable of moving the
+fleet past a real migration problem. Deleting a row also returns the entry to
+its computed disposition.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `playbook_id` | TEXT | PRIMARY KEY | Waived playbook |
+| `scope` | TEXT | PRIMARY KEY | Activation scope of the waived entry |
+| `scope_identifier` | TEXT | PRIMARY KEY DEFAULT '' | Project/agent-type id; `''` for system and supervisor scope |
+| `source_sha256` | TEXT | NOT NULL | Hash of the authoring Markdown the waiver was granted against |
+| `reason` | TEXT | NOT NULL, CHECK | Operator's justification; at least 12 characters |
+| `acknowledged_by` | TEXT | NOT NULL | Server-derived principal that granted the waiver |
+| `acknowledged_at` | REAL | NOT NULL | Unix timestamp |
+
 ### Table: `task_completion_records`
 
 Append-only audit records for accepted task-close operations.  This deliberately

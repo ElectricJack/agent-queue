@@ -5,15 +5,14 @@
 backends — SQLite proves the statement count; Postgres additionally proves
 the CAS semantics under a real second connection/backend.
 
-``perf_strict`` is the gate every *wall-clock* budget in this package takes:
-statement counts are deterministic, latencies are not, and a box running
-several agents (or an ``-n auto`` CI job) turns a real budget into a coin
-flip.  See its docstring.
+``perf_strict`` (defined in ``tests/conftest.py``) is the gate every
+*wall-clock* budget in this package takes: statement counts are
+deterministic, latencies are not, and a box running several agents (or an
+``-n auto`` CI job) turns a real budget into a coin flip.  See its
+docstring.
 """
 
 from __future__ import annotations
-
-import os
 
 import pytest
 
@@ -45,25 +44,6 @@ async def any_db(request, tmp_path):
     await db.close()
 
 
-@pytest.fixture
-def perf_strict() -> None:
-    """Skip a wall-clock latency budget unless ``AQ_PERF_STRICT=1``.
-
-    Statement-count budgets are deterministic and always run.  Latency
-    budgets are not: they measure the machine as much as the query, so
-    under ``pytest -n auto`` — or on a developer box running several
-    agents — they fail on load rather than on a regression.  pyproject's
-    ``perf`` marker description states the ruling; this fixture is where
-    it is enforced, so every latency assertion opts in the same way
-    instead of hand-rolling the check.
-
-    Take it as the *first* parameter of the test, ahead of any seeding
-    fixture, so an un-strict run skips before paying for the seed rather
-    than after.
-
-    To run the budgets, do it deliberately and serially on a quiet box::
-
-        AQ_PERF_STRICT=1 aq test -m perf -p no:xdist -s tests/perf
-    """
-    if os.environ.get("AQ_PERF_STRICT") != "1":
-        pytest.skip("AQ_PERF_STRICT not set — wall-clock budgets need a quiet box")
+#: ``perf_strict`` is defined in ``tests/conftest.py`` -- wall-clock budgets
+#: are not confined to this package, so the gate lives at the root where every
+#: suite can take it.  It is still the gate every latency budget here takes.

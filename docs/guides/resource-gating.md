@@ -130,15 +130,23 @@ no:xdist tests/` both do exactly what they say.
 Everything under `tests/perf/` carries the `perf` marker, which is what keeps
 it out of the default suite and out of CI's `Tests (default)` job. The
 *latency* budgets there — as opposed to the statement counts, which are
-deterministic — additionally take the `perf_strict` fixture and skip unless
-`AQ_PERF_STRICT=1`. They measure the machine as much as the query, so under
-`-n auto`, or on a box running several agents, they fail on load rather than
-on a regression. Run them on purpose, serially, when the box is idle:
+deterministic — additionally take the `perf_strict` fixture (defined in
+`tests/conftest.py`) and skip unless `AQ_PERF_STRICT=1`. They measure the
+machine as much as the query, so under `-n auto`, or on a box running several
+agents, they fail on load rather than on a regression. Run them on purpose,
+serially, when the box is idle:
 
 ```bash
 POSTGRES_TEST_DSN=postgresql+asyncpg://agent_queue:agent_queue_dev@localhost:5533/aq_perf \
 AQ_PERF_STRICT=1 aq test -m perf -p no:xdist -s tests/perf
 ```
+
+The same rule applies to a wall-clock budget that lives *outside*
+`tests/perf/`: mark it `perf` and take `perf_strict`, which is why the fixture
+is defined at `tests/conftest.py` rather than in the perf package. An ungated
+one turns CI's `Tests (default)` arm red on runner load rather than on a real
+regression — `test_pathological_artifact_is_bounded` did exactly that until it
+was split into a correctness half (always runs) and a budget half (gated).
 
 `-m perf` matters as much as `AQ_PERF_STRICT`: `--aq-all-markers` only stops
 `aq test` from adding its *own* `-m`, and pyproject's `addopts` still carries
