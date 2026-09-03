@@ -6,6 +6,8 @@ from typing import Any, TypeVar, cast
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..types import UNSET, Unset
+
 T = TypeVar("T", bound="StreamMetadata")
 
 
@@ -21,6 +23,7 @@ class StreamMetadata:
         ended_at (float | None):
         session_id (str):
         project_id (None | str):
+        client_reconnect_attempts (int | Unset):  Default: 5.
     """
 
     stream_id: str
@@ -31,6 +34,7 @@ class StreamMetadata:
     ended_at: float | None
     session_id: str
     project_id: None | str
+    client_reconnect_attempts: int | Unset = 5
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -53,6 +57,8 @@ class StreamMetadata:
         project_id: None | str
         project_id = self.project_id
 
+        client_reconnect_attempts = self.client_reconnect_attempts
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -67,6 +73,8 @@ class StreamMetadata:
                 "project_id": project_id,
             }
         )
+        if client_reconnect_attempts is not UNSET:
+            field_dict["client_reconnect_attempts"] = client_reconnect_attempts
 
         return field_dict
 
@@ -104,6 +112,8 @@ class StreamMetadata:
 
         project_id = _parse_project_id(d.pop("project_id"))
 
+        client_reconnect_attempts = d.pop("client_reconnect_attempts", UNSET)
+
         stream_metadata = cls(
             stream_id=stream_id,
             title=title,
@@ -113,6 +123,7 @@ class StreamMetadata:
             ended_at=ended_at,
             session_id=session_id,
             project_id=project_id,
+            client_reconnect_attempts=client_reconnect_attempts,
         )
 
         stream_metadata.additional_properties = d

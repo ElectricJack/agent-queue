@@ -499,6 +499,27 @@ This section replaces the retired per-task `requires_approval` boolean
 (dropped by Alembic revision `c4d5e6f7a8b9`, which backfills it into
 `integration_mode` on `tasks` and `archived_tasks`).
 
+### 4.13 `streams` Section
+
+Maps to `StreamsConfig` (`src/config.py`). The YAML key is `streams`. Governs
+the in-memory streamable-command registry (`src/api/streams.py`) behind the
+console-stream pane. See
+`docs/superpowers/specs/2026-08-22-pane-console-stream-design.md` §8.1/§8.4.
+
+| YAML key | Type | Default | Description |
+|---|---|---|---|
+| `buffer_max_lines` | `int` | `5000` | Frame cap of a stream's ring buffer, applied as the `deque`'s `maxlen`. Dropping a frame sets `truncated`, which the first replayed frame reports to the client. |
+| `buffer_max_bytes` | `int` | `2097152` (2 MiB) | Payload-byte cap of the same ring buffer, accounted in `StreamHandle.append`. Evicts oldest-first until the buffer fits, so a handful of very long lines cannot pin `buffer_max_lines` × line-length bytes. The newest frame is always kept even when it alone busts the cap, so a terminal `exit`/`killed` frame is never dropped. Only the text payload is counted; per-frame overhead is constant and already bounded by `buffer_max_lines`. |
+| `retention_seconds` | `int` | `300` | How long a finished stream stays in the registry before the 30s sweep evicts it. |
+| `kill_grace_seconds` | `float` | `5.0` | Total budget for the SIGTERM → SIGINT → SIGKILL escalation in `POST /api/streams/{id}/kill`; each stage gets a third of it. |
+| `max_concurrent_per_session` | `int` | `3` | Concurrent running streams a single session may hold. Exceeding it returns 429. |
+| `client_reconnect_attempts` | `int` | `5` | Reconnect budget for the pane's SSE backoff loop (500ms × 2ⁿ). Served to the browser as `client_reconnect_attempts` on `GET /api/streams/{id}` — the daemon's config has no other route into the dashboard. `0` means "do not reconnect". |
+
+Validation (`StreamsConfig.validate`): `buffer_max_lines`, `buffer_max_bytes`,
+`retention_seconds`, `kill_grace_seconds` and `max_concurrent_per_session` must
+all be positive. `client_reconnect_attempts` is unvalidated because `0` is a
+meaningful setting.
+
 ---
 
 ## 5. Loading Behavior

@@ -37328,6 +37328,11 @@
               }
             ],
             "title": "Project Id"
+          },
+          "client_reconnect_attempts": {
+            "type": "integer",
+            "title": "Client Reconnect Attempts",
+            "default": 5
           }
         },
         "type": "object",
