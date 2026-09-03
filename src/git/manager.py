@@ -89,7 +89,18 @@ class GitError(Exception):
 
 @dataclass(frozen=True)
 class PullRequestIdentity:
-    """Immutable PR facts that must agree from review through merge."""
+    """Immutable PR facts that must agree from review through merge.
+
+    ``base_oid`` is recorded but is *not* part of :attr:`pin`.  It is the tip
+    of the base branch at the moment of the read, so it moves on every push
+    to the default branch — with several agents delivering concurrently it
+    differs between two reads seconds apart for reasons that have nothing to
+    do with this PR.  Nothing the merge relies on depends on it: the PR-files
+    diff inspected before merging is GitHub's merge-base diff, and
+    ``gh pr merge`` merges into whatever the base tip is at that moment.  The
+    base *branch name* is pinned, because a PR retargeted onto another branch
+    lands its commits somewhere the review never looked at.
+    """
 
     repository: str
     number: int
@@ -97,6 +108,11 @@ class PullRequestIdentity:
     base_oid: str
     head_ref: str
     head_oid: str
+
+    @property
+    def pin(self) -> tuple[str, int, str, str, str]:
+        """The facts that fix *what* a review of this PR reviewed."""
+        return (self.repository, self.number, self.base_ref, self.head_ref, self.head_oid)
 
 
 # ---------------------------------------------------------------------------
@@ -2287,7 +2303,7 @@ class GitManager:
         method: str = "squash",
         *,
         expected_head_oid: str | None = None,
-        expected_base_oid: str | None = None,
+        expected_base_ref: str | None = None,
     ) -> dict:
         """Merge a PR via ``gh pr merge``.
 
@@ -2301,6 +2317,17 @@ class GitManager:
             One of ``"squash"``, ``"merge"``, ``"rebase"``.  Defaults to
             ``"squash"`` — matches the project convention documented in
             the shipped final-reviewer profile.
+        expected_head_oid:
+            The head the caller validated and had CI judged.  Any other head
+            refuses to merge, and the same OID goes into
+            ``--match-head-commit`` so GitHub enforces it too.
+        expected_base_ref:
+            The branch the PR targeted when the caller validated it.  A PR
+            retargeted since then refuses to merge.  The base branch's *tip*
+            is deliberately not pinned — see :class:`PullRequestIdentity`;
+            the default branch advancing between validation and merge is
+            the normal state of affairs under concurrent delivery, not a
+            change to this PR.
 
         Returns
         -------
@@ -2316,22 +2343,27 @@ class GitManager:
             expected_head_oid = expected_head_oid.lower()
             if not _OID_RE.fullmatch(expected_head_oid):
                 return {"success": False, "sha": None, "error": "invalid expected PR head OID"}
-        if expected_base_oid is not None:
-            expected_base_oid = expected_base_oid.lower()
-            if not _OID_RE.fullmatch(expected_base_oid):
-                return {"success": False, "sha": None, "error": "invalid expected PR base OID"}
         try:
             current = await self.avalidate_pr_for_merge(checkout_path, pr_url)
         except GitError as exc:
             return {"success": False, "sha": None, "error": str(exc)}
-        if (
-            (expected_head_oid is not None and current.head_oid != expected_head_oid)
-            or (expected_base_oid is not None and current.base_oid != expected_base_oid)
-        ):
+        if expected_head_oid is not None and current.head_oid != expected_head_oid:
             return {
                 "success": False,
                 "sha": None,
-                "error": "PR identity changed after validation; refusing merge",
+                "error": (
+                    "PR identity changed after validation (head moved from "
+                    f"{expected_head_oid} to {current.head_oid}); refusing merge"
+                ),
+            }
+        if expected_base_ref is not None and current.base_ref != expected_base_ref:
+            return {
+                "success": False,
+                "sha": None,
+                "error": (
+                    "PR identity changed after validation (retargeted from "
+                    f"{expected_base_ref} to {current.base_ref}); refusing merge"
+                ),
             }
         expected_head_oid = current.head_oid
         flag = f"--{method}"
@@ -2671,7 +2703,10 @@ class GitManager:
 
         The REST PR-files endpoint is GitHub's merge-base PR diff and supports
         pagination. Re-reading the identity after that potentially long query
-        proves the inspected diff still belongs to the precise base/head pair.
+        proves the inspected diff still belongs to the precise head and target
+        branch.  The base branch's tip is not compared: it advances with every
+        concurrent delivery and does not change a merge-base diff (see
+        :attr:`PullRequestIdentity.pin`).
         """
         identity = await self.aget_pr_identity(checkout_path, pr_url)
         paths = await self._apr_changed_paths(checkout_path, identity)
@@ -2680,7 +2715,7 @@ class GitManager:
             raise GitError(
                 "PR changes reserved daemon bookkeeping paths: " + ", ".join(sorted(reserved))
             )
-        if await self.aget_pr_identity(checkout_path, pr_url) != identity:
+        if (await self.aget_pr_identity(checkout_path, pr_url)).pin != identity.pin:
             raise GitError("PR identity changed while its delivery diff was inspected")
         return identity
 
