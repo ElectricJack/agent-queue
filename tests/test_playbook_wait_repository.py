@@ -63,6 +63,9 @@ class Event:
     event_type: str
     event_id: str | None = None
     fields: dict[str, Any] = field(default_factory=dict)
+    playbook_id: str = "task-review"
+    scope: str = "system"
+    scope_identifier: str = ""
 
 
 @pytest.fixture(params=["sqlite", "postgres"])
@@ -176,6 +179,7 @@ def make_wait(**overrides) -> WaitSpec:
         "event_type": "pr.merged",
         "match": {"pr.number": 41},
         "deadline_at": NOW + DAY,
+        "created_at": NOW,
     }
     base.update(overrides)
     return WaitSpec(**base)
@@ -431,6 +435,125 @@ async def test_claim_is_exactly_once_under_concurrency(db):
         *(db.claim_for_event(event, now=NOW + HOUR) for _ in range(20))
     )
     assert sum(len(batch) for batch in results) == 1
+
+
+async def test_event_arriving_during_registration_is_claimed_exactly_once(
+    db, monkeypatch
+):
+    """An event committed before its wait insert must survive registration."""
+    if db._engine.dialect.name != "postgresql":
+        pytest.skip("the cross-transaction visibility race requires PostgreSQL")
+
+    snapshot = await db.create_run(make_snapshot())
+    registration_entered = asyncio.Event()
+    release_registration = asyncio.Event()
+    original = type(db).register
+
+    async def gated_register(self, wait, snapshot_version, *, conn=None):
+        registration_entered.set()
+        await release_registration.wait()
+        return await original(self, wait, snapshot_version, conn=conn)
+
+    monkeypatch.setattr(type(db), "register", gated_register)
+    boundary = asyncio.create_task(
+        db.commit_boundary(
+            replace(snapshot, lifecycle=RunLifecycle.PAUSED),
+            make_receipt(snapshot),
+            WaitChangeSet(register=(make_wait(),)),
+        )
+    )
+    await registration_entered.wait()
+
+    event = Event("pr.merged", "evt-during", {"pr": {"number": 41}})
+    assert await db.claim_for_event(event, now=NOW + HOUR) == []
+
+    release_registration.set()
+    committed = await boundary
+    monkeypatch.undo()
+
+    [row] = await db.list_pending_events(
+        playbook_id="task-review", include_resolved=True
+    )
+    assert row["event_id"] == "evt-during"
+    assert row["event"] == {"pr": {"number": 41}}
+    assert [claim.claimed_event_id for claim in committed.pending_wait_claims] == [
+        "evt-during"
+    ]
+    assert committed.pending_wait_claims[0].event_fields == {"pr": {"number": 41}}
+    assert (await db.load_run("run-1")).pending_wait_claims == committed.pending_wait_claims
+    assert await db.list_active("run-1") == []
+    assert await db.claim_for_event(event, now=NOW + HOUR + 1) == []
+
+
+async def test_inbox_event_older_than_wait_decision_does_not_claim_new_wait(db):
+    await db.create_run(make_snapshot())
+    event = Event("pr.merged", "evt-old", {"pr": {"number": 41}})
+    assert await db.claim_for_event(event, now=NOW) == []
+
+    registration = await db.register(make_wait(created_at=NOW + 1), 1)
+
+    assert registration.matched_immediately is None
+    assert [wait.wait_id for wait in await db.list_active("run-1")] == ["wait-1"]
+
+
+async def test_duplicate_event_uses_its_original_payload_and_arrival_time(db):
+    await db.create_run(make_snapshot())
+    original = Event("pr.closed", "evt-duplicate", {"pr": {"number": 7}})
+    assert await db.claim_for_event(original, now=NOW) == []
+    await db.register(make_wait(created_at=NOW + 1), 1)
+
+    changed_replay = Event("pr.merged", "evt-duplicate", {"pr": {"number": 41}})
+    assert await db.claim_for_event(changed_replay, now=NOW + 2) == []
+    assert [wait.wait_id for wait in await db.list_active("run-1")] == ["wait-1"]
+    rows = await db.list_pending_events(
+        playbook_id="task-review", include_resolved=True
+    )
+    assert [(row["event_type"], row["event"]) for row in rows] == [
+        ("pr.closed", {"pr": {"number": 7}})
+    ]
+
+
+async def test_event_delivery_is_isolated_by_artifact_scope(db):
+    await db.create_run(make_snapshot())
+    await db.register(make_wait(), 1)
+
+    event = Event(
+        "pr.merged",
+        "evt-project",
+        {"pr": {"number": 41}},
+        scope="project",
+        scope_identifier="project-1",
+    )
+    assert await db.claim_for_event(event, now=NOW + HOUR) == []
+    assert [wait.wait_id for wait in await db.list_active("run-1")] == ["wait-1"]
+
+    system_event = replace(event, scope="system", scope_identifier="")
+    claims = await db.claim_for_event(system_event, now=NOW + HOUR + 1)
+    assert [claim.wait_id for claim in claims] == ["wait-1"]
+    rows = await db.list_pending_events(
+        playbook_id="task-review", include_resolved=True
+    )
+    assert {(row["scope"], row["scope_identifier"]) for row in rows} == {
+        ("project", "project-1"),
+        ("system", ""),
+    }
+
+
+async def test_wait_round_trip_preserves_decision_timestamp(db):
+    await db.create_run(make_snapshot())
+    await db.register(make_wait(created_at=NOW - 123), 1)
+
+    [persisted] = await db.list_active("run-1")
+    assert persisted.created_at == NOW - 123
+
+
+async def test_wait_inbox_rows_share_the_pending_event_quota(db):
+    db.set_playbook_pending_event_quota(1)
+    assert await db.claim_for_event(Event("nothing", "evt-1"), now=NOW) == []
+
+    with pytest.raises(PendingEventQuotaExceeded):
+        await db.claim_for_event(Event("nothing", "evt-2"), now=NOW + 1)
+    assert await count_rows(db, playbook_pending_events) == 1
 
 
 # -- B-10: the boundary is atomic -------------------------------------------

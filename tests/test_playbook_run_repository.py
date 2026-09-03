@@ -37,6 +37,7 @@ from src.playbooks.run_state import (
     deserialize_snapshot,
     serialize_snapshot,
 )
+from src.playbooks.waits import WaitChangeSet, WaitSpec
 from tests.pg_dsn import ensure_worker_postgres_dsn
 
 POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
@@ -272,6 +273,33 @@ async def test_oversize_result_fails_the_run_without_storing_it(db):
     assert failed.lifecycle is RunLifecycle.FAILED
     stored = await db.list_receipts(snapshot.run_id)
     assert "x" * 100 not in json.dumps([r.result for r in stored])
+
+
+async def test_commit_boundary_rejects_an_oversize_binding_with_a_redacted_receipt(db):
+    """The repository cap cannot be bypassed by constructing a snapshot directly."""
+    db.set_playbook_state_limits(
+        StateLimits(max_result_bytes=256 * 1024, max_snapshot_bytes=4_194_304)
+    )
+    snapshot = await db.create_run(make_snapshot())
+    bound_result = {"blob": "x" * 300_000}
+
+    with pytest.raises(StateLimitExceeded) as excinfo:
+        await db.commit_boundary(
+            replace(
+                snapshot,
+                current_step_id="ensure-task",
+                bindings={"ensure-task": bound_result},
+            ),
+            make_receipt(snapshot, result={}),
+        )
+
+    assert excinfo.value.kind == "result"
+    assert excinfo.value.step_id == "ensure-task"
+    assert excinfo.value.size > 256 * 1024
+    reloaded = await db.load_run(snapshot.run_id)
+    assert reloaded.version == 0
+    assert reloaded.bindings == {}
+    assert await db.list_receipts(snapshot.run_id) == []
 
 
 # -- B-4: create and load --------------------------------------------------
@@ -521,6 +549,48 @@ async def test_paused_run_cancels_immediately(db):
     )
     assert cancelled.lifecycle is RunLifecycle.CANCELLED
     assert cancelled.completed_at is not None
+
+
+async def test_paused_run_cancellation_clears_wait_before_events_can_claim(db):
+    snapshot = await db.create_run(make_snapshot())
+    paused = await db.commit_boundary(
+        replace(snapshot, lifecycle=RunLifecycle.PAUSED, current_step_id="await-merge"),
+        make_receipt(snapshot, step_id="await-merge"),
+        WaitChangeSet(
+            register=(
+                WaitSpec(
+                    wait_id="wait-1",
+                    run_id=snapshot.run_id,
+                    step_id="await-merge",
+                    event_type="pr.merged",
+                    match={"pr.number": 41},
+                ),
+            )
+        ),
+    )
+
+    cancelled = await db.request_cancel(
+        snapshot.run_id,
+        expected_version=paused.version,
+        reason="operator cancelled",
+        requested_by="user:jack",
+    )
+
+    assert cancelled.lifecycle is RunLifecycle.CANCELLED
+    assert await db.list_active(snapshot.run_id) == []
+    event = type(
+        "Event",
+        (),
+        {
+            "playbook_id": snapshot.playbook_id,
+            "scope": "system",
+            "scope_identifier": "",
+            "event_type": "pr.merged",
+            "event_id": "event-1",
+            "fields": {"pr": {"number": 41}},
+        },
+    )()
+    assert await db.claim_for_event(event, now=NOW + 1) == []
 
 
 async def test_cancel_requires_the_current_version(db):

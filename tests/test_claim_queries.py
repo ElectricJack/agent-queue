@@ -13,6 +13,7 @@ from src.models import (
     Agent,
     AgentProfile,
     AgentState,
+    DepType,
     Project,
     PlaybookRun,
     RepoSourceType,
@@ -371,6 +372,33 @@ class TestClaimTransaction:
             )
 
         assert selected == "explicit"
+
+    async def test_frontier_excludes_containers(self, db):
+        """A flagged container is settle-only work: a pool worker must never
+        claim it (calm-ember-48).  The child with the deliverable is claimable."""
+        await mktask(
+            db, "container", profile_id="worker", priority=1, intelligence_class="fast-low"
+        )
+        await mktask(
+            db, "container.1", profile_id="worker", priority=2, intelligence_class="fast-low"
+        )
+        await db.add_dependency("container.1", "container", DepType.PARENT_CHILD.value)
+        assert await db.get_task_meta("container", "container") is True
+
+        async with db.immediate() as conn:
+            selected = await db.select_ready_for_profile(
+                conn,
+                project_id=PROJECT_ID,
+                profile_id="worker",
+                default_profile_id=None,
+                agent_id="agent-1",
+                enforce_routing=True,
+                intelligence_class="fast-low",
+                llm_provider="anthropic",
+                options_hash="catalog-1",
+            )
+
+        assert selected == "container.1"
 
     async def test_claim_records_holder_everywhere(self, db):
         await mktask(db, "t1", profile_id="worker")

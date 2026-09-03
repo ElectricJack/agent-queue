@@ -7,7 +7,7 @@ deterministically).
 
 **Structured sections** (JSON blocks extracted):
 
-- ``## Config`` → model, permission_mode, max_tokens_per_task
+- ``## Config`` → default_class, permission_mode, max_tokens_per_task
 - ``## Tools`` → allowed / denied tool lists
 - ``## MCP Servers`` → server name → {command, args, env}
 
@@ -48,7 +48,6 @@ KNOWN_SECTIONS = STRUCTURED_SECTIONS | PROMPT_SECTIONS
 # Known Config-block keys with deterministic validation.
 CONFIG_KNOWN_KEYS = frozenset(
     {
-        "model",
         "permission_mode",
         "max_tokens_per_task",
         # Named-session fields (supervisor-agent spec §7).  ``workspaces``
@@ -464,7 +463,7 @@ def _validate_config(config: dict) -> list[str]:
 
     Validates:
 
-    - **model** — must be a string (non-empty when present).
+    - **model** — retired; select an intelligence class instead.
     - **permission_mode** — must be a string from :data:`VALID_PERMISSION_MODES`.
     - **max_tokens_per_task** — must be a positive integer.
 
@@ -483,12 +482,14 @@ def _validate_config(config: dict) -> list[str]:
     errors: list[str] = []
 
     # --- model ---
+    # A profile's model is derived from its intelligence class and harness.
+    # Keep this explicit (rather than treating it as an unknown key) so a
+    # hand-edited legacy profile gets an actionable error.
     if "model" in config:
-        model = config["model"]
-        if not isinstance(model, str):
-            errors.append(f"Config 'model' must be a string, got {type(model).__name__}")
-        elif not model.strip():
-            errors.append("Config 'model' must not be empty")
+        errors.append(
+            "Config 'model' was removed; select 'default_class' instead. "
+            "The class and harness resolve the launch model."
+        )
 
     # --- permission_mode ---
     if "permission_mode" in config:
@@ -906,13 +907,13 @@ def parse_profile(
     ...
     ... ## Config
     ... ```json
-    ... {"model": "claude-sonnet-4-6"}
+    ... {"default_class": "standard-medium"}
     ... ```
     ... ''')
     >>> result.is_valid
     True
     >>> result.config
-    {'model': 'claude-sonnet-4-6'}
+    {'default_class': 'standard-medium'}
     >>> result.frontmatter.id
     'coding'
     """
@@ -1054,9 +1055,7 @@ def parsed_profile_to_agent_profile(parsed: ParsedProfile) -> dict:
     if parsed.frontmatter.extra.get("memory_scope_id"):
         result["memory_scope_id"] = str(parsed.frontmatter.extra["memory_scope_id"])
 
-    # Config → model, permission_mode
-    if parsed.config.get("model"):
-        result["model"] = parsed.config["model"]
+    # Config → permission_mode
     if parsed.config.get("permission_mode"):
         result["permission_mode"] = parsed.config["permission_mode"]
 
@@ -1198,7 +1197,6 @@ def agent_profile_to_markdown(
     id: str,
     name: str,
     description: str = "",
-    model: str = "",
     permission_mode: str = "",
     allowed_tools: list[str] | None = None,
     mcp_servers: list[str] | dict[str, dict] | None = None,
@@ -1229,8 +1227,6 @@ def agent_profile_to_markdown(
         Display name.
     description:
         Optional description (stored in frontmatter).
-    model:
-        Model override (empty = use default).
     permission_mode:
         Permission mode override (empty = use default).
     allowed_tools:
@@ -1284,8 +1280,6 @@ def agent_profile_to_markdown(
 
     # --- Config section ---
     config: dict = {}
-    if model:
-        config["model"] = model
     if permission_mode:
         config["permission_mode"] = permission_mode
     if default_class:

@@ -22,7 +22,6 @@ class GetProfileResponse:
         id (str):
         name (str):
         description (str | Unset):  Default: ''.
-        model (str | Unset):  Default: ''.
         harness (None | str | Unset):
         default_class (str | Unset):  Default: ''.
         permission_mode (str | Unset):  Default: ''.
@@ -35,7 +34,6 @@ class GetProfileResponse:
     id: str
     name: str
     description: str | Unset = ""
-    model: str | Unset = ""
     harness: None | str | Unset = UNSET
     default_class: str | Unset = ""
     permission_mode: str | Unset = ""
@@ -51,8 +49,6 @@ class GetProfileResponse:
         name = self.name
 
         description = self.description
-
-        model = self.model
 
         harness: None | str | Unset
         if isinstance(self.harness, Unset):
@@ -88,8 +84,6 @@ class GetProfileResponse:
         )
         if description is not UNSET:
             field_dict["description"] = description
-        if model is not UNSET:
-            field_dict["model"] = model
         if harness is not UNSET:
             field_dict["harness"] = harness
         if default_class is not UNSET:
@@ -117,8 +111,6 @@ class GetProfileResponse:
         name = d.pop("name")
 
         description = d.pop("description", UNSET)
-
-        model = d.pop("model", UNSET)
 
         def _parse_harness(data: object) -> None | str | Unset:
             if data is None:
@@ -150,7 +142,6 @@ class GetProfileResponse:
             id=id,
             name=name,
             description=description,
-            model=model,
             harness=harness,
             default_class=default_class,
             permission_mode=permission_mode,

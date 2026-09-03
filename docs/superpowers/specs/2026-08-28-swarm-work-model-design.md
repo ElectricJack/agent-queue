@@ -159,7 +159,16 @@ stubbed:
 ### 7. Container semantics
 
 **Release.** Children are withheld while the container is `DEFINED` or
-`AWAITING_PLAN_APPROVAL` (`_parent_child_unsat`, unchanged).
+`AWAITING_PLAN_APPROVAL` (`_parent_child_unsat`, unchanged). A flagged container is
+**released, never dispatched**: it has no deliverable of its own, a worker holding it could
+never close it (invariant 6), and the worker's live session is exactly what the settlement
+predicate below waits on. The promotion cascade therefore moves a promoted container
+straight on from `READY` to `IN_PROGRESS` with no agent (`context=container_released`, the
+same shape `create_task_graph` births containers in and restart recovery preserves),
+`_schedule` withholds any container still `READY` — one that gained its first child after
+promotion, or came back from `PAUSED` — and releases it the same way, and the `task_claim`
+frontier excludes the flag. A released container whose children are already all
+`COMPLETED` settles immediately rather than at the next sweep.
 
 **Transition machinery refactor (prerequisite).** `transition_task` today opens its own
 transaction and has no `conn` parameter. It is split into `_apply_transition(conn, task_id,

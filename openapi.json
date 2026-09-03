@@ -1751,8 +1751,8 @@
         "tags": [
           "agent"
         ],
-        "summary": "Create a new agent profile. Profiles configure agents with specific tools, MCP servers, model overrides, and system prompt additions. Assign profiles to tasks (profile_id) or set as project defaults (default_profile_id).",
-        "description": "Create a new agent profile. Profiles configure agents with specific tools, MCP servers, model overrides, and system prompt additions. Assign profiles to tasks (profile_id) or set as project defaults (default_profile_id).",
+        "summary": "Create a new agent profile. Profiles configure agents with specific tools, MCP servers, intelligence classes, and system prompt additions. Assign profiles to tasks (profile_id) or set as project defaults (default_profile_id).",
+        "description": "Create a new agent profile. Profiles configure agents with specific tools, MCP servers, intelligence classes, and system prompt additions. Assign profiles to tasks (profile_id) or set as project defaults (default_profile_id).",
         "operationId": "create_profile",
         "requestBody": {
           "content": {
@@ -16015,7 +16015,7 @@
             "title": "Description",
             "description": "What this profile is for (optional)"
           },
-          "model": {
+          "default_class": {
             "anyOf": [
               {
                 "type": "string"
@@ -16024,8 +16024,8 @@
                 "type": "null"
               }
             ],
-            "title": "Model",
-            "description": "Model override (optional, empty = use default)"
+            "title": "Default Class",
+            "description": "Default intelligence class id (optional)"
           },
           "permission_mode": {
             "anyOf": [
@@ -18025,18 +18025,6 @@
             ],
             "title": "Description",
             "description": "New description (optional)"
-          },
-          "model": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Model",
-            "description": "New model override (optional)"
           },
           "permission_mode": {
             "anyOf": [
@@ -21288,11 +21276,6 @@
           "description": {
             "type": "string",
             "title": "Description",
-            "default": ""
-          },
-          "model": {
-            "type": "string",
-            "title": "Model",
             "default": ""
           },
           "harness": {
@@ -30817,11 +30800,6 @@
             "title": "Description",
             "default": ""
           },
-          "model": {
-            "type": "string",
-            "title": "Model",
-            "default": ""
-          },
           "harness": {
             "anyOf": [
               {
@@ -31130,11 +31108,6 @@
           "description": {
             "type": "string",
             "title": "Description",
-            "default": ""
-          },
-          "model": {
-            "type": "string",
-            "title": "Model",
             "default": ""
           },
           "harness": {

@@ -1,0 +1,9 @@
+{
+  "event_id": "evt-task-completed-code",
+  "event_type": "task.completed",
+  "project_id": "proj-1",
+  "review_task": false,
+  "task_id": "task-1",
+  "task_type": "code",
+  "title": "Add the widget"
+}

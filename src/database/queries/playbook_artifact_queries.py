@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import logging
 import time
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
+from contextlib import asynccontextmanager
+from pathlib import Path
 from uuid import uuid4
 
-from sqlalchemy import delete, insert, select, update
+from sqlalchemy import delete, insert, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 from src.database.tables import (
     playbook_activations,
@@ -16,6 +20,9 @@ from src.database.tables import (
     playbook_v2_runs,
 )
 from src.playbooks.artifact_ref import ArtifactRef
+from src.playbooks.artifact_tombstone import restore_any
+
+logger = logging.getLogger(__name__)
 
 #: Everything but the surrogate key: a re-activation of the same
 #: ``(playbook_id, scope, scope_identifier)`` rewrites the record in place and
@@ -41,7 +48,48 @@ class ArtifactNotFound(ValueError):
     """An activation cannot point at an artifact row which does not exist."""
 
 
+def _advisory_key(artifact_sha256: str) -> int:
+    """A stable signed 64-bit PostgreSQL advisory-lock key for one artifact hash.
+
+    ``pg_advisory_xact_lock`` takes a ``bigint``, so the first sixteen hex
+    digits of the digest are folded into the signed range.  Collisions between
+    two unrelated hashes are possible and harmless: the worst case is that two
+    artifacts serialise against each other for the length of one transaction.
+    """
+    digest = artifact_sha256.removeprefix("sha256:")
+    value = int(digest[:16], 16)
+    return value - (1 << 64) if value >= (1 << 63) else value
+
+
 class PlaybookArtifactQueryMixin:
+    @asynccontextmanager
+    async def artifact_hash_lock(
+        self, artifact_shas: Sequence[str]
+    ) -> AsyncIterator[AsyncConnection]:
+        """A write transaction that also excludes concurrent work on ``artifact_shas``.
+
+        The retention sweep and the compile-to-store handoff both act on one
+        hash from two sides — the sweep deletes the row and then removes the
+        file, the handoff adopts the file and then writes the row — so the
+        window between each pair is exactly the TOCTOU that leaves a live row
+        pointing at a deleted file.  Both sides take this lock, which makes
+        the two critical sections serialise instead of interleave.
+
+        On SQLite ``immediate()`` is already a database-wide write lock, so
+        the per-hash locks are implicit and nothing further is issued.  On
+        PostgreSQL ``immediate()`` is an ordinary read-committed transaction
+        and the exclusion has to be asked for: ``pg_advisory_xact_lock`` is
+        taken per hash, in sorted key order so two sweeps holding overlapping
+        candidate sets queue rather than deadlock, and released by the commit.
+        """
+        async with self.immediate() as conn:
+            if conn.dialect.name == "postgresql":
+                for key in sorted({_advisory_key(sha) for sha in artifact_shas if sha}):
+                    await conn.execute(
+                        text("SELECT pg_advisory_xact_lock(:key)"), {"key": key}
+                    )
+            yield conn
+
     async def upsert_playbook_artifact(
         self,
         ref: ArtifactRef,
@@ -59,6 +107,21 @@ class PlaybookArtifactQueryMixin:
         exists.  The local path, byte size, validation result, and profile
         fingerprint can change when the same canonical bytes are rediscovered
         or revalidated, so those fields are refreshed on subsequent calls.
+
+        This is the moment a hash becomes *referenced*, so it is one of the two
+        sides of :meth:`artifact_hash_lock` (§12.1).  Holding the lock across
+        the write means a retention sweep cannot be part-way through removing
+        the file for this hash while the row lands, and the file check below
+        cannot be answered with a state the sweep is about to change.
+
+        The check itself is the repair half of the sweep's two-phase deletion:
+        ``ArtifactStore.put`` adopts an existing file rather than rewriting it,
+        so a sweep that entombed that file between the adoption and this call
+        would otherwise leave the new row pointing at nothing.  Restoring the
+        tombstone puts the same bytes back under the same name.  A path with no
+        file and no tombstone is left alone — an artifact whose file was never
+        written is the ``file_missing`` fault ``playbooks.artifact_integrity``
+        exists to report, not something this write invents an answer for.
         """
         values = {
             **ref.as_dict(),
@@ -70,7 +133,7 @@ class PlaybookArtifactQueryMixin:
             "validation": validation,
             "created_at": time.time(),
         }
-        async with self.immediate() as conn:
+        async with self.artifact_hash_lock([ref.artifact_sha256]) as conn:
             insert_fn = pg_insert if conn.dialect.name == "postgresql" else sqlite_insert
             statement = insert_fn(playbook_artifacts).values(**values)
             await conn.execute(
@@ -82,6 +145,13 @@ class PlaybookArtifactQueryMixin:
                     },
                 )
             )
+            if path and restore_any(Path(path)):
+                logger.warning(
+                    "Artifact %s was re-adopted while retention was removing it; "
+                    "restored %s from its tombstone",
+                    ref.artifact_sha256,
+                    path,
+                )
 
     async def get_playbook_artifact(self, artifact_sha256: str) -> ArtifactRef | None:
         async with self._engine.begin() as conn:
@@ -225,7 +295,9 @@ class PlaybookArtifactQueryMixin:
             )
         return row.scalar_one_or_none()
 
-    async def filter_referenced_artifact_shas(self, shas: Sequence[str]) -> set[str]:
+    async def filter_referenced_artifact_shas(
+        self, shas: Sequence[str], *, conn: AsyncConnection | None = None
+    ) -> set[str]:
         """Which of ``shas`` are still named by a row anywhere in V2 storage.
 
         Three tables, not one.  The artifact row is the ordinary reference,
@@ -239,21 +311,36 @@ class PlaybookArtifactQueryMixin:
         Chunked because the candidate list comes from a directory scan and is
         not bounded by anything the schema controls, while both backends cap
         bound parameters per statement.
+
+        ``conn`` lets a caller run the question inside a transaction it already
+        holds.  The sweep needs exactly that: its answer is only worth acting
+        on while :meth:`artifact_hash_lock` is held, and a fresh connection
+        would read outside that lock and could be stale before the first file
+        is touched.  Without ``conn`` this opens its own read connection, which
+        is what the orphan scan wants.
         """
         wanted = [sha for sha in dict.fromkeys(shas) if sha]
         if not wanted:
             return set()
+        if conn is not None:
+            return await self._referenced_artifact_shas(conn, wanted)
+        async with self._engine.connect() as connection:
+            return await self._referenced_artifact_shas(connection, wanted)
+
+    @staticmethod
+    async def _referenced_artifact_shas(
+        conn: AsyncConnection, wanted: list[str]
+    ) -> set[str]:
         referenced: set[str] = set()
-        async with self._engine.connect() as conn:
-            for start in range(0, len(wanted), _SHA_BATCH):
-                batch = wanted[start : start + _SHA_BATCH]
-                for column in (
-                    playbook_artifacts.c.artifact_sha256,
-                    playbook_activations.c.active_artifact_sha256,
-                    playbook_v2_runs.c.artifact_sha256,
-                ):
-                    found = await conn.execute(select(column).where(column.in_(batch)))
-                    referenced.update(sha for sha in found.scalars().all() if sha)
+        for start in range(0, len(wanted), _SHA_BATCH):
+            batch = wanted[start : start + _SHA_BATCH]
+            for column in (
+                playbook_artifacts.c.artifact_sha256,
+                playbook_activations.c.active_artifact_sha256,
+                playbook_v2_runs.c.artifact_sha256,
+            ):
+                found = await conn.execute(select(column).where(column.in_(batch)))
+                referenced.update(sha for sha in found.scalars().all() if sha)
         return referenced
 
     async def collect_playbook_artifacts(

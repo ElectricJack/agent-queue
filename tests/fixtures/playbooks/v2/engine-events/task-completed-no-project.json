@@ -1,0 +1,8 @@
+{
+  "event_id": "evt-task-completed-no-project",
+  "event_type": "task.completed",
+  "review_task": false,
+  "task_id": "task-4",
+  "task_type": "code",
+  "title": "Orphan"
+}

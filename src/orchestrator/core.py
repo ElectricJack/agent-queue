@@ -2143,6 +2143,16 @@ class Orchestrator(
         except Exception:
             logger.warning("YAML inline mcp_servers migration failed", exc_info=True)
 
+        # Profiles now select a launch model solely through default_class and
+        # harness.  Migrate legacy Config.model keys before the strict parser
+        # below scans the vault.
+        from src.profiles.model_pin_migration import migrate_vault_profile_model_pins
+
+        try:
+            migrate_vault_profile_model_pins(self.config.vault_root)
+        except Exception:
+            logger.warning("Vault profile model-pin migration failed", exc_info=True)
+
         # Startup scan: sync any existing profile.md files from the vault
         # to the database.  The VaultWatcher's initial check() only takes
         # a snapshot (no dispatch), so pre-existing profile files would
@@ -3300,6 +3310,17 @@ class Orchestrator(
         # Route freshness is resolved before agent supply. This prevents an
         # unspecified task from creating a worker from a profile default.
         task_snapshot = await self.db.list_active_tasks()
+        # A flagged container (spec §7) is settle-only work and never
+        # dispatchable.  Promotion releases the ones it promotes; this catches
+        # a container that was already READY when it gained its first child
+        # (``set_parent`` on a READY task) or came back READY from PAUSED,
+        # and withholds it from the reconciler and the scheduler this cycle
+        # even if its release did not land (calm-ember-48).
+        withheld = await self._release_ready_containers(
+            [t.id for t in task_snapshot if t.status == TaskStatus.READY]
+        )
+        if withheld:
+            task_snapshot = [t for t in task_snapshot if t.id not in withheld]
         assignment_routes = await self.assignment_routing.routes_for(task_snapshot)
         from dataclasses import replace as _replace
 

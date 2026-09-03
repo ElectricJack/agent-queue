@@ -1,0 +1,10 @@
+{
+  "event_id": "evt-both",
+  "event_type": "task.completed",
+  "project_id": "proj-1",
+  "review_task": false,
+  "spec_id": "spec-2",
+  "task_id": "task-3",
+  "task_type": "code",
+  "title": "Both"
+}
