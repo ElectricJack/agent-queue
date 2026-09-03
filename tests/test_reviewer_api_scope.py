@@ -32,10 +32,18 @@ from src.models import Agent, AgentProfile, AgentState, Project, SessionRecord, 
 from src.orchestrator import Orchestrator
 from src.vault import ensure_default_intelligence_classes
 
+#: The identity ``pr_merge`` resolves for the final reviewer's PR.  ``gh``
+#: never runs in this test, so the OIDs only have to be well-formed.
+PR_IDENTITY = PullRequestIdentity(
+    repository="o/r",
+    number=1,
+    base_ref="main",
+    base_oid="a" * 40,
+    head_ref="feature/reviewed",
+    head_oid="b" * 40,
+)
+
 pytestmark = pytest.mark.asyncio
-
-_PR_IDENTITY = PullRequestIdentity("org/repo", 1, "main", "a" * 40, "feature", "b" * 40)
-
 
 @pytest.fixture(scope="module")
 def generated_routers():
@@ -128,12 +136,10 @@ async def api(tmp_path, monkeypatch, request, generated_routers):
     }
     merge_pr = AsyncMock(return_value={"success": True, "sha": "merged"})
     monkeypatch.setattr(orch.git, "amerge_pr", merge_pr)
-    # ``pr_merge`` resolves the PR's immutable identity through ``gh``
-    # before merging; this test is about the token scope, not GitHub.
+    # ``pr_merge`` pins the merge to the identity GitHub will merge and fails
+    # closed when it cannot resolve one; there is no real PR behind this URL.
     monkeypatch.setattr(
-        orch.git,
-        "avalidate_pr_for_merge",
-        AsyncMock(return_value=_PR_IDENTITY),
+        orch.git, "avalidate_pr_for_merge", AsyncMock(return_value=PR_IDENTITY),
     )
     monkeypatch.setattr(deps, "_command_handler", handler)
     monkeypatch.setattr(deps, "_orchestrator", orch)
@@ -264,10 +270,11 @@ async def test_final_reviewer_can_merge_its_review_branch_pr(api):
     assert result["sha"] == "merged"
     api.merge_pr.assert_awaited_once()
     assert api.merge_pr.await_args.args[1] == "https://example.invalid/pr/1"
+    # The merge is pinned to the validated identity, not just the URL.
     assert api.merge_pr.await_args.kwargs == {
         "method": "squash",
-        "expected_head_oid": _PR_IDENTITY.head_oid,
-        "expected_base_oid": _PR_IDENTITY.base_oid,
+        "expected_head_oid": PR_IDENTITY.head_oid,
+        "expected_base_ref": PR_IDENTITY.base_ref,
     }
 
 
