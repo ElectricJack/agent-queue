@@ -1064,6 +1064,23 @@ async def test_expiry_sweep_does_not_resolve_an_active_dispatch_claim(db):
     assert swept.expired == 1
 
 
+async def test_expiry_sweep_resolves_an_abandoned_dispatch_claim(db):
+    pending_id = await retain(db, ttl_seconds=1)
+    claim = await db.claim_pending_event_dispatch(
+        pending_id, claimed_by="dead-op", now=NOW + 0.5, stale_before=NOW
+    )
+    assert claim
+
+    swept = await db.purge_pending_events(NOW + 302, resolved_before=NOW)
+
+    assert swept.expired == 1
+    [row] = await db.list_pending_events(playbook_id="task-review", include_resolved=True)
+    assert row["resolution"] == "expired"
+    assert row["dispatch_claim_token"] is None
+    assert row["dispatch_claimed_by"] is None
+    assert row["dispatch_claimed_at"] is None
+
+
 async def test_pending_event_quota_is_enforced(db):
     db.set_playbook_pending_event_quota(3)
     for i in range(3):

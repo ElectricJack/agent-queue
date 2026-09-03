@@ -65,6 +65,7 @@ from src.playbooks.run_state import (
 from src.playbooks.waits import (
     EMPTY_WAIT_CHANGES,
     EVENT_ADDRESSABLE_WAIT_KINDS,
+    PENDING_EVENT_DISPATCH_LEASE_SECONDS,
     MatchableEvent,
     WaitChangeSet,
     WaitClaim,
@@ -1580,6 +1581,11 @@ class PlaybookRunQueryMixin:
         window. ``resolved_before`` comes from the retention sweeper so policy
         stays in configuration rather than being hidden in this query.
         """
+        claim_stale_before = now - PENDING_EVENT_DISPATCH_LEASE_SECONDS
+        claim_available = or_(
+            playbook_pending_events.c.dispatch_claim_token.is_(None),
+            playbook_pending_events.c.dispatch_claimed_at <= claim_stale_before,
+        )
         async with self.immediate() as conn:
             expiring = (
                 (
@@ -1587,7 +1593,7 @@ class PlaybookRunQueryMixin:
                         select(playbook_pending_events.c.pending_event_id)
                         .where(
                             playbook_pending_events.c.resolved_at.is_(None),
-                            playbook_pending_events.c.dispatch_claim_token.is_(None),
+                            claim_available,
                             playbook_pending_events.c.expires_at <= now,
                         )
                         .limit(limit)
@@ -1603,10 +1609,13 @@ class PlaybookRunQueryMixin:
                     .where(
                         playbook_pending_events.c.pending_event_id.in_(list(expiring)),
                         playbook_pending_events.c.resolved_at.is_(None),
-                        playbook_pending_events.c.dispatch_claim_token.is_(None),
+                        claim_available,
                         playbook_pending_events.c.expires_at <= now,
                     )
                     .values(
+                        dispatch_claim_token=None,
+                        dispatch_claimed_by=None,
+                        dispatch_claimed_at=None,
                         resolved_at=now,
                         resolved_by=PENDING_EVENT_EXPIRY_ACTOR,
                         resolution="expired",

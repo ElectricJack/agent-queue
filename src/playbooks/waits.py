@@ -24,6 +24,7 @@ from typing import Any, Protocol
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 WAIT_KINDS: frozenset[str] = frozenset({"event", "timer", "human", "agent_task"})
+PENDING_EVENT_DISPATCH_LEASE_SECONDS = 300.0
 
 #: The wait kinds an ingested event may claim.  Only an ``event`` wait is
 #: addressable by event dispatch: a ``timer`` wait ends at its deadline, a

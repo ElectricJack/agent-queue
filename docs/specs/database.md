@@ -1105,7 +1105,9 @@ on `resolved_at IS NULL`. Dispatch first acquires the all-or-none
 index continues protecting the event during execution. The owner renews the
 lease during a long dispatch and finalizes through its opaque token; a failed
 attempt clears the claim and records `attempts` / `last_error`, while a stale
-lease may be atomically replaced after process death. Retention is 7 days by default. The configured per-playbook quota
+lease may be atomically replaced after process death. The retention sweep
+protects a renewed live claim but expires an abandoned claim after the same
+lease horizon. Retention is 7 days by default. The configured per-playbook quota
 (`playbooks.v2_max_pending_events_per_playbook`) applies independently to
 unresolved activation rows and to resolved wait-delivery inbox rows, keeping
 either producer path from growing the table without bound.

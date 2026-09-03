@@ -46,6 +46,7 @@ from src.playbooks.definition import (
 )
 from src.playbooks.pipeline_lowering import shadow_compile
 from src.playbooks.proposal import DuplicateSemanticKey, load_semantic_body_json, propose
+from src.playbooks.waits import PENDING_EVENT_DISPATCH_LEASE_SECONDS
 from src.playbooks.validation import (
     Diagnostic,
     RegisteredEventLookup,
@@ -69,7 +70,6 @@ V2_STORAGE_UNAVAILABLE_ERROR = (
     "present in this build"
 )
 
-_PENDING_EVENT_DISPATCH_LEASE_SECONDS = 300.0
 _PENDING_EVENT_DISPATCH_RENEW_SECONDS = 60.0
 
 #: The seven command names this mixin owns, in child-plan §4.8 order.  Imported
@@ -1188,7 +1188,7 @@ class PlaybookV2CommandsMixin:
                 event_id,
                 claimed_by=actor,
                 now=claimed_at,
-                stale_before=claimed_at - _PENDING_EVENT_DISPATCH_LEASE_SECONDS,
+                stale_before=claimed_at - PENDING_EVENT_DISPATCH_LEASE_SECONDS,
             )
             if claim_token is None:
                 skipped.append(event_id)
@@ -1210,6 +1210,7 @@ class PlaybookV2CommandsMixin:
                 if not cancelled:
                     logger.warning("pending V2 event %s dispatch failed", event_id, exc_info=True)
                 try:
+                    cancelled_during_recovery = None
                     recovery = asyncio.create_task(
                         self.db.record_pending_event_dispatch_failure(
                             event_id,
@@ -1218,7 +1219,8 @@ class PlaybookV2CommandsMixin:
                         )
                     )
                     restored = await asyncio.shield(recovery)
-                except asyncio.CancelledError:
+                except asyncio.CancelledError as recovery_cancel:
+                    cancelled_during_recovery = recovery_cancel
                     restored = await recovery
                 except Exception as restore_exc:  # noqa: BLE001 - report both failures
                     logger.exception(
@@ -1229,6 +1231,8 @@ class PlaybookV2CommandsMixin:
                 else:
                     if not restored:
                         error = f"{error}; failed dispatch no longer owns pending event claim"
+                if cancelled_during_recovery is not None:
+                    raise cancelled_during_recovery
                 if not isinstance(exc, Exception):
                     raise
                 errors.append(f"{event_id}: {error}")

@@ -100,6 +100,41 @@ async def test_dispatch_cancellation_restores_the_event_before_propagating():
     )
 
 
+async def test_cancellation_during_failure_recovery_stops_the_batch():
+    rows = [
+        {
+            "pending_event_id": f"event-{index}",
+            "playbook_id": "default-pipeline",
+            "event": {"type": "task.completed", "task_id": f"t{index}"},
+        }
+        for index in (1, 2)
+    ]
+    handler, engine = _handler(rows[0])
+    handler.db.get_pending_events.return_value = rows
+    engine.dispatch_event.side_effect = RuntimeError("engine unavailable")
+    recovery_started = asyncio.Event()
+    recovery_may_finish = asyncio.Event()
+
+    async def gated_recovery(*_args, **_kwargs):
+        recovery_started.set()
+        await recovery_may_finish.wait()
+        return True
+
+    handler.db.record_pending_event_dispatch_failure.side_effect = gated_recovery
+    command = asyncio.create_task(
+        handler._cmd_playbook_pending_event_action(
+            {"action": "dispatch", "pending_event_ids": ["event-1", "event-2"]}
+        )
+    )
+    await recovery_started.wait()
+    command.cancel()
+    recovery_may_finish.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await command
+    assert engine.dispatch_event.await_count == 1
+
+
 async def test_long_dispatch_renews_its_claim(monkeypatch):
     import src.commands.playbook_v2_commands as commands
 
