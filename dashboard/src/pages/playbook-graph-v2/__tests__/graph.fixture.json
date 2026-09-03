@@ -2,7 +2,7 @@
   "success": true,
   "artifact": {
     "playbook_id": "default-pipeline",
-    "artifact_sha256": "sha256:c2f96f3fa308d465b0902014cc996ffbea623fd01ef1a0f7e722a03db742ccf9",
+    "artifact_sha256": "sha256:c9b651d907ea7b1015f462a20ba83a9013414bae8bc5e64d0358b4e4696c9041",
     "schema_generation": 2,
     "contract_fingerprint": "sha256:af1467721bd2f9a0febccfa63f2881a5aef07c7eae14fb1a2be9ee2965a8c835",
     "source_digest": "sha256:6f1c0d2b9a4e7f38c5b1de20a7f4c8931ee5b0a6d2c74f9138ab5e0c7d41928f",
@@ -104,43 +104,66 @@
       "terminal_outcome": null,
       "explanation": {
         "title": "Ensure a review task",
-        "effect_summary": "Invoke ensure_task",
-        "effects": [],
+        "effect_summary": "Create the task, or reuse the one already keyed by this deduplication key.",
+        "effects": [
+          {
+            "kind": "creates",
+            "subject": "task",
+            "detail": "Create or reuse a task keyed by \"dedup_key\"",
+            "arguments": [],
+            "conditional_on": null
+          }
+        ],
         "inputs": [
           {
-            "label": "Project Id",
+            "label": "Project",
             "value": {
-              "kind": "unresolved",
-              "display": "(unresolved)",
-              "canonical": null,
+              "kind": "event_ref",
+              "display": "this event's project_id",
+              "canonical": {
+                "type": "event_ref",
+                "path": "project_id"
+              },
               "redacted": false,
-              "type_name": null
+              "type_name": "string"
             },
             "source": "event",
-            "required": true,
+            "required": false,
             "description": null
           },
           {
             "label": "Title",
             "value": {
-              "kind": "unresolved",
-              "display": "(unresolved)",
-              "canonical": null,
+              "kind": "template",
+              "display": "Review: this event's title",
+              "canonical": {
+                "type": "template",
+                "parts": [
+                  {
+                    "type": "literal",
+                    "value": "Review: "
+                  },
+                  {
+                    "type": "event_ref",
+                    "path": "title"
+                  }
+                ]
+              },
               "redacted": false,
-              "type_name": null
+              "type_name": "string"
             },
             "source": "template",
             "required": true,
             "description": null
           },
           {
-            "label": "Dedup Key",
+            "label": "Deduplication key",
             "value": {
-              "kind": "unresolved",
-              "display": "(unresolved)",
+              "kind": "redacted",
+              "display": "(redacted)",
               "canonical": null,
-              "redacted": false,
-              "type_name": null
+              "redacted": true,
+              "type_name": "string"
             },
             "source": "template",
             "required": true,
@@ -197,14 +220,19 @@
             "terminal_outcome": "failed"
           }
         ],
-        "contract_fingerprint": null,
-        "renderer": "canonical"
+        "contract_fingerprint": "sha256:4b35696e1543b60b340641db99370be0cf94b2e5982e5926fb2b1aa55a5fc4bc",
+        "renderer": "contract"
       },
       "badges": [
         {
-          "kind": "diagnostic",
-          "label": "Errors",
-          "value": "1"
+          "kind": "idempotency",
+          "label": "Idempotent",
+          "value": "keyed by this step"
+        },
+        {
+          "kind": "retry",
+          "label": "Attempts",
+          "value": "2"
         }
       ],
       "ai": null,
@@ -233,17 +261,46 @@
           "command": "ensure_task",
           "inputs": {
             "project_id": {
-              "type": "unresolved"
+              "type": "event_ref",
+              "path": "project_id"
             },
             "title": {
-              "type": "unresolved"
+              "type": "template",
+              "parts": [
+                {
+                  "type": "literal",
+                  "value": "Review: "
+                },
+                {
+                  "type": "event_ref",
+                  "path": "title"
+                }
+              ]
             },
             "dedup_key": {
-              "type": "unresolved"
+              "type": "redacted"
             }
           },
-          "idempotency_key": null,
-          "retry": null,
+          "idempotency_key": {
+            "type": "template",
+            "parts": [
+              {
+                "type": "literal",
+                "value": "review-of-"
+              },
+              {
+                "type": "event_ref",
+                "path": "task_id"
+              }
+            ]
+          },
+          "retry": {
+            "max_attempts": 2,
+            "backoff_seconds": 5.0,
+            "retry_on": [
+              "runtime_error"
+            ]
+          },
           "save_result_as": "review",
           "transitions": {
             "created": "classify-risk",
@@ -254,56 +311,95 @@
         },
         "resolved_inputs": [
           {
-            "label": "Project Id",
+            "label": "Project",
             "value": {
-              "kind": "unresolved",
-              "display": "(unresolved)",
-              "canonical": null,
+              "kind": "event_ref",
+              "display": "this event's project_id",
+              "canonical": {
+                "type": "event_ref",
+                "path": "project_id"
+              },
               "redacted": false,
-              "type_name": null
+              "type_name": "string"
             },
             "source": "event",
-            "required": true,
+            "required": false,
             "description": null
           },
           {
             "label": "Title",
             "value": {
-              "kind": "unresolved",
-              "display": "(unresolved)",
-              "canonical": null,
+              "kind": "template",
+              "display": "Review: this event's title",
+              "canonical": {
+                "type": "template",
+                "parts": [
+                  {
+                    "type": "literal",
+                    "value": "Review: "
+                  },
+                  {
+                    "type": "event_ref",
+                    "path": "title"
+                  }
+                ]
+              },
               "redacted": false,
-              "type_name": null
+              "type_name": "string"
             },
             "source": "template",
             "required": true,
             "description": null
           },
           {
-            "label": "Dedup Key",
+            "label": "Deduplication key",
             "value": {
-              "kind": "unresolved",
-              "display": "(unresolved)",
+              "kind": "redacted",
+              "display": "(redacted)",
               "canonical": null,
-              "redacted": false,
-              "type_name": null
+              "redacted": true,
+              "type_name": "string"
             },
             "source": "template",
             "required": true,
             "description": null
           }
         ],
-        "result_schema": null,
-        "retry": null,
+        "result_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "task_id": {
+              "title": "Task Id",
+              "type": "string"
+            },
+            "created": {
+              "title": "Created",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "task_id",
+            "created"
+          ],
+          "title": "EnsureTaskValue",
+          "type": "object"
+        },
+        "retry": {
+          "max_attempts": 2,
+          "backoff_seconds": 5.0,
+          "retry_on": [
+            "runtime_error"
+          ]
+        },
         "idempotency": {
-          "supported": false,
-          "key_template": null,
-          "retry_safe": false
+          "supported": true,
+          "key_template": "{\"parts\":[{\"type\":\"literal\",\"value\":\"review-of-\"},{\"path\":\"task_id\",\"type\":\"event_ref\"}],\"type\":\"template\"}",
+          "retry_safe": true
         },
         "redaction": [
           {
             "field": "dedup_key",
-            "policy": "safe"
+            "policy": "redacted"
           },
           {
             "field": "project_id",
@@ -314,24 +410,9 @@
             "policy": "safe"
           }
         ],
-        "execution_fingerprint": null
+        "execution_fingerprint": "sha256:4b35696e1543b60b340641db99370be0cf94b2e5982e5926fb2b1aa55a5fc4bc"
       },
-      "diagnostics": [
-        {
-          "severity": "error",
-          "code": "unknown_command",
-          "message": "Command 'ensure_task' is not registered",
-          "rule_id": "review-on-task-completed",
-          "step_id": "ensure-review-task",
-          "source": {
-            "path": "system/playbooks/default-pipeline.md",
-            "start_line": 20,
-            "end_line": 27,
-            "heading": null,
-            "excerpt": null
-          }
-        }
-      ],
+      "diagnostics": [],
       "out_degree": 4,
       "position": {
         "x": 0,
@@ -1823,30 +1904,51 @@
       "terminal_outcome": null,
       "explanation": {
         "title": "Open a spec-ingest gate",
-        "effect_summary": "Invoke gate_create",
-        "effects": [],
+        "effect_summary": "Open a gate, and block the tasks waiting on it until it resolves.",
+        "effects": [
+          {
+            "kind": "creates",
+            "subject": "gate",
+            "detail": "Create a gate",
+            "arguments": [],
+            "conditional_on": null
+          },
+          {
+            "kind": "updates",
+            "subject": "gate_waiter",
+            "detail": "Link the waiting tasks to the gate",
+            "arguments": [],
+            "conditional_on": "when waiter_task_ids is provided"
+          }
+        ],
         "inputs": [
           {
-            "label": "Project Id",
+            "label": "Project",
             "value": {
-              "kind": "unresolved",
-              "display": "(unresolved)",
-              "canonical": null,
+              "kind": "event_ref",
+              "display": "this event's project_id",
+              "canonical": {
+                "type": "event_ref",
+                "path": "project_id"
+              },
               "redacted": false,
-              "type_name": null
+              "type_name": "string"
             },
             "source": "event",
             "required": true,
             "description": null
           },
           {
-            "label": "Gate Type",
+            "label": "Gate type",
             "value": {
-              "kind": "unresolved",
-              "display": "(unresolved)",
-              "canonical": null,
+              "kind": "literal",
+              "display": "review",
+              "canonical": {
+                "type": "literal",
+                "value": "review"
+              },
               "redacted": false,
-              "type_name": null
+              "type_name": "string"
             },
             "source": "literal",
             "required": true,
@@ -1855,11 +1957,25 @@
           {
             "label": "Title",
             "value": {
-              "kind": "unresolved",
-              "display": "(unresolved)",
-              "canonical": null,
+              "kind": "template",
+              "display": "Spec ingest: task.title",
+              "canonical": {
+                "type": "template",
+                "parts": [
+                  {
+                    "type": "literal",
+                    "value": "Spec ingest: "
+                  },
+                  {
+                    "type": "loop_ref",
+                    "binding": "task",
+                    "path": "title",
+                    "index": false
+                  }
+                ]
+              },
               "redacted": false,
-              "type_name": null
+              "type_name": "string"
             },
             "source": "template",
             "required": true,
@@ -1924,14 +2040,14 @@
             "terminal_outcome": "failed"
           }
         ],
-        "contract_fingerprint": null,
-        "renderer": "canonical"
+        "contract_fingerprint": "sha256:cef412074d2e82ff21c66ce7aac359b3fd4211e7a2a7ec5f451db6ddf023500d",
+        "renderer": "contract"
       },
       "badges": [
         {
-          "kind": "diagnostic",
-          "label": "Errors",
-          "value": "1"
+          "kind": "idempotency",
+          "label": "Idempotent",
+          "value": "keyed on await_id"
         }
       ],
       "ai": null,
@@ -1960,13 +2076,27 @@
           "command": "gate_create",
           "inputs": {
             "project_id": {
-              "type": "unresolved"
+              "type": "event_ref",
+              "path": "project_id"
             },
             "gate_type": {
-              "type": "unresolved"
+              "type": "literal",
+              "value": "review"
             },
             "title": {
-              "type": "unresolved"
+              "type": "template",
+              "parts": [
+                {
+                  "type": "literal",
+                  "value": "Spec ingest: "
+                },
+                {
+                  "type": "loop_ref",
+                  "binding": "task",
+                  "path": "title",
+                  "index": false
+                }
+              ]
             }
           },
           "idempotency_key": null,
@@ -1982,26 +2112,32 @@
         },
         "resolved_inputs": [
           {
-            "label": "Project Id",
+            "label": "Project",
             "value": {
-              "kind": "unresolved",
-              "display": "(unresolved)",
-              "canonical": null,
+              "kind": "event_ref",
+              "display": "this event's project_id",
+              "canonical": {
+                "type": "event_ref",
+                "path": "project_id"
+              },
               "redacted": false,
-              "type_name": null
+              "type_name": "string"
             },
             "source": "event",
             "required": true,
             "description": null
           },
           {
-            "label": "Gate Type",
+            "label": "Gate type",
             "value": {
-              "kind": "unresolved",
-              "display": "(unresolved)",
-              "canonical": null,
+              "kind": "literal",
+              "display": "review",
+              "canonical": {
+                "type": "literal",
+                "value": "review"
+              },
               "redacted": false,
-              "type_name": null
+              "type_name": "string"
             },
             "source": "literal",
             "required": true,
@@ -2010,21 +2146,114 @@
           {
             "label": "Title",
             "value": {
-              "kind": "unresolved",
-              "display": "(unresolved)",
-              "canonical": null,
+              "kind": "template",
+              "display": "Spec ingest: task.title",
+              "canonical": {
+                "type": "template",
+                "parts": [
+                  {
+                    "type": "literal",
+                    "value": "Spec ingest: "
+                  },
+                  {
+                    "type": "loop_ref",
+                    "binding": "task",
+                    "path": "title",
+                    "index": false
+                  }
+                ]
+              },
               "redacted": false,
-              "type_name": null
+              "type_name": "string"
             },
             "source": "template",
             "required": true,
             "description": null
           }
         ],
-        "result_schema": null,
+        "result_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "gate_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Gate Id"
+            },
+            "gate": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Gate"
+            },
+            "was_created": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Was Created"
+            },
+            "skipped": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Skipped"
+            },
+            "reason": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Reason"
+            },
+            "created": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Created"
+            }
+          },
+          "title": "GateCreateValue",
+          "type": "object"
+        },
         "retry": null,
         "idempotency": {
-          "supported": false,
+          "supported": true,
           "key_template": null,
           "retry_safe": false
         },
@@ -2042,24 +2271,9 @@
             "policy": "safe"
           }
         ],
-        "execution_fingerprint": null
+        "execution_fingerprint": "sha256:cef412074d2e82ff21c66ce7aac359b3fd4211e7a2a7ec5f451db6ddf023500d"
       },
-      "diagnostics": [
-        {
-          "severity": "error",
-          "code": "unknown_command",
-          "message": "Command 'gate_create' is not registered",
-          "rule_id": "sweep-on-spec-approved",
-          "step_id": "open-gate",
-          "source": {
-            "path": "system/playbooks/default-pipeline.md",
-            "start_line": 63,
-            "end_line": 66,
-            "heading": null,
-            "excerpt": null
-          }
-        }
-      ],
+      "diagnostics": [],
       "out_degree": 5,
       "position": {
         "x": 0,
@@ -2865,20 +3079,6 @@
     {
       "severity": "error",
       "code": "unknown_command",
-      "message": "Command 'ensure_task' is not registered",
-      "rule_id": "review-on-task-completed",
-      "step_id": "ensure-review-task",
-      "source": {
-        "path": "system/playbooks/default-pipeline.md",
-        "start_line": 20,
-        "end_line": 27,
-        "heading": null,
-        "excerpt": null
-      }
-    },
-    {
-      "severity": "error",
-      "code": "unknown_command",
       "message": "Command 'list_tasks' is not registered",
       "rule_id": "sweep-on-spec-approved",
       "step_id": "list-downstream",
@@ -2886,20 +3086,6 @@
         "path": "system/playbooks/default-pipeline.md",
         "start_line": 50,
         "end_line": 55,
-        "heading": null,
-        "excerpt": null
-      }
-    },
-    {
-      "severity": "error",
-      "code": "unknown_command",
-      "message": "Command 'gate_create' is not registered",
-      "rule_id": "sweep-on-spec-approved",
-      "step_id": "open-gate",
-      "source": {
-        "path": "system/playbooks/default-pipeline.md",
-        "start_line": 63,
-        "end_line": 66,
         "heading": null,
         "excerpt": null
       }

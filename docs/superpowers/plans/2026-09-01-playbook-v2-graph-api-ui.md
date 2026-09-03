@@ -2098,3 +2098,49 @@ backend suites share and would move the committed fixture's bytes.
 Run overlays stay hand-built here: `project_graph` does not produce them.
 They are pinned to the projected `artifact` so the canvas' artifact-identity
 check runs against the real hash.
+
+### 16.13 the stub registry takes the contract path on 2026-09-03 (task keen-harbor-76)
+
+What §16.12 filed. `tests.playbook_v2_helpers` now carries a `StubRegistry` of
+`CommandRegistration`s on `StubContracts._registry`, because
+`graph_projection.py` reads presentation, idempotency and `sensitive_args` off
+a *registration* — `ContractInfo` alone leaves every command on the
+unregistered branch no matter what the lookup table knows, which is why adding
+contracts to `STUB_CONTRACTS` was never on its own the fix.
+
+The registrations are copied from the live `CONTRACTS` rather than hand-built,
+so the projected fixture carries the argument labels, outcome labels and
+idempotency modes the daemon serves. Two deliberate deviations:
+
+* `ensure_task` is copied with `dedup_key` declared sensitive. No shipped
+  command declares a sensitive argument, so the stub is the only place the
+  projection's redaction branch can come from. `ContractInfo` is derived from
+  the *unmodified* registration, because `sensitive_args` is inside the
+  execution fingerprint and a fingerprint that moved would make the §10.1
+  artifact — and its receipts fixture, which pins `ensure_task`'s real
+  fingerprint — report `stale_contract` against this stub.
+* `list_tasks` stays unregistered (`UNREGISTERED_GOLDEN_COMMAND`). Registering
+  all three would take the unregistered branch away from the dashboard exactly
+  as registering none took the contract branch. `list-downstream` is now the
+  node that carries `unknown_command`, `renderer: "canonical"` and unresolved
+  values, and `test_the_stub_registry_covers_one_branch_per_command_node` pins
+  that the artifact's commands partition into the two sets.
+
+The §10.1 artifact's `ensure-review-task` step gained an `idempotency_key` and
+a `retry` policy. Both are inert at runtime — the command executor keys
+receipts off `receipts.idempotency_key(...)` and only the LLM executor reads
+`step.retry` — but they are the only source of the Advanced panel's key-template
+and retry rows, which no step in the artifact had previously exercised.
+`GOLDEN_DIGEST` in `test_playbook_v2_definition.py` moved with the artifact.
+
+`contractedEnsureReviewTask` is gone from `__tests__/fixtures.ts`;
+`unroutedEscalateNode` is the only derived node left. `AdvancedNodeDetail`,
+`SemanticNodeInspector`, `StepNodeCard`, `PlaybookSemanticGraphView` and
+`layout` now assert both branches against projected bytes.
+
+One thing the honest projection exposed, filed rather than fixed here: a
+registered command's card is titled by `presentation.title` while the canvas
+node beside it is titled by the authored step title, so `ensure-review-task`
+reads "Ensure a task exists" on the card and "Ensure a review task" on the
+canvas. That is production behaviour — the daemon projects with
+`RegistryContractLookup` — which the all-canonical fixture had been hiding.

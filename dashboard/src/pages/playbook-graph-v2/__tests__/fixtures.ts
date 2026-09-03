@@ -23,17 +23,22 @@ import { projectedGraph, projectedNode } from "./projected";
  *  its key inputs and its output binding for a whole package
  *  (`solid-harbor.49` pass 2).
  *
+ *  Both command branches are read, not built: the stub contract registry
+ *  models `ensure_task` and `gate_create` — and declares `dedup_key` sensitive
+ *  on the first, because no shipped command declares a sensitive argument —
+ *  while `list_tasks` stays unregistered. So `ensureReviewTask` is a projected
+ *  contract node, with both fingerprints, its retry policy, its key template
+ *  and a redacted input, and `listDownstream` is a projected *un*contracted
+ *  one, with an `unknown_command` diagnostic and unresolved values.
+ *
  *  Two kinds of thing are still built here rather than read:
  *
  *  * run overlays, which `project_graph` does not produce at all — they are
  *    `playbook_run_overlay`'s response, pinned to the projected artifact so
  *    the canvas' artifact check is exercised against the real hash;
- *  * the two `*Variant` nodes below, each a projected node with the exact
- *    fields `src/playbooks/graph_projection.py` writes down a branch this
- *    artifact does not reach (an unrouted profile; a registered command with a
- *    sensitive argument). They exist because the golden artifact's three
- *    commands are absent from `tests.playbook_v2_helpers.STUB_CONTRACTS`, so
- *    the projection of it never takes the contract path.
+ *  * `unroutedEscalateNode` below, a projected node with the exact fields
+ *    `src/playbooks/graph_projection.py` writes down a branch this artifact
+ *    does not reach (a profile the lookup resolves no routing for).
  */
 
 export const graph: PlaybookV2GraphResponse = projectedGraph;
@@ -87,55 +92,6 @@ export const activeGraph: PlaybookV2GraphResponse = {
 export const unroutedEscalateNode: GraphNodeDTO = {
   ...escalateNode,
   ai: { ...escalateNode.ai!, intelligence_class: null, provider: null, model: null },
-};
-
-/** A deterministic stand-in for a contract's execution fingerprint, matching
- *  `tests.playbook_v2_helpers.DEMO_FINGERPRINT`. */
-const DEMO_FINGERPRINT = `sha256:${"11".repeat(32)}`;
-
-/** `ensure-review-task` as the projector renders it when `ensure_task` *is*
- *  registered and declares `auth_token` in its contract's `sensitive_args`.
- *
- *  Only the fields `_node`/`_command_explanation` compute from a contract
- *  differ from the projected node: `renderer` flips to `"contract"`, both
- *  fingerprints come from the registration, `idempotency` reports the step's
- *  own key template, `redaction` marks the sensitive argument, and the
- *  sensitive input is projected through `project_value(..., redacted=True)` —
- *  whose display is `"(redacted)"` and whose canonical payload is dropped. */
-const redactedAuthToken: ExplanationRowDTO = {
-  label: "Auth Token",
-  value: {
-    kind: "redacted",
-    display: "(redacted)",
-    canonical: null,
-    redacted: true,
-    type_name: "string",
-  },
-  source: "literal",
-  required: true,
-  description: null,
-};
-
-export const contractedEnsureReviewTask: GraphNodeDTO = {
-  ...ensureReviewTask,
-  explanation: {
-    ...ensureReviewTask.explanation,
-    renderer: "contract",
-    contract_fingerprint: DEMO_FINGERPRINT,
-  },
-  advanced: {
-    ...ensureReviewTask.advanced,
-    resolved_inputs: [...ensureReviewTask.advanced.resolved_inputs!, redactedAuthToken],
-    result_schema: { type: "object", properties: { task_id: { type: "string" } } },
-    retry: { max_attempts: 2, backoff_seconds: 5, retry_on: ["runtime_error"] },
-    idempotency: { supported: true, key_template: '"review-of-<event.task_id>"', retry_safe: true },
-    redaction: [
-      { field: "auth_token", policy: "redacted" },
-      ...ensureReviewTask.advanced.redaction!,
-    ],
-    execution_fingerprint: DEMO_FINGERPRINT,
-  },
-  diagnostics: [],
 };
 
 /** A single-rule, single-node graph for tests that need the smallest possible

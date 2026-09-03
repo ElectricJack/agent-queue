@@ -138,10 +138,10 @@ describe("layoutSemanticGraph", () => {
       result.nodes.filter((n) => n.type === RULE_CLUSTER_NODE_TYPE).map((n) => [n.id, n.data]),
     );
     // Every graph-level diagnostic blames a step, so each lands on the cluster
-    // that owns that step: `ensure-review-task` on rule 1, `list-downstream`
-    // and `open-gate` on rule 2.
-    expect(byId["review-on-task-completed"]!.diagnosticCount).toBe(1);
-    expect(byId["sweep-on-spec-approved"]!.diagnosticCount).toBe(2);
+    // that owns that step. The projection's one diagnostic is the
+    // `unknown_command` on `list-downstream`, which rule 2 owns.
+    expect(byId["review-on-task-completed"]!.diagnosticCount).toBe(0);
+    expect(byId["sweep-on-spec-approved"]!.diagnosticCount).toBe(1);
   });
 
   it("tolerates a response with no graph payload at all", () => {
