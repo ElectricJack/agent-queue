@@ -710,6 +710,8 @@ class TestLlmToolTurnBoundaries:
         assert [r.snapshot_version for r in turns] == [1, 2]
         assert {r.principal["profile_id"] for r in turns} == {"worker"}
         assert outcome.lifecycle is RunLifecycle.COMPLETED
+        assert runs.snapshots[outcome.run_id].budget.llm_calls == 3
+        assert runs.snapshots[outcome.run_id].budget.total_tokens == 42
 
     @pytest.mark.asyncio
     async def test_tool_turn_at_call_limit_does_not_invent_a_schema_retry_call(self):
@@ -1047,6 +1049,59 @@ class TestLlmToolTurnBoundaries:
         assert [r.error_code for r in runs.receipts if r.step_kind == "llm"][-1] == (
             "budget_exceeded"
         )
+
+    @pytest.mark.asyncio
+    async def test_schema_retry_without_tools_is_durable_before_second_call(self):
+        class ProcessCrash(BaseException):
+            pass
+
+        class CrashSecondCall(FakeProvider):
+            def __init__(self):
+                super().__init__()
+                self.attempts = 0
+
+            @property
+            def reports_usage(self) -> bool:
+                return True
+
+            async def create_message(self, **kwargs):
+                self.attempts += 1
+                if self.attempts == 2:
+                    raise ProcessCrash
+                return await super().create_message(**kwargs)
+
+        step = _llm_step()
+        step = step.model_copy(
+            update={
+                "tool_use": step.tool_use.model_copy(
+                    update={"enabled": False, "aq_commands": []}
+                )
+            }
+        )
+        provider = CrashSecondCall()
+        provider.add_text("not json", usage=TokenUsage(2, 1, True))
+        engine, _adapter, runs, ref = build_llm(provider, step=step)
+
+        with pytest.raises(ProcessCrash):
+            await engine.run_rule(ref, "r", {}, TOOL_PRINCIPAL)
+
+        run_id = next(iter(runs.snapshots))
+        assert provider.attempts == 2
+        assert [r.receipt_kind for r in runs.receipts] == ["llm_call"]
+        assert runs.snapshots[run_id].budget.llm_calls == 1
+        assert runs.snapshots[run_id].budget.total_tokens == 3
+
+        restarted, _adapter, _runs, _ref = build_llm(
+            FakeProvider(), runs=runs, step=step
+        )
+        await restarted.resume(
+            run_id, EventArrived(event_id="recovery"), TOOL_PRINCIPAL
+        )
+        assert [r.receipt_kind for r in runs.receipts] == [
+            "llm_call",
+            "interrupted",
+        ]
+        assert runs.snapshots[run_id].budget.llm_calls == 2
 
 
 class TestReceipts:

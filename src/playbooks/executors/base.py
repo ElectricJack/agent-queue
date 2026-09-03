@@ -118,6 +118,9 @@ class ExecutorResult:
     wait: WaitSpec | None = None
     terminal_outcome: str | None = None
     usage: TokenUsage | None = None
+    #: Aggregate provider calls represented by ``usage`` for this LLM
+    #: attempt, including calls already persisted as turn boundaries.
+    llm_calls: int = 0
     #: The narrowed identity that actually executed the step, when different
     #: from the invoking principal (for example an LLM profile).
     effective_principal: Any | None = None

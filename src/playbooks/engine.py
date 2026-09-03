@@ -267,6 +267,7 @@ class _Attempt:
     loop_frame: LoopFrame | None = None
     clear_loop: bool = False
     usage: TokenUsage | None = None
+    llm_calls: int = 0
     boundary_receipts: list[StepReceipt] = field(default_factory=list)
 
 
@@ -1307,6 +1308,7 @@ class PlaybookEngine:
         attempt.principal = result.effective_principal or attempt.principal
         attempt.idempotency_key = result.idempotency_key or attempt.idempotency_key
         attempt.usage = result.usage
+        attempt.llm_calls = result.llm_calls
         if result.diagnostics:
             attempt.error = "; ".join(result.diagnostics)
 
@@ -1614,6 +1616,29 @@ class PlaybookEngine:
         }
         attempts = dict(snapshot.attempts)
         attempts[f"{attempt.step_id}:{attempt.iteration}"] = attempt.attempt
+        budget = snapshot.budget
+        if isinstance(attempt.step, LlmStep) and attempt.usage is not None:
+            durable_turns = [
+                turn
+                for turn in snapshot.llm_turns
+                if turn.get("step_id") == attempt.step_id
+                and int(turn.get("iteration", -1)) == attempt.iteration
+                and int(turn.get("attempt", 1)) == attempt.attempt
+            ]
+            durable_tokens = sum(
+                int((turn.get("usage") or {}).get("input_tokens", 0))
+                + int((turn.get("usage") or {}).get("output_tokens", 0))
+                for turn in durable_turns
+            )
+            new_calls = max(0, attempt.llm_calls - len(durable_turns))
+            new_tokens = (
+                max(0, attempt.usage.total - durable_tokens) if new_calls else 0
+            )
+            budget = replace(
+                budget,
+                llm_calls=budget.llm_calls + new_calls,
+                total_tokens=budget.total_tokens + new_tokens,
+            )
         next_snapshot = replace(
             snapshot,
             lifecycle=attempt.lifecycle,
@@ -1621,6 +1646,7 @@ class PlaybookEngine:
             wait=self._next_wait(attempt),
             loop=self._next_loop(attempt),
             attempts=attempts,
+            budget=budget,
             error=attempt.error,
             error_code=(
                 attempt.outcome if attempt.outcome in ENGINE_RESERVED_OUTCOMES else None

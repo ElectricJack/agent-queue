@@ -79,6 +79,7 @@ def _result(
     *,
     outcome: str,
     usage: TokenUsage | None = None,
+    llm_calls: int = 0,
     value: dict[str, Any] | None = None,
     diagnostics: tuple[str, ...] = (),
     control: StepControl = StepControl.ADVANCE,
@@ -92,6 +93,7 @@ def _result(
         outcome=outcome,
         value=value if step.save_result_as else None,
         usage=usage,
+        llm_calls=llm_calls,
         effective_principal=ctx.principal,
         idempotency_key=_attempt_key(ctx),
         receipt_inputs={"prompt_digest": prompt_digest},
@@ -240,16 +242,26 @@ class LiveLlmExecutor:
                 diagnostics=("provider does not report usage",),
             )
 
+        calls = 0
         try:
             prompt = _prompt(step, ctx)
             retries = step.retry.max_attempts if step.retry is not None else 1
             messages, next_turn_index, usage = _resume_state(prompt, ctx)
             calls = next_turn_index
+
+            async def persist_turn(turn: LLMToolTurn) -> None:
+                nonlocal next_turn_index
+                if ctx.on_tool_turn is not None:
+                    await ctx.on_tool_turn(replace(turn, principal=ctx.principal))
+                next_turn_index = max(next_turn_index, turn.turn_index + 1)
+
             for retry_index in range(retries + 1):
                 if calls >= step.budget.max_calls or (
                     usage is not None and _usage_breaches(step, usage)
                 ):
-                    return _result(step, ctx, outcome="budget_exceeded", usage=usage)
+                    return _result(
+                        step, ctx, outcome="budget_exceeded", usage=usage, llm_calls=calls
+                    )
                 tools = _published_tools(step, ctx)
                 denied = False
 
@@ -275,14 +287,6 @@ class LiveLlmExecutor:
                         return {"success": False, "error": type(exc).__name__}
 
                 if tools:
-                    async def persist_turn(turn: Any) -> None:
-                        nonlocal next_turn_index
-                        if ctx.on_tool_turn is not None:
-                            await ctx.on_tool_turn(
-                                replace(turn, principal=ctx.principal)
-                            )
-                        next_turn_index = max(next_turn_index, turn.turn_index + 1)
-
                     run = await ctx.services.llm.run_tools(
                         messages,
                         tools,
@@ -299,7 +303,7 @@ class LiveLlmExecutor:
                     messages = list(run.transcript)
                 else:
                     async with asyncio.timeout(step.budget.timeout_seconds):
-                        response = await ctx.services.llm.complete(prompt, spec=spec)
+                        response = await ctx.services.llm.complete(messages, spec=spec)
                         response_text, call_usage = response.text, response.usage or TokenUsage()
                         calls += 1
                 usage = call_usage if usage is None else usage + call_usage
@@ -309,64 +313,103 @@ class LiveLlmExecutor:
                         ctx,
                         outcome="operator_decision_required",
                         usage=usage,
+                        llm_calls=calls,
                         diagnostics=("LLM call interrupted",),
                         control=StepControl.OPERATOR_DECISION,
                     )
                 if tools and run.stopped_by == "cancelled":
-                    return _result(step, ctx, outcome="cancelled", usage=usage)
+                    return _result(
+                        step, ctx, outcome="cancelled", usage=usage, llm_calls=calls
+                    )
                 if tools and run.stopped_by == "max_turns":
-                    return _result(step, ctx, outcome="budget_exceeded", usage=usage)
+                    return _result(
+                        step, ctx, outcome="budget_exceeded", usage=usage, llm_calls=calls
+                    )
                 if denied:
-                    return _result(step, ctx, outcome="unauthorized", usage=usage)
+                    return _result(
+                        step, ctx, outcome="unauthorized", usage=usage, llm_calls=calls
+                    )
                 if step.budget.max_total_tokens is not None and not usage.reported:
                     return _result(
                         step,
                         ctx,
                         outcome="budget_exceeded",
                         usage=usage,
+                        llm_calls=calls,
                         diagnostics=("provider did not report usage",),
                     )
                 if _usage_breaches(step, usage):
-                    return _result(step, ctx, outcome="budget_exceeded", usage=usage)
+                    return _result(
+                        step, ctx, outcome="budget_exceeded", usage=usage, llm_calls=calls
+                    )
                 try:
                     value = _parse_and_validate(response_text, step)
                 except (ValueError, ValidationError):
                     if retry_index == retries:
-                        return _result(step, ctx, outcome="invalid_output", usage=usage)
-                    correction = "Return only JSON that validates against the declared schema."
-                    if tools:
-                        correction_message = {"role": "user", "content": correction}
-                        messages.append(correction_message)
-                        await persist_turn(
-                            LLMToolTurn(
-                                kind="llm_call",
-                                turn_index=next_turn_index,
-                                tool_call_ids=(),
-                                results_digest=hashlib.sha256(
-                                    response_text.encode()
-                                ).hexdigest(),
-                                usage=run.last_usage or TokenUsage(),
-                                transcript_delta=(
-                                    dict(run.transcript[-1]),
-                                    correction_message,
-                                ),
-                            )
+                        return _result(
+                            step,
+                            ctx,
+                            outcome="invalid_output",
+                            usage=usage,
+                            llm_calls=calls,
                         )
+                    correction = "Return only JSON that validates against the declared schema."
+                    correction_message = {"role": "user", "content": correction}
+                    if tools:
+                        messages.append(correction_message)
+                        assistant_message = dict(run.transcript[-1])
+                        boundary_usage = run.last_usage or TokenUsage()
                     else:
-                        prompt = f"{prompt}\n{correction}"
+                        assistant_message = {
+                            "role": "assistant",
+                            "content": response_text,
+                        }
+                        messages.extend((assistant_message, correction_message))
+                        boundary_usage = response.usage or TokenUsage()
+                    await persist_turn(
+                        LLMToolTurn(
+                            kind="llm_call",
+                            turn_index=next_turn_index,
+                            tool_call_ids=(),
+                            results_digest=hashlib.sha256(
+                                response_text.encode()
+                            ).hexdigest(),
+                            usage=boundary_usage,
+                            transcript_delta=(assistant_message, correction_message),
+                        )
+                    )
                     continue
                 outcome = value.get(step.outcome_field) if step.outcome_field else "completed"
                 if not isinstance(outcome, str) or outcome not in step.transitions:
-                    return _result(step, ctx, outcome="invalid_output", usage=usage)
-                return _result(step, ctx, outcome=outcome, usage=usage, value=value)
+                    return _result(
+                        step,
+                        ctx,
+                        outcome="invalid_output",
+                        usage=usage,
+                        llm_calls=calls,
+                    )
+                return _result(
+                    step,
+                    ctx,
+                    outcome=outcome,
+                    usage=usage,
+                    llm_calls=calls,
+                    value=value,
+                )
         except LLMToolTurnBoundaryError:
             raise
         except TimeoutError:
-            return _result(step, ctx, outcome="timed_out")
+            return _result(step, ctx, outcome="timed_out", llm_calls=calls)
         except asyncio.CancelledError:
-            return _result(step, ctx, outcome="cancelled")
+            return _result(step, ctx, outcome="cancelled", llm_calls=calls)
         except Exception as exc:  # noqa: BLE001 - provider errors are a typed outcome
-            return _result(step, ctx, outcome="provider_error", diagnostics=(type(exc).__name__,))
+            return _result(
+                step,
+                ctx,
+                outcome="provider_error",
+                llm_calls=calls,
+                diagnostics=(type(exc).__name__,),
+            )
 
 
 class SymbolicLlmExecutor:
