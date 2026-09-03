@@ -139,7 +139,11 @@ async def test_pr_merge_pins_the_validated_head_oid(monkeypatch):
 
 
 def _pr_identity_payload(
-    *, base_oid: str = "a" * 40, head_oid: str = "b" * 40, number: int = 42
+    *,
+    base_ref: str = "main",
+    base_oid: str = "a" * 40,
+    head_oid: str = "b" * 40,
+    number: int = 42,
 ) -> str:
     """The subset of GitHub's REST ``pulls/{n}`` resource the identity reads."""
     import json
@@ -147,7 +151,7 @@ def _pr_identity_payload(
     return json.dumps(
         {
             "number": number,
-            "base": {"ref": "main", "sha": base_oid, "repo": {"full_name": "org/repo"}},
+            "base": {"ref": base_ref, "sha": base_oid, "repo": {"full_name": "org/repo"}},
             "head": {"ref": "feature/guard", "sha": head_oid, "repo": {"full_name": "org/repo"}},
         }
     )
@@ -400,7 +404,20 @@ async def test_pr_validation_accepts_clean_paths_and_detects_a_changed_head(monk
     with pytest.raises(GitError, match="identity changed"):
         await gm.avalidate_pr_for_merge("/some/checkout", "https://github.com/org/repo/pull/42")
 
+    # The base OID moves on every push to the default branch, which says
+    # nothing about this PR: the PR-files diff is a merge-base diff, so what
+    # the PR introduces is unchanged.  Concurrent delivery must not turn
+    # validation into a coin toss.
     views = iter([_pr_identity_payload(), _pr_identity_payload(base_oid="e" * 40)])
+
+    identity = await gm.avalidate_pr_for_merge(
+        "/some/checkout", "https://github.com/org/repo/pull/42"
+    )
+    assert identity.head_oid == "b" * 40
+
+    # Retargeting the PR onto another branch is an identity change: the
+    # commits would land somewhere the review never looked at.
+    views = iter([_pr_identity_payload(), _pr_identity_payload(base_ref="develop")])
 
     with pytest.raises(GitError, match="identity changed"):
         await gm.avalidate_pr_for_merge("/some/checkout", "https://github.com/org/repo/pull/42")
@@ -426,11 +443,87 @@ async def test_pr_merge_refuses_when_head_changes_after_ci_validation(monkeypatc
         "/some/checkout",
         "https://github.com/org/repo/pull/42",
         expected_head_oid="b" * 40,
-        expected_base_oid="a" * 40,
+        expected_base_ref="main",
     )
 
     assert result["success"] is False
     assert "identity changed" in result["error"]
+    assert "head" in result["error"]
+    assert merge_called is False
+
+
+@pytest.mark.asyncio
+async def test_pr_merge_proceeds_when_only_the_base_moved_after_ci_validation(monkeypatch):
+    """Exit gate stark-impact-60.6 M4: base-branch movement is not a PR change.
+
+    With several agents delivering concurrently the default branch advances
+    between the CI check and the merge on most attempts.  The PR-files diff
+    inspected during validation is a merge-base diff and ``gh pr merge``
+    merges into the *current* base tip anyway, so refusing here only ever
+    produced a spurious "identity changed" the final-reviewer could not act
+    on.  The head OID stays pinned all the way into ``--match-head-commit``.
+    """
+    from src.git.manager import GitManager
+
+    gm = GitManager()
+    merge_cmd: list[str] | None = None
+
+    async def fake_arun_subprocess(cmd, cwd, timeout):
+        nonlocal merge_cmd
+        if _is_identity_call(cmd):
+            return MagicMock(returncode=0, stdout=_pr_identity_payload(base_oid="e" * 40), stderr="")
+        if cmd[:3] == ["gh", "pr", "merge"]:
+            merge_cmd = cmd
+        return MagicMock(returncode=0, stdout="work.py\n", stderr="")
+
+    monkeypatch.setattr(gm, "_arun_subprocess", fake_arun_subprocess)
+    result = await gm.amerge_pr(
+        "/some/checkout",
+        "https://github.com/org/repo/pull/42",
+        expected_head_oid="b" * 40,
+        expected_base_ref="main",
+    )
+
+    assert result["success"] is True, result
+    assert merge_cmd is not None
+    assert merge_cmd[-3:] == ["--match-head-commit", "b" * 40, "--delete-branch"]
+
+
+@pytest.mark.asyncio
+async def test_pr_merge_refuses_when_pr_is_retargeted_after_ci_validation(monkeypatch):
+    """Dropping the base OID from the pin must not drop retarget detection.
+
+    The base OID used to catch this only by accident (another branch has
+    another tip).  The base *branch name* is what the review and the
+    landed-on-default-branch check actually depend on, so it is pinned
+    explicitly.
+    """
+    from src.git.manager import GitManager
+
+    gm = GitManager()
+    merge_called = False
+
+    async def fake_arun_subprocess(cmd, cwd, timeout):
+        nonlocal merge_called
+        if _is_identity_call(cmd):
+            return MagicMock(
+                returncode=0, stdout=_pr_identity_payload(base_ref="develop"), stderr=""
+            )
+        if cmd[:3] == ["gh", "pr", "merge"]:
+            merge_called = True
+        return MagicMock(returncode=0, stdout="work.py\n", stderr="")
+
+    monkeypatch.setattr(gm, "_arun_subprocess", fake_arun_subprocess)
+    result = await gm.amerge_pr(
+        "/some/checkout",
+        "https://github.com/org/repo/pull/42",
+        expected_head_oid="b" * 40,
+        expected_base_ref="main",
+    )
+
+    assert result["success"] is False
+    assert "identity changed" in result["error"]
+    assert "main" in result["error"] and "develop" in result["error"]
     assert merge_called is False
 
 
@@ -502,15 +595,15 @@ async def test_cmd_pr_merge_routes_through_git_manager(monkeypatch, handler):
     head_oid = "c" * 40
 
     async def fake_amerge(
-        checkout_path, pr_url, method="squash", *, expected_head_oid=None, expected_base_oid=None
+        checkout_path, pr_url, method="squash", *, expected_head_oid=None, expected_base_ref=None
     ):
         calls["args"] = (checkout_path, pr_url, method)
         calls["head_oid"] = expected_head_oid
-        calls["base_oid"] = expected_base_oid
+        calls["base_ref"] = expected_base_ref
         return {"success": True, "sha": "abc123", "error": None}
 
     handler.orchestrator.git.avalidate_pr_for_merge = AsyncMock(
-        return_value=MagicMock(head_oid=head_oid)
+        return_value=MagicMock(head_oid=head_oid, base_ref="main")
     )
     monkeypatch.setattr(handler.orchestrator.git, "amerge_pr", fake_amerge)
     result = await handler.execute(
@@ -531,6 +624,9 @@ async def test_cmd_pr_merge_routes_through_git_manager(monkeypatch, handler):
     assert checkout_path == handler.config.data_dir
     assert checkout_path != "/tmp/p1"
     assert calls["head_oid"] == head_oid
+    # The base *branch* is pinned (a retargeted PR lands elsewhere); the base
+    # OID is not, because it moves with every concurrent delivery.
+    assert calls["base_ref"] == "main"
 
 
 @pytest.mark.asyncio
