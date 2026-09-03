@@ -556,9 +556,13 @@ async def create_graph(
     plan = await build_plan(db, graph, project_id=project_id, parent_id=parent_id)
     if dry_run:
         return build_report(graph, plan, dry_run=True, provenance=provenance)
+    from src.playbooks.routing import configured_routing_manager
+
     await write_plan(
-        db, plan, provenance=provenance,
-        routing_manager=getattr(getattr(handler, "orchestrator", None), "playbook_manager", None),
+        db,
+        plan,
+        provenance=provenance,
+        routing_manager=configured_routing_manager(getattr(handler, "orchestrator", None)),
     )
     for task_id in plan.routing_task_ids:
         await handler._emit_admitted_routing_gates(task_id)

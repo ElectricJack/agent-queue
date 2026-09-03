@@ -69,6 +69,28 @@ class _RoutingArtifactUnavailable(RuntimeError):
     """Admission cannot prove what the active routing policy would do."""
 
 
+def configured_routing_manager(orchestrator: Any) -> Any | None:
+    """Return the manager explicitly installed on *orchestrator*.
+
+    ``playbook_manager`` is optional until orchestrator initialization reaches
+    the playbook phase.  Reading it with permissive ``getattr`` is unsafe for
+    proxy and test-double orchestrators that fabricate missing attributes: the
+    fabricated object then looks like a real, uninitialized manager and every
+    task is conservatively gated.  Inspect the instance namespace so only the
+    manager the orchestrator actually installed participates in admission.
+
+    A real manager whose activation snapshot is not initialized is still
+    returned and therefore retains the fail-closed behavior below.
+    """
+
+    if orchestrator is None:
+        return None
+    try:
+        return vars(orchestrator).get("playbook_manager")
+    except TypeError:
+        return None
+
+
 def install_routing_activation_snapshot(
     manager: Any,
     rows: Iterable[Mapping[str, Any]],
