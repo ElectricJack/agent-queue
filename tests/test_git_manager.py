@@ -344,6 +344,25 @@ class TestPushBranchForceWithLease:
         remote_branches = _git(["branch", "-r"], cwd=clone)
         assert "origin/feature/plain-push" in remote_branches
 
+    def test_public_push_branch_rejects_reserved_delivery(self, git_repo):
+        """The compatibility API cannot publish daemon-owned task content."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+        mgr.create_branch(clone, "feature/reserved-push")
+        reserved = pathlib.Path(clone, ".aq", "claim.json")
+        reserved.parent.mkdir()
+        reserved.write_text("daemon state\n")
+        _git(["add", "-f", ".aq/claim.json"], cwd=clone)
+        _git(["commit", "-m", "reserved content"], cwd=clone)
+
+        with pytest.raises(GitError, match="reserved delivery paths"):
+            mgr.push_branch(clone, "feature/reserved-push")
+
+        assert _git(
+            ["ls-remote", "--heads", "origin", "refs/heads/feature/reserved-push"],
+            cwd=clone,
+        ) == ""
+
     def test_force_with_lease_first_push(self, git_repo):
         """force_with_lease=True works on first push (no prior remote branch)."""
         mgr = GitManager()
@@ -1008,6 +1027,23 @@ class TestSwitchToBranchRebase:
 class TestMidChainSync:
     """Tests for mid_chain_sync: push intermediate work and rebase mid-chain (G6 fix)."""
 
+    def test_reserved_intermediate_commit_is_never_published(self, git_repo):
+        """Both compatibility-path pushes enforce the delivery guard."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+        mgr.prepare_for_task(clone, "chain/reserved")
+        reserved = pathlib.Path(clone, ".codex", "settings.json")
+        reserved.parent.mkdir()
+        reserved.write_text("daemon state\n")
+        _git(["add", "-f", ".codex/settings.json"], cwd=clone)
+        _git(["commit", "-m", "reserved intermediate content"], cwd=clone)
+
+        assert mgr.mid_chain_sync(clone, "chain/reserved") is True
+        assert _git(
+            ["ls-remote", "--heads", "origin", "refs/heads/chain/reserved"],
+            cwd=clone,
+        ) == ""
+
     def test_mid_chain_sync_pushes_and_rebases(self, git_repo, tmp_path):
         """mid_chain_sync should push the branch to remote and rebase onto
         the latest origin/main, keeping the subtask chain close to main."""
@@ -1365,6 +1401,27 @@ class TestMergeBranchPullBeforeMerge:
 
 class TestSyncAndMerge:
     """Tests for the sync_and_merge() high-level merge-and-push flow."""
+
+    def test_reserved_merge_is_not_pushed_to_default(self, git_repo):
+        """The compatibility merge path rejects daemon-owned task content."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+        original_main = _git(["rev-parse", "origin/main"], cwd=clone)
+        mgr.prepare_for_task(clone, "task-sync/reserved")
+        reserved = pathlib.Path(clone, ".aq-worktree.json")
+        reserved.write_text("daemon state\n")
+        _git(["add", "-f", ".aq-worktree.json"], cwd=clone)
+        _git(["commit", "-m", "reserved merge content"], cwd=clone)
+
+        success, error = mgr.sync_and_merge(
+            clone,
+            "task-sync/reserved",
+            max_retries=0,
+        )
+
+        assert success is False
+        assert error.startswith("delivery_guard_failed: reserved delivery paths:")
+        assert _git(["rev-parse", "origin/main"], cwd=clone) == original_main
 
     def test_sync_and_merge_basic_success(self, git_repo):
         """Happy path: merge and push succeed on first attempt."""

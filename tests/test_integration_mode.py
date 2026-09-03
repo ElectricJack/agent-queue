@@ -9,7 +9,7 @@ is available only through explicit policy.
 """
 
 import os
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
@@ -386,6 +386,33 @@ class TestPhaseVerifyByMode:
         )
 
 
+class TestTaskBranchPublication:
+    async def test_pr_publication_uses_guarded_delivery_with_force_with_lease(self, orch):
+        """Manual recovery PR publication cannot bypass reserved-path validation."""
+        task = _pr_task("t-publish-guarded")
+        repo = RepoConfig(
+            id="r-1",
+            project_id="p-1",
+            source_type=RepoSourceType.CLONE,
+            default_branch="main",
+        )
+        orch.git.acreate_pr = AsyncMock(return_value="https://github.com/org/repo/pull/42")
+
+        result = await orch._create_pr_for_task(task, repo, "/workspace")
+
+        assert result == "https://github.com/org/repo/pull/42"
+        orch.git.apush_validated_delivery.assert_awaited_once_with(
+            "/workspace",
+            "origin/main",
+            "feature-1",
+            "feature-1",
+            force_with_lease=True,
+            event_bus=orch.bus,
+            project_id="p-1",
+        )
+        orch.git.apush_branch.assert_not_awaited()
+
+
 class TestPhaseIntegrateByMode:
     """_phase_integrate merges into default only in direct mode."""
 
@@ -414,22 +441,34 @@ class TestPhaseIntegrateByMode:
         assert result == PhaseResult.CONTINUE
         orch.git.amerge_branch.assert_awaited_once()
 
-    async def test_direct_mode_pushes_the_post_merge_oid_not_the_branch_name(self, orch, monkeypatch):
-        """A hook/ref race after local merge cannot replace the delivered default tip."""
+    async def test_direct_mode_guards_rebased_branch_and_default_delivery(self, orch, monkeypatch):
+        """Both direct-mode delivery pushes use the one guarded operation."""
         task = _direct_task("t-int-pinned")
         await orch.db.create_task(task)
 
         result = await self._run_integrate(orch, task, monkeypatch)
 
         assert result == PhaseResult.CONTINUE
-        orch.git.apush_validated_delivery.assert_any_await(
-            (await orch.db.get_workspace("ws-1")).workspace_path,
-            "origin/main",
-            "HEAD",
-            "main",
-            event_bus=orch.bus,
-            project_id="p-1",
-        )
+        workspace = (await orch.db.get_workspace("ws-1")).workspace_path
+        assert orch.git.apush_validated_delivery.await_args_list == [
+            call(
+                workspace,
+                "origin/main",
+                "HEAD",
+                "feature-1",
+                force_with_lease=True,
+                event_bus=orch.bus,
+                project_id="p-1",
+            ),
+            call(
+                workspace,
+                "origin/main",
+                "HEAD",
+                "main",
+                event_bus=orch.bus,
+                project_id="p-1",
+            ),
+        ]
 
     async def test_reserved_delivery_never_acquires_merge_slot(self, orch, monkeypatch):
         from src.orchestrator import git_ops

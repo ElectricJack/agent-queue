@@ -600,12 +600,20 @@ class GitManager:
         #    if a previous mid-chain sync already pushed + rebased, so fall
         #    back to --force-with-lease which is safe for agent-owned branches.
         try:
-            self._run(["push", "origin", branch_name], cwd=checkout_path)
+            self.push_validated_delivery(
+                checkout_path,
+                f"origin/{default_branch}",
+                branch_name,
+                branch_name,
+            )
         except GitError:
             try:
-                self._run(
-                    ["push", "--force-with-lease", "origin", branch_name],
-                    cwd=checkout_path,
+                self.push_validated_delivery(
+                    checkout_path,
+                    f"origin/{default_branch}",
+                    branch_name,
+                    branch_name,
+                    force_with_lease=True,
                 )
             except GitError:
                 pass  # Push failed — continue with rebase anyway
@@ -629,9 +637,12 @@ class GitManager:
 
         # 4. Force-push the rebased branch so remote matches local.
         try:
-            self._run(
-                ["push", "--force-with-lease", "origin", branch_name],
-                cwd=checkout_path,
+            self.push_validated_delivery(
+                checkout_path,
+                f"origin/{default_branch}",
+                "HEAD",
+                branch_name,
+                force_with_lease=True,
             )
         except GitError:
             pass  # Rebased locally but push failed — next subtask will try
@@ -662,7 +673,7 @@ class GitManager:
         *,
         force_with_lease: bool = False,
     ) -> None:
-        """Push a local branch to the ``origin`` remote.
+        """Safely publish a local branch relative to the repository default.
 
         When *force_with_lease* is ``True``, uses ``--force-with-lease`` so the
         push is safe for retries: if the branch was already pushed in a
@@ -670,13 +681,78 @@ class GitManager:
         succeed as long as no *other* user pushed to the same branch in the
         meantime.  This resolves **Gap G5** for PR branch pushes.
 
-        Plain push (default) is used for the ``sync_and_merge`` flow where
-        only the default branch is pushed and force-push is never appropriate.
+        The source is resolved once and its merge-base diff is checked for
+        daemon-owned paths before the exact object ID is pushed. This keeps
+        the retained synchronous API safe for task-delivery use.
         """
-        args = ["push", "origin", branch_name]
+        default_branch = self.get_default_branch(checkout_path)
+        self.push_validated_delivery(
+            checkout_path,
+            f"origin/{default_branch}",
+            branch_name,
+            branch_name,
+            force_with_lease=force_with_lease,
+        )
+
+    def push_validated_delivery(
+        self,
+        checkout_path: str,
+        base_ref: str,
+        source_ref: str,
+        branch: str,
+        *,
+        force_with_lease: bool = False,
+    ) -> str:
+        """Synchronously resolve once, validate, and push an exact delivery OID."""
+        source_ref = _validate_rev(source_ref, field="delivery source")
+        base_ref = _validate_rev(base_ref, field="delivery base")
+        branch = _validate_ref(branch)
+        tip = self._run(["rev-parse", "--verify", source_ref], cwd=checkout_path).strip()
+        if not _OID_RE.fullmatch(tip.lower()):
+            raise GitError(f"could not resolve immutable delivery tip for {source_ref}")
+        paths = self.reserved_paths_in_diff(checkout_path, base_ref, tip)
+        if paths:
+            raise GitError("reserved delivery paths: " + ", ".join(paths))
+        self._push_oid(
+            checkout_path,
+            tip,
+            branch,
+            force_with_lease=force_with_lease,
+        )
+        return tip
+
+    def _push_oid(
+        self,
+        checkout_path: str,
+        tip: str,
+        branch: str,
+        *,
+        force_with_lease: bool = False,
+    ) -> None:
+        """Synchronously push an OID without consulting a mutable ref."""
+        if not _OID_RE.fullmatch(tip.lower()):
+            raise GitError("invalid immutable push tip")
+        branch = _validate_ref(branch)
+        args = ["push", "origin", f"{tip}:refs/heads/{branch}"]
         if force_with_lease:
             args.insert(2, "--force-with-lease")
         self._run(args, cwd=checkout_path)
+
+    def reserved_paths_in_diff(
+        self,
+        checkout_path: str,
+        base_ref: str,
+        tip_ref: str,
+    ) -> list[str]:
+        """Synchronously return daemon-owned paths changed by a delivery tip."""
+        base_ref = _validate_rev(base_ref, field="delivery base")
+        tip_ref = _validate_rev(tip_ref, field="delivery tip")
+        merge_base = self._run(["merge-base", base_ref, tip_ref], cwd=checkout_path)
+        changed = self._run(
+            ["diff", "--name-only", "-z", merge_base, tip_ref, "--"],
+            cwd=checkout_path,
+        )
+        return sorted(self._daemon_bookkeeping_paths(changed))
 
     def rebase_onto(
         self,
@@ -818,9 +894,16 @@ class GitManager:
         # 4. Push with retry
         for attempt in range(max_retries + 1):
             try:
-                self._run(["push", "origin", default_branch], cwd=checkout_path)
+                self.push_validated_delivery(
+                    checkout_path,
+                    f"origin/{default_branch}",
+                    default_branch,
+                    default_branch,
+                )
                 return (True, "")
             except GitError as e:
+                if str(e).startswith("reserved delivery paths:"):
+                    return (False, f"delivery_guard_failed: {e}")
                 if attempt < max_retries:
                     # Re-pull (rebase) to incorporate whatever was pushed
                     # in the meantime, then retry the push.
@@ -1551,11 +1634,20 @@ class GitManager:
         _validate_ref(branch_name)
         _validate_ref(default_branch, field="default branch")
         try:
-            await self.apush_validated_ref(checkout_path, branch_name, branch_name)
+            await self.apush_validated_delivery(
+                checkout_path,
+                f"origin/{default_branch}",
+                branch_name,
+                branch_name,
+            )
         except GitError:
             try:
-                await self.apush_validated_ref(
-                    checkout_path, branch_name, branch_name, force_with_lease=True
+                await self.apush_validated_delivery(
+                    checkout_path,
+                    f"origin/{default_branch}",
+                    branch_name,
+                    branch_name,
+                    force_with_lease=True,
                 )
             except GitError:
                 pass
@@ -1605,6 +1697,12 @@ class GitManager:
         event_bus: EventBus | None = None,
         project_id: str | None = None,
     ) -> None:
+        """Push a named branch for an explicit, non-delivery Git command.
+
+        This primitive pins the branch to an object ID but intentionally does
+        not apply the daemon delivery-path policy. Automatic task delivery
+        must use :meth:`apush_validated_delivery` with its target base.
+        """
         _validate_ref(branch_name)
         # Capture the remote ref before pushing so we can compute commit_range.
         remote_ref_before: str | None = None
@@ -2350,6 +2448,11 @@ class GitManager:
         worktree is routinely left in.  Never forced: a rejected push means
         the remote branch has commits this HEAD does not, and the caller
         picks a different name rather than overwriting them.
+
+        This is a non-delivery recovery primitive: stranded-work preservation
+        must save the complete commit even when it contains daemon-owned
+        paths. Automatic task delivery must use
+        :meth:`apush_validated_delivery` instead.
         """
         tip = await self.apush_validated_ref(checkout_path, "HEAD", branch)
         if event_bus is not None:
@@ -2381,17 +2484,39 @@ class GitManager:
         A merge/rebase hook or another local process may move a named ref after
         its content has been guarded. The object-ID refspec makes Git deliver
         precisely the validated object rather than resolving the name again.
+
+        This low-level helper does not enforce reserved-path policy. Automatic
+        task delivery must use :meth:`apush_validated_delivery`.
         """
         source_ref = _validate_rev(source_ref, field="push source")
         branch = _validate_ref(branch)
         tip = (await self._arun(["rev-parse", "--verify", source_ref], cwd=checkout_path)).strip()
         if not _OID_RE.fullmatch(tip.lower()):
             raise GitError(f"could not resolve immutable delivery tip for {source_ref}")
+        await self._apush_oid(
+            checkout_path,
+            tip,
+            branch,
+            force_with_lease=force_with_lease,
+        )
+        return tip
+
+    async def _apush_oid(
+        self,
+        checkout_path: str,
+        tip: str,
+        branch: str,
+        *,
+        force_with_lease: bool = False,
+    ) -> None:
+        """Push an already-resolved commit without consulting a mutable ref."""
+        if not _OID_RE.fullmatch(tip.lower()):
+            raise GitError("invalid immutable push tip")
+        branch = _validate_ref(branch)
         args = ["push", "origin", f"{tip}:refs/heads/{branch}"]
         if force_with_lease:
             args.insert(2, "--force-with-lease")
         await self._arun(args, cwd=checkout_path)
-        return tip
 
     async def apush_validated_delivery(
         self,
@@ -2421,8 +2546,11 @@ class GitManager:
         paths = await self.areserved_paths_in_diff(checkout_path, base_ref, tip)
         if paths:
             raise GitError("reserved delivery paths: " + ", ".join(paths))
-        pushed = await self.apush_validated_ref(
-            checkout_path, tip, branch, force_with_lease=force_with_lease
+        await self._apush_oid(
+            checkout_path,
+            tip,
+            branch,
+            force_with_lease=force_with_lease,
         )
         if event_bus is not None:
             try:
@@ -2431,13 +2559,13 @@ class GitManager:
                     {
                         "branch": branch,
                         "remote": "origin",
-                        "commit_range": pushed,
+                        "commit_range": tip,
                         "project_id": project_id,
                     },
                 )
             except Exception:
                 logger.debug("Failed to emit git.push event for %s", checkout_path, exc_info=True)
-        return pushed
+        return tip
 
     async def alist_prs(
         self,
