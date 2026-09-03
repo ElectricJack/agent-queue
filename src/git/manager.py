@@ -1643,17 +1643,9 @@ class GitManager:
         project_id: str | None = None,
     ) -> None:
         _validate_ref(branch_name)
-        # Capture the remote ref before pushing so we can compute commit_range.
-        remote_ref_before: str | None = None
-        if event_bus is not None:
-            try:
-                remote_ref_before = await self._arun(
-                    ["rev-parse", f"origin/{branch_name}"],
-                    cwd=checkout_path,
-                )
-            except GitError:
-                # Remote branch doesn't exist yet (first push).
-                remote_ref_before = None
+        remote_ref_before = await self._aremote_ref_before_push(
+            checkout_path, branch_name, event_bus=event_bus
+        )
 
         tip = await self._aresolve_delivery_tip(checkout_path, branch_name)
         args = ["push", "origin", f"{tip}:refs/heads/{branch_name}"]
@@ -1661,30 +1653,80 @@ class GitManager:
             args.insert(2, "--force-with-lease")
         await self._arun(args, cwd=checkout_path)
 
-        # Emit git.push event on success
-        if event_bus is not None:
-            try:
-                if remote_ref_before:
-                    commit_range = f"{remote_ref_before}..{tip}"
-                else:
-                    commit_range = tip
-                await event_bus.emit(
-                    "git.push",
-                    {
-                        "branch": branch_name,
-                        "remote": "origin",
-                        "commit_range": commit_range,
-                        "project_id": project_id,
-                    },
-                )
-            except Exception:
-                # Event emission is best-effort; never fail the push
-                # because we couldn't emit the event.
-                logger.debug(
-                    "Failed to emit git.push event for %s",
-                    checkout_path,
-                    exc_info=True,
-                )
+        await self._aemit_push_event(
+            checkout_path,
+            branch_name,
+            remote_ref_before,
+            tip,
+            event_bus=event_bus,
+            project_id=project_id,
+        )
+
+    async def _aremote_ref_before_push(
+        self,
+        checkout_path: str,
+        branch: str,
+        *,
+        event_bus: EventBus | None,
+    ) -> str | None:
+        """``origin/<branch>`` as the remote-tracking ref has it, or ``None``.
+
+        Read *before* a push so the ``git.push`` event can carry the
+        ``<before>..<tip>`` range the push actually moved the branch over.
+        ``None`` means the remote branch does not exist yet (a first push) --
+        or that no event bus was given, in which case there is no event to
+        compute the range for and the extra ``rev-parse`` is skipped.
+        """
+        if event_bus is None:
+            return None
+        try:
+            out = await self._arun(
+                ["rev-parse", "--verify", f"refs/remotes/origin/{branch}"],
+                cwd=checkout_path,
+            )
+        except GitError:
+            return None
+        return out.strip() or None
+
+    @staticmethod
+    def _push_commit_range(remote_ref_before: str | None, tip: str) -> str:
+        """The ``commit_range`` a ``git.push`` event carries.
+
+        One shape for every push path: ``<remote-before>..<tip>`` when the
+        remote branch already existed, the bare ``<tip>`` on a first push.
+        """
+        if remote_ref_before:
+            return f"{remote_ref_before}..{tip}"
+        return tip
+
+    async def _aemit_push_event(
+        self,
+        checkout_path: str,
+        branch: str,
+        remote_ref_before: str | None,
+        tip: str,
+        *,
+        event_bus: EventBus | None,
+        project_id: str | None,
+    ) -> None:
+        """Emit ``git.push`` after a successful push, best-effort.
+
+        Never fails the push because the event could not be emitted.
+        """
+        if event_bus is None:
+            return
+        try:
+            await event_bus.emit(
+                "git.push",
+                {
+                    "branch": branch,
+                    "remote": "origin",
+                    "commit_range": self._push_commit_range(remote_ref_before, tip),
+                    "project_id": project_id,
+                },
+            )
+        except Exception:
+            logger.debug("Failed to emit git.push event for %s", checkout_path, exc_info=True)
 
     async def arebase_onto(
         self,
@@ -2384,22 +2426,18 @@ class GitManager:
         the remote branch has commits this HEAD does not, and the caller
         picks a different name rather than overwriting them.
         """
+        remote_ref_before = await self._aremote_ref_before_push(
+            checkout_path, branch, event_bus=event_bus
+        )
         tip = await self.apush_validated_ref(checkout_path, "HEAD", branch)
-        if event_bus is not None:
-            try:
-                await event_bus.emit(
-                    "git.push",
-                    {
-                        "branch": branch,
-                        "remote": "origin",
-                        "commit_range": tip,
-                        "project_id": project_id,
-                    },
-                )
-            except Exception:
-                logger.debug(
-                    "Failed to emit git.push event for %s", checkout_path, exc_info=True
-                )
+        await self._aemit_push_event(
+            checkout_path,
+            branch,
+            remote_ref_before,
+            tip,
+            event_bus=event_bus,
+            project_id=project_id,
+        )
 
     async def _aresolve_delivery_tip(self, checkout_path: str, source: str) -> str:
         """Resolve a delivery *source* to the one commit id that will be pushed.
@@ -2465,22 +2503,20 @@ class GitManager:
         paths = await self.areserved_paths_in_diff(checkout_path, base_ref, tip)
         if paths:
             raise GitError("reserved delivery paths: " + ", ".join(paths))
+        remote_ref_before = await self._aremote_ref_before_push(
+            checkout_path, branch, event_bus=event_bus
+        )
         pushed = await self.apush_validated_ref(
             checkout_path, tip, branch, force_with_lease=force_with_lease
         )
-        if event_bus is not None:
-            try:
-                await event_bus.emit(
-                    "git.push",
-                    {
-                        "branch": branch,
-                        "remote": "origin",
-                        "commit_range": pushed,
-                        "project_id": project_id,
-                    },
-                )
-            except Exception:
-                logger.debug("Failed to emit git.push event for %s", checkout_path, exc_info=True)
+        await self._aemit_push_event(
+            checkout_path,
+            branch,
+            remote_ref_before,
+            pushed,
+            event_bus=event_bus,
+            project_id=project_id,
+        )
         return pushed
 
     async def alist_prs(
