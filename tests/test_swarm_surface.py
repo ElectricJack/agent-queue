@@ -517,9 +517,10 @@ async def test_pool_lifecycle_is_global_durable_and_guarded(pool_handler, tmp_pa
 
 
 async def test_pool_lifecycle_event_includes_the_request_project(pool_handler):
-    """A project-scoped API call emits a schema-valid lifecycle event."""
+    """A global lifecycle edit emits schema-valid events for every project."""
     from src.event_bus import EventBus
 
+    await pool_handler.db.create_project(Project(id="other-project", name="other"))
     events = []
     bus = EventBus(env="dev")
     bus.subscribe("pool.lifecycle_changed", events.append)
@@ -530,11 +531,12 @@ async def test_pool_lifecycle_event_includes_the_request_project(pool_handler):
     )
 
     assert changed["success"] is True
-    assert len(events) == 1
-    assert {key: events[0][key] for key in ("project_id", "profile_id", "lifecycle")} == {
-        "project_id": PROJECT_ID,
-        "profile_id": "worker",
-        "lifecycle": "task",
+    assert {
+        (event["project_id"], event["profile_id"], event["lifecycle"])
+        for event in events
+    } == {
+        (PROJECT_ID, "worker", "task"),
+        ("other-project", "worker", "task"),
     }
 
 

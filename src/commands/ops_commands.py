@@ -458,13 +458,10 @@ class OpsCommandsMixin:
                     },
                 )
         # The profile edit is global, but lifecycle events are project-routed.
-        # A compatibility caller supplies the affected project; an unscoped
-        # global command fans out to every project so each emitted payload
-        # remains schema-valid without making the configuration project-local.
-        event_project_id = args.get("project_id") or (self._current_scope or {}).get("project_id")
-        project_ids = [event_project_id] if event_project_id else [
-            project.id for project in await self.db.list_projects()
-        ]
+        # Fan out to every project even when a compatibility caller supplied
+        # ``project_id``: that input does not make the profile configuration
+        # local, and every payload must satisfy the project event schema.
+        project_ids = [project.id for project in await self.db.list_projects()]
         for project_id in project_ids:
             await self.orchestrator.bus.emit(
                 "pool.lifecycle_changed",
