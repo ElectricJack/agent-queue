@@ -89,13 +89,17 @@ from src.playbooks.waits import EMPTY_WAIT_CHANGES, WaitChangeSet, WaitClaim, Wa
 
 logger = logging.getLogger(__name__)
 
-#: A walk that visits more steps than this has a cycle the validator did not
-#: catch.  It fails the run rather than spinning: an engine that never
-#: returns is indistinguishable from a hung daemon.
-MAX_STEP_VISITS = 1000
 #: §4.10's ``max_paths`` — the hard bound on returned symbolic paths for one
 #: dry-run or shadow traversal.
 DEFAULT_MAX_SYMBOLIC_PATHS = 32
+#: The roadmap's default bound for symbolic dry-run traversal.  Live walks use
+#: an artifact-derived ceiling instead: a dry-run option must never change the
+#: semantics of a real run.
+DEFAULT_DRY_RUN_MAX_STEP_VISITS = 1000
+
+#: Preserve the original protection for live graphs without loops.  ForEach
+#: artifacts raise this floor according to their authored iteration bounds.
+MIN_LIVE_STEP_VISITS = 1000
 
 #: How long ``cancel`` waits for an in-flight executor to give the run back
 #: before it ends the run itself (§4.9).  Mirrors
@@ -414,17 +418,19 @@ class PlaybookEngine:
         runs: Any | None = None,
         waits: Any | None = None,
         activations: Any | None = None,
-        max_step_visits: int = MAX_STEP_VISITS,
         max_symbolic_paths: int = DEFAULT_MAX_SYMBOLIC_PATHS,
+        max_symbolic_step_visits: int = DEFAULT_DRY_RUN_MAX_STEP_VISITS,
         cancellation_grace_seconds: float = DEFAULT_CANCELLATION_GRACE_SECONDS,
     ) -> None:
         self.services = services
         self.runs = runs
         self.waits = waits
         self.activations = activations
-        self.max_step_visits = max_step_visits
         #: The path bound a shadow run's symbolic traversal is held to.
         self.max_symbolic_paths = max_symbolic_paths
+        #: The visit bound for shadow's symbolic traversal. Live execution
+        #: derives its own ceiling from the artifact's authored loop bounds.
+        self.max_symbolic_step_visits = max_symbolic_step_visits
         self.cancellation_grace_seconds = cancellation_grace_seconds
         #: Live walks in *this* process, keyed by run id.  See :class:`_RunControl`.
         self._live: dict[str, _RunControl] = {}
@@ -515,7 +521,7 @@ class PlaybookEngine:
         *,
         invoke_ai: bool = False,
         max_paths: int = DEFAULT_MAX_SYMBOLIC_PATHS,
-        max_step_visits: int = MAX_STEP_VISITS,
+        max_step_visits: int = DEFAULT_DRY_RUN_MAX_STEP_VISITS,
     ) -> DryRunTree:
         """Traverse the executable artifact with a bounded symbolic work list.
 
@@ -1004,7 +1010,7 @@ class PlaybookEngine:
             dispatch_id=snapshot.dispatch_id or "",
             run_id_for=lambda _rule_id: snapshot.run_id,
             max_paths=self.max_symbolic_paths,
-            max_step_visits=self.max_step_visits,
+            max_step_visits=self.max_symbolic_step_visits,
             recorder=recorder,
         )
         if tree.truncated:
@@ -1882,9 +1888,10 @@ class PlaybookEngine:
         visits: int,
         outcome: str,
     ) -> RunOutcome:
+        max_step_visits = self._live_step_visit_limit(artifact, snapshot.rule_id)
         while not snapshot.is_terminal and snapshot.lifecycle is RunLifecycle.RUNNING:
             visits += 1
-            if visits > self.max_step_visits:
+            if visits > max_step_visits:
                 snapshot, receipt = await self._terminate(
                     snapshot, repository, "state_limit_exceeded", "step visit limit exceeded"
                 )
@@ -1920,6 +1927,29 @@ class PlaybookEngine:
             snapshot,
             tuple(receipts),
             result_value=result_value,
+        )
+
+    @staticmethod
+    def _live_step_visit_limit(artifact: PlaybookDefinition, rule_id: str) -> int:
+        """Return a safety ceiling that admits every authored loop bound.
+
+        Nested loops are invalid, so a conservative upper bound is every step
+        once outside a loop plus every step once for each permitted iteration
+        of every loop.  Exceeding that can only require revisiting a graph
+        cycle beyond the explicit ForEach bounds.  The fixed floor preserves
+        the pre-V2 safety allowance for non-loop graphs.
+        """
+        rule_steps = tuple(
+            step for step in artifact.steps.values() if step.rule == rule_id
+        )
+        loop_iterations = sum(
+            step.max_iterations
+            for step in rule_steps
+            if isinstance(step, ForEachStep)
+        )
+        return max(
+            MIN_LIVE_STEP_VISITS,
+            len(rule_steps) * (1 + loop_iterations),
         )
 
     async def _advance_one_step(

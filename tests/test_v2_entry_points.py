@@ -108,6 +108,7 @@ def test_production_engine_is_shared_by_all_handler_entry_points():
 
     assert first is second
     engine_class.assert_called_once()
+    assert "max_step_visits" not in engine_class.call_args.kwargs
 
 
 async def test_orchestrator_trigger_reaches_v2_engine_when_enabled():

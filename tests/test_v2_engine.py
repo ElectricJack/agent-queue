@@ -1802,6 +1802,19 @@ class TestSequentialLoops:
         assert gate_titles == ["Gate: d-1", "Gate: d-2", "Gate: d-3"]
 
     @pytest.mark.asyncio
+    async def test_live_loop_allows_the_declared_default_max_iterations(self):
+        engine, adapter, _runs, ref = loop_engine()
+        ids = [f"d-{index}" for index in range(500)]
+        adapter.queue.extend([downstream(*ids), *(ok() for _ in ids)])
+
+        outcome = await engine.run_rule(ref, "sweep", event("spec-approved"), TRUSTED_LOCAL)
+
+        assert outcome.lifecycle is RunLifecycle.COMPLETED
+        assert outcome.outcome == "completed"
+        assert len(adapter.args_for("ensure_task")) == 500
+        assert outcome.snapshot.bindings["sweep_result"]["total"] == 500
+
+    @pytest.mark.asyncio
     async def test_loop_item_lives_in_its_own_namespace(self):
         """A binding and a loop item may share a name and stay distinct.
 
