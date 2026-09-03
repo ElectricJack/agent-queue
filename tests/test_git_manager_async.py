@@ -577,6 +577,55 @@ class TestAsyncReservedDeliveryDiff:
         assert await mgr.areserved_paths_in_diff(clone, "main", "task/legitimate") == []
 
 
+@pytest.mark.asyncio
+async def test_validated_push_uses_the_resolved_oid_not_a_mutable_local_ref(mgr, monkeypatch):
+    """A post-merge hook cannot substitute content between validation and push."""
+    pushed: list[list[str]] = []
+    tip = "d" * 40
+
+    async def fake_arun(args, cwd=None, **_kwargs):
+        if args[:2] == ["rev-parse", "--verify"]:
+            return tip
+        pushed.append(args)
+        return ""
+
+    monkeypatch.setattr(mgr, "_arun", fake_arun)
+
+    await mgr.apush_validated_ref("/repo", "HEAD", "main")
+
+    assert pushed == [["push", "origin", f"{tip}:refs/heads/main"]]
+
+
+@pytest.mark.asyncio
+async def test_delivery_push_checks_and_pushes_one_immutable_tip_despite_head_mutation(
+    mgr, monkeypatch
+):
+    """A hook moving HEAD after diff inspection cannot replace the delivered commit."""
+    clean_tip = "d" * 40
+    unsafe_tip = "e" * 40
+    pushed: list[list[str]] = []
+    head_reads = 0
+
+    async def fake_arun(args, cwd=None, **_kwargs):
+        nonlocal head_reads
+        if args[:2] == ["rev-parse", "--verify"]:
+            if args[-1] == "HEAD":
+                head_reads += 1
+                return clean_tip if head_reads == 1 else unsafe_tip
+            return clean_tip
+        pushed.append(args)
+        return ""
+
+    monkeypatch.setattr(mgr, "_arun", fake_arun)
+    inspect = AsyncMock(return_value=[])
+    monkeypatch.setattr(mgr, "areserved_paths_in_diff", inspect)
+
+    await mgr.apush_validated_delivery("/repo", "origin/main", "HEAD", "main")
+
+    inspect.assert_awaited_once_with("/repo", "origin/main", clean_tip)
+    assert pushed == [["push", "origin", f"{clean_tip}:refs/heads/main"]]
+
+
 class TestAsyncPrepareForTask:
     @pytest.mark.asyncio
     async def test_creates_branch(self, clone, mgr):
@@ -1314,6 +1363,11 @@ async def test_async_merge_pr_handles_invalid_method_timeout_and_sha(mgr, monkey
 
     monkeypatch.setattr(mgr, "_arun_subprocess", fake_subprocess)
     pr_url = "https://github.com/org/repo/pull/42"
+    from src.git.manager import PullRequestIdentity
+
+    mgr.avalidate_pr_for_merge = AsyncMock(
+        return_value=PullRequestIdentity("org/repo", 42, "main", "a" * 40, "feature", "b" * 40)
+    )
 
     # Invalid method: rejected before any gh invocation.
     result = await mgr.amerge_pr("/repo", pr_url, method="octopus")
@@ -1337,7 +1391,16 @@ async def test_async_merge_pr_handles_invalid_method_timeout_and_sha(mgr, monkey
     )
     result = await mgr.amerge_pr("/repo", pr_url, method="rebase")
     assert result == {"success": True, "sha": sha, "error": None}
-    assert calls[-1] == ["gh", "pr", "merge", pr_url, "--rebase", "--delete-branch"]
+    assert calls[-1] == [
+        "gh",
+        "pr",
+        "merge",
+        pr_url,
+        "--rebase",
+        "--match-head-commit",
+        "b" * 40,
+        "--delete-branch",
+    ]
 
 
 # ------------------------------------------------------------------

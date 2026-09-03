@@ -294,12 +294,47 @@ remote exists) and rejects changed `.aq/**`, `.aq-worktree.json`, or
 not rejected. Git errors are unknown—not clean—and stop delivery. No-code and
 `skip_verification` shortcuts cannot bypass this invariant.
 
+### Immutable PR merge and exact-tip push guard
+
+`aq pr merge` first resolves the PR's base/head names and object IDs, inspects
+the complete paginated PR-files (merge-base) diff, and resolves the identity a
+second time. Any unreadable or malformed identity/diff, changed identity, or
+changed `.aq/**`, `.aq-worktree.json`, or `.codex/**` path fails closed.
+The eventual `gh pr merge` carries `--match-head-commit <head-oid>` and also
+checks the expected base/head pair immediately before invoking `gh`; a changed
+PR can therefore never turn a review of one head into a merge of another.
+`force=true` may waive only `integration.merge_ci_policy`; it cannot waive
+identity or path safety.
+
+Every daemon push resolves its source ref immediately beforehand and sends an
+object-ID refspec (`<oid>:refs/heads/<branch>`), rather than a mutable local
+branch name. After daemon rebase or merge operations,
+`apush_validated_delivery` resolves `HEAD` once, checks that exact OID with the
+reserved delivery-diff gate, and pushes that same OID. Hook or local-ref
+movement consequently cannot substitute a different tip after validation.
+
+### `apush_validated_ref(checkout_path, source_ref, branch, *, force_with_lease=False)`
+
+Resolves `source_ref` to a commit OID and pushes that OID to `origin/branch`.
+It raises `GitError` when the source cannot be resolved to a full commit OID;
+callers must treat that as a delivery failure rather than falling back to a
+branch-name push. `apush_branch` and `apush_head_to` use the same exact-OID
+refspec contract.
+
+### `apush_validated_delivery(checkout_path, base_ref, source_ref, branch, ...)`
+
+The daemon-only delivery primitive. It resolves `source_ref` once, uses that
+OID as the delivery-diff tip against `base_ref`, rejects reserved paths, then
+pushes the identical OID. Callers that have just merged or rebased must use it
+instead of separate diff and push calls.
+
 ### `push_branch(checkout_path, branch_name, *, force_with_lease=False)`
 
 Pushes a local branch to the `origin` remote.
 
-- Constructs the command as `git push origin <branch_name>`.
-- When `force_with_lease=True`, inserts `--force-with-lease` into the command: `git push origin --force-with-lease <branch_name>`. This makes push idempotent for retries: if the branch was already pushed in a previous attempt, a second push with amended/additional commits succeeds as long as no other user pushed to the same branch in the meantime. It is safe for task branches because they are owned by a single agent and are never concurrently updated by others.
+- Resolves `branch_name` once and constructs `git push origin
+  <resolved-oid>:refs/heads/<branch_name>`.
+- When `force_with_lease=True`, inserts `--force-with-lease` into the command before the exact OID refspec. This makes push idempotent for retries: if the branch was already pushed in a previous attempt, a second push with amended/additional commits succeeds as long as no other user pushed to the same branch in the meantime. It is safe for task branches because they are owned by a single agent and are never concurrently updated by others.
 - The `force_with_lease` parameter is keyword-only to prevent accidental positional use.
 - Used with `force_with_lease=True` by the orchestrator when pushing task branches for PR creation (task branches are agent-owned and safe to force-push).
 - Raises `GitError` on failure (e.g. non-fast-forward without the flag, authentication error, or remote ref updated by another clone when using `--force-with-lease`).

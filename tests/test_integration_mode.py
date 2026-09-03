@@ -75,6 +75,8 @@ async def orch(tmp_path):
     mock_git._arun = AsyncMock(return_value="0")
     mock_git.acommit_all = AsyncMock(return_value=True)
     mock_git.apush_branch = AsyncMock(return_value=None)
+    mock_git.apush_validated_ref = AsyncMock(return_value="a" * 40)
+    mock_git.apush_validated_delivery = AsyncMock(return_value="a" * 40)
     mock_git.amerge_branch = AsyncMock(return_value=True)
     mock_git.aabort_in_progress_operations = AsyncMock()
     mock_git.aforce_clean_workspace = AsyncMock(return_value=True)
@@ -361,6 +363,28 @@ class TestPhaseVerifyByMode:
         ]
         assert merge_calls, "direct mode should auto-merge the task branch into default"
 
+    async def test_auto_remediation_push_revalidates_its_post_merge_delivery(self, orch):
+        task = _direct_task("t-auto-pinned")
+        await orch.db.create_task(task)
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = _ctx(orch, task, ws.workspace_path)
+
+        async def git_commands(args, cwd=None, **_kwargs):
+            if args[0] == "rev-list":
+                return "1"
+            return ""
+
+        orch.git._arun = AsyncMock(side_effect=git_commands)
+        await orch._phase_verify(ctx)
+        orch.git.apush_validated_delivery.assert_awaited_once_with(
+            ws.workspace_path,
+            "origin/main",
+            "HEAD",
+            "main",
+            event_bus=orch.bus,
+            project_id="p-1",
+        )
+
 
 class TestPhaseIntegrateByMode:
     """_phase_integrate merges into default only in direct mode."""
@@ -389,6 +413,23 @@ class TestPhaseIntegrateByMode:
         result = await self._run_integrate(orch, task, monkeypatch)
         assert result == PhaseResult.CONTINUE
         orch.git.amerge_branch.assert_awaited_once()
+
+    async def test_direct_mode_pushes_the_post_merge_oid_not_the_branch_name(self, orch, monkeypatch):
+        """A hook/ref race after local merge cannot replace the delivered default tip."""
+        task = _direct_task("t-int-pinned")
+        await orch.db.create_task(task)
+
+        result = await self._run_integrate(orch, task, monkeypatch)
+
+        assert result == PhaseResult.CONTINUE
+        orch.git.apush_validated_delivery.assert_any_await(
+            (await orch.db.get_workspace("ws-1")).workspace_path,
+            "origin/main",
+            "HEAD",
+            "main",
+            event_bus=orch.bus,
+            project_id="p-1",
+        )
 
     async def test_reserved_delivery_never_acquires_merge_slot(self, orch, monkeypatch):
         from src.orchestrator import git_ops

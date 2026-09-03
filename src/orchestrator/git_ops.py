@@ -888,8 +888,10 @@ class GitOpsMixin:
                         cwd=workspace,
                     )
                     if ahead_output.strip() != "0":
-                        await self.git.apush_branch(
+                        await self.git.apush_validated_delivery(
                             workspace,
+                            f"origin/{default_branch}",
+                            "HEAD",
                             current_branch,
                             event_bus=self.bus,
                             project_id=task.project_id,
@@ -1792,8 +1794,10 @@ class GitOpsMixin:
                     )
                     return PhaseResult.STOP
                 try:
-                    await self.git.apush_branch(
+                    await self.git.apush_validated_delivery(
                         workspace,
+                        f"origin/{default_branch}",
+                        "HEAD",
                         branch,
                         force_with_lease=True,
                         event_bus=self.bus,
@@ -1892,10 +1896,16 @@ class GitOpsMixin:
                         )
                         return PhaseResult.STOP
                     try:
-                        # Regular push — no --force here.  The base has
-                        # just merged origin/<default> forward.
-                        await self.git._arun(
-                            ["push", "origin", default_branch], cwd=base_path
+                        # Regular push — no force here. The base has just
+                        # merged origin/<default> forward, and the manager
+                        # pushes the exact revalidated merge tip.
+                        await self.git.apush_validated_delivery(
+                            base_path,
+                            f"origin/{default_branch}",
+                            "HEAD",
+                            default_branch,
+                            event_bus=self.bus,
+                            project_id=task.project_id,
                         )
                     except Exception as e:
                         logger.warning(
