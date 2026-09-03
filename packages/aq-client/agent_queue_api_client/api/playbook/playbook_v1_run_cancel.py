@@ -6,6 +6,7 @@ import httpx
 from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.playbook_v1_run_cancel_request import PlaybookV1RunCancelRequest
+from ...models.playbook_v1_run_cancel_response import PlaybookV1RunCancelResponse
 from ...models.playbook_v1_run_cancel_response_422 import PlaybookV1RunCancelResponse422
 from ...types import Response
 
@@ -31,9 +32,10 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Any | PlaybookV1RunCancelResponse422 | None:
+) -> PlaybookV1RunCancelResponse | PlaybookV1RunCancelResponse422 | None:
     if response.status_code == 200:
-        response_200 = response.json()
+        response_200 = PlaybookV1RunCancelResponse.from_dict(response.json())
+
         return response_200
 
     if response.status_code == 422:
@@ -49,7 +51,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[Any | PlaybookV1RunCancelResponse422]:
+) -> Response[PlaybookV1RunCancelResponse | PlaybookV1RunCancelResponse422]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -62,7 +64,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: PlaybookV1RunCancelRequest,
-) -> Response[Any | PlaybookV1RunCancelResponse422]:
+) -> Response[PlaybookV1RunCancelResponse | PlaybookV1RunCancelResponse422]:
     """Cancel one V1 playbook run during the drain -- a cancel that actually cancels. Operator-only. Unlike
     cancel_playbook_run it signals the running coroutine and waits for it to stop before writing the
     terminal row, so the run cannot overwrite its own cancellation on a later persistence write. A run
@@ -81,7 +83,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any | PlaybookV1RunCancelResponse422]
+        Response[PlaybookV1RunCancelResponse | PlaybookV1RunCancelResponse422]
     """
 
     kwargs = _get_kwargs(
@@ -99,7 +101,7 @@ def sync(
     *,
     client: AuthenticatedClient | Client,
     body: PlaybookV1RunCancelRequest,
-) -> Any | PlaybookV1RunCancelResponse422 | None:
+) -> PlaybookV1RunCancelResponse | PlaybookV1RunCancelResponse422 | None:
     """Cancel one V1 playbook run during the drain -- a cancel that actually cancels. Operator-only. Unlike
     cancel_playbook_run it signals the running coroutine and waits for it to stop before writing the
     terminal row, so the run cannot overwrite its own cancellation on a later persistence write. A run
@@ -118,7 +120,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Any | PlaybookV1RunCancelResponse422
+        PlaybookV1RunCancelResponse | PlaybookV1RunCancelResponse422
     """
 
     return sync_detailed(
@@ -131,7 +133,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: PlaybookV1RunCancelRequest,
-) -> Response[Any | PlaybookV1RunCancelResponse422]:
+) -> Response[PlaybookV1RunCancelResponse | PlaybookV1RunCancelResponse422]:
     """Cancel one V1 playbook run during the drain -- a cancel that actually cancels. Operator-only. Unlike
     cancel_playbook_run it signals the running coroutine and waits for it to stop before writing the
     terminal row, so the run cannot overwrite its own cancellation on a later persistence write. A run
@@ -150,7 +152,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any | PlaybookV1RunCancelResponse422]
+        Response[PlaybookV1RunCancelResponse | PlaybookV1RunCancelResponse422]
     """
 
     kwargs = _get_kwargs(
@@ -166,7 +168,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient | Client,
     body: PlaybookV1RunCancelRequest,
-) -> Any | PlaybookV1RunCancelResponse422 | None:
+) -> PlaybookV1RunCancelResponse | PlaybookV1RunCancelResponse422 | None:
     """Cancel one V1 playbook run during the drain -- a cancel that actually cancels. Operator-only. Unlike
     cancel_playbook_run it signals the running coroutine and waits for it to stop before writing the
     terminal row, so the run cannot overwrite its own cancellation on a later persistence write. A run
@@ -185,7 +187,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Any | PlaybookV1RunCancelResponse422
+        PlaybookV1RunCancelResponse | PlaybookV1RunCancelResponse422
     """
 
     return (

@@ -7,6 +7,7 @@ from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.playbook_v1_admission_close_request import PlaybookV1AdmissionCloseRequest
 from ...models.playbook_v1_admission_close_response_422 import PlaybookV1AdmissionCloseResponse422
+from ...models.playbook_v1_admission_response import PlaybookV1AdmissionResponse
 from ...types import Response
 
 
@@ -31,9 +32,10 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Any | PlaybookV1AdmissionCloseResponse422 | None:
+) -> PlaybookV1AdmissionCloseResponse422 | PlaybookV1AdmissionResponse | None:
     if response.status_code == 200:
-        response_200 = response.json()
+        response_200 = PlaybookV1AdmissionResponse.from_dict(response.json())
+
         return response_200
 
     if response.status_code == 422:
@@ -49,7 +51,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[Any | PlaybookV1AdmissionCloseResponse422]:
+) -> Response[PlaybookV1AdmissionCloseResponse422 | PlaybookV1AdmissionResponse]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -62,7 +64,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: PlaybookV1AdmissionCloseRequest,
-) -> Response[Any | PlaybookV1AdmissionCloseResponse422]:
+) -> Response[PlaybookV1AdmissionCloseResponse422 | PlaybookV1AdmissionResponse]:
     """Refuse new V1 playbook runs. Operator-only. Already-paused V1 runs stay resumable -- this closes the
     door, it does not strand what is already inside. Appends a v1_admission_closed audit row.
 
@@ -77,7 +79,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any | PlaybookV1AdmissionCloseResponse422]
+        Response[PlaybookV1AdmissionCloseResponse422 | PlaybookV1AdmissionResponse]
     """
 
     kwargs = _get_kwargs(
@@ -95,7 +97,7 @@ def sync(
     *,
     client: AuthenticatedClient | Client,
     body: PlaybookV1AdmissionCloseRequest,
-) -> Any | PlaybookV1AdmissionCloseResponse422 | None:
+) -> PlaybookV1AdmissionCloseResponse422 | PlaybookV1AdmissionResponse | None:
     """Refuse new V1 playbook runs. Operator-only. Already-paused V1 runs stay resumable -- this closes the
     door, it does not strand what is already inside. Appends a v1_admission_closed audit row.
 
@@ -110,7 +112,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Any | PlaybookV1AdmissionCloseResponse422
+        PlaybookV1AdmissionCloseResponse422 | PlaybookV1AdmissionResponse
     """
 
     return sync_detailed(
@@ -123,7 +125,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: PlaybookV1AdmissionCloseRequest,
-) -> Response[Any | PlaybookV1AdmissionCloseResponse422]:
+) -> Response[PlaybookV1AdmissionCloseResponse422 | PlaybookV1AdmissionResponse]:
     """Refuse new V1 playbook runs. Operator-only. Already-paused V1 runs stay resumable -- this closes the
     door, it does not strand what is already inside. Appends a v1_admission_closed audit row.
 
@@ -138,7 +140,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any | PlaybookV1AdmissionCloseResponse422]
+        Response[PlaybookV1AdmissionCloseResponse422 | PlaybookV1AdmissionResponse]
     """
 
     kwargs = _get_kwargs(
@@ -154,7 +156,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient | Client,
     body: PlaybookV1AdmissionCloseRequest,
-) -> Any | PlaybookV1AdmissionCloseResponse422 | None:
+) -> PlaybookV1AdmissionCloseResponse422 | PlaybookV1AdmissionResponse | None:
     """Refuse new V1 playbook runs. Operator-only. Already-paused V1 runs stay resumable -- this closes the
     door, it does not strand what is already inside. Appends a v1_admission_closed audit row.
 
@@ -169,7 +171,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Any | PlaybookV1AdmissionCloseResponse422
+        PlaybookV1AdmissionCloseResponse422 | PlaybookV1AdmissionResponse
     """
 
     return (

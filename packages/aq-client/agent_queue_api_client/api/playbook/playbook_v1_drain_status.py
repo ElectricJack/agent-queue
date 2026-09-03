@@ -6,6 +6,7 @@ import httpx
 from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.playbook_v1_drain_status_request import PlaybookV1DrainStatusRequest
+from ...models.playbook_v1_drain_status_response import PlaybookV1DrainStatusResponse
 from ...models.playbook_v1_drain_status_response_422 import PlaybookV1DrainStatusResponse422
 from ...types import Response
 
@@ -31,9 +32,10 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Any | PlaybookV1DrainStatusResponse422 | None:
+) -> PlaybookV1DrainStatusResponse | PlaybookV1DrainStatusResponse422 | None:
     if response.status_code == 200:
-        response_200 = response.json()
+        response_200 = PlaybookV1DrainStatusResponse.from_dict(response.json())
+
         return response_200
 
     if response.status_code == 422:
@@ -49,7 +51,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[Any | PlaybookV1DrainStatusResponse422]:
+) -> Response[PlaybookV1DrainStatusResponse | PlaybookV1DrainStatusResponse422]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -62,7 +64,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: PlaybookV1DrainStatusRequest,
-) -> Response[Any | PlaybookV1DrainStatusResponse422]:
+) -> Response[PlaybookV1DrainStatusResponse | PlaybookV1DrainStatusResponse422]:
     """List every non-terminal V1 playbook run, each classified live (a coroutine owns it) or orphaned (the
     row outlived the process that started it, so only an operator write can clear it), with the options
     available for each. Read-only. Answers while playbooks are paused, because a paused fleet with
@@ -83,7 +85,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any | PlaybookV1DrainStatusResponse422]
+        Response[PlaybookV1DrainStatusResponse | PlaybookV1DrainStatusResponse422]
     """
 
     kwargs = _get_kwargs(
@@ -101,7 +103,7 @@ def sync(
     *,
     client: AuthenticatedClient | Client,
     body: PlaybookV1DrainStatusRequest,
-) -> Any | PlaybookV1DrainStatusResponse422 | None:
+) -> PlaybookV1DrainStatusResponse | PlaybookV1DrainStatusResponse422 | None:
     """List every non-terminal V1 playbook run, each classified live (a coroutine owns it) or orphaned (the
     row outlived the process that started it, so only an operator write can clear it), with the options
     available for each. Read-only. Answers while playbooks are paused, because a paused fleet with
@@ -122,7 +124,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Any | PlaybookV1DrainStatusResponse422
+        PlaybookV1DrainStatusResponse | PlaybookV1DrainStatusResponse422
     """
 
     return sync_detailed(
@@ -135,7 +137,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: PlaybookV1DrainStatusRequest,
-) -> Response[Any | PlaybookV1DrainStatusResponse422]:
+) -> Response[PlaybookV1DrainStatusResponse | PlaybookV1DrainStatusResponse422]:
     """List every non-terminal V1 playbook run, each classified live (a coroutine owns it) or orphaned (the
     row outlived the process that started it, so only an operator write can clear it), with the options
     available for each. Read-only. Answers while playbooks are paused, because a paused fleet with
@@ -156,7 +158,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any | PlaybookV1DrainStatusResponse422]
+        Response[PlaybookV1DrainStatusResponse | PlaybookV1DrainStatusResponse422]
     """
 
     kwargs = _get_kwargs(
@@ -172,7 +174,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient | Client,
     body: PlaybookV1DrainStatusRequest,
-) -> Any | PlaybookV1DrainStatusResponse422 | None:
+) -> PlaybookV1DrainStatusResponse | PlaybookV1DrainStatusResponse422 | None:
     """List every non-terminal V1 playbook run, each classified live (a coroutine owns it) or orphaned (the
     row outlived the process that started it, so only an operator write can clear it), with the options
     available for each. Read-only. Answers while playbooks are paused, because a paused fleet with
@@ -193,7 +195,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Any | PlaybookV1DrainStatusResponse422
+        PlaybookV1DrainStatusResponse | PlaybookV1DrainStatusResponse422
     """
 
     return (

@@ -6232,7 +6232,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybookCutoverSwitchResponse"
+                }
               }
             }
           },
@@ -6277,7 +6279,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybookCutoverWindowCloseResponse"
+                }
               }
             }
           },
@@ -6322,7 +6326,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybookCutoverWindowStatusResponse"
+                }
               }
             }
           },
@@ -6837,7 +6843,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybookV1AdmissionResponse"
+                }
               }
             }
           },
@@ -6882,7 +6890,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybookV1AdmissionResponse"
+                }
               }
             }
           },
@@ -6927,7 +6937,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybookV1DrainStatusResponse"
+                }
               }
             }
           },
@@ -6972,7 +6984,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybookV1RunCancelResponse"
+                }
               }
             }
           },
@@ -17393,6 +17407,104 @@
           "project_id"
         ],
         "title": "CreateTaskResponse"
+      },
+      "CutoverEventDTO": {
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "title": "Event Id"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "at": {
+            "type": "number",
+            "title": "At"
+          },
+          "actor": {
+            "type": "string",
+            "title": "Actor"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          },
+          "detail": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Detail",
+            "default": {}
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "event_id",
+          "kind",
+          "at",
+          "actor",
+          "reason"
+        ],
+        "title": "CutoverEventDTO",
+        "description": "One row of the append-only cutover audit."
+      },
+      "CutoverWindowDTO": {
+        "properties": {
+          "switched_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Switched At"
+          },
+          "elapsed_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Elapsed Seconds"
+          },
+          "wall_clock_ok": {
+            "type": "boolean",
+            "title": "Wall Clock Ok",
+            "default": false
+          },
+          "wall_clock_gate_seconds": {
+            "type": "number",
+            "title": "Wall Clock Gate Seconds"
+          },
+          "volume_gate_runs": {
+            "type": "integer",
+            "title": "Volume Gate Runs"
+          },
+          "closed_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closed At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "wall_clock_gate_seconds",
+          "volume_gate_runs"
+        ],
+        "title": "CutoverWindowDTO"
       },
       "DaemonMetrics": {
         "properties": {
@@ -29367,6 +29479,156 @@
         ],
         "title": "PlaybookCutoverSwitchRequest"
       },
+      "PlaybookCutoverSwitchResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "runtime": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "v1",
+                  "v2"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Runtime"
+          },
+          "event": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CutoverEventDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "generated_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generated At"
+          },
+          "admission": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "open",
+                  "closed"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Admission"
+          },
+          "active": {
+            "items": {
+              "$ref": "#/components/schemas/V1RunSummaryDTO"
+            },
+            "type": "array",
+            "title": "Active",
+            "default": []
+          },
+          "live_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Live Count"
+          },
+          "orphaned_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Orphaned Count"
+          },
+          "oldest_age_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oldest Age Seconds"
+          },
+          "drained": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Drained"
+          },
+          "closed_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closed At"
+          },
+          "closed_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closed By"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "PlaybookCutoverSwitchResponse"
+      },
       "PlaybookCutoverWindowCloseRequest": {
         "properties": {
           "reason": {
@@ -29381,10 +29643,158 @@
         ],
         "title": "PlaybookCutoverWindowCloseRequest"
       },
+      "PlaybookCutoverWindowCloseResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "event": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CutoverEventDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "blocking_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Blocking Reasons",
+            "default": []
+          },
+          "measures": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Measures",
+            "default": []
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "PlaybookCutoverWindowCloseResponse"
+      },
       "PlaybookCutoverWindowStatusRequest": {
         "properties": {},
         "type": "object",
         "title": "PlaybookCutoverWindowStatusRequest"
+      },
+      "PlaybookCutoverWindowStatusResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "generated_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generated At"
+          },
+          "runtime": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "v1",
+                  "v2"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Runtime"
+          },
+          "admission": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "open",
+                  "closed"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Admission"
+          },
+          "measures": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Measures",
+            "default": []
+          },
+          "window": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CutoverWindowDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "blocking_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Blocking Reasons",
+            "default": []
+          },
+          "can_close": {
+            "type": "boolean",
+            "title": "Can Close",
+            "default": false
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "PlaybookCutoverWindowStatusResponse"
       },
       "PlaybookGraphEdge": {
         "properties": {
@@ -30938,10 +31348,242 @@
         ],
         "title": "PlaybookV1AdmissionOpenRequest"
       },
+      "PlaybookV1AdmissionResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "event": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CutoverEventDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "generated_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generated At"
+          },
+          "admission": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "open",
+                  "closed"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Admission"
+          },
+          "closed_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closed At"
+          },
+          "closed_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closed By"
+          },
+          "active": {
+            "items": {
+              "$ref": "#/components/schemas/V1RunSummaryDTO"
+            },
+            "type": "array",
+            "title": "Active",
+            "default": []
+          },
+          "live_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Live Count"
+          },
+          "orphaned_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Orphaned Count"
+          },
+          "oldest_age_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oldest Age Seconds"
+          },
+          "drained": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Drained"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "PlaybookV1AdmissionResponse",
+        "description": "The drain snapshot as it stands after an admission change."
+      },
       "PlaybookV1DrainStatusRequest": {
         "properties": {},
         "type": "object",
         "title": "PlaybookV1DrainStatusRequest"
+      },
+      "PlaybookV1DrainStatusResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "generated_at": {
+            "type": "number",
+            "title": "Generated At"
+          },
+          "admission": {
+            "type": "string",
+            "enum": [
+              "open",
+              "closed"
+            ],
+            "title": "Admission"
+          },
+          "closed_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closed At"
+          },
+          "closed_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closed By"
+          },
+          "active": {
+            "items": {
+              "$ref": "#/components/schemas/V1RunSummaryDTO"
+            },
+            "type": "array",
+            "title": "Active",
+            "default": []
+          },
+          "live_count": {
+            "type": "integer",
+            "title": "Live Count"
+          },
+          "orphaned_count": {
+            "type": "integer",
+            "title": "Orphaned Count"
+          },
+          "oldest_age_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oldest Age Seconds"
+          },
+          "drained": {
+            "type": "boolean",
+            "title": "Drained"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "generated_at",
+          "admission",
+          "live_count",
+          "orphaned_count",
+          "drained"
+        ],
+        "title": "PlaybookV1DrainStatusResponse",
+        "description": "``drained`` is a conjunction, deliberately: admission closed *and* no\nactive run.  A zero count on its own is a snapshot \u2014 a run can start\nimmediately after it is read \u2014 so it is never the gate by itself."
       },
       "PlaybookV1RunCancelRequest": {
         "properties": {
@@ -30962,6 +31604,80 @@
           "reason"
         ],
         "title": "PlaybookV1RunCancelRequest"
+      },
+      "PlaybookV1RunCancelResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          },
+          "ownership": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "live",
+                  "orphaned"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ownership"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "PlaybookV1RunCancelResponse",
+        "description": "A cancel is only reported successful once the row is terminal *and* the\ncoroutine that could have overwritten it is gone."
       },
       "PlaybookV2GraphRequest": {
         "properties": {
@@ -41775,6 +42491,123 @@
           "source_hash"
         ],
         "title": "UpdatePlaybookSourceResponse"
+      },
+      "V1RunSummaryDTO": {
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "playbook_id": {
+            "type": "string",
+            "title": "Playbook Id"
+          },
+          "playbook_version": {
+            "type": "integer",
+            "title": "Playbook Version"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "current_node": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Node"
+          },
+          "started_at": {
+            "type": "number",
+            "title": "Started At"
+          },
+          "age_seconds": {
+            "type": "number",
+            "title": "Age Seconds"
+          },
+          "paused_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Paused At"
+          },
+          "waiting_for_event": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Waiting For Event"
+          },
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Id"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "ownership": {
+            "type": "string",
+            "enum": [
+              "live",
+              "orphaned"
+            ],
+            "title": "Ownership"
+          },
+          "options": {
+            "items": {
+              "type": "string",
+              "enum": [
+                "wait",
+                "resolve",
+                "cancel"
+              ]
+            },
+            "type": "array",
+            "title": "Options"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "run_id",
+          "playbook_id",
+          "playbook_version",
+          "status",
+          "started_at",
+          "age_seconds",
+          "ownership",
+          "options"
+        ],
+        "title": "V1RunSummaryDTO",
+        "description": "One active V1 run, as the drain sees it.\n\n``ownership`` is the field the whole drain turns on: ``live`` means a\ncoroutine still owns the run and it can finish by itself, ``orphaned``\nmeans the row outlived the process that started it and only an operator\nwrite will ever clear it.  ``options`` is never empty \u2014 ``cancel`` is\nalways available."
       },
       "ValidationError": {
         "properties": {

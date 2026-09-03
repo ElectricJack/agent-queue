@@ -662,3 +662,87 @@ def test_cutover_commands_are_in_no_shipped_profile():
             if name in text:
                 offenders.append(f"{profile.parent.name}: {name}")
     assert offenders == []
+
+
+# ---------------------------------------------------------------------------
+# The typed API surface must accept what the commands actually return
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_every_response_dto_accepts_its_commands_real_output():
+    """The DTOs are ``extra="forbid"``, so a key the command emits and the
+    model does not declare is a 500 on the generated route rather than a
+    warning.  This drives each command for real and validates the result."""
+    from src.api.models import get_all_response_models
+
+    models = get_all_response_models()
+
+    async def _validate(name, payload):
+        models[name].model_validate(payload)
+
+    # A drained fleet, an active fleet, and every refusal path.
+    active_db = _FakeDB([_run("live-1", "running", started_at=1.0)])
+    active = _cutover_handler(active_db, _config(v1_admission="closed"))
+    active.orchestrator = SimpleNamespace(
+        playbook_manager=SimpleNamespace(running_runs=lambda: {"live-1": "pb"}, _running={}),
+        bus=None,
+    )
+    await _validate("playbook_v1_drain_status", await active._cmd_playbook_v1_drain_status({}))
+    await _validate(
+        "playbook_cutover_switch",
+        await active._cmd_playbook_cutover_switch({"to": "v2", "reason": "cutting over now"}),
+    )
+    await _validate(
+        "playbook_v1_run_cancel",
+        await active._cmd_playbook_v1_run_cancel(
+            {"run_id": "live-1", "reason": "draining for the cutover"}
+        ),
+    )
+    await _validate(
+        "playbook_v1_run_cancel",
+        await active._cmd_playbook_v1_run_cancel({"reason": "draining for the cutover"}),
+    )
+    await _validate(
+        "playbook_v1_admission_close",
+        await active._cmd_playbook_v1_admission_close({"reason": "already closed here"}),
+    )
+
+    window = _cutover_handler(_FakeDB([]), _config(v2_engine=True, v1_admission="closed"))
+    await _validate(
+        "playbook_cutover_window_status",
+        await window._cmd_playbook_cutover_window_status({}),
+    )
+    await _validate(
+        "playbook_cutover_window_close",
+        await window._cmd_playbook_cutover_window_close({"reason": "closing the window"}),
+    )
+    await _validate(
+        "playbook_v1_admission_open",
+        await window._cmd_playbook_v1_admission_open({"reason": "rolling back for now"}),
+    )
+
+    # The two success shapes, which need a config writer.  These are the
+    # payloads a real operator sees, so leaving them unvalidated would leave
+    # the likeliest 500 uncovered.
+    open_config = _config()
+    writable = _cutover_handler(_FakeDB([]), open_config)
+
+    async def _write(field, value):
+        setattr(open_config.playbooks, field, value)
+        return None
+
+    writable._cutover_write_playbooks_field = _write
+    await _validate(
+        "playbook_v1_admission_close",
+        await writable._cmd_playbook_v1_admission_close({"reason": "closing ahead of cutover"}),
+    )
+    switched = await writable._cmd_playbook_cutover_switch(
+        {"to": "v2", "reason": "cutting over after a clean drain"}
+    )
+    assert switched["success"] is True
+    await _validate("playbook_cutover_switch", switched)
+    await _validate(
+        "playbook_v1_admission_open",
+        await writable._cmd_playbook_v1_admission_open({"reason": "reopening after rollback"}),
+    )

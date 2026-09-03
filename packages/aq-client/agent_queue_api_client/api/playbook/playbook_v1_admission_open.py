@@ -7,6 +7,7 @@ from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.playbook_v1_admission_open_request import PlaybookV1AdmissionOpenRequest
 from ...models.playbook_v1_admission_open_response_422 import PlaybookV1AdmissionOpenResponse422
+from ...models.playbook_v1_admission_response import PlaybookV1AdmissionResponse
 from ...types import Response
 
 
@@ -31,9 +32,10 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Any | PlaybookV1AdmissionOpenResponse422 | None:
+) -> PlaybookV1AdmissionOpenResponse422 | PlaybookV1AdmissionResponse | None:
     if response.status_code == 200:
-        response_200 = response.json()
+        response_200 = PlaybookV1AdmissionResponse.from_dict(response.json())
+
         return response_200
 
     if response.status_code == 422:
@@ -49,7 +51,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[Any | PlaybookV1AdmissionOpenResponse422]:
+) -> Response[PlaybookV1AdmissionOpenResponse422 | PlaybookV1AdmissionResponse]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -62,7 +64,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: PlaybookV1AdmissionOpenRequest,
-) -> Response[Any | PlaybookV1AdmissionOpenResponse422]:
+) -> Response[PlaybookV1AdmissionOpenResponse422 | PlaybookV1AdmissionResponse]:
     """Re-open V1 playbook admission. Operator-only. Refused while the fleet is on the V2 runtime:
     admission open under V2 would let a rollback silently start new V1 runs against unreviewed
     artifacts.
@@ -79,7 +81,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any | PlaybookV1AdmissionOpenResponse422]
+        Response[PlaybookV1AdmissionOpenResponse422 | PlaybookV1AdmissionResponse]
     """
 
     kwargs = _get_kwargs(
@@ -97,7 +99,7 @@ def sync(
     *,
     client: AuthenticatedClient | Client,
     body: PlaybookV1AdmissionOpenRequest,
-) -> Any | PlaybookV1AdmissionOpenResponse422 | None:
+) -> PlaybookV1AdmissionOpenResponse422 | PlaybookV1AdmissionResponse | None:
     """Re-open V1 playbook admission. Operator-only. Refused while the fleet is on the V2 runtime:
     admission open under V2 would let a rollback silently start new V1 runs against unreviewed
     artifacts.
@@ -114,7 +116,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Any | PlaybookV1AdmissionOpenResponse422
+        PlaybookV1AdmissionOpenResponse422 | PlaybookV1AdmissionResponse
     """
 
     return sync_detailed(
@@ -127,7 +129,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: PlaybookV1AdmissionOpenRequest,
-) -> Response[Any | PlaybookV1AdmissionOpenResponse422]:
+) -> Response[PlaybookV1AdmissionOpenResponse422 | PlaybookV1AdmissionResponse]:
     """Re-open V1 playbook admission. Operator-only. Refused while the fleet is on the V2 runtime:
     admission open under V2 would let a rollback silently start new V1 runs against unreviewed
     artifacts.
@@ -144,7 +146,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any | PlaybookV1AdmissionOpenResponse422]
+        Response[PlaybookV1AdmissionOpenResponse422 | PlaybookV1AdmissionResponse]
     """
 
     kwargs = _get_kwargs(
@@ -160,7 +162,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient | Client,
     body: PlaybookV1AdmissionOpenRequest,
-) -> Any | PlaybookV1AdmissionOpenResponse422 | None:
+) -> PlaybookV1AdmissionOpenResponse422 | PlaybookV1AdmissionResponse | None:
     """Re-open V1 playbook admission. Operator-only. Refused while the fleet is on the V2 runtime:
     admission open under V2 would let a rollback silently start new V1 runs against unreviewed
     artifacts.
@@ -177,7 +179,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Any | PlaybookV1AdmissionOpenResponse422
+        PlaybookV1AdmissionOpenResponse422 | PlaybookV1AdmissionResponse
     """
 
     return (

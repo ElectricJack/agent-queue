@@ -6,6 +6,7 @@ import httpx
 from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.playbook_cutover_switch_request import PlaybookCutoverSwitchRequest
+from ...models.playbook_cutover_switch_response import PlaybookCutoverSwitchResponse
 from ...models.playbook_cutover_switch_response_422 import PlaybookCutoverSwitchResponse422
 from ...types import Response
 
@@ -31,9 +32,10 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Any | PlaybookCutoverSwitchResponse422 | None:
+) -> PlaybookCutoverSwitchResponse | PlaybookCutoverSwitchResponse422 | None:
     if response.status_code == 200:
-        response_200 = response.json()
+        response_200 = PlaybookCutoverSwitchResponse.from_dict(response.json())
+
         return response_200
 
     if response.status_code == 422:
@@ -49,7 +51,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[Any | PlaybookCutoverSwitchResponse422]:
+) -> Response[PlaybookCutoverSwitchResponse | PlaybookCutoverSwitchResponse422]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -62,7 +64,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: PlaybookCutoverSwitchRequest,
-) -> Response[Any | PlaybookCutoverSwitchResponse422]:
+) -> Response[PlaybookCutoverSwitchResponse | PlaybookCutoverSwitchResponse422]:
     """Move the fleet between the V1 and V2 playbook runtimes. Operator-only, and the highest-privilege
     operation in the subsystem. Switching to v2 is refused until the drain completes; switching back to
     v1 is the rollback and is refused once the rollback window has been closed.
@@ -79,7 +81,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any | PlaybookCutoverSwitchResponse422]
+        Response[PlaybookCutoverSwitchResponse | PlaybookCutoverSwitchResponse422]
     """
 
     kwargs = _get_kwargs(
@@ -97,7 +99,7 @@ def sync(
     *,
     client: AuthenticatedClient | Client,
     body: PlaybookCutoverSwitchRequest,
-) -> Any | PlaybookCutoverSwitchResponse422 | None:
+) -> PlaybookCutoverSwitchResponse | PlaybookCutoverSwitchResponse422 | None:
     """Move the fleet between the V1 and V2 playbook runtimes. Operator-only, and the highest-privilege
     operation in the subsystem. Switching to v2 is refused until the drain completes; switching back to
     v1 is the rollback and is refused once the rollback window has been closed.
@@ -114,7 +116,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Any | PlaybookCutoverSwitchResponse422
+        PlaybookCutoverSwitchResponse | PlaybookCutoverSwitchResponse422
     """
 
     return sync_detailed(
@@ -127,7 +129,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: PlaybookCutoverSwitchRequest,
-) -> Response[Any | PlaybookCutoverSwitchResponse422]:
+) -> Response[PlaybookCutoverSwitchResponse | PlaybookCutoverSwitchResponse422]:
     """Move the fleet between the V1 and V2 playbook runtimes. Operator-only, and the highest-privilege
     operation in the subsystem. Switching to v2 is refused until the drain completes; switching back to
     v1 is the rollback and is refused once the rollback window has been closed.
@@ -144,7 +146,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any | PlaybookCutoverSwitchResponse422]
+        Response[PlaybookCutoverSwitchResponse | PlaybookCutoverSwitchResponse422]
     """
 
     kwargs = _get_kwargs(
@@ -160,7 +162,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient | Client,
     body: PlaybookCutoverSwitchRequest,
-) -> Any | PlaybookCutoverSwitchResponse422 | None:
+) -> PlaybookCutoverSwitchResponse | PlaybookCutoverSwitchResponse422 | None:
     """Move the fleet between the V1 and V2 playbook runtimes. Operator-only, and the highest-privilege
     operation in the subsystem. Switching to v2 is refused until the drain completes; switching back to
     v1 is the rollback and is refused once the rollback window has been closed.
@@ -177,7 +179,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Any | PlaybookCutoverSwitchResponse422
+        PlaybookCutoverSwitchResponse | PlaybookCutoverSwitchResponse422
     """
 
     return (

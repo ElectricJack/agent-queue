@@ -6,6 +6,7 @@ import httpx
 from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.playbook_cutover_window_close_request import PlaybookCutoverWindowCloseRequest
+from ...models.playbook_cutover_window_close_response import PlaybookCutoverWindowCloseResponse
 from ...models.playbook_cutover_window_close_response_422 import PlaybookCutoverWindowCloseResponse422
 from ...types import Response
 
@@ -31,9 +32,10 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Any | PlaybookCutoverWindowCloseResponse422 | None:
+) -> PlaybookCutoverWindowCloseResponse | PlaybookCutoverWindowCloseResponse422 | None:
     if response.status_code == 200:
-        response_200 = response.json()
+        response_200 = PlaybookCutoverWindowCloseResponse.from_dict(response.json())
+
         return response_200
 
     if response.status_code == 422:
@@ -49,7 +51,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[Any | PlaybookCutoverWindowCloseResponse422]:
+) -> Response[PlaybookCutoverWindowCloseResponse | PlaybookCutoverWindowCloseResponse422]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -62,7 +64,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: PlaybookCutoverWindowCloseRequest,
-) -> Response[Any | PlaybookCutoverWindowCloseResponse422]:
+) -> Response[PlaybookCutoverWindowCloseResponse | PlaybookCutoverWindowCloseResponse422]:
     """Close the playbook rollback window, after which the V1 runtime may be deleted and rollback is no
     longer available. Operator-only. Recomputes every acceptance measure itself and refuses while any
     one of them blocks, naming it. There is deliberately no force flag.
@@ -79,7 +81,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any | PlaybookCutoverWindowCloseResponse422]
+        Response[PlaybookCutoverWindowCloseResponse | PlaybookCutoverWindowCloseResponse422]
     """
 
     kwargs = _get_kwargs(
@@ -97,7 +99,7 @@ def sync(
     *,
     client: AuthenticatedClient | Client,
     body: PlaybookCutoverWindowCloseRequest,
-) -> Any | PlaybookCutoverWindowCloseResponse422 | None:
+) -> PlaybookCutoverWindowCloseResponse | PlaybookCutoverWindowCloseResponse422 | None:
     """Close the playbook rollback window, after which the V1 runtime may be deleted and rollback is no
     longer available. Operator-only. Recomputes every acceptance measure itself and refuses while any
     one of them blocks, naming it. There is deliberately no force flag.
@@ -114,7 +116,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Any | PlaybookCutoverWindowCloseResponse422
+        PlaybookCutoverWindowCloseResponse | PlaybookCutoverWindowCloseResponse422
     """
 
     return sync_detailed(
@@ -127,7 +129,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: PlaybookCutoverWindowCloseRequest,
-) -> Response[Any | PlaybookCutoverWindowCloseResponse422]:
+) -> Response[PlaybookCutoverWindowCloseResponse | PlaybookCutoverWindowCloseResponse422]:
     """Close the playbook rollback window, after which the V1 runtime may be deleted and rollback is no
     longer available. Operator-only. Recomputes every acceptance measure itself and refuses while any
     one of them blocks, naming it. There is deliberately no force flag.
@@ -144,7 +146,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any | PlaybookCutoverWindowCloseResponse422]
+        Response[PlaybookCutoverWindowCloseResponse | PlaybookCutoverWindowCloseResponse422]
     """
 
     kwargs = _get_kwargs(
@@ -160,7 +162,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient | Client,
     body: PlaybookCutoverWindowCloseRequest,
-) -> Any | PlaybookCutoverWindowCloseResponse422 | None:
+) -> PlaybookCutoverWindowCloseResponse | PlaybookCutoverWindowCloseResponse422 | None:
     """Close the playbook rollback window, after which the V1 runtime may be deleted and rollback is no
     longer available. Operator-only. Recomputes every acceptance measure itself and refuses while any
     one of them blocks, naming it. There is deliberately no force flag.
@@ -177,7 +179,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Any | PlaybookCutoverWindowCloseResponse422
+        PlaybookCutoverWindowCloseResponse | PlaybookCutoverWindowCloseResponse422
     """
 
     return (
