@@ -221,12 +221,22 @@ class ProfileLookup(Protocol):
         """The profile's ``CapabilityPolicy``, or ``None`` when unknown."""
 
     def routing(self, profile_id: str) -> Any | None:
-        """The profile's :class:`~src.profiles.intelligence.ProfileIntelligence`.
+        """The profile's :class:`~src.profiles.intelligence.ProfileIntelligence`
+        **for a session launch**, where the harness fixes the provider.
 
         ``None`` when the profile is unknown.  Validation never reads this —
         it exists because the semantic graph's AI cards must state which
         provider and model a step's profile actually resolves to, and this
         lookup is the only seam the projection has onto a profile.
+        """
+
+    def direct_routing(self, profile_id: str) -> Any | None:
+        """The same, **for a headless direct-path call** (an ``LlmStep``).
+
+        A separate method rather than an argument to :meth:`routing` because
+        the two answers differ in the provider: an ``LlmStep`` runs no CLI,
+        so ``llm.provider`` fixes it, not the profile's harness.  Asking the
+        wrong one is exactly the divergence the AI cards used to show.
         """
 
 
@@ -261,6 +271,9 @@ class NullProfileLookup:
         return None
 
     def routing(self, profile_id: str) -> Any | None:
+        return None
+
+    def direct_routing(self, profile_id: str) -> Any | None:
         return None
 
 
@@ -321,6 +334,12 @@ class VaultProfileLookup:
     the class and its provider.  The snapshot is passed in (the daemon hands
     over its live registry) rather than loaded here, because every consumer
     of this lookup is a pure projection.
+
+    ``llm_config`` is the same thing for the direct path: an ``LlmStep``
+    resolves against the ``llm:`` config, not against the profile's harness,
+    so without it :meth:`direct_routing` reports the class alone rather than
+    the harness's provider — which would be a different provider than the
+    step calls.
     """
 
     def __init__(
@@ -329,10 +348,12 @@ class VaultProfileLookup:
         *,
         plugin_command_names: frozenset[str] = frozenset(),
         intelligence_classes: Mapping[str, Any] | None = None,
+        llm_config: Any | None = None,
     ) -> None:
         self._profiles = profiles
         self._plugin_command_names = plugin_command_names
         self._intelligence_classes = intelligence_classes
+        self._llm_config = llm_config
 
     def policy(self, profile_id: str) -> Any | None:
         profile = self._profiles.get(profile_id)
@@ -353,6 +374,16 @@ class VaultProfileLookup:
         from src.profiles.intelligence import intelligence_for
 
         return intelligence_for(profile, self._intelligence_classes)
+
+    def direct_routing(self, profile_id: str) -> Any | None:
+        profile = self._profiles.get(profile_id)
+        if profile is None:
+            return None
+        from src.profiles.intelligence import direct_call_intelligence_for
+
+        return direct_call_intelligence_for(
+            profile, self._intelligence_classes, self._llm_config
+        )
 
 
 class RegisteredEventLookup:

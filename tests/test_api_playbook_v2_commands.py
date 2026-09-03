@@ -27,6 +27,7 @@ from src.commands.playbook_v2_commands import (
     V2_STORAGE_UNAVAILABLE_ERROR,
     V2_WRITES_DISABLED_ERROR,
 )
+from src.config import LLMConfig
 
 VALID_SHA = "sha256:" + "a" * 64
 OTHER_SHA = "sha256:" + "b" * 64
@@ -60,6 +61,9 @@ def _make_handler(*, v2_api: bool = True, v2_activation_writes: bool = True) -> 
     mock_orch.bus = AsyncMock()
     config = MagicMock()
     config.playbooks = _Playbooks(v2_api=v2_api, v2_activation_writes=v2_activation_writes)
+    # A real section, not a mock: the AI cards resolve an ``llm`` node against
+    # it, and a mock provider would make every direct-path model a mock too.
+    config.llm = LLMConfig()
     return CommandHandler(mock_orch, config)
 
 
@@ -408,6 +412,40 @@ async def test_v2_lookups_carry_the_live_intelligence_classes():
     _contracts, profiles, _events = await handler._v2_lookups()
     assert profiles.routing("reviewer") == ProfileIntelligence(
         "deep-high", "anthropic", "claude-opus-5"
+    )
+
+
+async def test_v2_lookups_carry_the_llm_config_for_direct_path_nodes():
+    """swift-ember-68: an ``llm`` node resolves against ``llm:``, not the harness.
+
+    Without the config the lookup would have to fall back to the harness's
+    provider, which is the divergence between the card and the executor.
+    """
+    from src.config import LLMConfig
+    from src.intelligence_classes import IntelligenceClass
+    from src.profiles.intelligence import ProfileIntelligence
+
+    handler = _make_handler()
+    handler.config.llm = LLMConfig(provider="openai", api_key="k")
+    handler.db.list_profiles = AsyncMock(return_value=[_reviewer_profile()])
+    handler.orchestrator.intelligence_classes = {
+        "deep-high": IntelligenceClass(
+            id="deep-high",
+            name="Deep",
+            description="",
+            mapping={
+                "anthropic": {"model": "claude-opus-5"},
+                "openai": {"model": "gpt-5"},
+            },
+        )
+    }
+    _contracts, profiles, _events = await handler._v2_lookups()
+    # The profile's harness is claude; the direct path is configured openai.
+    assert profiles.routing("reviewer") == ProfileIntelligence(
+        "deep-high", "anthropic", "claude-opus-5"
+    )
+    assert profiles.direct_routing("reviewer") == ProfileIntelligence(
+        "deep-high", "openai", "gpt-5"
     )
 
 
