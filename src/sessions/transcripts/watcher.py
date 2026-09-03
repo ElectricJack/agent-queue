@@ -51,6 +51,14 @@ logger = logging.getLogger(__name__)
 __all__ = ["TranscriptWatcher", "SessionTrackingState"]
 
 
+# Transcript timestamps are commonly second-granular while session creation
+# uses ``time.time()``.  A small tolerance keeps a line written immediately
+# after a launch from looking older than the new session by a fraction of a
+# second.
+_SESSION_START_GRACE_SECONDS = 5.0
+_DEFAULT_STARTUP_REPLAY_LIMIT = 100
+
+
 @dataclass
 class SessionTrackingState:
     """Per-session watcher bookkeeping."""
@@ -90,6 +98,7 @@ class TranscriptWatcher:
         base_dir: Path | None = None,
         tail_size: int = 20,
         questions=None,
+        startup_replay_limit: int = _DEFAULT_STARTUP_REPLAY_LIMIT,
     ) -> None:
         self.db = db
         self.bus = bus
@@ -97,6 +106,8 @@ class TranscriptWatcher:
         self._states: dict[str, SessionTrackingState] = {}
         self._tail_size = tail_size
         self.questions = questions
+        self._started_at = time.time()
+        self._startup_replay_limit = max(0, int(startup_replay_limit))
 
     async def tick(self, *, now: float | None = None) -> None:
         """One poll pass.  Never raises."""
@@ -145,6 +156,7 @@ class TranscriptWatcher:
         # A resolved path clears the one-shot suppression: if the file
         # goes away again later, we want to know.
         state.missing_emitted = False
+        uncheckpointed_adoption = False
         if state.last_path != path:
             # First sight of this file for this session, or a rotation onto
             # a different one.  Either way the in-process offset belongs to
@@ -154,13 +166,15 @@ class TranscriptWatcher:
             # uuids are dropped for the same reason: they were the previous
             # file's, and the stored mark carries the only one that still
             # matters, the entry the offset now sits immediately after.
-            await self._adopt_transcript(state, path)
+            uncheckpointed_adoption = await self._adopt_transcript(state, path)
         state.last_path = path
         await self._learn_session_key(row, reader, path)
 
         previous_offset = state.offset
         entries, new_offset = await reader.read_new(path, previous_offset)
         state.offset = new_offset
+        if uncheckpointed_adoption:
+            entries = self._skip_historical_adoption_entries(row, path, entries)
         if self.questions is not None:
             try:
                 question_entries, question_end = entries, new_offset
@@ -212,7 +226,7 @@ class TranscriptWatcher:
         if reader.infer_activity(tail) == "in-turn":
             await self._on_in_turn(row, now=now)
 
-    async def _adopt_transcript(self, state: SessionTrackingState, path: Path) -> None:
+    async def _adopt_transcript(self, state: SessionTrackingState, path: Path) -> bool:
         """Point *state* at *path*, resuming from that file's durable mark.
 
         A stored mark that is past the end of the file means the file was
@@ -220,10 +234,10 @@ class TranscriptWatcher:
         under a reused name, an operator truncating one), so the only honest
         resume point is its beginning.
 
-        A database without the checkpoint methods, or one that errors, falls
-        back to reading the file from the start — the pre-checkpoint
-        behaviour.  Replaying is wrong but recoverable; skipping a live
-        agent's output because a bookkeeping table was unavailable is worse.
+        Returns ``True`` if no valid durable mark was available.  The caller
+        then makes first adoption conservative: a daemon restart must not
+        charge a transcript's history merely because its checkpoint table is
+        unavailable or was added after the transcript already existed.
         """
         state.offset = 0
         state.question_offset = 0
@@ -232,29 +246,79 @@ class TranscriptWatcher:
 
         getter = getattr(self.db, "get_transcript_checkpoint", None)
         if getter is None:
-            return
+            return True
         try:
             mark = await getter(str(path))
         except Exception:
             logger.debug("transcript checkpoint read failed for %s", path, exc_info=True)
-            return
+            return True
         if not mark:
-            return
+            return True
         offset = int(mark.get("byte_offset") or 0)
         if offset <= 0:
-            return
+            return True
         try:
             size = path.stat().st_size
         except OSError:
             size = None
         if size is not None and size < offset:
-            return
+            return True
         state.offset = offset
         state.question_offset = offset
         last_uuid = mark.get("last_entry_uuid")
         if last_uuid:
             state.charged_uuids.add(last_uuid)
             state.last_charged_uuid = last_uuid
+        return False
+
+    def _skip_historical_adoption_entries(
+        self, row, path: Path, entries: list[TranscriptEntry]
+    ) -> list[TranscriptEntry]:
+        """Keep only safely current entries when a transcript has no mark.
+
+        A missing checkpoint normally means an older daemon version was
+        upgraded while its sessions stayed alive.  Such a first pass must not
+        replay turns from before that session began.  In addition, a large
+        batch from before *this* watcher started is a restart replay even for
+        a long-lived session, so it is discarded as an all-or-nothing guard.
+        The byte checkpoint still advances past every skipped record.
+        """
+        if not entries:
+            return entries
+
+        session_started_at = float(getattr(row, "started_at", 0.0) or 0.0)
+        session_cutoff = session_started_at - _SESSION_START_GRACE_SECONDS
+        fresh = [
+            entry
+            for entry in entries
+            if entry.ts and (not session_started_at or entry.ts >= session_cutoff)
+        ]
+        skipped_for_session = len(entries) - len(fresh)
+        if skipped_for_session:
+            logger.warning(
+                "transcript watcher: skipped %s pre-session entries while adopting %s",
+                skipped_for_session,
+                getattr(row, "id", "unknown"),
+            )
+
+        daemon_cutoff = self._started_at - _SESSION_START_GRACE_SECONDS
+        historical_usage = [
+            entry
+            for entry in fresh
+            if entry.type == "assistant" and entry.usage and entry.ts < daemon_cutoff
+        ]
+        if len(historical_usage) <= self._startup_replay_limit:
+            return fresh
+
+        historical_uuids = {entry.uuid for entry in historical_usage}
+        logger.warning(
+            "transcript watcher: skipped %s historical usage entries while adopting %s; "
+            "limit=%s",
+            len(historical_usage),
+            getattr(row, "id", "unknown"),
+            self._startup_replay_limit,
+        )
+        return [entry for entry in fresh if entry.uuid not in historical_uuids]
 
     async def _save_checkpoint(
         self, row, path: Path, state: SessionTrackingState

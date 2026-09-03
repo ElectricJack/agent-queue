@@ -961,6 +961,9 @@ class SessionsConfig:
     nudge_debounce_ms: int = 500
     state_cache_ttl_seconds: int = 2
     transcript_poll_seconds: int = 2
+    #: Maximum historical usage entries an uncheckpointed watcher may see
+    #: before treating the batch as restart replay rather than fresh work.
+    transcript_startup_replay_limit: int = 100
     adopt_on_start: bool = True
     #: Live pane stream (dashboard).  Polling happens only while a
     #: subscriber is attached, so an unwatched daemon pays nothing.
@@ -1011,6 +1014,7 @@ class SessionsConfig:
             "nudge_debounce_ms",
             "state_cache_ttl_seconds",
             "transcript_poll_seconds",
+            "transcript_startup_replay_limit",
             "dialog_settle_seconds",
         ):
             if getattr(self, name) < 0:
@@ -2732,6 +2736,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
                     "nudge_debounce_ms": int,
                     "state_cache_ttl_seconds": int,
                     "transcript_poll_seconds": int,
+                    "transcript_startup_replay_limit": int,
                     "adopt_on_start": bool,
                     "pane_stream_interval_seconds": float,
                     "pane_stream_max_sessions": int,
