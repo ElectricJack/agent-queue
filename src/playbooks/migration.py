@@ -1378,6 +1378,22 @@ def build_cutover_report(
 #: Where the reviewed fixtures live, relative to the repository root.
 REVIEWED_FIXTURE_ROOT = "tests/fixtures/playbooks/v2"
 
+#: The shipped playbooks whose reviewed evidence Package 6 promises to carry.
+#:
+#: The fixture root also contains compiler, lowering and event corpora, so
+#: "every child directory" is not the completeness boundary.  The Package 6
+#: fixture layout (§3.4) locks these four ids instead.  Keeping the set beside
+#: the release check means an empty or partially deleted fixture tree cannot
+#: turn into a successful check merely because there was nothing to iterate.
+EXPECTED_REVIEWED_FIXTURE_IDS: frozenset[str] = frozenset(
+    {
+        "coding-reflection",
+        "default-assignment-routing",
+        "default-pipeline",
+        "memory-consolidation",
+    }
+)
+
 
 @dataclass(frozen=True, slots=True)
 class StaleArtifact:
@@ -1421,8 +1437,9 @@ class UnverifiedActivation:
     read none of its own activations (`prime-zenith-66`).  Each such row is
     named here instead, and each becomes a blocking reason.
 
-    A *disabled* or *acknowledged* row never lands here: an operator decided
-    about it, and a decision made on purpose is not missing evidence.
+    A *disabled* row never lands here: an operator decided about it, and a
+    decision made on purpose is not missing evidence.  An acknowledgement does
+    not excuse a row that remains enabled; live execution still needs evidence.
     """
 
     playbook_id: str
@@ -1474,34 +1491,107 @@ def _unverified(row: Mapping[str, Any], reason: str, detail: str = "") -> Unveri
     )
 
 
-def _reviewed_fixture_artifacts(fixture_root: Path) -> dict[str, Any]:
-    """Every *approved* fixture artifact under *fixture_root*, by playbook id.
+def _reviewed_fixture_artifacts(
+    fixture_root: Path,
+) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    """Approved fixture artifacts and any evidence that could not be read.
 
     A fixture whose ``review.md`` does not record ``decision: approved`` is not
     read: it is a recorded negative, no activation may reference it, and
     holding it to the live contract surface would report drift in something
     nothing runs.
+
+    The four shipped fixture ids are required even when their directories are
+    absent.  Additional top-level directories only become fixture candidates
+    when they carry ``review.md`` or ``artifact.json``; this deliberately
+    ignores the event/lowering/invalid corpora that share the root.
     """
     from src.playbooks.definition import load_definition_json
 
     artifacts: dict[str, Any] = {}
-    if not fixture_root.is_dir():
-        return artifacts
-    for directory in sorted(p for p in fixture_root.iterdir() if p.is_dir()):
+    errors: list[dict[str, str]] = []
+
+    def unread(source: str, error: str) -> None:
+        errors.append({"source": source, "error": error})
+
+    try:
+        if not fixture_root.is_dir():
+            unread(
+                "reviewed_fixtures",
+                f"fixture root is missing or is not a directory: {fixture_root}",
+            )
+            return artifacts, errors
+        children = sorted(fixture_root.iterdir())
+    except OSError as exc:
+        unread("reviewed_fixtures", f"cannot list {fixture_root}: {exc}")
+        return artifacts, errors
+
+    directories = {path.name: path for path in children if path.is_dir()}
+    candidates = set(EXPECTED_REVIEWED_FIXTURE_IDS)
+    for directory in directories.values():
+        if (directory / "review.md").exists() or (directory / "artifact.json").exists():
+            candidates.add(directory.name)
+
+    for playbook_id in sorted(candidates):
+        source = f"reviewed_fixture:{playbook_id}"
+        directory = directories.get(playbook_id)
+        if directory is None:
+            unread(
+                source,
+                f"required fixture directory is missing: {fixture_root / playbook_id}",
+            )
+            continue
         artifact_path = directory / "artifact.json"
         review_path = directory / "review.md"
-        if not artifact_path.is_file() or not review_path.is_file():
+        try:
+            artifact_present = artifact_path.is_file()
+            review_present = review_path.is_file()
+        except OSError as exc:
+            unread(source, f"cannot inspect fixture files in {directory}: {exc}")
             continue
-        frontmatter = _review_frontmatter(review_path)
+
+        missing = [
+            name
+            for name, present in (("artifact.json", artifact_present), ("review.md", review_present))
+            if not present
+        ]
+        if missing:
+            unread(source, f"incomplete fixture; missing {', '.join(missing)}")
+            continue
+
+        try:
+            frontmatter = _review_frontmatter(review_path)
+        except Exception as exc:
+            unread(source, f"review.md is unreadable or malformed: {exc}")
+            continue
+        if not frontmatter:
+            unread(source, "review.md is malformed or has no YAML frontmatter mapping")
+            continue
         if frontmatter.get("decision") != "approved":
+            if playbook_id in EXPECTED_REVIEWED_FIXTURE_IDS:
+                unread(source, "required shipped fixture is not approved")
+            continue
+        reviewed_id = str(frontmatter.get("playbook_id") or "")
+        if reviewed_id != playbook_id:
+            unread(
+                source,
+                f"review.md playbook_id {reviewed_id!r} does not match directory {playbook_id!r}",
+            )
             continue
         try:
-            artifacts[directory.name] = load_definition_json(
-                artifact_path.read_text(encoding="utf-8")
-            )
-        except Exception as exc:  # pragma: no cover - a malformed fixture is a test failure
+            definition = load_definition_json(artifact_path.read_text(encoding="utf-8"))
+        except Exception as exc:
             logger.warning("release check: unreadable fixture %s: %s", artifact_path, exc)
-    return artifacts
+            unread(source, f"artifact.json is unreadable or malformed: {exc}")
+            continue
+        if definition.id != playbook_id:
+            unread(
+                source,
+                f"artifact.json playbook id {definition.id!r} does not match directory {playbook_id!r}",
+            )
+            continue
+        artifacts[playbook_id] = definition
+    return artifacts, errors
 
 
 def reviewed_artifact_evidence(
@@ -1695,6 +1785,11 @@ def release_check(
     failed and was rendered as zero activations let this gate certify a fleet
     nobody looked at.
 
+    The fixture read contributes errors in the same shape.  The Package 6
+    fixture layout's four shipped playbooks are an expected set, so a missing
+    root, an empty/partial tree, or malformed approved evidence is named and
+    blocks instead of collapsing to an empty successful comparison.
+
     Anything in ``evidence_errors`` or ``unverified`` therefore appears in
     ``blocking_reasons``, and a non-empty ``blocking_reasons`` fails the check
     just as a stale artifact does.
@@ -1717,7 +1812,9 @@ def release_check(
         for row in evidence_errors
     ]
 
-    for playbook_id, definition in _reviewed_fixture_artifacts(fixture_root).items():
+    fixture_artifacts, fixture_errors = _reviewed_fixture_artifacts(fixture_root)
+    unread.extend(fixture_errors)
+    for playbook_id, definition in fixture_artifacts.items():
         checked.append(playbook_id)
         compiled = definition.compiled_against
         stale += _compare_fingerprints(
@@ -1784,6 +1881,7 @@ def release_check(
 __all__ = [
     "REASON_CODES",
     "REVIEWED_FIXTURE_ROOT",
+    "EXPECTED_REVIEWED_FIXTURE_IDS",
     "SHA256_RE",
     "EXPECTED_DIFFERENCES",
     "AuthzDecision",

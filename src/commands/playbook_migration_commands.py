@@ -405,11 +405,12 @@ class PlaybookMigrationCommandsMixin:
         assertion `tests/test_playbook_contract_release_check.py` makes in CI,
         available against a live daemon.
 
-        It fails **closed**.  Live evidence this daemon could not read is
-        reported as ``evidence_errors`` and any enabled activation it could not
-        compare as ``unverified``; both feed ``blocking_reasons``, and either
-        one makes ``success`` false.  A gate that answered "yes" from an
-        unreadable activation table would be worse than no gate.
+        It fails **closed**.  Fixture or live evidence this daemon could not
+        read is reported as ``evidence_errors`` and any enabled activation it
+        could not compare as ``unverified``; both feed ``blocking_reasons``,
+        and either one makes ``success`` false.  A gate that answered "yes"
+        from an unreadable activation table or missing fixture tree would be
+        worse than no gate.
         """
         from src.commands.contracts import CONTRACTS
 
