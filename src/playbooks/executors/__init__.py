@@ -15,6 +15,10 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from src.playbooks.executors.agent_task import (
+    LiveAgentTaskExecutor,
+    SymbolicAgentTaskExecutor,
+)
 from src.playbooks.executors.base import (
     Cancellable,
     EngineServices,
@@ -34,22 +38,30 @@ from src.playbooks.executors.command import (
 from src.playbooks.executors.decision import DecisionExecutor
 from src.playbooks.executors.terminal import TerminalExecutor
 
+#: One shared symbolic agent-task executor: it has no state and no I/O, so
+#: dry-run and shadow get the same object for the same reason the
+#: deterministic three do.
+SYMBOLIC_AGENT_TASK_EXECUTOR = SymbolicAgentTaskExecutor()
+
 #: One shared instance per deterministic step kind (§3.1.2).
 DECISION_EXECUTOR = DecisionExecutor()
 TERMINAL_EXECUTOR = TerminalExecutor()
 
 EXECUTORS: Mapping[ExecutionMode, Mapping[str, Executor]] = {
     ExecutionMode.LIVE: {
+        "agent_task": LiveAgentTaskExecutor(),
         "command": LiveCommandExecutor(),
         "decision": DECISION_EXECUTOR,
         "terminal": TERMINAL_EXECUTOR,
     },
     ExecutionMode.DRY_RUN: {
+        "agent_task": SYMBOLIC_AGENT_TASK_EXECUTOR,
         "command": PreviewCommandExecutor(),
         "decision": DECISION_EXECUTOR,
         "terminal": TERMINAL_EXECUTOR,
     },
     ExecutionMode.SHADOW: {
+        "agent_task": SYMBOLIC_AGENT_TASK_EXECUTOR,
         "command": ShadowCommandExecutor(),
         "decision": DECISION_EXECUTOR,
         "terminal": TERMINAL_EXECUTOR,
@@ -81,11 +93,13 @@ __all__ = [
     "ExecutionMode",
     "Executor",
     "ExecutorResult",
+    "LiveAgentTaskExecutor",
     "LiveCommandExecutor",
     "PreviewCommandExecutor",
     "ShadowCommandExecutor",
     "StepContext",
     "StepControl",
+    "SymbolicAgentTaskExecutor",
     "TerminalExecutor",
     "TokenUsage",
     "UnknownStepType",

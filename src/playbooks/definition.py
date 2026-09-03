@@ -232,6 +232,32 @@ class LlmStep(StepBase):
     transitions: dict[str, Identifier]
 
 
+class CapabilityNarrowing(V2Base):
+    """Explicit per-step narrowing of a delegated agent task's capabilities.
+
+    Roadmap §2: "Delegated agent-task permissions are the intersection of
+    parent permissions, child profile permissions, and explicit per-step
+    narrowing."  This is that third term, and it is a *narrowing* only: the
+    executor intersects, never unions, so listing a name the parent or the
+    child profile does not hold grants nothing.
+
+    ``None`` in a namespace means "this step narrows nothing here" — the
+    identity of intersection, not deny-all.  An explicitly empty list means
+    *none*, matching :class:`~src.profiles.capabilities.CapabilityPolicy`'s
+    "empty means none" rule.  The distinction matters: a step that wants a
+    child with no AQ commands writes ``aq_commands: []``, and a step that
+    does not care omits the key.
+
+    Package 2 shipped ``AgentTaskStep`` without this field; Package 4's T-8
+    added it, because the roadmap constraint above is not implementable
+    without it.  See the child plan §2.1 and §4.5.
+    """
+
+    harness_tools: list[str] | None = None
+    aq_commands: list[QualifiedName] | None = None
+    plugin_tools: list[QualifiedName] | None = None
+
+
 class AgentTaskStep(StepBase):
     type: Literal["agent_task"] = "agent_task"
     profile_id: QualifiedName
@@ -239,6 +265,8 @@ class AgentTaskStep(StepBase):
     inputs: dict[str, Value] = Field(default_factory=dict)
     wait_for_completion: bool = True
     cancel_child: bool = False  # spec: explicit, defaults false
+    #: The third intersection term of §4.5 step 1.  ``None`` narrows nothing.
+    capability_narrowing: CapabilityNarrowing | None = None
     timeout_seconds: int | None = Field(default=None, ge=1)
     retry: RetryPolicy | None = None
     save_result_as: Identifier | None = None
@@ -849,6 +877,7 @@ __all__ = [
     "AgentTaskStep",
     "AgentTypeScope",
     "AiBudget",
+    "CapabilityNarrowing",
     "CommandStep",
     "CompiledAgainst",
     "DecisionCase",
