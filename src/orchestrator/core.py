@@ -859,11 +859,16 @@ class Orchestrator(
                     bus=self.bus,
                 )
 
+                # The manager admitted exactly this playbook (shadowing,
+                # cooldown, concurrency).  Constrain the engine to it: an
+                # unfiltered dispatch would start every scope-matching
+                # activation, including siblings the manager just rejected.
                 async def _run_v2() -> None:
                     try:
                         await engine.dispatch_event(
                             event_data,
                             ExecutionPrincipal.service("playbook-dispatch"),
+                            playbook_ids={playbook.id},
                         )
                     except Exception:
                         logger.exception(
