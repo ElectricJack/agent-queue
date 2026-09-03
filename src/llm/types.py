@@ -11,6 +11,32 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
+@dataclass(frozen=True, slots=True)
+class TokenUsage:
+    """Counts returned by a provider for one request or a sequence of turns.
+
+    ``reported`` is deliberately separate from the numeric fields: zero is a
+    valid reported count, while a missing count must fail a hard budget closed.
+    """
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    reported: bool = False
+
+    @property
+    def total(self) -> int:
+        return self.input_tokens + self.output_tokens
+
+    def __add__(self, other: "TokenUsage") -> "TokenUsage":
+        if not isinstance(other, TokenUsage):
+            return NotImplemented
+        return TokenUsage(
+            input_tokens=self.input_tokens + other.input_tokens,
+            output_tokens=self.output_tokens + other.output_tokens,
+            reported=self.reported and other.reported,
+        )
+
+
 @dataclass
 class TextBlock:
     text: str
@@ -26,6 +52,7 @@ class ToolUseBlock:
 @dataclass
 class ChatResponse:
     content: list[TextBlock | ToolUseBlock]
+    usage: TokenUsage | None = None
 
     @property
     def text_parts(self) -> list[str]:

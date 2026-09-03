@@ -23,7 +23,7 @@ import time
 from pathlib import Path
 
 from src.llm.providers.base import LLMProvider
-from src.llm.types import ChatResponse, TextBlock, ToolUseBlock
+from src.llm.types import ChatResponse, TextBlock, TokenUsage, ToolUseBlock
 
 
 logger = logging.getLogger(__name__)
@@ -115,6 +115,10 @@ class AnthropicProvider(LLMProvider):
     def model_name(self) -> str:
         return self._model
 
+    @property
+    def reports_usage(self) -> bool:
+        return True
+
     async def create_message(
         self,
         *,
@@ -144,4 +148,16 @@ class AnthropicProvider(LLMProvider):
             elif block.type == "tool_use":
                 content.append(ToolUseBlock(id=block.id, name=block.name, input=block.input))
 
-        return ChatResponse(content=content)
+        provider_usage = getattr(resp, "usage", None)
+        return ChatResponse(
+            content=content,
+            usage=(
+                TokenUsage(
+                    input_tokens=provider_usage.input_tokens,
+                    output_tokens=provider_usage.output_tokens,
+                    reported=True,
+                )
+                if provider_usage is not None
+                else None
+            ),
+        )

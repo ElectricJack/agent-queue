@@ -32,6 +32,7 @@ from src.playbooks.executors.command import (
     ShadowCommandExecutor,
 )
 from src.playbooks.executors.decision import DecisionExecutor
+from src.playbooks.executors.llm import LiveLlmExecutor, SymbolicLlmExecutor
 from src.playbooks.executors.terminal import TerminalExecutor
 
 #: One shared instance per deterministic step kind (§3.1.2).
@@ -41,16 +42,19 @@ TERMINAL_EXECUTOR = TerminalExecutor()
 EXECUTORS: Mapping[ExecutionMode, Mapping[str, Executor]] = {
     ExecutionMode.LIVE: {
         "command": LiveCommandExecutor(),
+        "llm": LiveLlmExecutor(),
         "decision": DECISION_EXECUTOR,
         "terminal": TERMINAL_EXECUTOR,
     },
     ExecutionMode.DRY_RUN: {
         "command": PreviewCommandExecutor(),
+        "llm": SymbolicLlmExecutor(),
         "decision": DECISION_EXECUTOR,
         "terminal": TERMINAL_EXECUTOR,
     },
     ExecutionMode.SHADOW: {
         "command": ShadowCommandExecutor(),
+        "llm": SymbolicLlmExecutor(),
         "decision": DECISION_EXECUTOR,
         "terminal": TERMINAL_EXECUTOR,
     },
@@ -82,10 +86,12 @@ __all__ = [
     "Executor",
     "ExecutorResult",
     "LiveCommandExecutor",
+    "LiveLlmExecutor",
     "PreviewCommandExecutor",
     "ShadowCommandExecutor",
     "StepContext",
     "StepControl",
+    "SymbolicLlmExecutor",
     "TerminalExecutor",
     "TokenUsage",
     "UnknownStepType",

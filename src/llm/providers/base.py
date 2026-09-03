@@ -27,5 +27,14 @@ class LLMProvider(ABC):
         """False when credentials are missing; the client reports it without calling."""
         return True
 
+    @property
+    def reports_usage(self) -> bool:
+        """Whether this adapter can return provider token counts before a call.
+
+        The conservative default makes new adapters ineligible for a hard
+        total-token budget until they opt in deliberately.
+        """
+        return False
+
     async def is_model_loaded(self) -> bool:
         return True
