@@ -315,6 +315,9 @@ Maps to `PlaybooksConfig`. The YAML key is `playbooks`.
 | `enabled` | `bool` | `False` | Whether the playbook/workflow subsystem is active. |
 | `v2_api` | `bool` | `False` | Playbook V2 semantic-graph **read** surface: `playbook_v2_graph`, `playbook_activation_health`, `playbook_artifacts`, `playbook_artifact_diff`, `playbook_pending_events`, `playbook_run_overlay`. Off returns `playbook v2 api is disabled (playbooks.v2_api=false)`. |
 | `v2_activation_writes` | `bool` | `False` | Playbook V2 operator **writes**: `playbook_activate` and `playbook_pending_event_action`. Gated separately from `v2_api` so the whole review surface stays readable with writes disabled. Off returns `playbook v2 activation writes are disabled (playbooks.v2_activation_writes=false)`. |
+| `v2_compiler_enabled` | `bool` | `False` | Review-only Package 2 compiler commands. Compilation, validation and shadow reports never persist or activate an artifact. |
+| `contract_intent` | `bool` | `True` | Add contract-derived intent to V1 graph-view nodes. Removed in Package 5. |
+| `cancellation_grace_seconds` | `int` | `30` | How long `PlaybookEngine.cancel` waits for an in-flight executor to acknowledge before ending the run itself. `0` means "do not wait": the run reaches `cancelled` immediately and the receipt records `grace_expired`. |
 
 > **Temporary — framework overhaul pause.** While `playbooks.enabled` is
 > `false` the `PlaybookManager`, `TimerService`, the playbook and
