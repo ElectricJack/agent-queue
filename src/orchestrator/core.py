@@ -3310,6 +3310,17 @@ class Orchestrator(
         # Route freshness is resolved before agent supply. This prevents an
         # unspecified task from creating a worker from a profile default.
         task_snapshot = await self.db.list_active_tasks()
+        # A flagged container (spec §7) is settle-only work and never
+        # dispatchable.  Promotion releases the ones it promotes; this catches
+        # a container that was already READY when it gained its first child
+        # (``set_parent`` on a READY task) or came back READY from PAUSED,
+        # and withholds it from the reconciler and the scheduler this cycle
+        # even if its release did not land (calm-ember-48).
+        withheld = await self._release_ready_containers(
+            [t.id for t in task_snapshot if t.status == TaskStatus.READY]
+        )
+        if withheld:
+            task_snapshot = [t for t in task_snapshot if t.id not in withheld]
         assignment_routes = await self.assignment_routing.routes_for(task_snapshot)
         from dataclasses import replace as _replace
 

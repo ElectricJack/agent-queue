@@ -12,6 +12,7 @@ from src.playbooks.definition import (
     PlaybookDefinition,
     artifact_sha256 as definition_artifact_sha256,
     canonical_bytes as definition_canonical_bytes,
+    load_definition_json,
 )
 from src.playbooks.run_state import (
     ArtifactHashCollision,
@@ -62,40 +63,40 @@ class ArtifactStore:
         sha = definition_artifact_sha256(definition)
         self._root.mkdir(mode=0o700, parents=True, exist_ok=True)
         path = Path(self.path_for(sha))
-        if path.exists():
-            if path.read_bytes() != data:
+        # Two attempts, because every read of ``path`` here races the retention
+        # sweep, which removes a collected artifact by renaming it away.  The
+        # adopt branch below is the one that can lose: it decides the file is
+        # already there and then reads it again to verify.  A single retry is
+        # enough — the second pass finds no file and writes the bytes itself,
+        # and a sweep cannot collect a hash it has already collected.
+        for attempt in (0, 1):
+            stored = self._read_if_present(path)
+            if stored is None:
+                self._write_atomically(path, data)
+            elif stored != data:
                 raise ArtifactHashCollision(f"{sha} already names different bytes at {path}")
-            # Content-addressed storage means an identical artifact is adopted
-            # rather than rewritten, which would otherwise leave this file with
-            # the mtime of whenever it was first written.  The retention sweep
-            # decides orphan candidacy by age (``ORPHAN_FILE_TTL_SECONDS``), so
-            # a file being adopted right now must look recent: without this,
-            # a put that reuses an old file could race the sweep between the
-            # adoption here and the caller's row write.
-            try:
-                os.utime(path)
-            except OSError:  # pragma: no cover - permissions/filesystem
-                pass
-        else:
-            tmp = self._root / f"{sha[7:]}.json.tmp-{os.getpid()}-{uuid4().hex}"
-            try:
-                fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            else:
+                # Content-addressed storage means an identical artifact is
+                # adopted rather than rewritten, which would otherwise leave
+                # this file with the mtime of whenever it was first written.
+                # The retention sweep decides orphan candidacy by age
+                # (``ORPHAN_FILE_TTL_SECONDS``), so a file being adopted right
+                # now must look recent: without this, a put that reuses an old
+                # file could race the sweep between the adoption here and the
+                # caller's row write.
                 try:
-                    os.write(fd, data)
-                    os.fsync(fd)
-                finally:
-                    os.close(fd)
-                os.replace(tmp, path)
-                directory_fd = os.open(self._root, os.O_RDONLY)
-                try:
-                    os.fsync(directory_fd)
-                finally:
-                    os.close(directory_fd)
-            finally:
-                tmp.unlink(missing_ok=True)
-        if self._sha(path.read_bytes()) != sha:
-            path.unlink(missing_ok=True)
-            raise ArtifactVerificationFailed(f"artifact at {path} does not match {sha}")
+                    os.utime(path)
+                except OSError:  # pragma: no cover - permissions/filesystem
+                    pass
+            written = self._read_if_present(path)
+            if written is None:
+                if attempt == 0:
+                    continue
+                raise ArtifactVerificationFailed(f"artifact at {path} vanished while storing")
+            if self._sha(written) != sha:
+                path.unlink(missing_ok=True)
+                raise ArtifactVerificationFailed(f"artifact at {path} does not match {sha}")
+            break
         return ArtifactRef(
             playbook_id=definition.id,
             artifact_sha256=sha,
@@ -106,12 +107,48 @@ class ArtifactStore:
             version=version,
         )
 
+    @staticmethod
+    def _read_if_present(path: Path) -> bytes | None:
+        """The file's bytes, or ``None`` when it is not there right now."""
+        try:
+            return path.read_bytes()
+        except FileNotFoundError:
+            return None
+
+    def _write_atomically(self, path: Path, data: bytes) -> None:
+        """Publish ``data`` at ``path`` by rename, durably and without a partial file."""
+        tmp = self._root / f"{path.stem}.json.tmp-{os.getpid()}-{uuid4().hex}"
+        try:
+            fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            try:
+                os.write(fd, data)
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            os.replace(tmp, path)
+            directory_fd = os.open(self._root, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        finally:
+            tmp.unlink(missing_ok=True)
+
     def load(self, artifact_sha256: str) -> PlaybookDefinition:
+        """Verify the bytes, then parse them through the strict Package 2 loader.
+
+        The hash check alone does not make stored text safe to parse loosely:
+        a file whose bytes hash to what the caller asked for can still carry a
+        duplicate object key, and ``model_validate_json`` silently keeps the
+        last one.  ``load_definition_json`` is the one parse §7.1 defines, so
+        an artifact that ``aq playbook v2 validate`` rejects cannot be loaded
+        here as though it were well-formed.
+        """
         path = Path(self.path_for(artifact_sha256))
         data = path.read_bytes()
         if self._sha(data) != artifact_sha256:
             raise ArtifactVerificationFailed(f"artifact at {path} does not match {artifact_sha256}")
-        return PlaybookDefinition.model_validate_json(data)
+        return load_definition_json(data.decode("utf-8"))
 
     def delete(self, artifact_sha256: str) -> bool:
         path = Path(self.path_for(artifact_sha256))

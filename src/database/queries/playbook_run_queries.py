@@ -63,6 +63,7 @@ from src.playbooks.run_state import (
 )
 from src.playbooks.waits import (
     EMPTY_WAIT_CHANGES,
+    EVENT_ADDRESSABLE_WAIT_KINDS,
     MatchableEvent,
     WaitChangeSet,
     WaitClaim,
@@ -381,6 +382,12 @@ class PlaybookRunQueryMixin:
         # Before the transaction, so an oversized payload never reaches the
         # database and a limit breach costs nothing to roll back.
         check_result_size(snapshot.run_id, receipt.step_id, dict(receipt.result), limits=limits)
+        # ``receipt.result`` is deliberately a compact/redacted audit
+        # projection.  The actual step result is durable in the snapshot
+        # bindings, so validate each binding independently rather than
+        # trusting a caller to have used ``bind_step_output``.
+        for step_id, value in snapshot.bindings.items():
+            check_result_size(snapshot.run_id, step_id, value, limits=limits)
         expected = snapshot.version
         advanced = replace(snapshot, version=expected + 1)
         # The receipt is the durable record of *which* graph and rule ran, so
@@ -1014,6 +1021,10 @@ class PlaybookRunQueryMixin:
         sees its wait; if ingestion wins, registration later sees the inbox
         row. The predicate is evaluated in Python over an index-narrowed
         candidate set (``idx_playbook_waits_match``) because ``match`` is inert JSON.
+        Only event-addressable kinds are candidates at all: a timer, human, or
+        agent-task wait carries no ``event_type`` and no ``match``, so without
+        the kind filter it would read as "matches every event" and an
+        unrelated event would resume a run before its deadline or answer.
         Candidates are keyset-paged in deterministic order so nonmatches do
         not consume ``limit``; the cap counts successful claims.  Each match
         is claimed by a CAS on ``state='active'``.  Two concurrent dispatches
@@ -1037,6 +1048,7 @@ class PlaybookRunQueryMixin:
                 filters = [
                     playbook_waits.c.state == "active",
                     playbook_waits.c.created_at <= canonical.received_at,
+                    playbook_waits.c.kind.in_(sorted(EVENT_ADDRESSABLE_WAIT_KINDS)),
                     or_(
                         playbook_waits.c.event_type == canonical.event_type,
                         playbook_waits.c.event_type == "",

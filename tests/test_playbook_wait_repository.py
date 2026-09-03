@@ -36,7 +36,13 @@ from src.playbooks.run_state import (
     WaitOwnershipViolation,
     WaitVersionMismatch,
 )
-from src.playbooks.waits import WaitChangeSet, WaitSpec, matches
+from src.playbooks.waits import (
+    EVENT_ADDRESSABLE_WAIT_KINDS,
+    WAIT_KINDS,
+    WaitChangeSet,
+    WaitSpec,
+    matches,
+)
 from tests.pg_dsn import ensure_worker_postgres_dsn
 
 POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
@@ -207,6 +213,25 @@ def test_match_requires_the_event_type():
     assert not matches(spec, Event("pr.closed", "e1", {}))
 
 
+def test_a_non_event_wait_is_never_matched_by_an_event():
+    """A timer/human/agent-task wait leaves ``event_type``/``match`` empty.
+
+    Read as a predicate that would make it match *every* event, so the kind
+    itself has to gate matching: those waits end at a deadline, an answer, or
+    a task outcome — never at an unrelated event arriving.
+    """
+    for kind in sorted(WAIT_KINDS - EVENT_ADDRESSABLE_WAIT_KINDS):
+        spec = make_wait(kind=kind, event_type="", match={})
+        assert not matches(spec, Event("unrelated.event", "e1", {}))
+        assert not matches(spec, Event("pr.merged", "e1", {"pr": {"number": 41}}))
+
+
+def test_a_non_event_wait_is_not_matched_even_by_its_own_event_type():
+    """Not even a same-typed event: only ``expire_due``/resume ends these."""
+    spec = make_wait(kind="timer", event_type="pr.merged", match={})
+    assert not matches(spec, Event("pr.merged", "e1", {"pr": {"number": 41}}))
+
+
 def test_correlation_key_is_stable_across_key_order():
     first = make_wait(match={"a": 1, "b": 2})
     second = make_wait(wait_id="wait-2", match={"b": 2, "a": 1})
@@ -252,6 +277,78 @@ async def test_a_non_matching_event_claims_nothing(db):
     assert await db.claim_for_event(Event("pr.merged", "e", {"pr": {"number": 7}}), now=NOW) == []
     assert await db.claim_for_event(Event("pr.closed", "e", {"pr": {"number": 41}}), now=NOW) == []
     assert len(await db.list_active("run-1")) == 1
+
+
+async def test_an_event_cannot_claim_a_non_event_wait(db):
+    """The regression: a future timer wait was consumable by any event.
+
+    ``WaitSpec(kind='timer')`` carries no ``event_type`` and no ``match``, and
+    ``claim_for_event`` selected ``event_type=''`` rows without looking at the
+    kind — so an unrelated event resumed a run whose deadline had not passed.
+    """
+    await db.create_run(make_snapshot())
+    for index, kind in enumerate(sorted(WAIT_KINDS - EVENT_ADDRESSABLE_WAIT_KINDS)):
+        await db.register(
+            make_wait(
+                wait_id=f"wait-{kind}",
+                step_id=f"step-{index}",
+                kind=kind,
+                event_type="",
+                match={},
+                deadline_at=NOW + DAY,
+            ),
+            1,
+        )
+    registered = {wait.wait_id for wait in await db.list_active("run-1")}
+
+    assert await db.claim_for_event(Event("unrelated.event", "evt-1", {}), now=NOW + HOUR) == []
+    assert (
+        await db.claim_for_event(
+            Event("pr.merged", "evt-2", {"pr": {"number": 41}}), now=NOW + HOUR
+        )
+        == []
+    )
+    assert {wait.wait_id for wait in await db.list_active("run-1")} == registered
+
+
+async def test_a_non_event_wait_still_expires_at_its_deadline(db):
+    """Gating event claims must not strand a timer wait: expiry still ends it."""
+    await db.create_run(make_snapshot())
+    await db.register(
+        make_wait(kind="timer", event_type="", match={}, deadline_at=NOW + HOUR), 1
+    )
+
+    assert await db.claim_for_event(Event("pr.merged", "evt-1", {}), now=NOW) == []
+
+    claims = await db.expire_due(NOW + DAY)
+    assert [claim.wait_id for claim in claims] == ["wait-1"]
+    assert claims[0].expired is True
+    assert claims[0].kind == "timer"
+    assert await db.list_active("run-1") == []
+
+
+async def test_an_event_claims_only_the_event_wait_beside_a_timer_wait(db):
+    """Both kinds coexist on one run; the event reaches exactly one of them."""
+    await db.create_run(make_snapshot())
+    await db.register(
+        make_wait(
+            wait_id="wait-timer",
+            step_id="await-deadline",
+            kind="timer",
+            event_type="",
+            match={},
+            deadline_at=NOW + DAY,
+        ),
+        1,
+    )
+    await db.register(make_wait(wait_id="wait-event"), 1)
+
+    claims = await db.claim_for_event(
+        Event("pr.merged", "evt-9", {"pr": {"number": 41}}), now=NOW + HOUR
+    )
+
+    assert [claim.wait_id for claim in claims] == ["wait-event"]
+    assert [wait.wait_id for wait in await db.list_active("run-1")] == ["wait-timer"]
 
 
 async def test_stale_snapshot_version_is_rejected_before_registration(db):

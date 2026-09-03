@@ -6,6 +6,7 @@ import pytest
 from src.orchestrator import Orchestrator
 from src.models import (
     AgentProfile,
+    DepType,
     Project,
     Task,
     Agent,
@@ -504,6 +505,104 @@ class TestRecoverStaleState:
         await orch.db.transition_task("child-1", TaskStatus.COMPLETED, context="test")
 
         assert (await orch.db.get_task("parent-1")).status == TaskStatus.COMPLETED
+
+
+class TestContainerRelease:
+    """A flagged container is released, never dispatched (spec §7).
+
+    A supervisor-built container (``aq task create`` + children under it via
+    ``--parent``) starts DEFINED and carries ``task_metadata.container``.  Its
+    only job is to settle once its children finish.  Handing it to a worker
+    session is self-defeating: Invariant 6 refuses the worker's close while a
+    child is open, and the worker's own live session is exactly what blocks
+    settlement, so it idle-heartbeats holding an agent slot and the
+    project-repo lock until the last child completes (calm-ember-48).
+
+    Release therefore lands the container at IN_PROGRESS with no agent — the
+    same shape ``creator.PARENT_STATUS`` births graph containers in and
+    recovery preserves — so settlement can close it.
+    """
+
+    async def _container_with_child(self, orch, *, container_status, child_status):
+        await orch.db.create_task(
+            Task(
+                id="c-1",
+                project_id="p-1",
+                title="Medium findings",
+                description="settle when the children finish",
+                status=container_status,
+            )
+        )
+        await orch.db.create_task(
+            Task(
+                id="c-1.1",
+                project_id="p-1",
+                title="Fix one finding",
+                description="a real deliverable",
+                status=child_status,
+            )
+        )
+        # ``set_parent`` (any path) is what writes the container flag.
+        await orch.db.add_dependency("c-1.1", "c-1", DepType.PARENT_CHILD.value)
+        assert await orch.db.get_task_meta("c-1", "container") is True
+
+    async def test_promotion_releases_container_to_in_progress_without_agent(self, orch):
+        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await self._container_with_child(
+            orch, container_status=TaskStatus.DEFINED, child_status=TaskStatus.DEFINED
+        )
+        # Withheld while the container is DEFINED.
+        assert (await orch.db.get_task("c-1.1")).is_blocked is True
+
+        await orch._check_defined_tasks()
+
+        container = await orch.db.get_task("c-1")
+        assert container.status == TaskStatus.IN_PROGRESS
+        assert container.assigned_agent_id is None
+        # Releasing the container releases its children.
+        await orch._check_defined_tasks()
+        assert (await orch.db.get_task("c-1.1")).status == TaskStatus.READY
+
+    async def test_container_with_open_children_is_never_in_routed_ready(self, session_orch):
+        orch = session_orch
+        await _create_session_project(orch)
+        # Already READY when it became a container: the shape ``set_parent``
+        # produces when children are attached after promotion.
+        await self._container_with_child(
+            orch, container_status=TaskStatus.READY, child_status=TaskStatus.READY
+        )
+
+        seen: list[list[str]] = []
+        real_reconcile = orch._agent_reconciler.reconcile
+
+        async def spy(**kwargs):
+            seen.append([t.id for t in kwargs.get("ready_tasks") or []])
+            return await real_reconcile(**kwargs)
+
+        orch._agent_reconciler.reconcile = spy
+
+        await _run_cycle_and_wait(orch)
+
+        assert seen, "the scheduler never consulted the reconciler"
+        assert all("c-1" not in ready for ready in seen)
+        container = await orch.db.get_task("c-1")
+        assert container.status == TaskStatus.IN_PROGRESS
+        assert container.assigned_agent_id is None
+        assert await orch.db.get_session_for_task("c-1") is None
+        # The child — the task with a deliverable — is what gets the session.
+        child = await orch.db.get_task("c-1.1")
+        assert child.status == TaskStatus.IN_PROGRESS
+        assert await orch.db.get_session_for_task("c-1.1") is not None
+
+    async def test_released_container_whose_children_are_done_settles_at_once(self, orch):
+        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await self._container_with_child(
+            orch, container_status=TaskStatus.READY, child_status=TaskStatus.COMPLETED
+        )
+
+        await _run_cycle_and_wait(orch)
+
+        assert (await orch.db.get_task("c-1")).status == TaskStatus.COMPLETED
 
 
 def _make_plan_toucher(workspace):

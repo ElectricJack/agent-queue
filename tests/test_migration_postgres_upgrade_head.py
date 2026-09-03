@@ -115,7 +115,10 @@ async def test_autogenerate_against_a_fresh_head_database_is_empty():
     such drift shipped for real — ``task_dependencies``' self-dependency
     guard was declared *unnamed* in ``tables.py``, which makes it
     invisible to autogenerate's comparison, so every run wanted to drop
-    the ``task_dependencies_check`` it found in the live schema.
+    the ``task_dependencies_check`` it found in the live schema.  A later
+    merge adopted the migration that creates ``agent_profiles.overlay_config``
+    without adopting its metadata declaration, so autogenerate then wanted
+    to remove that live column.
 
     This runs the same comparison ``alembic revision --autogenerate``
     runs (same ``compare_type`` opt as ``migrations/env.py``) and

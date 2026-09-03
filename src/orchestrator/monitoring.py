@@ -16,6 +16,7 @@ from src.notifications.events import (
     StuckDefinedTaskEvent,
 )
 from src.models import DepType, Task, TaskStatus
+from src.database.queries.hierarchy_queries import CONTAINER_KEY
 from src.database.queries.task_queries import TERMINAL_BLOCKED_META_KEY
 from src.task_summary import write_task_summary
 
@@ -292,6 +293,63 @@ class MonitoringMixin:
             if flipped:
                 await self._emit_blocked_flips(flipped, reason="promotion")
 
+        # A promoted container is released straight on to IN_PROGRESS (no
+        # agent) so it never sits in the READY frontier where the scheduler
+        # or a pool claim would hand it to a worker (spec §7, calm-ember-48).
+        await self._release_ready_containers(sorted(decisions))
+
+    async def _release_ready_containers(self, candidate_ids) -> set[str]:
+        """Move every flagged container among *candidate_ids* READY → IN_PROGRESS.
+
+        A container (``task_metadata.container``, spec §7) has no deliverable
+        of its own: it exists to settle once its children complete.  Dispatching
+        it is self-defeating — Invariant 6 refuses the worker's close while a
+        child is open, and the worker's own live session is exactly what the
+        settlement predicate waits on — so the worker idles holding an agent
+        slot and the project-repo lock for the whole subtree's lifetime
+        (solid-harbor.65, 2026-09-03).
+
+        Release lands the container in the same shape ``creator.PARENT_STATUS``
+        births graph containers in and recovery preserves: IN_PROGRESS with no
+        agent, which (a) satisfies the children's ``parent-child`` edge and
+        (b) is the status settlement acts on.  A container whose children are
+        already all COMPLETED (or that has none) settles here and now rather
+        than at the next backstop sweep.
+
+        Returns every flagged id, whether or not its transition landed, so a
+        caller can withhold the lot from dispatch in the same cycle.
+        """
+        ids = sorted({tid for tid in candidate_ids if tid})
+        if not ids:
+            return set()
+        flagged = await self.db.task_ids_with_meta(ids, CONTAINER_KEY)
+        for task_id in sorted(flagged):
+            task = await self.db.get_task(task_id)
+            # Only READY is ours to move: a claim or a session may have taken
+            # it in the meantime, and IN_PROGRESS is already the target.
+            if task is None or task.status != TaskStatus.READY:
+                continue
+            try:
+                flipped = await self.db.transition_task(
+                    task_id,
+                    TaskStatus.IN_PROGRESS,
+                    context="container_released",
+                    assigned_agent_id=None,
+                )
+            except Exception:
+                logger.exception("Failed to release container task '%s'", task_id)
+                continue
+            logger.info(
+                "Released container task '%s' (%s) to IN_PROGRESS without an agent — "
+                "it settles when its children finish",
+                task_id,
+                task.title,
+            )
+            if flipped:
+                await self._emit_blocked_flips(flipped, reason="promotion")
+            await self._settle_seeds({task_id})
+        return flagged
+
     async def _legacy_promotion_decisions(
         self,
         defined: list[Task],
@@ -547,12 +605,25 @@ class MonitoringMixin:
         candidates = await self.db.settle_candidates()
         if not candidates:
             return
+        settled = await self._settle_seeds(set(candidates))
+        for cid in settled:
+            logger.warning("container settlement backstop hit: %s (event path missed it)", cid)
+
+    async def _settle_seeds(self, seeds: set[str]) -> list[str]:
+        """Run the §7 settlement predicate over *seeds* now, with post-commit fan-out.
+
+        The same commit-then-notify shape as ``transition_task``: blocked-state
+        flips are logged, settled containers reach the settlement listener, and
+        waiters the settlement released are announced to the ready listener.
+        """
+        if not seeds:
+            return []
         async with self.db._engine.begin() as conn:
-            result = await self.db.settle_containers(set(candidates), conn=conn)
+            result = await self.db.settle_containers(set(seeds), conn=conn)
         await self.db.log_blocked_flips(result.flipped)
         await self.db._notify_settled(result.settled)
-        for cid in result.settled:
-            logger.warning("container settlement backstop hit: %s (event path missed it)", cid)
+        await self.db._notify_ready(result.ready)
+        return list(result.settled)
 
     async def _check_stuck_defined_tasks(self) -> None:
         """Monitoring: detect DEFINED tasks stuck waiting for dependencies.

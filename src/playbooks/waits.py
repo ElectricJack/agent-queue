@@ -24,6 +24,14 @@ from typing import Any, Protocol
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 WAIT_KINDS: frozenset[str] = frozenset({"event", "timer", "human", "agent_task"})
+
+#: The wait kinds an ingested event may claim.  Only an ``event`` wait is
+#: addressable by event dispatch: a ``timer`` wait ends at its deadline, a
+#: ``human`` wait at an answer, an ``agent_task`` wait at its task's outcome.
+#: Those three leave ``event_type`` and ``match`` empty, which the predicate
+#: below would otherwise read as "any event whatsoever", so the kind — not the
+#: emptiness of the predicate — is what decides addressability.
+EVENT_ADDRESSABLE_WAIT_KINDS: frozenset[str] = frozenset({"event"})
 WAIT_STATES: frozenset[str] = frozenset({"active", "claimed", "expired", "cleared"})
 
 #: Sentinel for "this path is absent", distinct from a stored ``None``.
@@ -167,8 +175,12 @@ def matches(spec: WaitSpec, event: MatchableEvent) -> bool:
     """Whether ``event`` satisfies ``spec``'s inert predicate.
 
     An absent path never matches — including against a required ``None``, so
-    "the field is missing" and "the field is null" stay distinguishable.
+    "the field is missing" and "the field is null" stay distinguishable.  A
+    wait of a kind no event addresses never matches at all, whatever its
+    predicate says.
     """
+    if spec.kind not in EVENT_ADDRESSABLE_WAIT_KINDS:
+        return False
     if spec.event_type and spec.event_type != event.event_type:
         return False
     for path, expected in spec.match.items():
