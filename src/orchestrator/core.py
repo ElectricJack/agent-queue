@@ -415,7 +415,12 @@ class Orchestrator(
         # shares the same reader state.  Base_dir=None => Path.home()
         # (spec default).
         self.agent_questions = AgentQuestionService(self.db, self.bus, self.session_providers, config)
-        self.transcript_watcher = TranscriptWatcher(db=self.db, bus=self.bus, questions=self.agent_questions)
+        self.transcript_watcher = TranscriptWatcher(
+            db=self.db,
+            bus=self.bus,
+            questions=self.agent_questions,
+            startup_replay_limit=config.sessions.transcript_startup_replay_limit,
+        )
         # ---- Message substrate (supervisor-agent.md §5) ------------------
         # SessionLens is the read-only window from the delivery engine into
         # the session runtime; MessageDeliveryEngine owns the delivery

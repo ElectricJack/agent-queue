@@ -565,6 +565,25 @@ def test_pane_stream_rejects_non_positive():
     assert "pane_stream_max_sessions" in fields
 
 
+def test_transcript_startup_replay_limit_is_loaded_and_non_negative(tmp_path):
+    from src.config import SessionsConfig
+
+    cfg = SessionsConfig(transcript_startup_replay_limit=-1)
+    assert "transcript_startup_replay_limit" in {error.field for error in cfg.validate()}
+
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        yaml.dump(
+            {
+                "discord": {"bot_token": "tok", "guild_id": "123"},
+                "database_path": str(tmp_path / "test.db"),
+                "sessions": {"transcript_startup_replay_limit": 17},
+            }
+        )
+    )
+    assert load_config(str(config_file)).sessions.transcript_startup_replay_limit == 17
+
+
 class TestSessionsEnabledDefault:
     """Sessions are the *only* execution path since the runtime subsystem was removed.
 
