@@ -20,6 +20,10 @@
 # check in the child plan's verification section fails for a reason unrelated
 # to the spec.  Bump GENERATOR_VERSION and regenerate in the same commit.
 #
+# The pin is only a declaration; what checks it against the committed tree is
+# tests/test_api_client_contract.py::
+# test_generated_client_boilerplate_matches_what_the_pinned_generator_writes.
+#
 # The generated client lives in packages/aq-client/ and should be committed.
 # After regenerating, reinstall it:
 #   pip install -e packages/aq-client/
