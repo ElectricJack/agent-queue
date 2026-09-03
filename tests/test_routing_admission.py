@@ -11,7 +11,6 @@ from src.database import Database
 from src.models import Agent, AgentProfile, Project, SessionRecord, Task, TaskStatus
 from src.orchestrator import Orchestrator
 from src.playbooks.manager import PlaybookManager
-from src.playbooks.models import PlaybookTrigger
 from src.playbooks.pipeline_compiler import compile_pipeline
 from src.playbooks.routing import install_routing_activation_snapshot
 from src.vault import ensure_default_intelligence_classes
@@ -39,9 +38,7 @@ def test_cached_system_default_does_not_restore_legacy_assignment_admission():
     config = AppConfig()
     manager = PlaybookManager(config=config)
     playbook = compile_pipeline(
-        LEGACY_ROUTING_PIPELINE.replace(
-            "id: legacy-routing-pipeline", "id: default-pipeline"
-        )
+        LEGACY_ROUTING_PIPELINE.replace("id: legacy-routing-pipeline", "id: default-pipeline")
     ).playbook
     manager._active[playbook.id] = playbook
     manager._index_triggers(playbook)
@@ -89,7 +86,7 @@ async def setup(tmp_path, request):
     pb = compile_pipeline(LEGACY_ROUTING_PIPELINE).playbook
     manager._active[pb.id] = pb
     manager._index_triggers(pb)
-    artifact = _routing_artifact()
+    artifact = _routing_artifact(artifact_id=pb.id)
     install_routing_activation_snapshot(
         manager,
         [
@@ -256,7 +253,10 @@ async def test_policy_matches_event_filter_when_and_ignores_cooldown(setup):
 
     _, _, manager, pb = setup
     task = Task(id="new", project_id="p", title="New", description="")
-    artifact = _routing_artifact(trigger_filter={"task_type": "feature"})
+    artifact = _routing_artifact(
+        artifact_id=pb.id,
+        trigger_filter={"task_type": "feature"},
+    )
     install_routing_activation_snapshot(
         manager,
         [
@@ -271,13 +271,8 @@ async def test_policy_matches_event_filter_when_and_ignores_cooldown(setup):
         ],
         artifact_store=RecordingStore({SHA: artifact}),
     )
-    pb.triggers = [PlaybookTrigger("task.created", filter={"task_type": "feature"})]
     assert not requires_routing_gate(manager, task)
     assert requires_routing_gate(manager, task, {"task_type": "feature"})
-    pb.pipeline_rules["task.created"][0]["when"] = {
-        "field": "event.parent_task_id",
-        "is_null": False,
-    }
     assert requires_routing_gate(manager, task, {"task_type": "feature"})
     manager.is_on_cooldown = MagicMock(return_value=True)
     assert requires_routing_gate(
@@ -413,7 +408,7 @@ async def test_worker_filed_child_is_gated_before_created_event(setup):
 
 
 @pytest.mark.parametrize("shape", ["string", "dict", "string_list"])
-async def test_policy_reads_legacy_pipeline_rule_entries(setup, shape):
+async def test_v2_policy_ignores_legacy_pipeline_rule_shapes(setup, shape):
     from src.playbooks.routing import requires_routing_gate, uses_default_triage
 
     _, _, manager, pb = setup
@@ -433,8 +428,29 @@ async def test_policy_reads_legacy_pipeline_rule_entries(setup, shape):
 )
 async def test_admission_policy_sees_final_task_identity_and_parent(setup, field, parented):
     handler, db, _, pb = setup
-    pb.pipeline_rules["task.created"] = [pb.pipeline_rules["task.created"][0]]
-    pb.pipeline_rules["task.created"][0]["when"] = {"field": field, "truthy": True}
+    path = field.removeprefix("event.")
+    artifact = _routing_artifact(
+        artifact_id=pb.id,
+        guard={
+            "type": "exists",
+            "value": {"type": "event_ref", "path": path},
+            "mode": "truthy",
+        },
+    )
+    install_routing_activation_snapshot(
+        handler.orchestrator.playbook_manager,
+        [
+            {
+                "playbook_id": artifact.id,
+                "scope": "system",
+                "scope_identifier": "",
+                "active_artifact_sha256": SHA,
+                "enabled": True,
+                "health": "ready",
+            }
+        ],
+        artifact_store=RecordingStore({SHA: artifact}),
+    )
     args = {"project_id": "p", "title": "Guarded routing"}
     if parented:
         await db.create_task(

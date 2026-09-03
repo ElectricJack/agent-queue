@@ -5,12 +5,18 @@ with task creation, not attached later after a worker could have claimed it.
 Cooldown and runner capacity delay execution; they do not waive routing.
 """
 
+import asyncio
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import asdict, dataclass, is_dataclass
 import logging
 from typing import Any
 
-from src.playbooks.definition import CommandStep, PlaybookDefinition, step_targets
+from src.playbooks.definition import (
+    CommandStep,
+    DecisionStep,
+    PlaybookDefinition,
+    step_targets,
+)
 from src.playbooks.expressions import (
     ResolutionScope,
     ValueResolutionError,
@@ -87,7 +93,13 @@ async def refresh_routing_activation_snapshot(
     *,
     artifact_store: Any | None = None,
 ) -> None:
-    """Refresh the synchronous admission view outside a task transaction."""
+    """Refresh the synchronous admission view outside a task transaction.
+
+    Refreshes are serialized through the manager and shielded once started.
+    This preserves database commit order under concurrent activation commands
+    and does not leave a committed activation unpublished when its caller is
+    cancelled while waiting for the snapshot query.
+    """
 
     if artifact_store is None:
         from src.playbooks.artifact_store import ArtifactStore
@@ -97,12 +109,26 @@ async def refresh_routing_activation_snapshot(
             config.compiled_root,
             max_artifact_bytes=config.playbooks.v2_max_artifact_bytes,
         )
+    lock = getattr(manager, "_routing_activation_refresh_lock", None)
+    if lock is None:
+        lock = asyncio.Lock()
+        manager._routing_activation_refresh_lock = lock  # noqa: SLF001
+
+    async def publish() -> None:
+        async with lock:
+            try:
+                rows = await db.list_playbook_activations(enabled_only=True)
+            except Exception:  # noqa: BLE001 - empty is the fail-closed state
+                logger.exception("could not refresh the routing activation snapshot")
+                rows = []
+            install_routing_activation_snapshot(manager, rows, artifact_store=artifact_store)
+
+    refresh = asyncio.create_task(publish())
     try:
-        rows = await db.list_playbook_activations(enabled_only=True)
-    except Exception:  # noqa: BLE001 - an empty snapshot is the fail-closed state
-        logger.exception("could not refresh the routing activation snapshot")
-        rows = []
-    install_routing_activation_snapshot(manager, rows, artifact_store=artifact_store)
+        await asyncio.shield(refresh)
+    except asyncio.CancelledError:
+        await refresh
+        raise
 
 
 def _scope_matches(row: Mapping[str, Any], event: Mapping[str, Any]) -> bool:
@@ -138,7 +164,10 @@ def _trigger_matches(rule: Any, event: Mapping[str, Any], *, match_filter: bool)
 
 
 def _loaded_activations(
-    manager: Any, event: Mapping[str, Any]
+    manager: Any,
+    event: Mapping[str, Any],
+    *,
+    selected_ids: set[str] | None = None,
 ) -> list[tuple[Mapping[str, Any], PlaybookDefinition]]:
     snapshot = getattr(manager, "_routing_activation_snapshot", None)
     if not isinstance(snapshot, _RoutingActivationSnapshot):
@@ -150,6 +179,7 @@ def _loaded_activations(
         and row.get("health") == "ready"
         and row.get("active_artifact_sha256")
         and _scope_matches(row, event)
+        and (selected_ids is None or row.get("playbook_id") in selected_ids)
     ]
     if not matching:
         raise _RoutingArtifactUnavailable("no ready routing activation matches this event")
@@ -160,13 +190,38 @@ def _loaded_activations(
         try:
             artifact = snapshot.artifact_store.load(sha)
         except Exception as exc:  # noqa: BLE001 - any unreadable active artifact is unsafe
-            raise _RoutingArtifactUnavailable(f"active routing artifact {sha} is unavailable") from exc
+            raise _RoutingArtifactUnavailable(
+                f"active routing artifact {sha} is unavailable"
+            ) from exc
         if artifact.id != row.get("playbook_id"):
             raise _RoutingArtifactUnavailable(
                 f"activation names {row.get('playbook_id')!r}, artifact names {artifact.id!r}"
             )
         loaded.append((row, artifact))
     return loaded
+
+
+def _selected_pipeline_ids(manager: Any, event: Mapping[str, Any]) -> set[str] | None:
+    """V1 manager's metadata-only shadowing answer while both formats coexist.
+
+    The production dispatcher still applies role shadowing in
+    ``PlaybookManager`` before constraining V2 dispatch by playbook id. Reuse
+    that same metadata decision here, but never inspect a V1 rule or node. A
+    manager without V1 candidates (lightweight tests and the eventual V1-free
+    manager) leaves V2 activations unfiltered.
+    """
+
+    get_candidates = getattr(manager, "get_playbooks_by_trigger", None)
+    select = getattr(manager, "_select_after_shadowing", None)
+    if not callable(get_candidates) or not callable(select):
+        return None
+    candidates = get_candidates("task.created")
+    if not isinstance(candidates, list) or not candidates:
+        return None
+    selected = select(candidates, dict(event))
+    return {
+        str(playbook.id) for playbook in selected if getattr(playbook, "kind", None) == "pipeline"
+    }
 
 
 def _artifact_command_effects(
@@ -182,15 +237,9 @@ def _artifact_command_effects(
     connection; task creation calls it while already holding a write transaction.
     """
 
-    loaded = _loaded_activations(manager, event)
-    project_has_policy = any(
-        row.get("scope") == "project"
-        and any(rule.trigger.event_type == "task.created" for rule in artifact.rules)
-        for row, artifact in loaded
-    )
+    selected_ids = _selected_pipeline_ids(manager, event)
+    loaded = _loaded_activations(manager, event, selected_ids=selected_ids)
     for row, artifact in loaded:
-        if project_has_policy and row.get("scope") == "system":
-            continue
         for rule in artifact.rules:
             if not _trigger_matches(rule, event, match_filter=match_filter):
                 continue
@@ -206,23 +255,33 @@ def _artifact_command_effects(
                     raise _RoutingArtifactUnavailable(
                         f"rule {rule.id!r} targets missing step {step_id!r}"
                     )
-                if isinstance(step, CommandStep):
+                if isinstance(step, DecisionStep) and match_filter:
+                    target = step.default
                     try:
-                        inputs = {
-                            name: resolve_value(value, ResolutionScope(event=event))
-                            for name, value in step.inputs.items()
-                        }
+                        for case in step.cases:
+                            if evaluate_condition(case.when, ResolutionScope(event=event)):
+                                target = case.goto
+                                break
                     except ValueResolutionError as exc:
-                        if not match_filter:
-                            # Recovery asks whether the artifact has triage
-                            # capability, not whether an old task event can be
-                            # reconstructed. Keep walking past event-dependent
-                            # commands to find the reusable ensure_task effect.
-                            pending.extend(step_targets(step).values())
-                            continue
                         raise _RoutingArtifactUnavailable(
-                            f"command {step_id!r} inputs do not resolve for admission"
+                            f"decision {step_id!r} does not resolve for admission"
                         ) from exc
+                    pending.append(target)
+                    continue
+                if isinstance(step, CommandStep):
+                    inputs: dict[str, Any] = {}
+                    for name, value in step.inputs.items():
+                        try:
+                            inputs[name] = resolve_value(value, ResolutionScope(event=event))
+                        except ValueResolutionError as exc:
+                            if match_filter:
+                                raise _RoutingArtifactUnavailable(
+                                    f"command {step_id!r} inputs do not resolve for admission"
+                                ) from exc
+                            # Recovery classifies only profile_id + dedup_key;
+                            # an event-only description/title must not hide an
+                            # otherwise static triage effect.
+                            continue
                     yield CommandEffect(step.command, inputs)
                 pending.extend(step_targets(step).values())
 

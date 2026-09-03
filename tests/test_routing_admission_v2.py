@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from src.config import AppConfig
+from src.database import Database
 from src.models import Task
 from src.playbooks.definition import PlaybookDefinition, load_definition_json
 from src.playbooks.manager import PlaybookManager
@@ -22,6 +24,7 @@ from src.playbooks.routing import (
 
 FIXTURE = Path("tests/fixtures/playbooks/v2/default-pipeline/artifact.json")
 SHA = "sha256:" + "1" * 64
+OTHER_SHA = "sha256:" + "3" * 64
 
 
 def _source() -> dict:
@@ -30,16 +33,18 @@ def _source() -> dict:
 
 def _routing_artifact(
     *,
+    artifact_id: str = "routing-policy",
     scope: dict | None = None,
     trigger_filter: dict | None = None,
     default_triage: bool = True,
+    guard: dict | None = None,
 ) -> PlaybookDefinition:
     trigger = {"event_type": "task.created"}
     if trigger_filter is not None:
         trigger["filter"] = trigger_filter
     raw = {
         "schema_version": 2,
-        "id": "routing-policy",
+        "id": artifact_id,
         "version": 1,
         "scope": scope or {"type": "system"},
         "purpose": "routine",
@@ -113,6 +118,22 @@ def _routing_artifact(
             },
         },
     }
+    if guard is not None:
+        raw["rules"][0]["guard"] = guard
+    return PlaybookDefinition.model_validate(raw)
+
+
+def _replace_artifact(
+    artifact: PlaybookDefinition,
+    *,
+    entry_step: str | None = None,
+    steps: dict | None = None,
+) -> PlaybookDefinition:
+    raw = artifact.model_dump(mode="json", exclude_none=True)
+    if entry_step is not None:
+        raw["rules"][0]["entry_step"] = entry_step
+    if steps is not None:
+        raw["steps"] = steps
     return PlaybookDefinition.model_validate(raw)
 
 
@@ -177,11 +198,162 @@ def _task(**updates) -> Task:
     )
 
 
-def test_requires_routing_gate_opens_no_second_connection():
+def _disabled_manager() -> PlaybookManager:
+    manager, _ = _manager(_routing_artifact())
+    manager._config.playbooks.enabled = False
+    return manager
+
+
+def _project_manager() -> PlaybookManager:
+    artifact = _routing_artifact(scope={"type": "project", "project_id": "p"})
+    return _manager(
+        artifact,
+        activation={"scope": "project", "scope_identifier": "p"},
+    )[0]
+
+
+async def test_requires_routing_gate_opens_no_second_connection(tmp_path):
     manager, store = _manager(_routing_artifact())
+    db = Database(str(tmp_path / "open-write.db"))
+    await db.initialize()
+
+    async with db._engine.begin():
+        assert requires_routing_gate(manager, _task()) is True
+    assert store.loads == [SHA]
+    await db.close()
+
+
+def test_unrelated_project_task_hook_does_not_shadow_system_routing_policy():
+    system = _routing_artifact(artifact_id="system-routing")
+    project = _routing_artifact(
+        artifact_id="project-hook",
+        scope={"type": "project", "project_id": "p"},
+        default_triage=False,
+    )
+    project_steps = project.model_dump(mode="json", exclude_none=True)["steps"]
+    project = _replace_artifact(project, entry_step="triage", steps=project_steps)
+    manager, _ = _manager()
+    install_routing_activation_snapshot(
+        manager,
+        [
+            {
+                "playbook_id": system.id,
+                "scope": "system",
+                "scope_identifier": "",
+                "active_artifact_sha256": SHA,
+                "enabled": True,
+                "health": "ready",
+            },
+            {
+                "playbook_id": project.id,
+                "scope": "project",
+                "scope_identifier": "p",
+                "active_artifact_sha256": OTHER_SHA,
+                "enabled": True,
+                "health": "ready",
+            },
+        ],
+        artifact_store=RecordingStore({SHA: system, OTHER_SHA: project}),
+    )
 
     assert requires_routing_gate(manager, _task()) is True
-    assert store.loads == [SHA]
+
+
+def test_manager_role_shadowing_selects_the_same_v2_policy_as_dispatch():
+    system = _routing_artifact(artifact_id="system-routing")
+    project = _routing_artifact(
+        artifact_id="project-routing",
+        scope={"type": "project", "project_id": "p"},
+        default_triage=False,
+    )
+    project_steps = project.model_dump(mode="json", exclude_none=True)["steps"]
+    project = _replace_artifact(project, entry_step="triage", steps=project_steps)
+    manager, _ = _manager()
+    system_metadata = SimpleNamespace(
+        id=system.id,
+        kind="pipeline",
+        scope="system",
+        role="default-pipeline",
+    )
+    project_metadata = SimpleNamespace(
+        id=project.id,
+        kind="pipeline",
+        scope="project",
+        role="default-pipeline",
+    )
+    manager._active = {
+        system_metadata.id: system_metadata,
+        project_metadata.id: project_metadata,
+    }
+    manager._trigger_map = {"task.created": set(manager._active)}
+    manager.set_scope_identifier(project.id, "p")
+    install_routing_activation_snapshot(
+        manager,
+        [
+            {
+                "playbook_id": system.id,
+                "scope": "system",
+                "scope_identifier": "",
+                "active_artifact_sha256": SHA,
+                "enabled": True,
+                "health": "ready",
+            },
+            {
+                "playbook_id": project.id,
+                "scope": "project",
+                "scope_identifier": "p",
+                "active_artifact_sha256": OTHER_SHA,
+                "enabled": True,
+                "health": "ready",
+            },
+        ],
+        artifact_store=RecordingStore({SHA: system, OTHER_SHA: project}),
+    )
+
+    assert requires_routing_gate(manager, _task()) is False
+    assert uses_default_triage(manager, "p") is False
+
+
+def test_decision_follows_only_the_event_selected_branch():
+    artifact = _routing_artifact()
+    raw_steps = artifact.model_dump(mode="json", exclude_none=True)["steps"]
+    raw_steps["decide"] = {
+        "type": "decision",
+        "rule": "route-created",
+        "title": "Route features",
+        "source": _source(),
+        "cases": [
+            {
+                "when": {
+                    "type": "comparison",
+                    "op": "eq",
+                    "left": {"type": "event_ref", "path": "task_type"},
+                    "right": {"type": "literal", "value": "feature"},
+                },
+                "goto": "gate",
+                "label": "feature",
+            }
+        ],
+        "default": "done",
+    }
+    artifact = _replace_artifact(artifact, entry_step="decide", steps=raw_steps)
+    manager, _ = _manager(artifact)
+
+    assert requires_routing_gate(manager, _task(), {"task_type": "feature"}) is True
+    assert requires_routing_gate(manager, _task(), {"task_type": "docs"}) is False
+
+
+def test_triage_detection_ignores_unrelated_unresolvable_inputs():
+    artifact = _routing_artifact()
+    raw_steps = artifact.model_dump(mode="json", exclude_none=True)["steps"]
+    raw_steps["triage"]["inputs"]["description"] = {
+        "type": "event_ref",
+        "path": "task.description",
+    }
+    artifact = _replace_artifact(artifact, steps=raw_steps)
+    manager, _ = _manager(artifact)
+
+    assert uses_default_triage(manager, "p") is True
 
 
 async def test_refresh_reads_activations_before_admission():
@@ -236,6 +408,91 @@ async def test_refresh_failure_installs_fail_closed_snapshot():
     assert uses_default_triage(manager, "p") is False
 
 
+async def test_concurrent_refreshes_publish_in_commit_order():
+    old = load_definition_json(FIXTURE.read_text())
+    new = _routing_artifact()
+    manager, _ = _manager()
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+
+    class RacingSource:
+        calls = 0
+
+        async def list_playbook_activations(self, *, enabled_only=False):
+            self.calls += 1
+            if self.calls == 1:
+                first_started.set()
+                await release_first.wait()
+                artifact = old
+                sha = SHA
+            else:
+                artifact = new
+                sha = OTHER_SHA
+            return [
+                {
+                    "playbook_id": artifact.id,
+                    "scope": "system",
+                    "scope_identifier": "",
+                    "active_artifact_sha256": sha,
+                    "enabled": True,
+                    "health": "ready",
+                }
+            ]
+
+    source = RacingSource()
+    store = RecordingStore({SHA: old, OTHER_SHA: new})
+    first = asyncio.create_task(
+        refresh_routing_activation_snapshot(manager, source, artifact_store=store)
+    )
+    await first_started.wait()
+    second = asyncio.create_task(
+        refresh_routing_activation_snapshot(manager, source, artifact_store=store)
+    )
+    await asyncio.sleep(0)
+    release_first.set()
+    await asyncio.gather(first, second)
+
+    assert requires_routing_gate(manager, _task()) is True
+    assert uses_default_triage(manager, "p") is True
+
+
+async def test_cancelled_refresh_finishes_publishing_committed_activation():
+    artifact = _routing_artifact()
+    manager, _ = _manager()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class SlowSource:
+        async def list_playbook_activations(self, *, enabled_only=False):
+            started.set()
+            await release.wait()
+            return [
+                {
+                    "playbook_id": artifact.id,
+                    "scope": "system",
+                    "scope_identifier": "",
+                    "active_artifact_sha256": SHA,
+                    "enabled": True,
+                    "health": "ready",
+                }
+            ]
+
+    task = asyncio.create_task(
+        refresh_routing_activation_snapshot(
+            manager,
+            SlowSource(),
+            artifact_store=RecordingStore({SHA: artifact}),
+        )
+    )
+    await started.wait()
+    task.cancel()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert uses_default_triage(manager, "p") is True
+
+
 @pytest.mark.parametrize(
     ("case", "manager_factory", "task", "extra", "expected_gate", "expected_triage"),
     [
@@ -271,6 +528,101 @@ async def test_refresh_failure_installs_fail_closed_snapshot():
             None,
             False,
             False,
+        ),
+        (
+            "parented task",
+            lambda: _manager(_routing_artifact())[0],
+            _task(),
+            {"parent_task_id": "parent"},
+            True,
+            True,
+        ),
+        (
+            "worker-filed child",
+            lambda: _manager(_routing_artifact())[0],
+            _task(),
+            {"filed_by_profile_id": "coder"},
+            True,
+            True,
+        ),
+        (
+            "graph unrouted node",
+            lambda: _manager(_routing_artifact())[0],
+            _task(id="parent.1"),
+            {"parent_task_id": "parent"},
+            True,
+            True,
+        ),
+        (
+            "graph routed node",
+            lambda: _manager(_routing_artifact())[0],
+            _task(id="parent.2", profile_id="coder"),
+            {"parent_task_id": "parent"},
+            False,
+            True,
+        ),
+        (
+            "custom route without default triage",
+            lambda: _manager(_routing_artifact(default_triage=False))[0],
+            _task(),
+            None,
+            True,
+            False,
+        ),
+        ("project policy match", _project_manager, _task(), None, True, True),
+        (
+            "project policy mismatch",
+            _project_manager,
+            _task(project_id="elsewhere"),
+            None,
+            True,
+            False,
+        ),
+        ("no activation", lambda: _manager()[0], _task(), None, True, False),
+        (
+            "unloadable activation",
+            lambda: _manager(activation={"playbook_id": "routing-policy"})[0],
+            _task(),
+            None,
+            True,
+            False,
+        ),
+        ("disabled subsystem", _disabled_manager, _task(), None, False, False),
+        (
+            "disabled activation",
+            lambda: _manager(_routing_artifact(), activation={"enabled": False})[0],
+            _task(),
+            None,
+            True,
+            False,
+        ),
+        (
+            "unhealthy activation",
+            lambda: _manager(_routing_artifact(), activation={"health": "invalid"})[0],
+            _task(),
+            None,
+            True,
+            False,
+        ),
+        (
+            "list filter match",
+            lambda: _manager(_routing_artifact(trigger_filter={"task_type": ["feature", "bug"]}))[
+                0
+            ],
+            _task(),
+            {"task_type": "bug"},
+            True,
+            True,
+        ),
+        (
+            "list filter miss",
+            lambda: _manager(_routing_artifact(trigger_filter={"task_type": ["feature", "bug"]}))[
+                0
+            ],
+            _task(),
+            {"task_type": "docs"},
+            False,
+            True,
         ),
     ],
     ids=lambda value: value if isinstance(value, str) else None,
