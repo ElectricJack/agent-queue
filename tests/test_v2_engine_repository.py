@@ -22,7 +22,7 @@ from src.commands.contracts.models import CommandResult
 from src.commands.principal import TRUSTED_LOCAL
 from src.database import Database
 from src.database.tables import playbook_artifacts
-from src.playbooks.engine import PlaybookEngine
+from src.playbooks.engine import HumanDecision, PlaybookEngine, WaitScheduler
 from src.playbooks.executors.base import EngineServices
 from src.playbooks.run_state import RunLifecycle
 from tests.fixtures.contracts.engine_contracts import (
@@ -185,3 +185,109 @@ async def test_a_failed_run_records_its_reserved_outcome_as_an_error_code(db):
     assert receipts["ensure-review-task"].error_code == "runtime_error"
     assert receipts["ensure-review-task"].outcome == "failure"
     assert receipts["review-failed"].error_code is None
+
+
+# --------------------------------------------------------------------------
+# Waits and loops against the real repository (T-6, T-7)
+#
+# The doubles in ``test_v2_engine.py`` prove the engine's ordering.  Only the
+# database proves that the change set the engine hands to ``commit_boundary``
+# actually lands: that a suspension writes the wait row inside the same
+# transaction as the snapshot and the receipt, that the inbox is scanned in
+# that transaction, and that a loop's four-part attempt identities survive
+# ``uq_playbook_step_receipts_attempt``.
+# --------------------------------------------------------------------------
+
+
+async def build_for(database, artifact_name: str):
+    artifact = load_artifact(artifact_name)
+    ref = artifact_ref_for(artifact)
+    await seed_artifact(database, ref)
+    registry, adapter = registry_with(ENSURE_TASK, LIST_TASKS)
+    store = InMemoryArtifactStore()
+    store.put(artifact)
+    engine = PlaybookEngine(
+        services=EngineServices(
+            contracts=registry, clock=lambda: NOW, artifact_store=store, bus=RecordingBus()
+        ),
+        runs=database,
+        waits=database,
+        activations=StubActivations([ref]),
+    )
+    return engine, adapter, ref
+
+
+@pytest.mark.asyncio
+async def test_a_suspension_writes_the_wait_row_in_the_same_boundary(db):
+    engine, _adapter, ref = await build_for(db, "wait-kinds.artifact.json")
+    outcome = await engine.run_rule(ref, "gate", event("task-completed-code"), TRUSTED_LOCAL)
+    assert outcome.lifecycle is RunLifecycle.PAUSED
+    active = await db.list_active(outcome.run_id)
+    assert [w.step_id for w in active] == ["await-approval"]
+    assert active[0].match == {"task_id": "task-1"}
+    stored = await db.load_run(outcome.run_id)
+    assert stored.wait is not None
+    # The registration is fenced to the version the boundary wrote, so a
+    # resume that found the two disagreeing would refuse rather than resume
+    # into a moved-on state.
+    receipts = await db.list_receipts(outcome.run_id)
+    assert receipts[-1].wait_id == active[0].wait_id
+    assert receipts[-1].snapshot_version == stored.version
+
+
+@pytest.mark.asyncio
+async def test_resuming_a_wait_clears_its_row_and_advances_the_run(db):
+    engine, _adapter, ref = await build_for(db, "wait-kinds.artifact.json")
+    outcome = await engine.run_rule(ref, "gate", event("task-completed-code"), TRUSTED_LOCAL)
+    resumed = await engine.resume(
+        outcome.run_id, HumanDecision(decision="approve"), TRUSTED_LOCAL
+    )
+    assert resumed.lifecycle is RunLifecycle.COMPLETED
+    assert await db.list_active(outcome.run_id) == []
+    stored = await db.load_run(outcome.run_id)
+    assert stored.wait is None
+    assert stored.bindings["approval"]["resolution"] == "approve"
+    gate = [r for r in await db.list_receipts(outcome.run_id) if r.step_id == "await-approval"]
+    # Two receipts for one step instance: the suspension and the resume.  The
+    # database's own uq_playbook_step_receipts_attempt is what would reject a
+    # second attempt=1, so a green run here proves the counter, not the code.
+    assert sorted(r.attempt for r in gate) == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_an_expired_wait_is_claimed_once_and_resumes_the_run(db):
+    engine, _adapter, ref = await build_for(db, "wait-kinds.artifact.json")
+    outcome = await engine.run_rule(ref, "sleep", event("task-created"), TRUSTED_LOCAL)
+    scheduler = WaitScheduler(engine, db, TRUSTED_LOCAL)
+    assert await scheduler.tick(NOW + 31) == (outcome.run_id,)
+    stored = await db.load_run(outcome.run_id)
+    assert stored.lifecycle is RunLifecycle.COMPLETED
+    assert stored.current_step_id == "sleep-done"
+    # The claim is a compare-and-set, so a second sweep finds nothing.
+    assert await scheduler.tick(NOW + 60) == ()
+
+
+@pytest.mark.asyncio
+async def test_a_loop_persists_one_receipt_per_iteration_boundary(db):
+    engine, adapter, ref = await build_for(db, "sequential-loop.artifact.json")
+    adapter.queue.extend(
+        [
+            CommandResult(
+                outcome="listed",
+                value=ListTasksResult(tasks=[{"id": "d-1"}, {"id": "d-2"}], count=2),
+                summary="ok",
+            ),
+            ok(),
+            ok(),
+        ]
+    )
+    outcome = await engine.run_rule(ref, "sweep", event("spec-approved"), TRUSTED_LOCAL)
+    assert outcome.lifecycle is RunLifecycle.COMPLETED
+    receipts = await db.list_receipts(outcome.run_id)
+    keys = [(r.step_id, r.iteration, r.attempt) for r in receipts]
+    assert len(keys) == len(set(keys))
+    assert ("open-gate", 0, 1) in keys
+    assert ("open-gate", 1, 1) in keys
+    stored = await db.load_run(outcome.run_id)
+    assert stored.loop is None
+    assert stored.bindings["sweep_result"]["succeeded"] == 2

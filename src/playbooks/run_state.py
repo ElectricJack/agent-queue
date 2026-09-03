@@ -358,7 +358,17 @@ class OperatorDecision:
 
 @dataclass(frozen=True, slots=True)
 class LoopFrame:
-    """Where a ``ForEachStep`` is, pinned to the collection it started on."""
+    """Where a ``ForEachStep`` is, pinned to the collection it started on.
+
+    ``last_step_id`` / ``last_outcome`` / ``last_failed`` record how the body
+    of the *current* iteration ended.  They are durable rather than passed in
+    memory because the frame is committed on both sides of every body
+    transition: a crash after the body's last step transitions back into the
+    loop node must leave the restarted engine knowing whether that iteration
+    succeeded, and the body's own receipt is not enough — the classification
+    depends on the producing step's contract, which the loop executor must
+    not have to re-derive (Package 4 child plan §4.7).
+    """
 
     step_id: str
     item_binding: str
@@ -367,6 +377,9 @@ class LoopFrame:
     total: int
     partial: tuple[Any, ...] = ()
     resume_step_id: str | None = None
+    last_step_id: str | None = None
+    last_outcome: str | None = None
+    last_failed: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -411,6 +424,15 @@ class RunSnapshot:
     context: Mapping[str, Any] = field(default_factory=dict)
     bindings: Mapping[str, Any] = field(default_factory=dict)
     sensitive: Mapping[str, Any] = field(default_factory=dict)
+    #: ``"<step_id>:<iteration>" -> attempts already receipted``.  Attempt
+    #: identity is four-part (§9.1) and the database enforces it through
+    #: ``uq_playbook_step_receipts_attempt``, so a step the walk reaches
+    #: twice — a wait suspending and then resuming, a loop node between
+    #: iterations, an author routing an edge back to an earlier step —
+    #: has to know how many attempts it has already recorded.  Counting
+    #: here rather than re-reading the receipt table keeps the boundary a
+    #: single write and survives a restart with the snapshot.
+    attempts: Mapping[str, int] = field(default_factory=dict)
     loop: LoopFrame | None = None
     wait: WaitSpec | None = None
     pending_wait_claims: tuple[WaitClaim, ...] = ()
@@ -465,6 +487,7 @@ class RunSnapshot:
             "context": dict(self.context),
             "bindings": dict(self.bindings),
             "sensitive": dict(self.sensitive),
+            "attempts": dict(self.attempts),
             "loop": asdict(self.loop) if self.loop is not None else None,
             "wait": self.wait.as_dict() if self.wait is not None else None,
             "pending_wait_claims": [asdict(claim) for claim in self.pending_wait_claims],
@@ -512,6 +535,7 @@ class RunSnapshot:
             context=dict(body.get("context") or {}),
             bindings=dict(body.get("bindings") or {}),
             sensitive=dict(body.get("sensitive") or {}),
+            attempts={str(k): int(v) for k, v in (body.get("attempts") or {}).items()},
             loop=(
                 LoopFrame(
                     step_id=loop["step_id"],
@@ -521,6 +545,9 @@ class RunSnapshot:
                     total=int(loop["total"]),
                     partial=tuple(loop.get("partial") or ()),
                     resume_step_id=loop.get("resume_step_id"),
+                    last_step_id=loop.get("last_step_id"),
+                    last_outcome=loop.get("last_outcome"),
+                    last_failed=loop.get("last_failed"),
                 )
                 if loop
                 else None

@@ -32,26 +32,38 @@ from src.playbooks.executors.command import (
     ShadowCommandExecutor,
 )
 from src.playbooks.executors.decision import DecisionExecutor
+from src.playbooks.executors.foreach import ForEachExecutor
 from src.playbooks.executors.terminal import TerminalExecutor
+from src.playbooks.executors.wait import LiveWaitExecutor, ReportingWaitExecutor
 
 #: One shared instance per deterministic step kind (§3.1.2).
 DECISION_EXECUTOR = DecisionExecutor()
+FOREACH_EXECUTOR = ForEachExecutor()
 TERMINAL_EXECUTOR = TerminalExecutor()
+
+#: Dry-run and shadow share one reporting wait: neither may register.
+REPORTING_WAIT_EXECUTOR = ReportingWaitExecutor()
 
 EXECUTORS: Mapping[ExecutionMode, Mapping[str, Executor]] = {
     ExecutionMode.LIVE: {
         "command": LiveCommandExecutor(),
         "decision": DECISION_EXECUTOR,
+        "foreach": FOREACH_EXECUTOR,
+        "wait": LiveWaitExecutor(),
         "terminal": TERMINAL_EXECUTOR,
     },
     ExecutionMode.DRY_RUN: {
         "command": PreviewCommandExecutor(),
         "decision": DECISION_EXECUTOR,
+        "foreach": FOREACH_EXECUTOR,
+        "wait": REPORTING_WAIT_EXECUTOR,
         "terminal": TERMINAL_EXECUTOR,
     },
     ExecutionMode.SHADOW: {
         "command": ShadowCommandExecutor(),
         "decision": DECISION_EXECUTOR,
+        "foreach": FOREACH_EXECUTOR,
+        "wait": REPORTING_WAIT_EXECUTOR,
         "terminal": TERMINAL_EXECUTOR,
     },
 }
@@ -81,8 +93,11 @@ __all__ = [
     "ExecutionMode",
     "Executor",
     "ExecutorResult",
+    "ForEachExecutor",
     "LiveCommandExecutor",
+    "LiveWaitExecutor",
     "PreviewCommandExecutor",
+    "ReportingWaitExecutor",
     "ShadowCommandExecutor",
     "StepContext",
     "StepControl",
