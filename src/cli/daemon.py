@@ -17,6 +17,7 @@ from pathlib import Path
 import click
 
 from .app import cli, console
+from src.env_scrub import harness_session_markers, strip_harness_session_markers
 
 CONFIG_DIR = os.path.expanduser("~/.agent-queue")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.yaml")
@@ -263,10 +264,18 @@ def _daemon_environment(*, home: str | None = None) -> dict[str, str]:
         if os.path.isdir(candidate) and candidate not in path_parts:
             path_parts.append(candidate)
     env["PATH"] = os.pathsep.join(path_parts)
-    # Strip Claude Code session markers.
-    env.pop("CLAUDECODE", None)
-    env.pop("CLAUDE_CODE_ENTRYPOINT", None)
+    strip_harness_session_markers(env)
     return env
+
+
+def _warn_harness_environment(command: str) -> None:
+    """Explain that a daemon launched from a harness will be sanitized."""
+    markers = harness_session_markers(os.environ)
+    if markers:
+        console.print(
+            f"[yellow]aq {command} detected enclosing harness marker(s): "
+            f"{', '.join(markers)}. The daemon will be launched with them removed.[/]"
+        )
 
 
 def start_daemon() -> bool:
@@ -642,6 +651,7 @@ def _maybe_prompt_dashboard(no_dashboard: bool) -> None:
 @click.option("--no-dashboard", is_flag=True, help="Skip the dashboard prompt.")
 def daemon_start(no_dashboard: bool) -> None:
     """Start the agent-queue daemon."""
+    _warn_harness_environment("start")
     if not start_daemon():
         raise SystemExit(1)
     _maybe_prompt_dashboard(no_dashboard)
@@ -680,6 +690,7 @@ def daemon_restart(no_dashboard: bool) -> None:
     re-adopts them, so in-flight work survives the restart. Use ``aq stop`` to
     end them.
     """
+    _warn_harness_environment("restart")
     stop_daemon(quiet=True)
     time.sleep(1)
     if not start_daemon():

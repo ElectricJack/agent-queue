@@ -63,11 +63,14 @@ def make_sampler(db, *, bus=None, clock=None, **overrides) -> MetricsSampler:
     return MetricsSampler(db, config, bus, clock=clock or Clock())
 
 
-async def add_ledger_row(db, *, timestamp, tokens, model=None, split=None):
+async def add_ledger_row(
+    db, *, timestamp, tokens, model=None, split=None, cache=None
+):
     """Insert a ledger row at an explicit time.
 
     ``record_token_usage`` stamps ``time.time()`` itself, and these tests
-    need rows on both sides of the 60-second window boundary.
+    need rows on both sides of the window boundaries.  ``split`` is
+    ``(input, output)``; ``cache`` is ``(read, write)``.
     """
     from sqlalchemy import insert
 
@@ -84,6 +87,8 @@ async def add_ledger_row(db, *, timestamp, tokens, model=None, split=None):
                 model=model,
                 input_tokens=split[0] if split else None,
                 output_tokens=split[1] if split else None,
+                cache_read_tokens=cache[0] if cache else None,
+                cache_write_tokens=cache[1] if cache else None,
                 timestamp=timestamp,
             )
         )
@@ -237,8 +242,13 @@ async def test_collect_folds_native_and_delegated_subagents(db):
     assert sample["subagents"]["by_session"]["s-parent"] == {
         "native": 2,
         "aq": 1,
+        # Three starts happened; one child has since stopped, so "open now"
+        # and "started in the window" are deliberately different numbers.
+        "spawned": 3,
         "hooks": True,
     }
+    assert sample["subagents"]["active"] == 3
+    assert sample["subagents"]["spawned_per_hour"] == 3
 
 
 async def test_subagent_completeness_is_false_when_a_launch_had_no_hooks(db):
@@ -249,26 +259,131 @@ async def test_subagent_completeness_is_false_when_a_launch_had_no_hooks(db):
     assert sample["subagents"]["complete"] is False
 
 
-async def test_collect_reports_token_rate_over_the_trailing_minute(db):
+async def test_the_session_drilldown_is_bounded(db):
+    """Fleet totals stay exact; the per-session breakdown does not grow forever."""
+    now = time.time()
+    for session in range(40):
+        for child in range(session + 1):
+            await db.record_subagent_event(
+                session_id=f"s{session:02d}",
+                harness="claude",
+                event="start",
+                subagent_id=f"c{session}-{child}",
+                occurred_at=now - 60,
+            )
+
+    sample = await make_sampler(db, clock=lambda: now).collect()
+
+    assert len(sample["subagents"]["by_session"]) == 25
+    # Trimmed by activity, not arbitrarily: the busiest session survives …
+    assert "s39" in sample["subagents"]["by_session"]
+    assert "s00" not in sample["subagents"]["by_session"]
+    # … and the total still counts every start, including the trimmed ones.
+    assert sample["subagents"]["spawned_per_hour"] == 820
+
+
+async def test_collect_scales_the_token_window_to_a_per_minute_rate(db):
+    """A 5-minute window read once a second is a rate; 60 seconds is a spike."""
     now = time.time()
     await add_ledger_row(
         db, timestamp=now - 10, tokens=300, model="claude-opus-5", split=(200, 100)
     )
     await add_ledger_row(db, timestamp=now - 20, tokens=999, model="claude-opus-5")
-    # Outside the trailing minute.
+    # Inside the 5-minute window but outside the trailing minute: it belongs
+    # in the smoothed rate and must stay out of the raw one.
+    await add_ledger_row(
+        db, timestamp=now - 200, tokens=600, model="claude-opus-5", split=(600, 0)
+    )
+    # Outside every window.
     await add_ledger_row(
         db, timestamp=now - 7200, tokens=50, model="claude-opus-5", split=(50, 0)
     )
 
-    sampler = make_sampler(db, clock=lambda: now)
+    sampler = make_sampler(db, clock=lambda: now, token_window_seconds=300.0)
     sample = await sampler.collect()
 
-    assert sample["tokens"]["input_per_min"] == 200
-    assert sample["tokens"]["output_per_min"] == 100
-    # Ledger volume with no input/output split is reported apart from the
-    # rates rather than folded into them.
-    assert sample["tokens"]["unattributed_per_min"] == 999
-    assert sample["tokens"]["by_model"]["claude-opus-5"]["input_per_min"] == 200
+    # 800 input tokens over 300 s → 160 a minute.
+    assert sample["tokens"]["input_per_min"] == 160
+    assert sample["tokens"]["output_per_min"] == 20
+    # Ledger volume no column could account for is reported apart from the
+    # rates rather than folded into them: 999 over 300 s.
+    assert sample["tokens"]["unattributed_per_min"] == pytest.approx(199.8)
+    assert sample["tokens"]["total_per_min"] == pytest.approx(379.8)
+    assert sample["tokens"]["window_seconds"] == 300.0
+    # The unsmoothed trailing minute survives alongside it.
+    assert sample["tokens"]["input_per_min_1m"] == 200
+    assert sample["tokens"]["output_per_min_1m"] == 100
+    assert sample["tokens"]["total_per_min_1m"] == 1299
+    assert sample["tokens"]["by_model"]["claude-opus-5"]["input_per_min"] == 160
+
+
+async def test_collect_counts_cache_tokens_instead_of_calling_them_unattributed(db):
+    """Cache volume is most of a warm agent's traffic and has to be in the total."""
+    now = time.time()
+    await add_ledger_row(
+        db,
+        timestamp=now - 10,
+        tokens=600_300,
+        model="claude-opus-5",
+        split=(200, 100),
+        cache=(600_000, 0),
+    )
+
+    sampler = make_sampler(db, clock=lambda: now, token_window_seconds=60.0)
+    sample = await sampler.collect()
+
+    tokens = sample["tokens"]
+    assert tokens["cache_read_per_min"] == 600_000
+    assert tokens["cache_write_per_min"] == 0
+    # The whole row is accounted for: nothing is left over to explain away.
+    assert tokens["total_per_min"] == 600_300
+    assert tokens["unattributed_per_min"] == 0
+    assert tokens["by_model"]["claude-opus-5"]["cache_read_per_min"] == 600_000
+    assert tokens["by_model"]["claude-opus-5"]["total_per_min"] == 600_300
+
+
+async def test_unattributed_covers_only_what_no_column_explains(db):
+    """A pre-cache-columns row still shows up, as a residue and nothing else."""
+    now = time.time()
+    await add_ledger_row(
+        db, timestamp=now - 5, tokens=1000, model="m", split=(100, 50)
+    )
+
+    sample = await make_sampler(
+        db, clock=lambda: now, token_window_seconds=60.0
+    ).collect()
+
+    assert sample["tokens"]["unattributed_per_min"] == 850
+    assert sample["tokens"]["total_per_min"] == 1000
+
+
+async def test_spawned_rate_survives_the_session_that_started_the_children(db):
+    """The pool case: the parent has exited, the work still happened."""
+    now = time.time()
+    for i in range(4):
+        await db.record_subagent_event(
+            session_id="gone",
+            harness="claude",
+            event="start",
+            subagent_id=f"c{i}",
+            occurred_at=now - 600,
+        )
+    # An hour and a half ago — outside the window.
+    await db.record_subagent_event(
+        session_id="gone",
+        harness="claude",
+        event="start",
+        subagent_id="ancient",
+        occurred_at=now - 5400,
+    )
+
+    sample = await make_sampler(db, clock=lambda: now).collect()
+
+    # Nothing is live, so the instantaneous count is honestly zero …
+    assert sample["subagents"]["active"] == 0
+    # … while the rate the tab actually plots reports the four starts.
+    assert sample["subagents"]["spawned_per_hour"] == 4
+    assert sample["subagents"]["by_session"]["gone"]["spawned"] == 4
 
 
 async def test_collect_carries_slow_values_between_fast_ticks(db):
@@ -279,9 +394,9 @@ async def test_collect_carries_slow_values_between_fast_ticks(db):
     calls: list[int] = []
     original = db.metrics_slow_snapshot
 
-    async def counted(since_ts):
+    async def counted(*args, **kwargs):
         calls.append(1)
-        return await original(since_ts)
+        return await original(*args, **kwargs)
 
     db.metrics_slow_snapshot = counted
     clock.advance(1)

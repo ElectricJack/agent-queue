@@ -66,11 +66,18 @@ export default function StatTiles({ sample }: { sample: MetricsSample | null }) 
       />
       <Tile
         icon={<ArrowsRightLeftIcon className="h-4 w-4" />}
-        label="Sub-agents"
-        value={format(pick(row, "subagents.total"))}
-        // A live session launched without its harness hooks makes the count
-        // a floor; saying so beats a confident wrong number.
-        hint={subagentsComplete ? "native + AQ-delegated" : "at least — hooks missing"}
+        label="Sub-agents / hr"
+        // Started over the window, not open right now: pool sessions exit
+        // before you look at them, so the instantaneous count reads 0 on a
+        // fleet that is visibly busy.
+        value={format(pick(row, "subagents.spawned_per_hour"))}
+        // A live session launched without its harness hooks makes the open
+        // count a floor; saying so beats a confident wrong number.
+        hint={
+          subagentsComplete
+            ? `${format(pick(row, "subagents.active"))} open now`
+            : `${format(pick(row, "subagents.active"))}+ open — hooks missing`
+        }
       />
       <Tile
         icon={<ServerStackIcon className="h-4 w-4" />}
@@ -78,7 +85,7 @@ export default function StatTiles({ sample }: { sample: MetricsSample | null }) 
         value={format(pick(row, "tokens.total_per_min"))}
         hint={`${format(pick(row, "tokens.input_per_min"))} in · ${format(
           pick(row, "tokens.output_per_min"),
-        )} out`}
+        )} out · ${format(pick(row, "tokens.cache_read_per_min"))} cached`}
       />
       <Tile
         icon={<RectangleStackIcon className="h-4 w-4" />}

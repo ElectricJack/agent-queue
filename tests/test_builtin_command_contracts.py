@@ -9,7 +9,7 @@ from src.playbooks.pipeline_compiler import PIPELINE_COMMAND_WHITELIST
 
 def test_all_pipeline_commands_have_one_contract_registration() -> None:
     assert CONTRACTS.names() == PIPELINE_COMMAND_WHITELIST
-    assert len(CONTRACTS.names()) == 10
+    assert len(CONTRACTS.names()) == 11
 
 
 def test_builtin_contract_capabilities_are_the_command_names() -> None:
@@ -33,6 +33,12 @@ def test_legacy_shapes_map_to_declared_outcomes_without_success_key_heuristics()
         _outcome_of("gate_resolve", {"error": "routing gates can only be resolved"})
         == "refused_routing_gate"
     )
+    assert _outcome_of("stop_task", {"stopped": "t-1"}) == "stopped"
+    assert (
+        _outcome_of("stop_task", {"error": "Task is not in progress (status: COMPLETED)"})
+        == "not_running"
+    )
+    assert _outcome_of("stop_task", {"error": "Task 't-1' not found"}) == "rejected"
 
 
 def test_presentation_is_authored_and_names_only_real_fields() -> None:
@@ -60,7 +66,7 @@ def test_presentation_is_authored_and_names_only_real_fields() -> None:
 
 
 def test_golden_fingerprints() -> None:
-    """Pinned execution fingerprints for the ten built-ins.
+    """Pinned execution fingerprints for the built-ins.
 
     Regenerating ``tests/fixtures/contracts/fingerprints.json`` stales every
     Package-2 artifact compiled against the old registry fingerprint.  Confirm
@@ -111,6 +117,69 @@ async def test_production_wiring_makes_the_registered_invokes_operational() -> N
         assert result.outcome == "created" and result.value.task_id == "t-1"
     finally:
         builtin.set_handler_provider(previous)
+
+
+async def test_stop_task_is_dispatchable_and_an_already_stopped_child_is_not_a_violation() -> None:
+    """``stop_task`` is what a parent run dispatches to cancel its child.
+
+    Both branches matter to the cancellation path: a running child stops, and
+    a child that already left ``IN_PROGRESS`` yields the ``not_running``
+    success outcome with an empty value — never ``contract_violation``, which
+    is what a required ``stopped`` field would otherwise produce.
+    """
+    from src.commands.contracts import builtin
+    from src.commands.contracts.builtin import StopTaskArgs
+
+    replies: list[dict] = []
+    calls: list[tuple[str, dict]] = []
+
+    class _Handler:
+        _active_project_id = None
+
+        async def execute(self, name: str, args: dict) -> dict:
+            calls.append((name, args))
+            return replies.pop(0)
+
+    previous = builtin._handler_provider
+    builtin.set_handler_provider(lambda: _Handler())
+    try:
+        invoke = CONTRACTS.require("stop_task").invoke
+        replies.append({"stopped": "child-1"})
+        result = await invoke(StopTaskArgs(task_id="child-1"), None)
+        assert (result.outcome, result.value.stopped) == ("stopped", "child-1")
+
+        replies.append({"error": "Task is not in progress (status: COMPLETED)"})
+        result = await invoke(StopTaskArgs(task_id="child-1"), None)
+        assert result.outcome == "not_running"
+
+        replies.append({"error": "Task 'child-9' not found"})
+        result = await invoke(StopTaskArgs(task_id="child-9"), None)
+        assert result.outcome == "rejected"
+        assert calls == [
+            ("stop_task", {"task_id": "child-1"}),
+            ("stop_task", {"task_id": "child-1"}),
+            ("stop_task", {"task_id": "child-9"}),
+        ]
+    finally:
+        builtin.set_handler_provider(previous)
+
+
+def test_stop_task_declares_a_cancellation_effect_the_renderer_can_explain() -> None:
+    from src.playbooks.explanation import render_effect
+
+    contract = CONTRACTS.require("stop_task").contract
+    execution = contract.execution
+    assert execution.side_effect.value == "update"
+    assert execution.retry_safe and execution.idempotency.mode == "natural"
+    assert {o.name: o.classification.value for o in execution.outcomes} == {
+        "stopped": "success",
+        "not_running": "success",
+        "rejected": "failure",
+    }
+    (clause,) = execution.effects
+    assert render_effect(clause, {"task_id": "t-1"}, contract.presentation).text == (
+        "Update the task's execution"
+    )
 
 
 async def test_an_uninstalled_provider_fails_loudly() -> None:

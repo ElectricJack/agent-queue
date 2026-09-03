@@ -13,7 +13,12 @@ T = TypeVar("T", bound="SessionSubagents")
 
 @_attrs_define
 class SessionSubagents:
-    """One live session's children.
+    """One session's children.
+
+    ``native`` and ``aq`` are children open right now, so they are 0 for a
+    session that has already exited; ``spawned`` counts the starts it
+    recorded inside the sampler's window and outlives the session row, which
+    is why an entry can appear here keyed by a session id rather than a name.
 
     ``hooks`` is False when the session was launched without its harness
     sub-agent hooks wired, which makes ``native`` a floor rather than a total.
@@ -21,11 +26,13 @@ class SessionSubagents:
         Attributes:
             native (float | Unset):  Default: 0.0.
             aq (float | Unset):  Default: 0.0.
+            spawned (float | Unset):  Default: 0.0.
             hooks (bool | Unset):  Default: True.
     """
 
     native: float | Unset = 0.0
     aq: float | Unset = 0.0
+    spawned: float | Unset = 0.0
     hooks: bool | Unset = True
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -33,6 +40,8 @@ class SessionSubagents:
         native = self.native
 
         aq = self.aq
+
+        spawned = self.spawned
 
         hooks = self.hooks
 
@@ -43,6 +52,8 @@ class SessionSubagents:
             field_dict["native"] = native
         if aq is not UNSET:
             field_dict["aq"] = aq
+        if spawned is not UNSET:
+            field_dict["spawned"] = spawned
         if hooks is not UNSET:
             field_dict["hooks"] = hooks
 
@@ -55,11 +66,14 @@ class SessionSubagents:
 
         aq = d.pop("aq", UNSET)
 
+        spawned = d.pop("spawned", UNSET)
+
         hooks = d.pop("hooks", UNSET)
 
         session_subagents = cls(
             native=native,
             aq=aq,
+            spawned=spawned,
             hooks=hooks,
         )
 

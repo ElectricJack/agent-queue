@@ -65,13 +65,15 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: PoolScaleRequest,
 ) -> Response[PoolScaleResponse | PoolScaleResponse422]:
-    """Set a pool profile's min/max active-session bounds. Validates min >= 0, max >= 1, and max >= min;
-    max may be null for no profile limit. With `now: true`, also terminates idle sessions above the new
-    max, oldest first. Backs `aq pool scale`.
+    """Set a pool profile's min/max active-session bounds on the system profile (they apply to every
+    project; each project's max_concurrent_agents still caps its own pool). Validates min >= 0, max >=
+    1, and max >= min; max may be null for no profile limit. With `now: true`, also terminates idle
+    sessions above the effective max, oldest first. Backs `aq pool scale`.
 
-     Set a pool profile's min/max active-session bounds. Validates min >= 0, max >= 1, and max >= min;
-    max may be null for no profile limit. With `now: true`, also terminates idle sessions above the new
-    max, oldest first. Backs `aq pool scale`.
+     Set a pool profile's min/max active-session bounds on the system profile (they apply to every
+    project; each project's max_concurrent_agents still caps its own pool). Validates min >= 0, max >=
+    1, and max >= min; max may be null for no profile limit. With `now: true`, also terminates idle
+    sessions above the effective max, oldest first. Backs `aq pool scale`.
 
     Args:
         body (PoolScaleRequest):
@@ -100,13 +102,15 @@ def sync(
     client: AuthenticatedClient | Client,
     body: PoolScaleRequest,
 ) -> PoolScaleResponse | PoolScaleResponse422 | None:
-    """Set a pool profile's min/max active-session bounds. Validates min >= 0, max >= 1, and max >= min;
-    max may be null for no profile limit. With `now: true`, also terminates idle sessions above the new
-    max, oldest first. Backs `aq pool scale`.
+    """Set a pool profile's min/max active-session bounds on the system profile (they apply to every
+    project; each project's max_concurrent_agents still caps its own pool). Validates min >= 0, max >=
+    1, and max >= min; max may be null for no profile limit. With `now: true`, also terminates idle
+    sessions above the effective max, oldest first. Backs `aq pool scale`.
 
-     Set a pool profile's min/max active-session bounds. Validates min >= 0, max >= 1, and max >= min;
-    max may be null for no profile limit. With `now: true`, also terminates idle sessions above the new
-    max, oldest first. Backs `aq pool scale`.
+     Set a pool profile's min/max active-session bounds on the system profile (they apply to every
+    project; each project's max_concurrent_agents still caps its own pool). Validates min >= 0, max >=
+    1, and max >= min; max may be null for no profile limit. With `now: true`, also terminates idle
+    sessions above the effective max, oldest first. Backs `aq pool scale`.
 
     Args:
         body (PoolScaleRequest):
@@ -130,13 +134,15 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: PoolScaleRequest,
 ) -> Response[PoolScaleResponse | PoolScaleResponse422]:
-    """Set a pool profile's min/max active-session bounds. Validates min >= 0, max >= 1, and max >= min;
-    max may be null for no profile limit. With `now: true`, also terminates idle sessions above the new
-    max, oldest first. Backs `aq pool scale`.
+    """Set a pool profile's min/max active-session bounds on the system profile (they apply to every
+    project; each project's max_concurrent_agents still caps its own pool). Validates min >= 0, max >=
+    1, and max >= min; max may be null for no profile limit. With `now: true`, also terminates idle
+    sessions above the effective max, oldest first. Backs `aq pool scale`.
 
-     Set a pool profile's min/max active-session bounds. Validates min >= 0, max >= 1, and max >= min;
-    max may be null for no profile limit. With `now: true`, also terminates idle sessions above the new
-    max, oldest first. Backs `aq pool scale`.
+     Set a pool profile's min/max active-session bounds on the system profile (they apply to every
+    project; each project's max_concurrent_agents still caps its own pool). Validates min >= 0, max >=
+    1, and max >= min; max may be null for no profile limit. With `now: true`, also terminates idle
+    sessions above the effective max, oldest first. Backs `aq pool scale`.
 
     Args:
         body (PoolScaleRequest):
@@ -163,13 +169,15 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: PoolScaleRequest,
 ) -> PoolScaleResponse | PoolScaleResponse422 | None:
-    """Set a pool profile's min/max active-session bounds. Validates min >= 0, max >= 1, and max >= min;
-    max may be null for no profile limit. With `now: true`, also terminates idle sessions above the new
-    max, oldest first. Backs `aq pool scale`.
+    """Set a pool profile's min/max active-session bounds on the system profile (they apply to every
+    project; each project's max_concurrent_agents still caps its own pool). Validates min >= 0, max >=
+    1, and max >= min; max may be null for no profile limit. With `now: true`, also terminates idle
+    sessions above the effective max, oldest first. Backs `aq pool scale`.
 
-     Set a pool profile's min/max active-session bounds. Validates min >= 0, max >= 1, and max >= min;
-    max may be null for no profile limit. With `now: true`, also terminates idle sessions above the new
-    max, oldest first. Backs `aq pool scale`.
+     Set a pool profile's min/max active-session bounds on the system profile (they apply to every
+    project; each project's max_concurrent_agents still caps its own pool). Validates min >= 0, max >=
+    1, and max >= min; max may be null for no profile limit. With `now: true`, also terminates idle
+    sessions above the effective max, oldest first. Backs `aq pool scale`.
 
     Args:
         body (PoolScaleRequest):

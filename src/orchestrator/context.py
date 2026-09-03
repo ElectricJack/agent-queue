@@ -5,8 +5,6 @@ from __future__ import annotations
 import logging
 import os
 
-from src.profiles.sync import underlying_agent_type
-
 logger = logging.getLogger(__name__)
 
 
@@ -259,12 +257,8 @@ class ContextMixin:
         # LLM sees base profile + override together.
         # See docs/specs/design/memory-scoping.md §5.
         if profile and task.project_id:
-            # Use the bare agent-type ("claude-code"), not the scoped profile
-            # id ("project:foo:claude-code"), so the override file path
-            # matches the expected ``overrides/{agent_type}.md`` convention.
-            bare_agent_type = underlying_agent_type(profile.id) or profile.id
             override_text = await self._load_project_override(
-                task.project_id, bare_agent_type
+                task.project_id, profile.id
             )
             if override_text:
                 builder.set_override_content(override_text)

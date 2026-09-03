@@ -182,7 +182,6 @@ Vault is Obsidian-compatible markdown. Scoped by directory: `system/` · `orches
 | **Compiled Playbook** | `~/.agent-queue/compiled/<id>.compiled.json` | LLM-generated DAG (nodes, transitions, terminals, pause points). Versioned via source_hash. |
 | **Agent Profile (source)** | `vault/agent-types/<type>/profile.md` | `## Role` (English) · `## Config` (JSON) · `## Tools` (JSON, bare names) · `## MCP Servers` (JSON list of registry names) · `## Rules` · `## Reflection`. Synced to DB on change. |
 | **Project Factsheet** | `vault/projects/<id>/memory/factsheet.md` | YAML: urls, tech_stack, contacts, key_paths, environments. Quick-reference card. |
-| **Project Profile Override** | `vault/projects/<id>/agent-types/<type>/profile.md` | Per-project agent-type override. Same hybrid markdown format as the system profile; `delete_project_profile` cleans both nested and any legacy flat path. |
 | **MCP Server Definition** | `vault/[projects/<pid>/]mcp-servers/<name>.md` | One server per file (command, args, env, transport). Project scope shadows system by name. |
 | **Memory (knowledge)** | `vault/**/memory/knowledge/*.md`, `memory/insights/*.md` | Semantically-indexed markdown with `topic:` frontmatter. |
 | **Facts KV** | `vault/**/memory/facts.md` | JSON blocks of deterministic facts (test_command, deploy_branch, etc). L1 tier — always loaded. |

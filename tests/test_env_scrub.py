@@ -17,6 +17,7 @@ from src.env_scrub import (
     STRIP_ALWAYS,
     ScrubResult,
     is_sensitive,
+    harness_session_markers,
     scrub_env,
     scrub_env_from_config,
 )
@@ -125,6 +126,26 @@ class TestPatterns:
         assert result.env[key] == "Jane Doe"
         assert key not in result.dropped
 
+    def test_harness_session_markers_are_removed_even_when_scrubbing_is_disabled(self):
+        source = {
+            "CLAUDE_CODE_SESSION_ID": "claude-session",
+            "CLAUDE_PID": "123",
+            "CLAUDE_EFFORT": "high",
+            "ANTHROPIC_AUTH_TOKEN": "session-token",
+            "CODEX_SANDBOX": "seatbelt",
+            "CODEX_CI": "1",
+            "ANTHROPIC_API_KEY": "api-key",
+            "CODEX_API_KEY": "api-key",
+        }
+        result = scrub_env(source, enabled=False)
+        assert harness_session_markers(source) == sorted(set(source) - {
+            "ANTHROPIC_API_KEY", "CODEX_API_KEY"
+        })
+        for key in harness_session_markers(source):
+            assert key not in result.env
+        assert result.env["ANTHROPIC_API_KEY"] == "api-key"
+        assert result.env["CODEX_API_KEY"] == "api-key"
+
 
 class TestAllowlist:
     # Names deliberately outside HARNESS_CREDENTIAL_ALLOWLIST so these tests
@@ -203,8 +224,6 @@ class TestHarnessCredentialAllowlist:
         "key",
         [
             "ANTHROPIC_API_KEY",
-            "ANTHROPIC_AUTH_TOKEN",
-            "CLAUDE_CODE_OAUTH_TOKEN",
             "OPENAI_API_KEY",
             "GEMINI_API_KEY",
             "GOOGLE_API_KEY",

@@ -15,21 +15,13 @@ T = TypeVar("T", bound="ProfileAuditRequest")
 class ProfileAuditRequest:
     """
     Attributes:
-        project_id (None | str | Unset): Only audit this project's profiles
         legacy_only (bool | None | Unset): Only report profiles that still need migration
     """
 
-    project_id: None | str | Unset = UNSET
     legacy_only: bool | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        project_id: None | str | Unset
-        if isinstance(self.project_id, Unset):
-            project_id = UNSET
-        else:
-            project_id = self.project_id
-
         legacy_only: bool | None | Unset
         if isinstance(self.legacy_only, Unset):
             legacy_only = UNSET
@@ -39,8 +31,6 @@ class ProfileAuditRequest:
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({})
-        if project_id is not UNSET:
-            field_dict["project_id"] = project_id
         if legacy_only is not UNSET:
             field_dict["legacy_only"] = legacy_only
 
@@ -49,15 +39,6 @@ class ProfileAuditRequest:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-
-        def _parse_project_id(data: object) -> None | str | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            return cast(None | str | Unset, data)
-
-        project_id = _parse_project_id(d.pop("project_id", UNSET))
 
         def _parse_legacy_only(data: object) -> bool | None | Unset:
             if data is None:
@@ -69,7 +50,6 @@ class ProfileAuditRequest:
         legacy_only = _parse_legacy_only(d.pop("legacy_only", UNSET))
 
         profile_audit_request = cls(
-            project_id=project_id,
             legacy_only=legacy_only,
         )
 

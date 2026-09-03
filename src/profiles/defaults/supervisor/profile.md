@@ -38,7 +38,6 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
 ```json
 {
   "harness": "claude",
-  "model": "claude-opus-5",
   "default_class": "deep-high",
   "lifecycle": "named",
   "mode": "on_demand",

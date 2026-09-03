@@ -207,7 +207,7 @@ def routing_mismatch(task: Task, agent: Agent, state: SchedulerState) -> str | N
         task = replace(task, intelligence_class=profile.default_class or None)
     return task_agent_mismatch(
         task, agent, task_profile=profile,
-        agent_profile=resolve_agent_profile(agent, task.project_id, profiles),
+        agent_profile=resolve_agent_profile(agent, profiles),
         harness_registry=state.harness_registry,
         intelligence_classes=state.intelligence_classes,
         required_provider=required_provider,

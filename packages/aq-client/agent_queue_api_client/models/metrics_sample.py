@@ -37,13 +37,28 @@ class MetricsSample:
             tasks (TaskMetrics | Unset):
             subagents (SubagentMetrics | Unset): Fleet sub-agent totals plus the per-session drill-down.
 
-                ``complete`` is the conjunction over live sessions: one session without
-                hooks makes ``native`` and ``total`` lower bounds for the whole fleet.
-            tokens (TokenMetrics | Unset): Rates over the trailing 60 seconds of the token ledger.
+                Two different questions, kept apart because they answer differently on a
+                pool fleet: ``active`` (== the older ``total``) is how many children are
+                open at this instant, and reads ~0 when the sessions that start children
+                are shorter-lived than the children; ``spawned_per_hour`` is how many
+                were started over the sampler's window, counted from the event table
+                regardless of whether the parent session still exists.
 
-                ``unattributed_per_min`` is ledger volume that carried no input/output
-                split — reported separately rather than folded into a model's rate, the
-                same honesty rule ``get_costs`` applies to pricing.
+                ``complete`` is the conjunction over live sessions: one session without
+                hooks makes ``native`` and ``active`` lower bounds for the whole fleet.
+            tokens (TokenMetrics | Unset): Ledger rates over ``window_seconds``, scaled to per minute.
+
+                ``total_per_min`` is everything the ledger recorded, cache included: on a
+                long-lived session cache reads are the overwhelming majority of the
+                traffic, so a "total" of input+output alone understates it by orders of
+                magnitude.  ``unattributed_per_min`` is what no column could account for
+                — rows from writers that report only a total, or written before the cache
+                columns existed — reported separately rather than folded into a model's
+                rate, the same honesty rule ``get_costs`` applies to pricing.
+
+                The ``*_per_min_1m`` fields are the raw trailing-minute counts, kept
+                beside the smoothed rates so the unsmoothed flush pattern is still
+                readable.
             slots (SlotMetrics | Unset): Worktree slots.  ``cap`` is null when worktree execution is off.
             machine (MachineMetrics | Unset): Nulls mean the platform does not expose the value, not zero.
             daemon (DaemonMetrics | Unset):

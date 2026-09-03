@@ -38,27 +38,28 @@ def _value(source, name: str) -> str:
     return str(getattr(source, name, None) or "").strip()
 
 
-def resolve_profile(profiles: Mapping, profile_id: str | None, project_id: str | None = None):
-    """Resolve a profile from a snapshot with the normal project override."""
+def resolve_profile(profiles: Mapping, profile_id: str | None):
+    """Resolve a profile from a snapshot.
+
+    Profiles are global: a durable worker is shared between projects, so
+    there is exactly one definition per id. Project-scoped overrides
+    (``project:<pid>:<id>``) were retired — see
+    :mod:`src.profiles.project_override_migration`.
+    """
     if not profile_id:
         return None
-    if project_id:
-        scoped = profiles.get(f"project:{project_id}:{profile_id}")
-        if scoped is not None:
-            return scoped
     return profiles.get(profile_id)
 
 
 def resolve_task_profile(task, project, profiles: Mapping):
     """Task/project requirements only; never substitute the candidate worker."""
     return resolve_profile(
-        profiles, _value(task, "profile_id") or _value(project, "default_profile_id"),
-        _value(task, "project_id") or None,
+        profiles, _value(task, "profile_id") or _value(project, "default_profile_id")
     )
 
 
-def resolve_agent_profile(agent, project_id: str | None, profiles: Mapping):
-    return resolve_profile(profiles, _value(agent, "profile_id"), project_id)
+def resolve_agent_profile(agent, profiles: Mapping):
+    return resolve_profile(profiles, _value(agent, "profile_id"))
 
 
 def _generic_worker_profile(profile) -> bool:

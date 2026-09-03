@@ -149,7 +149,7 @@ def _infer_provider_from_harness(harness) -> str:
     file does not declare its provider explicitly, the CLI's identifier is a
     stable-enough proxy (design §2 — one harness = one CLI = one vendor).
     An unknown harness returns ``""``, which resolution treats as "no
-    class-driven override" and falls back to ``profile.model`` unchanged.
+    class-driven override" and leaves the launch model unset.
     """
     mapping = {"claude": "anthropic", "codex": "openai", "gemini": "google"}
     key = getattr(harness, "id", "") or getattr(harness, "command", "")
@@ -522,10 +522,9 @@ class SessionSpecBuilder:
 
         argv.extend(harness.args)
 
-        # Resolve the model: intelligence class (task-scoped, then profile
-        # default) wins over ``profile.model`` when it maps a slice for this
-        # harness's provider.  Unknown class or missing mapping falls back
-        # silently to the profile — a class typo must never break launch.
+        # Resolve the model from the task-scoped or profile default class.
+        # Unknown classes or missing mappings leave the model unset; profiles
+        # no longer carry a conflicting literal fallback.
         model = self._resolve_model(
             profile, harness, task_intelligence_class, class_config=class_config
         )
@@ -704,13 +703,13 @@ class SessionSpecBuilder:
         *,
         class_config: dict | None = None,
     ) -> str:
-        """Pick a fixed worker model, selected class model, or profile fallback."""
+        """Pick a fixed worker model or the selected intelligence-class model."""
         worker_model = getattr(profile, "_agent_model_override", None)
         if worker_model:
             return worker_model
         if class_config is None:
             class_config = self._resolve_class_config(profile, harness, task_intelligence_class)
-        return str(class_config.get("model") or getattr(profile, "model", "") or "").strip()
+        return str(class_config.get("model") or "").strip()
 
     def _resolve_effort(self, profile, harness, class_config: dict) -> str:
         """Only map thinking levels for the CLI whose semantics we support."""
@@ -734,7 +733,7 @@ class SessionSpecBuilder:
         """Resolve the whole provider slice without dropping its thinking fields.
 
         Worker class > task class > profile default. Unknown classes, providers,
-        or model mappings leave the profile fallback intact.
+        or model mappings leave launch settings empty rather than using a pin.
         """
         class_id = (
             getattr(profile, "_agent_intelligence_class", None)
@@ -747,7 +746,7 @@ class SessionSpecBuilder:
         cls = self._intelligence_classes.get(class_id)
         if cls is None:
             logger.warning(
-                "intelligence-class '%s' not found; falling back to profile.model",
+                "intelligence-class '%s' not found; no launch model resolved",
                 class_id,
             )
             return {}
@@ -757,7 +756,7 @@ class SessionSpecBuilder:
         if not provider:
             logger.warning(
                 "intelligence-class '%s': could not infer provider for harness %r; "
-                "falling back to profile.model",
+                "no launch model resolved",
                 class_id,
                 getattr(harness, "id", "") or getattr(harness, "command", ""),
             )
@@ -777,7 +776,7 @@ class SessionSpecBuilder:
         if not model:
             logger.warning(
                 "intelligence-class '%s' has no model for provider %r; "
-                "falling back to profile.model",
+                "no launch model resolved",
                 class_id,
                 provider,
             )

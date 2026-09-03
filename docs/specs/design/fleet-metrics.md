@@ -23,8 +23,8 @@ generated TypeScript client types it.
 | --- | --- | --- |
 | `agents` | `total`, `by_state`, `by_harness`, `by_profile`, `by_lifecycle` | grouped count over `sessions` |
 | `tasks` | `READY` / `IN_PROGRESS` / `ASSIGNED` / `PAUSED` / `BLOCKED` / `WAITING_INPUT` / `other` / `total` | grouped count over `tasks` |
-| `subagents` | `total`, `native`, `aq`, `complete`, `by_session` | fold of `subagent_events` + delegation provenance on `tasks` |
-| `tokens` | `input_per_min`, `output_per_min`, `total_per_min`, `unattributed_per_min`, `by_model` | trailing 60 s of `token_ledger` |
+| `subagents` | `spawned_per_hour`, `active` (== `total`), `native`, `aq`, `complete`, `by_session` | `subagent_events` (starts over `metrics.subagent_window_seconds`, and the open-child fold) + delegation provenance on `tasks` |
+| `tokens` | `input_per_min`, `output_per_min`, `cache_read_per_min`, `cache_write_per_min`, `total_per_min`, `unattributed_per_min`, `*_per_min_1m`, `window_seconds`, `by_model` | `token_ledger` over `metrics.token_window_seconds`, scaled to per minute |
 | `slots` | `used`, `total`, `cap` | `workspaces` rows with a `slot_index` |
 | `machine` | `load1/5/15`, `cpu_count`, `mem_total_mb`, `mem_free_mb`, `mem_available_mb` | `os.getloadavg()`, `/proc/meminfo` |
 | `daemon` | `uptime_seconds`, `restarts` | process clock + a durable counter in `system_config` |
@@ -49,8 +49,44 @@ The same signal is derived from aggregates the sampler already has:
 `agents.by_lifecycle.pool` is supply, `tasks.READY` is demand.
 
 **Per-session rows for idle sessions.** `subagents.by_session` omits sessions
-with no children of either kind. Including them would put one entry per idle
-session into 86,400 stored samples a day for no information.
+with no children of any kind. Including them would put one entry per idle
+session into 86,400 stored samples a day for no information. A session that
+*did* start children inside the window keeps its row even after it exits —
+keyed by session id rather than name, since the row it was named by is gone.
+That set is unbounded on a busy pool fleet, so the drill-down is capped at the
+25 busiest sessions per sample. The fleet totals stay exact; only the
+breakdown is trimmed.
+
+### Rates are windowed, and the window is not the sample cadence
+
+Two series are counts of events, not gauges, and reading them over one
+sample's worth of time turns them into noise:
+
+* **Tokens.** A harness writes a whole turn's usage in one row, so a
+  60-second window sampled once a second reads 0 for most seconds and spikes
+  on the tick after each flush. The reported rates are measured over
+  `metrics.token_window_seconds` (default 300) and scaled to per minute; the
+  raw trailing-minute counts are kept beside them as `*_per_min_1m` rather
+  than discarded, and `window_seconds` says which window produced the rest.
+* **Sub-agents.** The open-child fold answers "how many are running right
+  now", which on a pool fleet is ~0 because the sessions that start children
+  exit before the children are counted. `spawned_per_hour` counts *starts*
+  over `metrics.subagent_window_seconds` (default an hour) straight off
+  `subagent_events`, with no join to live sessions at all. Both are reported:
+  `active` is the instantaneous reading, `spawned_per_hour` is the one the
+  tab plots.
+
+### Cache tokens are tokens
+
+`token_ledger.tokens_used` has always included cache reads and cache
+creation, but until the ledger grew `cache_read_tokens` / `cache_write_tokens`
+there was nowhere to put them, so `tokens_used - (input + output)` was
+reported as `unattributed`. On a warm context that residue is three orders of
+magnitude larger than fresh input, which is why a chart plotting
+input + output as "total" looked broken. The cache columns stay *outside* the
+priced input/output split — each is billed at its own rate, and folding
+either into `input_tokens` would overprice every row — but they are inside
+`total_per_min`.
 
 ### Honesty rules
 
@@ -58,11 +94,12 @@ session into 86,400 stored samples a day for no information.
   is a claim; an absent one is an admission.
 * `subagents.complete` is the **conjunction** over live sessions, matching
   `flock_rollup`: one session launched without its harness hooks wired makes
-  `native` and `total` a lower bound for the whole fleet, and the tile says
+  `native` and `active` a lower bound for the whole fleet, and the tile says
   "at least" rather than showing a confident wrong number.
-* Ledger volume with no input/output split lands in `unattributed_per_min`
-  rather than being folded into a model's rate — the same rule `get_costs`
-  applies to pricing.
+* Ledger volume no column can account for — a writer that reports only a
+  total, or a row written before the cache columns existed — lands in
+  `unattributed_per_min` rather than being folded into a model's rate, the
+  same rule `get_costs` applies to pricing.
 * `stall.*` and `merges_per_hour` come from bus events that are never
   persisted, so they restart at zero with the daemon. `daemon.uptime_seconds`
   is graphed beside them precisely so the reset is visible rather than

@@ -17,7 +17,6 @@ pool of long-lived ``lifecycle: pool`` sessions claims work in a loop via
 from __future__ import annotations
 
 import asyncio
-import dataclasses
 import logging
 import time
 import uuid
@@ -102,16 +101,13 @@ class PoolsMixin:
     async def _pool_profiles(
         self, project_id: str, *, system_profiles: list[AgentProfile] | None = None
     ) -> dict[str, AgentProfile]:
-        """Effective pool profiles for *project_id*, keyed by plain agent-type id.
+        """Pool profiles available to *project_id*, keyed by agent-type id.
 
-        Project override wins: a project-scoped row (``project:{pid}:{type}``)
-        with ``lifecycle == "pool"`` adds or replaces the system profile for
-        that type; a project-scoped row with any other lifecycle removes the
-        system pool profile for that type in this project (an explicit
-        opt-out).  The returned profile's ``.id`` is normalized to the plain
-        agent-type — never the ``project:...`` scoped form — so downstream
-        code (session naming, ``PoolKey``, env markers) never leaks the
-        scoping prefix into a session id or a git identity.
+        Profiles are global — a durable worker is shared between projects — so
+        every ``lifecycle: pool`` profile is a pool for every active project.
+        Sizing stays per project at runtime (one ``PoolKey`` per
+        project/profile, each still under that project's
+        ``max_concurrent_agents``); only the configuration is global.
 
         *system_profiles* lets a caller iterating many projects in one tick
         (``_measure_pools``, ``Orchestrator._schedule``) pass a single
@@ -121,22 +117,11 @@ class PoolsMixin:
         all_profiles = (
             system_profiles if system_profiles is not None else await self.db.list_profiles()
         )
-        scoped_prefix = f"project:{project_id}:"
-        out: dict[str, AgentProfile] = {}
-        for p in all_profiles:
-            if ":" in p.id:
-                continue
-            if getattr(p, "lifecycle", "task") == "pool":
-                out[p.id] = p
-        for p in all_profiles:
-            if not p.id.startswith(scoped_prefix):
-                continue
-            agent_type = p.id[len(scoped_prefix) :]
-            if getattr(p, "lifecycle", "task") == "pool":
-                out[agent_type] = dataclasses.replace(p, id=agent_type)
-            else:
-                out.pop(agent_type, None)
-        return out
+        return {
+            p.id: p
+            for p in all_profiles
+            if ":" not in p.id and getattr(p, "lifecycle", "task") == "pool"
+        }
 
     async def _pool_profile_ids(
         self, project_id: str, *, system_profiles: list[AgentProfile] | None = None
@@ -343,7 +328,7 @@ class PoolsMixin:
         for candidate in candidates:
             if not candidate.enabled or candidate.role != "worker":
                 continue
-            own_profile = resolve_agent_profile(candidate, project.id, profiles)
+            own_profile = resolve_agent_profile(candidate, profiles)
             if task_agent_mismatch(
                 requirement, candidate, task_profile=profile, agent_profile=own_profile,
                 harness_registry=self.harness_registry, intelligence_classes=classes,
@@ -356,7 +341,7 @@ class PoolsMixin:
         if agent is None:
             agent = Agent(id=f"agent-{uuid.uuid4().hex[:12]}",
                           name=f"{profile.id}-{uuid.uuid4().hex[:4]}", profile_id=profile.id)
-            worker_profile = resolve_agent_profile(agent, project.id, profiles) or profile
+            worker_profile = resolve_agent_profile(agent, profiles) or profile
             mismatch = task_agent_mismatch(
                 requirement, agent, task_profile=profile, agent_profile=worker_profile,
                 harness_registry=self.harness_registry, intelligence_classes=classes,

@@ -125,10 +125,6 @@ They are grouped by category (see `src/tools/registry.py`):
 | `get_profile` | Get profile details |
 | `edit_profile` | Edit an agent profile |
 | `delete_profile` | Delete a profile |
-| `list_project_profiles` | Per-agent-type rows for a project (override / inherit / none) |
-| `create_project_profile` | Create a project override (optionally seed from global) |
-| `edit_project_profile` | Edit a project override |
-| `delete_project_profile` | Reset a project agent-type back to the global default |
 | `show_effective_profile` | Resolve `(project, agent_type)` to its effective profile |
 | `list_available_tools` | List tools available to agents |
 | `check_profile` | Validate a profile |

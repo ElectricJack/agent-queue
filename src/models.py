@@ -1389,9 +1389,14 @@ class PipelineContext:
     #: verification reads ``no-op`` as "this task produced no code": there is
     #: nothing to push, PR or merge, so the require-a-PR gate does not apply.
     work_outcome: str = ""
-    #: Set by ``_run_completion_pipeline`` when the task branch carried no
-    #: commits ahead of its base, asked *before* integration could merge the
-    #: branch away.  The close path folds it into the ``no_code`` flag on
+    #: Branch selected by PR verification as the branch delivering this
+    #: task's work. Usually ``task.branch_name``; an alternate delivery
+    #: branch is retained so post-verification no-code checks inspect the
+    #: branch that actually carried the commits.
+    delivery_branch: str | None = None
+    #: Set by ``_run_completion_pipeline`` when the delivery branch carried
+    #: no commits ahead of its base, asked *before* integration could merge
+    #: the branch away. The close path folds it into the ``no_code`` flag on
     #: ``task.completed`` so the review rules never spawn a reviewer for an
     #: empty diff (task bright-forge-78).  False also means "not asked" —
     #: the question is only answerable on the paths where the branch is

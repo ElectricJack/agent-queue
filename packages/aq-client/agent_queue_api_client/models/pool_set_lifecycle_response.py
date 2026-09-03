@@ -16,27 +16,21 @@ class PoolSetLifecycleResponse:
     """
     Attributes:
         success (bool):
-        project_id (None | str | Unset):
         profile_id (None | str | Unset):
         lifecycle (None | str | Unset):
+        warnings (list[str] | Unset):
         error (None | str | Unset):
     """
 
     success: bool
-    project_id: None | str | Unset = UNSET
     profile_id: None | str | Unset = UNSET
     lifecycle: None | str | Unset = UNSET
+    warnings: list[str] | Unset = UNSET
     error: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         success = self.success
-
-        project_id: None | str | Unset
-        if isinstance(self.project_id, Unset):
-            project_id = UNSET
-        else:
-            project_id = self.project_id
 
         profile_id: None | str | Unset
         if isinstance(self.profile_id, Unset):
@@ -49,6 +43,10 @@ class PoolSetLifecycleResponse:
             lifecycle = UNSET
         else:
             lifecycle = self.lifecycle
+
+        warnings: list[str] | Unset = UNSET
+        if not isinstance(self.warnings, Unset):
+            warnings = self.warnings
 
         error: None | str | Unset
         if isinstance(self.error, Unset):
@@ -63,12 +61,12 @@ class PoolSetLifecycleResponse:
                 "success": success,
             }
         )
-        if project_id is not UNSET:
-            field_dict["project_id"] = project_id
         if profile_id is not UNSET:
             field_dict["profile_id"] = profile_id
         if lifecycle is not UNSET:
             field_dict["lifecycle"] = lifecycle
+        if warnings is not UNSET:
+            field_dict["warnings"] = warnings
         if error is not UNSET:
             field_dict["error"] = error
 
@@ -78,15 +76,6 @@ class PoolSetLifecycleResponse:
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
         success = d.pop("success")
-
-        def _parse_project_id(data: object) -> None | str | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            return cast(None | str | Unset, data)
-
-        project_id = _parse_project_id(d.pop("project_id", UNSET))
 
         def _parse_profile_id(data: object) -> None | str | Unset:
             if data is None:
@@ -106,6 +95,8 @@ class PoolSetLifecycleResponse:
 
         lifecycle = _parse_lifecycle(d.pop("lifecycle", UNSET))
 
+        warnings = cast(list[str], d.pop("warnings", UNSET))
+
         def _parse_error(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -117,9 +108,9 @@ class PoolSetLifecycleResponse:
 
         pool_set_lifecycle_response = cls(
             success=success,
-            project_id=project_id,
             profile_id=profile_id,
             lifecycle=lifecycle,
+            warnings=warnings,
             error=error,
         )
 

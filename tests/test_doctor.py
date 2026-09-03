@@ -82,6 +82,7 @@ class TestRegistry:
         from src.doctor.pool_checks import pool_checks
         from src.doctor.profile_checks import profile_checks
         from src.doctor.resource_checks import resource_checks
+        from src.doctor.session_checks import session_checks
         from src.doctor.task_checks import task_checks
         from src.doctor.workspace_checks import workspace_checks
 
@@ -94,6 +95,7 @@ class TestRegistry:
             | {c.id for c in formula_checks()}
             | {c.id for c in intelligence_class_checks()}
             | {c.id for c in resource_checks()}
+            | {c.id for c in session_checks()}
             | {c.id for c in integration_checks()}
             | {c.id for c in capability_checks()}
             | {c.id for c in workspace_checks()}
@@ -102,6 +104,14 @@ class TestRegistry:
             | {c.id for c in playbook_v2_checks()}
         )
         assert set(reg.ids()) == expected
+
+    async def test_env_markers_check_reports_an_inherited_harness_session(self, ctx, monkeypatch):
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "parent-session")
+        check = default_registry().get("sessions.env_markers")
+        assert check is not None
+        result = await check.run(ctx)
+        assert result.severity is Severity.ERROR
+        assert "CLAUDE_CODE_SESSION_ID" in result.data["markers"]
 
     def test_reserved_ids_are_not_preregistered(self):
         """Reserved ids stay free so their owning subsystem can claim them."""

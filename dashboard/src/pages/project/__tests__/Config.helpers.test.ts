@@ -3,7 +3,7 @@ import {
   parseOptionalInt,
   parseOptionalFloat,
   projectToForm,
-  profileOptionsFromRows,
+  dedupeProfileOptions,
 } from "../Config";
 
 describe("Config.tsx form helpers", () => {
@@ -34,12 +34,12 @@ describe("Config.tsx form helpers", () => {
     );
   });
 
-  it("profileOptionsFromRows dedupes scoped+global by id", () => {
-    const rows = [
-      { scoped: { id: "coder", name: "Coder (scoped)" }, global: { id: "coder", name: "Coder" } },
-      { scoped: null, global: { id: "reviewer", name: "Reviewer" } },
+  it("dedupeProfileOptions keeps the first entry per id", () => {
+    const profiles = [
+      { id: "coder", name: "Coder" },
+      { id: "coder", name: "Coder (dupe)" },
+      { id: "reviewer", name: "Reviewer" },
     ];
-    const opts = profileOptionsFromRows(rows);
-    expect(opts.map((o) => o.id)).toEqual(["coder", "reviewer"]);
+    expect(dedupeProfileOptions(profiles).map((o) => o.id)).toEqual(["coder", "reviewer"]);
   });
 });

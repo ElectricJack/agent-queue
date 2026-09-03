@@ -2044,10 +2044,6 @@ available or the channel cannot be found.
 - `export_profile` / `import_profile` — YAML/gist export/import
 
 ### Project-Scoped Profile Commands
-- `list_project_profiles` — per-agent-type rows for a project (override / inherit / no-default)
-- `create_project_profile` — create a project override (optional seed-from-global flag)
-- `edit_project_profile` — partial update of a project override
-- `delete_project_profile` — reset agent-type back to global; cleans both nested and flat vault paths and surfaces them in `removed_paths`
 - `show_effective_profile` — resolve `(project, agent_type)` to its effective profile
 
 ### MCP Server Registry Commands (`src/commands/mcp_commands.py`)

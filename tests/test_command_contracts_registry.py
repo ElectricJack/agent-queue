@@ -102,7 +102,7 @@ def test_a_bare_registry_registers_nothing_and_the_singleton_autoloads() -> None
     from src.commands.contracts import CONTRACTS
 
     assert ContractRegistry().names() == frozenset()
-    assert len(CONTRACTS.names()) == 10
+    assert len(CONTRACTS.names()) == 11
     # Idempotent: a second read does not re-register and raise "already registered".
     assert CONTRACTS.names() == CONTRACTS.names()
 
@@ -122,7 +122,7 @@ def test_the_explanation_module_can_be_imported_first() -> None:
     for first in ("src.playbooks.explanation", "src.playbooks.graph_view", "src.commands.contracts"):
         proc = subprocess.run(
             [sys.executable, "-c", f"import {first}; from src.commands.contracts import CONTRACTS;"
-             " assert len(CONTRACTS.names()) == 10"],
+             " assert len(CONTRACTS.names()) == 11"],
             capture_output=True,
             text=True,
         )

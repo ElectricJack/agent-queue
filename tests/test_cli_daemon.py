@@ -110,6 +110,38 @@ def test_daemon_environment_appends_installed_user_executable_dirs(
     assert "CLAUDECODE" not in env
 
 
+def test_daemon_environment_removes_claude_and_codex_session_markers(monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "parent")
+    monkeypatch.setenv("CLAUDE_PID", "123")
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "session-token")
+    monkeypatch.setenv("CODEX_SANDBOX", "seatbelt")
+    monkeypatch.setenv("CODEX_CI", "1")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "api-key")
+    monkeypatch.setenv("CODEX_API_KEY", "codex-key")
+
+    env = daemon_mod._daemon_environment()
+
+    for key in (
+        "CLAUDE_CODE_SESSION_ID", "CLAUDE_PID", "ANTHROPIC_AUTH_TOKEN",
+        "CODEX_SANDBOX", "CODEX_CI",
+    ):
+        assert key not in env
+    assert env["ANTHROPIC_API_KEY"] == "api-key"
+    assert env["CODEX_API_KEY"] == "codex-key"
+
+
+def test_start_warns_when_called_from_an_enclosing_harness(runner, monkeypatch):
+    monkeypatch.setenv("CODEX_CI", "1")
+    monkeypatch.setattr(daemon_mod, "start_daemon", lambda: True)
+    monkeypatch.setattr(daemon_mod, "_maybe_prompt_dashboard", lambda _: None)
+
+    result = runner.invoke(cli, ["start", "--no-dashboard"])
+
+    assert result.exit_code == 0
+    assert "detected enclosing harness marker" in result.output
+    assert "CODEX_CI" in result.output
+
+
 def test_daemon_environment_does_not_duplicate_existing_path(tmp_path, monkeypatch):
     local_bin = tmp_path / ".local" / "bin"
     local_bin.mkdir(parents=True)

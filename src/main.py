@@ -38,6 +38,7 @@ from src.runtimes import default_registry
 from src.messaging.base import MessagingAdapter
 from src.models import AgentState, TaskStatus
 from src.orchestrator import Orchestrator
+from src.env_scrub import strip_harness_session_markers
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +81,10 @@ async def _run_scheduler_cycles(orch: Orchestrator, shutdown_event: asyncio.Even
 
 async def run(config_path: str, profile: str | None = None) -> bool:
     """Run the daemon. Returns True if a restart was requested."""
+    # A daemon launched by an interactive Claude Code or Codex session must
+    # not retain that session's control variables.  Remove them before setup,
+    # config loading, or constructing any child-launching subsystem.
+    stripped_harness_markers = strip_harness_session_markers(os.environ)
     # The daemon owns the schema: this is what lets ``run_schema_setup``
     # migrate the production database.  ``AQ_DB_SCOPE=worker`` in the
     # environment still overrides it, so a daemon booted from inside a
@@ -92,6 +97,11 @@ async def run(config_path: str, profile: str | None = None) -> bool:
         level=os.environ.get("AGENT_QUEUE_LOG_LEVEL", "INFO"),
         format=os.environ.get("AGENT_QUEUE_LOG_FORMAT", "dev"),
     )
+    if stripped_harness_markers:
+        logger.warning(
+            "Stripped inherited harness session marker(s) at daemon startup: %s",
+            ", ".join(stripped_harness_markers),
+        )
 
     config = load_config(config_path, profile=profile)
     logger.info(

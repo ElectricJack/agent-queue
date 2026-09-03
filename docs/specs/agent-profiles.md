@@ -92,8 +92,12 @@ CREATE TABLE IF NOT EXISTS agent_profiles (
 ## Source of Truth: Vault Markdown
 
 The runtime source of truth for profiles is **vault markdown** at
-`vault/agent-types/<id>/profile.md` (system) and
-`vault/projects/<pid>/agent-types/<id>/profile.md` (project override). See
+`vault/agent-types/<id>/profile.md`. Profiles are global — a durable worker is
+shared between projects, so there is one definition per agent type.
+Project-scoped profiles (`project:<pid>:<id>`, sourced from
+`vault/projects/<pid>/agent-types/`) were retired; see
+`src/profiles/project_override_migration.py` and the
+`profiles.project_overrides` doctor check for the upgrade path. See
 [[design/profiles]] for the markdown format. The vault watcher syncs changes
 into the `agent_profiles` table at startup and on file change.
 
@@ -237,12 +241,8 @@ Imports from YAML text or gist URL:
 - `edit_profile` — partial update of profile fields (including install)
 - `delete_profile` — remove profile, clear references
 
-### Project-Scoped Profile CRUD
-- `list_project_profiles` — list per-agent-type rows for a project (override / inherit / no-default)
-- `create_project_profile` — create a project override (optionally seeded from the global default)
-- `edit_project_profile` — partial update of a project override
-- `delete_project_profile` — remove the override (resets the agent-type to global). Cleans up nested **and** flat vault paths so a stray scoped file can't resurrect during the next watcher pass.
-- `show_effective_profile` — resolve `project + agent_type` to the effective profile (override → inherit → no-default)
+### Resolution debug
+- `show_effective_profile` — resolve `project + agent_type` through the launch-time cascade (task profile → project default → worker default → system fallback)
 
 ### Discovery & Validation
 - `list_available_tools` — discover tools and MCP servers for profile configuration

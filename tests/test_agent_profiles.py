@@ -344,15 +344,15 @@ class TestProfileResolution:
         project = await orch.db.get_project("p-1")
         assert project.default_profile_id == "claude-opus"
 
-    async def test_system_default_prefers_project_scoped_override(self, orch):
-        """A project override of the fallback profile still wins."""
+    async def test_retired_project_override_never_wins(self, orch):
+        """Project-scoped profiles were retired — a leftover row must not resolve."""
         await self._only_profiles(orch, "claude-opus", "project:p-1:claude-opus")
         await orch.db.create_project(Project(id="p-1", name="test"))
         task = Task(id="t-1", project_id="p-1", title="Test", description="Test")
 
         profile = await orch._resolve_profile(task)
 
-        assert profile.id == "project:p-1:claude-opus"
+        assert profile.id == "claude-opus"
 
     async def test_task_profile_overrides_project_default(self, orch):
         """Task profile_id takes precedence over project default_profile_id."""
@@ -1362,25 +1362,20 @@ class TestProfileMcpServersShape:
         profile = await handler.db.get_profile("mcp-shape-reviewer")
         assert profile.mcp_servers == ["playwright"]
 
-    async def test_project_edit_accepts_the_same_payload(self, handler):
-        """Parity: the drawer sends one body shape to both routes."""
-        await handler.execute("create_profile", {"id": "mcp-shape-coding", "name": "Coding"})
-        await handler.execute(
-            "create_project_profile", {"project_id": "proj", "agent_type": "mcp-shape-coding"}
-        )
+    async def test_project_scoped_profile_routes_are_gone(self, handler):
+        """Project-scoped profile CRUD was retired with the concept itself."""
+        assert await handler.execute(
+            "create_project_profile", {"project_id": "proj", "agent_type": "coding"}
+        ) == {"error": "Unknown command: create_project_profile"}
         async with await self._client(handler) as client:
-            resp = await client.post(
+            for route in (
+                "/api/agent/create-project-profile",
                 "/api/agent/edit-project-profile",
-                json={
-                    "project_id": "proj",
-                    "agent_type": "mcp-shape-coding",
-                    "allowed_tools": ["Read"],
-                    "mcp_servers": [],
-                },
-            )
-        assert resp.status_code == 200, resp.text
-        profile = await handler.db.get_profile("project:proj:mcp-shape-coding")
-        assert profile.mcp_servers == []
+                "/api/agent/delete-project-profile",
+                "/api/agent/list-project-profiles",
+            ):
+                resp = await client.post(route, json={"project_id": "proj", "agent_type": "coding"})
+                assert resp.status_code == 404, f"{route} is still routed"
 
     async def test_legacy_inline_mapping_is_reduced_to_its_keys(self, handler):
         """Older MCP callers still send the pre-registry inline config dict."""
@@ -1421,20 +1416,3 @@ class TestProfileMcpServersShape:
         profile = await handler.db.get_profile("coder")
         assert profile.install == {"npm": ["eslint-mcp"]}
 
-    async def test_edit_project_profile_writes_default_class(self, handler):
-        await handler.execute("create_profile", {"id": "coder", "name": "Coder"})
-        await handler.execute(
-            "create_project_profile", {"project_id": "proj", "agent_type": "coder"}
-        )
-        async with await self._client(handler) as client:
-            resp = await client.post(
-                "/api/agent/edit-project-profile",
-                json={
-                    "project_id": "proj",
-                    "agent_type": "coder",
-                    "default_class": "deep-high",
-                },
-            )
-        assert resp.status_code == 200, resp.text
-        profile = await handler.db.get_profile("project:proj:coder")
-        assert profile.default_class == "deep-high"

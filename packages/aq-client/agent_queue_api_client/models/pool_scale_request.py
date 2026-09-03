@@ -15,24 +15,29 @@ T = TypeVar("T", bound="PoolScaleRequest")
 class PoolScaleRequest:
     """
     Attributes:
-        project_id (str): Project ID.
         profile_id (str): Pool profile (agent-type) ID.
+        project_id (None | str | Unset): Deprecated and ignored — bounds are global. Accepted for one release so
+            existing scripts keep working.
         min_ (int | None | Unset): New min_active bound (optional).
         max_ (int | None | Unset): New max_active bound; null removes the profile limit.
         now (bool | None | Unset): Immediately terminate idle sessions above the new max, oldest first.
     """
 
-    project_id: str
     profile_id: str
+    project_id: None | str | Unset = UNSET
     min_: int | None | Unset = UNSET
     max_: int | None | Unset = UNSET
     now: bool | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        project_id = self.project_id
-
         profile_id = self.profile_id
+
+        project_id: None | str | Unset
+        if isinstance(self.project_id, Unset):
+            project_id = UNSET
+        else:
+            project_id = self.project_id
 
         min_: int | None | Unset
         if isinstance(self.min_, Unset):
@@ -56,10 +61,11 @@ class PoolScaleRequest:
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "project_id": project_id,
                 "profile_id": profile_id,
             }
         )
+        if project_id is not UNSET:
+            field_dict["project_id"] = project_id
         if min_ is not UNSET:
             field_dict["min"] = min_
         if max_ is not UNSET:
@@ -72,9 +78,16 @@ class PoolScaleRequest:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        project_id = d.pop("project_id")
-
         profile_id = d.pop("profile_id")
+
+        def _parse_project_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        project_id = _parse_project_id(d.pop("project_id", UNSET))
 
         def _parse_min_(data: object) -> int | None | Unset:
             if data is None:
@@ -104,8 +117,8 @@ class PoolScaleRequest:
         now = _parse_now(d.pop("now", UNSET))
 
         pool_scale_request = cls(
-            project_id=project_id,
             profile_id=profile_id,
+            project_id=project_id,
             min_=min_,
             max_=max_,
             now=now,

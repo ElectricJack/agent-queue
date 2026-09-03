@@ -565,6 +565,25 @@ class TestEnvMarkers:
         )
         assert "CLAUDECODE" not in env
 
+    def test_session_excludes_all_inherited_harness_markers(self):
+        env = build_session_env(
+            session_id="s", task_id="t", project_id="p", profile_id="pr", epoch="e",
+            instance_token="i", work_dir="/wd", api_url="http://x", api_token="tok",
+            base={
+                "CLAUDE_CODE_SESSION_ID": "parent", "CLAUDE_CODE_MESSAGING_SOCKET": "/x",
+                "CLAUDE_PID": "123", "ANTHROPIC_AUTH_TOKEN": "session-token",
+                "CODEX_SANDBOX": "seatbelt", "CODEX_CI": "1",
+                "ANTHROPIC_API_KEY": "api-key", "CODEX_API_KEY": "codex-key",
+            },
+        )
+        for key in (
+            "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_PID",
+            "ANTHROPIC_AUTH_TOKEN", "CODEX_SANDBOX", "CODEX_CI",
+        ):
+            assert key not in env
+        assert env["ANTHROPIC_API_KEY"] == "api-key"
+        assert env["CODEX_API_KEY"] == "codex-key"
+
     def test_scrub_withholds_daemon_secrets_but_keeps_harness_credentials(self):
         env = build_session_env(
             session_id="s",
