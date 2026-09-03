@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from sqlalchemy import select
@@ -88,6 +88,45 @@ async def mktask(db, tid, status=TaskStatus.DEFINED, **kw):
         Task(id=tid, project_id=PROJECT_ID, title=tid, description=tid, status=status, **kw)
     )
     return tid
+
+
+async def test_set_parent_takes_project_hierarchy_lock(db, monkeypatch):
+    """Every hierarchy move must share the filing scope's project lock."""
+    await mktask(db, "parent", TaskStatus.IN_PROGRESS)
+    await mktask(db, "child", TaskStatus.IN_PROGRESS)
+    lock = AsyncMock()
+    monkeypatch.setattr(db, "lock_hierarchy_project", lock)
+
+    async with db._engine.begin() as conn:
+        await db.set_parent("child", "parent", conn=conn)
+        lock.assert_awaited_once_with(conn, PROJECT_ID)
+
+
+async def test_create_task_under_locks_project_before_child_ordinal(db, monkeypatch):
+    """Project lock must precede the parent-row ordinal reservation."""
+    from src.database.queries import hierarchy_queries
+
+    await mktask(db, "parent", TaskStatus.IN_PROGRESS)
+    real_child_task_id = hierarchy_queries.child_task_id
+    lock = AsyncMock()
+    monkeypatch.setattr(db, "lock_hierarchy_project", lock)
+
+    async def checked_child_task_id(conn, parent_id):
+        assert lock.await_count == 1
+        return await real_child_task_id(conn, parent_id)
+
+    monkeypatch.setattr(hierarchy_queries, "child_task_id", checked_child_task_id)
+    task = Task(
+        id="",
+        project_id=PROJECT_ID,
+        title="child",
+        description="child",
+        status=TaskStatus.DEFINED,
+    )
+
+    await db.create_task_under(task, "parent")
+
+    assert lock.await_count == 2  # create_task_under, then set_parent (same transaction)
 
 
 async def test_set_parent_rejects_blocking_dependency_cycle_on_both_backends(any_db):

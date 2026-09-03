@@ -670,6 +670,48 @@ class ClaimQueryMixin:
         await self._after_release(out)
         return out
 
+    async def lock_filing_scope(self, conn, task_ids: list[str]) -> dict[str, str | None]:
+        """Lock the task rows a worker filing's scope is derived from.
+
+        Returns ``{id: parent_task_id}`` for the rows that exist (a missing
+        id is simply absent). On Postgres the filing first takes the same
+        project-scoped advisory transaction lock as ``set_parent``,
+        serializing scope reads with every hierarchy move without contending
+        on ordinary project-row updates. It then row-locks the requested
+        tasks in ascending id order so deletion cannot invalidate the result.
+        The shared hierarchy lock covers intermediate ancestors: moving one
+        waits even though it is not itself named by the filing. On SQLite
+        ``immediate()`` already holds the database write lock.
+
+        Called first in the filing transaction, before ``reserve_filing``
+        takes the same row lock on the held task by writing to it.
+        """
+        anchor_id = task_ids[0] if task_ids else None
+        ids = sorted(set(task_ids))
+        if not ids:
+            return {}
+        if conn.dialect.name == "postgresql":
+            project_id = await conn.scalar(
+                select(tasks.c.project_id).where(tasks.c.id == anchor_id)
+            )
+            if project_id is None:
+                return {}
+            await self.lock_hierarchy_project(conn, project_id)
+            stmt = (
+                select(tasks.c.id, tasks.c.parent_task_id)
+                .where(tasks.c.id.in_(ids))
+                .order_by(tasks.c.id)
+                .with_for_update()
+            )
+        else:
+            stmt = (
+                select(tasks.c.id, tasks.c.parent_task_id)
+                .where(tasks.c.id.in_(ids))
+                .order_by(tasks.c.id)
+            )
+        rows = (await conn.execute(stmt)).fetchall()
+        return {r.id: r.parent_task_id for r in rows if r.id in ids}
+
     async def reserve_filing(self, conn, task_id: str, *, max_filings: int) -> bool:
         res = await conn.execute(
             update(tasks)

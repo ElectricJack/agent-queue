@@ -13,8 +13,15 @@ from src.config import AppConfig, DiscordConfig
 from src.database import Database
 from src.models import Agent, AgentState, Project, SessionRecord, Task, TaskStatus
 from src.orchestrator import Orchestrator
+from tests.pg_dsn import ensure_worker_postgres_dsn
 
 PROJECT_ID = "proj"
+
+#: The row lock that closes the filing/reparent race is a Postgres
+#: ``FOR UPDATE`` — on SQLite ``immediate()``'s database-wide writer lock
+#: already serialises the two transactions and the clause compiles away, so
+#: only a live Postgres can show that the lock itself is what blocks.
+POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
 
 
 @pytest.fixture
@@ -523,6 +530,310 @@ class TestSiblingFiling:
         assert (await db.get_task("epic.1")).filed_count == 0
         async with db._engine.begin() as conn:
             assert set(await db.subtree_ids("epic", conn=conn)) == {"epic", "epic.1"}
+
+
+def reparent_when_filing_starts(monkeypatch, db, task_id, new_parent):
+    """Land a reparent of *task_id* in the window the pre-check opened.
+
+    The scope pre-check in ``_cmd_create_task`` reads the held task's parent
+    and subtree before ``_create_worker_filed_task`` opens its transaction.
+    Committing a reparent exactly as that transaction is entered reproduces
+    the race deterministically — no threads, no sleeps, no timing.
+    """
+    from contextlib import asynccontextmanager
+
+    real_immediate = db.immediate
+    fired = []
+
+    @asynccontextmanager
+    async def racing_immediate():
+        if not fired:
+            fired.append(True)
+            async with db._engine.begin() as conn:
+                await db.set_parent(task_id, new_parent, conn=conn)
+        async with real_immediate() as conn:
+            yield conn
+
+    monkeypatch.setattr(db, "immediate", racing_immediate)
+    return fired
+
+
+class TestFilingScopeRace:
+    """A reparent that commits after the scope pre-check must not let a
+    filing land outside the scope the held task actually authorises (§12)."""
+
+    async def test_default_sibling_filing_follows_a_concurrent_reparent(
+        self, handler, db, monkeypatch
+    ):
+        sid = await holding_child_session(db)
+        await db.create_task(Task(id="epic2", project_id=PROJECT_ID, title="e2",
+                                  description="e", status=TaskStatus.IN_PROGRESS))
+        # A second open child keeps ``epic`` from settling COMPLETED when the
+        # race moves ``epic.1`` away, so the outcome under test is where the
+        # scope re-resolution puts the filing, not a ``container_closed``.
+        await db.create_task(Task(id="epic.2", project_id=PROJECT_ID, title="sib",
+                                  description="s", status=TaskStatus.IN_PROGRESS))
+        async with db._engine.begin() as conn:
+            await db.set_parent("epic.2", "epic", conn=conn)
+        fired = reparent_when_filing_starts(monkeypatch, db, "epic.1", "epic2")
+
+        res = await scoped(handler, sid)._cmd_create_task({
+            "title": "found a bug", "description": "d", "reason": "epic.1 exposed it",
+        })
+
+        assert fired, "the race never fired — the seam moved"
+        assert res["success"] is True, res
+        # The sibling default is re-resolved under the lock, so the filing
+        # lands beside the held task where it now lives, not where it was.
+        new = await db.get_task(res["task_id"])
+        assert new.parent_task_id == "epic2"
+        assert res["parent_id"] == "epic2"
+        deps = await db.get_typed_dependencies(new.id)
+        assert ("epic2", "parent-child") in deps
+        assert ("epic.1", "discovered-from") in deps
+        ev = created_events(handler)[0]
+        assert (ev["parent_task_id"], ev["discovered_from"]) == ("epic2", "epic.1")
+        assert (await db.get_task("epic.1")).filed_count == 1
+
+    async def test_explicit_former_parent_is_rejected_after_a_concurrent_reparent(
+        self, handler, db, monkeypatch
+    ):
+        sid = await holding_child_session(db)
+        await db.create_task(Task(id="epic2", project_id=PROJECT_ID, title="e2",
+                                  description="e", status=TaskStatus.IN_PROGRESS))
+        # A second open child keeps ``epic`` from settling COMPLETED when the
+        # race moves ``epic.1`` away — the refusal under test must be the
+        # scope check, not ``container_closed``.
+        await db.create_task(Task(id="epic.2", project_id=PROJECT_ID, title="sib",
+                                  description="s", status=TaskStatus.IN_PROGRESS))
+        async with db._engine.begin() as conn:
+            await db.set_parent("epic.2", "epic", conn=conn)
+        reparent_when_filing_starts(monkeypatch, db, "epic.1", "epic2")
+
+        res = await scoped(handler, sid)._cmd_create_task({
+            "title": "found a bug", "description": "d", "parent_id": "epic",
+            "reason": "epic.1 exposed it",
+        })
+
+        assert res["success"] is False
+        assert res["error"] == (
+            "parent must be the held task, one of its descendants, "
+            "or the held task's own parent"
+        )
+        # Nothing written: no task row, no quota consumed, no gate.
+        assert {t.id for t in await db.list_tasks(PROJECT_ID)} == {
+            "epic", "epic.1", "epic.2", "epic2"}
+        assert (await db.get_task("epic.1")).filed_count == 0
+
+    async def test_discovered_from_moved_out_of_the_subtree_is_rejected(
+        self, handler, db, monkeypatch
+    ):
+        sid = await holding_session(db)
+        await db.create_task(Task(id="held.1", project_id=PROJECT_ID, title="c",
+                                  description="c", status=TaskStatus.IN_PROGRESS))
+        await db.create_task(Task(id="elsewhere", project_id=PROJECT_ID, title="e",
+                                  description="e", status=TaskStatus.IN_PROGRESS))
+        async with db._engine.begin() as conn:
+            await db.set_parent("held.1", "held", conn=conn)
+        reparent_when_filing_starts(monkeypatch, db, "held.1", "elsewhere")
+
+        res = await scoped(handler, sid)._cmd_create_task({
+            "title": "found a bug", "description": "d", "discovered_from": "held.1",
+            "reason": "held.1 exposed it",
+        })
+
+        assert res["success"] is False
+        assert res["error"] == (
+            "discovered_from must be the held task or one of its descendants"
+        )
+        assert {t.id for t in await db.list_tasks(PROJECT_ID)} == {
+            "held", "held.1", "elsewhere"}
+        assert (await db.get_task("held")).filed_count == 0
+
+
+async def test_lock_filing_scope_shares_project_lock_with_hierarchy_writes(db):
+    """The PostgreSQL scope read uses the project hierarchy advisory lock."""
+    from types import SimpleNamespace
+
+    from sqlalchemy.dialects import postgresql
+
+    conn = AsyncMock()
+    conn.dialect.name = "postgresql"
+    conn.scalar.return_value = PROJECT_ID
+    query_result = MagicMock()
+    query_result.fetchall.return_value = [
+        SimpleNamespace(id="held", parent_task_id=None),
+        SimpleNamespace(id="middle", parent_task_id="held"),
+        SimpleNamespace(id="named", parent_task_id="middle"),
+    ]
+    conn.execute.return_value = query_result
+
+    result = await db.lock_filing_scope(conn, ["held", "named"])
+
+    assert result == {"held": None, "named": "middle"}
+    project_lock, task_lock = [call.args[0] for call in conn.execute.await_args_list]
+    project_sql = str(project_lock.compile(dialect=postgresql.dialect()))
+    task_sql = str(task_lock.compile(dialect=postgresql.dialect()))
+    assert "pg_advisory_xact_lock" in project_sql
+    assert "WHERE tasks.id IN" in task_sql and "FOR UPDATE" in task_sql
+
+
+@pytest.mark.skipif(POSTGRES_TEST_DSN is None, reason="POSTGRES_TEST_DSN not set")
+async def test_lock_filing_scope_blocks_a_concurrent_reparent_on_postgres():
+    """The filing lock is acquired before the competing reparent starts."""
+    import asyncio
+
+    from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
+
+    db = PostgreSQLDatabaseAdapter(POSTGRES_TEST_DSN)
+    await db.initialize()
+    await db.reset_for_tests()
+    try:
+        await db.create_project(Project(id=PROJECT_ID, name="p"))
+        for tid in ("epic", "epic.1", "epic2"):
+            await db.create_task(Task(id=tid, project_id=PROJECT_ID, title=tid, description=tid,
+                                      status=TaskStatus.IN_PROGRESS))
+        async with db._engine.begin() as conn:
+            await db.set_parent("epic.1", "epic", conn=conn)
+
+        started = asyncio.Event()
+
+        async def reparent():
+            async with db._engine.begin() as other:
+                started.set()
+                await db.set_parent("epic.1", "epic2", conn=other)
+
+        async with db.immediate() as conn:
+            assert await db.lock_filing_scope(conn, ["epic.1"]) == {"epic.1": "epic"}
+            racer = asyncio.create_task(reparent())
+            try:
+                await asyncio.wait_for(started.wait(), timeout=5)
+                with pytest.raises(asyncio.TimeoutError):
+                    await asyncio.wait_for(asyncio.shield(racer), timeout=0.5)
+                # Still the parent we locked, from inside the transaction.
+                assert (await db.lock_filing_scope(conn, ["epic.1"]))["epic.1"] == "epic"
+            finally:
+                if racer.done():
+                    racer.result()
+        await asyncio.wait_for(racer, timeout=5)
+        assert (await db.get_task("epic.1")).parent_task_id == "epic2"
+    finally:
+        await db.close()
+
+
+@pytest.mark.skipif(POSTGRES_TEST_DSN is None, reason="POSTGRES_TEST_DSN not set")
+async def test_lock_filing_scope_blocks_intermediate_ancestor_reparent_on_postgres():
+    """Moving an intermediate ancestor cannot invalidate descendant scope."""
+    import asyncio
+
+    from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
+
+    db = PostgreSQLDatabaseAdapter(POSTGRES_TEST_DSN)
+    await db.initialize()
+    await db.reset_for_tests()
+    try:
+        await db.create_project(Project(id=PROJECT_ID, name="p"))
+        for tid in ("held", "middle", "named", "elsewhere"):
+            await db.create_task(Task(
+                id=tid,
+                project_id=PROJECT_ID,
+                title=tid,
+                description=tid,
+                status=TaskStatus.IN_PROGRESS,
+            ))
+        async with db._engine.begin() as conn:
+            await db.set_parent("middle", "held", conn=conn)
+            await db.set_parent("named", "middle", conn=conn)
+
+        started = asyncio.Event()
+
+        async def move_intermediate_ancestor():
+            async with db._engine.begin() as other:
+                started.set()
+                await db.set_parent("middle", "elsewhere", conn=other)
+
+        async with db.immediate() as conn:
+            assert await db.lock_filing_scope(conn, ["held", "named"]) == {
+                "held": None,
+                "named": "middle",
+            }
+            racer = asyncio.create_task(move_intermediate_ancestor())
+            try:
+                await asyncio.wait_for(started.wait(), timeout=5)
+                with pytest.raises(asyncio.TimeoutError):
+                    await asyncio.wait_for(asyncio.shield(racer), timeout=0.5)
+                assert "named" in await db.subtree_ids("held", conn=conn)
+            finally:
+                if racer.done():
+                    racer.result()
+        await asyncio.wait_for(racer, timeout=5)
+        async with db._engine.begin() as conn:
+            assert "named" not in await db.subtree_ids("held", conn=conn)
+    finally:
+        await db.close()
+
+
+@pytest.mark.skipif(POSTGRES_TEST_DSN is None, reason="POSTGRES_TEST_DSN not set")
+async def test_create_task_under_waits_before_child_ordinal_on_postgres(monkeypatch):
+    """Ordinary child creation cannot invert filing's project/task lock order."""
+    import asyncio
+    import contextlib
+
+    from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
+    from src.database.queries import hierarchy_queries
+
+    creator = None
+    db = PostgreSQLDatabaseAdapter(POSTGRES_TEST_DSN)
+    await db.initialize()
+    await db.reset_for_tests()
+    try:
+        await db.create_project(Project(id=PROJECT_ID, name="p"))
+        for tid in ("held", "parent"):
+            await db.create_task(Task(
+                id=tid,
+                project_id=PROJECT_ID,
+                title=tid,
+                description=tid,
+                status=TaskStatus.IN_PROGRESS,
+            ))
+
+        real_child_task_id = hierarchy_queries.child_task_id
+        creator_reached_ordinal = asyncio.Event()
+
+        async def observed_child_task_id(conn, parent_id):
+            if asyncio.current_task().get_name() == "ordinary-child-creator":
+                creator_reached_ordinal.set()
+            return await real_child_task_id(conn, parent_id)
+
+        monkeypatch.setattr(hierarchy_queries, "child_task_id", observed_child_task_id)
+        created = Task(
+            id="",
+            project_id=PROJECT_ID,
+            title="ordinary child",
+            description="ordinary child",
+            status=TaskStatus.DEFINED,
+        )
+        async with db.immediate() as conn:
+            assert await db.lock_filing_scope(conn, ["held"]) == {"held": None}
+            creator = asyncio.create_task(
+                db.create_task_under(created, "parent"),
+                name="ordinary-child-creator",
+            )
+            # create_task_under must wait on the project advisory lock before it can
+            # update and lock the parent's ordinal row.
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(creator_reached_ordinal.wait(), timeout=0.5)
+            reserved_id, capped = await real_child_task_id(conn, "parent")
+            assert reserved_id == "parent.1" and capped is False
+        await asyncio.wait_for(creator, timeout=5)
+        assert created.id == "parent.2"
+    finally:
+        if creator is not None and not creator.done():
+            creator.cancel()
+        if creator is not None:
+            with contextlib.suppress(asyncio.CancelledError):
+                await creator
+        await db.close()
 
 
 def _cli_client(captured_args: dict):

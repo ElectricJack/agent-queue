@@ -759,11 +759,29 @@ close is skipped for pools; the token is revoked at drain.
   creation is refused** (`filing_requires_held_task`) — every worker-filed task has a
   provenance edge to the work that surfaced it, and an idle session has none to give.
   Anything a worker wants to file it files before closing;
+- **the scope is resolved *and* re-enforced under a row lock, inside the creation
+  transaction.** `T`'s parent and subtree are read again at the start of that transaction.
+  On Postgres, the filing takes a project-scoped transaction advisory lock in AQ's
+  hierarchy namespace — the same lock every `set_parent` takes before validating or
+  moving a subtree — and then row-locks `T` plus any explicitly named nodes in ascending
+  id order. The advisory lock does not contend with unrelated project-row updates. A named
+  descendant's membership depends on every intermediate ancestor, so locking only `T`
+  and the named leaf would not exclude an intermediate-ancestor move; the shared project
+  lock does. On SQLite `immediate()`'s writer lock already serialises the two transactions.
+  All parented-task creation follows the same lock order — project hierarchy lock first,
+  then task rows (including child-ordinal reservation) — to avoid lock inversion.
+  Without this exclusion a
+  `set_parent` committing between the pre-check and the write would file the task under a
+  container `T` no longer authorises. Consequences: the **sibling default follows `T`** to
+  wherever it now lives (and files a root if `T` became one); an **explicitly named parent
+  that has fallen out of scope is refused** and nothing is written, the quota reservation
+  included; and `task.created`/the command response report the parent **actually
+  written**, not the one resolved by the pre-check;
 - **quota:** at most `swarm.max_filings_per_task` (default 20) tasks filed from one held
   task, across all of its claims; beyond it `filing_quota_exceeded`. Durable routing gates
   stop gated work from *running*; the quota stops a looping worker from growing the queue
-  and the triage backlog without bound. Reserved **atomically** as the first statement of
-  the creation transaction: `UPDATE tasks SET filed_count = filed_count + 1 WHERE id =
+  and the triage backlog without bound. Reserved **atomically** as the first *write* of
+  the creation transaction (the locked scope read above precedes it and writes nothing): `UPDATE tasks SET filed_count = filed_count + 1 WHERE id =
   :held AND filed_count < :max` (`tasks.filed_count INTEGER NOT NULL DEFAULT 0`, §9);
   `rowcount = 0` → quota exceeded, nothing created. Concurrent creates cannot overshoot;
 - initial status **`DEFINED`** regardless of edges;
