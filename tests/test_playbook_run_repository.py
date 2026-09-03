@@ -581,7 +581,14 @@ async def test_paused_run_cancellation_clears_wait_before_events_can_claim(db):
     event = type(
         "Event",
         (),
-        {"event_type": "pr.merged", "event_id": "event-1", "fields": {"pr": {"number": 41}}},
+        {
+            "playbook_id": snapshot.playbook_id,
+            "scope": "system",
+            "scope_identifier": "",
+            "event_type": "pr.merged",
+            "event_id": "event-1",
+            "fields": {"pr": {"number": 41}},
+        },
     )()
     assert await db.claim_for_event(event, now=NOW + 1) == []
 
