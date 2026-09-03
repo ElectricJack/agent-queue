@@ -131,7 +131,6 @@ def build_v2_engine(
         runs=db,
         waits=db,
         activations=DatabaseActivationSource(db),
-        max_step_visits=playbooks.v2_dry_run_max_step_visits,
         cancellation_grace_seconds=playbooks.cancellation_grace_seconds,
     )
     try:
