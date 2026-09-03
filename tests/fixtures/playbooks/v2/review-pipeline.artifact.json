@@ -91,6 +91,26 @@
         }
       },
       "save_result_as": "review",
+      "idempotency_key": {
+        "type": "template",
+        "parts": [
+          {
+            "type": "literal",
+            "value": "review-of-"
+          },
+          {
+            "type": "event_ref",
+            "path": "task_id"
+          }
+        ]
+      },
+      "retry": {
+        "max_attempts": 2,
+        "backoff_seconds": 5.0,
+        "retry_on": [
+          "runtime_error"
+        ]
+      },
       "transitions": {
         "created": "classify-risk",
         "reused": "classify-risk",

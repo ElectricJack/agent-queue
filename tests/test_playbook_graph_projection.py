@@ -134,8 +134,15 @@ def test_explanation_is_copied_not_rederived(monkeypatch):
 
 
 def test_missing_contract_yields_canonical_renderer_and_error_diagnostic():
+    """``list-downstream`` is the artifact's unregistered command.
+
+    The stub models ``ensure_task`` and ``gate_create`` and deliberately not
+    ``list_tasks`` (``playbook_v2_helpers.UNREGISTERED_GOLDEN_COMMAND``), so
+    the one projection both this suite and the dashboard fixture read carries a
+    node down each branch.
+    """
     graph = _project()
-    node = next(item for item in graph["nodes"] if item["id"] == "ensure-review-task")
+    node = next(item for item in graph["nodes"] if item["id"] == "list-downstream")
     assert node["explanation"]["renderer"] == "canonical"
     assert [(item["severity"], item["code"]) for item in node["diagnostics"]] == [
         ("error", "unknown_command")
@@ -145,6 +152,67 @@ def test_missing_contract_yields_canonical_renderer_and_error_diagnostic():
         value == {"type": "unresolved"}
         for value in node["advanced"]["typed_step"]["inputs"].values()
     )
+
+
+def test_a_registered_command_resolves_its_inputs_and_redacts_the_sensitive_one():
+    """The other branch of the same projection (``keen-harbor-76``).
+
+    ``ensure_task`` is registered, so the card names the contract's argument
+    labels, states both fingerprints, and projects the argument the contract
+    declares sensitive through ``project_value(..., redacted=True)`` — a row
+    with no canonical payload to disclose.
+    """
+    graph = _project()
+    node = _node(graph, "ensure-review-task")
+    assert node["diagnostics"] == []
+    assert node["explanation"]["renderer"] == "contract"
+    fingerprint = node["explanation"]["contract_fingerprint"]
+    assert fingerprint == node["advanced"]["execution_fingerprint"]
+    # The stub declares the sensitive argument on a *copy*; the fingerprint it
+    # reports stays the one the artifact was compiled against.
+    assert fingerprint == _definition().compiled_against.commands["ensure_task"]
+    redacted = next(
+        row for row in node["explanation"]["inputs"] if row["value"]["redacted"]
+    )
+    assert redacted["label"] == "Deduplication key"
+    assert redacted["value"] == {
+        "kind": "redacted",
+        "display": "(redacted)",
+        "canonical": None,
+        "redacted": True,
+        "type_name": "string",
+    }
+    assert node["advanced"]["redaction"] == [
+        {"field": "dedup_key", "policy": "redacted"},
+        {"field": "project_id", "policy": "safe"},
+        {"field": "title", "policy": "safe"},
+    ]
+    assert node["advanced"]["typed_step"]["inputs"]["dedup_key"] == {"type": "redacted"}
+
+
+def test_the_stub_registry_covers_one_branch_per_command_node():
+    """Both command branches stay reachable from the one golden projection.
+
+    The dashboard's fixture is this projection, so a command added to the
+    artifact — or registered in the stub — must not quietly leave either the
+    contract path or the ``unknown_command`` path with no node to assert on.
+    """
+    from tests.playbook_v2_helpers import (
+        REGISTERED_GOLDEN_COMMANDS,
+        UNREGISTERED_GOLDEN_COMMAND,
+    )
+
+    definition = _definition()
+    commands = {
+        step.command for step in definition.steps.values() if hasattr(step, "command")
+    }
+    assert commands == set(REGISTERED_GOLDEN_COMMANDS) | {UNREGISTERED_GOLDEN_COMMAND}
+    renderers = {
+        node["explanation"]["renderer"]
+        for node in _project()["nodes"]
+        if node["step_kind"] == "command"
+    }
+    assert renderers == {"contract", "canonical"}
 
 
 def test_projection_is_deterministic():
@@ -280,9 +348,11 @@ def test_command_cards_badge_the_idempotency_their_contract_declares():
     }
     assert badges == {
         # ``ensure_task`` dedups on an argument, ``list_tasks`` is a read and is
-        # naturally idempotent, ``gate_create`` dedups on its await id.
+        # naturally idempotent, ``gate_create`` dedups on its await id — except
+        # that ``ensure-review-task`` authors its own ``idempotency_key``, which
+        # overrides whatever the contract declares.
         "ensure-review-task": [
-            {"kind": "idempotency", "label": "Idempotent", "value": "keyed on dedup_key"}
+            {"kind": "idempotency", "label": "Idempotent", "value": "keyed by this step"}
         ],
         "list-downstream": [{"kind": "idempotency", "label": "Idempotent", "value": "natural"}],
         "open-gate": [
@@ -292,13 +362,11 @@ def test_command_cards_badge_the_idempotency_their_contract_declares():
 
 
 def test_an_unregistered_command_claims_no_idempotency():
-    """The stub registry knows none of the artifact's commands.  A card that
-    said "Idempotent none" there would be asserting something the projection
-    cannot know; the ``unknown_command`` diagnostic is the honest answer."""
-    graph = _project()
-    for step_id in ("ensure-review-task", "list-downstream", "open-gate"):
-        node = _node(graph, step_id)
-        assert [badge["kind"] for badge in node["badges"]] == ["diagnostic"], step_id
+    """The stub registry does not know ``list_tasks``.  A card that said
+    "Idempotent none" there would be asserting something the projection cannot
+    know; the ``unknown_command`` diagnostic is the honest answer."""
+    node = _node(_project(), "list-downstream")
+    assert [badge["kind"] for badge in node["badges"]] == ["diagnostic"]
 
 
 def test_wait_step_explains_what_it_awaits_and_how_it_correlates():
@@ -456,7 +524,12 @@ def test_every_node_carries_what_the_compact_card_and_the_inspector_read():
     for node in graph["nodes"]:
         explanation = node["explanation"]
         # Compact card: title, one-line intent, chips, and a port per edge.
-        assert explanation["title"] == node["title"]
+        # A registered command's card is titled by its contract's presentation
+        # rather than by the authored step title, so only the canonical
+        # renderer has to agree with the node.
+        assert explanation["title"].strip()
+        if explanation["renderer"] == "canonical":
+            assert explanation["title"] == node["title"]
         assert explanation["effect_summary"].strip()
         assert node["out_degree"] == sum(
             edge["source"] == node["id"] for edge in graph["edges"]
