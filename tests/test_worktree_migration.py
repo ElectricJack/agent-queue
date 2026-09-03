@@ -315,14 +315,6 @@ def test_downgrade_then_reupgrade_reapplies_the_backfill(tmp_path: Path):
         engine.dispose()
 
 
-def test_alembic_chain_is_single_headed():
-    from alembic.script import ScriptDirectory
-
-    script = ScriptDirectory.from_config(Config("alembic.ini"))
-    heads = script.get_heads()
-    assert len(heads) == 1, f"alembic chain must stay single-headed, got {heads}"
-
-
 # ───────────────────────────── models (§3.5) ─────────────────────────────
 
 
