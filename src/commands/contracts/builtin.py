@@ -211,6 +211,14 @@ class TaskRouteValue(CommandValue):
     resolved_gate_ids: list[str]
 
 
+class StopTaskArgs(CommandArgs):
+    task_id: str
+
+
+class StopTaskValue(CommandValue):
+    stopped: str
+
+
 _handler_provider: Callable[[], Any] | None = None
 
 
@@ -252,6 +260,12 @@ def _outcome_of(name: str, raw: dict[str, Any]) -> str:
             return "already_linked"
         if name == "gate_resolve" and "routing" in str(raw.get("error", "")).lower():
             return "refused_routing_gate"
+        if name == "stop_task" and "not in progress" in str(raw.get("error", "")).lower():
+            # The task already reached a terminal or non-running state, which
+            # is the state a cancellation asks for.  A caller cancelling a
+            # child it no longer owns must not see that as a failure; a
+            # missing task still does (``rejected``).
+            return "not_running"
         return "rejected"
     if name == "ensure_task":
         return "created" if raw.get("created") else "reused"
@@ -268,6 +282,7 @@ def _outcome_of(name: str, raw: dict[str, Any]) -> str:
         "get_downstream_tasks": "listed",
         "task_batch_commit": "committed",
         "task_route": "routed",
+        "stop_task": "stopped",
     }[name]
 
 
@@ -275,7 +290,7 @@ def _adapter(name: str, value_type: type[CommandValue]):
     async def invoke(args: CommandArgs, _ctx: CommandContext) -> CommandResult[Any]:
         raw = await _handler().execute(name, args.model_dump(exclude_none=True))
         outcome = _outcome_of(name, raw)
-        if outcome in {"rejected", "refused_routing_gate", "already_linked"}:
+        if outcome in {"rejected", "refused_routing_gate", "already_linked", "not_running"}:
             value = value_type.model_construct()
         else:
             try:
@@ -470,6 +485,18 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
         result_labels={"task_ids": "Created tasks"},
         subject_labels={"task_graph": "the proposed task graph"},
     ),
+    "stop_task": CommandPresentation(
+        title="Stop a running task",
+        summary="Stop the agent working on a task and leave the task blocked.",
+        arg_labels={"task_id": "Task"},
+        outcome_labels={
+            "stopped": "Stopped",
+            "not_running": "Was not running",
+            "rejected": "Rejected",
+        },
+        result_labels={"stopped": "Stopped task"},
+        subject_labels={"task_execution": "the task's execution"},
+    ),
     "task_route": CommandPresentation(
         title="Route a task to a profile",
         summary="Assign the agent profile that will run the task, and clear its routing gate.",
@@ -636,6 +663,20 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
                 UpdateClause(subject=EffectSubject.TASK_ROUTING),
                 ResolveClause(subject=EffectSubject.ROUTING_GATE, target_arg="task_id"),
             ),
+            IdempotencySpec(mode="natural"),
+            True,
+        ),
+        (
+            "stop_task",
+            StopTaskArgs,
+            StopTaskValue,
+            (
+                OutcomeSpec(name="stopped", classification=OutcomeClass.SUCCESS),
+                OutcomeSpec(name="not_running", classification=OutcomeClass.SUCCESS),
+                OutcomeSpec(name="rejected", classification=OutcomeClass.FAILURE),
+            ),
+            SideEffectClass.UPDATE,
+            (UpdateClause(subject=EffectSubject.TASK_EXECUTION),),
             IdempotencySpec(mode="natural"),
             True,
         ),
