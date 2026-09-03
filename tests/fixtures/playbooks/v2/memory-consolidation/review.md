@@ -1,69 +1,57 @@
 ---
 playbook_id: memory-consolidation
-artifact_sha256: null
-source_sha256: "sha256:73f587dd70a16aa4efaec20119b2ef8207c39853faf3191fe0f1e285916d3cb3"
-contract_fingerprint: null
-reviewed_by: "aq task solid-harbor.52 (worker-standard-high-claude); operator sign-off is this fixture's PR review"
+artifact_sha256: "sha256:0074dfc2ec42a5d9f4eb455736e6590799045fba208115410a1e3a3fc411563e"
+source_sha256: "sha256:397d8826c2559f3c083b00ccd044f93a545690d7989410b4d8fe6b1b4139e9e5"
+contract_fingerprint: "sha256:37e638a13c981748c5929498767fd08bea9fc30bcd85ab36f5458e42381180e9"
+reviewed_by: "aq task agile-impact-36 (worker-deep-high-codex); operator sign-off is this fixture's PR review"
 reviewed_at: "2026-09-03"
-decision: rejected
-questions_resolved: 1
-blocked_on:
-  - "requires_agent_proposal: prose LLM playbook with no V1 machine graph to lower"
+decision: approved
+questions_resolved: 3
 capabilities_granted:
-  aq_commands: []
+  aq_commands: [create_task, list_projects, render_prompt]
   harness_tools: []
-  plugin_tools: []
-profiles_referenced: []
+  plugin_tools: [count_project_memory_files, read_project_memory_file]
+profiles_referenced: [supervisor]
 ---
 
-# Reviewed V2 proposal — `memory-consolidation` (not approved)
-
-`decision: rejected` is the locked vocabulary's "recorded, not activatable"
-(child plan §3.4), not a judgement on the playbook. There is no `artifact.json`
-here because no compile produced one.
+# Reviewed V2 artifact — `memory-consolidation`
 
 ## Compiler questions and decisions
 
-**Q1 — this playbook has no V1 machine graph, so there is nothing to lower.**
-`src/playbooks/pipeline_lowering.shadow_compile` classifies it by frontmatter
-`kind` (absent), reports `requires_agent_proposal`, and stops. The two ```json
-fences in the source are output-shape examples (`{"targets": [...]}` and
-`{"tasks_created": [...]}`), not an action graph — `is_action_block` in
-`tests/test_shipped_playbook_sources.py` is pinned against exactly these two so
-that stays true.
+**Q1 — how should prose-only V1 behavior map to V2?** Decision: preserve the
+complete source body as one schema-bound LLM prompt. Target selection and task
+creation happen in one durable tool loop; `tasks_created` is validated before
+the completed edge.
 
-**Decision: do not hand-author a semantic body and record it as an approved
-compile.** Child plan §5.3 T-8 is explicit that compilation here is LLM-driven
-and that the fixture is "the approved recording"; a body synthesised by the
-worker that wrote this file would be a recording of nothing. The honest artifact
-is this record plus `diagnostics.json`. Producing the real one needs a compiler
-agent run whose semantic diff a human reads — the procedure in T-8, which needs
-the compiler-agent surface and an operator, not a test fixture.
+**Q2 — which profile owns the call?** Decision: `supervisor`, because the
+source delegates consolidation scheduling to supervisor authority.
+
+**Q3 — the source named generic `read_file`, but the shipped file plugin has a
+project-memory boundary.** Decision: use `read_project_memory_file`, which
+confines reads to the selected project's memory directory.
 
 ## Semantic diff versus the V1 graph
 
-Not applicable: there is no V1 graph. V1 executed this source by handing its
-prose to an LLM step by step, so its behaviour was never expressed as a graph
-and there is no baseline for a structural diff. Child plan §4.5 anticipates
-this and limits LLM playbooks to *structural* parity.
+There is no V1 machine graph. Structural parity preserves the `timer.24h`
+trigger, full prose prompt, five tools, output shape, and completed/failed
+terminal split. V2 makes the former implicit LLM sequence one budgeted state.
 
 ## Capabilities and why each is needed
 
-None granted. For the record, the prose instructs the model to call
-`list_projects`, `read_file`, `count_project_memory_files`, `create_task` and
-`render_prompt`; a future approved artifact must list exactly those and no more,
-and the reviewer should check that `create_task` is still called without
-`agent_type` (the source explains why: an `agent_type` filter leaves the created
-task permanently READY).
+`list_projects` enumerates candidates; `read_project_memory_file` and
+`count_project_memory_files` apply the churn threshold; `render_prompt` builds
+the task body; `create_task` creates one task per selected project. No wildcard
+or harness capability is granted.
 
 ## AI profiles, budgets, and output schemas
 
-Unresolved along with the body. The source pins `llm_config.provider: gemini`
-with `gemini-2.5-pro`, and `transition_llm_config` with `gemini-2.5-flash` —
-a V2 artifact must map both onto profiles and budgets, and the split between the
-step model and the transition model is the part a reviewer should look at
-hardest, because V2 expresses transition evaluation differently from V1.
+The `supervisor` profile supplies `deep-high`. Hard limits are 50 calls, 4,096
+output tokens, 65,536 total tokens, and 900 seconds. The schema requires only
+`tasks_created[]` objects containing `project_id` and `task_id`.
 
 ## Accepted behaviour differences
 
-None accepted, because nothing is activated.
+1. Three prose steps execute within one V2 tool loop instead of three implicit
+   V1 turns, avoiding untyped intermediate durable state.
+2. The provider resolves through the `supervisor` profile and headless LLM
+   configuration instead of the retired source-level Gemini model pins.

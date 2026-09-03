@@ -47,6 +47,7 @@ from src.playbooks.executors.base import (
     UnknownStepType,
 )
 from src.playbooks.executors.foreach import ITERATING_OUTCOME
+from src.playbooks.executors.llm import _published_tools, resolve_profile_principal
 from src.playbooks.executors.wait import UNRESOLVED_REASON
 from src.playbooks.expressions import BindingRef, ResolutionScope
 from src.playbooks.receipts import RECEIPT_OUTCOMES, transition_id
@@ -184,6 +185,56 @@ def _llm_step() -> LlmStep:
             },
         }
     )
+
+
+@pytest.mark.asyncio
+async def test_trusted_service_llm_is_narrowed_to_an_enforced_profile_principal():
+    resolution = await resolve_profile_principal(
+        _llm_step(),
+        SimpleNamespace(db=_ProfileStore(), resolver=_Resolver()),
+        ExecutionPrincipal.service("timer"),
+    )
+
+    assert resolution.principal is not None
+    assert resolution.principal.kind is PrincipalKind.PLAYBOOK
+    assert resolution.principal.profile_id == "worker"
+    assert resolution.principal.policy.aq_commands == frozenset({"ensure_task"})
+
+
+def test_contracted_plugin_tools_are_published_under_the_plugin_namespace():
+    from src.commands.contracts import CONTRACTS
+
+    class PluginResolver:
+        def is_builtin(self, _name: str) -> bool:
+            return False
+
+        def is_plugin(self, name: str) -> bool:
+            return name == "git_diff"
+
+        def plugin_command_names(self) -> frozenset[str]:
+            return frozenset({"git_diff"})
+
+    step = _llm_step().model_copy(
+        update={
+            "tool_use": _llm_step().tool_use.model_copy(
+                update={"aq_commands": [], "plugin_tools": ["git_diff"]}
+            )
+        }
+    )
+    principal = ExecutionPrincipal(
+        kind=PrincipalKind.PLAYBOOK,
+        policy=CapabilityPolicy.from_namespaces(plugin_tools=["git_diff"]),
+    )
+    ctx = SimpleNamespace(
+        principal=principal,
+        services=SimpleNamespace(
+            contracts=CONTRACTS,
+            resolver=PluginResolver(),
+            authorization_mode="enforce",
+        ),
+    )
+
+    assert [tool["name"] for tool in _published_tools(step, ctx)] == ["git_diff"]
 
 
 def build_llm(

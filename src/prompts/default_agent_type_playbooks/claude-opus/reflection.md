@@ -4,6 +4,7 @@ triggers:
   - task.completed
   - task.failed
 scope: agent-type:claude-opus
+profile_id: worker-deep-high-claude
 cooldown: 30
 ---
 
@@ -16,7 +17,8 @@ cooldown: 30
 After a coding agent completes or fails a task, step back and extract
 reusable insights from the work. The goal is to build up the coding
 agent type's collective memory so that future tasks benefit from past
-experience.
+experience. The trigger supplies the task's `task_id`, `project_id`, and
+`title` to the `worker-deep-high-claude` profile.
 
 ## Review the task record
 
@@ -79,7 +81,7 @@ the error signature, what was tried, and what would have helped.
 ## Write insights to memory
 
 For each insight worth preserving, save it to memory using
-`memory_store`. Each insight should be:
+`memory_save` with the triggering `project_id`. Each insight should be:
   - **Specific and actionable** — not "tests are important" but
     "pytest with `--tb=short -q` runs 3x faster on this codebase and
     catches the same failures"
@@ -97,18 +99,18 @@ before starting a similar task?"
 
 ## Consolidate existing memories
 
-Before storing new insights, use `memory_recall` to check for related
+Before storing new insights, use `memory_search` with the triggering
+`project_id` to check for related
 existing memories. This helps avoid duplicates and gives you context
 for writing better insights.
 
-  - **Merge duplicates** — `memory_store` automatically merges related
+  - **Merge duplicates** — `memory_save` automatically merges related
     content (similarity 0.8-0.95) and deduplicates near-identical
-    content (> 0.95). If you find an existing memory that is clearly
-    wrong or superseded, use `memory_delete` with its `chunk_hash`.
+    content (> 0.95). If an existing memory is wrong or superseded, save an
+    explicit correction so future searches return the updated guidance.
   - **Correct outdated insights** — if this task contradicts an existing
-    memory, store the corrected version via `memory_store` (which will
-    auto-merge), then `memory_delete` the old entry if it's clearly
-    wrong.
+    memory, store the corrected version via `memory_save` (which will
+    auto-merge). Keep the correction explicit so later searches prefer it.
 
 Keep consolidation lightweight. Only touch memories directly related
 to the current task's domain.

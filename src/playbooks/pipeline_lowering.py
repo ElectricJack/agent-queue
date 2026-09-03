@@ -302,7 +302,13 @@ def lower_assignment(source: PlaybookSource) -> tuple[Mapping[str, Any], list[Di
     choose = "assignment-route--choose"
     done = "assignment-route--done"
     max_tokens = int(source.frontmatter.get("max_tokens") or 4096)
-    profile_id = str(source.frontmatter.get("role") or "assignment-routing")
+    # ``role`` remains the V1 discriminator. V2 needs an independently
+    # resolvable profile identity as well.
+    profile_id = str(
+        source.frontmatter.get("profile_id")
+        or source.frontmatter.get("role")
+        or "assignment-routing"
+    )
     source_ref = _ref(source, source.body_start_line, source.body.strip().splitlines()[0])
     return {
         "rules": [
@@ -329,7 +335,7 @@ def lower_assignment(source: PlaybookSource) -> tuple[Mapping[str, Any], list[Di
                     "max_total_tokens": max_tokens,
                     "timeout_seconds": 300,
                 },
-                "transitions": {"runtime_error": done},
+                "transitions": {"completed": done, "runtime_error": done},
             },
             done: {
                 "type": "terminal",

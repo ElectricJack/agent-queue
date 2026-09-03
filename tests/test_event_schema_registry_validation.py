@@ -73,6 +73,13 @@ def _register_typed_schemas(monkeypatch):
 
 # Maps event_type -> minimal valid payload (all required fields present)
 _CANONICAL_PAYLOADS: dict[str, dict] = {
+    "assignment.route.requested": {
+        "project_id": "proj-1",
+        "tasks": [],
+        "options": [],
+        "options_hash": "sha256:options",
+        "catalog_hash": "sha256:catalog",
+    },
     # Fleet metrics
     "metrics.tick": {"ts": 1.0},
     # Task lifecycle
