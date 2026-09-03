@@ -56,7 +56,7 @@ describe("layoutSemanticGraph", () => {
     expect(pair).toHaveLength(2);
     expect(new Set(pair.map((e) => e.id)).size).toBe(2);
     expect(pair.map((e) => e.data!.edgeKind)).toEqual(["decision_case", "decision_default"]);
-    expect(pair.map((e) => e.label)).toEqual(["already open", "otherwise"]);
+    expect(pair.map((e) => e.label)).toEqual(["already open", "Default"]);
     expect(pair.map((e) => e.selectable)).toEqual([true, true]);
   });
 
@@ -137,9 +137,10 @@ describe("layoutSemanticGraph", () => {
     const byId = Object.fromEntries(
       result.nodes.filter((n) => n.type === RULE_CLUSTER_NODE_TYPE).map((n) => [n.id, n.data]),
     );
-    // Rule 2 owns one rule-level diagnostic plus the graph-level stale contract
-    // on `open-gate`; rule 1 owns none.
-    expect(byId["review-on-task-completed"]!.diagnosticCount).toBe(0);
+    // Every graph-level diagnostic blames a step, so each lands on the cluster
+    // that owns that step: `ensure-review-task` on rule 1, `list-downstream`
+    // and `open-gate` on rule 2.
+    expect(byId["review-on-task-completed"]!.diagnosticCount).toBe(1);
     expect(byId["sweep-on-spec-approved"]!.diagnosticCount).toBe(2);
   });
 
