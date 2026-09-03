@@ -319,6 +319,20 @@ class AiBudgetDTO(V2Model):
     timeout_seconds: int | None = None
 
 
+class CapabilityNarrowingDTO(V2Model):
+    """``AgentTaskStep.capability_narrowing`` projected.
+
+    Unlike :class:`CapabilityNamespacesDTO` every namespace is nullable, because
+    the narrowing's ``None`` (this step narrows nothing here) and ``[]`` (none)
+    are different instructions and the card has to be able to say which one the
+    author wrote.  Lists are sorted for a stable card.
+    """
+
+    harness_tools: list[str] | None = None
+    aq_commands: list[str] | None = None
+    plugin_tools: list[str] | None = None
+
+
 class DelegationPolicyDTO(V2Model):
     """AgentTaskStep only."""
 
@@ -326,6 +340,10 @@ class DelegationPolicyDTO(V2Model):
     wait_for_completion: bool = True
     cancel_child: bool = False
     narrowed_from: str | None = None  # parent principal provenance, human-readable
+    #: Roadmap §2's third intersection term: the child principal is
+    #: ``parent ∩ child profile ∩ this``.  ``None`` means the step narrows
+    #: nothing beyond the first two terms.
+    capability_narrowing: CapabilityNarrowingDTO | None = None
 
 
 class AiNodeDetailDTO(V2Model):

@@ -14655,6 +14655,56 @@
         "title": "CapabilityNamespacesDTO",
         "description": "``CapabilityPolicy`` projected.  Sorted; empty list means deny-all."
       },
+      "CapabilityNarrowingDTO": {
+        "properties": {
+          "harness_tools": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Harness Tools"
+          },
+          "aq_commands": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Aq Commands"
+          },
+          "plugin_tools": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plugin Tools"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "CapabilityNarrowingDTO",
+        "description": "``AgentTaskStep.capability_narrowing`` projected.\n\nUnlike :class:`CapabilityNamespacesDTO` every namespace is nullable, because\nthe narrowing's ``None`` (this step narrows nothing here) and ``[]`` (none)\nare different instructions and the card has to be able to say which one the\nauthor wrote.  Lists are sorted for a stable card."
+      },
       "CatalogEntryModel": {
         "properties": {
           "server_name": {
@@ -17113,6 +17163,16 @@
               }
             ],
             "title": "Narrowed From"
+          },
+          "capability_narrowing": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CapabilityNarrowingDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "additionalProperties": false,

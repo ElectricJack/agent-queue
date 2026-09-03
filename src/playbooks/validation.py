@@ -137,6 +137,7 @@ VALIDATOR_CODES: Final[frozenset[str]] = frozenset(
         "output_schema_too_deep",
         "profile_capability_empty",
         "tool_use_not_subset",
+        "narrowing_not_subset",
         "capability_not_subset",
         "delegation_runtime_checked",
         "stale_contract",
@@ -1632,6 +1633,8 @@ def _profiles_and_capabilities(context: _Context) -> None:
                 step_id=step_id,
                 field="/profile_id",
             )
+        if isinstance(step, AgentTaskStep) and step.capability_narrowing is not None:
+            _check_narrowing(context, step_id, step, policy)
         if isinstance(step, LlmStep) and (
             step.tool_use.aq_commands or step.tool_use.plugin_tools
         ):
@@ -1705,6 +1708,47 @@ def _profiles_and_capabilities(context: _Context) -> None:
                 )
 
 
+def _check_narrowing(
+    context: _Context, step_id: str, step: AgentTaskStep, policy: Any
+) -> None:
+    """§6.7 — an explicit per-step narrowing may only name capabilities the
+    child profile actually grants.
+
+    The executor intersects (``src/playbooks/executors/agent_task.py``), so a
+    name the child profile does not hold narrows nothing: the run behaves
+    exactly as if the author had not written it.  That is the silent no-op
+    this diagnostic exists to prevent — an author who narrows a delegated
+    agent task to ``task_clos`` believes they restricted it, and a reviewer
+    reading the card sees a restriction that never applied.
+
+    ``None`` in a namespace is "narrows nothing here" and is skipped; an
+    explicitly empty list is "none", which is always a subset.
+    """
+    narrowing = step.capability_narrowing
+    if narrowing is None:
+        return
+    for namespace in ("harness_tools", "aq_commands", "plugin_tools"):
+        declared = getattr(narrowing, namespace, None)
+        if declared is None:
+            continue
+        granted = getattr(policy, namespace, None)
+        if not isinstance(granted, (frozenset, set)):
+            continue  # a lookup that does not expose namespaces; nothing to check
+        unknown = sorted(name for name in declared if name not in granted)
+        if not unknown:
+            continue
+        context.emit(
+            "narrowing_not_subset",
+            f"capability_narrowing.{namespace} names "
+            f"{', '.join(repr(name) for name in unknown)}, which profile "
+            f"{step.profile_id!r} does not grant; a narrowing intersects, so this "
+            f"restricts nothing",
+            rule_id=step.rule,
+            step_id=step_id,
+            field=f"/capability_narrowing/{namespace}",
+        )
+
+
 def _policy_is_empty(policy: Any) -> bool:
     """``CapabilityPolicy.is_empty`` — a method in the shipped Package 0 module,
     a property in that package's plan.  Tolerate both rather than pin one."""
@@ -1744,6 +1788,14 @@ def _inventory_names(definition: PlaybookDefinition) -> list[tuple[str, str | No
             names.extend((key, step.rule, step_id) for key in step.inputs)
         if isinstance(step, (LlmStep, AgentTaskStep)):
             names.append((step.profile_id, step.rule, step_id))
+        if isinstance(step, AgentTaskStep) and step.capability_narrowing is not None:
+            # §5.3 applied to the third intersection term: a per-step narrowing
+            # is an authored restriction, so every capability it names has to
+            # come from the prose.  A compiler that invents one silently changes
+            # what a delegated child may do, in either direction.
+            for namespace in ("harness_tools", "aq_commands", "plugin_tools"):
+                declared = getattr(step.capability_narrowing, namespace, None) or ()
+                names.extend((name, step.rule, step_id) for name in declared)
         if isinstance(step, LlmStep) and step.outcome_field:
             names.append((step.outcome_field, step.rule, step_id))
             from src.playbooks.definition import _outcome_enum
