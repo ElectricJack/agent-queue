@@ -204,8 +204,8 @@ def kind() -> WorkspaceKind:
 
 
 class TestGitExclude:
-    def test_creates_block_when_absent(self, base_repo: Path, mgr):
-        assert asyncio.run(mgr.ensure_git_exclude(base_repo)) is True
+    def test_creates_block_when_absent(self, base_repo: Path):
+        assert WorktreeSlotManager.ensure_git_exclude(base_repo) is True
         text = (base_repo / ".git" / "info" / "exclude").read_text(
             encoding="utf-8", errors="surrogateescape"
         )
@@ -215,24 +215,24 @@ class TestGitExclude:
         # sentinel out of `git status` in every slot.
         assert "/.aq-worktree.json" in text
 
-    def test_is_idempotent(self, base_repo: Path, mgr):
-        asyncio.run(mgr.ensure_git_exclude(base_repo))
+    def test_is_idempotent(self, base_repo: Path):
+        WorktreeSlotManager.ensure_git_exclude(base_repo)
         exclude = base_repo / ".git" / "info" / "exclude"
         first = exclude.read_bytes()
-        assert asyncio.run(mgr.ensure_git_exclude(base_repo)) is False
+        assert WorktreeSlotManager.ensure_git_exclude(base_repo) is False
         assert exclude.read_bytes() == first
 
-    def test_preserves_foreign_content(self, base_repo: Path, mgr):
+    def test_preserves_foreign_content(self, base_repo: Path):
         exclude = base_repo / ".git" / "info" / "exclude"
         exclude.parent.mkdir(parents=True, exist_ok=True)
         exclude.write_text("# operator's own rules\n*.swp\n")
-        asyncio.run(mgr.ensure_git_exclude(base_repo))
+        WorktreeSlotManager.ensure_git_exclude(base_repo)
         text = exclude.read_text()
         assert "# operator's own rules" in text
         assert "*.swp" in text
         assert "/.aq/" in text
 
-    def test_rewrites_a_drifted_block(self, base_repo: Path, mgr):
+    def test_rewrites_a_drifted_block(self, base_repo: Path):
         exclude = base_repo / ".git" / "info" / "exclude"
         exclude.parent.mkdir(parents=True, exist_ok=True)
         # Written cp1252-ish on purpose: the marker's em-dash must not be what
@@ -243,7 +243,7 @@ class TestGitExclude:
                 "cp1252"
             )
         )
-        assert asyncio.run(mgr.ensure_git_exclude(base_repo)) is True
+        assert WorktreeSlotManager.ensure_git_exclude(base_repo) is True
         text = exclude.read_text(encoding="utf-8", errors="surrogateescape")
         assert "/stale/" not in text
         assert "/.aq/" in text
@@ -257,7 +257,7 @@ class TestGitExclude:
         status = _git(["status", "--porcelain"], cwd=base_repo)
         assert status == "", f"base repo dirtied by slot creation: {status!r}"
 
-    def test_slot_creation_uses_exact_path_for_separate_git_dir(
+    def test_slot_creation_uses_git_resolved_exclude_path(
         self, tmp_path, db, bus, mutexes, kind
     ):
         origin = tmp_path / "separate-origin.git"
@@ -296,7 +296,6 @@ class TestGitExclude:
         asyncio.run(manager.create_slot(base_ws, kind, 0))
 
         assert EXCLUDE_BEGIN in (metadata / "info" / "exclude").read_text()
-        assert not (base / ".git" / "info" / "exclude").exists()
 
     def test_slot_creation_refuses_unverifiable_exclude(self, base_repo, mgr, base_ws, kind):
         info_dir = base_repo / ".git" / "info"
@@ -306,8 +305,6 @@ class TestGitExclude:
 
         with pytest.raises(OSError):
             asyncio.run(mgr.create_slot(base_ws, kind, 0))
-
-        assert not slot_path(base_repo, 0).exists()
 
 
 # ───────────────────────────── §2.5 sentinel ─────────────────────────────

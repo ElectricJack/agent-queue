@@ -238,3 +238,69 @@ class TestExclusiveCloneExcludesControlFiles:
         workspace = await db.get_workspace("ws-1")
         assert workspace.locked_by_task_id is None
         assert not Path(git_repo["clone"], ".agent-queue-lock").exists()
+
+    async def test_git_link_to_repo_subdirectory_is_rejected(self, orch, git_repo):
+        workspace = Path(git_repo["clone"]) / "package"
+        workspace.mkdir()
+        db = orch.db
+        await db.create_project(Project(id="p-1", name="alpha", repo_default_branch="main"))
+        await db.create_workspace(
+            Workspace(
+                id="ws-1",
+                project_id="p-1",
+                workspace_path=str(workspace),
+                source_type=RepoSourceType.LINK,
+                kind_id="project-repo",
+            )
+        )
+        agent = Agent(id="a-1", name="agent-1", profile_id="claude")
+        await db.create_agent(agent)
+        task = Task(id="t-1", project_id="p-1", title="Task One", description="first")
+        await db.create_task(task)
+
+        assert await orch._prepare_workspace(task, agent) is None
+        assert (await db.get_workspace("ws-1")).locked_by_task_id is None
+
+    async def test_legacy_worktree_handoff_installs_managed_excludes(
+        self, orch, git_repo, tmp_path
+    ):
+        workspace = tmp_path / "legacy-worktree"
+        _git(["worktree", "add", "-b", "legacy", str(workspace)], cwd=git_repo["clone"])
+        db = orch.db
+        await db.create_project(Project(id="p-1", name="alpha", repo_default_branch="main"))
+        await db.create_workspace(
+            Workspace(
+                id="ws-1",
+                project_id="p-1",
+                workspace_path=str(workspace),
+                source_type=RepoSourceType.WORKTREE,
+                kind_id="project-repo",
+            )
+        )
+        agent = Agent(id="a-1", name="agent-1", profile_id="claude")
+        await db.create_agent(agent)
+        task = Task(id="t-1", project_id="p-1", title="Task One", description="first")
+        await db.create_task(task)
+
+        assert await orch._prepare_workspace(task, agent) == str(workspace)
+        exclude = Path(
+            _git(["rev-parse", "--path-format=absolute", "--git-path", "info/exclude"], str(workspace))
+        )
+        assert EXCLUDE_BEGIN in exclude.read_text(encoding="utf-8")
+
+    async def test_auto_remediation_refuses_cached_reserved_paths(self, orch, git_repo):
+        workspace = await _prepare(orch, git_repo, source_type=RepoSourceType.CLONE)
+        reserved = Path(workspace) / ".aq" / "claim.json"
+        reserved.parent.mkdir()
+        reserved.write_text("base\n")
+        _git(["add", "-f", ".aq/claim.json"], cwd=workspace)
+        _git(["commit", "-m", "track daemon path"], cwd=workspace)
+        before = _git(["rev-parse", "HEAD"], cwd=workspace)
+        reserved.write_text("changed\n")
+        (Path(workspace) / "work.py").write_text("answer = 42\n")
+
+        still_dirty = await orch._auto_remediate_uncommitted(workspace, "t-1", "main")
+
+        assert still_dirty is True
+        assert _git(["rev-parse", "HEAD"], cwd=workspace) == before
+        assert ".aq/claim.json" in _git(["diff", "--cached", "--name-only"], cwd=workspace)

@@ -69,12 +69,12 @@ class AdoptReport:
 
     * ``adopted`` — workspace ids for slots whose row + directory + sentinel
       all check out on boot.
-    * ``repaired`` — workspace ids for bases whose exact Git-resolved
-      ``info/exclude`` block was missing or drifted and is now verified.
+    * ``repaired`` — workspace ids for bases whose ``.git/info/exclude``
+      block was missing or drifted and has now been rewritten.
     * ``pruned`` — worktree paths (or "prune" sentinel) that had a stale
       ``.git/worktrees`` registration and were pruned.
-    * ``exclude_failures`` — bases whose exact managed exclude path could not
-      be installed and verified; their slots are not reported as adopted.
+    * ``exclude_failures`` — bases whose exact Git-resolved exclude path
+      could not be installed and verified; their slots are not adopted.
     """
 
     adopted: list[str] = field(default_factory=list)
@@ -87,11 +87,11 @@ logger = logging.getLogger(__name__)
 #: Directory (relative to the base repo) that holds every slot.
 SLOTS_DIRNAME = Path(".aq") / "worktrees"
 
-#: Marker block written to Git's resolved ``info/exclude`` (design §2.4).
+#: Marker block written to ``<base>/.git/info/exclude`` (design §2.4).
 EXCLUDE_BEGIN = "# >>> agent-queue managed — do not edit between markers >>>"
 EXCLUDE_END = "# <<< agent-queue managed <<<"
 #: Design §2.4 specifies ``/.aq/``.  The sentinel is listed alongside it:
-#: Git's ``info/exclude`` lives in the *common* dir and is therefore shared by
+#: ``.git/info/exclude`` lives in the *common* dir and is therefore shared by
 #: every worktree of the repository, so one line here keeps ``git status``
 #: clean in every slot.  Without it the sentinel shows up as untracked in each
 #: slot and gets swept into the salvage patch.
@@ -293,6 +293,39 @@ class WorktreeSlotManager:
             return WorktreeSlotManager._ensure_git_exclude_locked(exclude)
 
     @staticmethod
+    def git_exclude_is_current_path(exclude_path: str | Path) -> bool:
+        """Return whether an exact exclude path contains the managed block."""
+        exclude = Path(exclude_path)
+        if not exclude.exists():
+            return False
+        with exclude.open(encoding="utf-8", errors="surrogateescape", newline="") as f:
+            existing = f.read()
+        start = existing.find(_EXCLUDE_BEGIN_ASCII)
+        end = existing.find(_EXCLUDE_END_ASCII)
+        if start == -1 or end == -1 or end <= start:
+            return False
+        current = existing[start : end + len(_EXCLUDE_END_ASCII)]
+        return current.strip() == EXCLUDE_BLOCK.strip()
+
+    @classmethod
+    def ensure_git_exclude_path(cls, exclude_path: str | Path) -> bool:
+        """Write and verify the managed block at an exact Git-resolved path."""
+        exclude = Path(exclude_path)
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        with _exclude_lock(exclude.parent / _EXCLUDE_LOCK_NAME):
+            changed = cls._ensure_git_exclude_locked(exclude)
+        if not cls.git_exclude_is_current_path(exclude):
+            raise OSError(f"managed Git exclude block could not be verified at {exclude}")
+        return changed
+
+    async def ensure_git_exclude_for_checkout(
+        self, checkout_path: str | Path
+    ) -> bool:
+        """Resolve Git's exact exclude path, then install and verify the block."""
+        exclude = await self.git.aget_git_path(str(checkout_path), "info/exclude")
+        return self.ensure_git_exclude_path(exclude)
+
+    @staticmethod
     def _ensure_git_exclude_locked(exclude: Path) -> bool:
         # git's shipped template is not guaranteed UTF-8 (it is cp1252 on
         # some Windows installs) and an operator's own rules may be in any
@@ -444,7 +477,7 @@ class WorktreeSlotManager:
         default_branch = await self._default_branch(base_path)
 
         async with self._git_mutex(base_path):
-            await self.ensure_git_exclude(base_path)
+            await self.ensure_git_exclude_for_checkout(base_path)
             try:
                 await self.git.aworktree_prune(base_path)
             except GitError as e:
@@ -535,7 +568,7 @@ class WorktreeSlotManager:
             _validate_ref(resume_branch, field="resume branch")
 
         slot_dir = Path(slot_ws.workspace_path)
-        await self.ensure_git_exclude(slot_dir)
+        await self.ensure_git_exclude_for_checkout(slot_dir)
         from src.orchestrator.task_checkpoint import prepare_checkpoint, restore_checkpoint
         checkpoint = await prepare_checkpoint(self.db, self.git, task.id, str(slot_dir))
         if checkpoint:
@@ -1409,12 +1442,11 @@ class WorktreeSlotManager:
         """Boot-time adoption.  Design §6, spec §6.4.
 
         Cross-checks ``git worktree list --porcelain`` in each base of the
-        project against slot rows and their sentinels; resolves, repairs, and
-        verifies the exact Git exclude path; runs ``git worktree prune`` for
-        stale registrations; and re-registers rows for intact directories.
-        A base whose exclude cannot be verified is not adopted.  This method
-        does **not** delete slot directories or branches — the whole point of
-        adoption is that the directory is durable state.
+        project against slot rows and their sentinels; repairs the exclude
+        block; runs ``git worktree prune`` for stale registrations; and
+        re-registers rows for intact directories.  Does **not** delete slot
+        directories or branches — the whole point of adoption is that the
+        directory is durable state.
         """
         report = AdoptReport()
 
@@ -1429,7 +1461,7 @@ class WorktreeSlotManager:
                 continue
             # Repair exclude block idempotently.
             try:
-                if await self.ensure_git_exclude(base_path):
+                if await self.ensure_git_exclude_for_checkout(base_path):
                     report.repaired.append(base.id)
             except Exception as e:
                 logger.warning("ensure_git_exclude failed for %s: %s", base_path, e)

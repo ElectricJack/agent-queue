@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from src.git.manager import GitError, GitManager
 from src.models import (
@@ -245,6 +246,7 @@ class WorkspaceMixin:
 
         ws = primary.workspace
         workspace = ws.workspace_path
+        is_git_workspace = primary.kind.is_git_repo
 
         if worktrees_enabled and ws.is_slot:
             # Worktree mode replaces the whole CLONE/LINK provisioning block
@@ -337,7 +339,8 @@ class WorkspaceMixin:
             try:
                 branch = await restore_checkpoint(self.db, self.git, task.id, workspace)
                 await self.db.update_task(task.id, branch_name=branch)
-                await self._ensure_control_files_excluded(workspace)
+                if is_git_workspace:
+                    await self._ensure_control_files_excluded(workspace)
                 return workspace  # Preserve the resumed task's plan files too.
             except Exception as exc:
                 logger.error("Cannot restore paused task %s: %s", task.id, exc)
@@ -346,7 +349,11 @@ class WorkspaceMixin:
                 return None
 
         repo_url = project.repo_url if project else ""
-        default_branch = await self._get_default_branch(project, workspace)
+        default_branch = (
+            await self._get_default_branch(project, workspace)
+            if is_git_workspace
+            else (project.repo_default_branch if project else None) or "main"
+        )
 
         # Branch naming strategy:
         # - Root tasks get a fresh branch derived from their ID + title.
@@ -364,11 +371,8 @@ class WorkspaceMixin:
         else:
             branch_name = GitManager.make_branch_name(task.id, task.title)
 
-        # Git operations may fail (network issues, auth errors, merge
-        # conflicts) but should never prevent returning the workspace path.
-        # The agent can still work in the directory; it just won't have
-        # proper branch management.  Errors are reported via Discord
-        # notification so operators are aware.
+        # Git handoff is fail-closed. A workspace without verified managed
+        # excludes or usable branch state is released instead of launched.
         try:
             if is_worktree:
                 # Legacy WORKTREE row: a pre-existing branch-isolated worktree
@@ -378,10 +382,13 @@ class WorkspaceMixin:
                 # the retired ``.worktrees-<base>/`` filename convention.
                 # Fetch is automatically serialized by the GitManager lock
                 # provider — no need for explicit mutex acquisition here.
+                if not is_git_workspace or not await self.git.avalidate_checkout(workspace):
+                    raise GitError(f"legacy worktree is not a valid Git checkout: {workspace}")
+                await self._ensure_control_files_excluded(workspace)
                 base_path = await self.git.aworktree_base_path(workspace)
                 if base_path and await self.git.ahas_remote(base_path):
                     await self.git._arun(["fetch", "origin"], cwd=base_path)
-            else:
+            elif is_git_workspace:
                 # Workspace source types determine the git setup strategy:
                 #
                 # CLONE: The orchestrator manages the full clone lifecycle.
@@ -407,10 +414,7 @@ class WorkspaceMixin:
 
                 elif ws.source_type == RepoSourceType.LINK:
                     if not os.path.isdir(workspace):
-                        await self._emit_text_notify(
-                            f"**Warning:** Linked workspace path `{workspace}` does not exist.",
-                            project_id=task.project_id,
-                        )
+                        raise GitError(f"linked workspace path does not exist: {workspace}")
 
                 # Ensure workspace is on a clean, up-to-date default branch.
                 # The agent will create/switch to the task branch per its prompt.
@@ -451,6 +455,8 @@ class WorkspaceMixin:
                             ["reset", "--hard", f"origin/{default_branch}"],
                             cwd=workspace,
                         )
+                else:
+                    raise GitError(f"workspace is not a valid Git checkout: {workspace}")
 
             # Update task branch in DB
             await self.db.update_task(task.id, branch_name=branch_name)
@@ -495,6 +501,12 @@ class WorkspaceMixin:
 
         if not await self.git.avalidate_checkout(workspace):
             raise GitError(f"cannot install managed excludes: {workspace} is not a checkout")
+        repo_root = await self.git._arun(["rev-parse", "--show-toplevel"], cwd=workspace)
+        if Path(repo_root).resolve() != Path(workspace).resolve():
+            raise GitError(
+                "Git workspace handoff requires the repository root: "
+                f"configured {workspace}, repository root {repo_root}"
+            )
         exclude_path = await self.git.aget_git_path(workspace, "info/exclude")
         return WorktreeSlotManager.ensure_git_exclude_path(exclude_path)
 

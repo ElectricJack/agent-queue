@@ -1026,7 +1026,7 @@ class GitPlugin(InternalPlugin):
             return {
                 "project_id": args["project_id"],
                 "status": "nothing_to_commit",
-                "message": "No changes to commit",
+                "message": "No eligible changes to commit",
             }
         result = {
             "project_id": args["project_id"],

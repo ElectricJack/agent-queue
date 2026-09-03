@@ -152,6 +152,7 @@ async def session_orch(tmp_path):
     # Branch setup is not what these tests assert on, and the workspaces
     # below are bare directories rather than real clones.
     o.git = AsyncMock()
+    o._ensure_control_files_excluded = AsyncMock(return_value=True)
     o.harness_registry.upsert(
         Harness(
             id="claude",
@@ -976,6 +977,9 @@ class TestPrepareWorkspaceCleanDefault:
         config.worktrees.enabled = False
         orch = Orchestrator(config, runtimes=MockAdapterFactory())
         await orch.initialize()
+        # These tests isolate branch preparation; managed-exclude handoff has
+        # dedicated real-repository coverage.
+        orch._ensure_control_files_excluded = AsyncMock(return_value=True)
 
         await orch.db.create_project(
             Project(
@@ -1137,6 +1141,8 @@ class TestPhaseVerifyNormalTask:
         mock_git.afind_open_pr = AsyncMock(return_value=None)
         mock_git.acount_commits_ahead = AsyncMock(return_value=1)
         mock_git._arun = AsyncMock(return_value="0")
+        mock_git.areserved_paths_in_index = AsyncMock(return_value=set())
+        mock_git.areserved_paths_in_diff = AsyncMock(return_value=set())
         mock_git.acommit_all = AsyncMock(return_value=True)
         mock_git.apush_branch = AsyncMock(return_value=None)
         mock_git.aabort_in_progress_operations = AsyncMock()
@@ -1323,8 +1329,10 @@ class TestPhaseVerifyNormalTask:
         )
         await orch.db.create_task(task)
 
-        # First call returns True (initial check), second returns False (re-check after commit)
-        orch.git.ahas_uncommitted_changes = AsyncMock(side_effect=[True, False])
+        # Initial dirty status, then clean after commit and on strict re-check.
+        orch.git.ahas_uncommitted_changes = AsyncMock(
+            side_effect=[True, *([False] * 6)]
+        )
 
         ws = await orch.db.get_workspace("ws-1")
         ctx = self._make_ctx(orch, task, ws.workspace_path)
@@ -1377,7 +1385,10 @@ class TestPhaseVerifyNormalTask:
         )
         await orch.db.create_task(task)
 
-        orch.git.ahas_uncommitted_changes = AsyncMock(return_value=True)
+        # Dirty through failed commit/stash, then clean after force-clean.
+        orch.git.ahas_uncommitted_changes = AsyncMock(
+            side_effect=[True, True, *([False] * 6)]
+        )
         orch.git.acommit_all = AsyncMock(side_effect=Exception("commit failed"))
         # Force-clean succeeds — workspace is clean after reset+clean
         orch.git.aforce_clean_workspace = AsyncMock(return_value=True)
@@ -1409,8 +1420,10 @@ class TestPhaseVerifyNormalTask:
 
         # Agent left uncommitted changes on task branch
         orch.git.aget_current_branch = AsyncMock(return_value="feature-3c")
-        # First call True (initial), second False (after auto-commit)
-        orch.git.ahas_uncommitted_changes = AsyncMock(side_effect=[True, False])
+        # Initial dirty status, then clean after commit and on strict re-check.
+        orch.git.ahas_uncommitted_changes = AsyncMock(
+            side_effect=[True, *([False] * 6)]
+        )
 
         ws = await orch.db.get_workspace("ws-1")
         ctx = self._make_ctx(orch, task, ws.workspace_path)
@@ -1433,7 +1446,7 @@ class TestPhaseVerifyNormalTask:
             project_id="p-1",
             title="Test",
             description="test",
-            branch_name="feature-4",
+            branch_name="main",
             status=TaskStatus.IN_PROGRESS,
             integration_mode="direct",
         )
@@ -1462,7 +1475,7 @@ class TestPhaseVerifyNormalTask:
             project_id="p-1",
             title="Test",
             description="test",
-            branch_name="feature-4b",
+            branch_name="main",
             status=TaskStatus.IN_PROGRESS,
             integration_mode="direct",
         )
@@ -1518,6 +1531,8 @@ class TestPhaseVerifyApprovalTask:
         # Default: the task branch carries work, so the PR gate applies.
         mock_git.acount_commits_ahead = AsyncMock(return_value=1)
         mock_git._arun = AsyncMock(return_value="0")
+        mock_git.areserved_paths_in_index = AsyncMock(return_value=set())
+        mock_git.areserved_paths_in_diff = AsyncMock(return_value=set())
         mock_git.acommit_all = AsyncMock(return_value=True)
         mock_git.apush_branch = AsyncMock(return_value=None)
         mock_git.aabort_in_progress_operations = AsyncMock()
@@ -1735,6 +1750,8 @@ class TestPhaseVerifyIntermediateSubtask:
         mock_git.afind_open_pr = AsyncMock(return_value=None)
         mock_git.acount_commits_ahead = AsyncMock(return_value=1)
         mock_git._arun = AsyncMock(return_value="0")
+        mock_git.areserved_paths_in_index = AsyncMock(return_value=set())
+        mock_git.areserved_paths_in_diff = AsyncMock(return_value=set())
         mock_git.acommit_all = AsyncMock(return_value=True)
         mock_git.apush_branch = AsyncMock(return_value=None)
         mock_git.aabort_in_progress_operations = AsyncMock()
@@ -1776,8 +1793,10 @@ class TestPhaseVerifyIntermediateSubtask:
         orch, sub1 = pipeline_orch
         from src.models import PhaseResult
 
-        # First call returns True (initial check), second returns False (re-check after commit)
-        orch.git.ahas_uncommitted_changes = AsyncMock(side_effect=[True, False])
+        # Initial dirty status, then clean after commit and on strict re-check.
+        orch.git.ahas_uncommitted_changes = AsyncMock(
+            side_effect=[True, *([False] * 6)]
+        )
 
         ws = await orch.db.get_workspace("ws-1")
         ctx = self._make_ctx(orch, sub1, ws.workspace_path)
@@ -2028,6 +2047,8 @@ class TestCompletionPipelineVerify:
         mock_git.ais_ancestor = AsyncMock(return_value=True)
         mock_git.acount_commits_ahead = AsyncMock(return_value=1)
         mock_git._arun = AsyncMock(return_value="0")
+        mock_git.areserved_paths_in_index = AsyncMock(return_value=set())
+        mock_git.areserved_paths_in_diff = AsyncMock(return_value=set())
         mock_git.ahas_non_plan_changes = AsyncMock(return_value=False)
         o.git = mock_git
 
