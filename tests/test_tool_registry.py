@@ -898,6 +898,9 @@ _PLAYBOOK_COMMANDS = [
     "playbook_v2_graph",
     "playbook_activation_health",
     "playbook_activate",
+    # Pre-existing omission: Package 5 registered this in ``_TOOL_CATEGORIES``
+    # but never added it here, leaving this class red on main.
+    "playbook_artifacts",
     "playbook_artifact_diff",
     "playbook_pending_events",
     "playbook_pending_event_action",
@@ -906,6 +909,10 @@ _PLAYBOOK_COMMANDS = [
     "playbook_v2_validate",
     "playbook_v2_propose",
     "playbook_v2_shadow_compile",
+    # Playbook V1->V2 migration readiness (Package 6).
+    "playbook_migration_inventory",
+    "playbook_migration_acknowledge",
+    "playbook_migration_unacknowledge",
 ]
 
 

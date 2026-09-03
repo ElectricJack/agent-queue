@@ -362,6 +362,24 @@ Required capability for all of them: `aq_commands: playbook_migration_*` etc. �
 | `ExecutionMode.shadow`, `PlaybookEngine` | 4 | `src/playbooks/engine.py` | V2 arm of the parity harness |
 | Artifact diff + activation review UI | 5 | `dashboard/src/pages/playbook-graph/*` | the human review that produces `review.md` |
 
+#### 3.8.1 Reconciliation against the live tree (Commit 1, `solid-harbor.51`)
+
+Packages 0–5 have all landed. Every symbol above exists as assigned except the
+three rows below. This section is the amendment §3.8 requires; the table above
+is left as drafted so the delta is legible.
+
+| Row as drafted | Live tree | What Package 6 does |
+|---|---|---|
+| `CommandContractRegistry` (1) | The class is `ContractRegistry` (`src/commands/contracts/registry.py`), reached through the module-level singleton `CONTRACTS` (`src/commands/contracts/__init__.py`). The registry-wide fingerprint is `registry_fingerprint()` | `build_inventory(contract_registry=...)` takes anything exposing `registry_fingerprint()`; the command surface passes `CONTRACTS` |
+| `CompileQuestion` (2) | **Does not exist.** Package 2 shipped `Diagnostic` (`severity`/`code`/`message`/`rule_id`/`step_id`, `src/playbooks/validation.py`) and `propose()` (`src/playbooks/proposal.py`); there is no separate question model | The `compile_question` reason is raised from the two conditions the inventory can observe without compiling: no reviewed artifact is active yet, or the authoring Markdown changed after the active artifact was reviewed. `questions_resolved` stays a `review.md` field for Commit 3, which does have the compiler in hand |
+| `playbook_pending_event_list\|replay\|discard` (§3.6) | Package 5 already ships `playbook_pending_events` (list) and `playbook_pending_event_action` (dispatch/discard) | **Superseded — Package 6 adds no pending-event commands.** Duplicating the surface would give operators two spellings of one action. Pending-event *surfacing* lands instead as `InventoryEntry.pending_events` and `MigrationInventory.to_dict()["pending_events_total"]`, which is what the §3.7 cutover report reads |
+
+Three further deviations, in the spirit of §2's table:
+
+- **`tests/playbooks/` still does not exist.** The suites are `tests/test_playbook_migration_inventory.py` (T-1/T-2) and `tests/test_playbook_migration_commands.py` (T-3), the latter a split of T-3's assertions out of the inventory suite so the database-backed cases carry their own `sqlite`/`postgres` fixture.
+- **§5.1 case 4 pinned line 41** for `default-pipeline.md`'s embedded action fence. The shipped file has moved since the plan was drafted and the fence now opens at line 107. The test recomputes the expected line by classifying fences in the shipped file rather than carrying a literal that will rot again.
+- **Package 6's response DTOs live in `src/api/models/playbook_migration.py`**, not in `playbook_v2.py`. That module is Package 5's frozen §4 contract and `tests/test_playbook_v2_api_dtos.py` asserts its `RESPONSE_MODELS` holds exactly the Package 2 and 5 surfaces; Package 6 adds commands to the same `aq playbook` CLI group, not to that contract.
+
 If a symbol turns out **not** to exist because an earlier package deviated, the fallback is explicit, never invented: record it as a `MigrationReason` with code `schema_violation` in the reconciliation commit's message and escalate to the roadmap owner. Package 6 must not ship a local reimplementation of an earlier package's interface.
 
 ---

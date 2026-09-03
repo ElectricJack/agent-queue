@@ -1197,6 +1197,10 @@ class TestAllPlaybookCommandsRegistered:
         "playbook_v2_validate",
         "playbook_v2_propose",
         "playbook_v2_shadow_compile",
+        # Playbook V1->V2 migration readiness (Package 6).
+        "playbook_migration_inventory",
+        "playbook_migration_acknowledge",
+        "playbook_migration_unacknowledge",
     ]
 
     def test_all_cmd_methods_exist(self):
