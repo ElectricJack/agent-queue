@@ -240,6 +240,50 @@ async def _make_slot_for(orch, task_id="tsk-1"):
     return await orch.db.get_workspace_for_task(task_id), Path(p)
 
 
+async def test_exclusive_clone_handoff_excludes_daemon_bookkeeping(base_repo_for_wt, tmp_path):
+    """Exclusive-clone task handoff keeps daemon state out of the task diff."""
+    config = AppConfig(
+        data_dir=str(tmp_path / "data"),
+        database_path=str(tmp_path / "aq.db"),
+        workspace_dir=str(tmp_path / "workspaces"),
+    )
+    config.worktrees.enabled = False
+    orch = Orchestrator(config, runtimes=_NullRuntimeFactory())
+    await orch.initialize()
+    try:
+        await orch.db.create_project(
+            Project(id="p1", name="alpha", repo_default_branch="main")
+        )
+        await orch.db.create_workspace(
+            _Workspace(
+                id="ws-clone",
+                project_id="p1",
+                workspace_path=str(base_repo_for_wt),
+                source_type=RepoSourceType.CLONE,
+                kind_id="project-repo",
+            )
+        )
+        await orch.db.create_agent(Agent(id="agent", name="agent", profile_id="p"))
+        await orch.db.create_task(Task(id="task", project_id="p1", title="task", description=""))
+
+        task = await orch.db.get_task("task")
+        agent = await orch.db.get_agent("agent")
+        assert await orch._prepare_workspace(task, agent) == str(base_repo_for_wt)
+
+        (base_repo_for_wt / ".aq").mkdir()
+        (base_repo_for_wt / ".aq" / "claim.json").write_text("{}\n")
+        (base_repo_for_wt / ".aq-worktree.json").write_text("{}\n")
+        (base_repo_for_wt / ".codex").mkdir()
+        (base_repo_for_wt / ".codex" / "hooks.json").write_text("{}\n")
+
+        status = _git_cli(["status", "--porcelain", "--untracked-files=all"], base_repo_for_wt)
+        assert ".aq/claim.json" not in status
+        assert ".aq-worktree.json" not in status
+        assert ".codex/hooks.json" not in status
+    finally:
+        await orch.shutdown()
+
+
 class TestWorkspaceDoctor:
     async def test_dirty_unlocked_slot_finding(self, worktree_handler):
         handler, orch, base = worktree_handler

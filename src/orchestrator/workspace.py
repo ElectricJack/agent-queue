@@ -370,6 +370,7 @@ class WorkspaceMixin:
         # proper branch management.  Errors are reported via Discord
         # notification so operators are aware.
         try:
+            exclude_root = workspace
             if is_worktree:
                 # Legacy WORKTREE row: a pre-existing branch-isolated worktree
                 # from before worktree-execution retired that fallback.  New
@@ -379,6 +380,8 @@ class WorkspaceMixin:
                 # Fetch is automatically serialized by the GitManager lock
                 # provider — no need for explicit mutex acquisition here.
                 base_path = await self.git.aworktree_base_path(workspace)
+                if base_path:
+                    exclude_root = base_path
                 if base_path and await self.git.ahas_remote(base_path):
                     await self.git._arun(["fetch", "origin"], cwd=base_path)
             else:
@@ -450,6 +453,16 @@ class WorkspaceMixin:
                             ["reset", "--hard", f"origin/{default_branch}"],
                             cwd=workspace,
                         )
+
+            # Pool and task runtimes write daemon-owned state in their working
+            # directory.  Keep it out of the task diff for every checked-out
+            # workspace, not only worktree slots (whose creation already does
+            # this).  A legacy worktree shares its base repository's exclude
+            # file, so target that common checkout instead.
+            if await self.git.avalidate_checkout(workspace):
+                from src.orchestrator.worktree_manager import WorktreeSlotManager
+
+                WorktreeSlotManager.ensure_git_exclude(exclude_root)
 
             # Update task branch in DB
             await self.db.update_task(task.id, branch_name=branch_name)
