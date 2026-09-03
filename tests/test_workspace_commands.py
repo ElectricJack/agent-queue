@@ -32,6 +32,7 @@ from src.models import (
     WorkspaceKind as _WorkspaceKind,
 )
 from src.orchestrator import Orchestrator
+from src.orchestrator.worktree_manager import EXCLUDE_BLOCK
 from src.runtimes.base import Runtime
 
 
@@ -474,6 +475,43 @@ class TestWorkspaceDoctor:
         result = await handler._cmd_workspace_doctor({"project_id": "p1"})
         kinds = {(f["kind"], f["workspace_id"]) for f in result["findings"]}
         assert ("exclude_missing", "ws-base") in kinds
+
+    async def test_separate_git_dir_checks_the_exact_exclude_path(
+        self, worktree_handler, tmp_path
+    ):
+        handler, orch, base = worktree_handler
+        metadata = tmp_path / "separate-metadata"
+        workspace = tmp_path / "separate-workspace"
+        subprocess.run(
+            [
+                "git",
+                "clone",
+                f"--separate-git-dir={metadata}",
+                str(base.parent / "origin.git"),
+                str(workspace),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        (metadata / "info" / "exclude").write_text(EXCLUDE_BLOCK)
+        await orch.db.create_workspace(
+            _Workspace(
+                id="ws-separate",
+                project_id="p1",
+                workspace_path=str(workspace),
+                source_type=RepoSourceType.CLONE,
+                kind_id="project-repo",
+            )
+        )
+
+        result = await handler._cmd_workspace_doctor({"project_id": "p1"})
+
+        findings = [
+            finding
+            for finding in result["findings"]
+            if finding["workspace_id"] == "ws-separate"
+        ]
+        assert not [finding for finding in findings if finding["kind"] == "exclude_missing"]
 
     async def test_redundant_clone_finding(self, worktree_handler, tmp_path):
         handler, orch, base = worktree_handler

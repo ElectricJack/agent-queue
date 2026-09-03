@@ -477,25 +477,22 @@ class WorkspaceMixin:
 
         return workspace
 
-    async def _ensure_control_files_excluded(self, workspace: str) -> None:
+    async def _ensure_control_files_excluded(self, workspace: str) -> bool:
         """Write the managed ``.git/info/exclude`` block into *workspace*.
 
         Worktree slots get this from :class:`WorktreeSlotManager` at
         provisioning; an exclusive clone or linked checkout (``worktrees.enabled:
         false``) has to get it here, or ``.aq/claim.json`` and friends end up in
         ``auto-commit: uncommitted changes from task <id>`` and — in direct
-        mode — on the project's default branch.  Best-effort: the block is
-        hygiene, not a precondition for launching the agent.
+        mode — on the project's default branch.  Failure is fatal to handoff:
+        an agent or pool session must never receive an unprotected checkout.
         """
         from src.orchestrator.worktree_manager import WorktreeSlotManager
 
-        try:
-            if not await self.git.avalidate_checkout(workspace):
-                return
-            exclude_path = await self.git.aget_git_path(workspace, "info/exclude")
-            WorktreeSlotManager.ensure_git_exclude_path(exclude_path)
-        except (OSError, GitError) as e:  # pragma: no cover - defensive
-            logger.warning("ensure_git_exclude failed for %s: %s", workspace, e)
+        if not await self.git.avalidate_checkout(workspace):
+            raise GitError(f"cannot install managed excludes: {workspace} is not a checkout")
+        exclude_path = await self.git.aget_git_path(workspace, "info/exclude")
+        return WorktreeSlotManager.ensure_git_exclude_path(exclude_path)
 
     @staticmethod
     def _project_slot_cap(project) -> int:
