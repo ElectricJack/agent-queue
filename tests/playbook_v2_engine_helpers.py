@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import pathlib
+import pickle
+import sqlite3
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from typing import Any
@@ -258,6 +260,115 @@ class RecordingRunRepository:
         return [receipt for receipt in self.receipts if receipt.run_id == run_id][
             offset : offset + limit
         ]
+
+
+class SQLiteRunRepository:
+    """Tiny test-only durable repository for process-restart boundary tests.
+
+    It deliberately persists only the engine's snapshot and receipt values.
+    Its schema is private to this test double, created in pytest's temporary
+    directory, and never invokes the application's migration machinery.
+    """
+
+    def __init__(self, database_path: str) -> None:
+        self.database_path = database_path
+        with sqlite3.connect(database_path) as connection:
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS test_v2_runs (run_id TEXT PRIMARY KEY, version INTEGER, snapshot BLOB)"
+            )
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS test_v2_receipts (receipt_id TEXT PRIMARY KEY, run_id TEXT, receipt BLOB)"
+            )
+
+    def _connection(self) -> sqlite3.Connection:
+        return sqlite3.connect(self.database_path)
+
+    async def create_run(self, snapshot: RunSnapshot) -> RunSnapshot:
+        with self._connection() as connection:
+            connection.execute(
+                "INSERT INTO test_v2_runs (run_id, version, snapshot) VALUES (?, ?, ?)",
+                (snapshot.run_id, snapshot.version, pickle.dumps(snapshot)),
+            )
+        return snapshot
+
+    async def load_run(self, run_id: str) -> RunSnapshot | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT snapshot FROM test_v2_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+        return pickle.loads(row[0]) if row is not None else None
+
+    async def find_run_for_dispatch(
+        self, dispatch_id: str, rule_id: str
+    ) -> RunSnapshot | None:
+        with self._connection() as connection:
+            rows = connection.execute("SELECT snapshot FROM test_v2_runs").fetchall()
+        return next(
+            (
+                snapshot
+                for (payload,) in rows
+                if (snapshot := pickle.loads(payload)).dispatch_id == dispatch_id
+                and snapshot.rule_id == rule_id
+            ),
+            None,
+        )
+
+    async def commit_boundary(
+        self,
+        snapshot: RunSnapshot,
+        receipt: StepReceipt,
+        wait_changes: Any = EMPTY_WAIT_CHANGES,
+    ) -> RunSnapshot:
+        del wait_changes
+        with self._connection() as connection:
+            current = connection.execute(
+                "SELECT version FROM test_v2_runs WHERE run_id = ?", (snapshot.run_id,)
+            ).fetchone()
+            if current is None or int(current[0]) != snapshot.version:
+                raise SnapshotVersionConflict(
+                    snapshot.run_id, snapshot.version, None if current is None else int(current[0])
+                )
+            advanced = replace(snapshot, version=snapshot.version + 1)
+            connection.execute(
+                "UPDATE test_v2_runs SET version = ?, snapshot = ? WHERE run_id = ?",
+                (advanced.version, pickle.dumps(advanced), advanced.run_id),
+            )
+            connection.execute(
+                "INSERT INTO test_v2_receipts (receipt_id, run_id, receipt) VALUES (?, ?, ?)",
+                (receipt.receipt_id, receipt.run_id, pickle.dumps(receipt)),
+            )
+        return advanced
+
+    async def list_receipts(
+        self, run_id: str, *, limit: int = 500, offset: int = 0
+    ) -> list[StepReceipt]:
+        with self._connection() as connection:
+            rows = connection.execute(
+                "SELECT receipt FROM test_v2_receipts WHERE run_id = ? ORDER BY rowid LIMIT ? OFFSET ?",
+                (run_id, limit, offset),
+            ).fetchall()
+        return [pickle.loads(payload) for (payload,) in rows]
+
+    async def request_cancel(
+        self, run_id: str, *, expected_version: int, reason: str, requested_by: str
+    ) -> RunSnapshot:
+        del reason, requested_by
+        snapshot = await self.load_run(run_id)
+        if snapshot is None or snapshot.version != expected_version:
+            raise SnapshotVersionConflict(
+                run_id, expected_version, None if snapshot is None else snapshot.version
+            )
+        updated = replace(
+            snapshot,
+            cancel_requested_at=1_000.0,
+            version=snapshot.version + 1,
+        )
+        with self._connection() as connection:
+            connection.execute(
+                "UPDATE test_v2_runs SET version = ?, snapshot = ? WHERE run_id = ?",
+                (updated.version, pickle.dumps(updated), run_id),
+            )
+        return updated
 
 
 def with_step(
