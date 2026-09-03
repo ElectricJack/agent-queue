@@ -408,6 +408,37 @@ before `amerge_pr` runs. It exists because branch protection does not:
 with its own `Tests (default)` run red. See
 [the merge-gating guide](../guides/merge-gating.md).
 
+### `apr_behind_base(checkout_path, pr_url)` (async only)
+
+Returns `(base_ref, behind_by)` for a PR head — the base branch name and
+the number of commits on it that the head does not contain — or `None`
+when the question cannot be answered.
+
+- Runs: `gh pr view <pr_url> --json baseRefName,headRefOid`, then
+  `gh api repos/<owner>/<repo>/compare/<base>...<head_oid>` and reads
+  `behind_by`. Owner and repo come from the PR URL
+  (`src/git/ci_gate.py`'s `parse_pr_url`).
+- This is the question GitHub's "Require branches to be up to date before
+  merging" flag asks. `0` means the head's checks ran against the base as
+  it is now; anything else means they passed against a base that has since
+  moved, and the merge result is a combination nothing has tested. Judging
+  it belongs to `src/git/ci_gate.py`'s `classify_base`
+  (`current` / `stale` / `unknown`).
+- `None` means unknown: a URL that names no repository, no `gh`, not
+  authenticated, no network, malformed JSON, a base name git would reject,
+  a head that is not a hex object id, or a `behind_by` that is not a
+  non-negative integer. Callers must never read it as up to date — under
+  `integration.merge_ci_policy: required` with
+  `integration.merge_require_up_to_date` on (the default), `pr_merge`
+  refuses on `None`.
+- Never raises.
+
+The consumer is `GitCommandsMixin._check_ci_before_merge`, alongside the
+rollup verdict. It exists because two PRs each green on their own base
+(#390 committed a generated file, #391 changed how it is generated) merged
+back to back into a red `main` that no pre-merge run could have observed.
+See [the merge-gating guide](../guides/merge-gating.md).
+
 ### `check_gh_auth()`
 
 Checks whether the `gh` CLI is authenticated. Returns `True` if `gh auth status` exits successfully, `False` otherwise (including timeout and missing executable). Async counterpart: `acheck_gh_auth`.

@@ -143,6 +143,25 @@ class GitRemoteUrlResponse(BaseModel):
     message: str | None = None
 
 
+class PrMergeBaseFreshness(BaseModel):
+    """Whether the PR head contains its base branch's tip.
+
+    GitHub's "Require branches to be up to date before merging", asked on
+    the fleet's own merge path.  A green rollup only says the head passed
+    against the base *as it was when the run started*; ``stale`` means the
+    base has moved since and the merged result is a combination nothing
+    has tested (PRs #390 + #391, 2026-09-03).
+    """
+
+    #: The base branch name (``""`` when unknown).
+    ref: str = ""
+    #: Commits on the base the head lacks; ``None`` when the comparison
+    #: could not be made.
+    behind_by: int | None = None
+    #: ``current`` / ``stale`` / ``unknown`` (see ``src/git/ci_gate.py``).
+    state: str = ""
+
+
 class PrMergeCiVerdict(BaseModel):
     """What the PR head's status checks said, and what the policy did about it.
 
@@ -163,6 +182,10 @@ class PrMergeCiVerdict(BaseModel):
     pending: list[str] = []
     #: Required check names the rollup does not mention at all.
     missing: list[str] = []
+    #: Base freshness, present when ``integration.merge_require_up_to_date``
+    #: is on.  A ``stale`` base blocks under ``required`` even when every
+    #: check is green.
+    base: PrMergeBaseFreshness | None = None
     #: True when the merge was refused because of this verdict.
     blocked: bool = False
     #: True when ``force`` overrode a ``required`` refusal.

@@ -19,8 +19,9 @@ class PrMergeRequest:
         pr_url (str): Full GitHub PR URL, e.g. ``https://github.com/org/repo/pull/42``.
         method (str | Unset): Merge strategy (default: squash). Default: 'squash'.
         force (bool | Unset): Merge even when ``integration.merge_ci_policy: required`` would refuse because the PR's
-            checks are red, still running, or unreadable.  For a human who has looked at the failure and judged it unrelated
-            — the override is recorded in the result and the log. Default: False.
+            checks are red, still running, or unreadable, or because the head is behind its base.  For a human who has
+            looked at the failure and judged it unrelated — the override is recorded in the result and the log. Default:
+            False.
     """
 
     project_id: str

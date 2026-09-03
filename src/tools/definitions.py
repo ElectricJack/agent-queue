@@ -5083,7 +5083,12 @@ _ALL_TOOL_DEFINITIONS = [
             "head after this command returns).  The PR's status-check rollup "
             "is consulted first according to ``integration.merge_ci_policy``; "
             "the verdict comes back in the ``ci`` block, and under the "
-            "``required`` policy a non-green rollup refuses the merge."
+            "``required`` policy a non-green rollup refuses the merge.  The "
+            "same block's ``base`` says whether the head is up to date with "
+            "its base (``current`` / ``stale`` / ``unknown``): a green head "
+            "behind its base passed against a base that has since moved, and "
+            "under ``required`` that refuses too until the branch is updated "
+            "and its checks re-run (``integration.merge_require_up_to_date``)."
         ),
         "input_schema": {
             "type": "object",
@@ -5109,7 +5114,8 @@ _ALL_TOOL_DEFINITIONS = [
                     "description": (
                         "Merge even when ``integration.merge_ci_policy: required`` "
                         "would refuse because the PR's checks are red, still "
-                        "running, or unreadable.  For a human who has looked at "
+                        "running, or unreadable, or because the head is behind "
+                        "its base.  For a human who has looked at "
                         "the failure and judged it unrelated — the override is "
                         "recorded in the result and the log."
                     ),
