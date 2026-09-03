@@ -297,6 +297,30 @@ class TestGitExclude:
 
         assert EXCLUDE_BEGIN in (metadata / "info" / "exclude").read_text()
 
+    def test_slot_creation_rejects_a_git_subdirectory_base(
+        self, base_repo: Path, db, bus, mutexes, kind
+    ):
+        nested = base_repo / "nested"
+        nested.mkdir()
+        nested_ws = Workspace(
+            id="ws-nested",
+            project_id="p1",
+            workspace_path=str(nested),
+            source_type=RepoSourceType.LINK,
+            kind_id="project-repo",
+        )
+        db.workspaces[nested_ws.id] = nested_ws
+        manager = WorktreeSlotManager(
+            db=db,
+            git=GitManager(),
+            bus=bus,
+            config=WorktreesConfig(enabled=True),
+            git_mutex=mutexes,
+        )
+
+        with pytest.raises(GitError, match="repository root"):
+            asyncio.run(manager.create_slot(nested_ws, kind, 0))
+
     def test_slot_creation_refuses_unverifiable_exclude(self, base_repo, mgr, base_ws, kind):
         info_dir = base_repo / ".git" / "info"
         (info_dir / "exclude").unlink()

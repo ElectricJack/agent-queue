@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 
 from src.git.manager import GitError
 from src.notifications.builder import build_task_detail
@@ -38,6 +39,16 @@ WORK_OUTCOME_NO_OP = "no-op"
 #: ``src/review_keys.py`` owns the set — the close path's ``review_task``
 #: guard reads the same ids, and the two must not drift apart.
 NO_CODE_PROFILE_IDS = REVIEW_PROFILE_IDS
+
+
+@dataclass(frozen=True)
+class _DeliveryResolution:
+    """Strict resolution of the one ref that carries task delivery work."""
+
+    delivery_ref: str | None
+    checked_refs: tuple[str, ...]
+    no_work: bool = False
+    error: str | None = None
 
 
 class GitOpsMixin:
@@ -425,12 +436,106 @@ class GitOpsMixin:
         base = f"origin/{default_branch}" if has_remote else default_branch
         return await self.git.acount_commits_ahead(workspace, ref, base)
 
+    async def _resolve_task_delivery(
+        self,
+        ctx: PipelineContext,
+        *,
+        current_branch: str,
+        has_remote: bool,
+    ) -> _DeliveryResolution:
+        """Resolve work to exactly one of the assigned and checked-out refs.
+
+        Both refs are compared with the same default-branch base. A positive
+        count on each distinct ref is ambiguous and therefore fail-closed;
+        exactly one positive count selects that ref; two zero counts prove no
+        work. Missing assigned metadata is accepted as no-work only from a
+        known-zero default checkout.
+        """
+        workspace = ctx.workspace_path
+        default_branch = ctx.default_branch or "main"
+        assigned_branch = ctx.delivery_branch or ctx.task.branch_name
+
+        current_count = await self._commits_ahead_of_default(
+            workspace,
+            current_branch,
+            default_branch,
+            has_remote=has_remote,
+        )
+        if current_count is None:
+            return _DeliveryResolution(
+                None,
+                (current_branch,),
+                error=f"Could not verify delivery commits on `{current_branch}`.",
+            )
+
+        if not assigned_branch or assigned_branch == current_branch:
+            if current_count > 0:
+                return _DeliveryResolution(current_branch, (current_branch,))
+            if current_branch == default_branch and not has_remote:
+                return _DeliveryResolution(
+                    None,
+                    (current_branch,),
+                    error="Cannot prove an untracked default checkout has no work.",
+                )
+            return _DeliveryResolution(None, (current_branch,), no_work=True)
+
+        branch_exists = await self.git.abranch_exists(workspace, assigned_branch)
+        if branch_exists is None:
+            return _DeliveryResolution(
+                None,
+                (current_branch,),
+                error=f"Could not verify whether delivery branch `{assigned_branch}` exists.",
+            )
+        if not branch_exists:
+            if current_count > 0:
+                return _DeliveryResolution(current_branch, (current_branch,))
+            if current_branch == default_branch and has_remote:
+                return _DeliveryResolution(None, (current_branch,), no_work=True)
+            return _DeliveryResolution(
+                None,
+                (current_branch,),
+                error=(
+                    f"Delivery branch `{assigned_branch}` does not exist and the "
+                    "current branch does not prove a default-checkout no-work result."
+                ),
+            )
+
+        assigned_count = await self._commits_ahead_of_default(
+            workspace,
+            assigned_branch,
+            default_branch,
+            has_remote=has_remote,
+        )
+        checked_refs = (current_branch, assigned_branch)
+        if assigned_count is None:
+            return _DeliveryResolution(
+                None,
+                checked_refs,
+                error=f"Could not verify delivery commits on `{assigned_branch}`.",
+            )
+        if current_count > 0 and assigned_count > 0:
+            return _DeliveryResolution(
+                None,
+                checked_refs,
+                error=(
+                    "Task delivery is ambiguous: both "
+                    f"`{assigned_branch}` and `{current_branch}` contain commits "
+                    f"ahead of `{default_branch}`."
+                ),
+            )
+        if assigned_count > 0:
+            return _DeliveryResolution(assigned_branch, checked_refs)
+        if current_count > 0:
+            return _DeliveryResolution(current_branch, checked_refs)
+        return _DeliveryResolution(None, checked_refs, no_work=True)
+
     async def _task_proves_no_work(
         self,
         ctx: PipelineContext,
         *,
         current_branch: str | None = None,
         has_remote: bool | None = None,
+        resolution: _DeliveryResolution | None = None,
     ) -> bool:
         """Prove a clean task has exactly zero commits on every relevant ref.
 
@@ -454,79 +559,16 @@ class GitOpsMixin:
         if not current_branch or current_branch == "HEAD":
             return False
 
-        default_branch = ctx.default_branch or "main"
-        assigned_branch = ctx.delivery_branch or ctx.task.branch_name
-
-        assigned_absent = False
-        if assigned_branch and assigned_branch != current_branch:
-            branch_exists = await self.git.abranch_exists(workspace, assigned_branch)
-            if branch_exists is None:
-                return False
-            if branch_exists:
-                assigned_count = await self._commits_ahead_of_default(
-                    workspace,
-                    assigned_branch,
-                    default_branch,
-                    has_remote=has_remote,
-                )
-                if assigned_count != 0:
-                    return False
-            else:
-                assigned_absent = True
-
-        if current_branch == default_branch and not has_remote:
-            return False
-        current_count = await self._commits_ahead_of_default(
-            workspace,
-            current_branch,
-            default_branch,
-            has_remote=has_remote,
-        )
-        if current_count != 0:
-            return False
-        return not assigned_absent or current_branch == default_branch
-
-    async def _branch_left_no_commits(self, ctx: PipelineContext) -> bool:
-        """True when this task's branch ended with no commits ahead of its base.
-
-        The third guard against the review pipeline reviewing nothing (task
-        bright-forge-78).  ``_task_produces_no_code`` asks about *intent* (a
-        ``read_only`` profile, ``--work-outcome no-op``) and the pipeline's
-        ``review_task`` flag asks about *provenance* (a dedup key this
-        pipeline stamped); both can be dodged by a project that renames or
-        rewrites its reviewer profiles.  This asks the branch itself, so an
-        empty diff is recognised whatever produced it — including a worker
-        that closed ``pass`` having committed nothing.
-
-        Asked only where the answer survives the rest of the close:
-
-        * **worktree mode** — integration merges the branch into the default
-          under the merge slot, after this;
-        * **pull_request mode** — the PR is merged later, by the final
-          reviewer.
-
-        The legacy direct path is deliberately excluded: ``_phase_verify``
-        auto-merges the task branch into the default branch there, so by this
-        point a branch full of work counts zero commits ahead and would be
-        misread as empty. Unknown stays False: "cannot tell" must never
-        disarm a review.
-        """
-        if not ctx.workspace_path or not await self._task_uses_git(ctx):
-            return False
-        pr_mode = (
-            await self._effective_integration_mode(ctx.task) == INTEGRATION_MODE_PULL_REQUEST
-        )
-        if not pr_mode and not await self._task_is_worktree_mode(ctx):
-            return False
-        try:
-            return await self._task_proves_no_work(ctx)
-        except Exception as e:
-            logger.warning(
-                "Task %s: empty-branch check failed (assuming it has work): %s",
-                ctx.task.id,
-                e,
+        if resolution is None:
+            resolution = await self._resolve_task_delivery(
+                ctx,
+                current_branch=current_branch,
+                has_remote=has_remote,
             )
+        if not resolution.no_work or resolution.error:
             return False
+        ctx.no_work_proven = True
+        return True
 
     async def _sweep_uncommitted_before_skip(self, ctx: PipelineContext) -> None:
         """Best-effort dirty-slot cleanup on a verification path that skips the checks.
@@ -599,14 +641,6 @@ class GitOpsMixin:
             return (ctx.pr_url, False)
         if result == PhaseResult.ERROR:
             return (ctx.pr_url, False)
-
-        # Whether the branch carries any work has to be settled *here*:
-        # verification is done (auto-commit and auto-push have run, so the
-        # answer is final) and integration has not yet merged the branch into
-        # the default branch, which would make a real code task look empty.
-        # The close path reads it off the context to flag ``task.completed``
-        # as ``no_code`` — see ``_branch_left_no_commits``.
-        ctx.branch_no_commits = await self._branch_left_no_commits(ctx)
 
         # Phase 2: Integration (worktree-mode only).  For exclusive-clone
         # tasks the verify phase already handled the merge; for worktree
@@ -725,15 +759,6 @@ class GitOpsMixin:
         pr_mode = (
             await self._effective_integration_mode(task) == INTEGRATION_MODE_PULL_REQUEST
         )
-        # A task branch is normally the delivery branch. If it carries no
-        # work, an agent may have committed and opened its PR from the branch
-        # currently checked out instead. That alternate branch is selected
-        # below only after the task branch is shown empty.
-        pr_delivery_branch = task.branch_name
-        if not pr_delivery_branch:
-            if pr_mode and current_branch != default_branch:
-                pr_delivery_branch = current_branch
-
         # Worktree-mode tasks integrate via _phase_integrate under the merge
         # slot, not via _phase_verify's auto-merge remediations.  The agent
         # is expected to leave the slot on its task branch with everything
@@ -745,10 +770,8 @@ class GitOpsMixin:
         # resolve the issue (uncommitted changes, missing merge/push/PR).
         # Unfixable issues (behind origin, diverged history) block immediately.
         failures: list[tuple[str, bool]] = []
-        if pr_mode and not pr_delivery_branch:
-            failures.append(("Could not determine the task delivery branch.", False))
-        delivery_guard_ref: str | None = None
         delivery_guard_blocked = False
+        resolution: _DeliveryResolution | None = None
 
         # ── Auto-remediate: commit uncommitted changes ──────────────────
         # Agents frequently forget to commit their work before completing.
@@ -784,27 +807,37 @@ class GitOpsMixin:
                     )
                     return PhaseResult.STOP
 
-        # Before any automatic merge or push, prove that the task's delivery
-        # diff does not modify daemon-owned paths.  A direct-mode agent may
-        # already have merged onto the default branch; PR/worktree agents
-        # normally leave their delivery tip checked out instead.
+        # Resolve assigned/current work once, then guard every ref that was
+        # part of that verdict. No mode may silently choose one of two
+        # independently-ahead refs.
         if not has_uncommitted:
-            candidate_delivery_ref: str | None = None
-            if current_branch and current_branch != default_branch:
-                candidate_delivery_ref = current_branch
-            elif current_branch == default_branch:
-                candidate_delivery_ref = default_branch
-            if candidate_delivery_ref and candidate_delivery_ref != delivery_guard_ref:
-                delivery_guard_ref = candidate_delivery_ref
+            try:
+                resolution = await self._resolve_task_delivery(
+                    ctx,
+                    current_branch=current_branch,
+                    has_remote=has_remote,
+                )
+            except Exception as exc:
+                resolution = _DeliveryResolution(
+                    None,
+                    (current_branch,),
+                    error=f"Could not resolve the task delivery ref: {exc}",
+                )
+            if resolution.error:
+                failures.append((resolution.error, False))
+                delivery_guard_blocked = True
+            for relevant_ref in resolution.checked_refs:
                 delivery_failure = await self._reserved_delivery_failure(
                     workspace,
                     default_branch,
-                    delivery_guard_ref,
+                    relevant_ref,
                     has_remote=has_remote,
                 )
                 if delivery_failure:
                     failures.append(delivery_failure)
                     delivery_guard_blocked = True
+            if resolution.delivery_ref:
+                ctx.delivery_branch = resolution.delivery_ref
 
         # This is the sole implicit no-work exit. Intent metadata and a
         # missing assigned branch can only skip delivery after the same
@@ -812,10 +845,12 @@ class GitOpsMixin:
         if (
             not has_uncommitted
             and not delivery_guard_blocked
+            and resolution is not None
             and await self._task_proves_no_work(
                 ctx,
                 current_branch=current_branch,
                 has_remote=has_remote,
+                resolution=resolution,
             )
         ):
             logger.info("Task %s: strict Git proof found no task delivery work", task.id)
@@ -829,32 +864,17 @@ class GitOpsMixin:
         # Skipped for worktree-mode tasks: integration is _phase_integrate's
         # job (under the merge slot); the slot deliberately stays on the
         # task branch.  Worktree-execution spec §6.5.
-        merge_branch: str | None = None
-        if current_branch != default_branch:
-            merge_branch = current_branch
-        elif task.branch_name and task.branch_name != default_branch:
-            branch_exists = await self.git.abranch_exists(workspace, task.branch_name)
-            if branch_exists is None:
-                failures.append(
-                    (
-                        f"Could not verify whether delivery branch `{task.branch_name}` exists.",
-                        False,
-                    )
-                )
-                delivery_guard_blocked = True
-            elif branch_exists:
-                delivery_failure = await self._reserved_delivery_failure(
-                    workspace,
-                    default_branch,
-                    task.branch_name,
-                    has_remote=has_remote,
-                )
-                if delivery_failure:
-                    failures.append(delivery_failure)
-                    delivery_guard_blocked = True
-                else:
-                    delivery_guard_ref = task.branch_name
-                    merge_branch = task.branch_name
+        delivery_ref = resolution.delivery_ref if resolution else None
+        pr_delivery_branch = delivery_ref if pr_mode else None
+        if pr_mode and not pr_delivery_branch and has_uncommitted:
+            # The strict resolver cannot prove a delivery tip while tracked or
+            # untracked work is still present.  Keep the dirty-tree failure
+            # fixable on the assigned branch; a later close will resolve its
+            # committed tip before any PR is accepted.
+            pr_delivery_branch = ctx.delivery_branch or task.branch_name or current_branch
+        merge_branch = delivery_ref if delivery_ref != default_branch else None
+        if pr_mode and not pr_delivery_branch and not delivery_guard_blocked:
+            failures.append(("Could not determine the task delivery branch.", False))
 
         if (
             not is_worktree_task
@@ -1025,61 +1045,8 @@ class GitOpsMixin:
                         True,  # fixable — agent can commit and push
                     )
                 )
-            if (
-                pr_delivery_branch
-                and task.branch_name == pr_delivery_branch
-                and current_branch != default_branch
-                and current_branch != pr_delivery_branch
-            ):
-                assigned_count = await self._commits_ahead_of_default(
-                    workspace,
-                    pr_delivery_branch,
-                    default_branch,
-                    has_remote=has_remote,
-                )
-                current_count = await self._commits_ahead_of_default(
-                    workspace,
-                    current_branch,
-                    default_branch,
-                    has_remote=has_remote,
-                )
-                if assigned_count is None or current_count is None:
-                    failures.append(("Could not verify the task delivery commits.", False))
-                    pr_delivery_branch = None
-                elif assigned_count == 0 and current_count > 0:
-                    pr_delivery_branch = current_branch
             if pr_delivery_branch:
                 ctx.delivery_branch = pr_delivery_branch
-                if pr_delivery_branch != delivery_guard_ref:
-                    branch_exists: bool | None = True
-                    if current_branch == default_branch:
-                        branch_exists = await self.git.abranch_exists(
-                            workspace, pr_delivery_branch
-                        )
-                    if branch_exists is None:
-                        failures.append(
-                            (
-                                f"Could not verify whether delivery branch "
-                                f"`{pr_delivery_branch}` exists.",
-                                False,
-                            )
-                        )
-                        delivery_guard_blocked = True
-                    elif branch_exists:
-                        delivery_failure = await self._reserved_delivery_failure(
-                            workspace,
-                            default_branch,
-                            pr_delivery_branch,
-                            has_remote=has_remote,
-                        )
-                        if delivery_failure:
-                            failures.append(delivery_failure)
-                            delivery_guard_blocked = True
-                    else:
-                        failures.append(
-                            (f"Delivery branch `{pr_delivery_branch}` does not exist.", False)
-                        )
-                        delivery_guard_blocked = True
                 if has_remote and not delivery_guard_blocked:
                     pr_url = await self.git.afind_open_pr(
                         workspace,
@@ -1658,7 +1625,6 @@ class GitOpsMixin:
         task = ctx.task
         workspace = ctx.workspace_path
         default_branch = ctx.default_branch or "main"
-        branch = task.branch_name
         if not workspace or not await self._task_uses_git(ctx):
             return PhaseResult.CONTINUE
 
@@ -1680,36 +1646,47 @@ class GitOpsMixin:
         if has_remote is None or not current_branch:
             return PhaseResult.STOP
 
-        branch_exists: bool | None = None
-        if branch:
-            branch_exists = await self.git.abranch_exists(workspace, branch)
-            if branch_exists is None:
-                return PhaseResult.STOP
-        delivery_ref = branch if branch and branch_exists else current_branch
+        try:
+            resolution = await self._resolve_task_delivery(
+                ctx,
+                current_branch=current_branch,
+                has_remote=has_remote,
+            )
+        except Exception as exc:
+            logger.error("Task %s: delivery-ref resolution failed: %s", task.id, exc)
+            return PhaseResult.STOP
+        if resolution.error:
+            logger.error("Task %s: refusing integration: %s", task.id, resolution.error)
+            ctx.verification_issues.append(resolution.error)
+            return PhaseResult.STOP
 
         # Defense in depth: run the delivery gate before both the no-work
         # return and every merge/push path.
-        delivery_failure = await self._reserved_delivery_failure(
-            workspace,
-            default_branch,
-            delivery_ref,
-            has_remote=has_remote,
-        )
-        if delivery_failure:
-            message, _fixable = delivery_failure
-            logger.error("Task %s: refusing integration: %s", task.id, message)
-            ctx.verification_issues.append(message)
-            return PhaseResult.STOP
+        for relevant_ref in resolution.checked_refs:
+            delivery_failure = await self._reserved_delivery_failure(
+                workspace,
+                default_branch,
+                relevant_ref,
+                has_remote=has_remote,
+            )
+            if delivery_failure:
+                message, _fixable = delivery_failure
+                logger.error("Task %s: refusing integration: %s", task.id, message)
+                ctx.verification_issues.append(message)
+                return PhaseResult.STOP
 
         if await self._task_proves_no_work(
             ctx,
             current_branch=current_branch,
             has_remote=has_remote,
+            resolution=resolution,
         ):
             logger.info("Task %s: strict Git proof found no work to integrate", task.id)
             return PhaseResult.CONTINUE
-        if not branch or branch_exists is not True:
+        branch = resolution.delivery_ref
+        if not branch:
             return PhaseResult.STOP
+        ctx.delivery_branch = branch
 
         ttl = float(self.config.worktrees.merge_slot_ttl_seconds)
         acquired = await acquire_merge_slot(self.db, task.project_id, task.id, ttl)

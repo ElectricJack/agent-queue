@@ -417,6 +417,33 @@ class TestWorkspaceDoctor:
         ]
         assert not [finding for finding in findings if finding["kind"] == "exclude_missing"]
 
+    async def test_git_subdirectory_base_is_unverifiable(
+        self, worktree_handler
+    ):
+        handler, orch, base = worktree_handler
+        nested = base / "nested"
+        nested.mkdir()
+        await orch.db.create_workspace(
+            _Workspace(
+                id="ws-subdir",
+                project_id="p1",
+                workspace_path=str(nested),
+                source_type=RepoSourceType.LINK,
+                kind_id="project-repo",
+            )
+        )
+
+        result = await handler._cmd_workspace_doctor({"project_id": "p1"})
+
+        findings = [
+            finding
+            for finding in result["findings"]
+            if finding["workspace_id"] == "ws-subdir"
+            and finding["kind"].startswith("exclude_")
+        ]
+        assert [finding["kind"] for finding in findings] == ["exclude_unverifiable"]
+        assert "repository root" in findings[0]["detail"]
+
     async def test_redundant_clone_finding(self, worktree_handler, tmp_path):
         handler, orch, base = worktree_handler
         # Add a second base clone under project-repo — should be flagged.

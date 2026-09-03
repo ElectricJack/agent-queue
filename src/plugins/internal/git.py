@@ -756,7 +756,7 @@ class GitPlugin(InternalPlugin):
             return {
                 "project_id": project_id,
                 "committed": False,
-                "message": "Nothing to commit -- working tree clean",
+                "message": "No eligible changes to commit",
             }
         return {"project_id": project_id, "committed": True, "commit_message": message}
 

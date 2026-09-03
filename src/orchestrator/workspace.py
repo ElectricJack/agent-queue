@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass, field
-from pathlib import Path
 
 from src.git.manager import GitError, GitManager
 from src.models import (
@@ -497,17 +496,12 @@ class WorkspaceMixin:
         and linked worktrees are covered.  Failure is fatal to handoff: an
         agent or pool session must never receive an unprotected checkout.
         """
-        from src.orchestrator.worktree_manager import WorktreeSlotManager
+        from src.orchestrator.worktree_manager import (
+            WorktreeSlotManager,
+            resolve_managed_exclude_path,
+        )
 
-        if not await self.git.avalidate_checkout(workspace):
-            raise GitError(f"cannot install managed excludes: {workspace} is not a checkout")
-        repo_root = await self.git._arun(["rev-parse", "--show-toplevel"], cwd=workspace)
-        if Path(repo_root).resolve() != Path(workspace).resolve():
-            raise GitError(
-                "Git workspace handoff requires the repository root: "
-                f"configured {workspace}, repository root {repo_root}"
-            )
-        exclude_path = await self.git.aget_git_path(workspace, "info/exclude")
+        exclude_path = await resolve_managed_exclude_path(self.git, workspace)
         return WorktreeSlotManager.ensure_git_exclude_path(exclude_path)
 
     @staticmethod

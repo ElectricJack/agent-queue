@@ -161,6 +161,20 @@ def _read_pointer_file(path: Path, key: str) -> Path | None:
         target = (path.parent / target).resolve()
     return target
 
+
+async def resolve_managed_exclude_path(git, checkout_path: str | Path) -> Path:
+    """Validate a repository-root checkout and resolve its exact exclude path."""
+    checkout = Path(checkout_path)
+    if not await git.avalidate_checkout(str(checkout)):
+        raise GitError(f"cannot install managed excludes: {checkout} is not a checkout")
+    repo_root = await git._arun(["rev-parse", "--show-toplevel"], cwd=str(checkout))
+    if Path(repo_root).resolve() != checkout.resolve():
+        raise GitError(
+            "Git workspace handoff requires the repository root: "
+            f"configured {checkout}, repository root {repo_root}"
+        )
+    return Path(await git.aget_git_path(str(checkout), "info/exclude"))
+
 #: Branch prefix every task branch carries.  Fixed — no title slug — so the
 #: branch is derivable from the task id alone (design §3.2).
 BRANCH_PREFIX = "aq/"
@@ -321,8 +335,8 @@ class WorktreeSlotManager:
     async def ensure_git_exclude_for_checkout(
         self, checkout_path: str | Path
     ) -> bool:
-        """Resolve Git's exact exclude path, then install and verify the block."""
-        exclude = await self.git.aget_git_path(str(checkout_path), "info/exclude")
+        """Validate the root checkout, then install its exact exclude block."""
+        exclude = await resolve_managed_exclude_path(self.git, checkout_path)
         return self.ensure_git_exclude_path(exclude)
 
     @staticmethod
@@ -1456,6 +1470,14 @@ class WorktreeSlotManager:
         slots = [ws for ws in workspaces if ws.is_slot]
 
         for base in bases:
+            try:
+                kind = await self.db.resolve_workspace_kind(
+                    project.id, base.kind_id or "project-repo"
+                )
+            except Exception:
+                kind = None
+            if kind is not None and not kind.is_git_repo:
+                continue
             base_path = base.workspace_path
             if not Path(base_path).is_dir():
                 continue

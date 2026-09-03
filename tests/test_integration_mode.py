@@ -317,7 +317,11 @@ class TestPhaseVerifyByMode:
         orch.git.aget_current_branch = AsyncMock(return_value="main")
         orch.git.afind_open_pr = AsyncMock(return_value=None)
         orch.git.ais_ancestor = AsyncMock(return_value=False)
-        orch.git.acount_commits_ahead = AsyncMock(return_value=1)
+        orch.git.acount_commits_ahead = AsyncMock(
+            side_effect=lambda _workspace, branch, _base: (
+                1 if branch == "feature-2" else 0
+            )
+        )
         ws = await orch.db.get_workspace("ws-1")
         ctx = _ctx(orch, task, ws.workspace_path)
         ctx.close_session_live = True
@@ -332,6 +336,11 @@ class TestPhaseVerifyByMode:
         await orch.db.create_task(task)
         orch.git.aget_current_branch = AsyncMock(return_value="main")
         orch.git.ais_ancestor = AsyncMock(return_value=False)
+        orch.git.acount_commits_ahead = AsyncMock(
+            side_effect=lambda _workspace, branch, _base: (
+                1 if branch == "feature-2" else 0
+            )
+        )
 
         async def find_open_pr(_workspace, _branch, *, include_workspace_head=True):
             if include_workspace_head:
@@ -365,6 +374,35 @@ class TestPhaseVerifyByMode:
         assert ctx.pr_url == "https://github.com/org/repo/pull/alt"
         orch.git.afind_open_pr.assert_awaited_once_with(
             ws.workspace_path, "feature/delivery", include_workspace_head=False
+        )
+
+    async def test_pr_mode_rejects_distinct_assigned_and_current_work(self, orch):
+        """Two independently ahead refs make the delivery tip ambiguous."""
+        task = _pr_task("t-pr-ambiguous", branch_name="feature/assigned")
+        await orch.db.create_task(task)
+        orch.git.aget_current_branch = AsyncMock(return_value="feature/current")
+        orch.git.acount_commits_ahead = AsyncMock(return_value=1)
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = _ctx(orch, task, ws.workspace_path)
+
+        assert await orch._phase_verify(ctx) == PhaseResult.STOP
+        orch.git.afind_open_pr.assert_not_awaited()
+
+    async def test_pr_mode_keeps_assigned_ref_when_wrong_current_is_empty(self, orch):
+        task = _pr_task("t-pr-wrong-current", branch_name="feature/assigned")
+        await orch.db.create_task(task)
+        orch.git.aget_current_branch = AsyncMock(return_value="feature/current")
+        orch.git.acount_commits_ahead = AsyncMock(
+            side_effect=lambda _workspace, branch, _base: (
+                2 if branch == "feature/assigned" else 0
+            )
+        )
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = _ctx(orch, task, ws.workspace_path)
+
+        assert await orch._phase_verify(ctx) == PhaseResult.CONTINUE
+        orch.git.afind_open_pr.assert_awaited_once_with(
+            ws.workspace_path, "feature/assigned", include_workspace_head=False
         )
 
     async def test_pr_mode_rejects_a_stale_pr_for_an_alternate_delivery_branch(self, orch):
@@ -411,7 +449,11 @@ class TestPhaseVerifyByMode:
         task = _direct_task("t-direct-assigned", branch_name="feature-assigned")
         await orch.db.create_task(task)
         orch.git.aget_current_branch = AsyncMock(return_value="main")
-        orch.git.acount_commits_ahead = AsyncMock(return_value=1)
+        orch.git.acount_commits_ahead = AsyncMock(
+            side_effect=lambda _workspace, branch, _base: (
+                1 if branch == "feature-assigned" else 0
+            )
+        )
         ws = await orch.db.get_workspace("ws-1")
         ctx = _ctx(orch, task, ws.workspace_path)
 
@@ -422,6 +464,43 @@ class TestPhaseVerifyByMode:
             if call.args and call.args[0][:1] == ["merge"]
         ]
         assert ["merge", "feature-assigned", "--no-edit"] in merge_calls
+
+    async def test_direct_mode_rejects_distinct_assigned_and_current_work(self, orch):
+        task = _direct_task("t-direct-ambiguous", branch_name="feature/assigned")
+        await orch.db.create_task(task)
+        orch.git.aget_current_branch = AsyncMock(return_value="feature/current")
+        orch.git.acount_commits_ahead = AsyncMock(return_value=1)
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = _ctx(orch, task, ws.workspace_path)
+
+        assert await orch._phase_verify(ctx) == PhaseResult.STOP
+        merge_calls = [
+            call.args[0]
+            for call in orch.git._arun.await_args_list
+            if call.args and call.args[0][:1] == ["merge"]
+        ]
+        assert merge_calls == []
+
+    async def test_direct_mode_uses_assigned_ref_when_wrong_current_is_empty(self, orch):
+        task = _direct_task("t-direct-wrong-current", branch_name="feature/assigned")
+        await orch.db.create_task(task)
+        orch.git.aget_current_branch = AsyncMock(return_value="feature/current")
+        orch.git.acount_commits_ahead = AsyncMock(
+            side_effect=lambda _workspace, branch, _base: (
+                2 if branch == "feature/assigned" else 0
+            )
+        )
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = _ctx(orch, task, ws.workspace_path)
+
+        assert await orch._phase_verify(ctx) == PhaseResult.CONTINUE
+        merge_calls = [
+            call.args[0]
+            for call in orch.git._arun.await_args_list
+            if call.args and call.args[0][:1] == ["merge"]
+        ]
+        assert ["merge", "feature/assigned", "--no-edit"] in merge_calls
+        assert ["merge", "feature/current", "--no-edit"] not in merge_calls
 
     async def test_direct_mode_probe_error_fails_closed(self, orch):
         task = _direct_task("t-direct-probe")
@@ -545,9 +624,9 @@ class TestEmptyBranchSkipsIntegration:
 
         result, acquire = await self._run_integrate(orch, task, monkeypatch, ahead=0)
 
-        assert result == PhaseResult.CONTINUE
-        acquire.assert_awaited_once()
-        orch.git.amerge_branch.assert_awaited_once()
+        assert result == PhaseResult.STOP
+        acquire.assert_not_awaited()
+        orch.git.amerge_branch.assert_not_awaited()
 
     async def test_a_branch_with_commits_still_integrates(self, orch, monkeypatch):
         task = _direct_task("t-int-ahead")
@@ -559,15 +638,15 @@ class TestEmptyBranchSkipsIntegration:
         acquire.assert_awaited_once()
         orch.git.amerge_branch.assert_awaited_once()
 
-    async def test_an_unanswerable_count_still_integrates(self, orch, monkeypatch):
-        """Unknown is not empty — keep integrating rather than skip blind."""
+    async def test_an_unanswerable_count_fails_closed(self, orch, monkeypatch):
+        """Unknown is not empty and cannot safely identify a delivery ref."""
         task = _direct_task("t-int-unknown")
         await orch.db.create_task(task)
 
         result, acquire = await self._run_integrate(orch, task, monkeypatch, ahead=None)
 
-        assert result == PhaseResult.CONTINUE
-        acquire.assert_awaited_once()
+        assert result == PhaseResult.STOP
+        acquire.assert_not_awaited()
 
 
 class TestSessionCloseCompletion:
@@ -1018,17 +1097,7 @@ class TestEmptyBranchSkipsThePrGate:
 
 
 class TestEmptyBranchIsFlaggedNoCode:
-    """The completion pipeline records whether the branch carried any work.
-
-    Third guard against the review pipeline reviewing nothing (task
-    bright-forge-78): ``_task_produces_no_code`` asks about intent and the
-    pipeline's ``review_task`` key asks about provenance, but a reviewer with
-    a rewritten profile and a custom dedup key dodges both.  The branch
-    itself cannot lie — zero commits ahead of the base means an empty diff.
-
-    The verdict has to be taken *before* integration, which merges the branch
-    into the default and would then make real work look empty.
-    """
+    """The central Git proof is the only source of the no-code event flag."""
 
     async def _run_pipeline(self, orch, task, monkeypatch, *, ahead, worktree=False):
         await orch.db.create_task(task)
@@ -1047,11 +1116,11 @@ class TestEmptyBranchIsFlaggedNoCode:
 
     async def test_pr_mode_empty_branch_is_flagged(self, orch, monkeypatch):
         ctx = await self._run_pipeline(orch, _pr_task("t-flag-empty"), monkeypatch, ahead=0)
-        assert ctx.branch_no_commits is True
+        assert ctx.no_work_proven is True
 
     async def test_pr_mode_branch_with_commits_is_not_flagged(self, orch, monkeypatch):
         ctx = await self._run_pipeline(orch, _pr_task("t-flag-ahead"), monkeypatch, ahead=4)
-        assert ctx.branch_no_commits is False
+        assert ctx.no_work_proven is False
 
     async def test_alternate_delivery_branch_with_commits_is_not_flagged(self, orch):
         """Completion must not report delivered alternate-branch work as no-code."""
@@ -1070,14 +1139,14 @@ class TestEmptyBranchIsFlaggedNoCode:
         ctx.work_outcome = "shipped"
 
         assert await orch._run_completion_pipeline(ctx) == (ctx.pr_url, True)
-        assert ctx.branch_no_commits is False
+        assert ctx.no_work_proven is False
 
     async def test_worktree_mode_empty_branch_is_flagged(self, orch, monkeypatch):
         """Non-PR worktree slots are asked too — integration merges later."""
         ctx = await self._run_pipeline(
             orch, _direct_task("t-flag-wt"), monkeypatch, ahead=0, worktree=True
         )
-        assert ctx.branch_no_commits is True
+        assert ctx.no_work_proven is True
 
     async def test_worktree_direct_status_error_is_not_flagged_empty(self, orch, monkeypatch):
         """Direct worktrees need the same known-clean proof as PR worktrees."""
@@ -1089,26 +1158,25 @@ class TestEmptyBranchIsFlaggedNoCode:
         ws = await orch.db.get_workspace("ws-1")
         ctx = _ctx(orch, task, ws.workspace_path)
 
-        assert await orch._branch_left_no_commits(ctx) is False
+        assert await orch._task_proves_no_work(ctx) is False
+        assert ctx.no_work_proven is False
 
-    async def test_the_legacy_direct_path_is_never_asked(self, orch, monkeypatch):
-        """Verification already merged the branch into the default there.
-
-        Counting commits ahead after that auto-merge returns zero for a
-        branch that shipped real work, so the question is not asked at all
-        and the review keeps firing.
-        """
+    async def test_direct_mode_empty_branch_is_flagged(self, orch, monkeypatch):
         ctx = await self._run_pipeline(
             orch, _direct_task("t-flag-direct"), monkeypatch, ahead=0, worktree=False
         )
-        assert ctx.branch_no_commits is False
+        assert ctx.no_work_proven is True
 
     async def test_an_unanswerable_count_is_not_flagged(self, orch, monkeypatch):
-        """Unknown is not empty — never disarm a review on a failed lookup."""
-        ctx = await self._run_pipeline(
-            orch, _pr_task("t-flag-unknown"), monkeypatch, ahead=None
-        )
-        assert ctx.branch_no_commits is False
+        """Unknown is not empty and fails the completion pipeline closed."""
+        task = _pr_task("t-flag-unknown")
+        await orch.db.create_task(task)
+        orch.git.acount_commits_ahead = AsyncMock(return_value=None)
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = _ctx(orch, task, ws.workspace_path)
+
+        assert await orch._run_completion_pipeline(ctx) == (None, False)
+        assert ctx.no_work_proven is False
 
     async def test_a_git_failure_is_not_flagged(self, orch, monkeypatch):
         task = _pr_task("t-flag-raises")
@@ -1118,11 +1186,13 @@ class TestEmptyBranchIsFlaggedNoCode:
         ws = await orch.db.get_workspace("ws-1")
         ctx = _ctx(orch, task, ws.workspace_path)
 
-        assert await orch._branch_left_no_commits(ctx) is False
+        assert await orch._run_completion_pipeline(ctx) == (None, False)
+        assert ctx.no_work_proven is False
 
     async def test_a_task_without_a_branch_is_not_asked(self, orch):
         task = _pr_task("t-flag-nobranch", branch_name=None)
         ctx = _ctx(orch, task, "/tmp")
 
-        assert await orch._branch_left_no_commits(ctx) is False
+        assert await orch._task_proves_no_work(ctx) is False
+        assert ctx.no_work_proven is False
 

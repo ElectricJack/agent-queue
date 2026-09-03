@@ -1398,14 +1398,11 @@ class PipelineContext:
     #: branch is retained so post-verification no-code checks inspect the
     #: branch that actually carried the commits.
     delivery_branch: str | None = None
-    #: Set by ``_run_completion_pipeline`` when the delivery branch carried
-    #: no commits ahead of its base, asked *before* integration could merge
-    #: the branch away. The close path folds it into the ``no_code`` flag on
-    #: ``task.completed`` so the review rules never spawn a reviewer for an
-    #: empty diff (task bright-forge-78).  False also means "not asked" —
-    #: the question is only answerable on the paths where the branch is
-    #: still unmerged at that point.
-    branch_no_commits: bool = False
+    #: Set only when the central strict Git predicate proves every relevant
+    #: delivery ref clean and exactly zero commits ahead of its base. The
+    #: close path copies this proof-backed verdict to ``task.completed`` as
+    #: ``no_code``; intent metadata never sets it.
+    no_work_proven: bool = False
 
 
 @dataclass(frozen=True)

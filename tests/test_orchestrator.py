@@ -1243,6 +1243,7 @@ class TestPhaseVerifyNormalTask:
 
         ws = await orch.db.get_workspace("ws-1")
         ctx = self._make_ctx(orch, task, ws.workspace_path)
+        orch.git.acount_commits_ahead = AsyncMock(return_value=0)
 
         result = await orch._phase_verify(ctx)
         assert result == PhaseResult.CONTINUE
@@ -1333,6 +1334,11 @@ class TestPhaseVerifyNormalTask:
         orch.git.ahas_uncommitted_changes = AsyncMock(
             side_effect=[True, *([False] * 6)]
         )
+        orch.git.acount_commits_ahead = AsyncMock(
+            side_effect=lambda _workspace, branch, _base: (
+                1 if branch == "main" else 0
+            )
+        )
 
         ws = await orch.db.get_workspace("ws-1")
         ctx = self._make_ctx(orch, task, ws.workspace_path)
@@ -1392,6 +1398,7 @@ class TestPhaseVerifyNormalTask:
         orch.git.acommit_all = AsyncMock(side_effect=Exception("commit failed"))
         # Force-clean succeeds — workspace is clean after reset+clean
         orch.git.aforce_clean_workspace = AsyncMock(return_value=True)
+        orch.git.acount_commits_ahead = AsyncMock(return_value=0)
 
         ws = await orch.db.get_workspace("ws-1")
         ctx = self._make_ctx(orch, task, ws.workspace_path)
@@ -2045,7 +2052,11 @@ class TestCompletionPipelineVerify:
         # integrated into origin/main": no PR is expected and ctx.pr_url
         # stays None.
         mock_git.ais_ancestor = AsyncMock(return_value=True)
-        mock_git.acount_commits_ahead = AsyncMock(return_value=1)
+        mock_git.acount_commits_ahead = AsyncMock(
+            side_effect=lambda _workspace, branch, _base: (
+                0 if branch == "main" else 1
+            )
+        )
         mock_git._arun = AsyncMock(return_value="0")
         mock_git.areserved_paths_in_index = AsyncMock(return_value=set())
         mock_git.areserved_paths_in_diff = AsyncMock(return_value=set())

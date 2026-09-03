@@ -20,6 +20,7 @@ import logging
 from pathlib import Path
 
 from src.models import KIND_MODE_WORKTREE
+from src.orchestrator.worktree_manager import resolve_managed_exclude_path
 
 logger = logging.getLogger(__name__)
 
@@ -144,10 +145,9 @@ class WorktreeCommandsMixin:
                     continue
                 base_path = base.workspace_path
                 try:
-                    exclude = Path(
-                        await self.orchestrator.git.aget_git_path(
-                            base_path, "info/exclude"
-                        )
+                    exclude = await resolve_managed_exclude_path(
+                        self.orchestrator.git,
+                        base_path,
                     )
                     needs_repair = not mgr.git_exclude_is_current_path(exclude)
                 except Exception as exc:
