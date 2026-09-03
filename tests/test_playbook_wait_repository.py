@@ -938,6 +938,149 @@ async def test_resolve_is_exactly_once(db):
     assert sum(1 for ok in outcomes if ok) == 1
 
 
+async def test_failed_pending_event_dispatch_is_retryable_and_audited(db):
+    pending_id = await retain(db)
+    claim = await db.claim_pending_event_dispatch(
+        pending_id, claimed_by="op-1", now=NOW + 1, stale_before=NOW
+    )
+    assert claim
+    # An in-flight event stays unresolved, so the dedup index still owns its key.
+    assert await retain(db, event_id="evt-2", now=NOW + 2) is None
+
+    assert await db.record_pending_event_dispatch_failure(
+        pending_id,
+        claim_token=claim,
+        error="engine unavailable",
+    )
+
+    [row] = await db.list_pending_events(playbook_id="task-review")
+    assert row["attempts"] == 1
+    assert row["last_error"] == "engine unavailable"
+    assert row["resolved_at"] is None
+    assert row["resolved_by"] is None
+    assert row["resolution"] is None
+
+    retry_claim = await db.claim_pending_event_dispatch(
+        pending_id, claimed_by="op-2", now=NOW + 2, stale_before=NOW + 1
+    )
+    assert retry_claim
+    assert await db.finalize_pending_event_dispatch(
+        pending_id,
+        claim_token=retry_claim,
+        resolved_by="op-2",
+        now=NOW + 3,
+    )
+    assert await db.list_pending_events(playbook_id="task-review") == []
+
+
+async def test_stale_dispatch_failure_cannot_reopen_a_newer_claim(db):
+    pending_id = await retain(db)
+    first_claim = await db.claim_pending_event_dispatch(
+        pending_id, claimed_by="op-1", now=NOW + 1, stale_before=NOW
+    )
+    assert first_claim
+    assert await db.record_pending_event_dispatch_failure(
+        pending_id,
+        claim_token=first_claim,
+        error="first failure",
+    )
+    second_claim = await db.claim_pending_event_dispatch(
+        pending_id, claimed_by="op-2", now=NOW + 2, stale_before=NOW + 1
+    )
+    assert second_claim
+
+    assert not await db.record_pending_event_dispatch_failure(
+        pending_id,
+        claim_token=first_claim,
+        error="late first failure",
+    )
+    assert await db.finalize_pending_event_dispatch(
+        pending_id,
+        claim_token=second_claim,
+        resolved_by="op-2",
+        now=NOW + 3,
+    )
+    assert await db.list_pending_events(playbook_id="task-review") == []
+    [row] = await db.list_pending_events(playbook_id="task-review", include_resolved=True)
+    assert row["attempts"] == 2
+    assert row["resolved_by"] == "op-2"
+    assert row["resolved_at"] == NOW + 3
+
+
+async def test_pending_event_dispatch_claim_is_exactly_once(db):
+    pending_id = await retain(db)
+    claims = await asyncio.gather(
+        *(
+            db.claim_pending_event_dispatch(
+                pending_id,
+                claimed_by=f"op-{i}",
+                now=NOW + 1,
+                stale_before=NOW,
+            )
+            for i in range(10)
+        )
+    )
+    assert sum(claim is not None for claim in claims) == 1
+
+
+async def test_stale_dispatch_claim_can_be_taken_over(db):
+    pending_id = await retain(db)
+    first_claim = await db.claim_pending_event_dispatch(
+        pending_id, claimed_by="op-1", now=NOW + 1, stale_before=NOW
+    )
+    assert first_claim
+    assert not await db.claim_pending_event_dispatch(
+        pending_id, claimed_by="op-2", now=NOW + 2, stale_before=NOW
+    )
+
+    second_claim = await db.claim_pending_event_dispatch(
+        pending_id, claimed_by="op-2", now=NOW + 3, stale_before=NOW + 2
+    )
+    assert second_claim and second_claim != first_claim
+    assert not await db.finalize_pending_event_dispatch(
+        pending_id, claim_token=first_claim, resolved_by="op-1", now=NOW + 4
+    )
+    assert await db.finalize_pending_event_dispatch(
+        pending_id, claim_token=second_claim, resolved_by="op-2", now=NOW + 4
+    )
+
+
+async def test_expiry_sweep_does_not_resolve_an_active_dispatch_claim(db):
+    pending_id = await retain(db, ttl_seconds=1)
+    claim = await db.claim_pending_event_dispatch(
+        pending_id, claimed_by="op-1", now=NOW + 0.5, stale_before=NOW
+    )
+    assert claim
+
+    swept = await db.purge_pending_events(NOW + 2, resolved_before=NOW)
+    assert swept.expired == 0
+    [row] = await db.list_pending_events(playbook_id="task-review")
+    assert row["dispatch_claim_token"] == claim
+
+    assert await db.record_pending_event_dispatch_failure(
+        pending_id, claim_token=claim, error="engine unavailable"
+    )
+    swept = await db.purge_pending_events(NOW + 2, resolved_before=NOW)
+    assert swept.expired == 1
+
+
+async def test_expiry_sweep_resolves_an_abandoned_dispatch_claim(db):
+    pending_id = await retain(db, ttl_seconds=1)
+    claim = await db.claim_pending_event_dispatch(
+        pending_id, claimed_by="dead-op", now=NOW + 0.5, stale_before=NOW
+    )
+    assert claim
+
+    swept = await db.purge_pending_events(NOW + 302, resolved_before=NOW)
+
+    assert swept.expired == 1
+    [row] = await db.list_pending_events(playbook_id="task-review", include_resolved=True)
+    assert row["resolution"] == "expired"
+    assert row["dispatch_claim_token"] is None
+    assert row["dispatch_claimed_by"] is None
+    assert row["dispatch_claimed_at"] is None
+
+
 async def test_pending_event_quota_is_enforced(db):
     db.set_playbook_pending_event_quota(3)
     for i in range(3):

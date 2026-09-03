@@ -25,9 +25,12 @@ stays here.
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import json
 import logging
 import time
+from contextlib import suppress
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -43,6 +46,7 @@ from src.playbooks.definition import (
 )
 from src.playbooks.pipeline_lowering import shadow_compile
 from src.playbooks.proposal import DuplicateSemanticKey, load_semantic_body_json, propose
+from src.playbooks.waits import PENDING_EVENT_DISPATCH_LEASE_SECONDS
 from src.playbooks.validation import (
     Diagnostic,
     RegisteredEventLookup,
@@ -65,6 +69,8 @@ V2_STORAGE_UNAVAILABLE_ERROR = (
     "artifact store and run receipts (playbook V2 roadmap packages 2-4) are not "
     "present in this build"
 )
+
+_PENDING_EVENT_DISPATCH_RENEW_SECONDS = 60.0
 
 #: The seven command names this mixin owns, in child-plan §4.8 order.  Imported
 #: by ``src/commands/handler.py`` (feature pause) and by the tests that pin the
@@ -1082,6 +1088,40 @@ class PlaybookV2CommandsMixin:
             "blockers": [],
         }
 
+    async def _v2_dispatch_pending_event(self, row, principal, claim_token: str):
+        """Dispatch while renewing the durable claim that excludes other operators."""
+        pending_event_id = row["pending_event_id"]
+        stable_dispatch_id = hashlib.sha256(
+            f"v2-pending|{pending_event_id}".encode()
+        ).hexdigest()[:12]
+        dispatch = asyncio.create_task(
+            self._v2_engine().dispatch_event(
+                row["event"],
+                principal,
+                playbook_ids=[row["playbook_id"]],
+                dispatch_id=stable_dispatch_id,
+            )
+        )
+        try:
+            while True:
+                done, _pending = await asyncio.wait(
+                    {dispatch}, timeout=_PENDING_EVENT_DISPATCH_RENEW_SECONDS
+                )
+                if dispatch in done:
+                    return await dispatch
+                renewed = await self.db.renew_pending_event_dispatch_claim(
+                    pending_event_id,
+                    claim_token=claim_token,
+                    now=time.time(),
+                )
+                if not renewed:
+                    raise RuntimeError("pending event dispatch claim was lost")
+        finally:
+            if not dispatch.done():
+                dispatch.cancel()
+                with suppress(BaseException):
+                    await dispatch
+
     async def _cmd_playbook_pending_event_action(self, args: dict) -> dict:
         """Dispatch or discard held pending events.
 
@@ -1119,7 +1159,19 @@ class PlaybookV2CommandsMixin:
         if not pending_event_ids:
             return {"error": "pending_event_ids must be a non-empty list of event ids"}
 
-        if not self._v2_storage_ready("get_pending_events", "resolve_pending_event"):
+        storage_methods = ["get_pending_events"]
+        if action == "discard":
+            storage_methods.append("resolve_pending_event")
+        else:
+            storage_methods.extend(
+                (
+                    "claim_pending_event_dispatch",
+                    "renew_pending_event_dispatch_claim",
+                    "finalize_pending_event_dispatch",
+                    "record_pending_event_dispatch_failure",
+                )
+            )
+        if not self._v2_storage_ready(*storage_methods):
             return self._v2_storage_unavailable()
         wanted = set(pending_event_ids)
         rows = await self.db.get_pending_events(pending_event_ids)
@@ -1137,26 +1189,71 @@ class PlaybookV2CommandsMixin:
             if row is None:
                 skipped.append(event_id)
                 continue
-            claimed = await self.db.resolve_pending_event(
-                event_id,
-                resolution=action,
-                resolved_by=actor,
-                now=time.time(),
-            )
-            if not claimed:
-                skipped.append(event_id)
-                continue
             if action == "discard":
+                resolved = await self.db.resolve_pending_event(
+                    event_id,
+                    resolution="discarded",
+                    resolved_by=actor,
+                    now=time.time(),
+                )
+                if not resolved:
+                    skipped.append(event_id)
+                    continue
                 discarded.append(event_id)
                 continue
+            claimed_at = time.time()
+            claim_token = await self.db.claim_pending_event_dispatch(
+                event_id,
+                claimed_by=actor,
+                now=claimed_at,
+                stale_before=claimed_at - PENDING_EVENT_DISPATCH_LEASE_SECONDS,
+            )
+            if claim_token is None:
+                skipped.append(event_id)
+                continue
             try:
-                result = await self._v2_engine().dispatch_event(
-                    row["event"], principal, playbook_ids=[row["playbook_id"]]
+                result = await self._v2_dispatch_pending_event(row, principal, claim_token)
+                finalized = await self.db.finalize_pending_event_dispatch(
+                    event_id,
+                    claim_token=claim_token,
+                    resolved_by=actor,
+                    now=time.time(),
                 )
+                if not finalized:
+                    raise RuntimeError("pending event dispatch claim was lost before finalization")
                 dispatched.extend(result.run_ids)
-            except Exception as exc:  # noqa: BLE001 - each event reports independently
-                logger.warning("pending V2 event %s dispatch failed", event_id, exc_info=True)
-                errors.append(f"{event_id}: {exc}")
+            except BaseException as exc:  # noqa: BLE001 - cancellation must release the claim
+                cancelled = isinstance(exc, asyncio.CancelledError)
+                error = "dispatch cancelled" if cancelled else str(exc)
+                if not cancelled:
+                    logger.warning("pending V2 event %s dispatch failed", event_id, exc_info=True)
+                try:
+                    cancelled_during_recovery = None
+                    recovery = asyncio.create_task(
+                        self.db.record_pending_event_dispatch_failure(
+                            event_id,
+                            claim_token=claim_token,
+                            error=error,
+                        )
+                    )
+                    restored = await asyncio.shield(recovery)
+                except asyncio.CancelledError as recovery_cancel:
+                    cancelled_during_recovery = recovery_cancel
+                    restored = await recovery
+                except Exception as restore_exc:  # noqa: BLE001 - report both failures
+                    logger.exception(
+                        "pending V2 event %s could not restore its failed dispatch",
+                        event_id,
+                    )
+                    error = f"{error}; failed to restore pending event: {restore_exc}"
+                else:
+                    if not restored:
+                        error = f"{error}; failed dispatch no longer owns pending event claim"
+                if cancelled_during_recovery is not None:
+                    raise cancelled_during_recovery
+                if not isinstance(exc, Exception):
+                    raise
+                errors.append(f"{event_id}: {error}")
         return {
             "success": not errors,
             "action": action,

@@ -1311,6 +1311,9 @@ playbook_pending_events = Table(
     Column("last_error", Text, nullable=True),
     Column("received_at", Float, nullable=False),
     Column("expires_at", Float, nullable=False),
+    Column("dispatch_claim_token", Text, nullable=True),
+    Column("dispatch_claimed_by", Text, nullable=True),
+    Column("dispatch_claimed_at", Float, nullable=True),
     Column("resolved_at", Float, nullable=True),
     Column("resolved_by", Text, nullable=True),
     Column("resolution", Text, nullable=True),
@@ -1322,6 +1325,15 @@ playbook_pending_events = Table(
     CheckConstraint(
         "resolution IS NULL OR resolution IN ('dispatched', 'discarded', 'expired')",
         name="ck_playbook_pending_events_resolution",
+    ),
+    CheckConstraint(
+        "(resolved_at IS NULL AND ((dispatch_claim_token IS NULL AND "
+        "dispatch_claimed_by IS NULL AND dispatch_claimed_at IS NULL) OR "
+        "(dispatch_claim_token IS NOT NULL AND dispatch_claimed_by IS NOT NULL AND "
+        "dispatch_claimed_at IS NOT NULL))) OR (resolved_at IS NOT NULL AND "
+        "dispatch_claim_token IS NULL AND dispatch_claimed_by IS NULL AND "
+        "dispatch_claimed_at IS NULL)",
+        name="ck_playbook_pending_events_dispatch_claim",
     ),
     Index(
         "uq_playbook_pending_events_dedup",

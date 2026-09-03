@@ -200,6 +200,28 @@ def test_upgrade_creates_every_table_and_index(tmp_path):
         engine.dispose()
 
 
+def test_pending_event_dispatch_claim_schema(tmp_path):
+    engine = _sqlite_engine(tmp_path, name="pending-event-claims.db")
+    try:
+        migrate(engine, "head")
+        inspector = _inspect(engine)
+        columns = {
+            column["name"] for column in inspector.get_columns("playbook_pending_events")
+        }
+        assert {
+            "dispatch_claim_token",
+            "dispatch_claimed_by",
+            "dispatch_claimed_at",
+        } <= columns
+        constraints = {
+            constraint["name"]
+            for constraint in inspector.get_check_constraints("playbook_pending_events")
+        }
+        assert "ck_playbook_pending_events_dispatch_claim" in constraints
+    finally:
+        engine.dispose()
+
+
 def test_receipt_boundary_columns_preserve_single_receipt_compatibility(tmp_path):
     engine = _sqlite_engine(tmp_path, name="receipt-boundaries.db")
     try:

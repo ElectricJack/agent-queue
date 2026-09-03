@@ -1100,8 +1100,14 @@ over `resolved_at IS NULL AND dedup_key <> ''` — the index, not a pre-read,
 because a pre-read races.  An empty `dedup_key` therefore never deduplicates.
 Replay order is `ORDER BY received_at, pending_event_id`.  `resolved_at` /
 `resolved_by` / `resolution` are the operator-audit columns; resolution CASes
-on `resolved_at IS NULL`, so two operators clicking "dispatch" produce one
-dispatch. Retention is 7 days by default. The configured per-playbook quota
+on `resolved_at IS NULL`. Dispatch first acquires the all-or-none
+`dispatch_claim_*` lease while leaving `resolved_at` NULL, so the deduplication
+index continues protecting the event during execution. The owner renews the
+lease during a long dispatch and finalizes through its opaque token; a failed
+attempt clears the claim and records `attempts` / `last_error`, while a stale
+lease may be atomically replaced after process death. The retention sweep
+protects a renewed live claim but expires an abandoned claim after the same
+lease horizon. Retention is 7 days by default. The configured per-playbook quota
 (`playbooks.v2_max_pending_events_per_playbook`) applies independently to
 unresolved activation rows and to resolved wait-delivery inbox rows, keeping
 either producer path from growing the table without bound.
@@ -1121,6 +1127,9 @@ either producer path from growing the table without bound.
 | `last_error` | TEXT | nullable | Last dispatch failure |
 | `received_at` | REAL | NOT NULL | Arrival time; the replay order |
 | `expires_at` | REAL | NOT NULL | `received_at + retention`; collectable past it |
+| `dispatch_claim_token` | TEXT | nullable | Opaque owner token while an operator dispatch is in flight |
+| `dispatch_claimed_by` | TEXT | nullable | Server-derived principal holding the dispatch lease |
+| `dispatch_claimed_at` | REAL | nullable | Last lease renewal time; stale claims may be replaced |
 | `resolved_at` | REAL | nullable | NULL while unresolved |
 | `resolved_by` | TEXT | nullable | Server-derived principal that resolved it |
 | `resolution` | TEXT | nullable, CHECK | One of: dispatched, discarded, expired |

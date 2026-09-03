@@ -65,6 +65,7 @@ from src.playbooks.run_state import (
 from src.playbooks.waits import (
     EMPTY_WAIT_CHANGES,
     EVENT_ADDRESSABLE_WAIT_KINDS,
+    PENDING_EVENT_DISPATCH_LEASE_SECONDS,
     MatchableEvent,
     WaitChangeSet,
     WaitClaim,
@@ -227,6 +228,9 @@ def _row_to_pending_event(row) -> dict[str, Any]:
         "last_error": row["last_error"],
         "received_at": row["received_at"],
         "expires_at": row["expires_at"],
+        "dispatch_claim_token": row["dispatch_claim_token"],
+        "dispatch_claimed_by": row["dispatch_claimed_by"],
+        "dispatch_claimed_at": row["dispatch_claimed_at"],
         "resolved_at": row["resolved_at"],
         "resolved_by": row["resolved_by"],
         "resolution": row["resolution"],
@@ -1367,6 +1371,9 @@ class PlaybookRunQueryMixin:
                         last_error=None,
                         received_at=now,
                         expires_at=now + ttl_seconds,
+                        dispatch_claim_token=None,
+                        dispatch_claimed_by=None,
+                        dispatch_claimed_at=None,
                         resolved_at=None,
                         resolved_by=None,
                         resolution=None,
@@ -1388,15 +1395,115 @@ class PlaybookRunQueryMixin:
     async def resolve_pending_event(
         self, pending_event_id: str, *, resolution: str, resolved_by: str, now: float
     ) -> bool:
-        """CAS on ``resolved_at IS NULL`` — two operators produce one dispatch."""
+        """Resolve an unclaimed pending event exactly once."""
         async with self.immediate() as conn:
             result = await conn.execute(
                 update(playbook_pending_events)
                 .where(
                     playbook_pending_events.c.pending_event_id == pending_event_id,
                     playbook_pending_events.c.resolved_at.is_(None),
+                    playbook_pending_events.c.dispatch_claim_token.is_(None),
                 )
                 .values(resolved_at=now, resolved_by=resolved_by, resolution=resolution)
+            )
+        return int(result.rowcount) == 1
+
+    async def claim_pending_event_dispatch(
+        self,
+        pending_event_id: str,
+        *,
+        claimed_by: str,
+        now: float,
+        stale_before: float,
+    ) -> str | None:
+        """Claim an unresolved event, replacing only an expired dispatch lease."""
+        claim_token = uuid.uuid4().hex
+        async with self.immediate() as conn:
+            result = await conn.execute(
+                update(playbook_pending_events)
+                .where(
+                    playbook_pending_events.c.pending_event_id == pending_event_id,
+                    playbook_pending_events.c.resolved_at.is_(None),
+                    or_(
+                        playbook_pending_events.c.dispatch_claim_token.is_(None),
+                        playbook_pending_events.c.dispatch_claimed_at <= stale_before,
+                    ),
+                )
+                .values(
+                    dispatch_claim_token=claim_token,
+                    dispatch_claimed_by=claimed_by,
+                    dispatch_claimed_at=now,
+                    attempts=playbook_pending_events.c.attempts + 1,
+                )
+            )
+        return claim_token if int(result.rowcount) == 1 else None
+
+    async def renew_pending_event_dispatch_claim(
+        self, pending_event_id: str, *, claim_token: str, now: float
+    ) -> bool:
+        """Extend one dispatch lease while its engine call is still live."""
+        async with self.immediate() as conn:
+            result = await conn.execute(
+                update(playbook_pending_events)
+                .where(
+                    playbook_pending_events.c.pending_event_id == pending_event_id,
+                    playbook_pending_events.c.resolved_at.is_(None),
+                    playbook_pending_events.c.dispatch_claim_token == claim_token,
+                )
+                .values(dispatch_claimed_at=now)
+            )
+        return int(result.rowcount) == 1
+
+    async def finalize_pending_event_dispatch(
+        self,
+        pending_event_id: str,
+        *,
+        claim_token: str,
+        resolved_by: str,
+        now: float,
+    ) -> bool:
+        """Finalize only the still-owned dispatch claim as successfully dispatched."""
+        async with self.immediate() as conn:
+            result = await conn.execute(
+                update(playbook_pending_events)
+                .where(
+                    playbook_pending_events.c.pending_event_id == pending_event_id,
+                    playbook_pending_events.c.resolved_at.is_(None),
+                    playbook_pending_events.c.dispatch_claim_token == claim_token,
+                )
+                .values(
+                    dispatch_claim_token=None,
+                    dispatch_claimed_by=None,
+                    dispatch_claimed_at=None,
+                    resolved_at=now,
+                    resolved_by=resolved_by,
+                    resolution="dispatched",
+                )
+            )
+        return int(result.rowcount) == 1
+
+    async def record_pending_event_dispatch_failure(
+        self,
+        pending_event_id: str,
+        *,
+        claim_token: str,
+        error: str,
+    ) -> bool:
+        """Release one failed dispatch lease and retain its error for retry."""
+        async with self.immediate() as conn:
+            result = await conn.execute(
+                update(playbook_pending_events)
+                .where(
+                    playbook_pending_events.c.pending_event_id == pending_event_id,
+                    playbook_pending_events.c.resolved_at.is_(None),
+                    playbook_pending_events.c.dispatch_claim_token == claim_token,
+                )
+                .values(
+                    dispatch_claim_token=None,
+                    dispatch_claimed_by=None,
+                    dispatch_claimed_at=None,
+                    last_error=error,
+                )
             )
         return int(result.rowcount) == 1
 
@@ -1474,6 +1581,11 @@ class PlaybookRunQueryMixin:
         window. ``resolved_before`` comes from the retention sweeper so policy
         stays in configuration rather than being hidden in this query.
         """
+        claim_stale_before = now - PENDING_EVENT_DISPATCH_LEASE_SECONDS
+        claim_available = or_(
+            playbook_pending_events.c.dispatch_claim_token.is_(None),
+            playbook_pending_events.c.dispatch_claimed_at <= claim_stale_before,
+        )
         async with self.immediate() as conn:
             expiring = (
                 (
@@ -1481,6 +1593,7 @@ class PlaybookRunQueryMixin:
                         select(playbook_pending_events.c.pending_event_id)
                         .where(
                             playbook_pending_events.c.resolved_at.is_(None),
+                            claim_available,
                             playbook_pending_events.c.expires_at <= now,
                         )
                         .limit(limit)
@@ -1496,9 +1609,13 @@ class PlaybookRunQueryMixin:
                     .where(
                         playbook_pending_events.c.pending_event_id.in_(list(expiring)),
                         playbook_pending_events.c.resolved_at.is_(None),
+                        claim_available,
                         playbook_pending_events.c.expires_at <= now,
                     )
                     .values(
+                        dispatch_claim_token=None,
+                        dispatch_claimed_by=None,
+                        dispatch_claimed_at=None,
                         resolved_at=now,
                         resolved_by=PENDING_EVENT_EXPIRY_ACTOR,
                         resolution="expired",
