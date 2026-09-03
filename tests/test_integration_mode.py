@@ -210,6 +210,24 @@ class TestPhaseVerifyByMode:
             "origin/main",
         )
 
+    async def test_pr_mode_requires_a_pr_for_task_branch_when_checkout_is_default(
+        self, orch
+    ):
+        """A task branch with commits cannot bypass the PR gate via checkout."""
+        task = _pr_task("t-pr-default-checkout", branch_name="feature-2")
+        await orch.db.create_task(task)
+        orch.git.aget_current_branch = AsyncMock(return_value="main")
+        orch.git.afind_open_pr = AsyncMock(return_value=None)
+        orch.git.ais_ancestor = AsyncMock(return_value=False)
+        orch.git.acount_commits_ahead = AsyncMock(return_value=1)
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = _ctx(orch, task, ws.workspace_path)
+        ctx.close_session_live = True
+
+        assert await orch._phase_verify(ctx) == PhaseResult.STOP
+        assert ctx.verification_retry_in_session is True
+        assert any("No open PR" in issue for issue in ctx.verification_issues)
+
     async def test_direct_mode_auto_merges_to_default(self, orch):
         task = _direct_task()
         await orch.db.create_task(task)

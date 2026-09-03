@@ -875,22 +875,18 @@ class GitOpsMixin:
                         True,  # fixable — agent can commit and push
                     )
                 )
-            # Allow being on default if no changes were made (research task)
-            if current_branch == default_branch:
-                # No-change task — acceptable, skip PR checks
-                pass
-            elif not has_uncommitted and await self._abranch_has_no_commits(
-                workspace, current_branch, default_branch
+            if not has_uncommitted and await self._abranch_has_no_commits(
+                workspace, task.branch_name, default_branch
             ):
                 # Review-only task: the worktree is pinned to its own task
-                # branch but the agent produced no commits.  There is nothing
-                # to push and nothing to open a PR for — demanding one forces
-                # an empty PR or a manual checkout of the default branch.
+                # branch, or checkout moved to default, but the task branch
+                # produced no commits. There is nothing to push and nothing
+                # to open a PR for — demanding one forces an empty PR.
                 logger.info(
                     "Task %s: branch '%s' has no commits ahead of '%s' — "
                     "skipping PR/push checks",
                     task.id,
-                    current_branch,
+                    task.branch_name,
                     default_branch,
                 )
             else:
