@@ -427,7 +427,7 @@ class GitOpsMixin:
             return False
         try:
             default_branch = ctx.default_branch or "main"
-            if pr_mode and await self.git.ahas_uncommitted_changes(workspace, strict=True) is not False:
+            if await self.git.ahas_uncommitted_changes(workspace, strict=True) is not False:
                 return False
             if await self._abranch_has_no_commits(workspace, branch, default_branch):
                 return True
@@ -535,7 +535,12 @@ class GitOpsMixin:
         # A no-code task (reviewer stage, ``--work-outcome no-op``) has
         # nothing to integrate — running it would only force-push an empty
         # ``aq/<id>`` branch to origin.
-        if await self._task_produces_no_code(ctx):
+        no_code = await self._task_produces_no_code(ctx)
+        known_clean = (
+            bool(ctx.workspace_path)
+            and await self.git.ahas_uncommitted_changes(ctx.workspace_path, strict=True) is False
+        )
+        if no_code and known_clean:
             logger.info(
                 "Task %s: no-code task (profile=%s, work_outcome=%s), skipping integration",
                 ctx.task.id,
@@ -606,13 +611,21 @@ class GitOpsMixin:
         if await self._task_produces_no_code(ctx):
             logger.info(
                 "Task %s: no-code task (profile=%s, work_outcome=%s), "
-                "skipping git verification",
+                "checking cleanliness before skipping git verification",
                 task.id,
                 task.profile_id,
                 ctx.work_outcome or "-",
             )
             await self._sweep_uncommitted_before_skip(ctx)
-            return PhaseResult.CONTINUE
+            if (
+                workspace
+                and await self.git.ahas_uncommitted_changes(workspace, strict=True) is False
+            ):
+                return PhaseResult.CONTINUE
+            logger.warning(
+                "Task %s: no-code shortcut refused because workspace cleanliness is unknown",
+                task.id,
+            )
 
         if not workspace or not await self.git.avalidate_checkout(workspace):
             return PhaseResult.CONTINUE
@@ -1516,7 +1529,10 @@ class GitOpsMixin:
         # remote.  Verification already accepts such a branch without a PR
         # (``_abranch_has_no_commits`` in ``_phase_verify``); integration
         # agrees with it.
-        if await self._abranch_has_no_commits(workspace, branch, default_branch):
+        if (
+            await self.git.ahas_uncommitted_changes(workspace, strict=True) is False
+            and await self._abranch_has_no_commits(workspace, branch, default_branch)
+        ):
             logger.info(
                 "Task %s: branch '%s' has no commits ahead of '%s' — "
                 "skipping integration",

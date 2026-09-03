@@ -373,6 +373,20 @@ class TestEmptyBranchSkipsIntegration:
         acquire.assert_not_awaited()
         orch.git.amerge_branch.assert_not_awaited()
 
+    async def test_direct_mode_status_error_cannot_skip_zero_commit_integration(
+        self, orch, monkeypatch
+    ):
+        """An unreadable index is unknown work, not proof of an empty task."""
+        task = _direct_task("t-int-empty-status-error")
+        await orch.db.create_task(task)
+        orch.git.ahas_uncommitted_changes = AsyncMock(return_value=None)
+
+        result, acquire = await self._run_integrate(orch, task, monkeypatch, ahead=0)
+
+        assert result == PhaseResult.CONTINUE
+        acquire.assert_awaited_once()
+        orch.git.amerge_branch.assert_awaited_once()
+
     async def test_a_branch_with_commits_still_integrates(self, orch, monkeypatch):
         task = _direct_task("t-int-ahead")
         await orch.db.create_task(task)
@@ -643,6 +657,20 @@ class TestNoCodeTasksSkipThePrGate:
         assert sweep.await_args.args[1] == task.id
         assert sweep.await_args.args[2] == "aq/t-dirty"
 
+    async def test_no_code_status_error_does_not_bypass_verification(self, orch):
+        """No-code intent is not evidence that an unreadable checkout is clean."""
+        _task, ctx = await self._no_pr_ctx(
+            orch, "t-no-code-status", "aq/t-no-code-status", profile_id="reviewer"
+        )
+
+        async def status_state(_workspace, *, strict=False):
+            return None if strict else False
+
+        orch.git.ahas_uncommitted_changes = AsyncMock(side_effect=status_state)
+
+        assert await orch._phase_verify(ctx) == PhaseResult.STOP
+        assert ctx.verification_retry_in_session is True
+
     async def test_no_code_task_skips_integration(self, orch, monkeypatch):
         """Nothing to rebase, push or merge — integrate is not run either.
 
@@ -656,6 +684,22 @@ class TestNoCodeTasksSkipThePrGate:
 
         assert await orch._run_completion_pipeline(ctx) == (None, True)
         integrate.assert_not_awaited()
+
+    async def test_no_code_status_error_does_not_skip_worktree_integration(
+        self, orch, monkeypatch
+    ):
+        """The integration shortcut also requires a known-clean checkout."""
+        _task, ctx = await self._no_pr_ctx(
+            orch, "t-int-status", "aq/t-int-status", profile_id="reviewer"
+        )
+        monkeypatch.setattr(orch, "_phase_verify", AsyncMock(return_value=PhaseResult.CONTINUE))
+        monkeypatch.setattr(orch, "_task_is_worktree_mode", AsyncMock(return_value=True))
+        orch.git.ahas_uncommitted_changes = AsyncMock(return_value=None)
+        integrate = AsyncMock(return_value=PhaseResult.CONTINUE)
+        monkeypatch.setattr(orch, "_phase_integrate", integrate)
+
+        assert await orch._run_completion_pipeline(ctx) == (None, True)
+        integrate.assert_awaited_once()
 
     async def test_shipped_worktree_task_still_integrates(self, orch, monkeypatch):
         _task, ctx = await self._no_pr_ctx(orch, "t-int-ship", "aq/t-int-ship")
@@ -863,6 +907,18 @@ class TestEmptyBranchIsFlaggedNoCode:
             orch, _direct_task("t-flag-wt"), monkeypatch, ahead=0, worktree=True
         )
         assert ctx.branch_no_commits is True
+
+    async def test_worktree_direct_status_error_is_not_flagged_empty(self, orch, monkeypatch):
+        """Direct worktrees need the same known-clean proof as PR worktrees."""
+        task = _direct_task("t-flag-wt-status")
+        await orch.db.create_task(task)
+        orch.git.acount_commits_ahead = AsyncMock(return_value=0)
+        orch.git.ahas_uncommitted_changes = AsyncMock(return_value=None)
+        monkeypatch.setattr(orch, "_task_is_worktree_mode", AsyncMock(return_value=True))
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = _ctx(orch, task, ws.workspace_path)
+
+        assert await orch._branch_left_no_commits(ctx) is False
 
     async def test_the_legacy_direct_path_is_never_asked(self, orch, monkeypatch):
         """Verification already merged the branch into the default there.
