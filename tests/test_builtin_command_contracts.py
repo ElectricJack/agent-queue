@@ -119,6 +119,53 @@ async def test_production_wiring_makes_the_registered_invokes_operational() -> N
         builtin.set_handler_provider(previous)
 
 
+async def test_registered_invoke_reenters_handler_with_its_supplied_principal() -> None:
+    """A narrowed executor principal must replace a broader ambient caller."""
+    from src.commands.contracts import builtin
+    from src.commands.principal import (
+        ExecutionPrincipal,
+        PrincipalKind,
+        current_principal,
+        principal_context,
+    )
+    from src.profiles.capabilities import CapabilityPolicy, DENY_ALL
+
+    broad = ExecutionPrincipal(
+        kind=PrincipalKind.SESSION,
+        session_id="outer",
+        policy=CapabilityPolicy.from_namespaces(aq_commands=["create_task"]),
+    )
+    narrowed = ExecutionPrincipal(
+        kind=PrincipalKind.PLAYBOOK,
+        session_id="child",
+        policy=DENY_ALL,
+    )
+    seen = []
+
+    class _Handler:
+        async def execute(self, _name: str, args: dict) -> dict:
+            seen.append(current_principal())
+            return {
+                "created": "child-1",
+                "task_id": "child-1",
+                "status": "DEFINED",
+                "title": args["title"],
+                "project_id": "p",
+            }
+
+    previous = builtin._handler_provider
+    builtin.set_handler_provider(lambda: _Handler())
+    try:
+        with principal_context(broad):
+            await CONTRACTS.require("create_task").invoke(
+                CreateTaskArgs(title="child"), narrowed
+            )
+    finally:
+        builtin.set_handler_provider(previous)
+
+    assert seen == [narrowed]
+
+
 async def test_builtin_adapter_enforces_its_supplied_narrowed_principal(
     command_handler_factory,
 ) -> None:

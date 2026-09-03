@@ -292,8 +292,10 @@ def _adapter(name: str, value_type: type[CommandValue]):
         if ctx is None:
             raw = await _handler().execute(name, args.model_dump(exclude_none=True))
         else:
-            # Re-enter the handler under the executor's principal so its
-            # narrowed authority cannot be replaced by a broader ambient one.
+            # The typed adapter is a dispatch boundary, not merely a value
+            # converter.  Re-enter CommandHandler under the principal the
+            # executor supplied so delegation narrowing cannot be replaced by
+            # a broader ambient request principal.
             with principal_context(ctx):
                 raw = await _handler().execute(name, args.model_dump(exclude_none=True))
         outcome = _outcome_of(name, raw)
