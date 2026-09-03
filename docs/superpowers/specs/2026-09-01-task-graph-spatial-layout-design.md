@@ -678,6 +678,15 @@ Performance, in `scripts/`, on PostgreSQL:
    with the grid as fallback, then default on and the grid, its tests, and the legacy
    endpoint removed.
 
+   Done, except for the legacy endpoint. The flag defaults on and the client-side grid
+   (`GraphCanvas.tsx`, `layout.ts`, `MobileCardList.tsx`, the `projectHierarchy` projection
+   and their tests) is gone, so the tiled canvas is the only graph view. `GET
+   /api/projects/{id}/graph` and its `useProjectGraphs` hook stay: the **Tasks tab** is
+   still their only other consumer, and `list` (5.3) is not a drop-in replacement for it —
+   its `q` is a single substring over `tasks.title`/`tasks.id`, while the Tasks tab
+   matches every search word against id, title, status, project name and id, assigned
+   agent, profile and intelligence class. Migrating that tab is its own change.
+
 ## 11. Out of scope
 
 - Manual drag-and-drop positioning or pinned nodes.

@@ -8,7 +8,7 @@ import PlaybookNode from "../PlaybookNode";
 import AgentAvatarLayer from "../AgentAvatarLayer";
 import ContainerNode from "./ContainerNode";
 import Breadcrumbs from "./Breadcrumbs";
-import { edgeStyleForType } from "../layout";
+import { edgeStyleForType } from "./edgeStyle";
 import { useExpandedTaskIds } from "../useGraphHierarchy";
 import { useLayoutExtents, useLayoutNode, type TilesParams, type Variant } from "../../../api/graphLayout";
 import { useLayoutTiles } from "./useLayoutTiles";

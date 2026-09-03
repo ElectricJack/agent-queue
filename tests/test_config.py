@@ -182,10 +182,11 @@ def test_graph_layout_config_defaults_and_parse(tmp_path):
     p.write_text(yaml.dump({
         "discord": {"bot_token": "t", "guild_id": "1"},
         "database_path": str(tmp_path / "test.db"),
-        "dashboard": {"graph_layout": {"enabled": True, "incremental_debounce_ms": 250}},
+        "dashboard": {"graph_layout": {"enabled": False, "incremental_debounce_ms": 250}},
     }))
     cfg = load_config(str(p))
-    assert cfg.graph_layout.enabled is True
+    # The block wins over the on-by-default field.
+    assert cfg.graph_layout.enabled is False
     assert cfg.graph_layout.incremental_debounce_ms == 250
     assert cfg.graph_layout.reconcile_interval_seconds == 900
 
@@ -199,7 +200,8 @@ def test_graph_layout_config_defaults_when_absent(tmp_path):
         "database_path": str(tmp_path / "test.db"),
     }))
     cfg = load_config(str(p))
-    assert cfg.graph_layout.enabled is False
+    # On by default since design §10 step 3 removed the dashboard's grid fallback.
+    assert cfg.graph_layout.enabled is True
     assert cfg.graph_layout.reconcile_interval_seconds == 900
     assert cfg.graph_layout.incremental_debounce_ms == 500
     assert cfg.graph_layout.tidy_job_budget_seconds == 60
@@ -222,10 +224,10 @@ def test_graph_layout_config_reads_top_level_block(tmp_path):
     p.write_text(yaml.dump({
         "discord": {"bot_token": "t", "guild_id": "1"},
         "database_path": str(tmp_path / "test.db"),
-        "graph_layout": {"enabled": True, "tidy_job_budget_seconds": 5},
+        "graph_layout": {"enabled": False, "tidy_job_budget_seconds": 5},
     }))
     cfg = load_config(str(p))
-    assert cfg.graph_layout.enabled is True
+    assert cfg.graph_layout.enabled is False
     assert cfg.graph_layout.tidy_job_budget_seconds == 5
     assert cfg.graph_layout.incremental_debounce_ms == 500
 

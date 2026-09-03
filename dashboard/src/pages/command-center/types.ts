@@ -23,16 +23,14 @@ export interface MergedGraph {
 /** What a click needs in order to route: the card's id and its playbook run. */
 export type SelectableTask = { id: string; playbook_run_id?: string | null };
 
+/** The props a task-graph view shares with the shell that hosts it. */
 export interface GraphViewProps {
-  graph: MergedGraph;
   playbooks?: PlaybookSummary[];
   selectedPlaybookId?: string | null;
   onPlaybookClick?: (playbookId: string) => void;
   onTaskClick: (taskId: string, task?: SelectableTask) => void;
   selectedTaskId?: string | null;
   onBackgroundClick?: () => void;
-  matchingTaskIds?: ReadonlySet<string>;
-  filtering?: boolean;
 }
 
 export interface TaskHierarchy {

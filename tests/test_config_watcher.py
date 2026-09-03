@@ -69,7 +69,7 @@ class TestDiffConfigs:
     def test_graph_layout_change_detected(self, tmp_path):
         a = AppConfig(data_dir=str(tmp_path / "data"))
         b = AppConfig(data_dir=str(tmp_path / "data"))
-        b.graph_layout = GraphLayoutConfig(enabled=True)
+        b.graph_layout = GraphLayoutConfig(enabled=False)
         result = diff_configs(a, b)
         assert "graph_layout" in result
         assert "graph_layout" in HOT_RELOADABLE_SECTIONS

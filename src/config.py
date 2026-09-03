@@ -1820,9 +1820,13 @@ class GraphLayoutConfig:
     The top-level spelling is what the config editor writes — it addresses
     sections by ``AppConfig`` field name — so ``update_config("graph_layout",
     ...)`` has to be honoured or it would silently no-op.
+
+    ``enabled`` defaults on (design §10 step 3): the dashboard's client-side
+    grid fallback is gone, so the graph tab has no other source of geometry.
+    Turning it off leaves the layout tables unpublished and the tab empty.
     """
 
-    enabled: bool = False
+    enabled: bool = True
     reconcile_interval_seconds: int = 900
     incremental_debounce_ms: int = 500
     tidy_job_budget_seconds: int = 60
@@ -3097,11 +3101,20 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
     # top-level keys. Reading only one of them would make runtime edits
     # silently ineffective.
     gl = (raw.get("dashboard") or {}).get("graph_layout") or raw.get("graph_layout") or {}
+    # Fall back to the dataclass's own defaults rather than repeating them:
+    # a second copy here silently ignored the §10 step 3 flip to enabled=True.
+    gl_defaults = GraphLayoutConfig()
     config.graph_layout = GraphLayoutConfig(
-        enabled=bool(gl.get("enabled", False)),
-        reconcile_interval_seconds=int(gl.get("reconcile_interval_seconds", 900)),
-        incremental_debounce_ms=int(gl.get("incremental_debounce_ms", 500)),
-        tidy_job_budget_seconds=int(gl.get("tidy_job_budget_seconds", 60)),
+        enabled=bool(gl.get("enabled", gl_defaults.enabled)),
+        reconcile_interval_seconds=int(
+            gl.get("reconcile_interval_seconds", gl_defaults.reconcile_interval_seconds)
+        ),
+        incremental_debounce_ms=int(
+            gl.get("incremental_debounce_ms", gl_defaults.incremental_debounce_ms)
+        ),
+        tidy_job_budget_seconds=int(
+            gl.get("tidy_job_budget_seconds", gl_defaults.tidy_job_budget_seconds)
+        ),
     )
 
     if "agent_profiles" in raw:

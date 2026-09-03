@@ -9,14 +9,12 @@ import TaskToolbar from "../TaskToolbar";
 const mocks = vi.hoisted(() => ({
   create: vi.fn(), open: vi.fn(), live: vi.fn(), tidy: vi.fn(), tidyFailed: false,
   locate: vi.fn(async () => ({ hits: [{ id: "t1", x: 1, y: 2, w: 1, h: 1 }] })),
-  layoutV2: false,
   error: null as Error | null,
   projects: [{ id: "alpha", name: "Alpha" }, { id: "beta", name: "Beta" }],
 }));
 vi.mock("../../../api/hooks", () => ({
   useProjects: () => ({ data: mocks.projects, isLoading: false, error: null }),
   useCreateTask: () => ({ mutate: mocks.create, isPending: false, error: mocks.error }),
-  useSystemStatus: () => ({ data: { graph_layout_enabled: mocks.layoutV2 } }),
 }));
 vi.mock("../../../api/graphLayout", () => ({
   useTidyLayout: () => ({ mutate: mocks.tidy, isPending: false, isError: mocks.tidyFailed }),
@@ -37,7 +35,7 @@ function mount(path = "/projects/alpha/graph") {
   </Routes></ShortcutsProvider></MemoryRouter>);
 }
 afterEach(cleanup);
-beforeEach(() => { vi.clearAllMocks(); mocks.error = null; mocks.layoutV2 = false; mocks.tidyFailed = false;
+beforeEach(() => { vi.clearAllMocks(); mocks.error = null; mocks.tidyFailed = false;
   mocks.locate.mockImplementation(async () => ({ hits: [{ id: "t1", x: 1, y: 2, w: 1, h: 1 }] })); });
 
 describe("shared Command Center task controls", () => {
@@ -99,15 +97,12 @@ describe("shared Command Center task controls", () => {
 });
 
 describe("layout-aware task controls", () => {
-  it("hides the layout controls while the flag is off", () => {
-    mount("/projects/alpha/graph?q=check");
+  it("hides Tidy in the all-projects scope, which has no project to tidy", () => {
+    mount("/command-center/graph?q=check");
     expect(screen.queryByRole("button", { name: /Tidy layout/ })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Next result/ })).not.toBeInTheDocument();
-    expect(mocks.locate).not.toHaveBeenCalled();
   });
 
-  it("offers Tidy and Next result behind the flag and confirms before tidying", async () => {
-    mocks.layoutV2 = true;
+  it("offers Tidy and Next result and confirms before tidying", async () => {
     mount("/projects/alpha/graph?q=check");
     await waitFor(() => expect(screen.getByRole("button", { name: "Next result (1)" })).toBeInTheDocument());
     expect(mocks.locate).toHaveBeenCalledWith("alpha", "active", "check", "", []);
@@ -128,7 +123,6 @@ describe("layout-aware task controls", () => {
   });
 
   it("keeps Next result off the Tasks tab and issues no locate there", () => {
-    mocks.layoutV2 = true;
     mount("/projects/alpha/tasks?q=check");
     expect(screen.queryByRole("button", { name: /Next result/ })).not.toBeInTheDocument();
     expect(mocks.locate).not.toHaveBeenCalled();
@@ -137,13 +131,11 @@ describe("layout-aware task controls", () => {
   });
 
   it("never locates with empty filters (the endpoint rejects that request)", () => {
-    mocks.layoutV2 = true;
     mount("/projects/alpha/graph");
     expect(mocks.locate).not.toHaveBeenCalled();
   });
 
   it("reports a failed tidy", () => {
-    mocks.layoutV2 = true;
     mocks.tidyFailed = true;
     mount("/projects/alpha/graph");
     expect(screen.getByRole("alert")).toHaveTextContent("Tidy failed");

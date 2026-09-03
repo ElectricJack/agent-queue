@@ -1,6 +1,6 @@
 import { MarkerType, type Edge, type Node } from "@xyflow/react";
 import type { GraphGate, LayoutNode } from "@aq/ts-client";
-import { edgeStyleForType } from "../layout";
+import { edgeStyleForType } from "./edgeStyle";
 import type { ContainerNodeData, SelectableTask, TaskNodeData } from "../types";
 import type { LayoutStore } from "./layoutStore";
 import { sizePx, toPx } from "./units";

@@ -1,6 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
-import { projectHierarchy, retainTaskOrder } from "./hierarchy";
-import type { GraphViewProps } from "./types";
+import { useCallback, useSyncExternalStore } from "react";
 
 const EXPANDED_TASKS_KEY = "aq:command-center:expanded-task-ids:v1";
 
@@ -32,11 +30,11 @@ function persistExpandedTaskIds(ids: ReadonlySet<string>) {
  *  zoom, if it is ever wanted, has to arrive as an explicit opt-in toggle that
  *  defaults to off. `__tests__/expandedState.test.tsx` guards this.
  *
- *  The one non-click change is filter-driven: an active filter temporarily
- *  auto-expands the ancestors of a match so it can be seen, flagged as
- *  `autoExpanded` and reverted when the filter clears. It never writes to the
- *  persisted set. The expanded-task set is shared by both canvases through
- *  one storage key. */
+ *  The one non-click change is filter-driven and lives on the server: a
+ *  filtered `tiles`/`list` request force-opens the ancestors of a match so it
+ *  can be seen (`forced_expansion_for`), and that never reaches this persisted
+ *  set. The set is shared by the canvas, the mobile list and the toolbar's
+ *  `locate` call through one storage key. */
 // One live set, not one per consumer: the canvas toggles it and the toolbar
 // has to send the SAME set to `locate`, or a jump would be computed against a
 // layout nobody is looking at. Storage alone only synchronised them on mount.
@@ -73,24 +71,4 @@ export function useExpandedTaskIds() {
   );
   const toggleExpanded = useCallback((id: string) => toggleExpandedId(id), []);
   return { expandedTaskIds, toggleExpanded };
-}
-
-export function useGraphHierarchy({
-  graph, matchingTaskIds, filtering,
-}: Pick<GraphViewProps, "graph" | "matchingTaskIds" | "filtering">) {
-  const { expandedTaskIds, toggleExpanded } = useExpandedTaskIds();
-  const [knownOrder, setKnownOrder] = useState<string[]>(() => graph.tasks.map((task) => task.id));
-  const order = useMemo(() => retainTaskOrder(knownOrder, graph.tasks), [knownOrder, graph.tasks]);
-
-  useEffect(() => {
-    if (order.length !== knownOrder.length || order.some((id, i) => id !== knownOrder[i])) {
-      setKnownOrder(order);
-    }
-  }, [order, knownOrder]);
-
-  const projection = useMemo(
-    () => projectHierarchy(graph, { expandedTaskIds, matchingTaskIds, filtering, orderedTaskIds: order }),
-    [graph, expandedTaskIds, matchingTaskIds, filtering, order],
-  );
-  return { projection, toggleExpanded };
 }
