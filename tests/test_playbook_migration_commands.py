@@ -460,7 +460,6 @@ async def _activate(
     source_digest: str = "sha256:" + "e" * 64,
 ):
     """Store the artifact bytes and write the artifact + activation rows."""
-    from src.commands.contracts import CONTRACTS
     from src.playbooks.artifact_store import ArtifactStore
 
     store = ArtifactStore(
@@ -470,7 +469,7 @@ async def _activate(
     ref = store.put(
         definition,
         source_digest=source_digest,
-        contract_fingerprint=str(CONTRACTS.registry_fingerprint()),
+        contract_fingerprint=definition.contract_fingerprint(),
         profile_fingerprint="",
         compiler_build="test-build",
         version=1,
@@ -637,14 +636,13 @@ async def test_inventory_sees_the_source_drift_the_activation_row_cannot_show(ha
     "recompile and re-review" condition §3.7 must not let through.
     """
     definition = _probe_definition().model_copy(update={"id": "default-pipeline"})
-    from src.commands.contracts import CONTRACTS
     from src.playbooks.artifact_store import ArtifactStore
 
     store = ArtifactStore(handler.config.compiled_root, max_artifact_bytes=1_048_576)
     ref = store.put(
         definition,
         source_digest="sha256:" + "e" * 64,
-        contract_fingerprint=str(CONTRACTS.registry_fingerprint()),
+        contract_fingerprint=definition.contract_fingerprint(),
         profile_fingerprint="",
         compiler_build="test-build",
         version=1,
@@ -669,6 +667,33 @@ async def test_inventory_sees_the_source_drift_the_activation_row_cannot_show(ha
     entry = next(e for e in result["entries"] if e["playbook_id"] == "default-pipeline")
     assert entry["artifact"]["artifact_sha256"] == ref.artifact_sha256
     assert any(reason["code"] == "compile_question" for reason in entry["reasons"])
+
+
+async def test_inventory_accepts_canonical_fingerprints_from_artifact_store(handler):
+    """A production-stored reviewed artifact matches the source and command subset."""
+    definition = await _activate_shipped_pipeline(handler)
+
+    result = await handler._cmd_playbook_migration_inventory({})
+
+    entry = next(e for e in result["entries"] if e["playbook_id"] == definition.id)
+    assert entry["disposition"] == "ready"
+    assert entry["reasons"] == []
+    assert entry["artifact"]["artifact_sha256"] == definition.artifact_sha256()
+
+
+async def test_inventory_blocks_when_contract_fingerprint_evidence_is_unreadable(handler):
+    """A vanished active artifact cannot crash or satisfy migration readiness."""
+    definition = await _activate_shipped_pipeline(handler)
+    from src.playbooks.artifact_store import ArtifactStore
+
+    store = ArtifactStore(handler.config.compiled_root)
+    Path(store.path_for(definition.artifact_sha256())).unlink()
+
+    result = await handler._cmd_playbook_migration_inventory({})
+
+    entry = next(e for e in result["entries"] if e["playbook_id"] == definition.id)
+    assert entry["disposition"] == "question_required"
+    assert "compile_question" in {reason["code"] for reason in entry["reasons"]}
 
 
 @pytest.mark.parametrize(
