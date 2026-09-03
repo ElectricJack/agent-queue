@@ -1283,6 +1283,7 @@ def build_cutover_report(
     active_v1_runs: Sequence[Mapping[str, Any]],
     parity: Mapping[str, Any],
     evidence_errors: Sequence[Mapping[str, Any]] = (),
+    compatibility_blockers: Sequence[str] = (),
     now: float | None = None,
 ) -> dict[str, Any]:
     """Render the complete, serialisable Package 6 cutover evidence.
@@ -1296,6 +1297,10 @@ def build_cutover_report(
     ``list_pending_events`` call rendered as zero pending events would let this
     report certify a fleet it never looked at.  Every entry is therefore a
     blocking reason, and the sections it fed are marked ``unavailable``.
+
+    *compatibility_blockers* are the live release-check findings collected by
+    the command layer.  They are rendered with the report's other blockers so
+    contract, profile, or artifact drift can never leave cutover eligible.
     """
     generated_at = time.time() if now is None else now
     unread = [
@@ -1376,6 +1381,7 @@ def build_cutover_report(
             f"evidence source {row['source']!r} could not be read ({row['error']}); "
             "cutover cannot be certified against evidence that was never collected"
         )
+    blocking_reasons.extend(str(reason) for reason in compatibility_blockers if reason)
     if unresolved:
         blocking_reasons.append(f"{len(unresolved)} unresolved migration inventory entries")
     unhealthy = [row for row in rendered_artifacts if row.get("activation_health") != "ready"]

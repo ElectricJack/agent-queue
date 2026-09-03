@@ -946,6 +946,122 @@ async def test_release_check_reports_a_moved_delegated_profile(tmp_path, db):
     assert row["playbook_id"] == "default-pipeline"
 
 
+@pytest.mark.asyncio
+async def test_cutover_report_blocks_a_moved_delegated_profile(tmp_path, db):
+    """Cutover consumes the same live profile evidence as the release check."""
+    from src.profiles.capabilities import CapabilityPolicy
+
+    data_dir = str(tmp_path / "aq")
+    os.makedirs(data_dir, exist_ok=True)
+    ensure_default_playbooks(data_dir)
+    moved = _MovedProfiles(
+        {"reviewer": CapabilityPolicy.from_namespaces(aq_commands=frozenset({"pr_merge"}))}
+    )
+    handler = _ReleaseHandler(_Config(data_dir), db, moved)
+    await _activate_shipped_pipeline(handler)
+
+    report = await handler._cmd_playbook_cutover_report({})
+
+    artifact = next(
+        row for row in report["artifacts"] if row["playbook_id"] == "default-pipeline"
+    )
+    assert artifact["activation_health"] == "stale_contract"
+    assert report["cutover_eligible"] is False
+    assert any(
+        "profile 'reviewer' changed" in reason for reason in report["blocking_reasons"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_cutover_report_uses_one_activation_snapshot(tmp_path, db, monkeypatch):
+    """Review, health, and compatibility evidence describe the same artifact."""
+    from src.playbooks.activation import profile_fingerprint
+    from src.playbooks.artifact_store import ArtifactStore
+    from src.profiles.capabilities import CapabilityPolicy
+
+    data_dir = str(tmp_path / "aq")
+    os.makedirs(data_dir, exist_ok=True)
+    ensure_default_playbooks(data_dir)
+    moved = _MovedProfiles(
+        {"reviewer": CapabilityPolicy.from_namespaces(aq_commands=frozenset({"pr_merge"}))}
+    )
+    handler = _ReleaseHandler(_Config(data_dir), db, moved)
+    reviewed = await _activate_shipped_pipeline(handler)
+
+    profiles = dict(reviewed.compiled_against.profiles)
+    profiles["reviewer"] = moved.policy("reviewer").fingerprint()
+    compatible = reviewed.model_copy(
+        update={
+            "compiled_against": reviewed.compiled_against.model_copy(
+                update={"profiles": profiles}
+            )
+        }
+    )
+    store = ArtifactStore(handler.config.compiled_root)
+    aggregate = profile_fingerprint(profiles)
+    candidate = store.put(
+        compatible,
+        source_digest=compatible.source_hash,
+        contract_fingerprint=compatible.contract_fingerprint(),
+        profile_fingerprint=aggregate,
+        compiler_build=compatible.compiler_build or "test-build",
+        version=compatible.version,
+    )
+    await db.upsert_playbook_artifact(
+        candidate,
+        scope="system",
+        profile_fingerprint=aggregate,
+        path=store.path_for(candidate.artifact_sha256),
+        size_bytes=len(store.canonical_bytes(compatible)),
+    )
+
+    original_live_health = handler._cutover_live_health
+
+    async def swap_activation_after_snapshot(*args):
+        await db.set_playbook_activation(
+            playbook_id="default-pipeline",
+            scope="system",
+            scope_identifier="",
+            artifact_sha256=candidate.artifact_sha256,
+            enabled=True,
+            activated_by="operator",
+            health="ready",
+            reasons="[]",
+        )
+        return await original_live_health(*args)
+
+    monkeypatch.setattr(handler, "_cutover_live_health", swap_activation_after_snapshot)
+
+    report = await handler._cmd_playbook_cutover_report({})
+
+    artifact = next(
+        row for row in report["artifacts"] if row["playbook_id"] == "default-pipeline"
+    )
+    assert artifact["artifact_sha256"] == reviewed.artifact_sha256()
+    assert artifact["activation_health"] == "stale_contract"
+    assert any(
+        "profile 'reviewer' changed" in reason for reason in report["blocking_reasons"]
+    )
+
+
+async def test_cutover_report_surfaces_release_check_blockers(handler):
+    async def blocked_release_check(_activation_rows):
+        return {
+            "success": False,
+            "stale": [],
+            "unverified": [],
+            "evidence_errors": [],
+            "blocking_reasons": ["live compatibility proof is incomplete"],
+        }
+
+    handler._cutover_release_evidence = blocked_release_check
+
+    report = await handler._cmd_playbook_cutover_report({})
+
+    assert "live compatibility proof is incomplete" in report["blocking_reasons"]
+    assert report["cutover_eligible"] is False
+
+
 async def _drifting_pipeline_handler(tmp_path, db):
     """A handler whose live `default-pipeline` activation is genuinely stale."""
     from src.profiles.capabilities import CapabilityPolicy

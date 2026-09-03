@@ -273,7 +273,10 @@ class PlaybookMigrationCommandsMixin:
     # ------------------------------------------------------------------
 
     async def _release_check_activations(
-        self, *, evidence_errors: list[dict[str, str]] | None = None
+        self,
+        *,
+        evidence_errors: list[dict[str, str]] | None = None,
+        activation_rows: list[dict] | None = None,
     ) -> list[dict]:
         """Enabled activations, each with the artifact's per-command fingerprints.
 
@@ -315,7 +318,11 @@ class PlaybookMigrationCommandsMixin:
 
         errors = evidence_errors if evidence_errors is not None else []
         rows: list[dict] = []
-        activations = await self._enabled_activations(evidence_errors=errors)
+        activations = (
+            await self._enabled_activations(evidence_errors=errors)
+            if activation_rows is None
+            else [row for row in activation_rows if row.get("enabled", True)]
+        )
 
         def _row(source: dict, **extra) -> dict:
             return {
@@ -449,6 +456,41 @@ class PlaybookMigrationCommandsMixin:
                 "error": str(exc),
             }
 
+    async def _cutover_live_health(
+        self, activation_rows: list[dict]
+    ) -> dict[tuple[str, str, str], str]:
+        """Recompute enabled activation health from this daemon's live registries."""
+        from src.playbooks.activation import load_activation_health
+
+        contracts, profiles, _events = await self._v2_lookups()
+        records = await load_activation_health(
+            self.db,
+            contracts=contracts,
+            profiles=profiles,
+            enabled_only=True,
+            activation_rows=activation_rows,
+        )
+        return {
+            (record.playbook_id, record.scope, record.scope_identifier): record.health.value
+            for record in records
+        }
+
+    async def _cutover_release_evidence(self, activation_rows: list[dict]) -> dict:
+        """The compatibility gate whose findings the cutover report consumes."""
+        from src.commands.contracts import CONTRACTS
+
+        evidence_errors: list[dict[str, str]] = []
+        activations = await self._release_check_activations(
+            evidence_errors=evidence_errors,
+            activation_rows=activation_rows,
+        )
+        return release_check(
+            contract_registry=CONTRACTS,
+            fixture_root=self._reviewed_fixture_root(),
+            activations=activations,
+            evidence_errors=evidence_errors,
+        )
+
     async def _cutover_report_inputs(self) -> dict:
         """Collect report inputs without turning the report into an operation.
 
@@ -466,6 +508,51 @@ class PlaybookMigrationCommandsMixin:
         fixture_root = self._reviewed_fixture_root()
         inventory = await self._migration_inventory()
         enabled = await self._enabled_activations(evidence_errors=evidence_errors)
+
+        live_health: dict[tuple[str, str, str], str] = {}
+        try:
+            live_health = await self._cutover_live_health(enabled)
+        except Exception as exc:  # pragma: no cover - defensive live-daemon reporting
+            logger.warning("cutover report: activation health unavailable", exc_info=True)
+            evidence_errors.append(_unread_evidence("activation_health", exc))
+
+        try:
+            compatibility = await self._cutover_release_evidence(enabled)
+        except Exception as exc:  # pragma: no cover - defensive live-daemon reporting
+            logger.warning("cutover report: release evidence unavailable", exc_info=True)
+            compatibility = {
+                "success": False,
+                "stale": [],
+                "unverified": [],
+                "evidence_errors": [_unread_evidence("release_check", exc)],
+                "blocking_reasons": [],
+            }
+        release_evidence = compatibility.get("evidence_errors") or []
+        for error in release_evidence:
+            if error not in evidence_errors:
+                evidence_errors.append(dict(error))
+        compatibility_blockers = [
+            str(row.get("message"))
+            for section in ("stale", "unverified")
+            for row in compatibility.get(section) or []
+            if row.get("message")
+        ]
+        evidence_blockers = {
+            f"evidence source {str(row.get('source') or 'unknown')!r} could not be read "
+            f"({str(row.get('error') or 'unavailable')}); a release cannot be certified "
+            "against evidence that was never collected"
+            for row in release_evidence
+        }
+        for reason in compatibility.get("blocking_reasons") or []:
+            rendered = str(reason)
+            if rendered not in compatibility_blockers and rendered not in evidence_blockers:
+                compatibility_blockers.append(rendered)
+        if not compatibility.get("success") and not (
+            compatibility_blockers or release_evidence
+        ):
+            compatibility_blockers.append(
+                str(compatibility.get("error") or "live activation compatibility check failed")
+            )
 
         store = self._migration_store()
         try:
@@ -487,6 +574,11 @@ class PlaybookMigrationCommandsMixin:
         artifacts = []
         for row in enabled:
             playbook_id = str(row.get("playbook_id") or "")
+            activation_key = (
+                playbook_id,
+                str(row.get("scope") or "system"),
+                str(row.get("scope_identifier") or ""),
+            )
             sha = _active_sha(row)
             if row.get("scope") == "project":
                 review = {
@@ -508,7 +600,7 @@ class PlaybookMigrationCommandsMixin:
                     **row,
                     "artifact_sha256": sha or None,
                     "source_sha256": row.get("source_digest"),
-                    "activation_health": row.get("health"),
+                    "activation_health": live_health.get(activation_key, row.get("health")),
                     "reviewed_by": review.get("reviewed_by"),
                     "reviewed_at": review.get("reviewed_at"),
                     "v1_available": playbook_id in v1_ids,
@@ -596,6 +688,7 @@ class PlaybookMigrationCommandsMixin:
             "active_v1_runs": active_v1_runs,
             "parity": parity,
             "evidence_errors": evidence_errors,
+            "compatibility_blockers": compatibility_blockers,
         }
 
     async def _cmd_playbook_cutover_report(self, args: dict) -> dict:
