@@ -7,11 +7,12 @@ both, a latency assertion runs in CI's ``Tests (default)`` job under
 regression.  Run them deliberately, serially, on a quiet machine, with
 ``POSTGRES_TEST_DSN`` and ``AQ_PERF_STRICT=1`` in the environment::
 
-    aq test --aq-all-markers -p no:xdist -s tests/perf/test_layout_api_statements.py
+    aq test -m perf -p no:xdist -s tests/perf/test_layout_api_statements.py
 """
 
 from __future__ import annotations
 
+import gc
 import statistics
 import time
 
@@ -51,16 +52,55 @@ async def _p95(ac, payload, label: str) -> float:
     The warm-up primes connection pool and query-plan caches so the timed
     loop measures steady-state latency, not cold start.  The p95 is printed
     as well as asserted, so a passing run still records the margin (``-s``).
+
+    ``gc.freeze()`` around the loop is what makes the number a measurement
+    of the endpoint rather than of the fixture.  This process is holding the
+    seeded 5,100-task project alive, and a gen-2 collection has to walk all
+    of it: measured here, ~2 to 5 of 50 samples caught one and each cost an
+    extra 50-70 ms, which is the entire difference between a 43 ms median
+    and a 95 ms "p95".  Freezing moves everything allocated up to this point
+    into the permanent generation, so gen-2 stops rescanning the fixture.
+    GC stays *enabled* — per-request garbage is still collected, so the
+    request keeps paying for its own allocations, which is the cost a real
+    server would pay.  A server holds a connection pool, not a test's object
+    graph.
+
+    Measured by these two tests on PostgreSQL 18, one 24-core box at load
+    ~2, run serially -- p95 / max in milliseconds, against a 100 ms budget:
+
+    ================================  =============  ============
+    case                              unfrozen       frozen
+    ================================  =============  ============
+    rect/collapsed-big-epic           123.4 / 130.8  53.1 / 56.3
+    focus/root=epic0 expanded=[]       80.5 / 157.7  59.1 / 61.5
+    focus/root=epic0 expanded=[pkg0]  105.7 / 150.0  57.9 / 64.4
+    ================================  =============  ============
+
+    Frozen, every case keeps ~40% headroom and max lands within 25% of the
+    median.  Unfrozen, two of the three miss and the assertion is really
+    "did three gen-2 collections happen to land in this loop" -- note that
+    the unfrozen medians (49.8 / 73.2 / 72.7) sit as far under the budget
+    as the frozen ones do.  The endpoint was never the problem.
     """
     r = await ac.post("/api/projects/perf/graph/tiles", json=payload)
     assert r.status_code == 200, r.text
     times = []
-    for _ in range(SAMPLES):
-        t0 = time.perf_counter()
-        r = await ac.post("/api/projects/perf/graph/tiles", json=payload)
-        times.append(time.perf_counter() - t0)
-        assert r.status_code == 200
-    # p95 estimator: statistics.quantiles(times, n=20)[18] over 50 samples.
+    gc.collect()
+    gc.freeze()
+    try:
+        for _ in range(SAMPLES):
+            t0 = time.perf_counter()
+            r = await ac.post("/api/projects/perf/graph/tiles", json=payload)
+            times.append(time.perf_counter() - t0)
+            assert r.status_code == 200
+    finally:
+        gc.unfreeze()
+    # p95 estimator: statistics.quantiles(times, n=20)[18].  At SAMPLES=50
+    # the exclusive method interpolates between the 2nd- and 3rd-slowest
+    # sample ((50 + 1) x 0.95 = 48.45), so this is only as stable as the
+    # tail is -- one extra outlier moves it by tens of milliseconds.  That
+    # is affordable because the frozen loop above has no outliers; do not
+    # reintroduce one without also raising SAMPLES.
     p95 = statistics.quantiles(times, n=20)[18]
     print(
         f"\n[perf] {label}: p95 {p95 * 1000:.1f}ms "
