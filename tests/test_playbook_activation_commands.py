@@ -96,3 +96,39 @@ async def test_activate_refuses_invalid_artifact():
     )
     assert result["blocked"] is True
     assert any("event" in blocker.lower() for blocker in result["blockers"])
+
+
+async def test_activate_synthesises_an_activation_when_the_health_read_misses_the_row():
+    """The write committed, so the response describes it rather than crashing.
+
+    ``load_activation_health`` can come back without the row that was just
+    written — the artifact became unreadable between the write and the
+    re-read, or the read does not see it yet.  The success path used to
+    dereference that ``None``; it now mirrors the blocked path and synthesises
+    the payload, with the health it could not verify reported as
+    ``unavailable``.
+    """
+    definition, ref, _activation = _backend_fixture()
+    handler = _Handler(definition, ref, [[], []])
+
+    result = await handler._cmd_playbook_activate(
+        {
+            "playbook_id": definition.id,
+            "artifact_sha256": ref.artifact_sha256,
+            "acknowledge_diff": ref.artifact_sha256,
+        }
+    )
+
+    assert result["success"] is True
+    assert result["blocked"] is False
+    handler.db.set_playbook_activation.assert_awaited_once()
+    activation = result["activation"]
+    assert activation["playbook_id"] == definition.id
+    assert activation["active_artifact_sha256"] == ref.artifact_sha256
+    assert activation["enabled"] is True
+    assert activation["health"] == "unavailable"
+    assert activation["scope"] == definition.scope.type
+    [reason] = activation["reasons"]
+    assert reason["code"] == "activation_health_unreadable"
+    assert definition.id in reason["message"]
+    assert ref.artifact_sha256 in reason["message"]
