@@ -670,6 +670,35 @@ class ClaimQueryMixin:
         await self._after_release(out)
         return out
 
+    async def lock_filing_scope(self, conn, task_ids: list[str]) -> dict[str, str | None]:
+        """Lock the task rows a worker filing's scope is derived from.
+
+        Returns ``{id: parent_task_id}`` for the rows that exist (a missing
+        id is simply absent).  On Postgres the rows are taken ``FOR UPDATE``
+        in ascending id order — one statement, canonical order — so a
+        concurrent ``set_parent`` on any of them blocks on its own
+        ``UPDATE tasks`` until the filing transaction commits, and two
+        filings that name each other's held task cannot deadlock.  The lock
+        covers exactly what ``set_parent`` writes for a move: the moved
+        task's own row.  On SQLite ``immediate()`` already holds the
+        database write lock and the clause compiles away, so behaviour there
+        is unchanged.
+
+        Called first in the filing transaction, before ``reserve_filing``
+        takes the same row lock on the held task by writing to it.
+        """
+        ids = sorted(set(task_ids))
+        if not ids:
+            return {}
+        stmt = (
+            select(tasks.c.id, tasks.c.parent_task_id)
+            .where(tasks.c.id.in_(ids))
+            .order_by(tasks.c.id)
+        )
+        if conn.dialect.name == "postgresql":
+            stmt = stmt.with_for_update()
+        return {r.id: r.parent_task_id for r in (await conn.execute(stmt)).fetchall()}
+
     async def reserve_filing(self, conn, task_id: str, *, max_filings: int) -> bool:
         res = await conn.execute(
             update(tasks)

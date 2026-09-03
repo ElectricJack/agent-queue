@@ -755,11 +755,23 @@ close is skipped for pools; the token is revoked at drain.
   creation is refused** (`filing_requires_held_task`) — every worker-filed task has a
   provenance edge to the work that surfaced it, and an idle session has none to give.
   Anything a worker wants to file it files before closing;
+- **the scope is resolved *and* re-enforced under a row lock, inside the creation
+  transaction.** `T`'s parent and subtree are read again as the first statement of that
+  transaction — `SELECT id, parent_task_id … FOR UPDATE` on Postgres over `T` plus any
+  node the worker named explicitly (ascending id order, one statement, so two filings
+  that name each other's held task cannot deadlock); on SQLite `immediate()`'s writer
+  lock already serialises the two transactions and the clause compiles away. Without it a
+  `set_parent` committing between the pre-check and the write would file the task under a
+  container `T` no longer authorises. Consequences: the **sibling default follows `T`** to
+  wherever it now lives (and files a root if `T` became one); an **explicitly named parent
+  that has fallen out of scope is refused** and nothing is written, the quota reservation
+  included; and `task.created`/the command response report the parent **actually
+  written**, not the one resolved by the pre-check;
 - **quota:** at most `swarm.max_filings_per_task` (default 20) tasks filed from one held
   task, across all of its claims; beyond it `filing_quota_exceeded`. Durable routing gates
   stop gated work from *running*; the quota stops a looping worker from growing the queue
-  and the triage backlog without bound. Reserved **atomically** as the first statement of
-  the creation transaction: `UPDATE tasks SET filed_count = filed_count + 1 WHERE id =
+  and the triage backlog without bound. Reserved **atomically** as the first *write* of
+  the creation transaction (the locked scope read above precedes it and writes nothing): `UPDATE tasks SET filed_count = filed_count + 1 WHERE id =
   :held AND filed_count < :max` (`tasks.filed_count INTEGER NOT NULL DEFAULT 0`, §9);
   `rowcount = 0` → quota exceeded, nothing created. Concurrent creates cannot overshoot;
 - initial status **`DEFINED`** regardless of edges;
