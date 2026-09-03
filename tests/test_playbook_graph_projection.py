@@ -199,3 +199,318 @@ def test_a_lookup_without_routing_degrades_instead_of_raising():
     )
     assert (ai["intelligence_class"], ai["provider"], ai["model"]) == (None, None, None)
     assert ai["capability_fingerprint"]
+
+
+# --------------------------------------------------------------------------
+# agile-cascade-53 — every step family explains its reads, its writes and its
+# intent.  Before this, six of the seven families shared one generic clause
+# and reported ``inputs=[]`` / ``result=None``.
+# --------------------------------------------------------------------------
+
+
+def _node(graph, step_id):
+    return next(node for node in graph["nodes"] if node["id"] == step_id)
+
+
+def _inputs(graph, step_id):
+    return {
+        row["label"]: (row["value"]["display"], row["value"]["kind"], row["source"])
+        for row in _node(graph, step_id)["explanation"]["inputs"]
+    }
+
+
+def test_llm_step_explains_its_prompt_its_budget_and_its_binding():
+    graph = _project()
+    node = _node(graph, "classify-risk")
+    explanation = node["explanation"]
+    assert explanation["effect_summary"] == (
+        "Ask the reviewer profile for a structured answer and branch on its risk"
+    )
+    assert _inputs(graph, "classify-risk") == {
+        "Prompt": ("Assess the review risk of task this event's title", "template", "template")
+    }
+    assert explanation["result"]["label"] == "risk"
+    assert explanation["result"]["value"]["kind"] == "binding_ref"
+    assert [(item["kind"], item["subject"]) for item in explanation["effects"]] == [
+        ("invokes_ai", "reviewer"),
+        ("binds", "risk"),
+    ]
+    assert "8000 total tokens" in explanation["effects"][0]["detail"]
+    assert {badge["kind"] for badge in node["badges"]} == {"profile", "budget"}
+
+
+def test_agent_task_step_explains_its_objective_and_its_delegation():
+    graph = _project()
+    explanation = _node(graph, "escalate")["explanation"]
+    assert explanation["effect_summary"] == (
+        "Delegate a task to the reviewer profile and wait for it"
+    )
+    assert _inputs(graph, "escalate") == {
+        "Objective": ("Re-review the change and record the riskiest line", "literal", "literal")
+    }
+    assert explanation["result"]["label"] == "escalation"
+    assert [item["kind"] for item in explanation["effects"]] == ["delegates", "binds"]
+
+
+def test_wait_step_explains_what_it_awaits_and_how_it_correlates():
+    graph = _project()
+    node = _node(graph, "await-approval")
+    explanation = node["explanation"]
+    assert explanation["effect_summary"] == "Pause until a human resolves the gate"
+    assert _inputs(graph, "await-approval") == {
+        "Awaited": ("Approve the review", "literal", "literal"),
+        "Correlation key": ("review.task_id", "binding_ref", "binding"),
+    }
+    assert explanation["result"]["label"] == "approval"
+    detail = explanation["effects"][0]["detail"]
+    assert "resolutions: approve, revise" in detail
+    assert "times out after 86400s" in detail
+    assert {"kind": "wait", "label": "Waits for", "value": "human"} in node["badges"]
+
+
+def test_foreach_step_explains_its_collection_its_item_and_its_failure_policy():
+    graph = _project()
+    node = _node(graph, "for-each-task")
+    explanation = node["explanation"]
+    assert explanation["effect_summary"] == (
+        "Run Open a spec-ingest gate once per item in downstream.tasks"
+    )
+    assert _inputs(graph, "for-each-task") == {
+        "Collection": ("downstream.tasks", "binding_ref", "binding")
+    }
+    assert [(item["kind"], item["subject"]) for item in explanation["effects"]] == [
+        ("branches", "task"),
+        ("binds", "task"),
+    ]
+    assert "collects every failing item" in explanation["effects"][0]["detail"]
+    assert {"kind": "loop", "label": "Failure policy", "value": "collect"} in node["badges"]
+
+
+def test_decision_step_renders_each_case_condition_as_readable_text():
+    graph = _project()
+    explanation = _node(graph, "check-gate")["explanation"]
+    assert _inputs(graph, "check-gate") == {
+        "already open": ("gate.created == false", "expression", "binding")
+    }
+    assert explanation["inputs"][0]["value"]["canonical"]["type"] == "comparison"
+    assert [
+        (item["kind"], item["subject"], item["conditional_on"])
+        for item in explanation["effects"]
+    ] == [
+        ("branches", "for-each-task", "gate.created == false"),
+        ("branches", "for-each-task", None),
+    ]
+
+
+def test_decision_edge_condition_is_readable_not_canonical_json():
+    edge = next(
+        item
+        for item in _project()["edges"]
+        if item["id"] == "sweep-on-spec-approved::check-gate::case:0"
+    )
+    assert edge["condition"] == "gate.created == false"
+
+
+def test_terminal_step_explains_its_outcome_and_its_returned_result():
+    graph = _project()
+    explanation = _node(graph, "done")["explanation"]
+    assert explanation["effect_summary"] == "End the rule as completed"
+    assert explanation["effects"] == [
+        {
+            "kind": "noop",
+            "subject": "rule",
+            "detail": "End the rule as completed",
+            "arguments": [],
+            "conditional_on": None,
+        }
+    ]
+    assert explanation["result"] is None
+
+    raw = json.loads((FIXTURES / "review-pipeline.artifact.json").read_text())
+    raw["steps"]["done"]["result"] = {
+        "type": "binding_ref",
+        "binding": "review",
+        "path": "task_id",
+    }
+    node = _node(_project(load_definition_json(json.dumps(raw))), "done")
+    assert node["explanation"]["result"]["label"] == "Result"
+    assert node["explanation"]["result"]["value"]["display"] == "review.task_id"
+    assert node["explanation"]["result"]["source"] == "binding"
+    assert "returning review.task_id" in node["explanation"]["effects"][0]["detail"]
+
+
+def test_every_declared_value_a_step_reads_reaches_the_card():
+    """Data reads: no typed expression in the artifact is dropped."""
+    definition = _definition()
+    graph = _project(definition)
+    reads = {
+        "classify-risk": {"Prompt"},
+        "escalate": {"Objective"},
+        "await-approval": {"Awaited", "Correlation key"},
+        "for-each-task": {"Collection"},
+        "check-gate": {"already open"},
+    }
+    for step_id, labels in reads.items():
+        assert set(_inputs(graph, step_id)) == labels, step_id
+        assert all(
+            row["value"]["display"] for row in _node(graph, step_id)["explanation"]["inputs"]
+        )
+    # And the values that are dropped are exactly the steps that read nothing.
+    empty = {
+        node["id"] for node in graph["nodes"] if not node["explanation"]["inputs"]
+    }
+    assert empty == {
+        step_id
+        for step_id, step in definition.steps.items()
+        if step.type == "terminal"
+    }
+
+
+def test_every_binding_a_step_writes_reaches_the_card_with_its_schema():
+    """Data writes: ``save_result_as`` is a result row for every family."""
+    from src.playbooks.definition import result_schema_for
+
+    definition = _definition()
+    graph = _project(definition)
+    written = {
+        step_id: step.save_result_as
+        for step_id, step in definition.steps.items()
+        if getattr(step, "save_result_as", None)
+    }
+    assert set(written) == {
+        "ensure-review-task",
+        "classify-risk",
+        "escalate",
+        "await-approval",
+        "list-downstream",
+        "open-gate",
+    }
+    for step_id, binding in written.items():
+        node = _node(graph, step_id)
+        result = node["explanation"]["result"]
+        assert result is not None and result["label"] == str(binding), step_id
+        assert result["value"]["kind"] == "binding_ref"
+        assert result["value"]["display"] == str(binding)
+        assert result["source"] == "derived"
+        if node["step_kind"] != "command":
+            assert node["advanced"]["result_schema"] == result_schema_for(
+                definition.steps[step_id]
+            )
+    for step_id in definition.steps:
+        if step_id not in written:
+            assert _node(graph, step_id)["explanation"]["result"] is None, step_id
+
+
+def test_every_node_carries_what_the_compact_card_and_the_inspector_read():
+    """The card and the inspector consume one explanation object (§4.2)."""
+    graph = _project()
+    for node in graph["nodes"]:
+        explanation = node["explanation"]
+        # Compact card: title, one-line intent, chips, and a port per edge.
+        assert explanation["title"] == node["title"]
+        assert explanation["effect_summary"].strip()
+        assert node["out_degree"] == sum(
+            edge["source"] == node["id"] for edge in graph["edges"]
+        )
+        assert {badge["kind"] for badge in node["badges"]} <= {
+            "profile",
+            "budget",
+            "capability",
+            "timeout",
+            "retry",
+            "idempotency",
+            "loop",
+            "wait",
+            "redaction",
+            "diagnostic",
+        }
+        # Inspector: the same rows, plus the canonical payload behind them.
+        assert node["advanced"]["resolved_inputs"] == explanation["inputs"]
+        assert node["advanced"]["typed_step"]["type"] == node["step_kind"]
+        for row in explanation["inputs"]:
+            assert row["label"] and row["value"]["display"]
+            # ``unresolved`` is the honest hole for a command with no contract
+            # in the registry; every other row keeps its canonical payload.
+            assert (
+                row["value"]["canonical"] is not None
+                or row["value"]["kind"] in {"redacted", "unresolved"}
+            )
+        # Every outcome the inspector lists is an edge the canvas can draw.
+        drawn = {
+            edge["outcome"] for edge in graph["edges"] if edge["source"] == node["id"]
+        }
+        listed = {
+            item["outcome"]
+            for item in explanation["outcomes"]
+            if item["target_step_id"] is not None
+        }
+        assert listed == drawn, node["id"]
+
+
+def test_explanations_stay_deterministic_across_projections():
+    first = json.dumps(_project(), sort_keys=True, separators=(",", ":"))
+    second = json.dumps(_project(), sort_keys=True, separators=(",", ":"))
+    assert first == second
+    assert '"effect_summary"' in first
+
+
+def test_context_and_composite_values_render_readably():
+    from src.playbooks.graph_projection import project_value
+
+    assert project_value({"type": "context_ref", "path": "run_id"})["display"] == (
+        "this run's run_id"
+    )
+    assert project_value(
+        {
+            "type": "coalesce",
+            "options": [
+                {"type": "event_ref", "path": "note"},
+                {"type": "literal", "value": "none"},
+            ],
+        }
+    )["display"] == "this event's note or else none"
+    assert project_value(
+        {"type": "list", "items": [{"type": "literal", "value": "a"}]}
+    )["display"] == "[a]"
+    assert project_value(
+        {"type": "object", "fields": {"k": {"type": "literal", "value": "v"}}}
+    )["display"] == "{k: v}"
+
+
+def test_boolean_and_exists_conditions_render_readably():
+    from src.playbooks.graph_projection import _condition_text
+
+    assert (
+        _condition_text(
+            {
+                "type": "bool",
+                "op": "and",
+                "operands": [
+                    {
+                        "type": "comparison",
+                        "op": "gte",
+                        "left": {"type": "binding_ref", "binding": "gate", "path": "count"},
+                        "right": {"type": "literal", "value": 2},
+                    },
+                    {"type": "exists", "value": {"type": "event_ref", "path": "note"}},
+                ],
+            }
+        )
+        == "(gate.count >= 2) and (this event's note is present)"
+    )
+    assert (
+        _condition_text(
+            {
+                "type": "bool",
+                "op": "not",
+                "operands": [
+                    {
+                        "type": "exists",
+                        "value": {"type": "loop_ref", "binding": "task"},
+                        "mode": "truthy",
+                    }
+                ],
+            }
+        )
+        == "not (task is truthy)"
+    )
