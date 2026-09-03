@@ -59,10 +59,10 @@ class TestGetStatusGraphLayoutFlag:
     async def test_get_status_reports_graph_layout_flag(self, command_handler_factory):
         h = await command_handler_factory()
         r = await h.execute("get_status", {})
-        assert r["graph_layout_enabled"] is False
-        h.config.graph_layout.enabled = True
+        assert r["graph_layout_enabled"] is True
+        h.config.graph_layout.enabled = False
         r2 = await h.execute("get_status", {})
-        assert r2["graph_layout_enabled"] is True
+        assert r2["graph_layout_enabled"] is False
 
 
 class TestRunCommand:

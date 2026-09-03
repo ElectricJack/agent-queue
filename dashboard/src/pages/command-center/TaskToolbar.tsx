@@ -2,7 +2,6 @@ import { useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
 import { MagnifyingGlassIcon, PlusIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import CreateTaskModal from "../../components/CreateTaskModal";
-import { useSystemStatus } from "../../api/hooks";
 import { useTidyLayout } from "../../api/graphLayout";
 import { useJumpToResult } from "./layout-v2/useJumpToResult";
 import { useShellPaneStore } from "../../panes/store";
@@ -12,14 +11,13 @@ import { FINISHED_STATUSES, TASK_STATUSES, taskStatusLabel } from "./taskFilters
 
 export default function TaskToolbar() {
   const { projectId, filters, focusId, setQuery, setStatus, setShowCompleted, clearFilters } = useTaskWorkspace();
-  const layoutV2 = useSystemStatus().data?.graph_layout_enabled === true;
   const variant = filters.showCompleted || focusId ? "all" : "active";
   // Only the graph pans to a hit, and only a server-side layout knows where
   // one is: on the Tasks tab the control would do nothing, so it is not shown
   // and the `locate` request is never issued.
   const onGraph = useLocation().pathname.endsWith("/graph");
   const { next: jumpNext, count: jumpCount } = useJumpToResult(
-    layoutV2 && onGraph ? projectId : undefined, variant, filters);
+    onGraph ? projectId : undefined, variant, filters);
   const tidy = useTidyLayout(projectId ?? "");
   const [createOpen, setCreateOpen] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -49,14 +47,14 @@ export default function TaskToolbar() {
           disabled={!!focusId} onChange={(e) => setShowCompleted(e.target.checked)} className="accent-indigo-500 disabled:opacity-50" />
         Show completed
       </label>
-      {layoutV2 && onGraph && jumpCount > 0 && <button type="button" onClick={jumpNext}
+      {onGraph && jumpCount > 0 && <button type="button" onClick={jumpNext}
         title="Pan the graph to the next matching task"
         className="h-9 rounded-md border border-gray-700 px-3 text-xs text-gray-200 hover:bg-gray-800">
         Next result ({jumpCount})
       </button>}
       {hasFilters && <button type="button" aria-label="Clear task filters" title="Clear filters" onClick={clearFilters}
         className="rounded p-2 text-gray-400 hover:bg-gray-800 hover:text-gray-100"><XMarkIcon className="h-4 w-4" /></button>}
-      {layoutV2 && projectId && <button type="button" disabled={tidy.isPending}
+      {projectId && <button type="button" disabled={tidy.isPending}
         title="Re-arrange every node in this project"
         onClick={() => { if (window.confirm("Tidy re-arranges every node in this project. Continue?")) tidy.mutate(); }}
         className="h-9 rounded-md border border-gray-700 px-3 text-xs text-gray-200 hover:bg-gray-800 disabled:opacity-50">
