@@ -892,6 +892,12 @@ class PlaybooksConfig:
     #: Playbook V2 Package 7.
     v2_compiler_enabled: bool = False
 
+    #: How long ``PlaybookEngine.cancel`` waits for an in-flight executor to
+    #: acknowledge before it ends the run itself (V2 child plan §4.9, §9).
+    #: ``0`` means "do not wait": the run reaches ``cancelled`` immediately and
+    #: the receipt records ``grace_expired``.
+    cancellation_grace_seconds: int = 30
+
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
         for field_name in (
@@ -914,6 +920,10 @@ class PlaybooksConfig:
             )
         if self.v2_artifact_min_versions < 1:
             errors.append(ConfigError("playbooks", "v2_artifact_min_versions", "must be >= 1"))
+        if self.cancellation_grace_seconds < 0:
+            errors.append(
+                ConfigError("playbooks", "cancellation_grace_seconds", "must be >= 0")
+            )
         return errors
 
 

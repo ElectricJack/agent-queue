@@ -19,6 +19,13 @@ interface Options {
 }
 
 /**
+ * Trailing edge for a viewport-driven fetch. A drag hands the hook a new rect
+ * every time it crosses a tile boundary; waiting for the gesture to settle
+ * turns a pan across a wide graph into one request instead of a dozen.
+ */
+export const VIEWPORT_DEBOUNCE_MS = 150;
+
+/**
  * Keeps a `LayoutStore` in sync with the viewport: fetches the cells the
  * viewport covers (padded by one), never refetches a loaded cell, coalesces
  * viewport changes that arrive while a request is in flight, and evicts cells
@@ -47,6 +54,8 @@ export function useLayoutTiles(
   // daemon. The band the canvas shows offers an explicit Retry instead.
   const failed = useRef(false);
   const wantedRef = useRef<CellKey[]>([]);
+  // The very first rect must not wait: nothing is on screen until it lands.
+  const panned = useRef(false);
   const centreRef = useRef<CellKey>("0:0");
   const paramsKey = JSON.stringify(params);
   const paramsRef = useRef(params);
@@ -146,7 +155,17 @@ export function useLayoutTiles(
     if (!viewportRect) return;
     wantedRef.current = cellsForRect(viewportRect, 1);
     centreRef.current = centreCell(viewportRect);
-    void load();
+    // The first rect of a mount is what puts anything on screen at all, so it
+    // loads immediately; after that a pan gets the trailing edge, and a
+    // gesture that crosses several tiles issues one request at the end rather
+    // than one per crossing.
+    if (!panned.current) {
+      panned.current = true;
+      void load();
+      return;
+    }
+    const timer = setTimeout(() => void load(), VIEWPORT_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
   }, [viewportRect, load]);
 
   const refetchVisible = useCallback(() => {

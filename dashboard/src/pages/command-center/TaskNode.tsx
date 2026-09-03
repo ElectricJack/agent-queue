@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { ChevronDownIcon, ChevronRightIcon, ExclamationTriangleIcon, MagnifyingGlassPlusIcon } from "@heroicons/react/24/outline";
 import { Handle, Position, type NodeProps, type Node } from "@xyflow/react";
 import { NODE_HEIGHT, NODE_WIDTH, type TaskNodeData } from "./types";
@@ -21,6 +22,15 @@ const STATUS_TONE: Record<string, string> = {
   CANCELED: "border-gray-700 bg-gray-900 text-gray-400",
 };
 
+/**
+ * Terminal statuses. A card in one of these with nothing running or blocked
+ * beneath it has no live state left to show, so it renders the cheap variant:
+ * a static completion line instead of a progress bar, and none of the live
+ * counters. On a project view where most of the graph is finished work this is
+ * most of the cards.
+ */
+const SETTLED = new Set(["COMPLETED", "CANCELLED", "CANCELED"]);
+
 interface CardProps {
   data: TaskNodeData;
   selected?: boolean;
@@ -43,6 +53,7 @@ export function TaskCard({ data, selected = false, fluid = false, layoutScale = 
       ? "All children are hidden by the current filters."
       : undefined;
   const openGates = gates.filter((gate) => gate.status.toLowerCase() === "open");
+  const settled = SETTLED.has(task.status) && hierarchy.runningCount === 0 && hierarchy.blockedCount === 0;
 
   return (
     <div
@@ -85,16 +96,18 @@ export function TaskCard({ data, selected = false, fluid = false, layoutScale = 
         {hierarchy.descendantCount > 0 && (
           <span className="mt-auto block w-full pt-1 text-[10px]">
             <span>{hierarchy.completedCount}/{hierarchy.descendantCount} descendants completed</span>
-            <span
-              role="progressbar"
-              aria-label={`Child completion for ${task.title}`}
-              aria-valuemin={0}
-              aria-valuemax={hierarchy.descendantCount}
-              aria-valuenow={hierarchy.completedCount}
-              className="mt-0.5 block h-1 overflow-hidden rounded bg-white/10"
-            >
-              <span className="block h-full bg-emerald-400" style={{ width: `${hierarchy.completedCount / hierarchy.descendantCount * 100}%` }} />
-            </span>
+            {!settled && (
+              <span
+                role="progressbar"
+                aria-label={`Child completion for ${task.title}`}
+                aria-valuemin={0}
+                aria-valuemax={hierarchy.descendantCount}
+                aria-valuenow={hierarchy.completedCount}
+                className="mt-0.5 block h-1 overflow-hidden rounded bg-white/10"
+              >
+                <span className="block h-full bg-emerald-400" style={{ width: `${hierarchy.completedCount / hierarchy.descendantCount * 100}%` }} />
+              </span>
+            )}
           </span>
         )}
       </button>
@@ -135,7 +148,12 @@ export function TaskCard({ data, selected = false, fluid = false, layoutScale = 
   );
 }
 
-export default function TaskNode({ data, selected }: NodeProps<TaskNodeType>) {
+/**
+ * `data` identity is stable across a re-delivered layout for a card that did
+ * not change (see `toFlowElements`' structural sharing), so memoising here
+ * keeps a re-rendered `NodeWrapper` from repainting the card underneath it.
+ */
+function TaskNode({ data, selected }: NodeProps<TaskNodeType>) {
   return (
     <>
       <Handle id="in-left" type="target" position={Position.Left} isConnectable={false} />
@@ -148,3 +166,5 @@ export default function TaskNode({ data, selected }: NodeProps<TaskNodeType>) {
     </>
   );
 }
+
+export default memo(TaskNode);

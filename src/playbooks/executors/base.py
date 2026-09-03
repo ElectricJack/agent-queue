@@ -33,6 +33,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from src.playbooks.artifact_ref import ArtifactRef
     from src.playbooks.artifact_store import ArtifactStore
     from src.playbooks.definition import PlaybookDefinition
+    from src.playbooks.run_state import LoopFrame
     from src.playbooks.waits import WaitSpec
 
 
@@ -130,6 +131,16 @@ class ExecutorResult:
     diagnostics: tuple[str, ...] = ()
     #: Dry-run / shadow only: the outcomes a resolved run could have taken.
     possible_outcomes: tuple[str, ...] = ()
+    #: The loop frame the engine must persist with this boundary (§4.7).  The
+    #: foreach executor is a *pure state transition over the frame*, so it
+    #: computes the next frame and hands it back rather than writing it: the
+    #: engine is still the only thing that touches durable state.
+    loop_frame: LoopFrame | None = None
+    #: Drop the run's loop frame at this boundary — the loop is over.  A
+    #: separate flag rather than ``loop_frame=None`` because "no change" and
+    #: "the loop ended" are different instructions and conflating them would
+    #: leave a finished loop's item readable on the continuation path.
+    clear_loop: bool = False
 
     def __post_init__(self) -> None:
         if not self.outcome:
@@ -179,6 +190,10 @@ class StepContext:
     #: Resolved ``step.inputs`` (§3.4 step 4).  The engine resolves them so a
     #: resolution failure is an outcome *before* any executor runs.
     inputs: Mapping[str, Any] = field(default_factory=dict)
+    #: The run's active loop frame, or ``None``.  Read by the foreach
+    #: executor, which is otherwise stateless; every other executor ignores
+    #: it and sees only :attr:`iteration_index`.
+    loop_frame: LoopFrame | None = None
 
 
 @runtime_checkable

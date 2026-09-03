@@ -13,8 +13,8 @@ import { useExpandedTaskIds } from "../useGraphHierarchy";
 import { useLayoutExtents, useLayoutNode, type TilesParams, type Variant } from "../../../api/graphLayout";
 import { useLayoutTiles } from "./useLayoutTiles";
 import { refetchLayout, registerLayoutRefetch } from "./liveRegistry";
-import { toFlowElements, type FlowHandlers } from "./flowNodes";
-import { maxDepthForZoom, sizePx, toPx, worldRectFromViewport, type Rect } from "./units";
+import { toFlowElements, type FlowCache, type FlowHandlers } from "./flowNodes";
+import { CELL, maxDepthForZoom, sizePx, toPx, worldRectFromViewport, type Rect } from "./units";
 import { DENSITY_STORAGE_KEY, DEFAULT_DENSITY, storedDensity, type LayoutDensity } from "./density";
 import {
   NODE_HEIGHT, NODE_WIDTH, type ContainerNodeData, type GraphViewProps, type GraphWorker,
@@ -50,6 +50,13 @@ const NO_PLAYBOOKS: NonNullable<GraphViewProps["playbooks"]> = [];
 const PROJECT_GAP = 2;
 const PLAYBOOKS_PER_ROW = 4;
 const initialViewport = { x: 0, y: 0, zoom: 1 };
+/**
+ * Below this zoom a card is a few pixels tall: the smoothstep router and the
+ * ×N labels are detail nobody can read, so the edges drop to straight lines.
+ * Nesting and collapse state are user-owned and unaffected — this is paint,
+ * not structure.
+ */
+const SIMPLE_EDGE_ZOOM = 0.5;
 const RELATION_LABELS: Record<string, string> = {
   blocks: "blocks",
   "parent-child": "parent-child",
@@ -105,6 +112,7 @@ interface LayerProps {
   onBudgetExceeded: () => void;
   onElements: (projectId: string, elements: LayerElements) => void;
   density: LayoutDensity;
+  simpleEdges: boolean;
 }
 
 function nearestIn(nodes: Node[], from: Node, dir: "up" | "down" | "left" | "right"): Node | null {
@@ -129,15 +137,25 @@ function nearestIn(nodes: Node[], from: Node, dir: "up" | "down" | "left" | "rig
  * project isolated: only the layer whose store changed re-runs its conversion.
  */
 function ProjectLayer({
-  projectId, projectNames, offsetY, params, viewport, width, height, expanded, handlers, onBudgetExceeded, onElements, density,
+  projectId, projectNames, offsetY, params, viewport, width, height, expanded, handlers, onBudgetExceeded, onElements, density, simpleEdges,
 }: LayerProps) {
-  // Memoised per layer: `useLayoutTiles` re-runs its viewport effect on every
-  // new rect identity, so a fresh object per render would refetch needlessly.
-  const rect = useMemo<Rect | null>(() => {
+  const rawRect = useMemo<Rect | null>(() => {
     if (!viewport || width === 0) return null;
     const world = worldRectFromViewport(viewport, width, height, density);
     return { x0: world.x0, y0: world.y0 - offsetY, x1: world.x1, y1: world.y1 - offsetY };
   }, [viewport, width, height, offsetY, density]);
+  // A pan of a few pixels covers exactly the cells the last one did, so the
+  // rect only gets a new identity when the tile coverage actually changes:
+  // `useLayoutTiles` re-runs its viewport effect on every new rect, and
+  // during a drag that is once per animation frame.
+  const coverage = rawRect
+    ? `${Math.floor(rawRect.x0 / CELL)}:${Math.floor(rawRect.y0 / CELL)}:${Math.ceil(rawRect.x1 / CELL)}:${Math.ceil(rawRect.y1 / CELL)}`
+    : "";
+  // `coverage` is the tile-grid identity of `rawRect`; holding the rect that
+  // crossed into the new coverage keeps a real viewport rect (and so a real
+  // centre cell) rather than a snapped-out one.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const rect = useMemo<Rect | null>(() => rawRect, [coverage]);
 
   const budget = useRef(onBudgetExceeded);
   budget.current = onBudgetExceeded;
@@ -149,8 +167,15 @@ function ProjectLayer({
     [projectId, refetchVisible],
   );
 
+  // The previous conversion, so a re-delivered layout hands back the very same
+  // Node objects for the cards that did not change and React Flow re-renders
+  // only the ones that did.
+  const flowCache = useRef<FlowCache | undefined>(undefined);
   useEffect(() => {
-    const { nodes, edges } = toFlowElements(store, { projectId, offsetY, expanded, handlers, projectNames, density });
+    const { nodes, edges, cache } = toFlowElements(
+      store, { projectId, offsetY, expanded, handlers, projectNames, density, simpleEdges }, flowCache.current,
+    );
+    flowCache.current = cache;
     // Docking is resolved server-side, so a worker's `docked_at` is already a
     // visible node id.
     const workers: GraphWorker[] = store.workers.map((worker) => ({
@@ -158,7 +183,7 @@ function ProjectLayer({
       in_collapsed: worker.in_collapsed, profile_id: null, session_id: null,
     }));
     onElements(projectId, { nodes, edges, workers, pending, loaded, error });
-  }, [store, pending, loaded, error, projectId, projectNames, offsetY, expanded, handlers, onElements, density]);
+  }, [store, pending, loaded, error, projectId, projectNames, offsetY, expanded, handlers, onElements, density, simpleEdges]);
 
   return null;
 }
@@ -206,6 +231,10 @@ function Inner(props: LayoutCanvasProps) {
     });
   }, []);
 
+  // A boolean, not the zoom: it flips once on the way past the threshold, so
+  // the edge rebuild happens on that crossing and not on every frame of a
+  // pinch.
+  const simpleEdges = (viewport?.zoom ?? 1) < SIMPLE_EDGE_ZOOM;
   const zoomDepth = maxDepthForZoom(viewport?.zoom ?? 1);
   const maxDepth = depthOverride === null ? zoomDepth : Math.min(depthOverride, zoomDepth ?? Infinity);
   const paramsSignature = `${focusId ?? ""}|${variant}|${filters.query.trim()}|${filters.status}|${[...expandedTaskIds].sort().join(",")}`;
@@ -325,35 +354,44 @@ function Inner(props: LayoutCanvasProps) {
     return kept.size === prev.size ? prev : kept;
   }), [projectIds]);
 
+  const playbookNodes = useMemo<Node[]>(() => playbooks.map((playbook, i) => ({
+    id: `playbook:${playbook.id}`,
+    type: "playbook",
+    position: toPx(i % PLAYBOOKS_PER_ROW, -1.5 - Math.floor(i / PLAYBOOKS_PER_ROW) * 1.3, density),
+    width: NODE_WIDTH,
+    height: NODE_HEIGHT,
+    draggable: false,
+    connectable: false,
+    data: { playbook, onOpenPlaybook: openPlaybook },
+  })), [playbooks, openPlaybook, density]);
+  const headers = useMemo<Node[]>(() => projectIds.length > 1 ? projectIds.map((pid) => ({
+    id: `project:${pid}`,
+    type: "projectHeader",
+    position: toPx(0, (offsets.get(pid) ?? 0) - 0.4, density),
+    selectable: false,
+    draggable: false,
+    connectable: false,
+    zIndex: 0,
+    className: "aq-project-header",
+    data: { label: projectNames.get(pid) ?? pid },
+  })) : [], [projectIds, offsets, projectNames, density]);
+  // Selection and keyboard focus decorate at most two cards, so only those get
+  // a new object: every other node keeps the identity the layer handed over,
+  // and React Flow re-renders nothing for them.
   const nodes = useMemo(() => {
-    const playbookNodes: Node[] = playbooks.map((playbook, i) => ({
-      id: `playbook:${playbook.id}`,
-      type: "playbook",
-      position: toPx(i % PLAYBOOKS_PER_ROW, -1.5 - Math.floor(i / PLAYBOOKS_PER_ROW) * 1.3, density),
-      width: NODE_WIDTH,
-      height: NODE_HEIGHT,
-      draggable: false,
-      connectable: false,
-      data: { playbook, onOpenPlaybook: openPlaybook },
-    }));
-    const headers: Node[] = projectIds.length > 1 ? projectIds.map((pid) => ({
-      id: `project:${pid}`,
-      type: "projectHeader",
-      position: toPx(0, (offsets.get(pid) ?? 0) - 0.4, density),
-      selectable: false,
-      draggable: false,
-      connectable: false,
-      zIndex: 0,
-      className: "aq-project-header",
-      data: { label: projectNames.get(pid) ?? pid },
-    })) : [];
     const all = [...playbookNodes, ...headers, ...projectIds.flatMap((pid) => layers.get(pid)?.nodes ?? [])];
-    return all.map((node) => ({
-      ...node,
-      selected: node.id === selectedId,
-      className: node.id === kbFocusId ? [node.className, "aq-focused"].filter(Boolean).join(" ") : node.className,
-    }));
-  }, [playbooks, projectIds, offsets, layers, selectedId, kbFocusId, openPlaybook, projectNames, density]);
+    if (!selectedId && !kbFocusId) return all;
+    return all.map((node) => {
+      const selected = node.id === selectedId;
+      const focused = node.id === kbFocusId;
+      if (!selected && !focused) return node;
+      return {
+        ...node,
+        selected,
+        className: focused ? [node.className, "aq-focused"].filter(Boolean).join(" ") : node.className,
+      };
+    });
+  }, [playbookNodes, headers, projectIds, layers, selectedId, kbFocusId]);
   const edges = useMemo(
     () => projectIds.flatMap((pid) => layers.get(pid)?.edges ?? []),
     [projectIds, layers],
@@ -499,7 +537,7 @@ function Inner(props: LayoutCanvasProps) {
         {projectIds.map((pid) => (
           <ProjectLayer key={pid} projectId={pid} projectNames={projectNames} offsetY={offsets.get(pid) ?? 0} params={params}
             viewport={viewport} width={size.w} height={size.h} expanded={expandedTaskIds} handlers={handlers}
-            onBudgetExceeded={onBudgetExceeded} onElements={onElements} density={density} />
+            onBudgetExceeded={onBudgetExceeded} onElements={onElements} density={density} simpleEdges={simpleEdges} />
         ))}
         <ReactFlow
           nodes={nodes}

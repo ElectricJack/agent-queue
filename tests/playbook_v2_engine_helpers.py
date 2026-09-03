@@ -21,7 +21,13 @@ from src.playbooks.definition import (
     load_definition_json,
 )
 from src.playbooks.receipts import StepReceipt
-from src.playbooks.run_state import DuplicateRun, RunSnapshot, SnapshotVersionConflict
+from src.playbooks.run_state import (
+    DuplicateRun,
+    IllegalLifecycleTransition,
+    RunLifecycle,
+    RunSnapshot,
+    SnapshotVersionConflict,
+)
 from src.playbooks.waits import EMPTY_WAIT_CHANGES
 
 FIXTURES = pathlib.Path("tests/fixtures/playbooks/v2")
@@ -193,6 +199,10 @@ class RecordingRunRepository:
         self.commit_calls = 0
         self.create_calls = 0
         self.conflicts = 0
+        #: ``(run_id, reason, requested_by)`` per ``request_cancel``.
+        self.cancel_reasons: list[tuple[str, str, str]] = []
+        #: Runs whose waits this double retired, from either seam.
+        self.cleared_runs: list[str] = []
         self._conflict_at = conflict_on_commit
         self._fail_with = fail_commit_with
         self.dispatch_keys: set[tuple[str | None, str]] = set()
@@ -226,6 +236,8 @@ class RecordingRunRepository:
         wait_changes: Any = EMPTY_WAIT_CHANGES,
     ) -> RunSnapshot:
         self.commit_calls += 1
+        if getattr(wait_changes, "clear_run_waits", False):
+            self.cleared_runs.append(snapshot.run_id)
         if self._fail_with is not None:
             raise self._fail_with
         if self._conflict_at is not None and self.commit_calls == self._conflict_at:
@@ -244,11 +256,37 @@ class RecordingRunRepository:
     async def request_cancel(
         self, run_id: str, *, expected_version: int, reason: str, requested_by: str
     ) -> RunSnapshot:
+        """The shipped repository's contract, not a convenience stub.
+
+        Three properties the engine depends on and the double therefore has
+        to reproduce: a paused run goes straight to ``cancelled`` while a
+        running one enters ``cancelling``; a terminal run is refused; and the
+        write advances the version exactly as a boundary does, which is what
+        makes "the walk must adopt the post-cancel version" testable here at
+        all rather than only against PostgreSQL.
+        """
         snapshot = self.snapshots[run_id]
+        if snapshot.is_terminal:
+            raise IllegalLifecycleTransition(
+                run_id, snapshot.lifecycle.value, RunLifecycle.CANCELLED.value
+            )
+        target = (
+            RunLifecycle.CANCELLED
+            if snapshot.lifecycle is RunLifecycle.PAUSED
+            else RunLifecycle.CANCELLING
+        )
+        now = 1_000.0
         updated = replace(
-            snapshot, cancel_requested_at=1_000.0, version=snapshot.version + 1
+            snapshot,
+            lifecycle=target,
+            cancel_requested_at=now,
+            version=snapshot.version + 1,
+            completed_at=now if target is RunLifecycle.CANCELLED else snapshot.completed_at,
         )
         self.snapshots[run_id] = updated
+        self.cancel_reasons.append((run_id, reason, requested_by))
+        if target is RunLifecycle.CANCELLED:
+            self.cleared_runs.append(run_id)
         return updated
 
 

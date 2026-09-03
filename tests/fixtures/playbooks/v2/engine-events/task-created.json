@@ -1,0 +1,7 @@
+{
+  "event_id": "evt-task-created",
+  "event_type": "task.created",
+  "project_id": "proj-1",
+  "task_id": "task-9",
+  "title": "Sleep on it"
+}

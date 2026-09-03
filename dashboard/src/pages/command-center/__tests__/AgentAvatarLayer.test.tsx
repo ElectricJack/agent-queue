@@ -3,8 +3,13 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import AgentAvatarLayer from "../AgentAvatarLayer";
 
+// The layer reads only the nodes its badges dock at, so the fake store is a
+// nodeLookup rather than a node array.
+const state = vi.hoisted(() => ({
+  nodeLookup: new Map([["parent", { id: "parent", position: { x: 32, y: 32 }, width: 240 }]]),
+}));
 vi.mock("@xyflow/react", () => ({
-  useNodes: () => [{ id: "parent", position: { x: 32, y: 32 } }],
+  useStore: (selector: (s: typeof state) => unknown) => selector(state),
   ViewportPortal: ({ children }: { children: ReactNode }) => <div>{children}</div>,
 }));
 afterEach(cleanup);

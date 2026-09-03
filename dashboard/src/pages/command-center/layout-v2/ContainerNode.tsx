@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { ChevronDownIcon, MagnifyingGlassPlusIcon } from "@heroicons/react/24/outline";
 import { Handle, Position } from "@xyflow/react";
 import type { ContainerNodeData } from "../types";
@@ -5,7 +6,7 @@ import { UNIT_H } from "./units";
 
 export interface ContainerNodeProps { id: string; data: ContainerNodeData; selected?: boolean }
 
-export default function ContainerNode({ data, selected }: ContainerNodeProps) {
+function ContainerNode({ data, selected }: ContainerNodeProps) {
   const { node, onFocus, onToggleChildren, onOpenTask } = data;
   const headerPx = 0.35 * UNIT_H * (data.layoutScale ?? 1);
   return (
@@ -32,3 +33,7 @@ export default function ContainerNode({ data, selected }: ContainerNodeProps) {
     </div>
   );
 }
+
+/** Its `data` keeps its identity while the container is unchanged, so a
+ *  re-rendered `NodeWrapper` costs nothing here. */
+export default memo(ContainerNode);

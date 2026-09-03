@@ -1,0 +1,134 @@
+{
+  "schema_version": 2,
+  "id": "wait-kinds",
+  "version": 1,
+  "scope": {"type": "system"},
+  "source_hash": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+  "compiled_at": "2026-09-01T00:00:00Z",
+  "purpose": "routine",
+  "rules": [
+    {
+      "id": "gate",
+      "name": "Wait for a human gate",
+      "trigger": {"event_type": "task.completed"},
+      "entry_step": "await-approval",
+      "source": {"path": "system/playbooks/waits.md", "start_line": 10, "end_line": 12}
+    },
+    {
+      "id": "correlate",
+      "name": "Wait for a correlated event",
+      "trigger": {"event_type": "spec.approved"},
+      "entry_step": "await-review",
+      "source": {"path": "system/playbooks/waits.md", "start_line": 30, "end_line": 32}
+    },
+    {
+      "id": "sleep",
+      "name": "Wait for a timer",
+      "trigger": {"event_type": "task.created"},
+      "entry_step": "await-timer",
+      "source": {"path": "system/playbooks/waits.md", "start_line": 50, "end_line": 52}
+    }
+  ],
+  "steps": {
+    "await-approval": {
+      "type": "wait",
+      "rule": "gate",
+      "title": "Await approval",
+      "wait_kind": "human",
+      "awaited": {"type": "literal", "value": "Approve the review"},
+      "correlation_key": {
+        "type": "object",
+        "fields": {"task_id": {"type": "event_ref", "path": "task_id"}}
+      },
+      "outcomes": ["approve", "revise"],
+      "timeout_seconds": 86400,
+      "save_result_as": "approval",
+      "transitions": {
+        "approve": "gate-done",
+        "revise": "gate-revised",
+        "timed_out": "gate-failed",
+        "contract_violation": "gate-failed",
+        "runtime_error": "gate-failed"
+      },
+      "source": {"path": "system/playbooks/waits.md", "start_line": 13, "end_line": 20}
+    },
+    "gate-done": {
+      "type": "terminal",
+      "rule": "gate",
+      "title": "Approved",
+      "outcome": "completed",
+      "source": {"path": "system/playbooks/waits.md", "start_line": 21, "end_line": 21}
+    },
+    "gate-revised": {
+      "type": "terminal",
+      "rule": "gate",
+      "title": "Revision asked for",
+      "outcome": "completed",
+      "source": {"path": "system/playbooks/waits.md", "start_line": 22, "end_line": 22}
+    },
+    "gate-failed": {
+      "type": "terminal",
+      "rule": "gate",
+      "title": "Gate failed",
+      "outcome": "failed",
+      "source": {"path": "system/playbooks/waits.md", "start_line": 23, "end_line": 23}
+    },
+    "await-review": {
+      "type": "wait",
+      "rule": "correlate",
+      "title": "Await the review event",
+      "wait_kind": "event",
+      "awaited": {"type": "literal", "value": "review.finished"},
+      "correlation_key": {
+        "type": "object",
+        "fields": {"spec_id": {"type": "event_ref", "path": "spec_id"}}
+      },
+      "timeout_seconds": 600,
+      "save_result_as": "review",
+      "transitions": {
+        "matched": "correlate-done",
+        "timed_out": "correlate-failed",
+        "runtime_error": "correlate-failed"
+      },
+      "source": {"path": "system/playbooks/waits.md", "start_line": 33, "end_line": 40}
+    },
+    "correlate-done": {
+      "type": "terminal",
+      "rule": "correlate",
+      "title": "Matched",
+      "outcome": "completed",
+      "source": {"path": "system/playbooks/waits.md", "start_line": 41, "end_line": 41}
+    },
+    "correlate-failed": {
+      "type": "terminal",
+      "rule": "correlate",
+      "title": "Never matched",
+      "outcome": "failed",
+      "source": {"path": "system/playbooks/waits.md", "start_line": 42, "end_line": 42}
+    },
+    "await-timer": {
+      "type": "wait",
+      "rule": "sleep",
+      "title": "Await a timer",
+      "wait_kind": "timer",
+      "timeout_seconds": 30,
+      "save_result_as": "timer",
+      "transitions": {"fired": "sleep-done", "runtime_error": "sleep-failed"},
+      "source": {"path": "system/playbooks/waits.md", "start_line": 53, "end_line": 57}
+    },
+    "sleep-done": {
+      "type": "terminal",
+      "rule": "sleep",
+      "title": "Slept",
+      "outcome": "completed",
+      "source": {"path": "system/playbooks/waits.md", "start_line": 58, "end_line": 58}
+    },
+    "sleep-failed": {
+      "type": "terminal",
+      "rule": "sleep",
+      "title": "Timer failed",
+      "outcome": "failed",
+      "source": {"path": "system/playbooks/waits.md", "start_line": 59, "end_line": 59}
+    }
+  }
+}
