@@ -240,8 +240,16 @@ export function layoutSemanticGraph(
       labelBgBorderRadius: 3,
       labelBgStyle: { fill: "#0b1220", fillOpacity: 0.92 },
       labelStyle: { fill: "#e2e8f0", fontSize: 10 },
-      selectable: false,
-      focusable: false,
+      // Every transition record is one independently selectable edge. These
+      // are per-edge flags on purpose: the canvas leaves `elementsSelectable`
+      // off so the cards stay read-only, and xyflow resolves selection as
+      // `edge.selectable || (elementsSelectable && edge.selectable === undefined)`,
+      // so an explicit `true` here selects edges without selecting anything else.
+      selectable: true,
+      focusable: true,
+      // Focusable edges get `tabIndex=0` and xyflow's Enter/Space/Escape
+      // handling, which is a toggle button, not the default `group` role.
+      ariaRole: "button",
       deletable: false,
       reconnectable: false,
       zIndex: traversed ? 3 : 2,

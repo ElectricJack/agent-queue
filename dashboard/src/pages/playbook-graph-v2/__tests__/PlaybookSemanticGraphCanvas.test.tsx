@@ -1,10 +1,10 @@
 import type { ComponentType, MouseEvent, ReactNode } from "react";
-import type { Edge, Node } from "@xyflow/react";
+import type { Edge, EdgeChange, Node } from "@xyflow/react";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import PlaybookSemanticGraphCanvas from "../PlaybookSemanticGraphCanvas";
-import { RULE_CLUSTER_NODE_TYPE, SEMANTIC_NODE_TYPE } from "../types";
+import { EDGE_KIND_STYLES, RULE_CLUSTER_NODE_TYPE, SEMANTIC_NODE_TYPE } from "../types";
 import { graph } from "./fixtures";
 
 interface FlowProps {
@@ -14,8 +14,11 @@ interface FlowProps {
   children: ReactNode;
   onPaneClick?: (event: MouseEvent) => void;
   onNodeClick?: (event: MouseEvent, node: { id: string; type?: string }) => void;
+  onEdgesChange?: (changes: EdgeChange[]) => void;
   nodesDraggable?: boolean;
   elementsSelectable?: boolean;
+  edgesFocusable?: boolean;
+  disableKeyboardA11y?: boolean;
   deleteKeyCode?: string | null;
   fitView?: boolean;
   minZoom?: number;
@@ -63,6 +66,19 @@ vi.mock("@xyflow/react", () => ({
         <ul data-testid="edges">
           {props.edges.map((e) => (
             <li key={e.id} data-testid={`edge-${e.id}`} aria-label={String(e.ariaLabel)}>
+              {/* Stands in for the `<g role="button" tabIndex={0}>` xyflow
+                  renders for a focusable, selectable edge: click and Enter
+                  both reach it through the same `select` change. */}
+              <button
+                type="button"
+                aria-label={`select edge ${e.id}`}
+                aria-pressed={Boolean(e.selected)}
+                onClick={() =>
+                  props.onEdgesChange?.([
+                    { id: e.id, type: "select", selected: !e.selected },
+                  ])
+                }
+              />
               {e.label ? String(e.label) : ""}
             </li>
           ))}
@@ -207,6 +223,125 @@ describe("PlaybookSemanticGraphCanvas", () => {
     expect(screen.getByTestId("flow")).toBeInTheDocument();
     expect(flow.mounts).toBe(mounts + 1);
     expect(screen.getByRole("region", { name: "Playbook semantic graph" })).toHaveAttribute("tabindex", "0");
+  });
+
+  it("selects two edges that share endpoints independently", async () => {
+    render(<PlaybookSemanticGraphCanvas graph={graph} onSelectNode={vi.fn()} />);
+    const caseId = "sweep-on-spec-approved::check-gate::case:0";
+    const defaultId = "sweep-on-spec-approved::check-gate::default";
+    const drawn = (id: string) => flow.current!.edges.find((e) => e.id === id)!;
+    // Same source and same target: nothing but the id separates these two.
+    expect(drawn(caseId).source).toBe(drawn(defaultId).source);
+    expect(drawn(caseId).target).toBe(drawn(defaultId).target);
+    expect(flow.current!.edges.filter((e) => e.selected)).toHaveLength(0);
+
+    await userEvent.click(screen.getByRole("button", { name: `select edge ${caseId}` }));
+    expect(drawn(caseId).selected).toBe(true);
+    expect(drawn(defaultId).selected).toBe(false);
+    // Selection has to be visible: the inline stroke would otherwise beat
+    // xyflow's own `.selected` rule and nothing would change on screen.
+    expect(drawn(caseId).style!.strokeWidth).toBeGreaterThan(
+      drawn(defaultId).style!.strokeWidth as number,
+    );
+    expect(drawn(caseId).style!.strokeDasharray).toBe(
+      EDGE_KIND_STYLES.decision_case!.strokeDasharray,
+    );
+    expect(drawn(caseId).zIndex!).toBeGreaterThan(drawn(defaultId).zIndex!);
+
+    // Picking its twin moves the selection rather than adding to it.
+    await userEvent.click(screen.getByRole("button", { name: `select edge ${defaultId}` }));
+    expect(drawn(caseId).selected).toBe(false);
+    expect(drawn(defaultId).selected).toBe(true);
+    expect(flow.current!.edges.filter((e) => e.selected)).toHaveLength(1);
+
+    // And clicking the selected one again lets it go.
+    await userEvent.click(screen.getByRole("button", { name: `select edge ${defaultId}` }));
+    expect(flow.current!.edges.filter((e) => e.selected)).toHaveLength(0);
+  });
+
+  it("makes every edge pointer- and keyboard-selectable without loosening the canvas", () => {
+    render(<PlaybookSemanticGraphCanvas graph={graph} onSelectNode={vi.fn()} />);
+    for (const edge of flow.current!.edges) {
+      expect(edge.selectable).toBe(true);
+      expect(edge.focusable).toBe(true);
+      expect(edge.ariaRole).toBe("button");
+      expect(edge.domAttributes).toMatchObject({ "aria-pressed": false });
+    }
+    expect(flow.current!.edgesFocusable).toBe(true);
+    // xyflow gates an edge's own Enter/Space/Escape handling behind this flag,
+    // so it cannot be set if edges are to be reachable without a mouse.
+    expect(flow.current!.disableKeyboardA11y).toBeUndefined();
+    // None of that reopens node selection, drag-select, dragging or delete.
+    expect(flow.current).toMatchObject({
+      elementsSelectable: false,
+      nodesDraggable: false,
+      panOnScroll: true,
+      deleteKeyCode: null,
+    });
+  });
+
+  it("holds one selection at a time across steps and edges", async () => {
+    const onSelectNode = vi.fn();
+    const edgeId = "sweep-on-spec-approved::check-gate::default";
+    const selected = () => flow.current!.edges.find((e) => e.id === edgeId)!.selected;
+    const { rerender } = render(
+      <PlaybookSemanticGraphCanvas graph={graph} selectedNodeId="done" onSelectNode={onSelectNode} />,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: `select edge ${edgeId}` }));
+    expect(selected()).toBe(true);
+    // The canvas asks the view to drop the step it was inspecting.
+    expect(onSelectNode).toHaveBeenLastCalledWith(null);
+    rerender(
+      <PlaybookSemanticGraphCanvas graph={graph} selectedNodeId={null} onSelectNode={onSelectNode} />,
+    );
+    expect(selected()).toBe(true);
+
+    // The reverse holds for every path that picks a step, including the
+    // diagnostics banner, which only ever changes the prop.
+    rerender(
+      <PlaybookSemanticGraphCanvas
+        graph={graph}
+        selectedNodeId="escalate"
+        onSelectNode={onSelectNode}
+      />,
+    );
+    expect(selected()).toBe(false);
+  });
+
+  it("clears a selected edge on Escape and on a background click", async () => {
+    const edgeId = "sweep-on-spec-approved::check-gate::case:0";
+    const selected = () => flow.current!.edges.find((e) => e.id === edgeId)!.selected;
+    render(<PlaybookSemanticGraphCanvas graph={graph} onSelectNode={vi.fn()} />);
+
+    await userEvent.click(screen.getByRole("button", { name: `select edge ${edgeId}` }));
+    expect(selected()).toBe(true);
+    fireEvent.keyDown(screen.getByRole("region", { name: "Playbook semantic graph" }), {
+      key: "Escape",
+    });
+    expect(selected()).toBe(false);
+
+    await userEvent.click(screen.getByRole("button", { name: `select edge ${edgeId}` }));
+    expect(selected()).toBe(true);
+    await userEvent.click(screen.getByRole("button", { name: "Blank canvas" }));
+    expect(selected()).toBe(false);
+  });
+
+  it("forgets a selected edge that the event scope drops", async () => {
+    const edgeId = "sweep-on-spec-approved::check-gate::case:0";
+    const { rerender } = render(
+      <PlaybookSemanticGraphCanvas graph={graph} onSelectNode={vi.fn()} />,
+    );
+    await userEvent.click(screen.getByRole("button", { name: `select edge ${edgeId}` }));
+    expect(flow.current!.edges.find((e) => e.id === edgeId)!.selected).toBe(true);
+
+    const narrowed = { ...graph, edges: graph.edges!.filter((e) => e.id !== edgeId) };
+    rerender(<PlaybookSemanticGraphCanvas graph={narrowed} onSelectNode={vi.fn()} />);
+    expect(flow.current!.edges.some((e) => e.id === edgeId)).toBe(false);
+
+    // Widening the scope again must not light the old edge back up.
+    rerender(<PlaybookSemanticGraphCanvas graph={graph} onSelectNode={vi.fn()} />);
+    expect(flow.current!.edges.filter((e) => e.selected)).toHaveLength(0);
   });
 
   it("reports an empty scope instead of rendering a blank canvas", () => {
