@@ -21,7 +21,7 @@ import dataclasses
 import logging
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
@@ -312,17 +312,7 @@ class MemoryConfig:
     deep_consolidation_schedule: str = "0 4 * * 0"  # weekly deep consolidation
     consolidation_provider: str = ""  # LLM provider (defaults to revision_provider)
     consolidation_model: str = ""  # model override for consolidation
-    index_knowledge: bool = True  # index knowledge/ in vector DB
     factsheet_in_context: bool = True  # include factsheet in agent context (Tier 0)
-    knowledge_topics: tuple[str, ...] = (
-        "architecture",
-        "api-and-endpoints",
-        "deployment",
-        "dependencies",
-        "gotchas",
-        "conventions",
-        "decisions",
-    )
     # L2 Topic Detection (spec §3 — pre-filtered memory loading by topic)
     topic_detection_enabled: bool = True  # detect topics from task description for L2 loading
     topic_max_knowledge_files: int = 3  # max knowledge files to inject per task
@@ -2482,6 +2472,69 @@ def _llm_config_from_mapping(m: dict, *, legacy: bool) -> LLMConfig:
     )
 
 
+#: Coercions for the scalar annotations a config dataclass can declare.
+#: The annotations are strings — ``config.py`` runs under ``from __future__
+#: import annotations`` — so the table is keyed by source text.
+_SCALAR_COERCIONS: dict[str, Callable[[object], object]] = {
+    "bool": bool,
+    "int": int,
+    "float": float,
+    "str": str,
+}
+
+_CONTAINER_ANNOTATION = re.compile(r"(tuple|list)\[(\w+)(?:, \.\.\.)?\]")
+
+
+def _coerce_field(annotation: str, value: object) -> object:
+    """Coerce one YAML value to the type its dataclass field declares.
+
+    Annotations outside the scalar table and ``list``/``tuple`` of a scalar
+    are passed through exactly as YAML parsed them, which is what the
+    hand-written keyword lists did too.
+    """
+    scalar = _SCALAR_COERCIONS.get(annotation)
+    if scalar is not None:
+        return scalar(value)
+    match = _CONTAINER_ANNOTATION.fullmatch(annotation)
+    if match and isinstance(value, (list, tuple)):
+        item = _SCALAR_COERCIONS.get(match.group(2), lambda v: v)
+        container = tuple if match.group(1) == "tuple" else list
+        return container(item(v) for v in value)
+    return value
+
+
+def _dataclass_kwargs(cls: type, section: object) -> dict:
+    """:func:`_present_kwargs` with the spec read off the dataclass itself.
+
+    A hand-written keyword list is how a declared field becomes an
+    unreachable config key.  ``playbooks.v2_api`` and four siblings
+    (steady-ridge-97), and 54 more fields across ``chat_analyzer``,
+    ``streams``, ``logging``, ``monitoring``, ``memory`` and ``metrics``
+    (grand-glacier-97), were all declared, documented and silently pinned to
+    their code default because nobody added a line to the loader.  Deriving
+    the spec from :func:`dataclasses.fields` removes the bug class instead of
+    one instance of it: a field is reachable from YAML the moment it is
+    declared, and ``tests/test_config_section_roundtrip.py`` holds every
+    section at zero gaps.
+
+    Only keys the section actually supplies are returned, so the dataclass
+    stays the single source of truth for defaults.  A key present with no
+    value (``level:`` alone on its line) asserts nothing and is treated as
+    not supplied.
+    """
+    if not isinstance(section, Mapping):
+        return {}
+    kwargs: dict[str, object] = {}
+    for f in dataclasses.fields(cls):
+        if f.name not in section:
+            continue
+        value = section[f.name]
+        if value is None:
+            continue
+        kwargs[f.name] = _coerce_field(str(f.type), value)
+    return kwargs
+
+
 def _present_kwargs(section: dict, spec: dict) -> dict:
     """Coerce only keys explicitly present in a YAML section.
 
@@ -2724,18 +2777,20 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
     # Existing config files with hook_engine section are silently ignored.
 
     if "logging" in raw:
-        lg = raw["logging"]
-        config.logging = LoggingConfig(
-            level=lg.get("level", "INFO"),
-            format=lg.get("format", "text"),
-            include_source=lg.get("include_source", False),
-        )
+        config.logging = LoggingConfig(**_dataclass_kwargs(LoggingConfig, raw["logging"]))
 
     if "monitoring" in raw:
-        m = raw["monitoring"]
         config.monitoring = MonitoringConfig(
-            stuck_task_threshold_seconds=m.get("stuck_task_threshold_seconds", 3600),
+            **_dataclass_kwargs(MonitoringConfig, raw["monitoring"])
         )
+
+    if "chat_analyzer" in raw:
+        config.chat_analyzer = ChatAnalyzerConfig(
+            **_dataclass_kwargs(ChatAnalyzerConfig, raw["chat_analyzer"])
+        )
+
+    if "streams" in raw:
+        config.streams = StreamsConfig(**_dataclass_kwargs(StreamsConfig, raw["streams"]))
 
     if "archive" in raw:
         ar = raw["archive"]
@@ -2762,37 +2817,14 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         )
 
     if "memory" in raw:
-        mem = raw["memory"]
-        # Defaults must match MemoryConfig dataclass defaults
-        # (enabled=True, embedding_provider="ollama") so a partial memory:
-        # section (e.g. just an api_key override) does not silently flip
+        # Every field is read off ``MemoryConfig`` itself, so a partial
+        # ``memory:`` section (an api-key override, say) keeps the dataclass
+        # defaults — notably ``enabled=False`` and
+        # ``embedding_provider="ollama"`` — instead of silently flipping
         # callers onto a different provider.  The aq-memory plugin's
-        # pyproject.toml installs `memsearch[ollama]` to support the
-        # "ollama" default; deploying with `embedding_provider: openai`
-        # is opt-in and requires an api key.
-        config.memory = MemoryConfig(
-            enabled=mem.get("enabled", False),
-            embedding_provider=mem.get("embedding_provider", "ollama"),
-            embedding_model=mem.get("embedding_model", ""),
-            embedding_base_url=mem.get("embedding_base_url", ""),
-            embedding_api_key=mem.get("embedding_api_key", ""),
-            milvus_uri=mem.get("milvus_uri", "~/.agent-queue/memsearch/milvus.db"),
-            milvus_token=mem.get("milvus_token", ""),
-            max_chunk_size=mem.get("max_chunk_size", 1500),
-            overlap_lines=mem.get("overlap_lines", 2),
-            auto_remember=mem.get("auto_remember", True),
-            auto_recall=mem.get("auto_recall", True),
-            recall_top_k=mem.get("recall_top_k", 5),
-            compact_enabled=mem.get("compact_enabled", False),
-            compact_interval_hours=mem.get("compact_interval_hours", 24),
-            index_notes=mem.get("index_notes", True),
-            index_sessions=mem.get("index_sessions", False),
-            stub_enrichment_enabled=mem.get("stub_enrichment_enabled", True),
-            stub_enrichment_class=str(mem.get("stub_enrichment_class", "") or ""),
-            stub_enrichment_max_source_chars=int(
-                mem.get("stub_enrichment_max_source_chars", 20_000)
-            ),
-        )
+        # pyproject.toml installs ``memsearch[ollama]`` to support that
+        # default; ``embedding_provider: openai`` is opt-in and needs a key.
+        config.memory = MemoryConfig(**_dataclass_kwargs(MemoryConfig, raw["memory"]))
 
     if "mcp_server" in raw:
         ms = raw["mcp_server"]
@@ -2993,18 +3025,8 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             cgroups=cgroups,
         )
 
-    if "metrics" in raw and isinstance(raw["metrics"], dict):
-        met = raw["metrics"]
-        config.metrics = MetricsConfig(
-            enabled=bool(met.get("enabled", True)),
-            interval_seconds=float(met.get("interval_seconds", 1.0)),
-            slow_interval_seconds=float(met.get("slow_interval_seconds", 5.0)),
-            flush_interval_seconds=float(met.get("flush_interval_seconds", 5.0)),
-            rollup_interval_seconds=float(met.get("rollup_interval_seconds", 60.0)),
-            retain_seconds_1s=int(met.get("retain_seconds_1s", 3600)),
-            retain_seconds_1m=int(met.get("retain_seconds_1m", 30 * 86400)),
-            retain_seconds_1h=int(met.get("retain_seconds_1h", 365 * 86400)),
-        )
+    if "metrics" in raw:
+        config.metrics = MetricsConfig(**_dataclass_kwargs(MetricsConfig, raw["metrics"]))
 
     # Both spellings: the spec nests it under ``dashboard``, while
     # ``config_editor``/``update_config`` write AppConfig field names as

@@ -29,79 +29,26 @@ SECTION_YAML_KEY = {"agents_config": "agents"}
 NON_DEFAULT_VALUES = {
     ("playbooks", "v2_pending_event_on_overflow"): "reject_new",
     ("playbooks", "v2_pending_event_replay_on_activation"): "automatic",
+    # Confidences are probabilities: ``+ 0.5`` leaves [0, 1] and would be
+    # withdrawn as unvalidatable rather than exercising the loader.
+    ("chat_analyzer", "min_confidence"): 0.42,
+    ("chat_analyzer", "in_flight_min_confidence"): 0.91,
+    # ``"ollama-probe"`` is not one of the five accepted providers, and the
+    # probe sets ``enabled: true``, which is when that check applies.
+    ("memory", "embedding_provider"): "openai",
 }
 
-# Sections that do not read every field they declare, as of steady-ridge-97.
-# ``playbooks`` is deliberately absent — it is the section that task fixed, and
-# ``test_playbooks_section_reads_every_field_it_declares`` holds it at zero.
-# The rest are the same bug in other sections; the registry is exact in both
-# directions, so fixing one of them fails this test until the entry is removed.
-KNOWN_LOADER_GAPS: dict[str, list[str]] = {
-    # Read from no YAML key at all.
-    "chat_analyzer": [
-        "dismiss_cooldown_seconds",
-        "in_flight_min_confidence",
-        "min_confidence",
-    ],
-    "streams": [
-        "buffer_max_bytes",
-        "buffer_max_lines",
-        "client_reconnect_attempts",
-        "kill_grace_seconds",
-        "max_concurrent_per_session",
-        "retention_seconds",
-    ],
-    # Read, but only a subset of their fields.
-    "logging": [
-        "console_format",
-        "log_file",
-        "log_file_backup_count",
-        "log_file_max_bytes",
-    ],
-    "monitoring": ["failed_blocked_report_interval_seconds"],
-    "memory": [
-        "auto_generate_notes",
-        "compact_archive_days",
-        "compact_llm_model",
-        "compact_llm_provider",
-        "compact_recent_days",
-        "consolidation_auto_trigger",
-        "consolidation_cooldown_minutes",
-        "consolidation_enabled",
-        "consolidation_growth_threshold",
-        "consolidation_max_batch_size",
-        "consolidation_min_age_hours",
-        "consolidation_model",
-        "consolidation_provider",
-        "consolidation_schedule",
-        "consolidation_similarity_threshold",
-        "context_include_recent",
-        "context_max_tokens",
-        "deep_consolidation_schedule",
-        "fact_extraction_enabled",
-        "factsheet_in_context",
-        "index_docs",
-        "index_knowledge",
-        "index_project_docs",
-        "index_specs",
-        "notes_inform_profile",
-        "profile_enabled",
-        "profile_max_size",
-        "revision_enabled",
-        "revision_model",
-        "revision_provider",
-        "spec_watcher_enabled",
-        "spec_watcher_max_excerpt_lines",
-        "spec_watcher_poll_interval",
-        "topic_detection_enabled",
-        "topic_max_chars_per_file",
-        "topic_max_knowledge_files",
-        "topic_memory_budget_chars",
-        "topic_memory_enabled",
-        "topic_memory_max_results",
-    ],
-    "metrics": ["subagent_window_seconds", "token_window_seconds"],
-}
+# Sections that do not read every field they declare.
+#
+# Empty, and meant to stay that way.  steady-ridge-97 fixed ``playbooks``;
+# grand-glacier-97 closed the remaining six (``chat_analyzer`` and ``streams``
+# were read from no YAML key at all; ``logging``, ``monitoring``, ``memory``
+# and ``metrics`` read a subset) by deriving the loader's keyword list from
+# ``dataclasses.fields()`` instead of hand-writing it.  An entry belongs here
+# only with a comment saying why that field is deliberately not operator-
+# settable; the comparison below is exact in both directions, so a new gap
+# fails the test and so does a recorded gap fixed without deleting its entry.
+KNOWN_LOADER_GAPS: dict[str, list[str]] = {}
 
 _ERROR_RE = re.compile(r"\[(\w+)\] (\w+):")
 
@@ -226,7 +173,8 @@ def test_config_section_loader_gaps_match_the_recorded_registry(tmp_path):
 
     The comparison is exact: a section that grows a new unreachable field
     fails, and so does one whose recorded gap is fixed without updating the
-    registry.  See ``KNOWN_LOADER_GAPS`` for what is outstanding today.
+    registry.  ``KNOWN_LOADER_GAPS`` is empty, so today this reads: every
+    scalar field of every ``AppConfig`` section round-trips through YAML.
     """
     base = AppConfig()
     observed: dict[str, list[str]] = {}
@@ -239,3 +187,104 @@ def test_config_section_loader_gaps_match_the_recorded_registry(tmp_path):
             observed[f.name] = dropped
 
     assert observed == KNOWN_LOADER_GAPS
+
+
+def test_chat_analyzer_and_streams_sections_load_from_yaml(tmp_path):
+    """The two sections ``load_config`` read from no YAML key at all.
+
+    Before grand-glacier-97 neither had an ``if "<section>" in raw`` branch,
+    so every field stayed at its code default no matter what was written.
+    """
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        yaml.dump(
+            {
+                "database_path": str(tmp_path / "test.db"),
+                "discord": {"bot_token": "t", "guild_id": "1"},
+                "chat_analyzer": {
+                    "min_confidence": 0.25,
+                    "in_flight_min_confidence": 0.95,
+                    "dismiss_cooldown_seconds": 0,
+                },
+                "streams": {
+                    "buffer_max_lines": 100,
+                    "buffer_max_bytes": 4096,
+                    "retention_seconds": 30,
+                    "kill_grace_seconds": 1.5,
+                    "max_concurrent_per_session": 1,
+                    "client_reconnect_attempts": 2,
+                },
+            }
+        )
+    )
+    config = load_config(str(path))
+
+    assert config.chat_analyzer.min_confidence == 0.25
+    assert config.chat_analyzer.in_flight_min_confidence == 0.95
+    assert config.chat_analyzer.dismiss_cooldown_seconds == 0
+    assert config.streams.buffer_max_lines == 100
+    assert config.streams.buffer_max_bytes == 4096
+    assert config.streams.retention_seconds == 30
+    assert config.streams.kill_grace_seconds == 1.5
+    assert config.streams.max_concurrent_per_session == 1
+    assert config.streams.client_reconnect_attempts == 2
+
+
+def test_partial_section_keeps_every_default_the_dataclass_declares(tmp_path):
+    """Supplying one key must not reset its neighbours.
+
+    The hand-written keyword lists repeated each default at the call site,
+    which is how ``logging.format`` came to load as ``"text"`` while
+    :class:`LoggingConfig` declared ``"dev"``.  Deriving the keywords from
+    the dataclass leaves untouched keys to the dataclass by construction.
+    """
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        yaml.dump(
+            {
+                "database_path": str(tmp_path / "test.db"),
+                "discord": {"bot_token": "t", "guild_id": "1"},
+                "logging": {"level": "DEBUG"},
+                "memory": {"embedding_api_key": "k"},
+            }
+        )
+    )
+    config = load_config(str(path))
+    defaults = AppConfig()
+
+    assert config.logging.level == "DEBUG"
+    assert config.memory.embedding_api_key == "k"
+    for section in ("logging", "memory"):
+        supplied = {"logging": "level", "memory": "embedding_api_key"}[section]
+        loaded, default = getattr(config, section), getattr(defaults, section)
+        for f in dataclasses.fields(loaded):
+            if f.name != supplied:
+                assert getattr(loaded, f.name) == getattr(default, f.name), f.name
+
+
+def test_tuple_fields_load_from_a_yaml_list(tmp_path):
+    """``tuple[str, ...]`` fields keep their declared type, not YAML's list."""
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        yaml.dump(
+            {
+                "database_path": str(tmp_path / "test.db"),
+                "discord": {"bot_token": "t", "guild_id": "1"},
+                "memory": {"knowledge_topics": ["architecture", "gotchas"]},
+            }
+        )
+    )
+    assert load_config(str(path)).memory.knowledge_topics == ("architecture", "gotchas")
+
+
+def test_a_key_written_with_no_value_leaves_the_default(tmp_path):
+    """``level:`` alone on its line asserts nothing, so it must not win."""
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        f"database_path: {tmp_path / 'test.db'}\n"
+        "discord:\n  bot_token: t\n  guild_id: '1'\n"
+        "logging:\n  level:\n  include_source: true\n"
+    )
+    config = load_config(str(path))
+    assert config.logging.level == AppConfig().logging.level
+    assert config.logging.include_source is True
