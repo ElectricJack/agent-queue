@@ -13,6 +13,7 @@ from jsonschema.exceptions import ValidationError
 
 from src.commands.authorization import authorize_command, denial_result
 from src.commands.principal import check_delegation
+from src.llm.client import LLMToolTurnBoundaryError
 from src.llm.spec import LLMCallSpec
 from src.llm.types import TokenUsage
 from src.playbooks.definition import LLM_RESERVED_OUTCOMES, LlmStep, _outcome_enum
@@ -91,6 +92,7 @@ def _result(
         outcome=outcome,
         value=value if step.save_result_as else None,
         usage=usage,
+        effective_principal=ctx.principal,
         idempotency_key=_attempt_key(ctx),
         receipt_inputs={"prompt_digest": prompt_digest},
         receipt_result=receipt_result,
@@ -127,14 +129,16 @@ def _resume_state(
     messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
     usage: TokenUsage | None = None
     for turn in turns:
-        messages.extend(dict(message) for message in turn.get("transcript_delta", ()))
+        if turn.get("kind", "tool_turn") == "tool_turn":
+            messages.extend(dict(message) for message in turn.get("transcript_delta", ()))
         raw_usage = turn.get("usage") or {}
         turn_usage = TokenUsage(
             input_tokens=int(raw_usage.get("input_tokens", 0)),
             output_tokens=int(raw_usage.get("output_tokens", 0)),
             reported=bool(raw_usage.get("reported", False)),
         )
-        usage = turn_usage if usage is None else usage + turn_usage
+        if turn_usage.reported or turn_usage.total:
+            usage = turn_usage if usage is None else usage + turn_usage
     next_turn_index = int(turns[-1]["turn_index"]) + 1 if turns else 0
     return messages, next_turn_index, usage
 
@@ -264,20 +268,30 @@ class LiveLlmExecutor:
                     except Exception as exc:  # noqa: BLE001 - tool loop receives a safe error result
                         return {"success": False, "error": type(exc).__name__}
 
-                async with asyncio.timeout(step.budget.timeout_seconds):
-                    if tools:
-                        run = await ctx.services.llm.run_tools(
-                            messages,
-                            tools,
-                            dispatch_tool,
-                            spec=spec,
-                            max_turns=step.budget.max_calls - calls,
-                            on_tool_turn=ctx.on_tool_turn,
-                            initial_turn_index=next_turn_index,
-                        )
-                        response_text, call_usage = run.text, run.usage or TokenUsage()
-                        calls += run.turns
-                    else:
+                if tools:
+                    async def persist_turn(turn: Any) -> None:
+                        nonlocal next_turn_index
+                        if ctx.on_tool_turn is not None:
+                            await ctx.on_tool_turn(
+                                replace(turn, principal=ctx.principal)
+                            )
+                        next_turn_index = max(next_turn_index, turn.turn_index + 1)
+
+                    run = await ctx.services.llm.run_tools(
+                        messages,
+                        tools,
+                        dispatch_tool,
+                        spec=spec,
+                        max_turns=step.budget.max_calls - calls,
+                        on_tool_turn=persist_turn,
+                        initial_turn_index=next_turn_index,
+                        timeout_seconds=step.budget.timeout_seconds,
+                    )
+                    response_text, call_usage = run.text, run.usage or TokenUsage()
+                    calls += run.turns
+                    messages = list(run.transcript)
+                else:
+                    async with asyncio.timeout(step.budget.timeout_seconds):
                         response = await ctx.services.llm.complete(prompt, spec=spec)
                         response_text, call_usage = response.text, response.usage or TokenUsage()
                         calls += 1
@@ -308,12 +322,18 @@ class LiveLlmExecutor:
                 except (ValueError, ValidationError):
                     if retry_index == retries:
                         return _result(step, ctx, outcome="invalid_output", usage=usage)
-                    prompt = f"{prompt}\nReturn only JSON that validates against the declared schema."
+                    correction = "Return only JSON that validates against the declared schema."
+                    if tools:
+                        messages.append({"role": "user", "content": correction})
+                    else:
+                        prompt = f"{prompt}\n{correction}"
                     continue
                 outcome = value.get(step.outcome_field) if step.outcome_field else "completed"
                 if not isinstance(outcome, str) or outcome not in step.transitions:
                     return _result(step, ctx, outcome="invalid_output", usage=usage)
                 return _result(step, ctx, outcome=outcome, usage=usage, value=value)
+        except LLMToolTurnBoundaryError:
+            raise
         except TimeoutError:
             return _result(step, ctx, outcome="timed_out")
         except asyncio.CancelledError:

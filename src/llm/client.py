@@ -52,9 +52,14 @@ class LLMToolTurn:
     results_digest: str
     usage: TokenUsage
     transcript_delta: tuple[dict, ...] = ()
+    principal: Any | None = None
 
 
 ToolTurnCallback = Callable[[LLMToolTurn], Awaitable[None]]
+
+
+class LLMToolTurnBoundaryError(RuntimeError):
+    """A durable turn callback failed; this is not a provider failure."""
 
 
 def _json_safe(obj: Any) -> str:
@@ -188,6 +193,7 @@ class LLMClient:
         on_tool_turn: ToolTurnCallback | None = None,
         initial_turn_index: int = 0,
         cancel_event: asyncio.Event | None = None,
+        timeout_seconds: float | None = None,
     ) -> LLMRunResult:
         """Caller-supplied tool loop.  Tool errors become tool results; the loop
         ends when the model answers without tool calls, on ``max_turns``, or on
@@ -198,6 +204,11 @@ class LLMClient:
         made: list[str] = []
         turns = 0
         usage: TokenUsage | None = None
+        deadline = (
+            asyncio.get_running_loop().time() + timeout_seconds
+            if timeout_seconds is not None
+            else None
+        )
 
         async def _progress(kind: str, detail: str | None = None) -> None:
             if on_progress is not None:
@@ -205,7 +216,21 @@ class LLMClient:
 
         async def _turn_boundary(turn: LLMToolTurn) -> None:
             if on_tool_turn is not None:
-                await on_tool_turn(turn)
+                try:
+                    await on_tool_turn(turn)
+                except Exception as exc:
+                    raise LLMToolTurnBoundaryError(
+                        "durable LLM tool-turn callback failed"
+                    ) from exc
+
+        async def _within_deadline(operation: Callable[[], Awaitable[Any]]) -> Any:
+            if deadline is None:
+                return await operation()
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                raise TimeoutError
+            async with asyncio.timeout(remaining):
+                return await operation()
 
         def _results_digest(results: list[dict]) -> str:
             payload = json.dumps(
@@ -230,10 +255,17 @@ class LLMClient:
 
             await _progress("thinking", None if turns == 0 else f"round {turns + 1}")
             try:
-                resp = await self._create_message(
-                    resolved, messages=transcript, system=system, tools=tools or None
+                resp = await _within_deadline(
+                    lambda: self._create_message(
+                        resolved,
+                        messages=transcript,
+                        system=system,
+                        tools=tools or None,
+                    )
                 )
             except asyncio.CancelledError:
+                if on_tool_turn is None:
+                    raise
                 await _turn_boundary(
                     LLMToolTurn(
                         kind="interrupted",
@@ -268,8 +300,12 @@ class LLMClient:
                     }
                 else:
                     try:
-                        result = await execute(call.name, dict(call.input or {}))
+                        result = await _within_deadline(
+                            lambda: execute(call.name, dict(call.input or {}))
+                        )
                     except asyncio.CancelledError:
+                        if on_tool_turn is None:
+                            raise
                         await _turn_boundary(
                             LLMToolTurn(
                                 kind="interrupted",

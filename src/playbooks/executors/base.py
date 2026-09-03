@@ -117,6 +117,9 @@ class ExecutorResult:
     wait: WaitSpec | None = None
     terminal_outcome: str | None = None
     usage: TokenUsage | None = None
+    #: The narrowed identity that actually executed the step, when different
+    #: from the invoking principal (for example an LLM profile).
+    effective_principal: Any | None = None
     idempotency_key: str | None = None
     #: Receipt projections.  ALREADY REDACTED by the executor per §3.3.4 —
     #: the engine writes them verbatim and performs no further redaction.

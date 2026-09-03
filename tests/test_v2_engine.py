@@ -50,7 +50,7 @@ from src.playbooks.executors.foreach import ITERATING_OUTCOME
 from src.playbooks.executors.wait import UNRESOLVED_REASON
 from src.playbooks.expressions import BindingRef, ResolutionScope
 from src.playbooks.receipts import RECEIPT_OUTCOMES, transition_id
-from src.playbooks.run_state import LoopFrame, RunLifecycle
+from src.playbooks.run_state import LoopFrame, RunLifecycle, StateLimitExceeded
 from src.playbooks.waits import (
     EMPTY_WAIT_CHANGES,
     WaitClaim,
@@ -185,9 +185,10 @@ def build_llm(
     provider: FakeProvider,
     *,
     runs: RecordingRunRepository | None = None,
+    step: LlmStep | None = None,
 ):
     artifact = minimal_artifact()
-    artifact = with_step(artifact, "ensure-review-task", _llm_step())
+    artifact = with_step(artifact, "ensure-review-task", step or _llm_step())
     ref = artifact_ref_for(artifact)
     registry, adapter = registry_with(ENSURE_TASK)
     store = InMemoryArtifactStore()
@@ -447,6 +448,79 @@ class TestCommitBoundary:
 
 class TestLlmToolTurnBoundaries:
     @pytest.mark.asyncio
+    async def test_tool_enabled_provider_deadline_is_timed_out_not_interrupted(self):
+        class BlockingProvider(FakeProvider):
+            @property
+            def reports_usage(self) -> bool:
+                return True
+
+            async def create_message(self, **_kwargs):
+                await asyncio.Event().wait()
+
+        step = _llm_step()
+        step = step.model_copy(
+            update={
+                "budget": step.budget.model_copy(update={"timeout_seconds": 0.01})
+            }
+        )
+        engine, _adapter, runs, ref = build_llm(BlockingProvider(), step=step)
+
+        outcome = await engine.run_rule(ref, "r", {}, TOOL_PRINCIPAL)
+
+        assert outcome.lifecycle is RunLifecycle.FAILED
+        assert [receipt.receipt_kind for receipt in runs.receipts] == ["step", "step"]
+        assert runs.receipts[0].error_code == "timed_out"
+        assert "interrupted" not in {receipt.receipt_kind for receipt in runs.receipts}
+
+    @pytest.mark.asyncio
+    async def test_turn_boundary_size_failure_is_not_a_provider_error(self):
+        class RejectFirstBoundary(RecordingRunRepository):
+            async def commit_boundary(self, snapshot, receipt, wait_changes=None):
+                if self.commit_calls == 0:
+                    self.commit_calls += 1
+                    raise StateLimitExceeded(
+                        snapshot.run_id, receipt.step_id, "tool result", 300_000, 262_144
+                    )
+                return await super().commit_boundary(snapshot, receipt, wait_changes)
+
+        class UsageProvider(FakeProvider):
+            @property
+            def reports_usage(self) -> bool:
+                return True
+
+        provider = UsageProvider()
+        provider.add_tool_call("ensure_task", {"project_id": "p", "title": "one"})
+        runs = RejectFirstBoundary()
+        engine, adapter, _runs, ref = build_llm(provider, runs=runs)
+        adapter.queue.append(ok())
+
+        outcome = await engine.run_rule(ref, "r", {}, TOOL_PRINCIPAL)
+
+        assert outcome.lifecycle is RunLifecycle.FAILED
+        assert runs.receipts[0].error_code == "state_limit_exceeded"
+        assert "provider_error" not in {receipt.error_code for receipt in runs.receipts}
+
+    @pytest.mark.asyncio
+    async def test_turn_boundary_version_conflict_stops_without_another_provider_call(self):
+        provider = FakeProvider()
+        provider.add_tool_call(
+            "ensure_task",
+            {"project_id": "p", "title": "one"},
+            usage=TokenUsage(10, 2, True),
+        )
+        runs = RecordingRunRepository(conflict_on_commit=1)
+        engine, adapter, _runs, ref = build_llm(provider, runs=runs)
+        adapter.queue.append(ok())
+
+        outcome = await engine.run_rule(ref, "r", {}, TOOL_PRINCIPAL)
+
+        assert outcome.outcome == "interrupted"
+        assert outcome.snapshot is not None and outcome.snapshot.version == 1
+        assert len(provider.calls) == 1
+        assert runs.commit_calls == 2
+        assert [receipt.error_code for receipt in runs.receipts] == ["interrupted"]
+
+    @pytest.mark.asyncio
     async def test_multi_turn_tool_loop_commits_one_receipt_per_completed_turn(self):
         provider = FakeProvider()
         provider.add_tool_call(
@@ -472,6 +546,7 @@ class TestLlmToolTurnBoundaries:
         ]
         assert len({r.idempotency_key for r in turns}) == 1
         assert [r.snapshot_version for r in turns] == [1, 2]
+        assert {r.principal["profile_id"] for r in turns} == {"worker"}
         assert outcome.lifecycle is RunLifecycle.COMPLETED
 
     @pytest.mark.asyncio
@@ -554,6 +629,119 @@ class TestLlmToolTurnBoundaries:
             "interrupted",
             "operator_decision",
         ]
+
+    @pytest.mark.asyncio
+    async def test_interrupted_call_counts_against_the_restart_call_budget(self):
+        class ProcessCrash(BaseException):
+            pass
+
+        class CrashAfterToolTurn(FakeProvider):
+            @property
+            def reports_usage(self) -> bool:
+                return True
+
+            async def create_message(self, **kwargs):
+                if self.calls:
+                    raise ProcessCrash
+                return await super().create_message(**kwargs)
+
+        step = _llm_step()
+        step = step.model_copy(
+            update={"budget": step.budget.model_copy(update={"max_calls": 2})}
+        )
+        first = CrashAfterToolTurn()
+        first.add_tool_call(
+            "ensure_task",
+            {"project_id": "p", "title": "one"},
+            usage=TokenUsage(10, 2, True),
+        )
+        engine, adapter, runs, ref = build_llm(first, step=step)
+        adapter.queue.append(ok())
+        with pytest.raises(ProcessCrash):
+            await engine.run_rule(ref, "r", {}, TOOL_PRINCIPAL)
+        run_id = next(iter(runs.snapshots))
+
+        resumed_provider = FakeProvider()
+        resumed_provider.add_text('{"risk":"low"}', usage=TokenUsage(5, 1, True))
+        restarted, _adapter, _runs, _ref = build_llm(
+            resumed_provider, runs=runs, step=step
+        )
+        await restarted.resume(run_id, EventArrived(event_id="recovery"), TOOL_PRINCIPAL)
+        outcome = await restarted.resume(
+            run_id, OperatorResolution(kind="retry"), TOOL_PRINCIPAL
+        )
+
+        assert outcome.lifecycle is RunLifecycle.FAILED
+        assert resumed_provider.calls == []
+        llm_receipts = [r for r in runs.receipts if r.step_kind == "llm"]
+        assert llm_receipts[-1].error_code == "budget_exceeded"
+
+    @pytest.mark.asyncio
+    async def test_retry_can_be_interrupted_twice_without_reusing_turn_identity(self):
+        class CancelProvider(FakeProvider):
+            @property
+            def reports_usage(self) -> bool:
+                return True
+
+            async def create_message(self, **_kwargs):
+                raise asyncio.CancelledError
+
+        first_engine, _adapter, runs, ref = build_llm(CancelProvider())
+        first = await first_engine.run_rule(ref, "r", {}, TOOL_PRINCIPAL)
+        assert first.lifecycle is RunLifecycle.PAUSED
+
+        second_engine, _adapter, _runs, _ref = build_llm(CancelProvider(), runs=runs)
+        second = await second_engine.resume(
+            first.run_id, OperatorResolution(kind="retry"), TOOL_PRINCIPAL
+        )
+
+        assert second.lifecycle is RunLifecycle.PAUSED
+        interrupted = [r for r in runs.receipts if r.receipt_kind == "interrupted"]
+        assert [r.turn_index for r in interrupted] == [0, 1]
+        assert len({r.operator_decision_id for r in interrupted}) == 2
+
+        final_provider = FakeProvider()
+        final_provider.add_text('{"risk":"low"}', usage=TokenUsage(5, 1, True))
+        final_engine, _adapter, _runs, _ref = build_llm(final_provider, runs=runs)
+        final = await final_engine.resume(
+            first.run_id, OperatorResolution(kind="retry"), TOOL_PRINCIPAL
+        )
+        assert final.lifecycle is RunLifecycle.COMPLETED
+
+    @pytest.mark.asyncio
+    async def test_schema_retry_carries_transcript_and_advances_tool_turn_index(self):
+        step = _llm_step()
+        step = step.model_copy(
+            update={"budget": step.budget.model_copy(update={"max_calls": 5})}
+        )
+        provider = FakeProvider()
+        provider.add_tool_call(
+            "ensure_task",
+            {"project_id": "p", "title": "one"},
+            usage=TokenUsage(10, 2, True),
+        )
+        provider.add_text("not json", usage=TokenUsage(5, 1, True))
+        provider.add_tool_call(
+            "ensure_task",
+            {"project_id": "p", "title": "two"},
+            usage=TokenUsage(11, 3, True),
+        )
+        provider.add_text('{"risk":"low"}', usage=TokenUsage(6, 1, True))
+        engine, adapter, runs, ref = build_llm(provider, step=step)
+        adapter.queue.extend([ok("t-1"), ok("t-2")])
+
+        outcome = await engine.run_rule(ref, "r", {}, TOOL_PRINCIPAL)
+
+        assert outcome.lifecycle is RunLifecycle.COMPLETED
+        assert [
+            r.turn_index for r in runs.receipts if r.receipt_kind == "tool_turn"
+        ] == [0, 1]
+        retry_messages = provider.calls[2].messages
+        assert [message["role"] for message in retry_messages[-2:]] == [
+            "assistant",
+            "user",
+        ]
+        assert "Return only JSON" in retry_messages[-1]["content"]
 
 
 class TestReceipts:

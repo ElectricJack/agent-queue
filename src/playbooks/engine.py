@@ -31,7 +31,7 @@ from typing import Any
 
 from src.commands.authorization import authorize_command
 from src.commands.contracts.models import OutcomeClass
-from src.llm.client import LLMToolTurn
+from src.llm.client import LLMToolTurn, LLMToolTurnBoundaryError
 from src.llm.types import TokenUsage
 from src.playbooks.artifact_ref import ArtifactRef
 from src.playbooks.definition import (
@@ -62,6 +62,7 @@ from src.playbooks.expressions import (
 )
 from src.playbooks.receipts import StepReceipt, idempotency_key, transition_id
 from src.playbooks.run_state import (
+    DuplicateAttempt,
     DuplicateRun,
     IllegalLifecycleTransition,
     LoopFrame,
@@ -557,10 +558,13 @@ class PlaybookEngine:
 
         current_step = artifact.steps.get(snapshot.current_step_id or "")
         if snapshot.lifecycle is RunLifecycle.RUNNING and isinstance(current_step, LlmStep):
+            iteration = snapshot.loop.index if snapshot.loop else -1
             relevant = [
                 int(turn.get("turn_index", -1))
                 for turn in snapshot.llm_turns
                 if turn.get("step_id") == snapshot.current_step_id
+                and int(turn.get("iteration", -1)) == iteration
+                and int(turn.get("attempt", 1)) == 1
             ]
             attempt = _Attempt(
                 snapshot=snapshot,
@@ -1047,6 +1051,34 @@ class PlaybookEngine:
             result = await executor.execute(step, ctx)
         except asyncio.CancelledError:
             raise
+        except LLMToolTurnBoundaryError as exc:
+            cause = exc.__cause__
+            if isinstance(cause, StateLimitExceeded):
+                result = ExecutorResult(
+                    control=StepControl.ADVANCE,
+                    outcome="state_limit_exceeded",
+                    diagnostics=(str(cause),),
+                )
+            elif isinstance(cause, (SnapshotVersionConflict, DuplicateAttempt)):
+                current = await repository.load_run(snapshot.run_id)
+                current = current or attempt.snapshot
+                failed, receipt = await self._terminate(
+                    current,
+                    repository,
+                    "interrupted",
+                    "another writer advanced this run",
+                )
+                return (
+                    failed,
+                    tuple(attempt.boundary_receipts) + (receipt,),
+                    "interrupted",
+                )
+            else:
+                result = ExecutorResult(
+                    control=StepControl.ADVANCE,
+                    outcome="runtime_error",
+                    diagnostics=(type(cause).__name__,),
+                )
         except Exception as exc:  # noqa: BLE001 - §3.4 step 6
             result = ExecutorResult(
                 control=StepControl.ADVANCE,
@@ -1079,6 +1111,7 @@ class PlaybookEngine:
 
         attempt.receipt_inputs = result.receipt_inputs
         attempt.receipt_result = result.receipt_result
+        attempt.principal = result.effective_principal or attempt.principal
         attempt.idempotency_key = result.idempotency_key or attempt.idempotency_key
         attempt.usage = result.usage
         if result.diagnostics:
@@ -1181,24 +1214,24 @@ class PlaybookEngine:
         error = snapshot.error
         error_code = snapshot.error_code
 
-        if turn.kind == "tool_turn":
-            llm_turns = llm_turns + (
-                {
-                    "step_id": attempt.step_id,
-                    "iteration": iteration,
-                    "attempt": 1,
-                    "turn_index": turn.turn_index,
-                    "tool_call_ids": list(turn.tool_call_ids),
-                    "results_digest": turn.results_digest,
-                    "usage": {
-                        "input_tokens": turn.usage.input_tokens,
-                        "output_tokens": turn.usage.output_tokens,
-                        "reported": turn.usage.reported,
-                    },
-                    "transcript_delta": [dict(message) for message in turn.transcript_delta],
+        llm_turns = llm_turns + (
+            {
+                "kind": turn.kind,
+                "step_id": attempt.step_id,
+                "iteration": iteration,
+                "attempt": 1,
+                "turn_index": turn.turn_index,
+                "tool_call_ids": list(turn.tool_call_ids),
+                "results_digest": turn.results_digest,
+                "usage": {
+                    "input_tokens": turn.usage.input_tokens,
+                    "output_tokens": turn.usage.output_tokens,
+                    "reported": turn.usage.reported,
                 },
-            )
-        else:
+                "transcript_delta": [dict(message) for message in turn.transcript_delta],
+            },
+        )
+        if turn.kind == "interrupted":
             decision_id = uuid.uuid4().hex
             lifecycle = RunLifecycle.PAUSED
             operator_decision = OperatorDecision(
@@ -1244,7 +1277,7 @@ class PlaybookEngine:
             iteration=iteration,
             attempt=1,
             idempotency_key=attempt.idempotency_key,
-            principal=self._principal_projection(attempt.principal),
+            principal=self._principal_projection(turn.principal or attempt.principal),
             result={
                 "tool_call_ids": list(turn.tool_call_ids),
                 "results_digest": turn.results_digest,
@@ -1475,7 +1508,7 @@ class PlaybookEngine:
             completed_at=now,
         )
         try:
-            await repository.commit_boundary(failed, receipt)
+            failed = await repository.commit_boundary(failed, receipt)
         except Exception:
             logger.exception("V2 run %s could not receipt its failure", snapshot.run_id)
         return failed, receipt

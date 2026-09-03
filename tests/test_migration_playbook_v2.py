@@ -274,6 +274,47 @@ def test_pre_amendment_receipt_reads_as_step_minus_one_after_upgrade(tmp_path):
         engine.dispose()
 
 
+def test_downgrade_refuses_to_discard_per_turn_receipts(tmp_path):
+    engine = _sqlite_engine(tmp_path, name="turn-receipt-downgrade.db")
+    sha = "sha256:" + "b" * 64
+    try:
+        migrate(engine, "head")
+        with engine.begin() as conn:
+            conn.execute(
+                sa.text(
+                    "INSERT INTO playbook_artifacts (artifact_sha256, playbook_id, scope, "
+                    "scope_identifier, schema_generation, version, source_digest, "
+                    "contract_fingerprint, profile_fingerprint, compiler_build, path, "
+                    "size_bytes, validation, created_at) VALUES (:sha,'p','system','',2,1,"
+                    ":sha,:sha,'','build','/tmp/a.json',2,'{}',1.0)"
+                ),
+                {"sha": sha},
+            )
+            conn.execute(
+                sa.text(
+                    "INSERT INTO playbook_v2_runs (run_id, playbook_id, artifact_sha256, "
+                    "rule_id, lifecycle, mode, snapshot_version, snapshot, snapshot_bytes, "
+                    "event_type, summary, started_at, updated_at) VALUES "
+                    "('r','p',:sha,'rule','running','live',1,'{}',2,'','',1.0,1.0)"
+                ),
+                {"sha": sha},
+            )
+            conn.execute(
+                sa.text(
+                    "INSERT INTO playbook_step_receipts "
+                    "(receipt_id, run_id, artifact_sha256, rule_id, step_id, step_kind, "
+                    "receipt_kind, turn_index, idempotency_key, outcome, started_at) VALUES "
+                    "('turn','r',:sha,'rule','step','llm','tool_turn',0,:key,'success',1.0)"
+                ),
+                {"sha": sha, "key": "r:step:-:1"},
+            )
+
+        with pytest.raises(RuntimeError, match="per-turn playbook receipts exist"):
+            migrate(engine, PRE_TURN_RECEIPTS_REVISION, downgrade=True)
+    finally:
+        engine.dispose()
+
+
 def test_downgrade_removes_them_in_fk_safe_order(tmp_path):
     """With ``PRAGMA foreign_keys=ON``, so a wrong drop order actually fails.
 

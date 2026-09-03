@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from src.config import LLMConfig
 from src.llm import LLMClient, LLMToolTurn
 from src.llm.fake import FakeProvider
@@ -165,3 +167,28 @@ async def test_interrupted_tool_call_reports_partial_receipt_without_a_transcrip
     assert len(seen[0].tool_call_ids) == 2
     assert seen[0].transcript_delta == ()
     assert len(seen[0].results_digest) == 64
+
+
+async def test_provider_cancellation_without_a_durable_callback_propagates():
+    class BlockingProvider(FakeProvider):
+        async def create_message(self, **_kwargs):
+            await asyncio.Event().wait()
+
+    task = asyncio.create_task(
+        _client(BlockingProvider()).run_tools("go", TOOLS, _exec)
+    )
+    await asyncio.sleep(0)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+async def test_caller_timeout_without_a_durable_callback_is_not_an_interruption():
+    class BlockingProvider(FakeProvider):
+        async def create_message(self, **_kwargs):
+            await asyncio.Event().wait()
+
+    with pytest.raises(TimeoutError):
+        async with asyncio.timeout(0.01):
+            await _client(BlockingProvider()).run_tools("go", TOOLS, _exec)
