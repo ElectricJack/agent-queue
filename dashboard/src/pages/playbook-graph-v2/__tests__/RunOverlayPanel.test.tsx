@@ -74,6 +74,50 @@ describe("RunOverlayPanel", () => {
     expect(retry.getByText("gate-b")).toBeInTheDocument();
   });
 
+  it("renders a retried loop iteration as one row that reaches both of its attempts", async () => {
+    const user = userEvent.setup();
+    // Shaped the way `project_overlay` emits it: the iterations hang off the
+    // step whose receipts carry the index, and the two attempts of iteration 1
+    // are one row holding both receipt ids rather than two rows sharing an
+    // index — an index is what the panel selects an iteration by.
+    const overlay: PlaybookRunOverlayResponse = {
+      ...runOverlay,
+      nodes: [
+        {
+          step_id: "open-gate",
+          state: "completed",
+          visit_count: 4,
+          last_outcome: "created",
+          receipt_ids: ["r-a", "r-b-1", "r-b", "r-c"],
+          iterations: [
+            { index: 0, item_display: "task-a", outcome: "created", receipt_ids: ["r-a"], started_at: 1_756_000_200, completed_at: 1_756_000_205 },
+            { index: 1, item_display: "task-b", outcome: "reused", receipt_ids: ["r-b-1", "r-b"], started_at: 1_756_000_210, completed_at: 1_756_000_260 },
+            { index: 2, item_display: "task-c", outcome: "created", receipt_ids: ["r-c"], started_at: 1_756_000_300, completed_at: 1_756_000_306 },
+          ],
+        },
+      ],
+    };
+    render(<RunOverlayPanel overlay={overlay} />);
+
+    // Four receipts, three iterations: the retry is not a fourth trip round the loop.
+    const iterations = within(screen.getByRole("group", { name: "Iterations of open-gate" }));
+    expect(iterations.getAllByRole("button")).toHaveLength(3);
+    expect(iterations.getAllByRole("button", { name: /^Iteration 1:/ })).toHaveLength(1);
+    // The row reports the attempt that settled the iteration and spans both.
+    expect(iterations.getByRole("button", { name: "Iteration 1: task-b" })).toHaveTextContent(
+      "1: task-b \u00b7 reused \u00b7 50s",
+    );
+
+    // Both attempts stay reachable through that one row.
+    await user.click(iterations.getByRole("button", { name: "Iteration 1: task-b" }));
+    const chooser = within(screen.getByRole("group", { name: "Receipts for open-gate" }));
+    expect(chooser.getAllByRole("button")).toHaveLength(2);
+    expect(screen.getByRole("region", { name: "Receipt detail" })).toHaveTextContent("Outcome: runtime_error");
+
+    await user.click(receiptButton("Receipt for open-gate, iteration 1 \u00b7 attempt 2 \u00b7 reused"));
+    expect(screen.getByRole("region", { name: "Receipt detail" })).toHaveTextContent("Outcome: reused");
+  });
+
   it("narrows a step's receipts to the chosen iteration and opens that iteration's first receipt", async () => {
     const user = userEvent.setup();
     render(<RunOverlayPanel overlay={runOverlay} />);

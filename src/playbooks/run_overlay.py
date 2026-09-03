@@ -213,22 +213,39 @@ def project_overlay(
     nodes = []
     for step_id in definition.steps:
         visits = by_step.get(step_id, [])
-        iterations = []
+        # One row per loop iteration, not per receipt: the retried attempts of a
+        # single iteration are the *same* iteration and collapse into it, newest
+        # attempt last. Emitting one row per receipt would report a retried loop
+        # as having run more iterations than it did, and would hand the panel two
+        # rows sharing an index — which is the identity it selects an iteration by.
+        iterations: list[dict[str, Any]] = []
+        by_index: dict[int, dict[str, Any]] = {}
         for receipt in visits:
             index = receipt["iteration_index"]
             if index is None:
                 continue
-            item_display = f"Iteration {index + 1}"
-            iterations.append(
-                {
+            iteration = by_index.get(index)
+            if iteration is None:
+                by_index[index] = iteration = {
                     "index": index,
-                    "item_display": item_display,
+                    "item_display": f"Iteration {index + 1}",
                     "outcome": receipt["outcome"],
                     "receipt_ids": [receipt["receipt_id"]],
                     "started_at": receipt["started_at"],
                     "completed_at": receipt["completed_at"],
                 }
-            )
+                iterations.append(iteration)
+                continue
+            # The iteration spans its attempts: it began when the first one did
+            # and is only over when the last one is.
+            iteration["receipt_ids"].append(receipt["receipt_id"])
+            iteration["outcome"] = receipt["outcome"]
+            iteration["completed_at"] = receipt["completed_at"]
+            started = receipt["started_at"]
+            if started is not None and (
+                iteration["started_at"] is None or started < iteration["started_at"]
+            ):
+                iteration["started_at"] = started
         nodes.append(
             {
                 "step_id": step_id,
