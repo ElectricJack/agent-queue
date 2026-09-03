@@ -299,7 +299,11 @@ def test_presentation_change_does_not_trip_it() -> None:
 
 
 def test_disabled_playbooks_do_not_block() -> None:
-    """A stale artifact belonging to a disabled or acknowledged playbook is not a gate."""
+    """A stale artifact belonging to a disabled playbook is not a gate.
+
+    The acknowledged row is disabled too: a waiver excuses an activation the
+    operator actually took out of service, and nothing else (`sound-horizon-20`).
+    """
     stale_commands = {CHANGED_COMMAND: "sha256:" + "d" * 64}
     rows = [
         {
@@ -309,7 +313,7 @@ def test_disabled_playbooks_do_not_block() -> None:
         },
         {
             "playbook_id": "acknowledged-one",
-            "enabled": True,
+            "enabled": False,
             "acknowledged_by": "operator",
             "artifact_commands": stale_commands,
         },
@@ -320,6 +324,62 @@ def test_disabled_playbooks_do_not_block() -> None:
     assert report["success"] is True, report["stale"]
     assert "disabled-one" not in report["checked"]
     assert "acknowledged-one" not in report["checked"]
+
+
+def test_an_acknowledged_but_enabled_activation_still_blocks() -> None:
+    """A waiver may not suppress the check for a playbook that is still live.
+
+    `sound-horizon-20`: `_disposition` turns any acknowledged entry into
+    `disabled` in the inventory, but the acknowledgement never touched the
+    activation row.  An enabled activation carrying `acknowledged_by` was
+    skipped here, so a waiver written for an intentionally disabled playbook
+    silently certified stale artifacts that the daemon was really executing.
+    """
+    stale_commands = {CHANGED_COMMAND: "sha256:" + "d" * 64}
+    report = release_check(
+        contract_registry=CONTRACTS,
+        fixture_root=FIXTURE_ROOT,
+        activations=[
+            {
+                "playbook_id": "acknowledged-and-live",
+                "enabled": True,
+                "acknowledged_by": "operator",
+                "artifact_commands": stale_commands,
+            }
+        ],
+    )
+
+    assert report["success"] is False
+    assert "acknowledged-and-live" in report["checked"]
+    assert [
+        row
+        for row in report["stale"]
+        if row["playbook_id"] == "acknowledged-and-live"
+        and row["dependency"] == CHANGED_COMMAND
+    ]
+
+
+def test_an_acknowledged_but_enabled_activation_without_evidence_is_unverified() -> None:
+    """The same row with no artifact evidence is named, not skipped."""
+    report = release_check(
+        contract_registry=CONTRACTS,
+        fixture_root=FIXTURE_ROOT,
+        activations=[
+            {
+                "playbook_id": "acknowledged-and-live",
+                "enabled": True,
+                "acknowledged_by": "operator",
+            }
+        ],
+    )
+
+    assert report["success"] is False
+    assert [
+        row
+        for row in report["unverified"]
+        if row["playbook_id"] == "acknowledged-and-live"
+        and row["reason"] == "no_command_evidence"
+    ]
 
 
 def test_an_enabled_stale_activation_does_block() -> None:
@@ -465,13 +525,13 @@ def test_an_unverified_row_carries_the_identity_an_operator_needs() -> None:
 
 
 def test_a_decided_activation_without_evidence_still_does_not_block() -> None:
-    """Disabled and acknowledged rows are decisions, not unread evidence."""
+    """A disabled row is a decision, not unread evidence — waived or not."""
     report = release_check(
         contract_registry=CONTRACTS,
         fixture_root=FIXTURE_ROOT,
         activations=[
             {"playbook_id": "disabled-one", "enabled": False},
-            {"playbook_id": "acked-one", "enabled": True, "acknowledged_by": "operator"},
+            {"playbook_id": "acked-one", "enabled": False, "acknowledged_by": "operator"},
         ],
     )
 

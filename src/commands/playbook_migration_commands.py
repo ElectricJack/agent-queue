@@ -285,10 +285,10 @@ class PlaybookMigrationCommandsMixin:
         (`prime-zenith-66`).  Naming the row costs one line in the report and
         keeps the claim true.
 
-        Reads that fail outright — the activation query, the waiver table, the
-        artifact store, the profile registry — are appended to *evidence_errors*
-        in the same ``{"source", "error"}`` shape :func:`build_cutover_report`
-        takes, and each becomes a blocking reason.
+        Reads that fail outright — the activation query, the artifact store,
+        the profile registry — are appended to *evidence_errors* in the same
+        ``{"source", "error"}`` shape :func:`build_cutover_report` takes, and
+        each becomes a blocking reason.
 
         Each comparable row also carries `current_profiles`, resolved from this
         daemon's *live* profile registry rather than from the shipped defaults.
@@ -300,42 +300,28 @@ class PlaybookMigrationCommandsMixin:
         shipped defaults would compare the artifact against a baseline it was
         never compiled against.
 
-        `acknowledged_by` comes from the waiver table: `release_check` skips an
-        acknowledged playbook because an operator has already decided about it,
-        and activation rows carry no such column of their own.
+        The waiver table is deliberately **not** joined here.  `release_check`
+        excuses a disabled activation, never an acknowledged one: a waiver says
+        a playbook is not migrating, an enabled activation says it already
+        runs V2, and treating the waiver as authoritative over a live row
+        suppressed the compatibility check for execution that is really
+        happening (`sound-horizon-20`).  Every row this method emits is enabled
+        — `_enabled_activations` filters on it — so every row is compared.  An
+        operator who means a waiver disables the activation.
         """
         from src.playbooks.migration import profile_fingerprints_for
 
         errors = evidence_errors if evidence_errors is not None else []
         rows: list[dict] = []
         activations = await self._enabled_activations(evidence_errors=errors)
-        try:
-            acknowledged = {
-                (
-                    str(ack.get("playbook_id") or ""),
-                    str(ack.get("scope") or ""),
-                    str(ack.get("scope_identifier") or ""),
-                ): ack.get("acknowledged_by")
-                for ack in await self.db.list_playbook_migration_acks()
-            }
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.warning("release check: acknowledgements unavailable", exc_info=True)
-            acknowledged = {}
-            errors.append(_unread_evidence("migration_acks", exc))
 
         def _row(source: dict, **extra) -> dict:
-            playbook_id = str(source.get("playbook_id") or "")
-            scope = str(source.get("scope") or "")
-            scope_identifier = str(source.get("scope_identifier") or "")
             return {
-                "playbook_id": playbook_id,
+                "playbook_id": str(source.get("playbook_id") or ""),
                 "enabled": True,
-                "scope": scope or "system",
+                "scope": str(source.get("scope") or "system"),
                 "scope_identifier": source.get("scope_identifier"),
                 "artifact_sha256": _active_sha(source) or None,
-                "acknowledged_by": acknowledged.get(
-                    (playbook_id, scope, scope_identifier)
-                ),
                 **extra,
             }
 

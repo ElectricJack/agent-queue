@@ -781,14 +781,8 @@ async def test_release_check_reports_a_moved_delegated_profile(tmp_path, db):
     assert row["playbook_id"] == "default-pipeline"
 
 
-@pytest.mark.asyncio
-async def test_release_check_honours_an_acknowledged_playbook(tmp_path, db):
-    """The waiver is the operator's decision, and a decision is not a regression.
-
-    Activation rows carry no `acknowledged_by` column, so the command has to
-    join the waiver table; reading the key straight off the activation row
-    always yielded `None` and made the escape hatch unreachable.
-    """
+async def _drifting_pipeline_handler(tmp_path, db):
+    """A handler whose live `default-pipeline` activation is genuinely stale."""
     from src.profiles.capabilities import CapabilityPolicy
 
     data_dir = str(tmp_path / "aq")
@@ -800,15 +794,58 @@ async def test_release_check_honours_an_acknowledged_playbook(tmp_path, db):
     handler = _ReleaseHandler(_Config(data_dir), db, moved)
     await _activate_shipped_pipeline(handler)
     assert (await handler._cmd_playbook_release_check({}))["success"] is False
+    return handler
+
+
+@pytest.mark.asyncio
+async def test_release_check_does_not_honour_a_waiver_on_a_live_activation(tmp_path, db):
+    """A waiver may not suppress the check for a playbook that is still running.
+
+    `sound-horizon-20`: the acknowledgement writes one row in
+    `playbook_migration_acks` and never touches `playbook_activations`, so
+    "acknowledged" and "enabled" were true at once.  The check used to skip on
+    the waiver alone, which certified a stale artifact the daemon was really
+    executing.  The waiver is only a decision about a playbook taken out of
+    service, so an enabled activation stays compared.
+    """
+    handler = await _drifting_pipeline_handler(tmp_path, db)
 
     result = await _ack(handler, "default-pipeline", _GOOD_REASON)
     assert result["success"] is True, result
 
     report = await handler._cmd_playbook_release_check({})
+    assert report["success"] is False
+    row = next(
+        r
+        for r in report["stale"]
+        if r["origin"] == "activation" and r["dependency"] == "reviewer"
+    )
+    assert row["playbook_id"] == "default-pipeline"
+
+
+@pytest.mark.asyncio
+async def test_release_check_honours_a_waiver_once_the_activation_is_disabled(tmp_path, db):
+    """The escape hatch still exists — for a playbook that is no longer live."""
+    handler = await _drifting_pipeline_handler(tmp_path, db)
+    result = await _ack(handler, "default-pipeline", _GOOD_REASON)
+    assert result["success"] is True, result
+
+    await handler.db.set_playbook_activation(
+        playbook_id="default-pipeline",
+        scope="system",
+        scope_identifier="",
+        artifact_sha256=None,
+        enabled=False,
+        activated_by="operator",
+        health="ready",
+        reasons="[]",
+    )
+
+    report = await handler._cmd_playbook_release_check({})
     assert report["success"] is True, report["stale"]
     # The checked-in fixture is still compared — it is held to the shipped
-    # profiles, which the waiver says nothing about.  What the waiver removes
-    # is the *activation* row this daemon serves.
+    # profiles, which the waiver says nothing about.  What the disabled
+    # activation removes is the row this daemon serves.
     assert [row for row in report["stale"] if row["origin"] == "activation"] == []
 
 
