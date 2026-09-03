@@ -67,6 +67,7 @@ class EffectSubject(StrEnum):
     TASK_GRAPH = "task_graph"
     TASK_LIST = "task_list"
     TASK_ROUTING = "task_routing"
+    TASK_EXECUTION = "task_execution"
     DOWNSTREAM_TASKS = "downstream_tasks"
     DEPENDENCY_EDGE = "dependency_edge"
     GATE = "gate"
