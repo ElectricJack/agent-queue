@@ -400,3 +400,141 @@ async def test_doctor_check_reports_ok_on_a_clean_tree() -> None:
     assert result.id == RELEASE_CHECK_ID
     assert result.severity is Severity.OK
     assert CHANGED_PLAYBOOK in result.data["checked"]
+
+
+# ---------------------------------------------------------------------------
+# Evidence the check could not read (prime-zenith-66)
+# ---------------------------------------------------------------------------
+#
+# The gate's whole value is the claim "every enabled activation was compared".
+# Before this section a live daemon whose activation query, artifact store or
+# profile registry was unavailable produced exactly the same payload as a clean
+# fleet: `success: True`, four shipped fixtures in `checked`, no stale rows.
+# Absence of evidence is not evidence of a clean release, so each unread source
+# and each uncomparable activation is now a *named* blocking result.
+
+
+def test_an_enabled_activation_without_command_evidence_blocks() -> None:
+    """The deterministic reproduction from the exit gate.
+
+    An enabled activation whose artifact could not be loaded reached
+    `release_check` as a row with no `artifact_commands`, and line 1584's
+    `continue` dropped it without a trace.
+    """
+    report = release_check(
+        contract_registry=CONTRACTS,
+        fixture_root=FIXTURE_ROOT,
+        activations=[{"playbook_id": "enabled-but-unreadable", "enabled": True}],
+    )
+
+    assert report["success"] is False
+    assert report["stale"] == []
+    row = next(
+        r for r in report["unverified"] if r["playbook_id"] == "enabled-but-unreadable"
+    )
+    assert row["reason"] == "no_command_evidence"
+    assert "enabled-but-unreadable" in row["message"]
+    assert any("enabled-but-unreadable" in reason for reason in report["blocking_reasons"])
+    # It was not compared, so it must not be claimed as compared.
+    assert "enabled-but-unreadable" not in report["checked"]
+
+
+def test_an_unverified_row_carries_the_identity_an_operator_needs() -> None:
+    report = release_check(
+        contract_registry=CONTRACTS,
+        fixture_root=FIXTURE_ROOT,
+        activations=[
+            {
+                "playbook_id": "project-one",
+                "enabled": True,
+                "scope": "project",
+                "scope_identifier": "proj-7",
+                "artifact_sha256": "sha256:" + "c" * 64,
+                "evidence_reason": "artifact_unreadable",
+                "evidence_detail": "OSError: [Errno 2] No such file",
+            }
+        ],
+    )
+
+    row = next(r for r in report["unverified"] if r["playbook_id"] == "project-one")
+    assert row["reason"] == "artifact_unreadable"
+    assert row["scope"] == "project"
+    assert row["scope_identifier"] == "proj-7"
+    assert row["artifact_sha256"] == "sha256:" + "c" * 64
+    assert "OSError" in row["message"]
+
+
+def test_a_decided_activation_without_evidence_still_does_not_block() -> None:
+    """Disabled and acknowledged rows are decisions, not unread evidence."""
+    report = release_check(
+        contract_registry=CONTRACTS,
+        fixture_root=FIXTURE_ROOT,
+        activations=[
+            {"playbook_id": "disabled-one", "enabled": False},
+            {"playbook_id": "acked-one", "enabled": True, "acknowledged_by": "operator"},
+        ],
+    )
+
+    assert report["success"] is True, report["blocking_reasons"]
+    assert report["unverified"] == []
+
+
+def test_an_unread_evidence_source_blocks_the_release_check() -> None:
+    report = release_check(
+        contract_registry=CONTRACTS,
+        fixture_root=FIXTURE_ROOT,
+        evidence_errors=[
+            {"source": "activations", "error": "OperationalError: no such table"}
+        ],
+    )
+
+    assert report["success"] is False
+    assert report["evidence_errors"] == [
+        {"source": "activations", "error": "OperationalError: no such table"}
+    ]
+    assert any(
+        "activations" in reason and "no such table" in reason
+        for reason in report["blocking_reasons"]
+    )
+
+
+def test_an_unread_profile_registry_does_not_fall_back_to_the_shipped_profiles() -> None:
+    """The live registry is the baseline; the shipped defaults are a different fact.
+
+    Falling back silently held an operator-customised profile to
+    `src/profiles/defaults/`, which either invents drift or — when the customised
+    policy happens to agree — certifies a comparison that never happened.
+    """
+    profile = next(iter(shipped_profile_fingerprints()))
+    live = current_command_fingerprints(CONTRACTS)
+    report = release_check(
+        contract_registry=CONTRACTS,
+        fixture_root=FIXTURE_ROOT,
+        activations=[
+            {
+                "playbook_id": "live-one",
+                "enabled": True,
+                # The command half is comparable and clean, so anything the
+                # report blocks on comes from the profile half alone.
+                "artifact_commands": {CHANGED_COMMAND: live[CHANGED_COMMAND]},
+                "artifact_profiles": {profile: "sha256:" + "f" * 64},
+                "current_profiles_unavailable": True,
+            }
+        ],
+    )
+
+    assert report["success"] is False
+    # No profile drift is invented against a baseline that was never read.
+    assert [row for row in report["stale"] if row["playbook_id"] == "live-one"] == []
+    row = next(r for r in report["unverified"] if r["playbook_id"] == "live-one")
+    assert row["reason"] == "profile_registry_unavailable"
+    # The command half *was* compared, and the report says so.
+    assert "live-one" in report["checked"]
+
+
+def test_a_clean_tree_reports_no_unread_evidence() -> None:
+    report = release_check(contract_registry=CONTRACTS, fixture_root=FIXTURE_ROOT)
+    assert report["success"] is True
+    assert report["evidence_errors"] == []
+    assert report["unverified"] == []
+    assert report["blocking_reasons"] == []

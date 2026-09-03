@@ -392,6 +392,7 @@ As with §3.8.1 the drafted text above is left intact so the delta stays legible
 | §3.4 locks `decision: approved \| rejected`, and T-7 assertion 3 asserts `approved` for all four | The first fixture pass exposed missing event, profile, and LLM-tool contracts | The prerequisites now ship: `assignment.route.requested` has the emitter's exact schema; prose sources name resolvable profiles; LLM tool commands have typed contracts and profile ceilings. All four enabled shipped fixtures are `approved`; the synthetic rejected-fixture test keeps the negative path locked |
 | §5.2 T-5's "the V1 pipeline compiler stops being able to compile the shipped source" leaves nothing for the V1 arm of §3.5's shadow harness, nor for Package 2's deterministic lowering tests | Both still need a machine graph, and so does the reviewed artifact | The pre-rewrite source is frozen byte-for-byte at `tests/fixtures/playbooks/v1/default-pipeline.md`. The reviewed V2 artifact is `lower_pipeline` applied to it, which makes V1-equivalence true by construction; every V1 assertion that read the shipped Markdown was repointed there rather than deleted |
 | §5.5 T-14's `release_check` compares "`compiled_against.commands` **and** `compiled_against.profiles`" | Activation rows carry an aggregate `contract_fingerprint`, not per-command values; a per-command comparison needs the artifact loaded from `ArtifactStore` | **Both halves ship as T-14 drafted them** (`nimble-apex-17`; the earlier deferral is superseded). `profile_fingerprints` now defaults to `shipped_profile_fingerprints()` — the profiles a fixture was compiled against — and each activation row carries a `current_profiles` map the daemon resolves from its *live* registry, so neither side is held to the other's view of the profile set. Deferring it had left `release_check(profile_fingerprints=None)` skipping the profile comparison entirely, with no caller ever passing the argument |
+| §5.5 T-14 locks "`release_check` compares, for every enabled activation *and* every checked-in fixture" | Both the command and the daemon read live evidence through `try/except` blocks that returned `[]`, `return`ed early, or `continue`d, so an unreadable activation table, artifact store, artifact, or profile registry produced the payload of a clean fleet: `success: true`, the four shipped fixtures in `checked`, no stale rows | **The gate now fails closed** (`prime-zenith-66`). `release_check` takes `evidence_errors` in the same `{source, error}` shape `build_cutover_report` already used, and returns `evidence_errors`, `unverified` (one `UnverifiedActivation` per enabled row it could not compare, naming playbook, scope, artifact hash and reason) and `blocking_reasons`; either non-empty makes `success` false. An unread live profile registry no longer silently falls back to `shipped_profile_fingerprints()` — a different baseline is not the one the artifact was compiled against — and `aq doctor --check playbooks.stale_artifacts` WARNs on unread evidence instead of swallowing it to `[]`. Disabled and acknowledged rows are unaffected: a decision is not missing evidence |
 
 **Compiler-question resolution (`agile-impact-36`).** Assignment routing keeps
 its V1 `role` discriminator and independently names `playbook-compiler`, whose
@@ -1090,6 +1091,31 @@ The supplied `acknowledged_by` is discarded; the stored value is the principal's
 
 ### 9.3 `playbook_release_check` — a changed contract blocks readiness
 
+The payload below is the drift case.  A run that could not *read* some of its
+evidence blocks in a second, separately named way (`prime-zenith-66`):
+
+```json
+{"success": false,
+ "checked": ["coding-reflection", "default-assignment-routing", "memory-consolidation"],
+ "stale": [],
+ "evidence_errors": [{"source": "activations",
+                      "error": "OperationalError: connection reset"}],
+ "unverified": [{"playbook_id": "default-pipeline", "scope": "system",
+                 "scope_identifier": null, "artifact_sha256": "sha256:4f1c0a9d…",
+                 "reason": "artifact_unreadable",
+                 "detail": "OSError: [Errno 2] No such file",
+                 "message": "default-pipeline: enabled activation could not be compared …"}],
+ "blocking_reasons": ["evidence source 'activations' could not be read (…)",
+                      "default-pipeline: enabled activation could not be compared …"]}
+```
+
+`evidence_errors` are sources the daemon could not read at all; `unverified`
+are enabled activations it read but could not compare.  Both feed
+`blocking_reasons`, and either one makes `success` false — the gate's claim is
+"every enabled activation was compared", and it may not make that claim about
+evidence it never collected.
+
+
 ```json
 {"success": false,
  "contract_fingerprint": "sha256:e91b77…",
@@ -1121,6 +1147,7 @@ Every log line and report row in this package carries `playbook_id`, `scope`, `s
 |---|---|---|
 | A shipped source changed since review | `test_source_matches_live_shipped_file` fails in CI with "recompile, re-review, and update the fixture" | Repeat §5.3 T-8 |
 | A command contract changed | `playbook_release_check` fails; `aq doctor` reports `playbooks.stale_artifacts`; the affected activation is `stale_contract` and refuses new runs | Rebuild and review the affected playbooks |
+| The daemon cannot read its activations, artifact store, or profile registry | `playbook_release_check` fails with the source named in `evidence_errors` and each uncomparable activation in `unverified`; `aq doctor` reports `playbooks.stale_artifacts` as a WARN naming what it could not read | Fix the unavailable source and re-run — never read the empty `stale` list as a pass |
 | A project playbook cannot compile | `aq playbook migration-inventory` shows `question_required` with a `MigrationReason` naming the source line | Fix the Markdown, or acknowledge it disabled with a reason |
 | Events pile up behind a stale activation | `aq playbook pending-event-list`; `cutover_report.pending_events.oldest_age_seconds` | Rebuild, then replay or discard each event explicitly |
 | Pending events exceed `max_per_activation` | An audited drop record per event; the count appears in the cutover report | Raise the cap or clear the backlog — never silent |
