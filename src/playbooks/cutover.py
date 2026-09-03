@@ -33,7 +33,7 @@ import json
 import logging
 import math
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -67,6 +67,22 @@ V1RunOption = Literal["wait", "resolve", "cancel"]
 #: ``"cancel"``  — offered always; ``playbook_v1_run_cancel``.
 
 PlaybookRuntime = Literal["v1", "v2"]
+
+#: The two signatures gate G2 needs (§3.9): the person who wrote the change
+#: and the person releasing it, and they must be two different people.
+CUTOVER_AUTHORIZATION_ROLES: tuple[str, ...] = ("author", "release_operator")
+
+#: Event kinds that end one cutover attempt and start the next.  A G1 sign-off
+#: older than any of these authorised a fleet state that no longer exists —
+#: the rollback happened for a reason — so it does not carry over.
+CYCLE_BOUNDARY_EVENT_KINDS: tuple[str, ...] = (
+    "switched_to_v2",
+    "rolled_back_to_v1",
+    "v1_admission_reopened",
+)
+
+#: Shortest ``signed_by`` accepted.  One character is not a name.
+MIN_SIGNER_LENGTH: int = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -321,3 +337,169 @@ def _p95(values: list[float]) -> float | None:
         return None
     index = max(0, min(len(values) - 1, math.ceil(0.95 * len(values)) - 1))
     return values[index]
+
+
+# ---------------------------------------------------------------------------
+# Gates G1 and G2 (§3.9) — pure functions over the audit log
+# ---------------------------------------------------------------------------
+
+
+def readiness_check(
+    name: str,
+    *,
+    observed: Any,
+    passed: bool,
+    blocking: str | None = None,
+) -> dict[str, Any]:
+    """One row of the switch-readiness table: ``{check, observed, pass, blocking?}``.
+
+    The same shape for every evidence source, so the sign-off event can carry
+    the table verbatim and an auditor reads one format.  ``blocking`` is set
+    only when ``pass`` is false; a passing row has nothing to say.
+    """
+    row: dict[str, Any] = {"check": name, "observed": observed, "pass": bool(passed)}
+    if not passed:
+        row["blocking"] = blocking or f"{name} did not pass"
+    return row
+
+
+def normalize_signer(name: Any) -> str:
+    """The comparison key for a human's name: trimmed, single-spaced, casefolded.
+
+    Empty when *name* is not a usable name.  Two signatures are from the same
+    person when their keys are equal — ``"Alice"`` and ``"  alice "`` are one
+    signer, not two.
+    """
+    if not isinstance(name, str):
+        return ""
+    collapsed = " ".join(name.split())
+    if len(collapsed) < MIN_SIGNER_LENGTH:
+        return ""
+    return collapsed.casefold()
+
+
+def display_signer(name: Any) -> str:
+    """The name as recorded: trimmed and single-spaced, case preserved."""
+    return " ".join(name.split()) if isinstance(name, str) else ""
+
+
+def _event_order(event: dict[str, Any]) -> tuple[float, str]:
+    return (float(event.get("at") or 0.0), str(event.get("event_id") or ""))
+
+
+def current_drain_signoff(events: Iterable[dict[str, Any]]) -> dict[str, Any] | None:
+    """The ``drain_completed`` row that authorises the *current* attempt, if any.
+
+    The latest sign-off counts only when no cycle boundary
+    (:data:`CYCLE_BOUNDARY_EVENT_KINDS`) was recorded after it.  Ties are
+    resolved against the sign-off: a boundary at the same instant invalidates
+    it, because a gate that guesses in its own favour is not a gate.
+    """
+    signoff: dict[str, Any] | None = None
+    boundary: dict[str, Any] | None = None
+    for event in events:
+        kind = event.get("kind")
+        if kind == "drain_completed":
+            if signoff is None or _event_order(event) > _event_order(signoff):
+                signoff = event
+        elif kind in CYCLE_BOUNDARY_EVENT_KINDS and (
+            boundary is None or _event_order(event) > _event_order(boundary)
+        ):
+            boundary = event
+    if signoff is None:
+        return None
+    if boundary is not None and _event_order(boundary) >= _event_order(signoff):
+        return None
+    return signoff
+
+
+@dataclass(frozen=True, slots=True)
+class AuthorizationStatus:
+    """Where gate G2 stands for one drain sign-off."""
+
+    drain_signoff_event_id: str | None
+    authorizations: tuple[dict[str, Any], ...]
+    satisfied: bool
+    blocking_reasons: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "drain_signoff_event_id": self.drain_signoff_event_id,
+            "authorizations": [dict(a) for a in self.authorizations],
+            "satisfied": self.satisfied,
+            "blocking_reasons": list(self.blocking_reasons),
+        }
+
+
+def authorization_summary(event: dict[str, Any]) -> dict[str, Any]:
+    """The operator-facing view of one ``cutover_authorized`` row."""
+    detail = event.get("detail") or {}
+    return {
+        "event_id": event.get("event_id"),
+        "at": event.get("at"),
+        "actor": event.get("actor"),
+        "role": detail.get("role"),
+        "signed_by": detail.get("signed_by"),
+    }
+
+
+def authorization_status(
+    signoff: dict[str, Any] | None, events: Sequence[dict[str, Any]]
+) -> AuthorizationStatus:
+    """Evaluate G2 against the audit log.
+
+    Only ``cutover_authorized`` rows whose ``detail.drain_signoff_event_id``
+    names *signoff* count: a signature authorises one specific sign-off, not
+    "whatever the fleet looks like now".  Satisfied when every role in
+    :data:`CUTOVER_AUTHORIZATION_ROLES` has a signature and no two roles were
+    signed by the same person (:func:`normalize_signer`).
+    """
+    if signoff is None:
+        return AuthorizationStatus(
+            None, (), False, ("no current drain sign-off (G1) to authorize",)
+        )
+    signoff_id = str(signoff.get("event_id") or "")
+    matching = sorted(
+        (
+            e
+            for e in events
+            if e.get("kind") == "cutover_authorized"
+            and str((e.get("detail") or {}).get("drain_signoff_event_id") or "") == signoff_id
+        ),
+        key=_event_order,
+    )
+    authorizations = tuple(authorization_summary(e) for e in matching)
+
+    by_role: dict[str, dict[str, Any]] = {}
+    for auth in authorizations:
+        role = str(auth.get("role") or "")
+        if role in CUTOVER_AUTHORIZATION_ROLES and role not in by_role:
+            by_role[role] = auth
+
+    reasons: list[str] = []
+    missing = [role for role in CUTOVER_AUTHORIZATION_ROLES if role not in by_role]
+    if missing:
+        have = (
+            ", ".join(
+                f"{role}={by_role[role]['signed_by']}"
+                for role in CUTOVER_AUTHORIZATION_ROLES
+                if role in by_role
+            )
+            or "none"
+        )
+        reasons.append(
+            "G2 needs an authorization from each of "
+            + ", ".join(CUTOVER_AUTHORIZATION_ROLES)
+            + f"; missing: {', '.join(missing)} (have: {have})"
+        )
+    signers = [normalize_signer(by_role[role].get("signed_by")) for role in by_role]
+    if len(by_role) == len(CUTOVER_AUTHORIZATION_ROLES) and len(set(signers)) < len(signers):
+        reasons.append(
+            "G2 requires two distinct people; the same person signed as " + " and ".join(by_role)
+        )
+    return AuthorizationStatus(
+        drain_signoff_event_id=signoff_id,
+        authorizations=authorizations,
+        satisfied=not reasons,
+        blocking_reasons=tuple(reasons),
+    )

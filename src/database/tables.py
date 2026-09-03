@@ -1089,6 +1089,7 @@ CUTOVER_EVENT_KINDS = (
     "v1_admission_closed",
     "v1_admission_reopened",
     "drain_completed",
+    "cutover_authorized",
     "switched_to_v2",
     "rolled_back_to_v1",
     "window_coverage_rehearsal",

@@ -31,12 +31,16 @@ from src.playbooks.cutover import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-#: The seven §3.3 commands.  Every one of them must answer on a paused fleet.
+#: The seven §3.3 commands plus the three §3.9 gate commands.  Every one of
+#: them must answer on a paused fleet.
 CUTOVER_COMMANDS = (
     "playbook_v1_drain_status",
     "playbook_v1_admission_close",
     "playbook_v1_admission_open",
     "playbook_v1_run_cancel",
+    "playbook_cutover_gate_status",
+    "playbook_cutover_drain_signoff",
+    "playbook_cutover_authorize",
     "playbook_cutover_switch",
     "playbook_cutover_window_status",
     "playbook_cutover_window_close",
@@ -100,11 +104,19 @@ def _run(run_id, status, *, started_at, playbook_id="pb", **kwargs):
 
 
 class _FakeDB:
-    """The three reads and one write ``drain_status`` and the commands make."""
+    """The reads and the one write ``drain_status`` and the commands make."""
 
-    def __init__(self, runs=(), events=()):
+    def __init__(self, runs=(), events=(), pending=()):
         self.runs = list(runs)
         self.events = list(events)
+        self.pending = list(pending)
+
+    async def list_pending_events(self, limit=100, **kwargs):
+        return list(self.pending)[:limit]
+
+    async def list_playbook_cutover_events(self, kind=None, limit=500):
+        matches = [e for e in self.events if kind is None or e["kind"] == kind]
+        return sorted(matches, key=lambda e: (e["at"], e["event_id"]))[:limit]
 
     async def list_playbook_runs(self, playbook_id=None, status=None, limit=50):
         return [r for r in self.runs if status is None or r.status == status][:limit]
@@ -647,6 +659,523 @@ async def test_window_status_detects_a_runtime_flipped_outside_the_command():
 
 
 # ---------------------------------------------------------------------------
+# §3.9 — G1 drain sign-off and G2 two-person switch authorization
+# ---------------------------------------------------------------------------
+
+
+def _event(kind, at, *, event_id=None, actor="local", detail=None):
+    return {
+        "event_id": event_id or f"{kind}-{at}",
+        "kind": kind,
+        "at": at,
+        "actor": actor,
+        "reason": "a reason long enough",
+        "detail": dict(detail or {}),
+    }
+
+
+def _authorization(at, *, role, signed_by, signoff_id, event_id=None):
+    return _event(
+        "cutover_authorized",
+        at,
+        event_id=event_id or f"auth-{role}-{at}",
+        detail={"role": role, "signed_by": signed_by, "drain_signoff_event_id": signoff_id},
+    )
+
+
+def test_drain_signoff_is_stale_once_a_cycle_boundary_follows_it():
+    """A sign-off authorises *this* attempt.  A rollback, a re-opened
+    admission or a completed switch each start a new attempt and the old
+    sign-off must not carry over into it."""
+    from src.playbooks.cutover import current_drain_signoff
+
+    signoff = _event("drain_completed", 10.0)
+    assert current_drain_signoff([signoff]) == signoff
+    assert current_drain_signoff([signoff, _event("v1_admission_closed", 12.0)]) == signoff
+    for boundary in ("switched_to_v2", "rolled_back_to_v1", "v1_admission_reopened"):
+        assert current_drain_signoff([signoff, _event(boundary, 11.0)]) is None, boundary
+    # A fresh sign-off after the boundary is the one that counts.
+    fresh = _event("drain_completed", 13.0, event_id="fresh")
+    assert current_drain_signoff([signoff, _event("rolled_back_to_v1", 11.0), fresh]) == fresh
+    assert current_drain_signoff([]) is None
+
+
+def test_authorization_requires_both_roles_from_two_distinct_people():
+    from src.playbooks.cutover import authorization_status
+
+    signoff = _event("drain_completed", 10.0, event_id="g1")
+    nothing = authorization_status(signoff, [signoff])
+    assert nothing.satisfied is False
+    assert any("author" in r and "release_operator" in r for r in nothing.blocking_reasons)
+
+    one = authorization_status(
+        signoff, [signoff, _authorization(11.0, role="author", signed_by="Alice", signoff_id="g1")]
+    )
+    assert one.satisfied is False
+    assert any("release_operator" in r for r in one.blocking_reasons)
+
+    same_person = authorization_status(
+        signoff,
+        [
+            signoff,
+            _authorization(11.0, role="author", signed_by="Alice", signoff_id="g1"),
+            _authorization(12.0, role="release_operator", signed_by="  alice ", signoff_id="g1"),
+        ],
+    )
+    assert same_person.satisfied is False
+    assert any("distinct" in r for r in same_person.blocking_reasons)
+
+    two = authorization_status(
+        signoff,
+        [
+            signoff,
+            _authorization(11.0, role="author", signed_by="Alice", signoff_id="g1"),
+            _authorization(12.0, role="release_operator", signed_by="Bob", signoff_id="g1"),
+        ],
+    )
+    assert two.satisfied is True
+    assert two.blocking_reasons == ()
+    assert [a["signed_by"] for a in two.authorizations] == ["Alice", "Bob"]
+
+    # An authorization for a different (older) sign-off is not carried over.
+    other = authorization_status(
+        signoff,
+        [
+            signoff,
+            _authorization(11.0, role="author", signed_by="Alice", signoff_id="old"),
+            _authorization(12.0, role="release_operator", signed_by="Bob", signoff_id="g1"),
+        ],
+    )
+    assert other.satisfied is False
+    assert [a["signed_by"] for a in other.authorizations] == ["Bob"]
+
+    # No sign-off at all: nothing can be authorised.
+    assert authorization_status(None, []).satisfied is False
+
+
+def _passing(name):
+    from src.playbooks.cutover import readiness_check
+
+    async def _check():
+        return readiness_check(name, observed="ok", passed=True)
+
+    return _check
+
+
+def _blocking(name, why):
+    from src.playbooks.cutover import readiness_check
+
+    async def _check():
+        return readiness_check(name, observed="bad", passed=False, blocking=why)
+
+    return _check
+
+
+def _ready_handler(db, config, **overrides):
+    """A handler whose non-drain evidence sources all pass unless overridden.
+
+    The drain check stays real (it reads ``db``); the report, activation and
+    pending-event checks need a vault, artifacts and lookups a unit test does
+    not have, so they are stubbed at the same seam the real handler uses.
+    """
+    handler = _cutover_handler(db, config)
+    handler._cutover_check_report = overrides.get("report", _passing("cutover_report"))
+    handler._cutover_check_activations = overrides.get("activations", _passing("activations"))
+    handler._cutover_check_pending_events = overrides.get(
+        "pending_events", _passing("pending_events")
+    )
+    return handler
+
+
+def _writable(handler, config):
+    async def _write(field, value):
+        setattr(config.playbooks, field, value)
+
+    handler._cutover_write_playbooks_field = _write
+    return handler
+
+
+@pytest.mark.asyncio
+async def test_readiness_fails_closed_when_evidence_sources_are_unavailable():
+    """A bare handler has no report and no activation lookups, and a database
+    without the pending-event query cannot answer either.  Every one of those
+    is reported as blocking, never as satisfied — only a read that actually
+    returned zero rows passes."""
+    handler = _cutover_handler(_FakeDB([]), _config(v1_admission="closed"))
+    status = await handler._cmd_playbook_cutover_gate_status({})
+    assert status["success"] is True
+    assert status["can_switch"] is False
+    names = {row["check"]: row for row in status["checks"]}
+    assert names["drain"]["pass"] is True
+    assert names["pending_events"] == {
+        "check": "pending_events", "observed": {"unresolved": 0}, "pass": True
+    }
+    for name in ("cutover_report", "activations"):
+        assert names[name]["pass"] is False, name
+        assert names[name]["blocking"], name
+    assert any("drain sign-off" in r for r in status["blocking_reasons"])
+
+    class _NoPendingReadDB(_FakeDB):
+        list_pending_events = None
+
+    unreadable = _cutover_handler(_NoPendingReadDB([]), _config(v1_admission="closed"))
+    status = await unreadable._cmd_playbook_cutover_gate_status({})
+    names = {row["check"]: row for row in status["checks"]}
+    assert names["pending_events"]["pass"] is False
+    assert "cannot be read" in names["pending_events"]["blocking"]
+
+
+@pytest.mark.asyncio
+async def test_drain_signoff_requires_a_named_signer_and_a_reason():
+    handler = _ready_handler(_FakeDB([]), _config(v1_admission="closed"))
+    missing = await handler._cmd_playbook_cutover_drain_signoff(
+        {"reason": "the drain is complete and reviewed"}
+    )
+    assert missing["success"] is False
+    assert "signed_by" in missing["error"]
+    short = await handler._cmd_playbook_cutover_drain_signoff(
+        {"reason": "short", "signed_by": "Alice"}
+    )
+    assert short["success"] is False
+    assert handler.db.events == []
+
+
+@pytest.mark.asyncio
+async def test_drain_signoff_refuses_while_any_readiness_check_blocks():
+    db = _FakeDB([_run("r1", "running", started_at=1.0)])
+    handler = _ready_handler(db, _config(v1_admission="closed"))
+    result = await handler._cmd_playbook_cutover_drain_signoff(
+        {"reason": "signing off the drain", "signed_by": "Alice"}
+    )
+    assert result["success"] is False
+    assert any("drain" in r for r in result["blocking_reasons"])
+    assert db.events == []
+
+    pending = _ready_handler(
+        _FakeDB([]),
+        _config(v1_admission="closed"),
+        pending_events=_blocking("pending_events", "3 unresolved pending events"),
+    )
+    result = await pending._cmd_playbook_cutover_drain_signoff(
+        {"reason": "signing off the drain", "signed_by": "Alice"}
+    )
+    assert result["success"] is False
+    assert any("pending" in r for r in result["blocking_reasons"])
+    assert pending.db.events == []
+
+
+@pytest.mark.asyncio
+async def test_drain_signoff_records_the_signer_and_the_evidence_it_verified():
+    db = _FakeDB([_run("old", "completed", started_at=1.0, completed_at=3.0)])
+    handler = _ready_handler(db, _config(v1_admission="closed"))
+    result = await handler._cmd_playbook_cutover_drain_signoff(
+        {"reason": "drain reviewed and signed", "signed_by": "  Alice Example "}
+    )
+    assert result["success"] is True, result
+    event = result["event"]
+    assert event["kind"] == "drain_completed"
+    assert event["detail"]["signed_by"] == "Alice Example"
+    assert {row["check"] for row in event["detail"]["checks"]} == {
+        "drain", "cutover_report", "activations", "pending_events"
+    }
+    assert event["detail"]["v1_baseline"]["sample_size"] == 1
+    assert db.events == [event]
+
+    again = await handler._cmd_playbook_cutover_drain_signoff(
+        {"reason": "signing the same drain twice", "signed_by": "Bob"}
+    )
+    assert again["success"] is False
+    assert "already signed" in again["error"]
+    assert len(db.events) == 1
+
+
+@pytest.mark.asyncio
+async def test_authorize_refuses_without_a_current_drain_signoff():
+    handler = _ready_handler(_FakeDB([]), _config(v1_admission="closed"))
+    result = await handler._cmd_playbook_cutover_authorize(
+        {"reason": "authorising the switch", "signed_by": "Alice", "role": "author"}
+    )
+    assert result["success"] is False
+    assert "drain sign-off" in result["error"]
+    assert handler.db.events == []
+
+    stale = _ready_handler(
+        _FakeDB([], [_event("drain_completed", 1.0), _event("rolled_back_to_v1", 2.0)]),
+        _config(v1_admission="closed"),
+    )
+    result = await stale._cmd_playbook_cutover_authorize(
+        {"reason": "authorising the switch", "signed_by": "Alice", "role": "author"}
+    )
+    assert result["success"] is False
+    assert "drain sign-off" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_authorize_validates_role_and_signer():
+    db = _FakeDB([], [_event("drain_completed", 1.0, event_id="g1")])
+    handler = _ready_handler(db, _config(v1_admission="closed"))
+    bad_role = await handler._cmd_playbook_cutover_authorize(
+        {"reason": "authorising the switch", "signed_by": "Alice", "role": "manager"}
+    )
+    assert bad_role["success"] is False
+    assert "role" in bad_role["error"]
+    no_name = await handler._cmd_playbook_cutover_authorize(
+        {"reason": "authorising the switch", "role": "author"}
+    )
+    assert no_name["success"] is False
+    assert "signed_by" in no_name["error"]
+    assert len(db.events) == 1
+
+
+@pytest.mark.asyncio
+async def test_authorize_binds_each_signature_to_the_signoff_and_refuses_one_person_twice():
+    db = _FakeDB([], [_event("drain_completed", 1.0, event_id="g1")])
+    handler = _ready_handler(db, _config(v1_admission="closed"))
+
+    first = await handler._cmd_playbook_cutover_authorize(
+        {"reason": "I wrote the change", "signed_by": "Alice", "role": "author"}
+    )
+    assert first["success"] is True, first
+    assert first["event"]["kind"] == "cutover_authorized"
+    assert first["event"]["detail"] == {
+        "role": "author", "signed_by": "Alice", "drain_signoff_event_id": "g1"
+    }
+    assert first["can_switch"] is False
+    assert any("release_operator" in r for r in first["blocking_reasons"])
+
+    same_role = await handler._cmd_playbook_cutover_authorize(
+        {"reason": "I also wrote the change", "signed_by": "Carol", "role": "author"}
+    )
+    assert same_role["success"] is False
+    assert "already authorized" in same_role["error"]
+
+    same_person = await handler._cmd_playbook_cutover_authorize(
+        {"reason": "I will also release it", "signed_by": "ALICE", "role": "release_operator"}
+    )
+    assert same_person["success"] is False
+    assert "distinct" in same_person["error"]
+
+    second = await handler._cmd_playbook_cutover_authorize(
+        {"reason": "I am releasing this", "signed_by": "Bob", "role": "release_operator"}
+    )
+    assert second["success"] is True, second
+    assert second["can_switch"] is True
+    assert second["blocking_reasons"] == []
+    assert [a["signed_by"] for a in second["authorizations"]] == ["Alice", "Bob"]
+    assert [e["kind"] for e in db.events] == [
+        "drain_completed", "cutover_authorized", "cutover_authorized"
+    ]
+
+
+def _authorized_db(signoff_id="g1"):
+    return _FakeDB(
+        [],
+        [
+            _event("drain_completed", 1.0, event_id=signoff_id),
+            _authorization(2.0, role="author", signed_by="Alice", signoff_id=signoff_id),
+            _authorization(3.0, role="release_operator", signed_by="Bob", signoff_id=signoff_id),
+        ],
+    )
+
+
+@pytest.mark.asyncio
+async def test_switch_to_v2_refuses_without_a_drain_signoff_even_when_ready():
+    """The defect behind solid-harbor.57 finding 1: ``drained`` alone let the
+    fleet switch.  Now every gate must be on record."""
+    config = _config(v1_admission="closed")
+    handler = _writable(_ready_handler(_FakeDB([]), config), config)
+    result = await handler._cmd_playbook_cutover_switch(
+        {"to": "v2", "reason": "cutting over after a clean drain"}
+    )
+    assert result["success"] is False
+    assert "drain sign-off" in result["error"]
+    assert config.playbooks.v2_engine is False
+    assert handler.db.events == []
+
+
+@pytest.mark.asyncio
+async def test_switch_to_v2_refuses_with_a_single_authorization():
+    db = _FakeDB(
+        [],
+        [
+            _event("drain_completed", 1.0, event_id="g1"),
+            _authorization(2.0, role="author", signed_by="Alice", signoff_id="g1"),
+        ],
+    )
+    config = _config(v1_admission="closed")
+    handler = _writable(_ready_handler(db, config), config)
+    result = await handler._cmd_playbook_cutover_switch(
+        {"to": "v2", "reason": "cutting over after a clean drain"}
+    )
+    assert result["success"] is False
+    assert "authoriz" in result["error"]
+    assert any("release_operator" in r for r in result["blocking_reasons"])
+    assert config.playbooks.v2_engine is False
+    assert len(db.events) == 2
+
+
+@pytest.mark.asyncio
+async def test_switch_to_v2_refuses_when_readiness_regressed_after_the_signoff():
+    """The sign-off is evidence about the past; the switch re-verifies the
+    present.  A pending event that arrived after G1 blocks the switch."""
+    config = _config(v1_admission="closed")
+    handler = _writable(
+        _ready_handler(
+            _authorized_db(),
+            config,
+            pending_events=_blocking("pending_events", "1 unresolved pending event"),
+        ),
+        config,
+    )
+    result = await handler._cmd_playbook_cutover_switch(
+        {"to": "v2", "reason": "cutting over after a clean drain"}
+    )
+    assert result["success"] is False
+    assert any("pending" in r for r in result["blocking_reasons"])
+    assert config.playbooks.v2_engine is False
+
+    # Likewise a V1 run that reappeared.
+    regressed = _authorized_db()
+    regressed.runs.append(_run("late", "running", started_at=5.0))
+    handler = _writable(_ready_handler(regressed, config), config)
+    result = await handler._cmd_playbook_cutover_switch(
+        {"to": "v2", "reason": "cutting over after a clean drain"}
+    )
+    assert result["success"] is False
+    assert result["drained"] is False
+    assert config.playbooks.v2_engine is False
+
+
+@pytest.mark.asyncio
+async def test_switch_to_v2_refuses_a_signoff_from_a_previous_attempt():
+    db = _authorized_db()
+    db.events.append(_event("rolled_back_to_v1", 4.0))
+    config = _config(v1_admission="closed")
+    handler = _writable(_ready_handler(db, config), config)
+    result = await handler._cmd_playbook_cutover_switch(
+        {"to": "v2", "reason": "cutting over again after the rollback"}
+    )
+    assert result["success"] is False
+    assert "drain sign-off" in result["error"]
+    assert config.playbooks.v2_engine is False
+
+
+@pytest.mark.asyncio
+async def test_switch_to_v2_records_the_gates_it_verified():
+    db = _authorized_db()
+    config = _config(v1_admission="closed")
+    handler = _writable(_ready_handler(db, config), config)
+    result = await handler._cmd_playbook_cutover_switch(
+        {"to": "v2", "reason": "cutting over after a clean drain"}
+    )
+    assert result["success"] is True, result
+    assert config.playbooks.v2_engine is True
+    event = result["event"]
+    assert event["kind"] == "switched_to_v2"
+    assert event["detail"]["drain_signoff_event_id"] == "g1"
+    assert [(a["role"], a["signed_by"]) for a in event["detail"]["authorizations"]] == [
+        ("author", "Alice"),
+        ("release_operator", "Bob"),
+    ]
+    assert all(row["pass"] for row in event["detail"]["checks"])
+
+    # The switch consumed the gates: the same sign-off cannot switch twice.
+    config.playbooks.v2_engine = False
+    again = await handler._cmd_playbook_cutover_switch(
+        {"to": "v2", "reason": "switching again on the old paperwork"}
+    )
+    assert again["success"] is False
+    assert "drain sign-off" in again["error"]
+
+
+@pytest.mark.asyncio
+async def test_rollback_to_v1_needs_no_gate():
+    """§3.9: an operator must be able to roll back at 3am.  No sign-off, no
+    authorization and no readiness check stands in the way of ``--to v1``."""
+    config = _config(v2_engine=True, v1_admission="closed")
+    handler = _writable(_cutover_handler(_FakeDB([]), config), config)
+    result = await handler._cmd_playbook_cutover_switch(
+        {"to": "v1", "reason": "rolling back after a regression"}
+    )
+    assert result["success"] is True, result
+    assert config.playbooks.v2_engine is False
+    assert result["event"]["kind"] == "rolled_back_to_v1"
+
+
+@pytest.mark.asyncio
+async def test_gate_status_names_every_missing_gate():
+    db = _FakeDB(
+        [],
+        [
+            _event("drain_completed", 1.0, event_id="g1"),
+            _authorization(2.0, role="author", signed_by="Alice", signoff_id="g1"),
+        ],
+    )
+    handler = _ready_handler(db, _config(v1_admission="closed"))
+    status = await handler._cmd_playbook_cutover_gate_status({})
+    assert status["success"] is True
+    assert status["runtime"] == "v1"
+    assert status["ready"] is True
+    assert status["drain_signoff"]["event_id"] == "g1"
+    assert [a["role"] for a in status["authorizations"]] == ["author"]
+    assert status["can_switch"] is False
+    assert any("release_operator" in r for r in status["blocking_reasons"])
+
+    complete = _ready_handler(_authorized_db(), _config(v1_admission="closed"))
+    status = await complete._cmd_playbook_cutover_gate_status({})
+    assert status["can_switch"] is True
+    assert status["blocking_reasons"] == []
+
+
+@pytest.mark.asyncio
+async def test_real_handler_gate_status_and_switch_refuse_on_an_unprepared_fleet(
+    command_handler_factory,
+):
+    """The live seams — the cutover report, the activation lookups and the
+    pending-event query — must answer without raising, and a fleet with no
+    reviewed activation must be refused, naming why."""
+    handler = await command_handler_factory()
+    handler.config.playbooks.v1_admission = "closed"
+
+    status = await handler.execute("playbook_cutover_gate_status", {})
+    assert status["success"] is True
+    assert status["can_switch"] is False
+    checks = {row["check"]: row for row in status["checks"]}
+    assert checks["cutover_report"]["pass"] is False
+    assert checks["activations"]["pass"] is False
+
+    signoff = await handler.execute(
+        "playbook_cutover_drain_signoff",
+        {"reason": "attempting to sign an unprepared fleet", "signed_by": "Alice"},
+    )
+    assert signoff["success"] is False
+    assert signoff["blocking_reasons"]
+
+    switch = await handler.execute(
+        "playbook_cutover_switch", {"to": "v2", "reason": "attempting an ungated switch"}
+    )
+    assert switch["success"] is False
+    assert handler.config.playbooks.v2_engine is False
+    assert await handler.db.list_playbook_cutover_events() == []
+
+
+@pytest.mark.asyncio
+async def test_cutover_authorized_is_a_legal_event_kind(command_handler_factory):
+    """The migrated schema must accept the new kind — the check constraint is
+    the closed set, so a kind missing from it fails at insert time."""
+    handler = await command_handler_factory()
+    event = await handler.db.append_playbook_cutover_event(
+        kind="cutover_authorized",
+        actor="local",
+        reason="a reason long enough",
+        detail={"role": "author", "signed_by": "Alice", "drain_signoff_event_id": "g1"},
+    )
+    rows = await handler.db.list_playbook_cutover_events(kind="cutover_authorized")
+    assert [row["event_id"] for row in rows] == [event["event_id"]]
+    assert rows[0]["detail"]["signed_by"] == "Alice"
+
+
+# ---------------------------------------------------------------------------
 # T-6 — operator-only
 # ---------------------------------------------------------------------------
 
@@ -737,11 +1266,60 @@ async def test_every_response_dto_accepts_its_commands_real_output():
         "playbook_v1_admission_close",
         await writable._cmd_playbook_v1_admission_close({"reason": "closing ahead of cutover"}),
     )
-    switched = await writable._cmd_playbook_cutover_switch(
+    ungated = await writable._cmd_playbook_cutover_switch(
         {"to": "v2", "reason": "cutting over after a clean drain"}
     )
-    assert switched["success"] is True
+    assert ungated["success"] is False
+    await _validate("playbook_cutover_switch", ungated)
+
+    # The gate surface: every refusal and every success shape.
+    gated_config = _config(v1_admission="closed")
+    gated = _writable(_ready_handler(_FakeDB([]), gated_config), gated_config)
+    await _validate(
+        "playbook_cutover_gate_status", await gated._cmd_playbook_cutover_gate_status({})
+    )
+    await _validate(
+        "playbook_cutover_authorize",
+        await gated._cmd_playbook_cutover_authorize(
+            {"reason": "authorising before the sign-off", "signed_by": "Bob", "role": "author"}
+        ),
+    )
+    signoff = await gated._cmd_playbook_cutover_drain_signoff(
+        {"reason": "drain reviewed and signed", "signed_by": "Alice"}
+    )
+    assert signoff["success"] is True, signoff
+    await _validate("playbook_cutover_drain_signoff", signoff)
+    await _validate(
+        "playbook_cutover_drain_signoff",
+        await gated._cmd_playbook_cutover_drain_signoff(
+            {"reason": "signing the drain twice", "signed_by": "Alice"}
+        ),
+    )
+    for signed_by, role in (("Alice", "author"), ("Bob", "release_operator")):
+        authorized = await gated._cmd_playbook_cutover_authorize(
+            {"reason": "authorising the switch", "signed_by": signed_by, "role": role}
+        )
+        assert authorized["success"] is True, authorized
+        await _validate("playbook_cutover_authorize", authorized)
+    await _validate(
+        "playbook_cutover_gate_status", await gated._cmd_playbook_cutover_gate_status({})
+    )
+    switched = await gated._cmd_playbook_cutover_switch(
+        {"to": "v2", "reason": "cutting over after a clean drain"}
+    )
+    assert switched["success"] is True, switched
     await _validate("playbook_cutover_switch", switched)
+
+    blocked = _cutover_handler(_FakeDB([_run("r1", "running", started_at=1.0)]), _config())
+    await _validate(
+        "playbook_cutover_drain_signoff",
+        await blocked._cmd_playbook_cutover_drain_signoff(
+            {"reason": "signing an undrained fleet", "signed_by": "Alice"}
+        ),
+    )
+    await _validate(
+        "playbook_cutover_gate_status", await blocked._cmd_playbook_cutover_gate_status({})
+    )
     await _validate(
         "playbook_v1_admission_open",
         await writable._cmd_playbook_v1_admission_open({"reason": "reopening after rollback"}),

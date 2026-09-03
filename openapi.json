@@ -6162,6 +6162,147 @@
         }
       }
     },
+    "/api/playbook/cutover-authorize": {
+      "post": {
+        "tags": [
+          "playbook"
+        ],
+        "summary": "Gate G2: one named human authorizes the switch to v2 in one role, author or release_operator. Operator-only. Bound to the current G1 drain sign-off and refused without one; one signature per role and one role per person, so the switch needs two different people. Appends a cutover_authorized audit row.",
+        "description": "Gate G2: one named human authorizes the switch to v2 in one role, author or release_operator. Operator-only. Bound to the current G1 drain sign-off and refused without one; one signature per role and one role per person, so the switch needs two different people. Appends a cutover_authorized audit row.",
+        "operationId": "playbook_cutover_authorize",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaybookCutoverAuthorizeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybookCutoverAuthorizeResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/playbook/cutover-drain-signoff": {
+      "post": {
+        "tags": [
+          "playbook"
+        ],
+        "summary": "Gate G1: a named human signs off the V1 drain. Operator-only. The command re-verifies every readiness check itself and refuses while any one blocks, naming it; a second sign-off for the same attempt is refused. Appends a drain_completed audit row carrying the attested name, the readiness table it verified and the V1 latency baseline.",
+        "description": "Gate G1: a named human signs off the V1 drain. Operator-only. The command re-verifies every readiness check itself and refuses while any one blocks, naming it; a second sign-off for the same attempt is refused. Appends a drain_completed audit row carrying the attested name, the readiness table it verified and the V1 latency baseline.",
+        "operationId": "playbook_cutover_drain_signoff",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaybookCutoverDrainSignoffRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybookCutoverDrainSignoffResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/playbook/cutover-gate-status": {
+      "post": {
+        "tags": [
+          "playbook"
+        ],
+        "summary": "Where the V2 switch stands: the readiness table (drain complete, cutover report clean and rollback-ready, every enabled activation ready, zero pending events), the current G1 drain sign-off, the G2 authorizations on record, and everything that still blocks. Read-only and recomputed from source on every call.",
+        "description": "Where the V2 switch stands: the readiness table (drain complete, cutover report clean and rollback-ready, every enabled activation ready, zero pending events), the current G1 drain sign-off, the G2 authorizations on record, and everything that still blocks. Read-only and recomputed from source on every call.",
+        "operationId": "playbook_cutover_gate_status",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaybookCutoverGateStatusRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybookCutoverGateStatusResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/playbook/cutover-report": {
       "post": {
         "tags": [
@@ -6214,8 +6355,8 @@
         "tags": [
           "playbook"
         ],
-        "summary": "Move the fleet between the V1 and V2 playbook runtimes. Operator-only, and the highest-privilege operation in the subsystem. Switching to v2 is refused until the drain completes; switching back to v1 is the rollback and is refused once the rollback window has been closed.",
-        "description": "Move the fleet between the V1 and V2 playbook runtimes. Operator-only, and the highest-privilege operation in the subsystem. Switching to v2 is refused until the drain completes; switching back to v1 is the rollback and is refused once the rollback window has been closed.",
+        "summary": "Move the fleet between the V1 and V2 playbook runtimes. Operator-only, and the highest-privilege operation in the subsystem. Switching to v2 is refused unless, re-verified at that moment, every readiness check passes, a current G1 drain sign-off exists and both G2 roles are authorized by two different people; switching back to v1 is the rollback, needs no gate, and is refused once the rollback window has been closed.",
+        "description": "Move the fleet between the V1 and V2 playbook runtimes. Operator-only, and the highest-privilege operation in the subsystem. Switching to v2 is refused unless, re-verified at that moment, every readiness check passes, a current G1 drain sign-off exists and both G2 roles are authorized by two different people; switching back to v1 is the rollback, needs no gate, and is refused once the rollback window has been closed.",
         "operationId": "playbook_cutover_switch",
         "requestBody": {
           "content": {
@@ -17413,6 +17554,73 @@
           "project_id"
         ],
         "title": "CreateTaskResponse"
+      },
+      "CutoverAuthorizationDTO": {
+        "properties": {
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Id"
+          },
+          "at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "At"
+          },
+          "actor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "author",
+                  "release_operator"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role"
+          },
+          "signed_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Signed By"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "CutoverAuthorizationDTO",
+        "description": "One G2 signature: who the server saw (``actor``) and who the human\ndeclared themselves to be (``signed_by``), in one of the two roles."
       },
       "CutoverEventDTO": {
         "properties": {
@@ -29363,6 +29571,271 @@
         ],
         "title": "PlaybookArtifactsRequest"
       },
+      "PlaybookCutoverAuthorizeRequest": {
+        "properties": {
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": "Why, at least 10 characters. Stored verbatim in the append-only cutover audit."
+          },
+          "signed_by": {
+            "type": "string",
+            "title": "Signed By",
+            "description": "The authorizing human's name, at least 2 characters."
+          },
+          "role": {
+            "type": "string",
+            "title": "Role",
+            "description": "Which of the two required signatures this is."
+          }
+        },
+        "type": "object",
+        "required": [
+          "reason",
+          "signed_by",
+          "role"
+        ],
+        "title": "PlaybookCutoverAuthorizeRequest"
+      },
+      "PlaybookCutoverAuthorizeResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "event": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CutoverEventDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "drain_signoff_event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Drain Signoff Event Id"
+          },
+          "authorizations": {
+            "items": {
+              "$ref": "#/components/schemas/CutoverAuthorizationDTO"
+            },
+            "type": "array",
+            "title": "Authorizations",
+            "default": []
+          },
+          "blocking_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Blocking Reasons",
+            "default": []
+          },
+          "can_switch": {
+            "type": "boolean",
+            "title": "Can Switch",
+            "default": false
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "PlaybookCutoverAuthorizeResponse"
+      },
+      "PlaybookCutoverDrainSignoffRequest": {
+        "properties": {
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": "Why, at least 10 characters. Stored verbatim in the append-only cutover audit."
+          },
+          "signed_by": {
+            "type": "string",
+            "title": "Signed By",
+            "description": "The attesting human's name, at least 2 characters. Recorded alongside the server-derived actor."
+          }
+        },
+        "type": "object",
+        "required": [
+          "reason",
+          "signed_by"
+        ],
+        "title": "PlaybookCutoverDrainSignoffRequest"
+      },
+      "PlaybookCutoverDrainSignoffResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "event": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CutoverEventDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "checks": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Checks",
+            "default": []
+          },
+          "blocking_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Blocking Reasons",
+            "default": []
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "PlaybookCutoverDrainSignoffResponse"
+      },
+      "PlaybookCutoverGateStatusRequest": {
+        "properties": {},
+        "type": "object",
+        "title": "PlaybookCutoverGateStatusRequest"
+      },
+      "PlaybookCutoverGateStatusResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "generated_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generated At"
+          },
+          "runtime": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "v1",
+                  "v2"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Runtime"
+          },
+          "ready": {
+            "type": "boolean",
+            "title": "Ready",
+            "default": false
+          },
+          "checks": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Checks",
+            "default": []
+          },
+          "drain_signoff": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CutoverEventDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "authorizations": {
+            "items": {
+              "$ref": "#/components/schemas/CutoverAuthorizationDTO"
+            },
+            "type": "array",
+            "title": "Authorizations",
+            "default": []
+          },
+          "blocking_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Blocking Reasons",
+            "default": []
+          },
+          "can_switch": {
+            "type": "boolean",
+            "title": "Can Switch",
+            "default": false
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "PlaybookCutoverGateStatusResponse",
+        "description": "Readiness, the current G1 sign-off and the G2 signatures, recomputed\nfrom source on every call.  ``can_switch`` is the conjunction."
+      },
       "PlaybookCutoverReportRequest": {
         "properties": {},
         "type": "object",
@@ -29526,6 +29999,31 @@
               }
             ],
             "title": "Error"
+          },
+          "checks": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Checks",
+            "default": []
+          },
+          "blocking_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Blocking Reasons",
+            "default": []
+          },
+          "authorizations": {
+            "items": {
+              "$ref": "#/components/schemas/CutoverAuthorizationDTO"
+            },
+            "type": "array",
+            "title": "Authorizations",
+            "default": []
           },
           "generated_at": {
             "anyOf": [
