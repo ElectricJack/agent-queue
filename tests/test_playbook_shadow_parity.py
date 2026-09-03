@@ -33,6 +33,7 @@ from src.playbooks.migration import (
     ShadowObservation,
     build_cutover_report,
     compare,
+    validate_parity_evidence,
 )
 from tests.playbook_shadow_parity_harness import (
     PARITY_REPORT,
@@ -50,6 +51,36 @@ from tests.playbook_shadow_parity_harness import (
     structural_parity,
     v1_node_id,
 )
+
+#: The artifact hash the cutover-report unit tests pretend is live.
+_LIVE_ARTIFACT = "sha256:" + "b" * 64
+
+
+def _parity(**overrides: object) -> dict:
+    """A complete committed parity record, shaped as the harness writes one.
+
+    The gate reads the whole record, so a test about some *other* blocker has
+    to hand it valid parity evidence or it measures the parity gate instead.
+    """
+    record: dict = {
+        "suite": "tests/test_playbook_shadow_parity.py",
+        "artifact_sha256": _LIVE_ARTIFACT,
+        "v1_source": "tests/fixtures/playbooks/v1/default-pipeline.md",
+        "corpus": "tests/fixtures/playbooks/v2/events/",
+        "observations": 1,
+        "identical": 1,
+        "expected": 0,
+        "unexplained": 0,
+        "deterministic_playbooks": ["default-pipeline"],
+        "events": [{"event_id": "evt-parity-0001", "event_type": "task.completed"}],
+        "recorded": True,
+    }
+    record.update(overrides)
+    return record
+
+
+def _events(count: int) -> list[dict]:
+    return [{"event_id": f"evt-parity-{index:04d}"} for index in range(count)]
 
 
 def _observation(*, arm: str, **changes: object) -> ShadowObservation:
@@ -147,7 +178,7 @@ def test_cutover_report_makes_every_gate_and_operational_backlog_visible() -> No
             {"run_id": "v1-running", "status": "running", "started_at": 80.0},
             {"run_id": "v1-paused", "status": "paused", "started_at": 85.0},
         ),
-        parity={"observations": 4, "identical": 3, "expected": 1, "unexplained": 0},
+        parity=_parity(observations=4, identical=3, expected=1, events=_events(4)),
         now=100.0,
     )
 
@@ -174,7 +205,7 @@ def test_cutover_report_blocks_unresolved_parity_and_missing_rollback_artifact()
         acknowledged_disabled=(),
         pending_events=(),
         active_v1_runs=(),
-        parity={"observations": 1, "identical": 0, "expected": 0, "unexplained": 1},
+        parity=_parity(identical=0, unexplained=1),
         now=100.0,
     )
 
@@ -205,8 +236,7 @@ def test_cutover_report_blocks_on_incomplete_artifact_evidence() -> None:
         acknowledged_disabled=(),
         pending_events=(),
         active_v1_runs=(),
-        parity={"observations": 1, "identical": 1, "expected": 0, "unexplained": 0,
-                "recorded": True},
+        parity=_parity(),
         now=100.0,
     )
 
@@ -234,14 +264,197 @@ def test_cutover_report_blocks_an_unreviewed_artifact_that_has_both_hashes() -> 
         acknowledged_disabled=(),
         pending_events=(),
         active_v1_runs=(),
-        parity={"observations": 1, "identical": 1, "expected": 0, "unexplained": 0,
-                "recorded": True},
+        parity=_parity(),
         now=100.0,
     )
 
     assert report["rollback_ready"] is False
     assert not any("incomplete artifact evidence" in r for r in report["blocking_reasons"])
     assert any("no recorded review" in r for r in report["blocking_reasons"])
+
+
+# ---------------------------------------------------------------------------
+# The committed shadow-parity record is checked, not merely counted
+# ---------------------------------------------------------------------------
+
+
+def _certifiable(**parity_overrides: object) -> dict:
+    """One healthy, reviewed, rollback-ready activation — every gate but parity.
+
+    Whatever this returns blocks for exactly one reason at a time, so a test
+    that asserts ``cutover_eligible is False`` is asserting about the parity
+    record it passed and nothing else.
+    """
+    return build_cutover_report(
+        contract_fingerprint="sha256:" + "a" * 64,
+        artifacts=(
+            {
+                "playbook_id": "default-pipeline",
+                "scope": "system",
+                "artifact_sha256": _LIVE_ARTIFACT,
+                "source_sha256": "sha256:" + "c" * 64,
+                "activation_health": "ready",
+                "reviewed_by": "operator",
+                "reviewed_at": "2026-09-03",
+                "v1_available": True,
+            },
+        ),
+        unresolved=(),
+        acknowledged_disabled=(),
+        pending_events=(),
+        active_v1_runs=(),
+        parity=_parity(**parity_overrides),
+        now=100.0,
+    )
+
+
+def test_a_complete_parity_record_still_certifies() -> None:
+    """The control: tightening the gate must not block real evidence."""
+    report = _certifiable()
+
+    assert report["blocking_reasons"] == []
+    assert report["cutover_eligible"] is True
+
+
+def test_cutover_report_rejects_parity_evidence_that_only_claims_to_exist() -> None:
+    """``{"recorded": true}`` used to be a complete pass for this gate.
+
+    The gate asked two questions — is ``unexplained`` non-zero, and is
+    ``recorded`` exactly ``False`` — and any JSON object answered both
+    acceptably, so a fleet could be certified against a record that observed
+    nothing and named no suite, corpus, or artifact.
+    """
+    report = build_cutover_report(
+        contract_fingerprint="sha256:" + "a" * 64,
+        artifacts=(
+            {
+                "playbook_id": "default-pipeline",
+                "scope": "system",
+                "artifact_sha256": _LIVE_ARTIFACT,
+                "source_sha256": "sha256:" + "c" * 64,
+                "activation_health": "ready",
+                "reviewed_by": "operator",
+                "reviewed_at": "2026-09-03",
+                "v1_available": True,
+            },
+        ),
+        unresolved=(),
+        acknowledged_disabled=(),
+        pending_events=(),
+        active_v1_runs=(),
+        parity={"recorded": True},
+        now=100.0,
+    )
+
+    assert report["rollback_ready"] is True
+    assert report["cutover_eligible"] is False
+    assert any("no suite" in reason for reason in report["blocking_reasons"])
+    assert any("no artifact_sha256" in reason for reason in report["blocking_reasons"])
+    assert any("observations is not a whole count" in r for r in report["blocking_reasons"])
+    assert any("binds to nothing that is live" in r for r in report["blocking_reasons"])
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [
+        ({"suite": ""}, "has no suite"),
+        ({"corpus": None}, "has no corpus"),
+        ({"v1_source": 3}, "has no v1_source"),
+        ({"artifact_sha256": "not-a-digest"}, "is not a sha256 digest"),
+        ({"observations": "15"}, "observations is not a whole count"),
+        ({"unexplained": True}, "unexplained is not a whole count"),
+        ({"identical": -1}, "identical is not a whole count"),
+        ({"events": []}, "carries no per-event evidence"),
+        ({"events": [{"event_type": "task.completed"}]}, "name no event"),
+        ({"events": _events(3)}, "lists 3 events for 1 observations"),
+    ],
+)
+def test_cutover_report_rejects_a_malformed_parity_field(
+    overrides: dict, expected: str
+) -> None:
+    """Every field is evidence; a malformed one fails closed, one reason each."""
+    report = _certifiable(**overrides)
+
+    assert report["cutover_eligible"] is False
+    assert any(expected in reason for reason in report["blocking_reasons"]), (
+        report["blocking_reasons"]
+    )
+
+
+def test_cutover_report_rejects_a_parity_record_that_observed_nothing() -> None:
+    """An empty comparison is not evidence that the two arms agree."""
+    report = _certifiable(observations=0, identical=0, events=_events(0))
+
+    assert report["cutover_eligible"] is False
+    assert any("observed no events" in reason for reason in report["blocking_reasons"])
+
+
+def test_cutover_report_rejects_parity_counters_that_do_not_add_up() -> None:
+    """A record that classified 1 of 15 observations has 14 it never explains."""
+    report = _certifiable(observations=15, identical=1, events=_events(15))
+
+    assert report["cutover_eligible"] is False
+    assert any("counters do not add up" in reason for reason in report["blocking_reasons"])
+
+
+def test_cutover_report_binds_parity_evidence_to_the_live_artifact() -> None:
+    """Parity proved against bytes nobody activates says nothing about cutover.
+
+    This is the report's freshness check: the record names the exact artifact
+    both arms ran against, so a recompiled artifact stops matching and the
+    stale record can no longer certify it.
+    """
+    report = _certifiable(artifact_sha256="sha256:" + "d" * 64)
+
+    assert report["cutover_eligible"] is False
+    assert any(
+        "recorded against artifact sha256:" + "d" * 64 in reason
+        and "activates sha256:" + "b" * 64 in reason
+        for reason in report["blocking_reasons"]
+    ), report["blocking_reasons"]
+
+
+def test_cutover_report_blocks_parity_evidence_for_an_inactive_playbook() -> None:
+    """A record about a playbook nobody runs binds its hash to nothing."""
+    report = _certifiable(deterministic_playbooks=["retired-pipeline"])
+
+    assert report["cutover_eligible"] is False
+    assert any(
+        "'retired-pipeline', which is not an enabled activation" in reason
+        for reason in report["blocking_reasons"]
+    )
+
+
+def test_parity_evidence_that_is_not_an_object_is_not_evidence() -> None:
+    assert validate_parity_evidence(None) == [
+        (
+            "the shadow-parity record is not an object; cutover cannot be certified "
+            "against evidence that could not be read"
+        )
+    ]
+
+
+def test_an_unrecorded_parity_record_names_why_it_could_not_be_read() -> None:
+    """"Missing" and "malformed" are different problems for whoever fixes it."""
+    problems = validate_parity_evidence({"recorded": False, "error": "parity.json: no such file"})
+
+    assert problems == ["no committed shadow-parity report is available (parity.json: no such file)"]
+
+
+@pytest.mark.asyncio
+async def test_cutover_report_names_the_unreadable_parity_record(tmp_path, monkeypatch) -> None:
+    """The command layer reads the file; the report says why it could not."""
+    monkeypatch.chdir(tmp_path)
+
+    report = await _EvidenceHandler(_CleanEvidence())._cmd_playbook_cutover_report({})
+
+    assert report["cutover_eligible"] is False
+    assert report["parity"]["recorded"] is False
+    assert any(
+        "no committed shadow-parity report is available" in reason
+        and "parity-report.json" in reason
+        for reason in report["blocking_reasons"]
+    ), report["blocking_reasons"]
 
 
 @pytest.mark.asyncio
@@ -265,7 +478,7 @@ async def test_cutover_report_command_uses_only_collected_evidence() -> None:
                 "acknowledged_disabled": (),
                 "pending_events": (),
                 "active_v1_runs": (),
-                "parity": {"observations": 1, "identical": 1, "expected": 0, "unexplained": 0},
+                "parity": _parity(),
             }
 
     report = await _Handler()._cmd_playbook_cutover_report({})
@@ -472,7 +685,7 @@ def test_cutover_report_evidence_errors_default_to_none_recorded() -> None:
         acknowledged_disabled=(),
         pending_events=(),
         active_v1_runs=(),
-        parity={"observations": 1, "identical": 1, "expected": 0, "unexplained": 0},
+        parity=_parity(deterministic_playbooks=["p"]),
         now=100.0,
     )
 

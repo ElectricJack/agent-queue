@@ -32,6 +32,12 @@ hash no approved review names is reported as unreviewed, never as approved.
 - Active V1 runs (running, paused, oldest age, unavailable):
 - Evidence sources that could not be read (must be empty):
 - Shadow parity (observations, identical, expected, unexplained, report path):
+  the record is checked, not counted — it must name its suite, corpus, V1
+  source and artifact hash, classify every observation it counts over a
+  non-empty corpus, and carry an artifact hash equal to the bytes each
+  deterministic playbook actually activates. A recompiled artifact therefore
+  makes the record stale and blocks until the parity suite is re-run
+  (`pytest tests/test_playbook_shadow_parity.py --parity-record`).
 - Rollback ready:
 - Cutover eligible:
 - Blocking reasons:
