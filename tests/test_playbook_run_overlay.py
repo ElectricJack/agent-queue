@@ -74,6 +74,53 @@ def test_loop_iterations_are_listed_not_collapsed():
     assert sum(item["outcome"] == "rejected" for item in node["iterations"]) == 1
 
 
+def _receipts_with_a_retried_iteration():
+    """The first iteration of ``open-gate`` fails once and is retried."""
+    _definition, _ref, receipts, _run = _data()
+    first = next(item for item in receipts if item["receipt_id"] == "rcpt-07")
+    failed = {
+        **first,
+        "receipt_id": "rcpt-07a",
+        "attempt": 1,
+        "outcome": "runtime_error",
+        "error": "gate_create timed out talking to the daemon",
+        "completed_at": first["started_at"] + 0.2,
+    }
+    retry = {
+        **first,
+        "attempt": 2,
+        "started_at": first["started_at"] + 1.0,
+        "completed_at": first["started_at"] + 1.5,
+    }
+    ordered = []
+    for item in receipts:
+        ordered.extend([failed, retry] if item["receipt_id"] == "rcpt-07" else [item])
+    return ordered
+
+
+def test_retried_attempts_within_one_loop_iteration_are_one_iteration():
+    node = next(
+        item
+        for item in _overlay(receipts=_receipts_with_a_retried_iteration())["nodes"]
+        if item["step_id"] == "open-gate"
+    )
+    # Six receipts, still the five iterations the loop actually ran.
+    assert node["visit_count"] == 6
+    assert [item["index"] for item in node["iterations"]] == [0, 1, 2, 3, 4]
+    retried = node["iterations"][0]
+    assert retried["receipt_ids"] == ["rcpt-07a", "rcpt-07"]
+    # The iteration reports the attempt that settled it, and spans both.
+    assert retried["outcome"] == "created"
+    assert retried["started_at"] == 1788305000.0
+    assert retried["completed_at"] == 1788305001.5
+
+
+def test_no_node_reports_two_iterations_with_the_same_index():
+    for node in _overlay(receipts=_receipts_with_a_retried_iteration())["nodes"]:
+        indexes = [item["index"] for item in node["iterations"]]
+        assert len(indexes) == len(set(indexes)), node["step_id"]
+
+
 def test_multiple_attempts_on_one_step_are_both_present():
     receipts = [item for item in _overlay()["receipts"] if item["step_id"] == "ensure-review-task"]
     assert [item["attempt"] for item in receipts] == [1, 2]
