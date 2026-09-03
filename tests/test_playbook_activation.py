@@ -1130,3 +1130,186 @@ async def test_activation_health_response_validates_against_the_wire_contract(db
     response = PlaybookActivationHealthResponse.model_validate(result)
     assert response.activations[0].health == "ready"
     assert response.activations[0].pending_event_count == 0
+
+
+# ---------------------------------------------------------------------------
+# The collect/delete TOCTOU (child plan §12.1): a hash re-adopted by a
+# concurrent compile between the row delete and the file removal, on both
+# backends.  The invariant under test is one sentence -- every live artifact
+# row has its file -- and it is asserted after every interleaving below.
+# ---------------------------------------------------------------------------
+
+
+async def _assert_every_live_row_has_its_file(db):
+    from pathlib import Path
+
+    from src.database.tables import playbook_artifacts
+
+    async with db._engine.connect() as conn:
+        rows = (
+            await conn.execute(
+                select(playbook_artifacts.c.artifact_sha256, playbook_artifacts.c.path)
+            )
+        ).fetchall()
+    assert rows, "the fixture should leave live rows behind"
+    dangling = [sha for sha, path in rows if not Path(path).is_file()]
+    assert not dangling, f"live artifact rows whose file is gone: {dangling}"
+
+
+async def _backdate_artifacts(db, seconds: float) -> None:
+    """Age every artifact row so a one-day horizon collects it.
+
+    Cheaper and far less brittle than sweeping with a ``now`` a year in the
+    future: the tombstone grace period is measured against the same ``now``,
+    so a horizon faked that way would also finalize every tombstone the sweep
+    had just created.
+    """
+    import time as _time
+
+    from sqlalchemy import update as sa_update
+
+    from src.database.tables import playbook_artifacts
+
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            sa_update(playbook_artifacts).values(created_at=_time.time() - seconds)
+        )
+
+
+@pytest.mark.asyncio
+async def test_retention_keeps_the_file_of_an_artifact_re_adopted_mid_sweep(db, tmp_path):
+    """The confirmed gate finding, as a regression.
+
+    ``collect_playbook_artifacts`` selects v1, proves it unreferenced and
+    deletes its row.  A concurrent compile then adopts the very same file --
+    content-addressed storage adopts identical bytes rather than rewriting
+    them -- and writes the row back before the sweep reaches the file.  The
+    old code unlinked it anyway and left the new row pointing at nothing.
+    """
+    import time as _time
+
+    from src.database.tables import playbook_artifacts
+
+    refs = await _store_versions(db, tmp_path, 12)
+    readopted = refs[0]
+    path = tmp_path / "artifacts" / f"{readopted.digest}.json"
+    original = db.collect_playbook_artifacts
+
+    async def _collect_then_readopt(*args, **kwargs):
+        collected = await original(*args, **kwargs)
+        await db.upsert_playbook_artifact(
+            readopted, scope="system", path=str(path), size_bytes=2
+        )
+        return collected
+
+    db.collect_playbook_artifacts = _collect_then_readopt
+    counts = await _sweeper(db, tmp_path).sweep(_time.time() + _A_YEAR)
+
+    # v2 is collected for real; v1's file is kept because its row came back.
+    assert counts["artifact_rows"] == 2
+    assert counts["artifact_files"] == 1
+    assert path.is_file()
+    async with db._engine.connect() as conn:
+        surviving = set(
+            (await conn.execute(select(playbook_artifacts.c.artifact_sha256))).scalars().all()
+        )
+    assert readopted.artifact_sha256 in surviving
+    assert refs[1].artifact_sha256 not in surviving
+    assert not (tmp_path / "artifacts" / f"{refs[1].digest}.json").exists()
+    await _assert_every_live_row_has_its_file(db)
+
+
+@pytest.mark.asyncio
+async def test_a_row_written_after_the_sweep_restores_its_file_from_the_tombstone(db, tmp_path):
+    """The other side of the same window: the row lands after the re-check.
+
+    Nothing the sweep can observe would have saved this one -- at re-check
+    time no row named the hash -- so the file is removed by rename and kept as
+    a tombstone for a grace period.  ``upsert_playbook_artifact`` takes the
+    same hash lock and restores it, which is what makes the invariant hold for
+    an adoption the sweep could not see.
+    """
+    import time as _time
+
+    from src.playbooks.artifact_tombstone import TOMBSTONE_GLOB
+
+    refs = await _store_versions(db, tmp_path, 12)
+    await _backdate_artifacts(db, 2 * 86400)
+    readopted = refs[0]
+    path = tmp_path / "artifacts" / f"{readopted.digest}.json"
+
+    counts = await _sweeper(db, tmp_path, v2_artifact_retention_days=1).sweep(_time.time())
+
+    assert counts["artifact_files"] == 2
+    assert counts["tombstone_files"] == 0  # both tombstones are inside the grace period
+    assert not path.exists()
+    assert len(list((tmp_path / "artifacts").glob(TOMBSTONE_GLOB))) == 2
+
+    # The compile that adopted the bytes before the sweep now records its row.
+    await db.upsert_playbook_artifact(readopted, scope="system", path=str(path), size_bytes=2)
+
+    assert path.read_text() == "{}"
+    assert len(list((tmp_path / "artifacts").glob(TOMBSTONE_GLOB))) == 1
+    await _assert_every_live_row_has_its_file(db)
+
+
+#: Where a concurrent compile's row write can land relative to the sweep's
+#: artifact phase.  Each one is a different window, and the invariant has to
+#: survive all three: before the sweep read the reference set, after it read
+#: the reference set but while the tombstone still exists, and after the whole
+#: sweep has finished.
+_INTERLEAVE_POINTS = ("after_collect", "after_unlink", "after_sweep")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("interleave", _INTERLEAVE_POINTS)
+async def test_every_live_artifact_row_has_its_file_whenever_the_row_lands(
+    db, tmp_path, interleave
+):
+    """The §12.1 invariant against every point the racing row write can land.
+
+    One artifact is re-adopted by a concurrent compile -- identical bytes are
+    adopted rather than rewritten, so the file on disk is the one the sweep is
+    collecting -- and its row is written at ``interleave``.  Whichever window
+    that falls in, the sweep must not leave the resulting live row without its
+    file: caught by the re-check under the hash lock when the row beat it, and
+    by the tombstone restore in ``upsert_playbook_artifact`` when it did not.
+    """
+    import time as _time
+
+    refs = await _store_versions(db, tmp_path, 12)
+    await _backdate_artifacts(db, 2 * 86400)
+    readopted = refs[0]
+    path = tmp_path / "artifacts" / f"{readopted.digest}.json"
+    sweeper = _sweeper(db, tmp_path, v2_artifact_retention_days=1)
+
+    async def _write_the_row():
+        await db.upsert_playbook_artifact(
+            readopted, scope="system", path=str(path), size_bytes=2
+        )
+
+    def _after(name, target):
+        """Run the racing row write once ``target`` has returned.
+
+        Never *inside* the sweep's transaction: ``upsert_playbook_artifact``
+        takes the same write lock, and on SQLite that lock is the whole
+        database, so an injection there would deadlock rather than interleave.
+        """
+
+        async def _wrapper(*args, **kwargs):
+            result = await target(*args, **kwargs)
+            if interleave == name:
+                await _write_the_row()
+            return result
+
+        return _wrapper
+
+    db.collect_playbook_artifacts = _after("after_collect", db.collect_playbook_artifacts)
+    sweeper._unlink_artifacts = _after("after_unlink", sweeper._unlink_artifacts)
+
+    await sweeper.sweep(_time.time())
+    if interleave == "after_sweep":
+        await _write_the_row()
+
+    assert path.read_text() == "{}"
+    await _assert_every_live_row_has_its_file(db)
