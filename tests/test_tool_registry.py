@@ -1,6 +1,7 @@
 """Tests for ToolRegistry -- tool categorization and on-demand loading."""
 
 import asyncio
+from collections import Counter
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -898,14 +899,12 @@ _PLAYBOOK_COMMANDS = [
     "playbook_v2_graph",
     "playbook_activation_health",
     "playbook_activate",
-    # Pre-existing omission: Package 5 registered this in ``_TOOL_CATEGORIES``
-    # but never added it here, leaving this class red on main.
+    # Activation artifacts and the pending-event queue (Package 5).
     "playbook_artifacts",
     "playbook_artifact_diff",
     "playbook_pending_events",
     "playbook_pending_event_action",
     "playbook_run_overlay",
-    "playbook_artifacts",
     # Playbook V2 review-only compiler (Package 2).
     "playbook_v2_validate",
     "playbook_v2_propose",
@@ -914,6 +913,7 @@ _PLAYBOOK_COMMANDS = [
     "playbook_migration_inventory",
     "playbook_migration_acknowledge",
     "playbook_migration_unacknowledge",
+    "playbook_cutover_report",
     # The release gate: reviewed artifacts versus the live contract surface.
     "playbook_release_check",
 ]
@@ -927,6 +927,19 @@ class TestPlaybookToolRegistration:
     complementing the per-command tests that live alongside each command's own
     test file.
     """
+
+    # -- The spec list itself ----------------------------------------------
+
+    def test_spec_list_has_no_duplicates(self):
+        """``_PLAYBOOK_COMMANDS`` lists each command once.
+
+        ``test_playbook_category_has_correct_count`` compares the registry's
+        count against ``len(_PLAYBOOK_COMMANDS)``, so a duplicated entry hides
+        exactly one unregistered — or one unexpected — playbook tool.
+        """
+        counts = Counter(_PLAYBOOK_COMMANDS)
+        dupes = sorted(name for name, n in counts.items() if n > 1)
+        assert not dupes, f"Duplicated entries in _PLAYBOOK_COMMANDS: {dupes}"
 
     # -- Category mapping --------------------------------------------------
 
