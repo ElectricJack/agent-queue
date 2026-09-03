@@ -5,6 +5,7 @@ Tests GitManager.amerge_pr and CommandHandler._cmd_pr_merge.
 
 from __future__ import annotations
 
+import os
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -137,18 +138,176 @@ async def test_pr_merge_pins_the_validated_head_oid(monkeypatch):
     assert result["success"] is True
 
 
-def _pr_identity_payload(*, base_oid: str = "a" * 40, head_oid: str = "b" * 40) -> str:
+def _pr_identity_payload(
+    *, base_oid: str = "a" * 40, head_oid: str = "b" * 40, number: int = 42
+) -> str:
+    """The subset of GitHub's REST ``pulls/{n}`` resource the identity reads."""
     import json
 
     return json.dumps(
         {
-            "baseRefName": "main",
-            "baseRefOid": base_oid,
-            "headRefName": "feature/guard",
-            "headRefOid": head_oid,
-            "baseRepository": {"nameWithOwner": "org/repo"},
+            "number": number,
+            "base": {"ref": "main", "sha": base_oid, "repo": {"full_name": "org/repo"}},
+            "head": {"ref": "feature/guard", "sha": head_oid, "repo": {"full_name": "org/repo"}},
         }
     )
+
+
+_PR_IDENTITY_CMD = ["gh", "api", "--hostname", "github.com", "repos/org/repo/pulls/42"]
+
+
+def _is_identity_call(cmd: list[str]) -> bool:
+    """``gh api repos/{owner}/{repo}/pulls/{n}`` — not the paginated files query."""
+    return cmd[:2] == ["gh", "api"] and "--paginate" not in cmd
+
+
+#: ``gh pr view --json`` fields as gh 2.45.0 lists them in its "Unknown JSON
+#: field" error — the minimum gh this project supports (``_cmd_pr_merge`` was
+#: verified against it).  ``baseRefOid`` (gh >= 2.46) and ``baseRepository``
+#: (no version) are deliberately absent.
+_GH_2_45_PR_VIEW_FIELDS = frozenset(
+    {
+        "additions", "assignees", "author", "autoMergeRequest", "baseRefName", "body",
+        "changedFiles", "closed", "closedAt", "comments", "commits", "createdAt",
+        "deletions", "files", "headRefName", "headRefOid", "headRepository",
+        "headRepositoryOwner", "id", "isCrossRepository", "isDraft", "labels",
+        "latestReviews", "maintainerCanModify", "mergeCommit", "mergeStateStatus",
+        "mergeable", "mergedAt", "mergedBy", "milestone", "number",
+        "potentialMergeCommit", "projectCards", "projectItems", "reactionGroups",
+        "reviewDecision", "reviewRequests", "reviews", "state", "statusCheckRollup",
+        "title", "updatedAt", "url",
+    }
+)  # fmt: skip
+
+
+def test_every_gh_pr_view_json_field_exists_on_the_minimum_supported_gh():
+    """Regression for the merge path asking gh for fields it does not have.
+
+    ``aget_pr_identity`` used to request ``baseRefOid`` and ``baseRepository``;
+    gh 2.45 rejects both with ``Unknown JSON field`` and every ``aq pr merge``
+    failed closed.  The suite missed it because the subprocess was faked, so
+    this pins every ``gh pr view --json`` literal in the manager to the field
+    list the minimum supported gh actually serves.
+    """
+    import re
+    from pathlib import Path
+
+    from src.git import manager
+
+    source = Path(manager.__file__).read_text()
+    specs = re.findall(r'"--json",\s*"([A-Za-z0-9,]+)"', source)
+    assert specs, "expected at least one gh pr view --json call in the manager"
+    for spec in specs:
+        unknown = set(spec.split(",")) - _GH_2_45_PR_VIEW_FIELDS
+        assert not unknown, f"gh 2.45 has no pr view --json field(s) {sorted(unknown)}"
+
+
+@pytest.mark.asyncio
+async def test_pr_identity_is_read_from_the_rest_pull_resource(monkeypatch):
+    from src.git.manager import GitManager
+
+    gm = GitManager()
+    commands: list[list[str]] = []
+
+    async def fake_arun_subprocess(cmd, cwd, timeout):
+        commands.append(cmd)
+        return MagicMock(returncode=0, stdout=_pr_identity_payload(), stderr="")
+
+    monkeypatch.setattr(gm, "_arun_subprocess", fake_arun_subprocess)
+    identity = await gm.aget_pr_identity(
+        "/some/checkout", "https://github.com/org/repo/pull/42#issuecomment-1"
+    )
+
+    assert commands == [_PR_IDENTITY_CMD]
+    assert identity.repository == "org/repo"
+    assert identity.number == 42
+    assert (identity.base_ref, identity.head_ref) == ("main", "feature/guard")
+    assert (identity.base_oid, identity.head_oid) == ("a" * 40, "b" * 40)
+
+
+@pytest.mark.asyncio
+async def test_pr_identity_uses_the_host_from_the_url(monkeypatch):
+    from src.git.manager import GitManager
+
+    gm = GitManager()
+    commands: list[list[str]] = []
+
+    async def fake_arun_subprocess(cmd, cwd, timeout):
+        commands.append(cmd)
+        return MagicMock(returncode=0, stdout=_pr_identity_payload(), stderr="")
+
+    monkeypatch.setattr(gm, "_arun_subprocess", fake_arun_subprocess)
+    await gm.aget_pr_identity("/some/checkout", "https://ghe.example.com/org/repo/pull/42")
+
+    assert commands == [["gh", "api", "--hostname", "ghe.example.com", "repos/org/repo/pulls/42"]]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "pr_url",
+    [
+        "https://github.com/org/repo",
+        "https://github.com/org/repo/issues/42",
+        "https://github.com/org/repo/pull/0",
+        "https://github.com/org/pull/42",
+        "not a url",
+    ],
+)
+async def test_pr_identity_rejects_urls_that_are_not_a_pull_request(monkeypatch, pr_url):
+    from src.git.manager import GitManager
+
+    gm = GitManager()
+
+    async def never(cmd, cwd, timeout):  # pragma: no cover - must not be reached
+        raise AssertionError(f"gh must not run for {pr_url!r}: {cmd}")
+
+    monkeypatch.setattr(gm, "_arun_subprocess", never)
+    with pytest.raises(GitError, match="pull request URL"):
+        await gm.aget_pr_identity("/some/checkout", pr_url)
+
+
+@pytest.mark.asyncio
+async def test_pr_identity_fails_closed_when_the_resource_is_a_different_pr(monkeypatch):
+    from src.git.manager import GitManager
+
+    gm = GitManager()
+
+    async def other_pr(cmd, cwd, timeout):
+        return MagicMock(returncode=0, stdout=_pr_identity_payload(number=41), stderr="")
+
+    monkeypatch.setattr(gm, "_arun_subprocess", other_pr)
+    with pytest.raises(GitError, match="complete PR identity"):
+        await gm.aget_pr_identity("/some/checkout", "https://github.com/org/repo/pull/42")
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_pr_identity_resolves_against_a_real_gh():
+    """The faked-subprocess tests cannot catch a gh field gh does not serve.
+
+    Needs a ``gh`` on PATH that is logged in and can reach github.com; skips
+    otherwise.  cli/cli#1 is a merged, immutable public PR.
+    """
+    import asyncio
+    import shutil
+
+    from src.git.manager import GitManager
+
+    if shutil.which("gh") is None:
+        pytest.skip("gh is not installed")
+    auth = await asyncio.create_subprocess_exec(
+        "gh", "auth", "status", stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
+    )
+    if await auth.wait() != 0:
+        pytest.skip("gh is not authenticated")
+
+    identity = await GitManager().aget_pr_identity(os.getcwd(), "https://github.com/cli/cli/pull/1")
+    assert identity.repository == "cli/cli"
+    assert identity.number == 1
+    assert identity.base_ref == "prototype"
+    assert identity.head_ref == "gh-pr"
+    assert identity.base_oid == "8ebaf1d3aaf3eef03b349d20338c83157b0bcfd7"
+    assert identity.head_oid == "e9a3253762e768badaa1d4a5b3d267416d1e42f4"
 
 
 @pytest.mark.asyncio
@@ -168,7 +327,7 @@ async def test_pr_validation_rejects_added_modified_and_deleted_reserved_paths(
     gm = GitManager()
 
     async def fake_arun_subprocess(cmd, cwd, timeout):
-        if cmd[:3] == ["gh", "pr", "view"]:
+        if _is_identity_call(cmd):
             return MagicMock(returncode=0, stdout=_pr_identity_payload(), stderr="")
         assert cmd[:4] == ["gh", "api", "--paginate", "repos/org/repo/pulls/42/files"]
         return MagicMock(returncode=0, stdout=f"work.py\n{path}\n", stderr="")
@@ -225,7 +384,7 @@ async def test_pr_validation_accepts_clean_paths_and_detects_a_changed_head(monk
     views = iter([_pr_identity_payload(), _pr_identity_payload()])
 
     async def fake_arun_subprocess(cmd, cwd, timeout):
-        if cmd[:3] == ["gh", "pr", "view"]:
+        if _is_identity_call(cmd):
             return MagicMock(returncode=0, stdout=next(views), stderr="")
         return MagicMock(returncode=0, stdout="work.py\n", stderr="")
 
@@ -256,7 +415,7 @@ async def test_pr_merge_refuses_when_head_changes_after_ci_validation(monkeypatc
 
     async def fake_arun_subprocess(cmd, cwd, timeout):
         nonlocal merge_called
-        if cmd[:3] == ["gh", "pr", "view"]:
+        if _is_identity_call(cmd):
             return MagicMock(returncode=0, stdout=_pr_identity_payload(head_oid="c" * 40), stderr="")
         if cmd[:3] == ["gh", "pr", "merge"]:
             merge_called = True

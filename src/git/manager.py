@@ -110,7 +110,13 @@ class PullRequestIdentity:
 _REFNAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
 _OID_RE = re.compile(r"^[0-9a-f]{40}$")
 _REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
-_PR_NUMBER_RE = re.compile(r"/pull/([1-9][0-9]*)/?(?:[?#].*)?$")
+#: ``https://<host>/<owner>/<repo>/pull/<n>`` with an optional trailing slash,
+#: query or fragment — the shape ``gh pr create`` prints and ``gh pr merge``
+#: accepts.  Owner and repo use the same alphabet as :data:`_REPOSITORY_RE`.
+_PR_URL_RE = re.compile(
+    r"^https://(?P<host>[A-Za-z0-9.-]+)/(?P<owner>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+)"
+    r"/pull/(?P<number>[1-9][0-9]*)/?(?:[?#].*)?$"
+)
 
 
 def _validate_ref(name: str, *, field: str = "branch") -> str:
@@ -2512,19 +2518,25 @@ class GitManager:
     async def aget_pr_identity(self, checkout_path: str, pr_url: str) -> PullRequestIdentity:
         """Resolve the PR identity GitHub will merge, or fail closed.
 
-        The repository and OIDs come from one ``gh pr view`` response so the
-        subsequent PR-files query can be tied to an immutable snapshot.
+        Reads the REST pull-request resource (``gh api
+        repos/{owner}/{repo}/pulls/{n}``) rather than ``gh pr view --json``.
+        The GraphQL field list gh exposes depends on the gh version —
+        ``baseRefOid`` only exists from gh 2.46 and there is no
+        ``baseRepository`` field on any version, so asking for them made
+        every merge fail closed on the gh 2.45 this project supports — while
+        the REST resource has carried ``base.sha``, ``head.sha`` and
+        ``base.repo.full_name`` for years.  Host, owner, repo and number come
+        from the URL, so no checkout is needed to resolve them, and the
+        repository and OIDs come from one response so the subsequent
+        PR-files query can be tied to an immutable snapshot.
         """
+        url = _PR_URL_RE.fullmatch(pr_url.strip())
+        if url is None:
+            raise GitError("could not resolve PR identity: not a GitHub pull request URL")
+        host, owner, repo, number = url.group("host", "owner", "repo", "number")
         try:
             result = await self._arun_subprocess(
-                [
-                    "gh",
-                    "pr",
-                    "view",
-                    pr_url,
-                    "--json",
-                    "baseRefName,baseRefOid,headRefName,headRefOid,baseRepository",
-                ],
+                ["gh", "api", "--hostname", host, f"repos/{owner}/{repo}/pulls/{number}"],
                 cwd=checkout_path,
                 timeout=self._GIT_TIMEOUT,
             )
@@ -2534,16 +2546,16 @@ class GitManager:
             raise GitError(f"could not resolve PR identity: {result.stderr.strip()}")
         try:
             data = json.loads(result.stdout)
-            repository = data["baseRepository"]["nameWithOwner"]
-            base_ref = data["baseRefName"]
-            head_ref = data["headRefName"]
-            base_oid = data["baseRefOid"].lower()
-            head_oid = data["headRefOid"].lower()
+            resource_number = data["number"]
+            repository = data["base"]["repo"]["full_name"]
+            base_ref = data["base"]["ref"]
+            head_ref = data["head"]["ref"]
+            base_oid = data["base"]["sha"].lower()
+            head_oid = data["head"]["sha"].lower()
         except (KeyError, TypeError, ValueError, AttributeError) as exc:
             raise GitError("could not resolve complete PR identity") from exc
-        number_match = _PR_NUMBER_RE.search(pr_url)
         if (
-            not number_match
+            resource_number != int(number)
             or not isinstance(repository, str)
             or not _REPOSITORY_RE.fullmatch(repository)
             or not isinstance(base_ref, str)
@@ -2554,7 +2566,7 @@ class GitManager:
             raise GitError("could not resolve complete PR identity")
         return PullRequestIdentity(
             repository=repository,
-            number=int(number_match.group(1)),
+            number=int(number),
             base_ref=base_ref,
             base_oid=base_oid,
             head_ref=head_ref,
