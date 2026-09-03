@@ -12,7 +12,8 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
-from dataclasses import replace
+from dataclasses import dataclass, replace
+from typing import Any
 
 import pytest
 
@@ -119,6 +120,24 @@ def make_receipt(snapshot: RunSnapshot, **overrides) -> StepReceipt:
     }
     base.update(overrides)
     return StepReceipt(**base)
+
+
+@dataclass
+class Event:
+    """A complete ``MatchableEvent``, routed at this file's seeded artifact.
+
+    Every field of the protocol matters here: ``claim_for_event`` locks and
+    scans by ``playbook_id``/``scope``/``scope_identifier``, so an event that
+    omits them cannot claim anything and would make a "nothing was claimed"
+    assertion pass for the wrong reason.
+    """
+
+    event_type: str
+    event_id: str | None
+    fields: dict[str, Any]
+    playbook_id: str = "task-review"
+    scope: str = "system"
+    scope_identifier: str = ""
 
 
 def test_run_repository_preserves_the_step_receipt_type_contract():
@@ -564,6 +583,7 @@ async def test_paused_run_cancellation_clears_wait_before_events_can_claim(db):
                     step_id="await-merge",
                     event_type="pr.merged",
                     match={"pr.number": 41},
+                    created_at=NOW,
                 ),
             )
         ),
@@ -578,19 +598,39 @@ async def test_paused_run_cancellation_clears_wait_before_events_can_claim(db):
 
     assert cancelled.lifecycle is RunLifecycle.CANCELLED
     assert await db.list_active(snapshot.run_id) == []
-    event = type(
-        "Event",
-        (),
-        {
-            "playbook_id": snapshot.playbook_id,
-            "scope": "system",
-            "scope_identifier": "",
-            "event_type": "pr.merged",
-            "event_id": "event-1",
-            "fields": {"pr": {"number": 41}},
-        },
-    )()
+    event = Event("pr.merged", "event-1", {"pr": {"number": 41}})
     assert await db.claim_for_event(event, now=NOW + 1) == []
+
+
+async def test_the_same_event_claims_the_wait_while_the_run_is_still_paused(db):
+    """The control for the case above: the event is not inert, the cancel is.
+
+    Without this, an ``Event`` that stopped routing at the run — a missing
+    ``playbook_id``, a renamed scope — would keep the cancellation test green
+    while proving nothing.
+    """
+    snapshot = await db.create_run(make_snapshot())
+    await db.commit_boundary(
+        replace(snapshot, lifecycle=RunLifecycle.PAUSED, current_step_id="await-merge"),
+        make_receipt(snapshot, step_id="await-merge"),
+        WaitChangeSet(
+            register=(
+                WaitSpec(
+                    wait_id="wait-1",
+                    run_id=snapshot.run_id,
+                    step_id="await-merge",
+                    event_type="pr.merged",
+                    match={"pr.number": 41},
+                    created_at=NOW,
+                ),
+            )
+        ),
+    )
+
+    event = Event("pr.merged", "event-1", {"pr": {"number": 41}})
+    claims = await db.claim_for_event(event, now=NOW + 1)
+
+    assert [claim.wait_id for claim in claims] == ["wait-1"]
 
 
 async def test_cancel_requires_the_current_version(db):
