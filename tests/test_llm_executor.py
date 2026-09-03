@@ -10,6 +10,7 @@ from typing import Any
 from src.commands.contracts.registry import ContractRegistry
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, TRUSTED_LOCAL
 from src.config import LLMConfig
+from src.intelligence_classes import IntelligenceClass
 from src.llm import LLMClient
 from src.llm.fake import FakeProvider
 from src.llm.types import TokenUsage
@@ -264,3 +265,100 @@ async def test_symbolic_executor_forks_across_typed_and_reserved_outcomes() -> N
 
     assert result.control is StepControl.UNRESOLVED
     assert set(result.possible_outcomes) == {"low", "high", "invalid_output", "budget_exceeded", "provider_error"}
+
+
+def profile_with_class(class_id: str) -> Any:
+    """A profile whose id is deliberately not a class id (the reported defect)."""
+    return SimpleNamespace(
+        id="worker",
+        default_class=class_id,
+        allowed_tools=[],
+        harness_tools=[],
+        aq_commands=[],
+        plugin_tools=[],
+    )
+
+
+class RecordingFactory:
+    """A provider factory that keeps what the resolved call asked it to build."""
+
+    def __init__(self, provider: FakeProvider) -> None:
+        self.provider = provider
+        self.models: list[str] = []
+
+    def __call__(self, **kwargs: Any) -> FakeProvider:
+        self.models.append(kwargs.get("model", ""))
+        return self.provider
+
+
+def classed_context(
+    provider: FakeProvider, *, db: Any, classes: dict[str, Any]
+) -> tuple[StepContext, RecordingFactory]:
+    """A context whose client resolves classes for real, plus its factory.
+
+    ``LLMClient.with_provider`` loads an empty class snapshot, so it cannot
+    show which class a call selected; this builds the real resolution path.
+    """
+    factory = RecordingFactory(provider)
+    client = LLMClient(
+        LLMConfig(model="config-fallback-model"),
+        classes_loader=lambda: classes,
+        provider_factory=factory,
+    )
+    ctx = context(provider, db=db)
+    return replace(ctx, services=replace(ctx.services, llm=client)), factory
+
+
+async def test_intelligence_class_comes_from_the_profile_not_from_its_id() -> None:
+    """A profile id is not a class id: feeding it in silently ran the config default."""
+    provider = FakeProvider()
+    provider.add_text('{"risk": "low"}', usage=TokenUsage(10, 2, True))
+    classes = {
+        "deep-high": IntelligenceClass(
+            id="deep-high",
+            name="Deep",
+            description="",
+            mapping={"anthropic": {"model": "declared-deep-model"}},
+        )
+    }
+    ctx, factory = classed_context(
+        provider, db=ProfileStore(profile_with_class("deep-high")), classes=classes
+    )
+
+    result = await LiveLlmExecutor().execute(llm_step(), ctx)
+
+    assert result.outcome == "low"
+    # The declared class decided the model, not ``llm.model`` and not the
+    # profile id (which names no class at all).
+    assert factory.models == ["declared-deep-model"]
+    assert result.operation == "llm:worker/declared-deep-model"
+
+
+async def test_profile_without_a_class_falls_back_to_configuration() -> None:
+    """No declared class is a real answer — it must not become the profile id."""
+    provider = FakeProvider()
+    provider.add_text('{"risk": "low"}', usage=TokenUsage(10, 2, True))
+    ctx, factory = classed_context(
+        provider, db=ProfileStore(profile_with_class("")), classes={}
+    )
+
+    result = await LiveLlmExecutor().execute(llm_step(), ctx)
+
+    assert result.outcome == "low"
+    assert factory.models == ["config-fallback-model"]
+
+
+async def test_a_missing_profile_is_unavailable_rather_than_unauthorized() -> None:
+    """§4.4: a profile can be transiently unloaded; that is not a policy violation."""
+    provider = FakeProvider()
+    provider.add_text('{"risk": "low"}', usage=TokenUsage(10, 2, True))
+
+    result = await LiveLlmExecutor().execute(
+        llm_step(), context(provider, db=ProfileStore(None))
+    )
+
+    assert result.outcome == "unavailable"
+    assert result.diagnostics == ("named profile unavailable",)
+    assert provider.calls == []
+    # Nothing resolved, so the receipt names the boundary and no model.
+    assert result.operation == "llm:worker"

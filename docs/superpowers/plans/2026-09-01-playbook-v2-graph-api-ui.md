@@ -2059,4 +2059,40 @@ Still open, and filed rather than folded in: `__tests__/fixtures.ts` is still
 hand-authored TypeScript. §16.10 deviation 1 asked for it to become the
 projection's output; that is a dashboard-side change (its component tests
 assert hand-authored badges and rows) and belongs with the UI slice, not with
-this backend fix.
+this backend fix. Closed by §16.12.
+
+### 16.12 `fixtures.ts` derives from the projection on 2026-09-03 (task sharp-apex-57)
+
+The dashboard half of §16.10 deviation 1. `__tests__/fixtures.ts` no longer
+authors a single `GraphNodeDTO`: `graph`, every named node and every edge and
+rule now come out of `graph.fixture.json` through `./projected`, so the
+`playbook-graph-v2` component suites assert the payload `project_graph`
+actually serves. What the hand-authored fixture had been claiming, and the
+backend does not emit, went with it:
+
+* `renderer: "contract"` and a `contract_fingerprint` on nodes the stub
+  registry has no contract for — the projection renders all thirteen steps
+  `"canonical"` and puts an `unknown_command` error on the three commands;
+* `"Saved as"` result labels (the projector labels the result row with the
+  binding name), title-cased outcome labels chosen by hand, `"otherwise"` for
+  a decision default (`"Default"`), `"each task"` for a loop body
+  (`"Each item"`), and `«redacted»` for a redacted value (`"(redacted)"`);
+* `delegation.narrowed_from`, which `_ai_detail` writes as `None`
+  unconditionally, so no test may assert a value for it.
+
+Two nodes are still derived rather than read, each a projected node spread
+with the exact fields `graph_projection.py` writes down a branch this artifact
+does not reach, and each documented as such at its definition:
+`unroutedEscalateNode` (a profile lookup that resolves no routing) and
+`contractedEnsureReviewTask` (a registered command with a sensitive argument,
+which is the only way to reach the Advanced panel's fingerprint, retry and
+redaction rows). Both exist because the golden artifact's three commands —
+`ensure_task`, `list_tasks`, `gate_create` — are absent from
+`tests.playbook_v2_helpers.STUB_CONTRACTS`, so the projection of it never
+takes the contract path at all. Giving the stub those contracts would remove
+the need for both, and is filed rather than folded in: it changes a stub four
+backend suites share and would move the committed fixture's bytes.
+
+Run overlays stay hand-built here: `project_graph` does not produce them.
+They are pinned to the projected `artifact` so the canvas' artifact-identity
+check runs against the real hash.

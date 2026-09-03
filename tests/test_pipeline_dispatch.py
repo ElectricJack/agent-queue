@@ -17,7 +17,6 @@ against the real compiled default pipeline on a real database.
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -33,9 +32,8 @@ from src.playbooks.manager import PlaybookManager
 from src.playbooks.pipeline_compiler import compile_pipeline
 from src.playbooks.store import CompiledPlaybookStore
 
-DEFAULT_PIPELINE_PATH = (
-    Path(__file__).parent.parent / "src" / "prompts" / "default_playbooks" / "default-pipeline.md"
-)
+# The frozen pre-rewrite V1 graph; the shipped Markdown is prose now.
+from tests.conftest import DEFAULT_PIPELINE_PATH
 
 PLAYBOOK_ID = "default-pipeline"
 

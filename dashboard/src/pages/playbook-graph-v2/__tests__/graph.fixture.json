@@ -772,6 +772,11 @@
           "value": "for completion"
         },
         {
+          "kind": "wait",
+          "label": "On cancel",
+          "value": "leaves the child running"
+        },
+        {
           "kind": "timeout",
           "label": "Timeout",
           "value": "3600s"

@@ -70,6 +70,45 @@ export function Pairs({ pairs }: { pairs: [string, ReactNode][] }) {
   );
 }
 
+/** How many input rows a compact card shows before collapsing the rest into a
+ *  "+N more" chip. Two rows plus the overflow chip is what fits on one line at
+ *  `NODE_WIDTH` without pushing the outcome ports off the card. */
+export const CARD_INPUT_LIMIT = 2;
+
+export interface KeyData {
+  /** The rows the card prints, required ones first. */
+  shown: ExplanationRowDTO[];
+  /** The rest, named in the overflow chip's tooltip rather than dropped. */
+  hidden: ExplanationRowDTO[];
+  /** The binding this step writes, or null when it writes nothing. */
+  result: ExplanationRowDTO | null;
+}
+
+/** The bounded key-input/output summary a compact card shows: what this step
+ *  reads and what it binds, without selecting it.
+ *
+ *  It reads `explanation.inputs` and `explanation.result` — the same payload
+ *  the inspector renders in full through `IntentSections` — so the card is a
+ *  truncation of the inspector and never a second interpretation of the step.
+ *  Required rows come first because an optional argument that happens to be
+ *  declared early is not what an operator is looking for; declaration order
+ *  breaks ties within each group. */
+export function keyData(
+  explanation: StepExplanationDTO,
+  limit: number = CARD_INPUT_LIMIT,
+): KeyData {
+  const inputs = explanation.inputs ?? [];
+  const ordered = [
+    ...inputs.filter((row) => row.required !== false),
+    ...inputs.filter((row) => row.required === false),
+  ];
+  return {
+    shown: ordered.slice(0, limit),
+    hidden: ordered.slice(limit),
+    result: explanation.result ?? null,
+  };
+}
+
 export function Block({ name, children }: { name: string; children: ReactNode }) {
   return (
     <section role="group" aria-label={name} className="min-w-0 space-y-1">

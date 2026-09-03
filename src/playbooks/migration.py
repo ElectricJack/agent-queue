@@ -27,6 +27,7 @@ import os
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Literal
 
 import yaml
@@ -36,6 +37,9 @@ from src.playbooks.handler import PLAYBOOK_PATTERNS, derive_playbook_scope
 from src.playbooks.routing import is_deprecated_default_assignment_entry
 
 logger = logging.getLogger(__name__)
+
+#: The three exact-match capability namespaces (Package 0).
+_CAPABILITY_NAMESPACES: tuple[str, ...] = ("harness_tools", "aq_commands", "plugin_tools")
 
 
 PlaybookDisposition = Literal["ready", "question_required", "invalid", "disabled"]
@@ -243,6 +247,150 @@ class MigrationInventory:
             "pending_events_total": sum(e.pending_events for e in self.entries),
             "entries": [entry.to_dict() for entry in self.entries],
         }
+
+
+# ---------------------------------------------------------------------------
+# §5.4 — deterministic V1/V2 shadow comparison
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class CommandInvocation:
+    """One command a shadow arm would have invoked, after normalisation."""
+
+    order: int
+    command: str
+    args_canonical: str
+
+
+@dataclass(frozen=True, slots=True)
+class AuthzDecision:
+    """The dispatch-boundary decision for one command."""
+
+    command: str
+    principal_kind: str
+    allowed: bool
+    reason: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowObservation:
+    """The comparable, side-effect-free record of one V1 or V2 event arm."""
+
+    arm: Literal["v1", "v2"]
+    event_id: str
+    event_type: str
+    rules_selected: tuple[str, ...]
+    node_path: tuple[str, ...]
+    commands: tuple[CommandInvocation, ...]
+    routing_outputs: Mapping[str, Any]
+    terminal: str
+    authorization: tuple[AuthzDecision, ...]
+
+
+DifferenceClass = Literal["identical", "expected_v2_semantics", "unexplained"]
+
+
+@dataclass(frozen=True, slots=True)
+class ParityFinding:
+    """One visible difference between the two arms of a shadow observation."""
+
+    field: Literal[
+        "rules_selected", "node_path", "commands", "routing_outputs", "terminal", "authorization"
+    ]
+    v1: Any
+    v2: Any
+    classification: DifferenceClass
+    rationale_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.classification == "expected_v2_semantics":
+            if self.field == "authorization":
+                raise ValueError("authorization differences are never waivable")
+            if self.rationale_id not in EXPECTED_DIFFERENCES:
+                raise ValueError(f"unknown expected-difference rationale {self.rationale_id!r}")
+        elif self.rationale_id is not None:
+            raise ValueError("only an expected difference may carry a rationale id")
+
+
+#: The only intentional semantic deviations a parity report may name.  Keeping
+#: this closed and in the executable comparison module prevents a report from
+#: becoming a free-form waiver document.
+EXPECTED_DIFFERENCES: Mapping[str, str] = {
+    "run-per-rule": (
+        "V2 has one run per matching rule while V1 shared one run per event; run identity "
+        "is deliberately excluded from the observation."
+    ),
+    "rule-failure-isolation": (
+        "A V2 rule failure does not abort sibling rules, whereas V1 stopped the shared event run."
+    ),
+    "loop-frame-shape": (
+        "V2 stores loop state in a typed frame rather than V1's transient outputs dictionary; "
+        "per-iteration commands remain comparable."
+    ),
+    "unassigned-ref-rejected": (
+        "V2 rejects an unassigned binding at compile time where V1 substituted an empty or null value."
+    ),
+    "terminal-vocabulary": (
+        "V2 distinguishes timed_out and cancelled from V1's failed terminal vocabulary."
+    ),
+}
+
+
+_PARITY_FIELDS: tuple[str, ...] = (
+    "rules_selected",
+    "node_path",
+    "commands",
+    "routing_outputs",
+    "terminal",
+    "authorization",
+)
+
+
+def _terminal_difference_is_expected(v1: str, v2: str) -> bool:
+    """Only V2's new non-completed terminals are a vocabulary difference."""
+    return v1 != "completed" and v2 in {"timed_out", "cancelled"}
+
+
+def compare(v1: ShadowObservation, v2: ShadowObservation) -> tuple[ParityFinding, ...]:
+    """Compare the closed observation surface and leave unknown differences loud.
+
+    This function intentionally has no heuristic to turn a changed command,
+    route, or authorization result into an expected difference.  New semantic
+    intent needs an explicit reviewed rationale and an observation exercising
+    it; otherwise cutover remains blocked.
+    """
+    if v1.arm != "v1" or v2.arm != "v2":
+        raise ValueError("compare requires a v1 observation followed by a v2 observation")
+    if (v1.event_id, v1.event_type) != (v2.event_id, v2.event_type):
+        raise ValueError("compare requires observations for the same event id and type")
+
+    findings: list[ParityFinding] = []
+    for field in _PARITY_FIELDS:
+        left = getattr(v1, field)
+        right = getattr(v2, field)
+        if left == right:
+            continue
+        if field == "terminal" and _terminal_difference_is_expected(left, right):
+            findings.append(
+                ParityFinding(
+                    field="terminal",
+                    v1=left,
+                    v2=right,
+                    classification="expected_v2_semantics",
+                    rationale_id="terminal-vocabulary",
+                )
+            )
+        else:
+            findings.append(
+                ParityFinding(
+                    field=field,  # type: ignore[arg-type]
+                    v1=left,
+                    v2=right,
+                    classification="unexplained",
+                )
+            )
+    return tuple(findings)
 
 
 # ---------------------------------------------------------------------------
@@ -835,15 +983,402 @@ def _orphan_entry(
     )
 
 
+
+# ---------------------------------------------------------------------------
+# §5.3 T-9 — capability audit
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class CapabilityFinding:
+    """One capability an artifact needs that a review record does not list."""
+
+    namespace: str          # harness_tools | aq_commands | plugin_tools
+    name: str               # the command or tool
+    step_id: str            # the step that needs it
+    rule_id: str | None
+
+
+def required_capabilities(definition: Any) -> dict[str, set[str]]:
+    """What one artifact actually needs, split by capability namespace.
+
+    A ``command`` step needs its command in ``aq_commands``; an ``llm`` step
+    needs each name in its ``tool_use`` allowance, classified the same way
+    :func:`src.profiles.capabilities.classify_capability` classifies it, so a
+    plugin tool is not audited as an AQ command.
+    """
+    from src.profiles.capabilities import classify_capability
+
+    required: dict[str, set[str]] = {namespace: set() for namespace in _CAPABILITY_NAMESPACES}
+    for step in getattr(definition, "steps", {}).values():
+        command = getattr(step, "command", None)
+        if isinstance(command, str) and command:
+            required["aq_commands"].add(command)
+        for name in getattr(step, "tool_use", None) or ():
+            if isinstance(name, str) and name:
+                required[classify_capability(name)].add(name)
+    return required
+
+
+def audit_capabilities(definition: Any, policy: Any) -> tuple[CapabilityFinding, ...]:
+    """Every capability the artifact needs that *policy* does not grant.
+
+    *policy* is either a :class:`~src.profiles.capabilities.CapabilityPolicy`
+    or a plain mapping of namespace to names — the shape a reviewed fixture's
+    ``review.md`` records for the capabilities a human approved.
+
+    **One direction only** (child plan §4.1).  A finding means the artifact
+    exceeds what was approved.  A capability listed in the review but unused by
+    the artifact is not a finding, because this function must never be readable
+    as a way to *grant* something: a repository write is not a privilege grant.
+    """
+    granted: dict[str, frozenset[str]] = {}
+    for namespace in _CAPABILITY_NAMESPACES:
+        if isinstance(policy, Mapping):
+            names = policy.get(namespace) or ()
+        else:
+            names = getattr(policy, namespace, None) or ()
+        granted[namespace] = frozenset(str(name) for name in names)
+
+    findings: list[CapabilityFinding] = []
+    for step_id, step in sorted(getattr(definition, "steps", {}).items()):
+        needed: list[tuple[str, str]] = []
+        command = getattr(step, "command", None)
+        if isinstance(command, str) and command:
+            needed.append(("aq_commands", command))
+        for name in getattr(step, "tool_use", None) or ():
+            if isinstance(name, str) and name:
+                from src.profiles.capabilities import classify_capability
+
+                needed.append((classify_capability(name), name))
+        for namespace, name in needed:
+            if name in granted[namespace]:
+                continue
+            findings.append(
+                CapabilityFinding(
+                    namespace=namespace,
+                    name=name,
+                    step_id=step_id,
+                    rule_id=getattr(step, "rule", None),
+                )
+            )
+    return tuple(findings)
+
+
+
+# ---------------------------------------------------------------------------
+# §5.5 — cutover evidence report
+# ---------------------------------------------------------------------------
+
+
+def build_cutover_report(
+    *,
+    contract_fingerprint: str,
+    artifacts: Sequence[Mapping[str, Any]],
+    unresolved: Sequence[Mapping[str, Any]],
+    acknowledged_disabled: Sequence[Mapping[str, Any]],
+    pending_events: Sequence[Mapping[str, Any]],
+    active_v1_runs: Sequence[Mapping[str, Any]],
+    parity: Mapping[str, Any],
+    now: float | None = None,
+) -> dict[str, Any]:
+    """Render the complete, serialisable Package 6 cutover evidence.
+
+    The report only assembles evidence collected by the caller; it never
+    compiles, activates, replays, or otherwise alters fleet state.
+    """
+    generated_at = time.time() if now is None else now
+    rendered_artifacts = [
+        {
+            "playbook_id": row.get("playbook_id"),
+            "scope": row.get("scope", "system"),
+            "scope_identifier": row.get("scope_identifier"),
+            "artifact_sha256": row.get("artifact_sha256"),
+            "source_sha256": row.get("source_sha256"),
+            "activation_health": row.get("activation_health", row.get("health")),
+            "reviewed_by": row.get("reviewed_by"),
+            "reviewed_at": row.get("reviewed_at"),
+        }
+        for row in artifacts
+    ]
+    by_playbook: dict[str, int] = {}
+    received: list[float] = []
+    for event in pending_events:
+        playbook_id = str(event.get("playbook_id") or "unknown")
+        by_playbook[playbook_id] = by_playbook.get(playbook_id, 0) + 1
+        timestamp = event.get("received_at")
+        if isinstance(timestamp, (int, float)):
+            received.append(float(timestamp))
+
+    runs: list[dict[str, Any]] = []
+    running = paused = 0
+    run_started: list[float] = []
+    for row in active_v1_runs:
+        status = str(row.get("status") or "")
+        if status == "running":
+            running += 1
+        elif status == "paused":
+            paused += 1
+        else:
+            continue
+        runs.append(dict(row))
+        timestamp = row.get("started_at")
+        if isinstance(timestamp, (int, float)):
+            run_started.append(float(timestamp))
+
+    unexplained = int(parity.get("unexplained") or 0)
+    rollback_ready = bool(rendered_artifacts) and all(
+        row.get("v1_available", False) for row in artifacts
+    )
+    blocking_reasons: list[str] = []
+    if unresolved:
+        blocking_reasons.append(f"{len(unresolved)} unresolved migration inventory entries")
+    unhealthy = [row for row in rendered_artifacts if row.get("activation_health") != "ready"]
+    if unhealthy:
+        blocking_reasons.append(f"{len(unhealthy)} enabled activations are not ready")
+    if pending_events:
+        blocking_reasons.append(f"{len(pending_events)} pending events require an operator decision")
+    if runs:
+        blocking_reasons.append(f"{len(runs)} active V1 runs must drain before cutover")
+    if unexplained:
+        blocking_reasons.append(f"{unexplained} unexplained shadow-parity findings")
+    if parity.get("recorded") is False:
+        blocking_reasons.append("no committed shadow-parity report is available")
+    if not rollback_ready:
+        blocking_reasons.append("rollback artifacts are incomplete")
+
+    return {
+        "success": True,
+        "generated_at": generated_at,
+        "contract_fingerprint": contract_fingerprint,
+        "artifacts": rendered_artifacts,
+        "unresolved": [dict(row) for row in unresolved],
+        "acknowledged_disabled": [dict(row) for row in acknowledged_disabled],
+        "pending_events": {
+            "total": len(pending_events),
+            "oldest_age_seconds": max(0.0, generated_at - min(received)) if received else None,
+            "by_playbook": dict(sorted(by_playbook.items())),
+        },
+        "active_v1_runs": {
+            "running": running,
+            "paused": paused,
+            "oldest_age_seconds": max(0.0, generated_at - min(run_started)) if run_started else None,
+            "runs": runs,
+        },
+        "parity": dict(parity),
+        "rollback_ready": rollback_ready,
+        "cutover_eligible": not blocking_reasons,
+        "blocking_reasons": blocking_reasons,
+    }
+
+
+# ---------------------------------------------------------------------------
+# §5.5 — the release check
+# ---------------------------------------------------------------------------
+
+#: Where the reviewed fixtures live, relative to the repository root.
+REVIEWED_FIXTURE_ROOT = "tests/fixtures/playbooks/v2"
+
+
+@dataclass(frozen=True, slots=True)
+class StaleArtifact:
+    """One reviewed artifact that no longer matches the surface it compiled against."""
+
+    playbook_id: str
+    origin: str                      # "fixture" | "activation"
+    kind: str                        # "command" | "profile"
+    dependency: str                  # the command or profile that moved
+    reviewed_fingerprint: str | None
+    current_fingerprint: str | None
+
+    @property
+    def change(self) -> str:
+        return "removed" if self.current_fingerprint is None else "changed"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "playbook_id": self.playbook_id,
+            "origin": self.origin,
+            "kind": self.kind,
+            "dependency": self.dependency,
+            "change": self.change,
+            "reviewed_fingerprint": self.reviewed_fingerprint,
+            "current_fingerprint": self.current_fingerprint,
+            "message": (
+                f"{self.playbook_id}: {self.kind} {self.dependency!r} "
+                f"{self.change} since the artifact was reviewed; rebuild and re-review"
+            ),
+        }
+
+
+def _reviewed_fixture_artifacts(fixture_root: Path) -> dict[str, Any]:
+    """Every *approved* fixture artifact under *fixture_root*, by playbook id.
+
+    A fixture whose ``review.md`` does not record ``decision: approved`` is not
+    read: it is a recorded negative, no activation may reference it, and
+    holding it to the live contract surface would report drift in something
+    nothing runs.
+    """
+    from src.playbooks.definition import load_definition_json
+
+    artifacts: dict[str, Any] = {}
+    if not fixture_root.is_dir():
+        return artifacts
+    for directory in sorted(p for p in fixture_root.iterdir() if p.is_dir()):
+        artifact_path = directory / "artifact.json"
+        review_path = directory / "review.md"
+        if not artifact_path.is_file() or not review_path.is_file():
+            continue
+        frontmatter = _review_frontmatter(review_path)
+        if frontmatter.get("decision") != "approved":
+            continue
+        try:
+            artifacts[directory.name] = load_definition_json(
+                artifact_path.read_text(encoding="utf-8")
+            )
+        except Exception as exc:  # pragma: no cover - a malformed fixture is a test failure
+            logger.warning("release check: unreadable fixture %s: %s", artifact_path, exc)
+    return artifacts
+
+
+def _review_frontmatter(path: Path) -> dict[str, Any]:
+    text = path.read_text(encoding="utf-8")
+    if not text.startswith("---\n"):
+        return {}
+    end = text.find("\n---\n", 3)
+    if end == -1:
+        return {}
+    parsed = yaml.safe_load(text[4:end])
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _compare_fingerprints(
+    playbook_id: str,
+    origin: str,
+    kind: str,
+    reviewed: Mapping[str, str],
+    current: Mapping[str, str],
+) -> list[StaleArtifact]:
+    stale: list[StaleArtifact] = []
+    for dependency, reviewed_fingerprint in sorted(reviewed.items()):
+        current_fingerprint = current.get(dependency)
+        if current_fingerprint == reviewed_fingerprint:
+            continue
+        stale.append(
+            StaleArtifact(
+                playbook_id=playbook_id,
+                origin=origin,
+                kind=kind,
+                dependency=dependency,
+                reviewed_fingerprint=str(reviewed_fingerprint),
+                current_fingerprint=(
+                    None if current_fingerprint is None else str(current_fingerprint)
+                ),
+            )
+        )
+    return stale
+
+
+def current_command_fingerprints(contract_registry: Any) -> dict[str, str]:
+    """``{command: execution fingerprint}`` for everything the registry serves."""
+    fingerprints: dict[str, str] = {}
+    for name in sorted(contract_registry.names()):
+        registration = contract_registry.get(name)
+        if registration is None:  # pragma: no cover - names() and get() disagree
+            continue
+        fingerprints[name] = str(registration.contract.fingerprint())
+    return fingerprints
+
+
+def release_check(
+    *,
+    contract_registry: Any,
+    fixture_root: Path | str = REVIEWED_FIXTURE_ROOT,
+    profile_fingerprints: Mapping[str, str] | None = None,
+    activations: Sequence[Mapping[str, Any]] = (),
+) -> dict[str, Any]:
+    """Do the reviewed artifacts still match the surface they were compiled against?
+
+    §5.5's release gate, and deliberately **offline**: it performs no network
+    call, no LLM call and no compile.  It reads the checked-in fixtures and,
+    when given them, the enabled activation rows, and compares each artifact's
+    ``compiled_against`` against the in-process registries.
+
+    A changed *execution* fingerprint is drift; a presentation-only label change
+    is not, because the fingerprint is taken over the execution contract alone
+    (``src/commands/contracts/models.py::execution_fingerprint``).
+
+    *activations* are mappings shaped like the rows
+    ``playbook_migration_queries`` returns.  A row that is disabled,
+    acknowledged, or carries no artifact does not block: an operator has
+    already decided about it, and a decision made on purpose is not a
+    regression.
+    """
+    fixture_root = Path(fixture_root)
+    current_commands = current_command_fingerprints(contract_registry)
+    current_profiles = dict(profile_fingerprints or {})
+    stale: list[StaleArtifact] = []
+    checked: list[str] = []
+
+    for playbook_id, definition in _reviewed_fixture_artifacts(fixture_root).items():
+        checked.append(playbook_id)
+        compiled = definition.compiled_against
+        stale += _compare_fingerprints(
+            playbook_id, "fixture", "command", compiled.commands, current_commands
+        )
+        if profile_fingerprints is not None:
+            stale += _compare_fingerprints(
+                playbook_id, "fixture", "profile", compiled.profiles, current_profiles
+            )
+
+    for row in activations:
+        if not row.get("enabled", True) or row.get("acknowledged_by"):
+            continue
+        playbook_id = str(row.get("playbook_id") or "")
+        commands = row.get("artifact_commands") or {}
+        if not playbook_id or not commands:
+            continue
+        checked.append(playbook_id)
+        stale += _compare_fingerprints(
+            playbook_id, "activation", "command", commands, current_commands
+        )
+        profiles = row.get("artifact_profiles")
+        if profile_fingerprints is not None and profiles:
+            stale += _compare_fingerprints(
+                playbook_id, "activation", "profile", profiles, current_profiles
+            )
+
+    return {
+        "success": not stale,
+        "checked": sorted(set(checked)),
+        "registry_fingerprint": str(contract_registry.registry_fingerprint()),
+        "stale": [entry.to_dict() for entry in stale],
+    }
+
+
 __all__ = [
     "REASON_CODES",
+    "REVIEWED_FIXTURE_ROOT",
     "SHA256_RE",
+    "EXPECTED_DIFFERENCES",
+    "AuthzDecision",
+    "CapabilityFinding",
+    "CommandInvocation",
     "InventoryEntry",
     "MigrationInventory",
     "MigrationReason",
     "MigrationReasonError",
+    "ParityFinding",
     "PlaybookDisposition",
+    "ShadowObservation",
     "SourceRef",
+    "StaleArtifact",
+    "audit_capabilities",
     "build_inventory",
+    "build_cutover_report",
+    "compare",
+    "current_command_fingerprints",
     "find_embedded_action_block",
+    "release_check",
+    "required_capabilities",
 ]

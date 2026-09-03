@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 
 from src.orchestrator.core import _eval_pipeline_when
@@ -51,11 +50,19 @@ def test_validator_rejects_non_bool_is_null():
 
 
 def test_default_pipeline_legacy_triage_rule_absent():
-    text = Path("src/prompts/default_playbooks/default-pipeline.md").read_text(encoding="utf-8")
-    block = re.search(r"```json\n(.*?)\n```", text, re.S).group(1)
-    rules = {r["id"]: r for r in json.loads(block)["rules"]}
-    assert "worker-filed-triage" not in rules
-    assert "task-created-routing" not in rules
+    """The superseded routing rules are absent from the reviewed V2 artifact.
+
+    They used to be checked against the shipped Markdown's JSON block; since
+    Package 6 that block is gone and the artifact is what an activation runs.
+    """
+    artifact = json.loads(
+        Path(
+            "tests/fixtures/playbooks/v2/default-pipeline/artifact.json"
+        ).read_text(encoding="utf-8")
+    )
+    rule_ids = {rule["id"] for rule in artifact["rules"]}
+    assert "worker-filed-triage" not in rule_ids
+    assert "task-created-routing" not in rule_ids
 
 
 def test_any_clause_semantics():

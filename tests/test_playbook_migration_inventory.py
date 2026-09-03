@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from pathlib import Path
 from typing import ClassVar
 
 import pytest
@@ -237,25 +238,22 @@ async def test_inventory_is_read_only(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def _embedded_fence_line() -> int:
-    """Independently locate the action-graph fence in the shipped pipeline.
+#: The pre-Package-6 shipped pipeline, which still carries an action graph.
+#: Package 6 rewrote the shipped source as prose, so a *shipped* file is no
+#: longer an example of this condition; the frozen snapshot is.
+FROZEN_V1_PIPELINE = (
+    Path(__file__).parent / "fixtures" / "playbooks" / "v1" / "default-pipeline.md"
+)
 
-    The child plan's §5.1 case 4 pinned line 41; the shipped file has moved
-    since the plan was drafted, so the assertion recomputes the expected line
-    rather than carrying a stale literal (recorded in §2's reconciliation).
+
+def _embedded_fence_line(path=FROZEN_V1_PIPELINE) -> int:
+    """Independently locate the action-graph fence in *path*.
+
+    The child plan's §5.1 case 4 pinned line 41; the file has moved since the
+    plan was drafted, so the assertion recomputes the expected line rather than
+    carrying a stale literal (recorded in §2's reconciliation).
     """
-    import os
-
-    import src.vault as vault_mod
-
-    path = os.path.join(
-        os.path.dirname(vault_mod.__file__),
-        "prompts",
-        "default_playbooks",
-        "default-pipeline.md",
-    )
-    with open(path, encoding="utf-8") as handle:
-        lines = handle.read().splitlines()
+    lines = Path(path).read_text(encoding="utf-8").splitlines()
     for index, line in enumerate(lines):
         if line.strip() != "```json":
             continue
@@ -270,19 +268,48 @@ def _embedded_fence_line() -> int:
             continue
         if isinstance(payload, dict) and isinstance(payload.get("rules"), list):
             return index + 1
-    raise AssertionError("no action-graph fence found in default-pipeline.md")
+    raise AssertionError(f"no action-graph fence found in {path}")
 
 
 @pytest.mark.asyncio
 async def test_embedded_action_block_is_question_required(tmp_path):
-    inv = await _inventory(_vault_root(tmp_path))
-    entry = _entry(inv, "default-pipeline")
+    """A vault copy that still carries a machine graph is question_required.
+
+    Since Package 6 the *shipped* pipeline is prose, so this condition is set up
+    from the frozen pre-rewrite source — which is exactly the case that matters
+    operationally, because `ensure_default_playbooks` never overwrites a vault
+    copy and every existing install still has one of these.
+    """
+    vault_root = _vault_root(tmp_path)
+    _write_playbook(
+        vault_root,
+        "system/playbooks",
+        "legacy-graph.md",
+        FROZEN_V1_PIPELINE.read_text(encoding="utf-8").replace(
+            "id: default-pipeline", "id: legacy-graph", 1
+        ),
+    )
+    inv = await _inventory(vault_root)
+    entry = _entry(inv, "legacy-graph")
     assert entry.has_embedded_action_block is True
     assert entry.disposition == "question_required"
     assert "embedded_action_block" in _codes(entry)
-    reason = next(r for r in entry.reasons if r.code == "embedded_action_block")
-    assert reason.source_line == _embedded_fence_line()
+    assert reason_line(entry) == _embedded_fence_line()
     _seen("embedded_action_block")
+
+
+def reason_line(entry) -> int | None:
+    reason = next(r for r in entry.reasons if r.code == "embedded_action_block")
+    return reason.source_line
+
+
+@pytest.mark.asyncio
+async def test_shipped_pipeline_no_longer_has_an_action_block(tmp_path):
+    """Package 6's whole point, asserted where the inventory reports it."""
+    inv = await _inventory(_vault_root(tmp_path))
+    entry = _entry(inv, "default-pipeline")
+    assert entry.has_embedded_action_block is False
+    assert "embedded_action_block" not in _codes(entry)
 
 
 @pytest.mark.asyncio
@@ -301,8 +328,23 @@ async def test_output_shape_fences_are_not_action_blocks(tmp_path):
 
 @pytest.mark.asyncio
 async def test_scope_conflict_detected(tmp_path):
-    inv = await _inventory(_vault_root(tmp_path))
-    entry = _entry(inv, "coding-reflection")
+    """Frontmatter scope disagreeing with the install path is a conflict.
+
+    `coding-reflection` used to be the live example: it declared
+    `agent-type:coding` while only ever installing under `claude-opus/`.
+    Package 6 §5.2 T-6 corrected the frontmatter, so the condition is now
+    constructed rather than shipped — see
+    `test_shipped_reflection_scope_matches_its_install_path` below.
+    """
+    vault_root = _vault_root(tmp_path)
+    _write_playbook(
+        vault_root,
+        "agent-types/claude-opus/playbooks",
+        "mislabelled.md",
+        _source("mislabelled", scope="agent-type:coding"),
+    )
+    inv = await _inventory(vault_root)
+    entry = _entry(inv, "mislabelled")
     assert entry.scope == "agent_type"
     assert entry.scope_identifier == "claude-opus"
     assert entry.disposition == "question_required"
@@ -310,6 +352,15 @@ async def test_scope_conflict_detected(tmp_path):
     assert "agent-type:coding" in reason.message
     assert "claude-opus" in reason.message
     _seen("scope_conflict")
+
+
+@pytest.mark.asyncio
+async def test_shipped_reflection_scope_matches_its_install_path(tmp_path):
+    inv = await _inventory(_vault_root(tmp_path))
+    entry = _entry(inv, "coding-reflection")
+    assert entry.scope == "agent_type"
+    assert entry.scope_identifier == "claude-opus"
+    assert "scope_conflict" not in _codes(entry)
 
 
 # ---------------------------------------------------------------------------

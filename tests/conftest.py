@@ -262,7 +262,17 @@ async def internal_plugins_handler(tmp_path: Path):
 # test_review_pipeline_e2e.py, and test_review_reopen_cascade.py.
 # ---------------------------------------------------------------------------
 
+# The shipped Markdown is a prose authoring source since Package 6 and carries
+# no machine graph, so `PipelineEngine` — the V1 dispatch harness these suites
+# exercise — is fed the *frozen* pre-rewrite graph instead.  That is deliberate:
+# these tests assert V1 behaviour, and V1 behaviour is exactly what the snapshot
+# preserves.  See tests/fixtures/playbooks/v1/README.md.
 DEFAULT_PIPELINE_PATH = (
+    Path(__file__).parent / "fixtures" / "playbooks" / "v1" / "default-pipeline.md"
+)
+
+#: The live shipped authoring source — prose, no action graph.
+SHIPPED_PIPELINE_PATH = (
     Path(__file__).parent.parent
     / "src"
     / "prompts"

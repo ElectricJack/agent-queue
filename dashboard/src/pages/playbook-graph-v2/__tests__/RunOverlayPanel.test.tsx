@@ -23,7 +23,9 @@ describe("RunOverlayPanel", () => {
     expect(summary.getByText("run-42")).toBeInTheDocument();
     expect(summary.getByText("completed")).toBeInTheDocument();
     expect(summary.getByText("sweep-on-spec-approved")).toBeInTheDocument();
-    expect(summary.getByText("a1a1a1a1a1a1")).toBeInTheDocument();
+    expect(
+      summary.getByText(runOverlay.artifact.artifact_sha256.replace("sha256:", "").slice(0, 12)),
+    ).toBeInTheDocument();
     expect(summary.getByText("5m 0s")).toBeInTheDocument();
 
     cleanup();

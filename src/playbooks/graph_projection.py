@@ -800,6 +800,98 @@ def _ai_detail(step: Any, profiles: Any) -> dict | None:
     }
 
 
+def _idempotency_badge(step: Any, registration: Any) -> dict | None:
+    """The compact card's idempotency chip for a command step.
+
+    The child plan's compact-card contract (§6.2) puts idempotency on every
+    command card.  It has two sources and they are not interchangeable: a step
+    may author its own ``idempotency_key``, which overrides whatever the
+    contract declares, and otherwise the registered contract's mode is the
+    answer.  ``none`` is stated rather than omitted — "running this twice does
+    it twice" is exactly what an operator needs before re-dispatching an event
+    — but an *unregistered* command has no answer at all: the node already
+    carries an ``unknown_command`` diagnostic, and claiming "none" there would
+    be a fact the projection does not have.
+    """
+    if not isinstance(step, CommandStep):
+        return None
+    if step.idempotency_key is not None:
+        return {"kind": "idempotency", "label": "Idempotent", "value": "keyed by this step"}
+    if registration is None:
+        return None
+    spec = registration.contract.execution.idempotency
+    value = f"keyed on {spec.key_field}" if spec.mode == "keyed" else spec.mode
+    return {"kind": "idempotency", "label": "Idempotent", "value": value}
+
+
+def _badges(
+    step: Any,
+    *,
+    registration: Any,
+    retry: Any,
+    diagnostics: list[dict],
+) -> list[dict]:
+    """The compact card's chips for one step, in reading order (§6.2).
+
+    Everything a card shows about *what data* a step reads and writes comes
+    from its explanation payload — these chips are the execution configuration
+    beside it: who runs it, what it costs, how it retries, whether running it
+    twice is safe.  The chip kinds are the frozen ``NodeBadgeDTO.kind`` set,
+    so a new fact reuses an existing kind rather than widening a locked DTO.
+    """
+    badges: list[dict] = []
+    if isinstance(step, (LlmStep, AgentTaskStep)):
+        badges.append({"kind": "profile", "label": "Profile", "value": step.profile_id})
+    if isinstance(step, LlmStep):
+        badges.append(
+            {
+                "kind": "budget",
+                "label": "Budget",
+                "value": f"{step.budget.max_calls} call(s), "
+                f"{step.budget.max_total_tokens} tokens",
+            }
+        )
+        if step.tool_use.enabled:
+            badges.append(
+                {
+                    "kind": "capability",
+                    "label": "Tools",
+                    "value": str(len(step.tool_use.aq_commands) + len(step.tool_use.plugin_tools)),
+                }
+            )
+    if isinstance(step, AgentTaskStep):
+        badges.append(
+            {
+                "kind": "wait",
+                "label": "Waits",
+                "value": "for completion" if step.wait_for_completion else "no",
+            }
+        )
+        # Whether the rule takes the child down with it is a delegation fact an
+        # operator reads off the card, not a detail of the wait.
+        badges.append(
+            {
+                "kind": "wait",
+                "label": "On cancel",
+                "value": "cancels the child" if step.cancel_child else "leaves the child running",
+            }
+        )
+    if isinstance(step, WaitStep):
+        badges.append({"kind": "wait", "label": "Waits for", "value": step.wait_kind})
+    if isinstance(step, ForEachStep):
+        badges.append({"kind": "loop", "label": "Failure policy", "value": step.failure_policy})
+    idempotency_badge = _idempotency_badge(step, registration)
+    if idempotency_badge is not None:
+        badges.append(idempotency_badge)
+    if getattr(step, "timeout_seconds", None):
+        badges.append({"kind": "timeout", "label": "Timeout", "value": f"{step.timeout_seconds}s"})
+    if retry is not None:
+        badges.append({"kind": "retry", "label": "Attempts", "value": str(retry.max_attempts)})
+    if diagnostics:
+        badges.append({"kind": "diagnostic", "label": "Errors", "value": str(len(diagnostics))})
+    return badges
+
+
 def _node(
     step_id: str,
     step: Any,
@@ -891,50 +983,7 @@ def _node(
             "timeout_seconds": step.timeout_seconds,
             "timeout_step_id": step.transitions.get("timed_out"),
         }
-    badges = []
-    if isinstance(step, (LlmStep, AgentTaskStep)):
-        badges.append({"kind": "profile", "label": "Profile", "value": step.profile_id})
-    if isinstance(step, LlmStep):
-        badges.append(
-            {
-                "kind": "budget",
-                "label": "Budget",
-                "value": f"{step.budget.max_calls} call(s), "
-                f"{step.budget.max_total_tokens} tokens",
-            }
-        )
-        if step.tool_use.enabled:
-            badges.append(
-                {
-                    "kind": "capability",
-                    "label": "Tools",
-                    "value": str(len(step.tool_use.aq_commands) + len(step.tool_use.plugin_tools)),
-                }
-            )
-    if isinstance(step, AgentTaskStep):
-        badges.append(
-            {
-                "kind": "wait",
-                "label": "Waits",
-                "value": "for completion" if step.wait_for_completion else "no",
-            }
-        )
-    if isinstance(step, WaitStep):
-        badges.append({"kind": "wait", "label": "Waits for", "value": step.wait_kind})
-    if isinstance(step, ForEachStep):
-        badges.append(
-            {"kind": "loop", "label": "Failure policy", "value": step.failure_policy}
-        )
-    if getattr(step, "timeout_seconds", None):
-        badges.append(
-            {"kind": "timeout", "label": "Timeout", "value": f"{step.timeout_seconds}s"}
-        )
-    if retry is not None:
-        badges.append(
-            {"kind": "retry", "label": "Attempts", "value": str(retry.max_attempts)}
-        )
-    if diagnostics:
-        badges.append({"kind": "diagnostic", "label": "Errors", "value": str(len(diagnostics))})
+    badges = _badges(step, registration=registration, retry=retry, diagnostics=diagnostics)
     return {
         "id": step_id,
         "rule_id": rule.id,

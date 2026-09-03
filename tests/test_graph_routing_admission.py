@@ -83,7 +83,8 @@ async def wired(request, tmp_path, monkeypatch):
         on_trigger=orch._on_playbook_trigger,
     )
     default = compile_pipeline(
-        Path("src/prompts/default_playbooks/default-pipeline.md").read_text()
+        # Frozen pre-Package-6 V1 graph; the shipped source is prose now.
+        Path("tests/fixtures/playbooks/v1/default-pipeline.md").read_text()
     ).playbook
     custom = compile_pipeline(PROJECT_ROUTING_PIPELINE).playbook
     for playbook in (default, custom):

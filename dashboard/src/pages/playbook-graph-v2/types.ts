@@ -9,7 +9,12 @@ import type {
 /** Fixed card geometry. The backend owns rank and order (`GraphLayoutDTO`);
  *  the frontend owns pixels and nothing else. */
 export const NODE_WIDTH = 264;
-export const NODE_HEIGHT = 156;
+/** Tall enough for the compact-card contract at its fullest: title, kind, the
+ *  two-line intent, the bounded key-input/output line, a run-state row, three
+ *  wrapped rows of chips, and the outcome ports pinned to the bottom edge. The
+ *  card clips what does not fit and the ports sit at `mt-auto`, so a height
+ *  that is too small loses the ports rather than growing. */
+export const NODE_HEIGHT = 208;
 export const COLUMN_GAP = 72;
 export const ROW_GAP = 88;
 export const PADDING = 40;

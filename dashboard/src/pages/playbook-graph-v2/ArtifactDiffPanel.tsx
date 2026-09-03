@@ -82,16 +82,38 @@ function ruleRows(rules: RuleDiffDTO[]): DiffRow[] {
       const notes = [];
       if (added.length) notes.push(`steps added: ${added.join(", ")}`);
       if (removed.length) notes.push(`steps removed: ${removed.join(", ")}`);
+      // When the rule's own fields are itemised below, they carry the values —
+      // repeating the event type here would print the same move twice.
+      const itemised = (rule.field_changes ?? []).length > 0;
       return {
         key: `rule:${rule.rule_id}`,
         kind: "rule",
         identity: rule.rule_id,
         change: rule.change,
-        before: literal(rule.event_type_before),
-        after: literal(rule.event_type_after),
+        before: itemised ? null : literal(rule.event_type_before),
+        after: itemised ? null : literal(rule.event_type_after),
         note: notes.join("; ") || undefined,
       };
     });
+}
+
+/** A rule's own fields, itemised the way a step's are. A trigger filter or
+ *  condition moving raises `semantic_change_count` and forces an activation
+ *  acknowledgement, so the operator has to see which field moved and to what,
+ *  not just that something did. */
+function ruleFieldRows(rules: RuleDiffDTO[], executable: boolean): DiffRow[] {
+  return rules.flatMap((rule) =>
+    (rule.field_changes ?? [])
+      .filter((field) => (field.executable !== false) === executable)
+      .map((field) => ({
+        key: `rule:${rule.rule_id}${field.path}`,
+        kind: "rule field",
+        identity: `${rule.rule_id}${field.path}`,
+        change: fieldChange(field),
+        before: literal(valueText(field.before)),
+        after: literal(valueText(field.after)),
+      })),
+  );
 }
 
 function edgeRows(edges: EdgeDiffDTO[]): DiffRow[] {
@@ -130,16 +152,18 @@ export default function ArtifactDiffPanel({ diff }: { diff?: PlaybookArtifactDif
   if (!diff)
     return <p className="text-sm text-gray-500">Select an artifact to review its semantic diff.</p>;
   const steps = diff.steps ?? [];
+  const rules = diff.rules ?? [];
   // A contract-only or structural change increments `semantic_change_count`
   // and demands an acknowledgement without touching a single step field, so
   // every semantic collection belongs in this list, not just the steps.
   const executable = [
     ...stepRows(steps, true),
-    ...ruleRows(diff.rules ?? []),
+    ...ruleRows(rules),
+    ...ruleFieldRows(rules, true),
     ...edgeRows(diff.edges ?? []),
     ...contractRows(diff.contracts ?? []),
   ];
-  const presentation = stepRows(steps, false);
+  const presentation = [...stepRows(steps, false), ...ruleFieldRows(rules, false)];
   const diagnostics = diff.diagnostics ?? [];
   // `activation_blockers` is derived from the diagnostics, so anything the
   // banner already shows would otherwise be printed twice.

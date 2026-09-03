@@ -126,7 +126,7 @@ describe("PlaybookSemanticGraphCanvas", () => {
       "already open",
     );
     expect(screen.getByTestId("edge-sweep-on-spec-approved::check-gate::default")).toHaveTextContent(
-      "otherwise",
+      "Default",
     );
   });
 

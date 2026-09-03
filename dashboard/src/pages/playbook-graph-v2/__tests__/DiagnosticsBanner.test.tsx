@@ -6,21 +6,40 @@ import { graph } from "./fixtures";
 
 afterEach(cleanup);
 
+/** One diagnostic of every severity. The error is the projection's own — the
+ *  stub registry knows none of the artifact's commands — and the other three
+ *  are severities `project_graph` does not raise for this artifact but the
+ *  banner has to rank and render. */
 const ALL = [
-  ...graph.diagnostics!,
+  graph.diagnostics![0]!,
+  {
+    severity: "warning" as const,
+    code: "stale_contract",
+    message: "gate_create's contract changed since this artifact was compiled",
+    rule_id: "sweep-on-spec-approved",
+    step_id: "open-gate",
+    source: null,
+  },
   { severity: "question" as const, code: "compile_question", message: "Unresolved question on check-gate", rule_id: null, step_id: "check-gate", source: null },
-  { severity: "error" as const, code: "invalid_reference", message: "downstream.tasks is not declared", rule_id: null, step_id: "for-each-task", source: null },
+  {
+    severity: "info" as const,
+    code: "activation_disabled",
+    message: "This artifact is not the active one for its scope",
+    rule_id: null,
+    step_id: null,
+    source: null,
+  },
 ];
 
 describe("DiagnosticsBanner", () => {
-  it("shows compile questions, invalid references, stale contracts and disabled activations", () => {
+  it("shows unknown commands, compile questions, stale contracts and disabled activations", () => {
     render(<DiagnosticsBanner diagnostics={ALL} />);
     const banner = within(screen.getByRole("region", { name: "Graph diagnostics" }));
-    expect(banner.getByText(/is not declared/)).toBeInTheDocument();
+    expect(banner.getByText(/is not registered/)).toBeInTheDocument();
     expect(banner.getByText(/Unresolved question on check-gate/)).toBeInTheDocument();
     expect(banner.getByText(/contract changed since this artifact was compiled/)).toBeInTheDocument();
     expect(banner.getByText(/not the active one for its scope/)).toBeInTheDocument();
-    for (const code of ["invalid_reference", "compile_question", "stale_contract", "activation_disabled"]) {
+    for (const code of ["unknown_command", "compile_question", "stale_contract", "activation_disabled"]) {
       expect(banner.getAllByText(code).length).toBeGreaterThan(0);
     }
   });

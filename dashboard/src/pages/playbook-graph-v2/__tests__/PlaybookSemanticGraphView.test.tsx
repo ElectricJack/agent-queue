@@ -4,7 +4,7 @@ import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import PlaybookSemanticGraphView from "../PlaybookSemanticGraphView";
-import { foreignRunOverlay, graph, runOverlay } from "./fixtures";
+import { activeGraph, artifact, foreignRunOverlay, graph, runOverlay } from "./fixtures";
 
 const api = vi.hoisted(() => ({
   useGraph: vi.fn(),
@@ -58,11 +58,21 @@ afterEach(cleanup);
 
 describe("PlaybookSemanticGraphView", () => {
   it("shows the pinned artifact hash, version, health and activation state", () => {
+    api.useGraph.mockReturnValue(ok(activeGraph));
     render(<PlaybookSemanticGraphView playbookId="default-pipeline" />);
-    expect(screen.getByTitle(graph.artifact.artifact_sha256)).toHaveTextContent("a1a1a1a1a1a1");
-    expect(screen.getByText("v5")).toBeInTheDocument();
-    expect(screen.getByText("question_required")).toBeInTheDocument();
+    const short = artifact.artifact_sha256.replace("sha256:", "").slice(0, 12);
+    expect(screen.getByTitle(artifact.artifact_sha256)).toHaveTextContent(short);
+    expect(screen.getByText(`v${artifact.version}`)).toBeInTheDocument();
+    expect(screen.getByText("ready")).toBeInTheDocument();
     expect(screen.getByText("active")).toBeInTheDocument();
+  });
+
+  it("reports the projection's own activation rather than assuming an active one", () => {
+    // `project_graph` was called with no activation row, so the response
+    // carries `ActivationStateDTO`'s disabled default.
+    render(<PlaybookSemanticGraphView playbookId="default-pipeline" />);
+    expect(screen.getByText("disabled")).toBeInTheDocument();
+    expect(screen.getByText("not the active artifact")).toBeInTheDocument();
   });
 
   it("says so when the projected artifact is not the active one", () => {
@@ -96,7 +106,7 @@ describe("PlaybookSemanticGraphView", () => {
     render(<PlaybookSemanticGraphView playbookId="default-pipeline" />);
     expect(
       within(screen.getByRole("region", { name: "Graph diagnostics" })).getByText(
-        /contract changed since this artifact was compiled/,
+        /Command 'gate_create' is not registered/,
       ),
     ).toBeInTheDocument();
     for (const node of graph.nodes!) {

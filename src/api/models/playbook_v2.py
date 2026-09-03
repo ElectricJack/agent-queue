@@ -581,6 +581,13 @@ class RuleDiffDTO(V2Model):
     event_type_after: str | None = None
     step_ids_added: list[str] = []
     step_ids_removed: list[str] = []
+    # Every field the two artifacts' copies of this rule disagree on, in the
+    # same shape as ``StepDiffDTO.field_changes``.  A rule's trigger filter or
+    # condition moving counts towards ``semantic_change_count`` and forces an
+    # activation acknowledgement, so it has to be itemised, not just counted.
+    # Empty for an added or removed rule: its whole body is implied by the
+    # change tone and counting it would move the semantic count.
+    field_changes: list[FieldChangeDTO] = []
 
 
 class ContractChangeDTO(V2Model):
