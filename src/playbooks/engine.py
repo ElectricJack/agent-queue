@@ -31,16 +31,20 @@ from typing import Any
 
 from src.commands.authorization import authorize_command
 from src.commands.contracts.models import OutcomeClass
+from src.llm.client import LLMToolTurn, LLMToolTurnBoundaryError
+from src.llm.types import TokenUsage
 from src.playbooks.artifact_ref import ArtifactRef
 from src.playbooks.definition import (
     CommandStep,
     ForEachStep,
+    LlmStep,
     PlaybookDefinition,
     Rule,
     WaitStep,
     step_targets,
 )
 from src.playbooks.executors import executor_for
+from src.playbooks.executors.llm import resolve_profile_principal
 from src.playbooks.executors.base import (
     ENGINE_RESERVED_OUTCOMES,
     GOTO_CAPABLE_STEP_KINDS,
@@ -59,9 +63,12 @@ from src.playbooks.expressions import (
 )
 from src.playbooks.receipts import StepReceipt, idempotency_key, transition_id
 from src.playbooks.run_state import (
+    DuplicateAttempt,
     DuplicateRun,
     IllegalLifecycleTransition,
     LoopFrame,
+    OperatorDecision,
+    RunBudget,
     RunLifecycle,
     RunSnapshot,
     SnapshotVersionConflict,
@@ -259,6 +266,9 @@ class _Attempt:
     wait_id: str | None = None
     loop_frame: LoopFrame | None = None
     clear_loop: bool = False
+    usage: TokenUsage | None = None
+    llm_calls: int = 0
+    boundary_receipts: list[StepReceipt] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -279,9 +289,9 @@ class _RunControl:
     """
 
     run_id: str
-    #: Serialises the two writers of the cancellation boundary: the walk, when
-    #: its executor gives the run back, and ``cancel`` itself, when the grace
-    #: window expires first.  Exactly one of them writes it.
+    #: Serialises cancellation intent/finalization with a completed LLM turn
+    #: entering durable storage.  Once a turn callback owns this lock, grace
+    #: expiry cannot overtake and discard that completed turn.
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     #: Set once that boundary is durable, by whichever side wrote it.
     settled: asyncio.Event = field(default_factory=asyncio.Event)
@@ -296,6 +306,11 @@ class _RunControl:
     #: engine at most one signal per in-flight step, so a second ``cancel``
     #: call joins the first one's grace window instead of signalling again.
     signalled: bool = False
+    #: Set before ``cancel`` waits for ``lock``.  A completed LLM callback
+    #: that already owns the lock uses this request to persist cancellation
+    #: itself rather than returning control for another provider call.
+    pending_cancel: tuple[Any, str] | None = None
+    cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
     cancellation: str | None = None
     final: RunSnapshot | None = None
     receipt: StepReceipt | None = None
@@ -485,6 +500,122 @@ class PlaybookEngine:
         mode = ExecutionMode(snapshot.mode)
         artifact_ref = await self._ref_for(snapshot)
         artifact = self._load(artifact_ref)
+
+        if snapshot.operator_decision is not None:
+            if not isinstance(cause, OperatorResolution):
+                return RunOutcome(
+                    run_id,
+                    RunLifecycle.PAUSED,
+                    "operator_decision_required",
+                    snapshot,
+                )
+            if cause.kind not in {"retry", "fail", "cancel"}:
+                return RunOutcome(run_id, RunLifecycle.PAUSED, "invalid_resolution", snapshot)
+            decision = snapshot.operator_decision
+            now = self.services.clock()
+            lifecycle = {
+                "retry": RunLifecycle.RUNNING,
+                "fail": RunLifecycle.FAILED,
+                "cancel": RunLifecycle.CANCELLED,
+            }[cause.kind]
+            resolved = replace(
+                snapshot,
+                lifecycle=lifecycle,
+                operator_decision=None,
+                error=None if cause.kind == "retry" else f"operator resolved: {cause.kind}",
+                error_code=None if cause.kind == "retry" else cause.kind,
+                updated_at=now,
+                completed_at=now if lifecycle in {RunLifecycle.FAILED, RunLifecycle.CANCELLED} else None,
+            )
+            resolution_receipt = StepReceipt(
+                receipt_id=uuid.uuid4().hex,
+                run_id=snapshot.run_id,
+                artifact_sha256=snapshot.artifact_sha256,
+                rule_id=snapshot.rule_id,
+                step_id=decision.step_id,
+                step_kind="llm",
+                receipt_kind="operator_decision",
+                turn_index=decision.turn_index,
+                operator_decision_id=decision.decision_id,
+                outcome="success" if cause.kind == "retry" else "failure",
+                started_at=now,
+                snapshot_version=snapshot.version + 1,
+                iteration=snapshot.loop.index if snapshot.loop else -1,
+                attempt=decision.attempt,
+                principal=self._principal_projection(principal),
+                result={"resolution": cause.kind},
+                completed_at=now,
+            )
+            snapshot = await repository.commit_boundary(resolved, resolution_receipt)
+            if snapshot.is_terminal:
+                return RunOutcome(
+                    run_id,
+                    snapshot.lifecycle,
+                    cause.kind,
+                    snapshot,
+                    (resolution_receipt,),
+                )
+            walked = await self._walk(
+                snapshot, artifact, artifact_ref, principal, mode, repository
+            )
+            return replace(
+                walked,
+                receipts=(resolution_receipt,) + walked.receipts,
+            )
+
+        current_step = artifact.steps.get(snapshot.current_step_id or "")
+        if snapshot.lifecycle is RunLifecycle.RUNNING and isinstance(current_step, LlmStep):
+            step_id = snapshot.current_step_id or ""
+            iteration = self._iteration_of(snapshot, step_id)
+            attempt_number = self._next_attempt(snapshot, step_id, iteration)
+            relevant = [
+                int(turn.get("turn_index", -1))
+                for turn in snapshot.llm_turns
+                if turn.get("step_id") == step_id
+                and int(turn.get("iteration", -1)) == iteration
+                and int(turn.get("attempt", 1)) == attempt_number
+            ]
+            effective_principal, _diagnostics = await resolve_profile_principal(
+                current_step, self.services, principal
+            )
+            attempt = _Attempt(
+                snapshot=snapshot,
+                step_id=step_id,
+                step=current_step,
+                started_at=self.services.clock(),
+                # Do not attribute an ambiguous prior call to a broader
+                # caller when the configured profile cannot be re-resolved.
+                # A null projection is the fail-closed audit identity.
+                principal=effective_principal,
+                iteration=iteration,
+                attempt=attempt_number,
+                idempotency_key=idempotency_key(
+                    snapshot.run_id,
+                    step_id,
+                    iteration,
+                    attempt_number,
+                ),
+            )
+            await self._commit_llm_turn(
+                attempt,
+                LLMToolTurn(
+                    kind="interrupted",
+                    turn_index=max(relevant, default=-1) + 1,
+                    tool_call_ids=(),
+                    results_digest=hashlib.sha256(b"[]").hexdigest(),
+                    usage=TokenUsage(),
+                ),
+                artifact_ref,
+                repository,
+            )
+            return RunOutcome(
+                run_id,
+                RunLifecycle.PAUSED,
+                "operator_decision_required",
+                attempt.snapshot,
+                tuple(attempt.boundary_receipts),
+            )
+
         snapshot = replace(
             snapshot,
             lifecycle=RunLifecycle.RUNNING,
@@ -524,42 +655,64 @@ class PlaybookEngine:
         repository = self.runs
         if repository is None:
             raise RuntimeError("cancel requires a run repository")
+        control = self._live.get(run_id)
+        # Latch synchronously, before the first repository await.  A tool-turn
+        # callback already in progress observes this even if its commit wins
+        # the scheduler race with cancel's initial snapshot read.
+        if control is not None and control.pending_cancel is None:
+            control.pending_cancel = (principal, reason)
+            control.cancel_event.set()
         snapshot = await repository.load_run(run_id)
         if snapshot is None:
             return RunOutcome(run_id, RunLifecycle.FAILED, "unknown_run")
+        if control is not None and self._settled_cancellation(control) is not None:
+            return await self._await_cancellation(control, principal, repository)
         if snapshot.is_terminal:
             return self._already_terminal(snapshot)
 
-        if snapshot.lifecycle is RunLifecycle.PAUSED:
-            return await self._cancel_paused(snapshot, repository, principal, reason)
-
-        control = self._live.get(run_id)
-        # Already ``cancelling`` means the intent is durable and some caller
-        # is already inside the grace window.  Recording it a second time
-        # would advance the run row underneath that caller's walk, and the
-        # walk's own boundary would then lose its CAS.
-        if snapshot.lifecycle is not RunLifecycle.CANCELLING:
-            try:
-                snapshot = await self._request_cancel(
+        async def persist_intent() -> RunOutcome | None:
+            nonlocal snapshot
+            while True:
+                if snapshot.is_terminal:
+                    return self._already_terminal(snapshot)
+                if snapshot.lifecycle is RunLifecycle.PAUSED:
+                    return await self._cancel_paused(
+                        snapshot, repository, principal, reason
+                    )
+                # Already ``cancelling`` means another caller made the intent
+                # durable.  Rewriting it would only advance the version under
+                # the walk a second time.
+                if snapshot.lifecycle is RunLifecycle.CANCELLING:
+                    return None
+                snapshot = await self._request_cancel_latest(
                     repository, snapshot, reason=reason, principal=principal
                 )
-            except IllegalLifecycleTransition:
-                refreshed = await repository.load_run(run_id)
-                return self._already_terminal(refreshed or snapshot)
+
         if control is None:
+            completed = await persist_intent()
+            if completed is not None:
+                return completed
             # No walk here.  Whichever process owns the run reads the intent
             # off the snapshot at its next boundary.
             return RunOutcome(run_id, snapshot.lifecycle, "cancel_requested", snapshot)
-        control.cancel_snapshot = snapshot
 
-        in_flight = control.in_flight
-        if in_flight is None and not control.signalled:
-            return RunOutcome(run_id, snapshot.lifecycle, "cancel_requested", snapshot)
-        if in_flight is not None and not control.signalled:
-            control.signalled = True
-            executor, step, ctx = in_flight
-            if isinstance(executor, Cancellable):
-                await executor.request_cancel(step, ctx)
+        async with control.lock:
+            if self._settled_cancellation(control) is None:
+                completed = await persist_intent()
+                if completed is not None:
+                    return completed
+                control.cancel_snapshot = snapshot
+
+                in_flight = control.in_flight
+                if in_flight is None and not control.signalled:
+                    return RunOutcome(
+                        run_id, snapshot.lifecycle, "cancel_requested", snapshot
+                    )
+                if in_flight is not None and not control.signalled:
+                    control.signalled = True
+                    executor, step, ctx = in_flight
+                    if isinstance(executor, Cancellable):
+                        await executor.request_cancel(step, ctx)
         return await self._await_cancellation(control, principal, repository)
 
     async def _await_cancellation(
@@ -676,6 +829,27 @@ class PlaybookEngine:
             requested_by=getattr(principal, "describe", lambda: "operator")(),
         )
 
+    async def _request_cancel_latest(
+        self,
+        repository: Any,
+        snapshot: RunSnapshot,
+        *,
+        reason: str,
+        principal: Any,
+    ) -> RunSnapshot:
+        """Persist intent against the latest live version, or return its new state."""
+        while snapshot.lifecycle is RunLifecycle.RUNNING:
+            try:
+                return await self._request_cancel(
+                    repository, snapshot, reason=reason, principal=principal
+                )
+            except (SnapshotVersionConflict, IllegalLifecycleTransition):
+                refreshed = await repository.load_run(snapshot.run_id)
+                if refreshed is None:  # pragma: no cover - live runs are not deleted
+                    raise RuntimeError(f"run {snapshot.run_id!r} disappeared")
+                snapshot = refreshed
+        return snapshot
+
     @staticmethod
     def _already_terminal(snapshot: RunSnapshot) -> RunOutcome:
         """V1's refusal, verbatim — ``playbook_commands.py:544``."""
@@ -789,12 +963,13 @@ class PlaybookEngine:
                 receipts.append(receipt)
                 outcome = "state_limit_exceeded"
                 break
-            snapshot, receipt, outcome = await self._advance_one_step(
+            snapshot, step_receipts, outcome = await self._advance_one_step(
                 snapshot, artifact, artifact_ref, principal, mode, repository
             )
-            if receipt is not None:
+            for receipt in step_receipts:
                 receipts.append(receipt)
-                await self._emit(EVENT_STEP_COMPLETED, snapshot, step_id=receipt.step_id)
+                if receipt.receipt_kind == "step":
+                    await self._emit(EVENT_STEP_COMPLETED, snapshot, step_id=receipt.step_id)
             if snapshot.lifecycle is RunLifecycle.PAUSED and snapshot.pending_wait_claims:
                 # Registration and inbox ingestion serialize per playbook, so
                 # an event that arrived first is consumed *inside* the same
@@ -812,7 +987,7 @@ class PlaybookEngine:
         principal: Any,
         mode: ExecutionMode,
         repository: Any,
-    ) -> tuple[RunSnapshot, StepReceipt | None, str]:
+    ) -> tuple[RunSnapshot, tuple[StepReceipt, ...], str]:
         """§3.4's eleven stages, in order.
 
         Stages 8-10 are the atomic unit: nothing between the executor call
@@ -821,9 +996,10 @@ class PlaybookEngine:
         """
         step_id = snapshot.current_step_id
         if step_id is None or step_id not in artifact.steps:
-            return await self._fail_now(
+            failed, receipt, outcome = await self._fail_now(
                 snapshot, repository, "contract_violation", f"step {step_id!r} is not in the artifact"
             )
+            return failed, (() if receipt is None else (receipt,)), outcome
         step = artifact.steps[step_id]
         iteration = self._iteration_of(snapshot, step_id)
         attempt = _Attempt(
@@ -839,20 +1015,33 @@ class PlaybookEngine:
             snapshot.run_id, step_id, iteration, attempt.attempt
         )
 
+        async def finish(boundary: Any) -> tuple[RunSnapshot, tuple[StepReceipt, ...], str]:
+            committed, receipt, boundary_outcome = await boundary
+            receipts = list(attempt.boundary_receipts)
+            if receipt is not None:
+                receipts.append(receipt)
+            return committed, tuple(receipts), boundary_outcome
+
         # 2. Cancellation — read from the snapshot the engine is about to
         #    write, so a live run cannot overwrite a cancellation.
         control = self._live.get(snapshot.run_id)
         settled = self._settled_cancellation(control)
         if settled is not None:
-            return settled
+            committed, receipt, boundary_outcome = settled
+            receipts = list(attempt.boundary_receipts)
+            if receipt is not None:
+                receipts.append(receipt)
+            return committed, tuple(receipts), boundary_outcome
         cancelled = self._pending_cancellation(snapshot, control)
         if cancelled is not None:
-            return await self._commit_cancellation(
-                self._cancellation_attempt(cancelled, step, step_id, principal),
-                artifact_ref,
-                repository,
-                control,
-                cancellation=CANCELLATION_ACKNOWLEDGED,
+            return await finish(
+                self._commit_cancellation(
+                    self._cancellation_attempt(cancelled, step, step_id, principal),
+                    artifact_ref,
+                    repository,
+                    control,
+                    cancellation=CANCELLATION_ACKNOWLEDGED,
+                )
             )
 
         # 3. Deadline.
@@ -861,14 +1050,16 @@ class PlaybookEngine:
             attempt.lifecycle = RunLifecycle.TIMED_OUT
             attempt.timed_out = True
             attempt.error = "run deadline fired"
-            return await self._commit(attempt, artifact_ref, repository)
+            return await finish(self._commit(attempt, artifact_ref, repository))
 
         # A suspended run resumes *without* re-running its wait executor:
         # re-executing would compute a second correlation key and open a
         # second wait for one suspension.  The resumption is durable state
         # on the snapshot, so this branch is identical after a restart.
         if isinstance(step, WaitStep) and snapshot.wait is not None:
-            return await self._resume_wait(attempt, step, artifact, artifact_ref, repository)
+            return await finish(
+                self._resume_wait(attempt, step, artifact, artifact_ref, repository)
+            )
 
         scope = self._scope(snapshot, artifact)
 
@@ -882,14 +1073,47 @@ class PlaybookEngine:
         except ValueResolutionError as exc:
             attempt.outcome = "input_resolution_failed"
             attempt.error = exc.reason
-            return await self._advance_on_outcome(attempt, artifact, artifact_ref, repository)
+            return await finish(
+                self._advance_on_outcome(attempt, artifact, artifact_ref, repository)
+            )
 
         # 5. Authorize.  Package 0 owns the decision; the engine only routes
         #    it, so an artifact can declare an edge for a denial.
         if isinstance(step, CommandStep) and not self._authorized(step, principal):
             attempt.outcome = "unauthorized"
             attempt.error = f"capability denied: {step.command}"
-            return await self._advance_on_outcome(attempt, artifact, artifact_ref, repository)
+            return await finish(
+                self._advance_on_outcome(attempt, artifact, artifact_ref, repository)
+            )
+
+        async def on_tool_turn(turn: LLMToolTurn) -> None:
+            if control is None:
+                await self._commit_llm_turn(attempt, turn, artifact_ref, repository)
+                return
+            async with control.lock:
+                await self._commit_llm_turn(attempt, turn, artifact_ref, repository)
+                if control.pending_cancel is not None:
+                    cancel_principal, reason = control.pending_cancel
+                    cancelling = await self._request_cancel_latest(
+                        repository,
+                        attempt.snapshot,
+                        reason=reason,
+                        principal=cancel_principal,
+                    )
+                    control.cancel_snapshot = cancelling
+                    if cancelling.lifecycle is RunLifecycle.CANCELLING:
+                        await self._commit_cancellation(
+                            self._cancellation_attempt(
+                                cancelling, step, step_id, cancel_principal
+                            ),
+                            artifact_ref,
+                            repository,
+                            control,
+                            cancellation=CANCELLATION_ACKNOWLEDGED,
+                        )
+                    # Stop the client before it can issue a provider request
+                    # beyond the completed and now durable turn.
+                    raise asyncio.CancelledError
 
         ctx = StepContext(
             run_id=snapshot.run_id,
@@ -906,8 +1130,11 @@ class PlaybookEngine:
             iteration_index=None if iteration < 0 else iteration,
             run_deadline_at=snapshot.deadline_at,
             cancel_requested=snapshot.cancel_requested_at is not None,
+            cancel_event=control.cancel_event if control is not None else None,
             inputs=inputs,
             loop_frame=snapshot.loop,
+            llm_turns=snapshot.llm_turns,
+            on_tool_turn=on_tool_turn if isinstance(step, LlmStep) else None,
         )
 
         # 6. Execute.  An unexpected exception is runtime_error carrying the
@@ -919,6 +1146,106 @@ class PlaybookEngine:
             result = await executor.execute(step, ctx)
         except asyncio.CancelledError:
             raise
+        except LLMToolTurnBoundaryError as exc:
+            cause = exc.__cause__
+            if isinstance(cause, StateLimitExceeded):
+                result = ExecutorResult(
+                    control=StepControl.ADVANCE,
+                    outcome="state_limit_exceeded",
+                    diagnostics=(str(cause),),
+                )
+            elif isinstance(cause, (SnapshotVersionConflict, DuplicateAttempt)):
+                current = await repository.load_run(snapshot.run_id)
+                current = current or attempt.snapshot
+                if current.lifecycle in {
+                    RunLifecycle.CANCELLING,
+                    RunLifecycle.CANCELLED,
+                }:
+                    if current.lifecycle is RunLifecycle.CANCELLED:
+                        return (
+                            current,
+                            tuple(attempt.boundary_receipts),
+                            "cancelled",
+                        )
+                    if control is not None:
+                        control.cancel_snapshot = current
+                        async with control.lock:
+                            settled = self._settled_cancellation(control)
+                            if settled is not None:
+                                committed, receipt, boundary_outcome = settled
+                            else:
+                                cancellation_principal = (
+                                    control.pending_cancel[0]
+                                    if control.pending_cancel is not None
+                                    else principal
+                                )
+                                # The model/tool turn completed before the
+                                # cancellation request won the snapshot CAS.
+                                # Rebase that completed boundary on the fresh
+                                # cancelling row before writing the one
+                                # terminal cancellation boundary.
+                                attempt.snapshot = current
+                                if (
+                                    isinstance(cause, SnapshotVersionConflict)
+                                    and exc.turn.kind != "interrupted"
+                                ):
+                                    await self._commit_llm_turn(
+                                        attempt, exc.turn, artifact_ref, repository
+                                    )
+                                    current = attempt.snapshot
+                                    control.cancel_snapshot = current
+                                committed, receipt, boundary_outcome = (
+                                    await self._commit_cancellation(
+                                        self._cancellation_attempt(
+                                            current,
+                                            step,
+                                            step_id,
+                                            cancellation_principal,
+                                        ),
+                                        artifact_ref,
+                                        repository,
+                                        control,
+                                        cancellation=CANCELLATION_ACKNOWLEDGED,
+                                    )
+                                )
+                    else:
+                        committed, receipt, boundary_outcome = (
+                            await self._commit_cancellation(
+                                self._cancellation_attempt(
+                                    current, step, step_id, principal
+                                ),
+                                artifact_ref,
+                                repository,
+                                None,
+                                cancellation=CANCELLATION_ACKNOWLEDGED,
+                            )
+                        )
+                    receipts = list(attempt.boundary_receipts)
+                    if receipt is not None:
+                        receipts.append(receipt)
+                    return committed, tuple(receipts), boundary_outcome
+                if (
+                    current.lifecycle is not RunLifecycle.RUNNING
+                    or current.current_step_id != step_id
+                ):
+                    return current, tuple(attempt.boundary_receipts), "interrupted"
+                failed, receipt = await self._terminate(
+                    current,
+                    repository,
+                    "interrupted",
+                    "another writer advanced this run",
+                )
+                return (
+                    failed,
+                    tuple(attempt.boundary_receipts) + (receipt,),
+                    "interrupted",
+                )
+            else:
+                result = ExecutorResult(
+                    control=StepControl.ADVANCE,
+                    outcome="runtime_error",
+                    diagnostics=(type(cause).__name__,),
+                )
         except Exception as exc:  # noqa: BLE001 - §3.4 step 6
             result = ExecutorResult(
                 control=StepControl.ADVANCE,
@@ -934,24 +1261,54 @@ class PlaybookEngine:
         # boundary is the cancellation's rather than the step's.  Under the
         # control's lock, because ``cancel`` writes the same boundary when its
         # grace window expires first and exactly one of them may.
-        if control is not None and control.cancel_snapshot is not None:
+        if control is not None and (
+            control.cancel_snapshot is not None or control.pending_cancel is not None
+        ):
             async with control.lock:
                 settled = self._settled_cancellation(control)
                 if settled is not None:
-                    return settled
-                cancelled = self._pending_cancellation(snapshot, control)
-                if cancelled is not None:
-                    return await self._commit_cancellation(
-                        self._cancellation_attempt(cancelled, step, step_id, principal),
-                        artifact_ref,
+                    committed, receipt, boundary_outcome = settled
+                    receipts = list(attempt.boundary_receipts)
+                    if receipt is not None:
+                        receipts.append(receipt)
+                    return committed, tuple(receipts), boundary_outcome
+                cancellation_principal = principal
+                if control.cancel_snapshot is None and control.pending_cancel is not None:
+                    cancellation_principal, reason = control.pending_cancel
+                    control.cancel_snapshot = await self._request_cancel_latest(
                         repository,
-                        control,
-                        cancellation=CANCELLATION_ACKNOWLEDGED,
+                        attempt.snapshot,
+                        reason=reason,
+                        principal=cancellation_principal,
+                    )
+                elif control.pending_cancel is not None:
+                    cancellation_principal = control.pending_cancel[0]
+                if control.cancel_snapshot is not None and control.cancel_snapshot.is_terminal:
+                    return (
+                        control.cancel_snapshot,
+                        tuple(attempt.boundary_receipts),
+                        "cancelled",
+                    )
+                cancelled = self._pending_cancellation(attempt.snapshot, control)
+                if cancelled is not None:
+                    return await finish(
+                        self._commit_cancellation(
+                            self._cancellation_attempt(
+                                cancelled, step, step_id, cancellation_principal
+                            ),
+                            artifact_ref,
+                            repository,
+                            control,
+                            cancellation=CANCELLATION_ACKNOWLEDGED,
+                        )
                     )
 
         attempt.receipt_inputs = result.receipt_inputs
         attempt.receipt_result = result.receipt_result
+        attempt.principal = result.effective_principal or attempt.principal
         attempt.idempotency_key = result.idempotency_key or attempt.idempotency_key
+        attempt.usage = result.usage
+        attempt.llm_calls = result.llm_calls
         if result.diagnostics:
             attempt.error = "; ".join(result.diagnostics)
 
@@ -960,7 +1317,9 @@ class PlaybookEngine:
         if violation is not None:
             attempt.outcome = violation
             attempt.error = f"{result.control} is not legal for a {step.type} step"
-            return await self._advance_on_outcome(attempt, artifact, artifact_ref, repository)
+            return await finish(
+                self._advance_on_outcome(attempt, artifact, artifact_ref, repository)
+            )
 
         attempt.control = result.control
         attempt.outcome = result.outcome
@@ -971,7 +1330,7 @@ class PlaybookEngine:
         if result.value is not None and getattr(step, "save_result_as", None):
             try:
                 attempt.snapshot = bind_step_output(
-                    snapshot,
+                    attempt.snapshot,
                     step_id=step.save_result_as,
                     value=result.value,
                     declared=result.value.keys()
@@ -981,7 +1340,9 @@ class PlaybookEngine:
             except StateLimitExceeded:
                 attempt.outcome = "state_limit_exceeded"
                 attempt.error = "bound result exceeds the state limit"
-                return await self._advance_on_outcome(attempt, artifact, artifact_ref, repository)
+                return await finish(
+                    self._advance_on_outcome(attempt, artifact, artifact_ref, repository)
+                )
 
         # 9 and 10.
         if result.control is StepControl.TERMINATE:
@@ -989,13 +1350,13 @@ class PlaybookEngine:
                 result.terminal_outcome or "completed", RunLifecycle.COMPLETED
             )
             attempt.next_step_id = None
-            return await self._commit(attempt, artifact_ref, repository)
+            return await finish(self._commit(attempt, artifact_ref, repository))
         if result.control is StepControl.GOTO:
             attempt.next_step_id = result.goto_step_id
             attempt.selected_transition = transition_id(
                 snapshot.rule_id, step_id, result.outcome
             )
-            return await self._commit(attempt, artifact_ref, repository)
+            return await finish(self._commit(attempt, artifact_ref, repository))
         if result.control is StepControl.SUSPEND:
             # One transaction: the paused snapshot, the receipt, and the
             # registration that scans the durable inbox for an event that
@@ -1008,16 +1369,138 @@ class PlaybookEngine:
             attempt.wait_id = wait.wait_id
             attempt.wait_changes = WaitChangeSet(register=(wait,))
             attempt.next_step_id = attempt.step_id
-            return await self._commit(attempt, artifact_ref, repository)
+            return await finish(self._commit(attempt, artifact_ref, repository))
         if result.control is StepControl.UNRESOLVED:
             attempt.lifecycle = RunLifecycle.PAUSED
             attempt.error = attempt.error or "unresolved boundary"
-            return await self._commit(attempt, artifact_ref, repository)
+            return await finish(self._commit(attempt, artifact_ref, repository))
         if result.control is StepControl.OPERATOR_DECISION:
+            if (
+                attempt.boundary_receipts
+                and attempt.boundary_receipts[-1].receipt_kind == "interrupted"
+            ):
+                return (
+                    attempt.snapshot,
+                    tuple(attempt.boundary_receipts),
+                    "operator_decision_required",
+                )
             attempt.lifecycle = RunLifecycle.PAUSED
             attempt.outcome = "operator_decision_required"
-            return await self._commit(attempt, artifact_ref, repository)
-        return await self._advance_on_outcome(attempt, artifact, artifact_ref, repository)
+            return await finish(self._commit(attempt, artifact_ref, repository))
+        return await finish(
+            self._advance_on_outcome(attempt, artifact, artifact_ref, repository)
+        )
+
+    async def _commit_llm_turn(
+        self,
+        attempt: _Attempt,
+        turn: LLMToolTurn,
+        artifact_ref: ArtifactRef,
+        repository: Any,
+    ) -> None:
+        """Persist one awaited client turn before provider execution continues."""
+        snapshot = attempt.snapshot
+        now = self.services.clock()
+        iteration = attempt.iteration
+        decision_id: str | None = None
+        llm_turns = snapshot.llm_turns
+        lifecycle = (
+            RunLifecycle.CANCELLING
+            if snapshot.lifecycle is RunLifecycle.CANCELLING
+            else RunLifecycle.RUNNING
+        )
+        operator_decision = snapshot.operator_decision
+        error = snapshot.error
+        error_code = snapshot.error_code
+
+        llm_turns = llm_turns + (
+            {
+                "kind": turn.kind,
+                "step_id": attempt.step_id,
+                "iteration": iteration,
+                "attempt": attempt.attempt,
+                "turn_index": turn.turn_index,
+                "tool_call_ids": list(turn.tool_call_ids),
+                "results_digest": turn.results_digest,
+                "usage": {
+                    "input_tokens": turn.usage.input_tokens,
+                    "output_tokens": turn.usage.output_tokens,
+                    "reported": turn.usage.reported,
+                },
+                "transcript_delta": [dict(message) for message in turn.transcript_delta],
+            },
+        )
+        if turn.kind == "interrupted":
+            decision_id = uuid.uuid4().hex
+            lifecycle = RunLifecycle.PAUSED
+            operator_decision = OperatorDecision(
+                step_id=attempt.step_id,
+                attempt=attempt.attempt,
+                reason="LLM provider or tool call interrupted",
+                raised_at=now,
+                decision_id=decision_id,
+                turn_index=turn.turn_index,
+            )
+            error = "LLM provider or tool call interrupted"
+            error_code = "interrupted"
+
+        budget = RunBudget(
+            llm_calls=snapshot.budget.llm_calls + 1,
+            total_tokens=snapshot.budget.total_tokens + turn.usage.total,
+            max_total_tokens=snapshot.budget.max_total_tokens,
+            cost_usd=snapshot.budget.cost_usd,
+        )
+        next_snapshot = replace(
+            snapshot,
+            lifecycle=lifecycle,
+            llm_turns=llm_turns,
+            operator_decision=operator_decision,
+            budget=budget,
+            error=error,
+            error_code=error_code,
+            updated_at=now,
+        )
+        receipt = StepReceipt(
+            receipt_id=uuid.uuid4().hex,
+            run_id=snapshot.run_id,
+            artifact_sha256=artifact_ref.artifact_sha256,
+            rule_id=snapshot.rule_id,
+            step_id=attempt.step_id,
+            step_kind="llm",
+            receipt_kind=turn.kind,
+            turn_index=turn.turn_index,
+            operator_decision_id=decision_id,
+            outcome=(
+                "operator_decision_required"
+                if turn.kind == "interrupted"
+                else "success"
+            ),
+            started_at=attempt.started_at,
+            snapshot_version=snapshot.version + 1,
+            iteration=iteration,
+            attempt=attempt.attempt,
+            idempotency_key=attempt.idempotency_key,
+            principal=self._principal_projection(turn.principal or attempt.principal),
+            result={
+                "tool_call_ids": list(turn.tool_call_ids),
+                "results_digest": turn.results_digest,
+            },
+            error=error if turn.kind == "interrupted" else None,
+            error_code="interrupted" if turn.kind == "interrupted" else None,
+            tokens_in=turn.usage.input_tokens,
+            tokens_out=turn.usage.output_tokens,
+            completed_at=now,
+            duration_ms=max(0, int((now - attempt.started_at) * 1000)),
+        )
+        attempt.snapshot = await repository.commit_boundary(next_snapshot, receipt)
+        attempt.boundary_receipts.append(receipt)
+        await self._emit(
+            EVENT_STEP_COMPLETED,
+            attempt.snapshot,
+            step_id=receipt.step_id,
+            receipt_kind=receipt.receipt_kind,
+            turn_index=receipt.turn_index,
+        )
 
     @staticmethod
     def _pending_cancellation(
@@ -1133,6 +1616,29 @@ class PlaybookEngine:
         }
         attempts = dict(snapshot.attempts)
         attempts[f"{attempt.step_id}:{attempt.iteration}"] = attempt.attempt
+        budget = snapshot.budget
+        if isinstance(attempt.step, LlmStep) and attempt.usage is not None:
+            durable_turns = [
+                turn
+                for turn in snapshot.llm_turns
+                if turn.get("step_id") == attempt.step_id
+                and int(turn.get("iteration", -1)) == attempt.iteration
+                and int(turn.get("attempt", 1)) == attempt.attempt
+            ]
+            durable_tokens = sum(
+                int((turn.get("usage") or {}).get("input_tokens", 0))
+                + int((turn.get("usage") or {}).get("output_tokens", 0))
+                for turn in durable_turns
+            )
+            new_calls = max(0, attempt.llm_calls - len(durable_turns))
+            new_tokens = (
+                max(0, attempt.usage.total - durable_tokens) if new_calls else 0
+            )
+            budget = replace(
+                budget,
+                llm_calls=budget.llm_calls + new_calls,
+                total_tokens=budget.total_tokens + new_tokens,
+            )
         next_snapshot = replace(
             snapshot,
             lifecycle=attempt.lifecycle,
@@ -1140,6 +1646,7 @@ class PlaybookEngine:
             wait=self._next_wait(attempt),
             loop=self._next_loop(attempt),
             attempts=attempts,
+            budget=budget,
             error=attempt.error,
             error_code=(
                 attempt.outcome if attempt.outcome in ENGINE_RESERVED_OUTCOMES else None
@@ -1177,6 +1684,8 @@ class PlaybookEngine:
             cancelled_at=attempt.cancelled_at,
             completed_at=now,
             duration_ms=max(0, int((now - attempt.started_at) * 1000)),
+            tokens_in=attempt.usage.input_tokens if attempt.usage is not None else 0,
+            tokens_out=attempt.usage.output_tokens if attempt.usage is not None else 0,
         )
         try:
             committed = await repository.commit_boundary(
@@ -1226,7 +1735,7 @@ class PlaybookEngine:
             completed_at=now,
         )
         try:
-            await repository.commit_boundary(failed, receipt)
+            failed = await repository.commit_boundary(failed, receipt)
         except Exception:
             logger.exception("V2 run %s could not receipt its failure", snapshot.run_id)
         return failed, receipt

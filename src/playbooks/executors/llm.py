@@ -13,6 +13,7 @@ from jsonschema.exceptions import ValidationError
 
 from src.commands.authorization import authorize_command, denial_result
 from src.commands.principal import check_delegation
+from src.llm.client import LLMToolTurn, LLMToolTurnBoundaryError
 from src.llm.spec import LLMCallSpec
 from src.llm.types import TokenUsage
 from src.playbooks.definition import LLM_RESERVED_OUTCOMES, LlmStep, _outcome_enum
@@ -78,18 +79,22 @@ def _result(
     *,
     outcome: str,
     usage: TokenUsage | None = None,
+    llm_calls: int = 0,
     value: dict[str, Any] | None = None,
     diagnostics: tuple[str, ...] = (),
+    control: StepControl = StepControl.ADVANCE,
 ) -> ExecutorResult:
     prompt_digest = hashlib.sha256(_prompt(step, ctx).encode()).hexdigest()
     _ignored_inputs, receipt_result = project_step_receipt(
         {}, value or {}, run_id=ctx.run_id
     )
     return ExecutorResult(
-        control=StepControl.ADVANCE,
+        control=control,
         outcome=outcome,
         value=value if step.save_result_as else None,
         usage=usage,
+        llm_calls=llm_calls,
+        effective_principal=ctx.principal,
         idempotency_key=_attempt_key(ctx),
         receipt_inputs={"prompt_digest": prompt_digest},
         receipt_result=receipt_result,
@@ -106,6 +111,38 @@ def _prompt(step: LlmStep, ctx: StepContext) -> str:
     if not ctx.inputs:
         return prompt
     return f"{prompt}\n\nInputs:\n{json.dumps(dict(ctx.inputs), sort_keys=True, default=str)}"
+
+
+def _resume_state(
+    prompt: str, ctx: StepContext
+) -> tuple[list[dict[str, Any]], int, TokenUsage | None]:
+    """Rebuild only completed turns belonging to this exact attempt."""
+    iteration = -1 if ctx.iteration_index is None else ctx.iteration_index
+    turns = sorted(
+        (
+            turn
+            for turn in ctx.llm_turns
+            if turn.get("step_id") == ctx.step_id
+            and int(turn.get("iteration", -1)) == iteration
+            and int(turn.get("attempt", 1)) == ctx.attempt
+        ),
+        key=lambda turn: int(turn["turn_index"]),
+    )
+    messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
+    usage: TokenUsage | None = None
+    for turn in turns:
+        if turn.get("kind", "tool_turn") in {"tool_turn", "llm_call"}:
+            messages.extend(dict(message) for message in turn.get("transcript_delta", ()))
+        raw_usage = turn.get("usage") or {}
+        turn_usage = TokenUsage(
+            input_tokens=int(raw_usage.get("input_tokens", 0)),
+            output_tokens=int(raw_usage.get("output_tokens", 0)),
+            reported=bool(raw_usage.get("reported", False)),
+        )
+        if turn_usage.reported or turn_usage.total:
+            usage = turn_usage if usage is None else usage + turn_usage
+    next_turn_index = int(turns[-1]["turn_index"]) + 1 if turns else 0
+    return messages, next_turn_index, usage
 
 
 def _published_tools(step: LlmStep, ctx: StepContext) -> list[dict[str, Any]]:
@@ -135,7 +172,9 @@ def _published_tools(step: LlmStep, ctx: StepContext) -> list[dict[str, Any]]:
     return tools
 
 
-async def _profile_principal(step: LlmStep, ctx: StepContext) -> tuple[Any | None, tuple[str, ...]]:
+async def resolve_profile_principal(
+    step: LlmStep, services: Any, invoking_principal: Any
+) -> tuple[Any | None, tuple[str, ...]]:
     """Resolve the named profile from the server authority and only narrow.
 
     The database is the authority that command dispatch itself uses to resolve
@@ -143,26 +182,26 @@ async def _profile_principal(step: LlmStep, ctx: StepContext) -> tuple[Any | Non
     class, the artifact fingerprint, or prompt data; all three are insufficient
     to prove that the requested profile remains a subset of the caller.
     """
-    get_profile = getattr(ctx.services.db, "get_profile", None)
+    get_profile = getattr(services.db, "get_profile", None)
     if not callable(get_profile):
         return None, ("profile authority unavailable",)
     try:
         profile = await get_profile(step.profile_id)
         if profile is None:
             return None, ("named profile unavailable",)
-        resolver = ctx.services.resolver
+        resolver = services.resolver
         plugin_command_names = (
             resolver.plugin_command_names() if resolver is not None else frozenset()
         )
         policy = capability_policy_for(profile, plugin_command_names=plugin_command_names)
-        parent_policy = ctx.principal.policy
+        parent_policy = invoking_principal.policy
         widening = check_delegation(parent_policy, policy)
     except Exception:  # noqa: BLE001 - authority failures must fail closed
         return None, ("profile authority unavailable",)
     if widening:
         return None, ("named profile exceeds invoking principal",)
     return replace(
-        ctx.principal.narrow(policy, reason=f"llm-profile:{step.profile_id}"),
+        invoking_principal.narrow(policy, reason=f"llm-profile:{step.profile_id}"),
         profile_id=step.profile_id,
     ), ()
 
@@ -180,7 +219,9 @@ class LiveLlmExecutor:
         if ctx.services.llm is None:
             return _result(step, ctx, outcome="unavailable", diagnostics=("LLM client unavailable",))
 
-        principal, diagnostics = await _profile_principal(step, ctx)
+        principal, diagnostics = await resolve_profile_principal(
+            step, ctx.services, ctx.principal
+        )
         if principal is None:
             return _result(step, ctx, outcome="unauthorized", diagnostics=diagnostics)
         ctx = replace(ctx, principal=principal)
@@ -201,14 +242,26 @@ class LiveLlmExecutor:
                 diagnostics=("provider does not report usage",),
             )
 
+        calls = 0
         try:
             prompt = _prompt(step, ctx)
             retries = step.retry.max_attempts if step.retry is not None else 1
-            usage: TokenUsage | None = None
-            calls = 0
+            messages, next_turn_index, usage = _resume_state(prompt, ctx)
+            calls = next_turn_index
+
+            async def persist_turn(turn: LLMToolTurn) -> None:
+                nonlocal next_turn_index
+                if ctx.on_tool_turn is not None:
+                    await ctx.on_tool_turn(replace(turn, principal=ctx.principal))
+                next_turn_index = max(next_turn_index, turn.turn_index + 1)
+
             for retry_index in range(retries + 1):
-                if calls >= step.budget.max_calls:
-                    return _result(step, ctx, outcome="budget_exceeded", usage=usage)
+                if calls >= step.budget.max_calls or (
+                    usage is not None and _usage_breaches(step, usage)
+                ):
+                    return _result(
+                        step, ctx, outcome="budget_exceeded", usage=usage, llm_calls=calls
+                    )
                 tools = _published_tools(step, ctx)
                 denied = False
 
@@ -233,51 +286,130 @@ class LiveLlmExecutor:
                     except Exception as exc:  # noqa: BLE001 - tool loop receives a safe error result
                         return {"success": False, "error": type(exc).__name__}
 
-                async with asyncio.timeout(step.budget.timeout_seconds):
-                    if tools:
-                        run = await ctx.services.llm.run_tools(
-                            prompt,
-                            tools,
-                            dispatch_tool,
-                            spec=spec,
-                            max_turns=step.budget.max_calls - calls,
-                        )
-                        response_text, call_usage = run.text, run.usage or TokenUsage()
-                        calls += run.turns
-                    else:
-                        response = await ctx.services.llm.complete(prompt, spec=spec)
+                if tools:
+                    run = await ctx.services.llm.run_tools(
+                        messages,
+                        tools,
+                        dispatch_tool,
+                        spec=spec,
+                        max_turns=step.budget.max_calls - calls,
+                        on_tool_turn=persist_turn,
+                        initial_turn_index=next_turn_index,
+                        timeout_seconds=step.budget.timeout_seconds,
+                        cancel_event=ctx.cancel_event,
+                    )
+                    response_text, call_usage = run.text, run.usage or TokenUsage()
+                    calls += run.turns
+                    messages = list(run.transcript)
+                else:
+                    async with asyncio.timeout(step.budget.timeout_seconds):
+                        response = await ctx.services.llm.complete(messages, spec=spec)
                         response_text, call_usage = response.text, response.usage or TokenUsage()
                         calls += 1
                 usage = call_usage if usage is None else usage + call_usage
+                if tools and run.stopped_by == "interrupted":
+                    return _result(
+                        step,
+                        ctx,
+                        outcome="operator_decision_required",
+                        usage=usage,
+                        llm_calls=calls,
+                        diagnostics=("LLM call interrupted",),
+                        control=StepControl.OPERATOR_DECISION,
+                    )
+                if tools and run.stopped_by == "cancelled":
+                    return _result(
+                        step, ctx, outcome="cancelled", usage=usage, llm_calls=calls
+                    )
+                if tools and run.stopped_by == "max_turns":
+                    return _result(
+                        step, ctx, outcome="budget_exceeded", usage=usage, llm_calls=calls
+                    )
                 if denied:
-                    return _result(step, ctx, outcome="unauthorized", usage=usage)
+                    return _result(
+                        step, ctx, outcome="unauthorized", usage=usage, llm_calls=calls
+                    )
                 if step.budget.max_total_tokens is not None and not usage.reported:
                     return _result(
                         step,
                         ctx,
                         outcome="budget_exceeded",
                         usage=usage,
+                        llm_calls=calls,
                         diagnostics=("provider did not report usage",),
                     )
                 if _usage_breaches(step, usage):
-                    return _result(step, ctx, outcome="budget_exceeded", usage=usage)
+                    return _result(
+                        step, ctx, outcome="budget_exceeded", usage=usage, llm_calls=calls
+                    )
                 try:
                     value = _parse_and_validate(response_text, step)
                 except (ValueError, ValidationError):
                     if retry_index == retries:
-                        return _result(step, ctx, outcome="invalid_output", usage=usage)
-                    prompt = f"{prompt}\nReturn only JSON that validates against the declared schema."
+                        return _result(
+                            step,
+                            ctx,
+                            outcome="invalid_output",
+                            usage=usage,
+                            llm_calls=calls,
+                        )
+                    correction = "Return only JSON that validates against the declared schema."
+                    correction_message = {"role": "user", "content": correction}
+                    if tools:
+                        messages.append(correction_message)
+                        assistant_message = dict(run.transcript[-1])
+                        boundary_usage = run.last_usage or TokenUsage()
+                    else:
+                        assistant_message = {
+                            "role": "assistant",
+                            "content": response_text,
+                        }
+                        messages.extend((assistant_message, correction_message))
+                        boundary_usage = response.usage or TokenUsage()
+                    await persist_turn(
+                        LLMToolTurn(
+                            kind="llm_call",
+                            turn_index=next_turn_index,
+                            tool_call_ids=(),
+                            results_digest=hashlib.sha256(
+                                response_text.encode()
+                            ).hexdigest(),
+                            usage=boundary_usage,
+                            transcript_delta=(assistant_message, correction_message),
+                        )
+                    )
                     continue
                 outcome = value.get(step.outcome_field) if step.outcome_field else "completed"
                 if not isinstance(outcome, str) or outcome not in step.transitions:
-                    return _result(step, ctx, outcome="invalid_output", usage=usage)
-                return _result(step, ctx, outcome=outcome, usage=usage, value=value)
+                    return _result(
+                        step,
+                        ctx,
+                        outcome="invalid_output",
+                        usage=usage,
+                        llm_calls=calls,
+                    )
+                return _result(
+                    step,
+                    ctx,
+                    outcome=outcome,
+                    usage=usage,
+                    llm_calls=calls,
+                    value=value,
+                )
+        except LLMToolTurnBoundaryError:
+            raise
         except TimeoutError:
-            return _result(step, ctx, outcome="timed_out")
+            return _result(step, ctx, outcome="timed_out", llm_calls=calls)
         except asyncio.CancelledError:
-            return _result(step, ctx, outcome="cancelled")
+            return _result(step, ctx, outcome="cancelled", llm_calls=calls)
         except Exception as exc:  # noqa: BLE001 - provider errors are a typed outcome
-            return _result(step, ctx, outcome="provider_error", diagnostics=(type(exc).__name__,))
+            return _result(
+                step,
+                ctx,
+                outcome="provider_error",
+                llm_calls=calls,
+                diagnostics=(type(exc).__name__,),
+            )
 
 
 class SymbolicLlmExecutor:
@@ -302,4 +434,4 @@ class SymbolicLlmExecutor:
         )
 
 
-__all__ = ["LiveLlmExecutor", "SymbolicLlmExecutor"]
+__all__ = ["LiveLlmExecutor", "SymbolicLlmExecutor", "resolve_profile_principal"]

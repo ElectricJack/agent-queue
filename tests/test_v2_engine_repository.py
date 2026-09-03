@@ -132,7 +132,10 @@ async def test_a_dispatch_persists_one_run_and_its_receipts_per_rule(db):
         receipts = await db.list_receipts(run_id)
         assert receipts
         # Every attempt of the run is receipted, each with its own identity.
-        keys = [(r.step_id, r.iteration, r.attempt) for r in receipts]
+        keys = [
+            (r.step_id, r.iteration, r.attempt, r.turn_index, r.receipt_kind)
+            for r in receipts
+        ]
         assert len(keys) == len(set(keys))
 
 
