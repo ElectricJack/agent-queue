@@ -89,7 +89,8 @@ def test_close_surface_accepts_structured_completion_details(tmp_path, monkeypat
 
 def test_create_task_accepts_swarm_fields():
     props = defs()["create_task"]["input_schema"]["properties"]
-    assert {"depends_on", "discovered_from", "dedup_key", "parent_id"} <= set(props)
+    assert {"depends_on", "discovered_from", "dedup_key", "parent_id", "root"} <= set(props)
+    assert props["root"]["type"] == "boolean"
 
 
 def test_pool_commands_defined():

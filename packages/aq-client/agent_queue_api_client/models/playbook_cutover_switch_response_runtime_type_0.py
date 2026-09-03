@@ -1,0 +1,9 @@
+from enum import Enum
+
+
+class PlaybookCutoverSwitchResponseRuntimeType0(str, Enum):
+    V1 = "v1"
+    V2 = "v2"
+
+    def __str__(self) -> str:
+        return str(self.value)

@@ -53,9 +53,8 @@ class CreateTaskRequest:
             NOT need to be listed. When omitted, the task implicitly requires 'project-repo' — preserving today's single-
             workspace behavior. Each kind must resolve via project-scoped or system-wide vault/workspace-kinds/<id>.md.
         parent_id (None | str | Unset): Create as a child of this container; the id becomes <parent>.<n>
-        root (bool | Unset): Explicitly create at project level instead of under a container. Mutually exclusive with
-            parent_id. Use it when filing cross-cutting work from inside a task so the placement reads as deliberate rather
-            than as a forgotten parent_id (swarm-work-model §12). Default: False.
+        root (bool | Unset): For worker-filed work, create at project root instead of defaulting beside the held task.
+            Mutually exclusive with parent_id. Default: False.
         depends_on (list[Any] | None | Unset): Task IDs or described dependency edges (optional).
         discovered_from (None | str | Unset): Task ID this work was discovered from (provenance, swarm-work-model §9; a
             worker-filed caller is restricted to the held task's subtree).

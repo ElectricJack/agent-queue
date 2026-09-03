@@ -195,8 +195,10 @@ review-and-fix --var branch=feat/x` resolves the `extends` chain
 `aq formula cook` writes the container + two children with a
 `formula:review-and-fix` label; `aq formula show --as-cooked <container>`
 renders back the snapshot the cook actually wrote and it matches; both
-children are closed through their own sessions and the container settles to
-COMPLETED. *Regression it catches: a chain that resolves differently than it
+children are closed through their own sessions — with `--work-outcome no-op`,
+because the runner commits nothing and a `shipped` close under the
+`pull_request` default is refused for a PR the bare e2e remote can never
+carry — and the container settles to COMPLETED. *Regression it catches: a chain that resolves differently than it
 cooks, a snapshot that drifts from the graph, a container that never settles.*
 
 **S5 — fence and scope.** A second pool session's token cannot heartbeat the

@@ -27,11 +27,13 @@ See ``specs/command-handler.md`` for the command reference specification.
 from __future__ import annotations
 
 import contextvars
+import json
 import os
 import time
 from collections.abc import Callable
 
 import logging
+from typing import Any
 
 from src.config import AppConfig
 from src.orchestrator import Orchestrator
@@ -49,6 +51,7 @@ from src.commands.profile_commands import ProfileCommandsMixin
 from src.commands.mcp_commands import McpCommandsMixin
 from src.commands.notes_commands import NotesCommandsMixin
 from src.commands.playbook_commands import PlaybookCommandsMixin
+from src.commands.playbook_cutover_commands import PlaybookCutoverCommandsMixin
 from src.commands.playbook_migration_commands import PlaybookMigrationCommandsMixin
 from src.commands.playbook_v2_commands import (
     PLAYBOOK_V2_ARTIFACT_COMMANDS,
@@ -337,6 +340,7 @@ class CommandHandler(
     PlaybookCommandsMixin,
     PlaybookV2CommandsMixin,
     PlaybookMigrationCommandsMixin,
+    PlaybookCutoverCommandsMixin,
     WorkflowCommandsMixin,
     PluginCommandsMixin,
     ToolCommandsMixin,
@@ -397,6 +401,7 @@ class CommandHandler(
     - :class:`NotesCommandsMixin` — note path helpers
     - :class:`PlaybookCommandsMixin` — playbook compile, run, health
     - :class:`PlaybookMigrationCommandsMixin` — V1→V2 inventory and waivers
+    - :class:`PlaybookCutoverCommandsMixin` — V1 drain, runtime switch, window
     - :class:`PlaybookV2CommandsMixin` — V2 semantic graph, diff, activation
     - :class:`WorkflowCommandsMixin` — workflow CRUD, stage advancement
     - :class:`PluginCommandsMixin` — plugin lifecycle
@@ -834,6 +839,44 @@ class CommandHandler(
             return frozenset(names)
         return frozenset()
 
+    async def _record_capability_denial(self, name: str, principal: Any, decision: Any) -> None:
+        """Leave a durable ``capability.denied`` row (Package 7 §3.5 measure 4).
+
+        The rollback-window gate counts denials over a 72 h window, which an
+        in-memory counter would lose at the first restart; the events table
+        is the one place that survives.  Grouping key only — command, profile,
+        namespace, fingerprint — and never the arguments, which may carry a
+        secret.  Best-effort: a denial that fails to record must still deny.
+        """
+        db = getattr(self, "db", None)
+        log_event = getattr(db, "log_event", None)
+        if log_event is None:
+            return
+        try:
+            policy = getattr(principal, "policy", None)
+            fingerprint = policy.fingerprint() if policy is not None else None
+            await log_event(
+                "capability.denied",
+                project_id=getattr(principal, "project_id", None),
+                task_id=getattr(principal, "task_id", None),
+                agent_id=getattr(principal, "session_id", None),
+                payload=json.dumps(
+                    {
+                        "command": name,
+                        "principal_kind": getattr(
+                            getattr(principal, "kind", None), "value", None
+                        ),
+                        "profile_id": getattr(principal, "profile_id", None),
+                        "namespace": getattr(decision, "namespace", None),
+                        "shadow": bool(getattr(decision, "shadow", False)),
+                        "fingerprint": fingerprint,
+                    },
+                    sort_keys=True,
+                ),
+            )
+        except Exception:
+            logger.debug("Could not record capability.denied for %s", name, exc_info=True)
+
     async def execute(self, name: str, args: dict) -> dict:
         """Execute a command by name and return a structured result dict.
 
@@ -947,6 +990,7 @@ class CommandHandler(
                     result = denial_result(name)
                     _emit_ok = False
                     _emit_error = result["error"]
+                    await self._record_capability_denial(name, principal, decision)
                     return result
 
                 handler = getattr(self, f"_cmd_{name}", None)

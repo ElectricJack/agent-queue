@@ -1,8 +1,8 @@
 ---
 playbook_id: memory-consolidation
-artifact_sha256: "sha256:0074dfc2ec42a5d9f4eb455736e6590799045fba208115410a1e3a3fc411563e"
+artifact_sha256: "sha256:c69b44e5af6bf80fe9344ee7480969acf84c32c6b4e7baca43c16a27970230ff"
 source_sha256: "sha256:397d8826c2559f3c083b00ccd044f93a545690d7989410b4d8fe6b1b4139e9e5"
-contract_fingerprint: "sha256:37e638a13c981748c5929498767fd08bea9fc30bcd85ab36f5458e42381180e9"
+contract_fingerprint: "sha256:90d67fce3cb16821f9b06a366068d89f78230bcecaabe95fa61e4e7f7f187071"
 reviewed_by: "aq task agile-impact-36 (worker-deep-high-codex); operator sign-off is this fixture's PR review"
 reviewed_at: "2026-09-03"
 decision: approved

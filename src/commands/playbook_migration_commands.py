@@ -634,6 +634,12 @@ class PlaybookMigrationCommandsMixin:
                     _unread_evidence("active_v1_runs", exc, detail=f"status={status}: ")
                 )
 
+        # ``recorded`` says only that a file was read; whether what it says is
+        # evidence is decided by ``validate_parity_evidence`` in the report, so
+        # a record that parses but carries no observations, no provenance, or a
+        # hash naming bytes nobody activates still blocks.  A record that could
+        # not be read names why, because "the file is missing" and "the file is
+        # malformed" are different things for whoever has to fix it.
         parity_path = fixture_root / "parity-report.json"
         try:
             import json
@@ -642,7 +648,8 @@ class PlaybookMigrationCommandsMixin:
             if not isinstance(parity, dict):
                 raise ValueError("not an object")
             parity["recorded"] = True
-        except Exception:
+        except Exception as exc:
+            logger.warning("cutover report: parity record unreadable", exc_info=True)
             parity = {
                 "observations": 0,
                 "identical": 0,
@@ -650,6 +657,7 @@ class PlaybookMigrationCommandsMixin:
                 "unexplained": 0,
                 "suite": "tests/test_playbook_shadow_parity.py",
                 "recorded": False,
+                "error": f"{parity_path}: {exc}",
             }
 
         acknowledged_disabled = []

@@ -873,6 +873,9 @@ class DatabaseConfig:
 #: exported so the storage layer and the operator commands name the same
 #: values the config file does.
 PENDING_EVENT_OVERFLOW_POLICIES: tuple[str, ...] = ("drop_oldest", "reject_new")
+
+#: The two states ``PlaybooksConfig.v1_admission`` may hold (Package 7 §3.4).
+V1_ADMISSION_STATES: tuple[str, ...] = ("open", "closed")
 PENDING_EVENT_REPLAY_POLICIES: tuple[str, ...] = ("manual", "automatic")
 
 
@@ -946,6 +949,18 @@ class PlaybooksConfig:
     #: the receipt records ``grace_expired``.
     cancellation_grace_seconds: int = 30
 
+    #: Whether new V1 playbook runs may still start.  ``open`` is the
+    #: pre-cutover state; ``closed`` refuses new V1 dispatch while leaving
+    #: already-paused V1 runs resumable, which is what "drain" means
+    #: operationally (Package 7 §3.4).  Flipped by the operator at gate G1
+    #: through ``playbook_v1_admission_close``; removed together with the rest
+    #: of the drain surface once the V1 runtime is deleted.
+    #:
+    #: Deliberately independent of ``v2_engine``: draining happens *while* the
+    #: fleet is still on V1, and a rollback flips ``v2_engine`` back without
+    #: reopening admission.
+    v1_admission: str = "open"
+
     def validate(
         self, *, activation_healths: Mapping[str, str] | None = None
     ) -> list[ConfigError]:
@@ -994,6 +1009,25 @@ class PlaybooksConfig:
         if self.cancellation_grace_seconds < 0:
             errors.append(
                 ConfigError("playbooks", "cancellation_grace_seconds", "must be >= 0")
+            )
+        if self.v1_admission not in V1_ADMISSION_STATES:
+            errors.append(
+                ConfigError(
+                    "playbooks",
+                    "v1_admission",
+                    f"must be one of {', '.join(V1_ADMISSION_STATES)}",
+                )
+            )
+        elif self.v2_engine and self.v1_admission == "open":
+            # Once V2 owns dispatch, "V1 admission open" describes nothing --
+            # and it would let a rollback silently start new V1 runs against
+            # artifacts nobody reviewed (Package 7 §3.4).
+            errors.append(
+                ConfigError(
+                    "playbooks",
+                    "v1_admission",
+                    "must be 'closed' once playbooks.v2_engine=true",
+                )
             )
         if self.v2_pending_event_on_overflow not in PENDING_EVENT_OVERFLOW_POLICIES:
             errors.append(
@@ -2746,6 +2780,20 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             v2_compiler_enabled=bool(pb.get("v2_compiler_enabled", False)),
             cancellation_grace_seconds=int(pb.get("cancellation_grace_seconds", 30)),
             v2_engine=bool(pb.get("v2_engine", False)),
+            # An unset ``v1_admission`` on a fleet that is already on the V2
+            # engine resolves to ``closed``, not to the bare default.  It is
+            # the truthful description of that fleet -- nothing dispatches V1
+            # there -- and it is what keeps Package 7 §3.4's incoherent-pair
+            # rule from refusing to boot a daemon that turned on ``v2_engine``
+            # before the rule existed.  An *explicit* ``v1_admission: open``
+            # alongside ``v2_engine: true`` is still a validation error: that
+            # one the operator wrote.
+            v1_admission=str(
+                pb.get(
+                    "v1_admission",
+                    "closed" if bool(pb.get("v2_engine", False)) else "open",
+                )
+            ),
             v2_dry_run_max_paths=int(pb.get("v2_dry_run_max_paths", 32)),
             v2_dry_run_max_step_visits=int(pb.get("v2_dry_run_max_step_visits", 1000)),
             v2_storage_enabled=bool(pb.get("v2_storage_enabled", False)),

@@ -54,6 +54,7 @@ from src.database.queries.transaction_queries import TransactionQueryMixin
 from src.database.queries.transcript_queries import TranscriptQueryMixin
 from src.database.queries.playbook_queries import PlaybookQueryMixin
 from src.database.queries.playbook_artifact_queries import PlaybookArtifactQueryMixin
+from src.database.queries.playbook_cutover_queries import PlaybookCutoverQueryMixin
 from src.database.queries.playbook_migration_queries import PlaybookMigrationQueryMixin
 from src.database.queries.playbook_run_queries import PlaybookRunQueryMixin
 from src.database.queries.plugin_queries import PluginQueryMixin
@@ -99,6 +100,7 @@ class PostgreSQLDatabaseAdapter(
     PlaybookQueryMixin,
     PlaybookArtifactQueryMixin,
     PlaybookMigrationQueryMixin,
+    PlaybookCutoverQueryMixin,
     PlaybookRunQueryMixin,
     WorkflowQueryMixin,
     ApiSessionTokenQueriesMixin,

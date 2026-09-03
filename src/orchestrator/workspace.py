@@ -337,6 +337,7 @@ class WorkspaceMixin:
             try:
                 branch = await restore_checkpoint(self.db, self.git, task.id, workspace)
                 await self.db.update_task(task.id, branch_name=branch)
+                await self._ensure_control_files_excluded(workspace)
                 return workspace  # Preserve the resumed task's plan files too.
             except Exception as exc:
                 logger.error("Cannot restore paused task %s: %s", task.id, exc)
@@ -414,6 +415,13 @@ class WorkspaceMixin:
                 # Ensure workspace is on a clean, up-to-date default branch.
                 # The agent will create/switch to the task branch per its prompt.
                 if await self.git.avalidate_checkout(workspace):
+                    # The daemon's own control files (``.aq/claim.json``, the
+                    # worktree sentinel, ``.agent-queue-lock``) live untracked
+                    # inside this checkout.  Only ``.git/info/exclude`` keeps
+                    # them out of ``git status`` — and therefore out of the
+                    # verify phase's ``git add -A`` auto-commit — and until
+                    # now only worktree-slot provisioning wrote that block.
+                    await self._ensure_control_files_excluded(workspace)
                     # Discard any uncommitted changes left by a previous task
                     # so the checkout to default_branch doesn't fail due to
                     # conflicts.  This is especially important for LINK
@@ -468,6 +476,33 @@ class WorkspaceMixin:
         )
 
         return workspace
+
+    async def _ensure_control_files_excluded(self, workspace: str) -> None:
+        """Write the managed ``.git/info/exclude`` block into *workspace*.
+
+        Worktree slots get this from :class:`WorktreeSlotManager` at
+        provisioning; an exclusive clone or linked checkout (``worktrees.enabled:
+        false``) has to get it here, or ``.aq/claim.json`` and friends end up in
+        ``auto-commit: uncommitted changes from task <id>`` and — in direct
+        mode — on the project's default branch.  Best-effort: the block is
+        hygiene, not a precondition for launching the agent.
+        """
+        from src.orchestrator.worktree_manager import WorktreeSlotManager
+
+        try:
+            if not await self.git.avalidate_checkout(workspace):
+                return
+            # ``info/exclude`` lives in the common dir.  For a linked checkout
+            # that is itself a worktree ``<workspace>/.git`` is a file
+            # pointing elsewhere, so resolve the base repository; everywhere
+            # else the workspace is its own common dir and no subprocess is
+            # needed.
+            base = workspace
+            if os.path.isfile(os.path.join(workspace, ".git")):
+                base = await self.git.aworktree_base_path(workspace) or workspace
+            WorktreeSlotManager.ensure_git_exclude(base)
+        except (OSError, GitError) as e:  # pragma: no cover - defensive
+            logger.warning("ensure_git_exclude failed for %s: %s", workspace, e)
 
     @staticmethod
     def _project_slot_cap(project) -> int:

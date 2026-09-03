@@ -869,6 +869,15 @@ class Orchestrator(
                     bus=self.bus,
                 )
 
+                # Stamp the event's arrival before the fire-and-forget hop so
+                # the run's snapshot carries it: Package 7 §3.5 measure 6
+                # (dispatch latency) reads ``started_at - event._received_at``
+                # from durable rows, because an in-memory timer would not
+                # survive a restart inside the 72 h observation window.  A
+                # copy, so a replayed event sees its own arrival.
+                if "_received_at" not in event_data:
+                    event_data = {**event_data, "_received_at": time.time()}
+
                 # The manager admitted exactly this playbook (shadowing,
                 # cooldown, concurrency).  Constrain the engine to it: an
                 # unfiltered dispatch would start every scope-matching
@@ -889,6 +898,20 @@ class Orchestrator(
                 asyncio.create_task(
                     _run_v2(),
                     name=f"playbook-v2:{playbook.id}:{event_data.get('type', 'trigger')}",
+                )
+                return
+
+            # Package 7 §3.4: admission is read per dispatch, below the
+            # runtime branch and above every V1 import.  Closing admission
+            # stops *new* V1 runs without touching the paused ones already in
+            # flight -- stranding those would make a later ``drained: true``
+            # retroactively false.
+            from src.playbooks.cutover import v1_admission_closed
+
+            if v1_admission_closed(getattr(self, "config", None)):
+                logger.info(
+                    "v1 admission closed — refusing new run for playbook '%s'",
+                    playbook.id,
                 )
                 return
 

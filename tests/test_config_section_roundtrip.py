@@ -29,6 +29,7 @@ SECTION_YAML_KEY = {"agents_config": "agents"}
 NON_DEFAULT_VALUES = {
     ("playbooks", "v2_pending_event_on_overflow"): "reject_new",
     ("playbooks", "v2_pending_event_replay_on_activation"): "automatic",
+    ("playbooks", "v1_admission"): "closed",
     # Confidences are probabilities: ``+ 0.5`` leaves [0, 1] and would be
     # withdrawn as unvalidatable rather than exercising the loader.
     ("chat_analyzer", "min_confidence"): 0.42,

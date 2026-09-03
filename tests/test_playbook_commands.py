@@ -1203,6 +1203,21 @@ class TestAllPlaybookCommandsRegistered:
         # The release gate: reviewed artifacts versus the live contract surface.
         "playbook_release_check",
         "playbook_cutover_report",
+        # Playbook V1 drain and runtime cutover (Package 7).  Operator-only,
+        # and deliberately absent from PAUSED_PLAYBOOK_COMMANDS: a fleet that
+        # paused the subsystem with runs still going is the one that needs to
+        # drain them.
+        "playbook_v1_drain_status",
+        "playbook_v1_admission_close",
+        "playbook_v1_admission_open",
+        "playbook_v1_run_cancel",
+        "playbook_cutover_gate_status",
+        "playbook_cutover_drain_signoff",
+        "playbook_cutover_authorize",
+        "playbook_cutover_switch",
+        "playbook_cutover_window_status",
+        "playbook_cutover_window_rehearsal",
+        "playbook_cutover_window_close",
     ]
 
     def test_all_cmd_methods_exist(self):

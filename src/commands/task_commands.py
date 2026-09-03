@@ -160,6 +160,33 @@ def _check_capability_escalation(parent, child) -> str:
     return ""
 
 
+#: Scope refusals for worker filing (swarm work model §12).  The same text is
+#: produced by the pre-check in ``_cmd_create_task`` and by the re-check
+#: inside ``_create_worker_filed_task``'s transaction, so a filing that loses
+#: a race to a concurrent reparent reads exactly like one that never had the
+#: scope to begin with.
+_DISCOVERED_FROM_SCOPE_ERROR = "discovered_from must be the held task or one of its descendants"
+_PARENT_SCOPE_ERROR = (
+    "parent must be the held task, one of its descendants, or the held task's own parent"
+)
+
+
+class _FilingScope(Exception):
+    """Internal signal: the filing left the held task's authorised scope.
+
+    Raised by the in-transaction re-check in
+    :meth:`TaskCommandsMixin._create_worker_filed_task` when a concurrent
+    reparent moved the held task — or the node the worker named — out from
+    under the scope the pre-check saw.  The ``immediate()`` block rolls back
+    nothing-written and ``_cmd_create_task`` turns it into the same refusal
+    the pre-check would have returned.
+    """
+
+    def __init__(self, error: str):
+        super().__init__(error)
+        self.error = error
+
+
 class _FilingQuota(Exception):
     """Internal signal: ``reserve_filing`` refused — held task hit its quota.
 
@@ -991,25 +1018,44 @@ class TaskCommandsMixin:
         *,
         held_id: str,
         parent_id: str | None,
+        parent_explicit: bool,
+        explicit_root: bool,
         discovered_from: str | None,
         edges: list[tuple[str, str, str | None]],
         reason: str,
         routing_policy: Callable[[Task], bool] | None = None,
-    ) -> tuple[str, str | None, str | None, bool]:
+    ) -> tuple[str, str | None, str | None, bool, str | None]:
         """Write a worker-filed task + its edges in one ``immediate()`` txn.
 
-        Order (swarm work model §12): ``reserve_filing`` first — ``False``
-        raises :class:`_FilingQuota` with nothing written — then the task
-        row, then the parent-child or ``discovered-from`` edge, then (root
-        filings only) the routing gate, then the ``depends_on`` edges. Any
-        exception rolls the whole transaction back untouched.
+        Order (swarm work model §12): the scope re-check first — a locked
+        read that writes nothing — then ``reserve_filing`` (``False`` raises
+        :class:`_FilingQuota` with nothing written), then the task row, then
+        the parent-child edge (if any) and the ``discovered-from`` edge,
+        then (root filings only) the routing gate, then the ``depends_on``
+        edges. Any exception rolls the whole transaction back untouched.
 
-        Returns ``(task_id, gate_id, discovered_from_origin, depth_cap_fallback)``.
-        ``gate_id`` is set for root filings and policy-gated child filings;
-        ``discovered_from_origin`` is set whenever a ``discovered-from`` edge
-        was written — root filings (origin = ``discovered_from`` or the held
-        task) and depth-cap-fallback child filings alike (origin = the
-        would-be container).
+        ``parent_id`` arrives already defaulted by ``_cmd_create_task``: a
+        worker holding a child task files a *sibling* (parent = the held
+        task's own parent) unless it named a parent itself or requested an
+        explicit root. Both the default and the authorisation it rests on are
+        **recomputed here under the row lock**, because the pre-check ran
+        before this transaction opened and a reparent that commits in between
+        would otherwise file the task under a container the held task no
+        longer authorises (or under its former parent). When placement was
+        unstated the default follows the held task to wherever it now lives;
+        an explicit root remains a root; and a named parent that is no longer
+        in scope is refused with :class:`_FilingScope`.
+
+        Returns ``(task_id, gate_id, discovered_from_origin,
+        depth_cap_fallback, parent_id)`` — the last being the parent
+        actually written, which the caller reports instead of the one it
+        passed in.
+        ``gate_id`` is set for root filings and policy-gated parented
+        filings. ``discovered_from_origin`` is the provenance origin for
+        every worker filing: ``discovered_from`` or the held task, except
+        for a depth-cap-fallback filing, where it is the would-be container.
+        A ``discovered-from`` edge to it is written unless the origin is the
+        parent itself (the parent-child edge already records that).
 
         The ``is_blocked`` flip set from every write below (task-row
         creation never flips anything; the edge, and the gate if any, can)
@@ -1018,10 +1064,43 @@ class TaskCommandsMixin:
         ``create_gate`` do for their own single-write callers.
         """
         gate_id: str | None = None
-        origin: str | None = None
+        # The provenance origin: the task the worker named, else the task it
+        # holds. Reported on ``task.created`` for every worker filing; the
+        # depth-cap branch below repoints it at the would-be container.
+        origin: str | None = discovered_from or held_id
         depth_cap_fallback = False
         flipped: set[str] = set()
         async with self.db.immediate() as conn:
+            # ---- scope re-check, under the lock -------------------------
+            # ``_cmd_create_task``'s pre-check read the held task's parent
+            # and subtree before this transaction existed. On Postgres the
+            # scope helper takes the same project-scoped hierarchy lock as
+            # ``set_parent``, because a named descendant can leave the
+            # subtree when any intermediate ancestor is moved; on SQLite
+            # ``immediate()`` already excludes concurrent writers. Derive
+            # the scope again after that lock.
+            locked = await self.db.lock_filing_scope(
+                conn,
+                [held_id]
+                + ([parent_id] if parent_explicit and parent_id else [])
+                + ([discovered_from] if discovered_from else []),
+            )
+            if held_id not in locked:
+                raise _FilingScope(f"held task '{held_id}' no longer exists")
+            held_parent_id = locked[held_id]
+            allowed = {held_id} | set(await self.db.subtree_ids(held_id, conn=conn))
+            if discovered_from and discovered_from not in allowed:
+                raise _FilingScope(_DISCOVERED_FROM_SCOPE_ERROR)
+            if not parent_explicit and not explicit_root:
+                # The sibling default is re-resolved, not re-authorised: it
+                # follows the held task to its current parent (``None`` for a
+                # held task that is now a root, which files a root the same
+                # way a root-held task always did).
+                parent_id = held_parent_id
+            elif parent_id and parent_id not in (
+                allowed | ({held_parent_id} if held_parent_id else set())
+            ):
+                raise _FilingScope(_PARENT_SCOPE_ERROR)
             if not await self.db.reserve_filing(
                 conn, held_id, max_filings=self.config.swarm.max_filings_per_task
             ):
@@ -1036,6 +1115,23 @@ class TaskCommandsMixin:
                     task.id, parent_id, conn=conn, description=reason
                 )
                 flipped |= result.flipped
+                # Sibling filing (parent = the held task's own parent) or a
+                # filing under a descendant: the parent-child edge places the
+                # task, the ``discovered-from`` edge keeps provenance to the
+                # work that surfaced it. When the parent *is* the origin the
+                # parent-child edge (carrying ``reason``) already says so — a
+                # second edge to the same task would only duplicate it.
+                if origin != parent_id:
+                    flipped |= (
+                        await self.db.add_dependency(
+                            task.id,
+                            origin,
+                            DepType.DISCOVERED_FROM.value,
+                            description=reason,
+                            conn=conn,
+                        )
+                        or set()
+                    )
             elif parent_id:
                 # Naming-depth cap: child_task_id already minted a root id;
                 # record provenance the same way create_task_under does,
@@ -1052,7 +1148,6 @@ class TaskCommandsMixin:
                     or set()
                 )
             else:
-                origin = discovered_from or held_id
                 flipped |= (
                     await self.db.add_dependency(
                         task.id,
@@ -1101,7 +1196,7 @@ class TaskCommandsMixin:
                     or set()
                 )
         await self.db.log_blocked_flips(flipped)
-        return task.id, gate_id, origin, depth_cap_fallback
+        return task.id, gate_id, origin, depth_cap_fallback, parent_id
 
     def _validate_routing_class(self, class_id, profile=None) -> str | None:
         """Reject invalid explicit routing instead of launching a fallback model."""
@@ -1132,24 +1227,13 @@ class TaskCommandsMixin:
         return None
 
     async def _cmd_create_task(self, args: dict) -> dict:
-        # ----- Placement intent: container, explicit root, or unstated -----
-        # ``root`` (CLI ``--root``) is the explicit opt-out that matches
-        # ``aq task reparent --root``: it *asserts* project level rather than
-        # leaving it to be inferred from a missing ``--parent``. The two are
-        # contradictory, so a caller that passes both is refused before
-        # anything is read or written — for every caller kind, since the
-        # contradiction is in the request, not in the caller's authority.
         explicit_root = bool(args.get("root"))
         if explicit_root and args.get("parent_id"):
             return {
                 "success": False,
-                "code": "root_and_parent_conflict",
-                "error": (
-                    "'root' and 'parent_id' are mutually exclusive (CLI: --root / "
-                    "--parent): pass --parent <container-id> to file inside a "
-                    "container, or --root to file cross-cutting work at project level"
-                ),
+                "error": "--root and parent_id are mutually exclusive",
             }
+
         # ----- Worker-filed work (swarm work model §12) --------------------
         # A session-scoped, non-elevated caller is a pool worker currently
         # holding a task. Its filings are pinned to its own project, forced
@@ -1164,6 +1248,9 @@ class TaskCommandsMixin:
         creator_session_id = scope.get("session_id") if scope.get("kind") == "session" else None
         filing_session = None
         held_id: str | None = None
+        # Whether the worker named a parent itself (vs. the sibling default).
+        # Read again by ``_create_worker_filed_task``'s in-transaction check.
+        parent_explicit = False
         if scope.get("kind") == "session" and not scope.get("elevated"):
             filing_session = await self.db.get_session(scope.get("session_id") or "")
             if filing_session is None:
@@ -1182,34 +1269,32 @@ class TaskCommandsMixin:
                 }
             args.pop("status", None)  # worker-filed work always starts DEFINED
             held_id = filing_session.task_id
+            held_task = await self.db.get_task(held_id)
+            held_parent_id = held_task.parent_task_id if held_task is not None else None
             async with self.db._engine.begin() as _conn:
                 allowed = {held_id} | set(await self.db.subtree_ids(held_id, conn=_conn))
             if args.get("discovered_from") and args["discovered_from"] not in allowed:
-                return {
-                    "success": False,
-                    "error": "discovered_from must be the held task or one of its descendants",
-                }
-            if args.get("parent_id") and args["parent_id"] not in allowed:
-                return {
-                    "success": False,
-                    "error": "parent must be the held task or one of its descendants",
-                }
-            # Placement for a worker filing is three-valued, not two:
-            #   ``parent_id``  — file inside the held task's subtree. No
-            #                    routing gate; the child inherits the
-            #                    container's routing (§12).
-            #   ``root=True``  — deliberately file cross-cutting work at
-            #                    project level: root id, ``discovered-from``
-            #                    edge back to the held task, routing gate.
-            #   neither        — unstated, and resolves to the same
-            #                    project-level filing as ``root``. Guidance
-            #                    (AGENTS.md, prime's ``emergent_work``) asks
-            #                    workers to say which they mean, so a reviewer
-            #                    can tell a deliberate cross-cutting filing
-            #                    from a forgotten ``--parent``. The default is
-            #                    deliberately left alone here: changing what
-            #                    omission means would silently re-home every
-            #                    existing filing path.
+                return {"success": False, "error": _DISCOVERED_FROM_SCOPE_ERROR}
+            # §12: emergent work found while holding a *child* task T is
+            # organised as T's sibling — unless the caller explicitly asks
+            # for a root, the new task defaults to T's own parent (the shared
+            # container/epic) and keeps a
+            # ``discovered-from`` edge back to T. The worker may name exactly
+            # that immediate parent explicitly; nothing further up or across
+            # the tree opens up. A root-held task keeps root filing.
+            #
+            # Everything below is a *pre-check*: it fails the obvious cases
+            # cheaply, before the rest of ``create_task`` does any work. It
+            # is not the authorisation — ``_create_worker_filed_task``
+            # recomputes both the default and the check from rows it has
+            # locked, so a reparent that commits after this read cannot land
+            # the filing outside the held task's scope.
+            parent_explicit = bool(args.get("parent_id"))
+            if not explicit_root and not parent_explicit and held_parent_id:
+                args["parent_id"] = held_parent_id
+            allowed_parents = allowed | ({held_parent_id} if held_parent_id else set())
+            if parent_explicit and args["parent_id"] not in allowed_parents:
+                return {"success": False, "error": _PARENT_SCOPE_ERROR}
             if not str(args.get("reason") or "").strip():
                 return {
                     "success": False,
@@ -1497,10 +1582,7 @@ class TaskCommandsMixin:
                 return {"error": f"Dependency task '{dep_id}' not found"}
             edges.append((dep_id, dep_type, dep_reason))
 
-        # An explicit root request is authoritative over any ``parent_id`` a
-        # wizard/params dict carried in; the contradictory *caller-supplied*
-        # combination was already refused at the top of this method.
-        parent_id = None if explicit_root else args.get("parent_id")
+        parent_id = args.get("parent_id")
         if parent_id:
             parent = await self.db.get_task(parent_id)
             if parent is None:
@@ -1578,15 +1660,24 @@ class TaskCommandsMixin:
                     gate_id,
                     discovered_from_origin,
                     depth_cap_fallback,
+                    # The parent actually written: the in-transaction
+                    # re-check may have re-resolved the sibling default
+                    # against a held task that moved. Everything below
+                    # (the event, the response) reports that one.
+                    parent_id,
                 ) = await self._create_worker_filed_task(
                     task,
                     held_id=held_id,
                     parent_id=parent_id,
+                    parent_explicit=parent_explicit,
+                    explicit_root=explicit_root,
                     discovered_from=args.get("discovered_from"),
                     edges=edges,
                     reason=spawn_reason or "",
                     routing_policy=routing_policy,
                 )
+            except _FilingScope as exc:
+                return {"success": False, "error": exc.error}
             except _FilingQuota:
                 return {
                     "success": False,

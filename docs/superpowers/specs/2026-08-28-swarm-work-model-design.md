@@ -740,27 +740,48 @@ close is skipped for pools; the token is revoked at drain.
 
 - `project_id` := token project (mismatch → `out_of_scope`);
 - `created_by_kind='session'`, `created_by_id=<session_id>`;
-- **holding a task `T`:** `parent_id`, if given, must be `T` or a descendant of `T`
-  (else `hierarchy.parent_out_of_scope`); if absent, a `discovered-from` edge to `T` is
-  added automatically. **Idle (no held task): creation is refused**
-  (`filing_requires_held_task`) — every worker-filed task has a provenance edge to the
-  work that surfaced it, and an idle session has none to give. Anything a worker wants
-  to file it files before closing;
-- **placement is three-valued**: `parent_id` (file inside `T`'s subtree), `root: true`
-  (CLI `--root`) — an *explicit* project-level filing — or neither. Both together are
-  refused with `root_and_parent_conflict` before anything is read or written. Explicit
-  root takes exactly the same path as an omitted parent: root id, `discovered-from` edge
-  back to `T`, routing gate in the same transaction. The distinction is intent, not
-  mechanics: a worker holding a child task is told by shipped guidance to group emergent
-  work under its epic with `--parent`, so a bare `create_task` with no placement is
-  indistinguishable from a forgotten `--parent`. `--root` is the opt-out that says
-  "cross-cutting, on purpose", and mirrors the `--root` on `aq task reparent`. Omission
-  keeps its historical meaning — a project-level filing — so no existing caller moves;
+- **holding a task `T`:** `parent_id`, if given, must be `T`, a descendant of `T`, or
+  **`T`'s own immediate parent** (else `hierarchy.parent_out_of_scope`) — nothing further
+  up or across the tree, and never another project. **If `parent_id` is absent and `T`
+  has a parent, the new task defaults to `T.parent_task_id`**: emergent work found while
+  executing a child of an epic is organised as that child's *sibling*, grouped under the
+  same epic (this is what `AGENTS.md` and the prime "Emergent work" section tell workers
+  to do; the server now does it for them). An explicit `root=true` (`aq task create
+  --root`) opts out of that sibling default for cross-cutting work and creates a project
+  root; `root` and `parent_id` are mutually exclusive and the conflict is rejected before
+  the filing quota or any other state is mutated. If `T` is a root, the filing is a root
+  with or without the explicit flag. A
+  `discovered-from` edge to `T` (or to the explicit `discovered_from`, which must also
+  be `T` or a descendant) is written **in the same transaction as the parent-child edge**,
+  carrying the required `reason`, so placement and provenance never disagree — except
+  when the parent *is* the origin (`parent_id = T`), where the parent-child edge already
+  records the relationship and no duplicate edge is added. **Idle (no held task):
+  creation is refused** (`filing_requires_held_task`) — every worker-filed task has a
+  provenance edge to the work that surfaced it, and an idle session has none to give.
+  Anything a worker wants to file it files before closing;
+- **the scope is resolved *and* re-enforced under a row lock, inside the creation
+  transaction.** `T`'s parent and subtree are read again at the start of that transaction.
+  On Postgres, the filing takes a project-scoped transaction advisory lock in AQ's
+  hierarchy namespace — the same lock every `set_parent` takes before validating or
+  moving a subtree — and then row-locks `T` plus any explicitly named nodes in ascending
+  id order. The advisory lock does not contend with unrelated project-row updates. A named
+  descendant's membership depends on every intermediate ancestor, so locking only `T`
+  and the named leaf would not exclude an intermediate-ancestor move; the shared project
+  lock does. On SQLite `immediate()`'s writer lock already serialises the two transactions.
+  All parented-task creation follows the same lock order — project hierarchy lock first,
+  then task rows (including child-ordinal reservation) — to avoid lock inversion.
+  Without this exclusion a
+  `set_parent` committing between the pre-check and the write would file the task under a
+  container `T` no longer authorises. Consequences: the **sibling default follows `T`** to
+  wherever it now lives (and files a root if `T` became one); an **explicitly named parent
+  that has fallen out of scope is refused** and nothing is written, the quota reservation
+  included; and `task.created`/the command response report the parent **actually
+  written**, not the one resolved by the pre-check;
 - **quota:** at most `swarm.max_filings_per_task` (default 20) tasks filed from one held
   task, across all of its claims; beyond it `filing_quota_exceeded`. Durable routing gates
   stop gated work from *running*; the quota stops a looping worker from growing the queue
-  and the triage backlog without bound. Reserved **atomically** as the first statement of
-  the creation transaction: `UPDATE tasks SET filed_count = filed_count + 1 WHERE id =
+  and the triage backlog without bound. Reserved **atomically** as the first *write* of
+  the creation transaction (the locked scope read above precedes it and writes nothing): `UPDATE tasks SET filed_count = filed_count + 1 WHERE id =
   :held AND filed_count < :max` (`tasks.filed_count INTEGER NOT NULL DEFAULT 0`, §9);
   `rowcount = 0` → quota exceeded, nothing created. Concurrent creates cannot overshoot;
 - initial status **`DEFINED`** regardless of edges;
@@ -768,15 +789,24 @@ close is skipped for pools; the token is revoked at drain.
   (`create_gate(gate_type='routing', await_id=<task_id>)` + `task_gates` row, via the
   existing routing-gate code path that `task-created-routing` uses today). The task is
   therefore blocked by a durable record from the instant it exists; nothing about its
-  safety depends on a playbook running. Subtasks of the held task get no gate: they
-  inherit the container's profile (or `profile_id` = the session's own profile) and
-  proceed once the cascade promotes them;
+  safety depends on a playbook running. Parented filings — subtasks of the held task
+  and sibling filings under its parent alike — get no born-with gate: they sit inside a
+  container the assignment router already routes, inherit `profile_id` from the filing
+  session's own profile when the delegation bound resolves one (never wider), and
+  proceed once the cascade promotes them. A project pipeline whose `task.created` rule
+  attaches a `routing` gate to parented tasks still gets that gate, in the same
+  transaction (`routing_policy`);
 - `profile_id` may be omitted (routing decides) or set only to the session's own profile.
 
 **Policy lives in the default pipeline — it resolves the hold, it does not create it.**
 `task.created` gains optional payload fields `created_by_kind`, `created_by_id`,
 `parent_task_id`, `discovered_from`, `routing_gate_id` (schema registry updated; required
-triple unchanged). The shipped `default-pipeline.md` rule:
+triple unchanged). For a worker filing `parent_task_id` is the parent actually written
+(the shared epic for a sibling filing, `null` for a root or depth-cap fallback) and
+`discovered_from` is the origin task, so a subscriber sees both halves of the placement.
+An explicit root filing therefore reports `parent_task_id: null` and `discovered_from: T`,
+exactly like a root filing made while holding a root task. The shipped
+`default-pipeline.md` rule:
 
 ```yaml
 - id: worker-filed-triage
