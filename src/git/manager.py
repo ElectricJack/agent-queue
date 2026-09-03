@@ -900,6 +900,10 @@ class GitManager:
         ".claude/plans/",
         "plan.md",
     ]
+    # Daemon-owned runtime state must never become task work, even when a
+    # repository already tracks one of these paths and ignore rules cannot
+    # suppress its staged change.
+    _DAEMON_BOOKKEEPING_EXCLUDES = [".aq/", ".aq-worktree.json", ".codex/"]
 
     def commit_all(
         self,
@@ -929,6 +933,11 @@ class GitManager:
         hook failures would prevent workspace cleanup.
         """
         self._run(["add", "-A"], cwd=checkout_path)
+        for pattern in self._DAEMON_BOOKKEEPING_EXCLUDES:
+            try:
+                self._run(["reset", "HEAD", "--", pattern], cwd=checkout_path)
+            except GitError:
+                pass
         # Unstage plan files so they never reach target repo history.
         if exclude_plans:
             for pattern in self._PLAN_FILE_EXCLUDES:
@@ -1893,6 +1902,11 @@ class GitManager:
         pathspec arguments.  See ``docs/specs/design/trust-and-ops.md`` §2.4.
         """
         await self._arun(["add", "-A"], cwd=checkout_path)
+        for pattern in self._DAEMON_BOOKKEEPING_EXCLUDES:
+            try:
+                await self._arun(["reset", "HEAD", "--", pattern], cwd=checkout_path)
+            except GitError:
+                pass
         if exclude_plans:
             for pattern in self._PLAN_FILE_EXCLUDES:
                 try:
@@ -2615,6 +2629,24 @@ class GitManager:
             return int(output.strip())
         except ValueError:
             return None
+
+    async def abranch_exists(self, checkout_path: str, branch: str) -> bool | None:
+        """Return whether *branch* exists locally or in ``origin``, else ``None`` on error."""
+        branch = _validate_ref(branch, field="branch")
+        for ref in (f"refs/heads/{branch}", f"refs/remotes/origin/{branch}"):
+            try:
+                result = await self._arun_subprocess(
+                    ["git", "show-ref", "--verify", "--quiet", ref],
+                    cwd=checkout_path,
+                    timeout=self._GIT_TIMEOUT,
+                )
+            except Exception:
+                return None
+            if result.returncode == 0:
+                return True
+            if result.returncode != 1:
+                return None
+        return False
 
     async def ahas_non_plan_changes(
         self,

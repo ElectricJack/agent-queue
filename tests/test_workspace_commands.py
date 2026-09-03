@@ -15,12 +15,17 @@ from src.database import Database
 from src.models import (
     Agent,
     AgentProfile,
+    AgentOutput,
+    AgentResult,
     KIND_MODE_WORKTREE,
+    PipelineContext,
     Project,
     Project as _Project,
+    RepoConfig,
     RepoSourceType,
     SYSTEM_KIND_SCOPE,
     Task,
+    TaskStatus,
     Workspace as _Workspace,
     WorkspaceKind,
     WorkspaceKind as _WorkspaceKind,
@@ -280,6 +285,126 @@ async def test_exclusive_clone_handoff_excludes_daemon_bookkeeping(base_repo_for
         assert ".aq/claim.json" not in status
         assert ".aq-worktree.json" not in status
         assert ".codex/hooks.json" not in status
+    finally:
+        await orch.shutdown()
+
+
+async def test_resumed_exclusive_clone_handoff_excludes_daemon_bookkeeping(
+    base_repo_for_wt, tmp_path, monkeypatch
+):
+    """Checkpoint resume keeps daemon state out of an exclusive clone's diff."""
+    from src.orchestrator import task_checkpoint
+
+    config = AppConfig(
+        data_dir=str(tmp_path / "data"),
+        database_path=str(tmp_path / "aq.db"),
+        workspace_dir=str(tmp_path / "workspaces"),
+    )
+    config.worktrees.enabled = False
+    orch = Orchestrator(config, runtimes=_NullRuntimeFactory())
+    await orch.initialize()
+    try:
+        await orch.db.create_project(
+            Project(id="p1", name="alpha", repo_default_branch="main")
+        )
+        await orch.db.create_workspace(
+            _Workspace(
+                id="ws-clone",
+                project_id="p1",
+                workspace_path=str(base_repo_for_wt),
+                source_type=RepoSourceType.CLONE,
+                kind_id="project-repo",
+            )
+        )
+        await orch.db.create_agent(Agent(id="agent", name="agent", profile_id="p"))
+        await orch.db.create_task(Task(id="task", project_id="p1", title="task", description=""))
+        await orch.db.set_task_meta("task", "manual_pause_checkpoint", {"saved": True})
+        monkeypatch.setattr(task_checkpoint, "restore_checkpoint", AsyncMock(return_value="aq/task"))
+
+        task = await orch.db.get_task("task")
+        agent = await orch.db.get_agent("agent")
+        assert await orch._prepare_workspace(task, agent) == str(base_repo_for_wt)
+
+        (base_repo_for_wt / ".aq").mkdir()
+        (base_repo_for_wt / ".aq" / "claim.json").write_text("{}\n")
+        (base_repo_for_wt / ".aq-worktree.json").write_text("{}\n")
+        (base_repo_for_wt / ".codex").mkdir()
+        (base_repo_for_wt / ".codex" / "hooks.json").write_text("{}\n")
+
+        status = _git_cli(["status", "--porcelain", "--untracked-files=all"], base_repo_for_wt)
+        assert ".aq/claim.json" not in status
+        assert ".aq-worktree.json" not in status
+        assert ".codex/hooks.json" not in status
+    finally:
+        await orch.shutdown()
+
+
+async def test_clean_exclusive_clone_with_uncreated_task_branch_needs_no_pr(
+    base_repo_for_wt, tmp_path
+):
+    """A clone left clean on main has no delivery work when its branch is absent."""
+    config = AppConfig(
+        data_dir=str(tmp_path / "data"),
+        database_path=str(tmp_path / "aq.db"),
+        workspace_dir=str(tmp_path / "workspaces"),
+    )
+    config.worktrees.enabled = False
+    orch = Orchestrator(config, runtimes=_NullRuntimeFactory())
+    await orch.initialize()
+    try:
+        await orch.db.create_project(
+            Project(id="p1", name="alpha", repo_default_branch="main")
+        )
+        await orch.db.create_workspace(
+            _Workspace(
+                id="ws-clone",
+                project_id="p1",
+                workspace_path=str(base_repo_for_wt),
+                source_type=RepoSourceType.CLONE,
+                kind_id="project-repo",
+            )
+        )
+        await orch.db.create_agent(Agent(id="agent", name="agent", profile_id="p"))
+        await orch.db.create_task(
+            Task(
+                id="task",
+                project_id="p1",
+                title="task",
+                description="",
+                integration_mode="pull_request",
+                status=TaskStatus.IN_PROGRESS,
+            )
+        )
+
+        task = await orch.db.get_task("task")
+        agent = await orch.db.get_agent("agent")
+        assert await orch._prepare_workspace(task, agent) == str(base_repo_for_wt)
+        task = await orch.db.get_task("task")
+        head_before = _git_cli(["rev-parse", "HEAD"], base_repo_for_wt)
+        assert _git_cli(["branch", "--show-current"], base_repo_for_wt) == "main"
+        assert _git_cli(["branch", "--list", task.branch_name], base_repo_for_wt) == ""
+
+        ctx = PipelineContext(
+            task=task,
+            agent=agent,
+            output=AgentOutput(result=AgentResult.COMPLETED, tokens_used=0),
+            workspace_path=str(base_repo_for_wt),
+            workspace_id="ws-clone",
+            repo=RepoConfig(
+                id="repo",
+                project_id="p1",
+                source_type=RepoSourceType.CLONE,
+                default_branch="main",
+            ),
+            default_branch="main",
+            close_session_live=True,
+            work_outcome="shipped",
+        )
+
+        assert await orch._run_completion_pipeline(ctx) == (None, True)
+        assert _git_cli(["rev-parse", "HEAD"], base_repo_for_wt) == head_before
+        assert ctx.pr_url is None
+        assert ctx.branch_no_commits is True
     finally:
         await orch.shutdown()
 

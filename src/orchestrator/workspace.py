@@ -121,6 +121,17 @@ class WorkspaceMixin:
         except OSError:
             pass
 
+    async def _ensure_daemon_git_exclude(self, workspace: str, *, is_worktree: bool) -> None:
+        """Install daemon bookkeeping excludes when *workspace* is a checkout."""
+        if not await self.git.avalidate_checkout(workspace):
+            return
+        exclude_root = workspace
+        if is_worktree:
+            exclude_root = await self.git.aworktree_base_path(workspace) or workspace
+        from src.orchestrator.worktree_manager import WorktreeSlotManager
+
+        WorktreeSlotManager.ensure_git_exclude(exclude_root)
+
     async def _prepare_workspace(self, task: Task, agent) -> str | None:
         async with self._task_control_lock(task.id):
             current = await self.db.get_task(task.id)
@@ -332,6 +343,11 @@ class WorkspaceMixin:
         except OSError as e:
             logger.warning("Failed to write sentinel to %s: %s", workspace, e)
 
+        # A resumed exclusive clone returns below, before ordinary clone
+        # provisioning. Install the managed block first whenever this is
+        # already a checkout so its restored session cannot stage daemon state.
+        await self._ensure_daemon_git_exclude(workspace, is_worktree=is_worktree)
+
         from src.orchestrator.task_checkpoint import CHECKPOINT_META, restore_checkpoint
         if await self.db.get_task_meta(task.id, CHECKPOINT_META):
             try:
@@ -370,7 +386,6 @@ class WorkspaceMixin:
         # proper branch management.  Errors are reported via Discord
         # notification so operators are aware.
         try:
-            exclude_root = workspace
             if is_worktree:
                 # Legacy WORKTREE row: a pre-existing branch-isolated worktree
                 # from before worktree-execution retired that fallback.  New
@@ -380,8 +395,6 @@ class WorkspaceMixin:
                 # Fetch is automatically serialized by the GitManager lock
                 # provider — no need for explicit mutex acquisition here.
                 base_path = await self.git.aworktree_base_path(workspace)
-                if base_path:
-                    exclude_root = base_path
                 if base_path and await self.git.ahas_remote(base_path):
                     await self.git._arun(["fetch", "origin"], cwd=base_path)
             else:
@@ -454,15 +467,9 @@ class WorkspaceMixin:
                             cwd=workspace,
                         )
 
-            # Pool and task runtimes write daemon-owned state in their working
-            # directory.  Keep it out of the task diff for every checked-out
-            # workspace, not only worktree slots (whose creation already does
-            # this).  A legacy worktree shares its base repository's exclude
-            # file, so target that common checkout instead.
-            if await self.git.avalidate_checkout(workspace):
-                from src.orchestrator.worktree_manager import WorktreeSlotManager
-
-                WorktreeSlotManager.ensure_git_exclude(exclude_root)
+            # A newly created clone was not a checkout before the checkpoint
+            # path above, so apply the same exclusion after provisioning.
+            await self._ensure_daemon_git_exclude(workspace, is_worktree=is_worktree)
 
             # Update task branch in DB
             await self.db.update_task(task.id, branch_name=branch_name)

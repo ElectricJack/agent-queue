@@ -426,9 +426,19 @@ class GitOpsMixin:
         if not pr_mode and not await self._task_is_worktree_mode(ctx):
             return False
         try:
-            return await self._abranch_has_no_commits(
-                workspace, branch, ctx.default_branch or "main"
-            )
+            default_branch = ctx.default_branch or "main"
+            if await self._abranch_has_no_commits(workspace, branch, default_branch):
+                return True
+            if pr_mode:
+                current_branch = await self.git.aget_current_branch(workspace)
+                if (
+                    current_branch == default_branch
+                    and not await self.git.ahas_uncommitted_changes(workspace)
+                ):
+                    return await self._assigned_branch_is_absent(
+                        workspace, branch, default_branch
+                    )
+            return False
         except Exception as e:
             logger.warning(
                 "Task %s: empty-branch check failed (assuming it has work): %s",
@@ -882,9 +892,20 @@ class GitOpsMixin:
                         True,  # fixable — agent can commit and push
                     )
                 )
-            if not has_uncommitted and await self._abranch_has_no_commits(
+            branch_has_no_commits = not has_uncommitted and await self._abranch_has_no_commits(
                 workspace, pr_delivery_branch, default_branch
+            )
+            branch_is_absent = False
+            if (
+                not branch_has_no_commits
+                and not has_uncommitted
+                and current_branch == default_branch
+                and task.branch_name
             ):
+                branch_is_absent = await self._assigned_branch_is_absent(
+                    workspace, pr_delivery_branch, default_branch
+                )
+            if branch_has_no_commits or branch_is_absent:
                 if (
                     task.branch_name
                     and current_branch != default_branch
@@ -1131,6 +1152,23 @@ class GitOpsMixin:
             if count is not None:
                 return count == 0
         return False
+
+    async def _assigned_branch_is_absent(
+        self, workspace: str, branch: str, default_branch: str
+    ) -> bool:
+        """True only when a clean-default checkout's assigned branch is absent.
+
+        A missing ref and a Git failure both make ``acount_commits_ahead``
+        return ``None``. Check the ref separately only after both counts are
+        unknown; a real Git error remains unknown and keeps the PR gate armed.
+        """
+        for base in (f"origin/{default_branch}", default_branch):
+            if await self.git.acount_commits_ahead(workspace, branch, base) is not None:
+                return False
+        try:
+            return await self.git.abranch_exists(workspace, branch) is False
+        except Exception:
+            return False
 
     async def _auto_remediate_uncommitted(
         self,

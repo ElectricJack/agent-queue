@@ -220,6 +220,18 @@ class TestAsyncFindOpenPr:
         """An unknown base is "unknown", never a silent zero."""
         assert await mgr.acount_commits_ahead(clone, "main", "origin/nope") is None
 
+    @pytest.mark.asyncio
+    async def test_branch_exists_distinguishes_absence_from_command_failure(
+        self, mgr, clone, monkeypatch
+    ):
+        assert await mgr.abranch_exists(clone, "missing") is False
+        monkeypatch.setattr(
+            mgr,
+            "_arun_subprocess",
+            AsyncMock(return_value=SimpleNamespace(returncode=128, stdout="", stderr="broken")),
+        )
+        assert await mgr.abranch_exists(clone, "missing") is None
+
 
 class TestAsyncGetStatus:
     @pytest.mark.asyncio
@@ -255,6 +267,26 @@ class TestAsyncCommitAll:
     async def test_no_changes(self, clone, mgr):
         committed = await mgr.acommit_all(clone, "nothing")
         assert committed is False
+
+    @pytest.mark.asyncio
+    async def test_auto_remediation_never_commits_reserved_daemon_paths(self, clone, mgr):
+        """Reserved bookkeeping stays unstaged even when it is already tracked."""
+        reserved_paths = (".aq/claim.json", ".aq-worktree.json", ".codex/hooks.json")
+        for path in reserved_paths:
+            target = pathlib.Path(clone, path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("before\n")
+        _git(["add", *reserved_paths], cwd=clone)
+        _git(["commit", "-m", "tracked daemon paths"], cwd=clone)
+
+        for path in reserved_paths:
+            pathlib.Path(clone, path).write_text("after\n")
+        pathlib.Path(clone, "work.txt").write_text("real work\n")
+
+        assert await mgr.acommit_all(clone, "auto remediation", exclude_plans=False)
+        committed_paths = _git(["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"], cwd=clone)
+        assert committed_paths.splitlines() == ["work.txt"]
+        assert set(_git(["diff", "--name-only"], cwd=clone).splitlines()) == set(reserved_paths)
 
     @pytest.mark.asyncio
     async def test_emits_git_commit_event(self, clone, mgr):

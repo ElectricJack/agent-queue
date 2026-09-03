@@ -744,6 +744,18 @@ class TestEmptyBranchSkipsThePrGate:
         assert await orch._phase_verify(ctx) == PhaseResult.STOP
         assert any("No open PR" in msg for msg in ctx.verification_issues)
 
+    async def test_unknown_assigned_branch_probe_keeps_the_pr_gate(self, orch):
+        """A Git error must not look like an absent task branch."""
+        task, ctx = await self._empty_branch_ctx(orch, "t-unknown", "aq/t-unknown")
+        orch.git.aget_current_branch = AsyncMock(return_value="main")
+        orch.git.acount_commits_ahead = AsyncMock(return_value=None)
+        orch.git.abranch_exists = AsyncMock(return_value=None)
+        orch.git.afind_open_pr = AsyncMock(return_value=None)
+        orch.git.ais_ancestor = AsyncMock(return_value=False)
+
+        assert await orch._phase_verify(ctx) == PhaseResult.STOP
+        assert any("No open PR" in msg for msg in ctx.verification_issues)
+
     async def test_a_dirty_empty_branch_still_needs_a_pr(self, orch, monkeypatch):
         """Uncommitted work is work — the agent has to commit and PR it."""
         _task, ctx = await self._empty_branch_ctx(orch, "t-dirty-empty", "aq/t-dirty-empty")

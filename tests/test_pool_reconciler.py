@@ -139,6 +139,31 @@ async def ready(db, tid, *, profile_id="worker", intelligence_class=None):
 
 
 class TestReconcilePools:
+    async def test_exclusive_clone_pool_handoff_installs_daemon_excludes(
+        self, orch, db, tmp_path, monkeypatch
+    ):
+        """Pool launch protects its checkout before the session receives it."""
+        from src.orchestrator.worktree_manager import WorktreeSlotManager
+
+        orch.config.worktrees.enabled = False
+        workspace = tmp_path / "ws0"
+        (workspace / ".git").mkdir(parents=True)
+        orch.git.avalidate_checkout = AsyncMock(return_value=True)
+        orch.git.aworktree_base_path = AsyncMock(return_value=None)
+        calls: list[str] = []
+        monkeypatch.setattr(
+            WorktreeSlotManager,
+            "ensure_git_exclude",
+            staticmethod(lambda path: calls.append(str(path)) or True),
+        )
+
+        session_id = await orch._launch_pool_session(
+            await db.get_project(PROJECT_ID), await db.get_profile("worker")
+        )
+
+        assert session_id is not None
+        assert calls == [str(workspace)]
+
     async def test_starts_sessions_for_ready_work(self, orch, db):
         for t in ("t1", "t2", "t3"):
             await ready(db, t)
