@@ -62,6 +62,7 @@ SHIPPED_HARNESS_HASHES: Mapping[str, frozenset[str]] = {
             "314a36b9a946f95737230ba41401e7624b84325b9c8f4616c3d80ecfc9daf854",  # 0bcaefe9 2026-09-01
             "69c946e751315e37f8af36d7c43ae364d01ffe166c248f314c74db46e499e991",  # 28f8481e 2026-09-02
             "76ad7c1261dd56beeafa750b53394fe28040cd86b2301a42fafee66b51db2d78",  # 5e65efe9 2026-09-02 (PR #212)
+            "c002fa5b88f0a942a38f81649eac0cb694bb48ec8b80ef190b992ac91b15e135",  # ca7ffda9 2026-09-03
         }
     ),
     "codex.md": frozenset(
@@ -74,6 +75,7 @@ SHIPPED_HARNESS_HASHES: Mapping[str, frozenset[str]] = {
             "7eb57eb1e25979ba733cc795fb4830c4cdd863d6b86f5cfd88fdbcca41801368",  # 21688ff2 2026-09-01
             "e8d6273fd9c27416b9b72287f477e91d3655bebd0ff1b4e0bc177bb1d4a71bf5",  # 0bcaefe9 2026-09-01
             "2d322783e676dfa4fede595a93b6d3b2706a4628c306ce00a10d7233ca10b07e",  # 5e65efe9 2026-09-02 (PR #212)
+            "8cc90bc5c0e99cf7e737bef15368de5e34ff0293b78044fc76aaaceda837f9a3",  # ca7ffda9 2026-09-03
         }
     ),
     "gemini.md": frozenset(
