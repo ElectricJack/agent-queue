@@ -808,8 +808,6 @@ class DatabaseConfig:
 #: values the config file does.
 PENDING_EVENT_OVERFLOW_POLICIES: tuple[str, ...] = ("drop_oldest", "reject_new")
 
-#: The two states ``PlaybooksConfig.v1_admission`` may hold (Package 7 §3.4).
-V1_ADMISSION_STATES: tuple[str, ...] = ("open", "closed")
 PENDING_EVENT_REPLAY_POLICIES: tuple[str, ...] = ("manual", "automatic")
 
 
@@ -822,9 +820,6 @@ class PlaybooksConfig:
     """
 
     enabled: bool = False
-    #: Add contract-derived intent to V1 graph-view nodes.  Removed in Package 5.
-    contract_intent: bool = True
-    v2_storage_enabled: bool = False
     v2_max_artifact_bytes: int = 1_048_576
     v2_max_result_bytes: int = 262_144
     v2_max_snapshot_bytes: int = 4_194_304
@@ -854,46 +849,14 @@ class PlaybooksConfig:
     v2_artifact_min_versions: int = 10
     v2_retention_sweep_interval_seconds: int = 3600
 
-    #: Playbook V2 semantic-graph read surface (graph, activation health,
-    #: artifact diff, pending events, run overlay).  Package 5 owns it;
-    #: Package 7 removes the flag together with the V1 graph command.
-    v2_api: bool = False
-
-    #: Reach the unified V2 executor from production entry points. Package 7
-    #: removes this rollback flag after the V1 runtime is drained.
-    v2_engine: bool = False
     v2_dry_run_max_paths: int = 32
     v2_dry_run_max_step_visits: int = 1000
-
-    #: Playbook V2 operator *writes* (activate an artifact, resolve a pending
-    #: event).  Deliberately separate from ``v2_api`` so the whole review
-    #: surface stays readable with writes disabled — roadmap Package 5's
-    #: rollback boundary: "Activation writes are independently feature-gated
-    #: from graph reads."  Removed in Package 7.
-    v2_activation_writes: bool = False
-
-    #: Review-only Package 2 compiler commands.  Compilation, validation and
-    #: shadow reports never persist or activate an artifact.  Removed in
-    #: Playbook V2 Package 7.
-    v2_compiler_enabled: bool = False
 
     #: How long ``PlaybookEngine.cancel`` waits for an in-flight executor to
     #: acknowledge before it ends the run itself (V2 child plan §4.9, §9).
     #: ``0`` means "do not wait": the run reaches ``cancelled`` immediately and
     #: the receipt records ``grace_expired``.
     cancellation_grace_seconds: int = 30
-
-    #: Whether new V1 playbook runs may still start.  ``open`` is the
-    #: pre-cutover state; ``closed`` refuses new V1 dispatch while leaving
-    #: already-paused V1 runs resumable, which is what "drain" means
-    #: operationally (Package 7 §3.4).  Flipped by the operator at gate G1
-    #: through ``playbook_v1_admission_close``; removed together with the rest
-    #: of the drain surface once the V1 runtime is deleted.
-    #:
-    #: Deliberately independent of ``v2_engine``: draining happens *while* the
-    #: fleet is still on V1, and a rollback flips ``v2_engine`` back without
-    #: reopening admission.
-    v1_admission: str = "open"
 
     def validate(
         self, *, activation_healths: Mapping[str, str] | None = None
@@ -932,36 +895,9 @@ class PlaybooksConfig:
         for field_name in ("v2_dry_run_max_paths", "v2_dry_run_max_step_visits"):
             if getattr(self, field_name) < 1:
                 errors.append(ConfigError("playbooks", field_name, "must be >= 1"))
-        if self.v2_engine and not self.enabled:
-            errors.append(
-                ConfigError(
-                    "playbooks",
-                    "v2_engine",
-                    "requires playbooks.enabled=true",
-                )
-            )
         if self.cancellation_grace_seconds < 0:
             errors.append(
                 ConfigError("playbooks", "cancellation_grace_seconds", "must be >= 0")
-            )
-        if self.v1_admission not in V1_ADMISSION_STATES:
-            errors.append(
-                ConfigError(
-                    "playbooks",
-                    "v1_admission",
-                    f"must be one of {', '.join(V1_ADMISSION_STATES)}",
-                )
-            )
-        elif self.v2_engine and self.v1_admission == "open":
-            # Once V2 owns dispatch, "V1 admission open" describes nothing --
-            # and it would let a rollback silently start new V1 runs against
-            # artifacts nobody reviewed (Package 7 §3.4).
-            errors.append(
-                ConfigError(
-                    "playbooks",
-                    "v1_admission",
-                    "must be 'closed' once playbooks.v2_engine=true",
-                )
             )
         if self.v2_pending_event_on_overflow not in PENDING_EVENT_OVERFLOW_POLICIES:
             errors.append(
@@ -2550,8 +2486,7 @@ def _dataclass_kwargs(cls: type, section: object) -> dict:
     """:func:`_present_kwargs` with the spec read off the dataclass itself.
 
     A hand-written keyword list is how a declared field becomes an
-    unreachable config key.  ``playbooks.v2_api`` and four siblings
-    (steady-ridge-97), and 54 more fields across ``chat_analyzer`` (since
+    unreachable config key. Fifty-four fields across ``chat_analyzer`` (since
     deleted as dead — prime-torrent-81), ``streams``, ``logging``,
     ``monitoring``, ``memory`` and ``metrics`` (grand-glacier-97), were all
     declared, documented and silently pinned to their code default because
@@ -2701,29 +2636,9 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         pb = raw["playbooks"]
         config.playbooks = PlaybooksConfig(
             enabled=bool(pb.get("enabled", False)),
-            contract_intent=bool(pb.get("contract_intent", True)),
-            v2_api=bool(pb.get("v2_api", False)),
-            v2_activation_writes=bool(pb.get("v2_activation_writes", False)),
-            v2_compiler_enabled=bool(pb.get("v2_compiler_enabled", False)),
             cancellation_grace_seconds=int(pb.get("cancellation_grace_seconds", 30)),
-            v2_engine=bool(pb.get("v2_engine", False)),
-            # An unset ``v1_admission`` on a fleet that is already on the V2
-            # engine resolves to ``closed``, not to the bare default.  It is
-            # the truthful description of that fleet -- nothing dispatches V1
-            # there -- and it is what keeps Package 7 §3.4's incoherent-pair
-            # rule from refusing to boot a daemon that turned on ``v2_engine``
-            # before the rule existed.  An *explicit* ``v1_admission: open``
-            # alongside ``v2_engine: true`` is still a validation error: that
-            # one the operator wrote.
-            v1_admission=str(
-                pb.get(
-                    "v1_admission",
-                    "closed" if bool(pb.get("v2_engine", False)) else "open",
-                )
-            ),
             v2_dry_run_max_paths=int(pb.get("v2_dry_run_max_paths", 32)),
             v2_dry_run_max_step_visits=int(pb.get("v2_dry_run_max_step_visits", 1000)),
-            v2_storage_enabled=bool(pb.get("v2_storage_enabled", False)),
             v2_max_artifact_bytes=int(pb.get("v2_max_artifact_bytes", 1_048_576)),
             v2_max_result_bytes=int(pb.get("v2_max_result_bytes", 262_144)),
             v2_max_snapshot_bytes=int(pb.get("v2_max_snapshot_bytes", 4_194_304)),

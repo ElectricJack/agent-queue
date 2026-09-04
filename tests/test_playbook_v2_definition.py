@@ -165,12 +165,9 @@ class TestCanonicalSerialization:
         assert contract_fingerprint(widened) == contract_fingerprint(golden)
         assert golden.contract_fingerprint() == contract_fingerprint(golden)
 
-    def test_source_digest_reuses_v1_normalization(self):
-        from src.playbooks.compiler import PlaybookCompiler
-
+    def test_source_digest_uses_stable_normalization(self):
         markdown = "# Title\r\n\r\n  Body \n"
-        expected = PlaybookCompiler._normalize_content(markdown)
-        assert D.normalize_source(markdown) == expected
+        assert D.normalize_source(markdown) == "\n---\n# Title\n\n  Body"
         assert source_digest(markdown).startswith("sha256:")
         assert len(source_digest(markdown)) == len("sha256:") + 64
 

@@ -17,7 +17,7 @@ T = TypeVar("T", bound="PlaybookV2ImportResponse")
 
 @_attrs_define
 class PlaybookV2ImportResponse:
-    """A reviewed artifact persisted as an inactive activation candidate.
+    """A validated artifact persisted as an inactive activation candidate.
 
     Attributes:
         success (bool):
@@ -28,8 +28,6 @@ class PlaybookV2ImportResponse:
         version (int):
         source_sha256 (str):
         contract_fingerprint (str):
-        reviewed_by (str):
-        reviewed_at (str):
         activated (bool):
         scope_identifier (None | str | Unset):
         diagnostics (list[CompilerDiagnosticDTO] | Unset):
@@ -43,8 +41,6 @@ class PlaybookV2ImportResponse:
     version: int
     source_sha256: str
     contract_fingerprint: str
-    reviewed_by: str
-    reviewed_at: str
     activated: bool
     scope_identifier: None | str | Unset = UNSET
     diagnostics: list[CompilerDiagnosticDTO] | Unset = UNSET
@@ -65,10 +61,6 @@ class PlaybookV2ImportResponse:
         source_sha256 = self.source_sha256
 
         contract_fingerprint = self.contract_fingerprint
-
-        reviewed_by = self.reviewed_by
-
-        reviewed_at = self.reviewed_at
 
         activated = self.activated
 
@@ -97,8 +89,6 @@ class PlaybookV2ImportResponse:
                 "version": version,
                 "source_sha256": source_sha256,
                 "contract_fingerprint": contract_fingerprint,
-                "reviewed_by": reviewed_by,
-                "reviewed_at": reviewed_at,
                 "activated": activated,
             }
         )
@@ -132,10 +122,6 @@ class PlaybookV2ImportResponse:
 
         contract_fingerprint = d.pop("contract_fingerprint")
 
-        reviewed_by = d.pop("reviewed_by")
-
-        reviewed_at = d.pop("reviewed_at")
-
         activated = d.pop("activated")
 
         def _parse_scope_identifier(data: object) -> None | str | Unset:
@@ -165,8 +151,6 @@ class PlaybookV2ImportResponse:
             version=version,
             source_sha256=source_sha256,
             contract_fingerprint=contract_fingerprint,
-            reviewed_by=reviewed_by,
-            reviewed_at=reviewed_at,
             activated=activated,
             scope_identifier=scope_identifier,
             diagnostics=diagnostics,

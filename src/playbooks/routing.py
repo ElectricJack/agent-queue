@@ -28,29 +28,6 @@ from src.playbooks.expressions import (
 logger = logging.getLogger(__name__)
 
 
-_DEPRECATED_DEFAULT_ASSIGNMENT_RULES = (
-    "task-created-routing",
-    "worker-filed-triage",
-)
-
-
-def is_deprecated_default_assignment_entry(playbook, entry: str) -> bool:
-    """Identify cached system-default rule entries superseded by the router."""
-
-    scope = getattr(playbook, "scope", "")
-    scope = getattr(scope, "value", scope)
-    if (
-        getattr(playbook, "id", "") != "default-pipeline"
-        or getattr(playbook, "kind", "") != "pipeline"
-        or scope != "system"
-    ):
-        return False
-    return any(
-        entry == rule_id or entry.startswith(f"{rule_id}-")
-        for rule_id in _DEPRECATED_DEFAULT_ASSIGNMENT_RULES
-    )
-
-
 @dataclass(frozen=True, slots=True)
 class CommandEffect:
     """One reachable V2 command with its event-resolved inputs."""
@@ -183,7 +160,6 @@ def _loaded_activations(
     ]
     if not matching:
         raise _RoutingArtifactUnavailable("no ready routing activation matches this event")
-
     loaded: list[tuple[Mapping[str, Any], PlaybookDefinition]] = []
     for row in matching:
         sha = str(row["active_artifact_sha256"])
@@ -198,30 +174,22 @@ def _loaded_activations(
                 f"activation names {row.get('playbook_id')!r}, artifact names {artifact.id!r}"
             )
         loaded.append((row, artifact))
-    return loaded
-
-
-def _selected_pipeline_ids(manager: Any, event: Mapping[str, Any]) -> set[str] | None:
-    """V1 manager's metadata-only shadowing answer while both formats coexist.
-
-    The production dispatcher still applies role shadowing in
-    ``PlaybookManager`` before constraining V2 dispatch by playbook id. Reuse
-    that same metadata decision here, but never inspect a V1 rule or node. A
-    manager without V1 candidates (lightweight tests and the eventual V1-free
-    manager) leaves V2 activations unfiltered.
-    """
-
-    get_candidates = getattr(manager, "get_playbooks_by_trigger", None)
-    select = getattr(manager, "_select_after_shadowing", None)
-    if not callable(get_candidates) or not callable(select):
-        return None
-    candidates = get_candidates("task.created")
-    if not isinstance(candidates, list) or not candidates:
-        return None
-    selected = select(candidates, dict(event))
-    return {
-        str(playbook.id) for playbook in selected if getattr(playbook, "kind", None) == "pipeline"
+    # A project activation overrides system routing only when it actually owns
+    # the event. An unrelated project-scoped hook must not hide the system
+    # task-created admission policy.
+    system_ids = {
+        str(row.get("playbook_id")) for row, _artifact in loaded if row.get("scope") == "system"
     }
+    project_loaded = [
+        item
+        for item in loaded
+        if item[0].get("scope") == "project"
+        and str(item[0].get("playbook_id")) in system_ids
+        and any(rule.trigger.event_type == str(event.get("type") or "task.created") for rule in item[1].rules)
+    ]
+    if project_loaded:
+        return project_loaded
+    return loaded
 
 
 def _artifact_command_effects(
@@ -237,8 +205,7 @@ def _artifact_command_effects(
     connection; task creation calls it while already holding a write transaction.
     """
 
-    selected_ids = _selected_pipeline_ids(manager, event)
-    loaded = _loaded_activations(manager, event, selected_ids=selected_ids)
+    loaded = _loaded_activations(manager, event)
     for row, artifact in loaded:
         for rule in artifact.rules:
             if not _trigger_matches(rule, event, match_filter=match_filter):

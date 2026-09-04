@@ -27,7 +27,6 @@ from src.models import (
     Agent,
     AgentProfile,
     AgentState,
-    PlaybookRun,
     Project,
     ProjectStatus,
     RepoConfig,
@@ -516,22 +515,6 @@ class DatabaseBackend(Protocol):
     async def count_ready_by_profile(self, project_id: str) -> dict[str | None, int]: ...
 
     # --- Hooks / Hook Runs removed (playbooks spec §13 Phase 3) ---
-
-    # --- Playbook Runs ---
-
-    async def create_playbook_run(self, run: PlaybookRun) -> None: ...
-    async def get_playbook_run(self, run_id: str) -> PlaybookRun | None: ...
-    async def list_playbook_runs(
-        self,
-        playbook_id: str | None = None,
-        status: str | None = None,
-        limit: int = 50,
-    ) -> list[PlaybookRun]: ...
-    async def update_playbook_run(self, run_id: str, **kwargs) -> None: ...
-    async def delete_playbook_run(self, run_id: str) -> None: ...
-    async def get_playbook_run_by_event(
-        self, playbook_id: str, event_id: str
-    ) -> PlaybookRun | None: ...
 
     # --- Workflows ---
 

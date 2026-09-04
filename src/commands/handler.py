@@ -51,8 +51,6 @@ from src.commands.profile_commands import ProfileCommandsMixin
 from src.commands.mcp_commands import McpCommandsMixin
 from src.commands.notes_commands import NotesCommandsMixin
 from src.commands.playbook_commands import PlaybookCommandsMixin
-from src.commands.playbook_cutover_commands import PlaybookCutoverCommandsMixin
-from src.commands.playbook_migration_commands import PlaybookMigrationCommandsMixin
 from src.commands.playbook_v2_commands import (
     PLAYBOOK_V2_ARTIFACT_COMMANDS,
     PLAYBOOK_V2_COMMANDS,
@@ -82,7 +80,6 @@ from src.commands.git_commands import GitCommandsMixin
 # -- dv2 phase 6 mixins ---------------------------------------------------
 from src.commands.proposal_commands import TaskProposalCommandsMixin
 from src.commands.spec_commands import SpecCommandsMixin
-from src.playbooks.validator_command import PlaybookValidateInstallMixin
 
 logger = logging.getLogger(__name__)
 
@@ -202,10 +199,7 @@ PAUSED_PLAYBOOK_COMMANDS: frozenset[str] = frozenset(
         "advance_workflow_stage",
         "workflow_pipeline_view",
     }
-    # src/commands/playbook_v2_commands.py (7 + the artifact chooser) --
-    # the V2 semantic-graph surface pauses with the rest of the subsystem,
-    # on top of its own ``playbooks.v2_api`` /
-    # ``playbooks.v2_activation_writes`` flags.
+    # The V2 semantic-graph surface pauses with the rest of the subsystem.
     | PLAYBOOK_V2_COMMANDS
     | PLAYBOOK_V2_ARTIFACT_COMMANDS
     | PLAYBOOK_V2_COMPILER_COMMANDS
@@ -341,8 +335,6 @@ class CommandHandler(
     NotesCommandsMixin,
     PlaybookCommandsMixin,
     PlaybookV2CommandsMixin,
-    PlaybookMigrationCommandsMixin,
-    PlaybookCutoverCommandsMixin,
     WorkflowCommandsMixin,
     PluginCommandsMixin,
     ToolCommandsMixin,
@@ -360,7 +352,6 @@ class CommandHandler(
     # -- dv2 phase 2 mixins -----------------------------------------------
     GitCommandsMixin,
     # -- dv2 phase 6 mixins -----------------------------------------------
-    PlaybookValidateInstallMixin,
     TaskProposalCommandsMixin,
     SpecCommandsMixin,
 ):
@@ -402,8 +393,6 @@ class CommandHandler(
     - :class:`ProfileCommandsMixin` — agent profile CRUD
     - :class:`NotesCommandsMixin` — note path helpers
     - :class:`PlaybookCommandsMixin` — playbook compile, run, health
-    - :class:`PlaybookMigrationCommandsMixin` — V1→V2 inventory and waivers
-    - :class:`PlaybookCutoverCommandsMixin` — V1 drain, runtime switch, window
     - :class:`PlaybookV2CommandsMixin` — V2 semantic graph, diff, activation
     - :class:`WorkflowCommandsMixin` — workflow CRUD, stage advancement
     - :class:`PluginCommandsMixin` — plugin lifecycle

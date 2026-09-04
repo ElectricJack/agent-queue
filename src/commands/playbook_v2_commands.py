@@ -577,7 +577,7 @@ class PlaybookV2CommandsMixin:
 
         ``path`` names a directory inside the configured vault containing the
         Package 6 bundle layout: ``artifact.json``, ``artifact.sha256``,
-        ``source.md`` and ``review.md``.  The metadata binds the exact playbook,
+        ``source.md`` and ``manifest.md``.  The metadata binds the exact playbook,
         artifact, source, profiles, and command-contract fingerprints; it does
         not impose a human approval policy.  The artifact is parsed
         strictly, must already be canonical, and is revalidated against the
@@ -589,7 +589,7 @@ class PlaybookV2CommandsMixin:
         this attempt is removed.  No activation row is read or written.
 
         Args:
-            path: Vault-relative or absolute path to the reviewed bundle
+            path: Vault-relative or absolute path to the artifact bundle
                 directory.
         """
         from src.commands.principal import PrincipalKind, current_principal
@@ -600,7 +600,7 @@ class PlaybookV2CommandsMixin:
         ):
             return {
                 "success": False,
-                "error": "out of scope: playbook_v2_import requires an operator",
+                "error": "out of scope: playbook_v2_import requires elevated capability scope",
             }
         if not self._v2_api_enabled():
             return {"success": False, "error": V2_API_DISABLED_ERROR}
@@ -627,7 +627,7 @@ class PlaybookV2CommandsMixin:
         required: dict[str, Path] = {}
         missing: list[str] = []
         vault_root = self._v2_vault_root()
-        for name in ("artifact.json", "artifact.sha256", "source.md", "review.md"):
+        for name in ("artifact.json", "artifact.sha256", "source.md", "manifest.md"):
             try:
                 resolved = (directory / name).resolve()
                 resolved.relative_to(vault_root)
@@ -642,14 +642,14 @@ class PlaybookV2CommandsMixin:
         if missing:
             return {
                 "success": False,
-                "error": f"reviewed artifact bundle is incomplete; missing {', '.join(missing)}",
+                "error": f"artifact bundle is incomplete; missing {', '.join(missing)}",
             }
 
         try:
             artifact_bytes = required["artifact.json"].read_bytes()
             definition = load_definition_json(artifact_bytes.decode("utf-8"))
         except (OSError, UnicodeDecodeError, ValueError, ValidationError, json.JSONDecodeError) as exc:
-            return {"success": False, "error": f"invalid reviewed artifact: {exc}"}
+            return {"success": False, "error": f"invalid artifact: {exc}"}
         if canonical_bytes(definition) != artifact_bytes:
             return {
                 "success": False,
@@ -677,17 +677,17 @@ class PlaybookV2CommandsMixin:
             }
 
         try:
-            review_text = required["review.md"].read_text(encoding="utf-8")
-            if not review_text.startswith("---\n"):
-                raise ValueError("review.md has no YAML frontmatter")
-            end = review_text.find("\n---\n", 4)
+            manifest_text = required["manifest.md"].read_text(encoding="utf-8")
+            if not manifest_text.startswith("---\n"):
+                raise ValueError("manifest.md has no YAML frontmatter")
+            end = manifest_text.find("\n---\n", 4)
             if end < 0:
-                raise ValueError("review.md has no closing YAML frontmatter marker")
-            review = yaml.load(review_text[4:end], Loader=_UniqueReviewLoader)
-            if not isinstance(review, dict):
-                raise ValueError("review.md frontmatter is not a mapping")
+                raise ValueError("manifest.md has no closing YAML frontmatter marker")
+            manifest = yaml.load(manifest_text[4:end], Loader=_UniqueReviewLoader)
+            if not isinstance(manifest, dict):
+                raise ValueError("manifest.md frontmatter is not a mapping")
         except (OSError, ValueError, yaml.YAMLError) as exc:
-            return {"success": False, "error": f"review evidence is invalid: {exc}"}
+            return {"success": False, "error": f"artifact manifest is invalid: {exc}"}
 
 
         expected = {
@@ -697,23 +697,23 @@ class PlaybookV2CommandsMixin:
             "contract_fingerprint": definition.contract_fingerprint(),
         }
         for field, value in expected.items():
-            if review.get(field) != value:
+            if manifest.get(field) != value:
                 return {
                     "success": False,
-                    "error": f"review.md {field} does not match the reviewed artifact",
+                    "error": f"manifest.md {field} does not match the artifact",
                 }
         if directory.name != definition.id:
             return {
                 "success": False,
-                "error": "reviewed bundle directory name does not match playbook_id",
+                "error": "artifact bundle directory name does not match playbook_id",
             }
-        reviewed_profiles = review.get("profiles_referenced")
-        if not isinstance(reviewed_profiles, list) or sorted(reviewed_profiles) != list(
+        manifest_profiles = manifest.get("profiles_referenced")
+        if not isinstance(manifest_profiles, list) or sorted(manifest_profiles) != list(
             referenced_profile_ids(definition)
         ):
             return {
                 "success": False,
-                "error": "review.md profiles_referenced does not match the reviewed artifact",
+                "error": "manifest.md profiles_referenced does not match the artifact",
             }
         try:
             source_text = required["source.md"].read_text(encoding="utf-8")
@@ -737,7 +737,7 @@ class PlaybookV2CommandsMixin:
         if any(diagnostic.severity in {"error", "question"} for diagnostic in diagnostics):
             return {
                 "success": False,
-                "error": "reviewed artifact does not validate against the live registries",
+                "error": "artifact does not validate against the live registries",
                 "diagnostics": diagnostic_rows,
             }
 
@@ -795,7 +795,7 @@ class PlaybookV2CommandsMixin:
             if not isinstance(exc, Exception):
                 raise
             logger.warning("could not import reviewed V2 artifact %s", actual_sha, exc_info=True)
-            return {"success": False, "error": f"reviewed artifact import failed: {exc}"}
+            return {"success": False, "error": f"artifact import failed: {exc}"}
 
         return {
             "success": True,

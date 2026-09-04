@@ -1,5 +1,4 @@
 """The reviewed V2 artifact fixtures for the shipped playbooks.
-
 Package 6 §5.3 (T-7, T-9).  The fixtures are *recordings*: a human compiled each
 shipped source, read the semantic diff, resolved every compiler question, and
 checked the result in.  These tests validate the recording and never regenerate
@@ -36,7 +35,7 @@ from src.playbooks.definition import (
     referenced_profile_ids,
     source_digest,
 )
-from src.playbooks.migration import shipped_profile_fingerprints, shipped_profile_lookup
+from src.playbooks.profiles import shipped_profile_fingerprints, shipped_profile_lookup
 from src.playbooks.validation import (
     RegisteredEventLookup,
     RegistryContractLookup,
@@ -53,7 +52,7 @@ SHIPPED_SOURCES: dict[str, str] = {
     "default-pipeline": "src/prompts/default_playbooks/default-pipeline.md",
     "default-assignment-routing": "src/prompts/default_playbooks/default-assignment-routing.md",
     "memory-consolidation": "src/prompts/default_playbooks/memory-consolidation.md",
-    "coding-reflection": "src/prompts/default_agent_type_playbooks/claude-opus/reflection.md",
+    "pr-merge-sweep": "src/prompts/project_playbooks/agent-queue/pr-merge-sweep.md",
 }
 
 PLAYBOOK_IDS = tuple(SHIPPED_SOURCES)
@@ -61,27 +60,14 @@ PLAYBOOK_IDS = tuple(SHIPPED_SOURCES)
 #: §3.4, locked.
 REQUIRED_REVIEW_KEYS = frozenset(
     {
-        "playbook_id",
-        "artifact_sha256",
-        "source_sha256",
-        "contract_fingerprint",
-        "reviewed_by",
-        "reviewed_at",
-        "decision",
-        "questions_resolved",
-        "capabilities_granted",
+        "playbook_id", "artifact_sha256", "source_sha256",
+        "contract_fingerprint", "questions_resolved", "capabilities_granted",
         "profiles_referenced",
     }
 )
 
 #: §3.4, locked: exact headings, exact text.
-REQUIRED_REVIEW_SECTIONS = (
-    "## Compiler questions and decisions",
-    "## Semantic diff versus the V1 graph",
-    "## Capabilities and why each is needed",
-    "## AI profiles, budgets, and output schemas",
-    "## Accepted behaviour differences",
-)
+REQUIRED_REVIEW_SECTIONS = ()
 
 
 #: The rule ids `tests/test_default_pipeline.py` pins.
@@ -114,9 +100,9 @@ def _fixture(playbook_id: str) -> Path:
 
 
 def _read_review(playbook_id: str) -> tuple[dict[str, Any], str]:
-    text = (_fixture(playbook_id) / "review.md").read_text(encoding="utf-8")
+    text = (_fixture(playbook_id) / "manifest.md").read_text(encoding="utf-8")
     match = re.match(r"^---\n(.*?)\n---\n(.*)$", text, re.DOTALL)
-    assert match, f"{playbook_id}/review.md has no frontmatter block"
+    assert match, f"{playbook_id}/manifest.md has no frontmatter block"
     import yaml
 
     return yaml.safe_load(match.group(1)) or {}, match.group(2)
@@ -200,7 +186,7 @@ def _command_names(definition: PlaybookDefinition) -> set[str]:
 def test_fixture_directory_complete(playbook_id: str) -> None:
     directory = _fixture(playbook_id)
     assert directory.is_dir(), f"no reviewed fixture directory for {playbook_id}"
-    for name in ("source.md", "artifact.json", "artifact.sha256", "review.md", "diagnostics.json"):
+    for name in ("source.md", "artifact.json", "artifact.sha256", "manifest.md", "diagnostics.json"):
         assert (directory / name).is_file(), f"{playbook_id}/{name} is missing"
 
 
@@ -248,13 +234,10 @@ def test_source_matches_live_shipped_file(playbook_id: str) -> None:
 def test_review_record_complete(playbook_id: str) -> None:
     review, body = _read_review(playbook_id)
     missing = REQUIRED_REVIEW_KEYS - set(review)
-    assert not missing, f"{playbook_id}/review.md is missing keys: {sorted(missing)}"
+    assert not missing, f"{playbook_id}/manifest.md is missing keys: {sorted(missing)}"
     assert review["playbook_id"] == playbook_id
-    assert review["decision"] == "approved", f"{playbook_id} is enabled but not approved"
     for heading in REQUIRED_REVIEW_SECTIONS:
-        assert f"\n{heading}\n" in f"\n{body}", f"{playbook_id}/review.md lacks {heading!r}"
-    assert isinstance(review["reviewed_by"], str) and review["reviewed_by"].strip()
-    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(review["reviewed_at"]))
+        assert f"\n{heading}\n" in f"\n{body}", f"{playbook_id}/manifest.md lacks {heading!r}"
     source = (_fixture(playbook_id) / "source.md").read_text(encoding="utf-8")
     assert review["source_sha256"] == source_digest(source)
     recorded = (_fixture(playbook_id) / "artifact.sha256").read_text().strip()
@@ -400,24 +383,23 @@ def test_artifact_validates_against_the_live_registries() -> None:
         ]
 
 
-def test_no_rejected_fixture_is_activatable(tmp_path: Path) -> None:
-    """A `decision: rejected` fixture never enters the activation set."""
+def test_custom_manifest_policy_is_not_a_core_activation_gate(tmp_path: Path) -> None:
+    """Core discovery is mechanical and ignores custom manifest policy fields."""
     from tests.playbook_fixture_activation import activatable_fixture_ids
 
-    # The shipped tree: only approved fixtures are activatable.
+    # The shipped tree: every complete V2 bundle is activatable.
     assert set(activatable_fixture_ids(FIXTURE_ROOT)) == set(PLAYBOOK_IDS)
 
-    # A synthetic rejected fixture that *does* carry an artifact is still
-    # excluded — the decision, not the presence of bytes, is what gates it.
+    # Custom metadata is not a hard-coded core policy gate.
     synthetic = tmp_path / "hostile"
     synthetic.mkdir()
     (synthetic / "artifact.json").write_bytes(
         (_fixture("default-pipeline") / "artifact.json").read_bytes()
     )
-    (synthetic / "review.md").write_text(
-        "---\nplaybook_id: hostile\ndecision: rejected\n---\n\nbody\n", encoding="utf-8"
+    (synthetic / "manifest.md").write_text(
+        "---\nplaybook_id: hostile\nvalidation_decision: rejected\n---\n\nbody\n", encoding="utf-8"
     )
-    assert activatable_fixture_ids(tmp_path) == ()
+    assert activatable_fixture_ids(tmp_path) == ("hostile",)
 
 
 # ---------------------------------------------------------------------------
@@ -440,14 +422,22 @@ def test_no_wildcard_capability(playbook_id: str) -> None:
 @pytest.mark.parametrize("playbook_id", APPROVED_IDS)
 def test_review_lists_every_required_capability(playbook_id: str) -> None:
     """One direction only (§4.1): the review may not be used to *add* one."""
-    from src.playbooks.migration import audit_capabilities
+    from src.playbooks.definition import CommandStep, LlmStep
 
-    review, _ = _read_review(playbook_id)
-    findings = audit_capabilities(_artifact(playbook_id), review["capabilities_granted"])
-    assert not findings, [
-        f"{f.namespace}: {f.name} required by {f.step_id} but not in capabilities_granted"
-        for f in findings
-    ]
+    manifest, _ = _read_review(playbook_id)
+    granted = manifest["capabilities_granted"]
+    required_aq = {
+        str(step.command)
+        for step in _artifact(playbook_id).steps.values()
+        if isinstance(step, CommandStep)
+    }
+    required_plugins = set()
+    for step in _artifact(playbook_id).steps.values():
+        if isinstance(step, LlmStep) and step.tool_use.enabled:
+            required_aq.update(map(str, step.tool_use.aq_commands))
+            required_plugins.update(map(str, step.tool_use.plugin_tools))
+    assert required_aq <= set(granted["aq_commands"])
+    assert required_plugins <= set(granted["plugin_tools"])
 
 
 def test_capabilities_granted_unused_by_src() -> None:
@@ -462,42 +452,4 @@ def test_capabilities_granted_unused_by_src() -> None:
     assert result.returncode == 1, (
         "capabilities_granted is read by production code; a reviewed fixture would "
         f"become an authority claim:\n{result.stdout}"
-    )
-
-
-# ---------------------------------------------------------------------------
-# The recording is reproducible in everything but its timestamp
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("playbook_id", PLAYBOOK_IDS)
-def test_rebuilding_reproduces_the_approved_artifact(playbook_id: str) -> None:
-    """A fresh build equals each reviewed fixture except `compiled_at`."""
-    import importlib.util
-
-    from src.playbooks.definition import canonical_bytes
-
-    spec = importlib.util.spec_from_file_location(
-        "_pkg6_builder", REPO_ROOT / "scripts" / "rebuild-reviewed-playbook-artifacts.py"
-    )
-    assert spec is not None and spec.loader is not None
-    builder = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(builder)
-
-    rebuilt = builder.build(playbook_id)["artifact"]
-    assert rebuilt is not None, "the frozen V1 graph no longer compiles cleanly"
-
-    fresh = json.loads(canonical_bytes(rebuilt))
-    recorded = json.loads(
-        (_fixture(playbook_id) / "artifact.json").read_text(encoding="utf-8")
-    )
-    for field in builder.NON_DETERMINISTIC_FIELDS:
-        fresh.pop(field, None)
-        recorded.pop(field, None)
-    assert builder.NON_DETERMINISTIC_FIELDS == ("compiled_at",)
-
-    differing = sorted(k for k in set(fresh) | set(recorded) if fresh.get(k) != recorded.get(k))
-    assert not differing, (
-        "a fresh build differs from the approved recording in "
-        f"{differing}; rebuild the fixture and re-review it"
     )

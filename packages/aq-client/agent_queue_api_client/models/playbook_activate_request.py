@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar, cast
+from typing import Any, TypeVar
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
@@ -16,16 +16,13 @@ class PlaybookActivateRequest:
     """
     Attributes:
         playbook_id (str): The playbook to activate against.
-        artifact_sha256 (str): The reviewed artifact hash, full 'sha256:<64 hex>' form.
+        artifact_sha256 (str): The artifact hash, full 'sha256:<64 hex>' form.
         enabled (bool | Unset): Whether the activation is enabled. Default: true. Default: True.
-        acknowledge_diff (None | str | Unset): Required when the diff against the active artifact is executable. Must
-            equal artifact_sha256, so an acknowledgement cannot be replayed against another artifact.
     """
 
     playbook_id: str
     artifact_sha256: str
     enabled: bool | Unset = True
-    acknowledge_diff: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -34,12 +31,6 @@ class PlaybookActivateRequest:
         artifact_sha256 = self.artifact_sha256
 
         enabled = self.enabled
-
-        acknowledge_diff: None | str | Unset
-        if isinstance(self.acknowledge_diff, Unset):
-            acknowledge_diff = UNSET
-        else:
-            acknowledge_diff = self.acknowledge_diff
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -51,8 +42,6 @@ class PlaybookActivateRequest:
         )
         if enabled is not UNSET:
             field_dict["enabled"] = enabled
-        if acknowledge_diff is not UNSET:
-            field_dict["acknowledge_diff"] = acknowledge_diff
 
         return field_dict
 
@@ -65,20 +54,10 @@ class PlaybookActivateRequest:
 
         enabled = d.pop("enabled", UNSET)
 
-        def _parse_acknowledge_diff(data: object) -> None | str | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            return cast(None | str | Unset, data)
-
-        acknowledge_diff = _parse_acknowledge_diff(d.pop("acknowledge_diff", UNSET))
-
         playbook_activate_request = cls(
             playbook_id=playbook_id,
             artifact_sha256=artifact_sha256,
             enabled=enabled,
-            acknowledge_diff=acknowledge_diff,
         )
 
         playbook_activate_request.additional_properties = d

@@ -334,21 +334,18 @@ class ProjectCommandsMixin:
         if "assignment_playbook_id" in args:
             playbook_id = args["assignment_playbook_id"]
             if playbook_id is not None:
-                from src.assignment_routing import (
-                    AssignmentPlaybookError,
-                    select_assignment_playbook,
-                )
+                from src.playbooks.services import DatabaseActivationSource
 
-                manager = getattr(self.orchestrator, "playbook_manager", None)
-                if manager is None:
-                    return {"error": "Assignment playbook manager is unavailable"}
-                try:
-                    select_assignment_playbook(
-                        manager,
-                        replace(project, assignment_playbook_id=playbook_id),
-                    )
-                except AssignmentPlaybookError as exc:
-                    return {"error": str(exc)}
+                ref = await DatabaseActivationSource(self.db).artifact_for(
+                    playbook_id, scope_identifier=project.id
+                )
+                if ref is None:
+                    return {"error": f"Assignment playbook '{playbook_id}' has no ready V2 activation"}
+                definition = self._v2_engine().services.artifact_store.load(
+                    ref.artifact_sha256
+                )
+                if definition.purpose != "assignment_routing":
+                    return {"error": f"Playbook '{playbook_id}' is not assignment routing"}
             updates["assignment_playbook_id"] = playbook_id
         if "repo_default_branch" in args:
             updates["repo_default_branch"] = args["repo_default_branch"]

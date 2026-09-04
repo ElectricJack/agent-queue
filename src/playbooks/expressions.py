@@ -19,10 +19,39 @@ edges.  ``test_expressions_module_has_no_intra_package_imports`` pins it.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping
 from typing import Annotated, Any, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+
+_FENCED_JSON_RE = re.compile(r"```(?:json)?\s*\n(.*?)\n```", re.DOTALL)
+
+
+def parse_json_from_text(text: str) -> Any:
+    """Recover the final JSON object from a model response."""
+    if not isinstance(text, str) or not text.strip():
+        return None
+    try:
+        return json.loads(text.strip())
+    except (json.JSONDecodeError, TypeError):
+        pass
+    for block in reversed(_FENCED_JSON_RE.findall(text)):
+        try:
+            return json.loads(block.strip())
+        except (json.JSONDecodeError, TypeError):
+            continue
+    decoder = json.JSONDecoder()
+    last = None
+    for index, char in enumerate(text):
+        if char != "{":
+            continue
+        try:
+            last, _ = decoder.raw_decode(text[index:])
+        except json.JSONDecodeError:
+            continue
+    return last
+
 
 # --------------------------------------------------------------------------
 # §4.1 — the shared strict base

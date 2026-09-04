@@ -15,7 +15,6 @@ from src.config import AppConfig
 from src.database import Database
 from src.models import Task
 from src.playbooks.definition import PlaybookDefinition, load_definition_json
-from src.playbooks.manager import PlaybookManager
 from src.playbooks.routing import (
     install_routing_activation_snapshot,
     refresh_routing_activation_snapshot,
@@ -168,12 +167,11 @@ def _manager(
     *,
     activation: dict | None = None,
     store: RecordingStore | None = None,
-) -> tuple[PlaybookManager, RecordingStore]:
+) -> tuple[SimpleNamespace, RecordingStore]:
     config = AppConfig()
     config.playbooks.enabled = True
-    manager = PlaybookManager(
-        config=config,
-        command_handler=SimpleNamespace(db=NoSecondConnection()),
+    manager = SimpleNamespace(
+        _config=config, _routing_activation_refresh_lock=asyncio.Lock()
     )
     store = store or RecordingStore({SHA: artifact} if artifact is not None else {})
     rows = []
@@ -200,13 +198,13 @@ def _task(**updates) -> Task:
     )
 
 
-def _disabled_manager() -> PlaybookManager:
+def _disabled_manager() -> SimpleNamespace:
     manager, _ = _manager(_routing_artifact())
     manager._config.playbooks.enabled = False
     return manager
 
 
-def _project_manager() -> PlaybookManager:
+def _project_manager() -> SimpleNamespace:
     artifact = _routing_artifact(scope={"type": "project", "project_id": "p"})
     return _manager(
         artifact,
@@ -279,61 +277,6 @@ def test_unrelated_project_task_hook_does_not_shadow_system_routing_policy():
     assert requires_routing_gate(manager, _task()) is True
 
 
-def test_manager_role_shadowing_selects_the_same_v2_policy_as_dispatch():
-    system = _routing_artifact(artifact_id="system-routing")
-    project = _routing_artifact(
-        artifact_id="project-routing",
-        scope={"type": "project", "project_id": "p"},
-        default_triage=False,
-    )
-    project_steps = project.model_dump(mode="json", exclude_none=True)["steps"]
-    project = _replace_artifact(project, entry_step="triage", steps=project_steps)
-    manager, _ = _manager()
-    system_metadata = SimpleNamespace(
-        id=system.id,
-        kind="pipeline",
-        scope="system",
-        role="default-pipeline",
-    )
-    project_metadata = SimpleNamespace(
-        id=project.id,
-        kind="pipeline",
-        scope="project",
-        role="default-pipeline",
-    )
-    manager._active = {
-        system_metadata.id: system_metadata,
-        project_metadata.id: project_metadata,
-    }
-    manager._trigger_map = {"task.created": set(manager._active)}
-    manager.set_scope_identifier(project.id, "p")
-    install_routing_activation_snapshot(
-        manager,
-        [
-            {
-                "playbook_id": system.id,
-                "scope": "system",
-                "scope_identifier": "",
-                "active_artifact_sha256": SHA,
-                "enabled": True,
-                "health": "ready",
-            },
-            {
-                "playbook_id": project.id,
-                "scope": "project",
-                "scope_identifier": "p",
-                "active_artifact_sha256": OTHER_SHA,
-                "enabled": True,
-                "health": "ready",
-            },
-        ],
-        artifact_store=RecordingStore({SHA: system, OTHER_SHA: project}),
-    )
-
-    assert requires_routing_gate(manager, _task()) is False
-    assert uses_default_triage(manager, "p") is False
-
-
 def test_decision_follows_only_the_event_selected_branch():
     artifact = _routing_artifact()
     raw_steps = artifact.model_dump(mode="json", exclude_none=True)["steps"]
@@ -381,7 +324,7 @@ async def test_refresh_reads_activations_before_admission():
     store = RecordingStore({SHA: artifact})
     config = AppConfig()
     config.playbooks.enabled = True
-    manager = PlaybookManager(config=config)
+    manager = SimpleNamespace(_config=config, _routing_activation_refresh_lock=asyncio.Lock())
 
     class ActivationSource:
         calls = 0
@@ -411,7 +354,7 @@ async def test_refresh_reads_activations_before_admission():
 async def test_refresh_failure_installs_fail_closed_snapshot():
     config = AppConfig()
     config.playbooks.enabled = True
-    manager = PlaybookManager(config=config)
+    manager = SimpleNamespace(_config=config, _routing_activation_refresh_lock=asyncio.Lock())
     store = RecordingStore({})
 
     class BrokenActivationSource:
@@ -647,7 +590,7 @@ async def test_cancelled_refresh_finishes_publishing_committed_activation():
     ],
     ids=lambda value: value if isinstance(value, str) else None,
 )
-def test_routing_admission_parity_with_v1_cases(
+def test_routing_admission_matches_expected_cases(
     case, manager_factory, task, extra, expected_gate, expected_triage
 ):
     # Literal oracle transcribed from the 16 admission and two graph-routing

@@ -18,20 +18,6 @@ if TYPE_CHECKING:
 _EXCLUDED_TOOLS = frozenset({"load_tools", "reply_to_user"})
 
 
-def v2_engine_enabled(config: Any) -> bool:
-    """Whether production callers may enter the V2 engine.
-
-    The subsystem switch remains authoritative: accepting ``v2_engine`` while
-    playbooks as a whole are paused would make a no-op look like a successful
-    cutover.
-    """
-    playbooks = getattr(config, "playbooks", None)
-    return (
-        getattr(playbooks, "enabled", False) is True
-        and getattr(playbooks, "v2_engine", False) is True
-    )
-
-
 class DatabaseActivationSource:
     """Project Package 3 activation rows into the engine's tiny read contract."""
 

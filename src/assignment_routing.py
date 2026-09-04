@@ -18,41 +18,6 @@ class AssignmentPlaybookError(ValueError):
     """The effective assignment playbook is missing or unsafe to run."""
 
 
-def select_assignment_playbook(manager, project):
-    """Resolve the system default or a project-scoped explicit override."""
-
-    playbook_id = project.assignment_playbook_id or DEFAULT_ASSIGNMENT_PLAYBOOK_ID
-    if manager is None:
-        # ``playbooks.enabled=false`` leaves ``Orchestrator.playbook_manager``
-        # None (feature-pause branch in src/orchestrator/core.py).  Routing is
-        # then simply unavailable: report it as a configuration error and wait,
-        # exactly like a missing or disabled playbook.  Never an AttributeError
-        # -- callers guard on AssignmentPlaybookError, not on that.
-        raise AssignmentPlaybookError(
-            "assignment playbook manager is unavailable: the playbook subsystem "
-            f"is disabled (playbooks.enabled=false); effective playbook '{playbook_id}'"
-        )
-    playbook = manager.get_playbook(playbook_id)
-    if playbook is None:
-        raise AssignmentPlaybookError(f"assignment playbook '{playbook_id}' is missing")
-    if not playbook.enabled:
-        raise AssignmentPlaybookError(f"assignment playbook '{playbook_id}' is disabled")
-    if playbook.kind != "assignment-routing" or playbook.role != "assignment-routing":
-        raise AssignmentPlaybookError(
-            f"playbook '{playbook_id}' is not an assignment-routing playbook"
-        )
-    if project.assignment_playbook_id:
-        if playbook.scope != "project" or manager.get_scope_identifier(playbook_id) != project.id:
-            raise AssignmentPlaybookError(
-                f"assignment playbook '{playbook_id}' is not scoped to project '{project.id}'"
-            )
-    elif playbook.scope != "system":
-        raise AssignmentPlaybookError(
-            f"default assignment playbook '{playbook_id}' must be system scoped"
-        )
-    return playbook
-
-
 @dataclass(frozen=True)
 class EffectiveAssignmentRoute:
     """The one route consumed by schedulers, claims, and launch checks."""

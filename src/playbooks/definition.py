@@ -17,6 +17,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+
+import yaml
 from datetime import datetime
 from types import UnionType
 from typing import Annotated, Any, Final, Literal, Union, get_args, get_origin
@@ -705,14 +708,31 @@ def artifact_sha256(definition: PlaybookDefinition) -> str:
 
 
 def normalize_source(markdown: str) -> str:
-    """The normalization V1 hashes, reused verbatim so the two compilers agree.
-
-    ``PlaybookCompiler._normalize_content`` is the authority; only the digest
-    presentation differs (V1 truncates to 16 hex with no prefix).
-    """
-    from src.playbooks.compiler import PlaybookCompiler
-
-    return PlaybookCompiler._normalize_content(markdown)
+    """Normalize Markdown so cosmetic changes do not alter source identity."""
+    frontmatter: dict[str, Any] = {}
+    body = markdown
+    if markdown.startswith("---"):
+        parts = markdown.split("---", 2)
+        if len(parts) == 3:
+            try:
+                frontmatter = yaml.safe_load(parts[1]) or {}
+                body = parts[2]
+            except yaml.YAMLError:
+                pass
+    fm = yaml.dump(frontmatter, default_flow_style=False, sort_keys=True).strip() if frontmatter else ""
+    body = re.sub(r"<!--.*?-->", "", body, flags=re.DOTALL)
+    lines: list[str] = []
+    blank = False
+    for raw in body.splitlines():
+        line = raw.rstrip()
+        if not line:
+            if not blank:
+                lines.append("")
+            blank = True
+        else:
+            lines.append(line)
+            blank = False
+    return f"{fm}\n---\n{'\n'.join(lines).strip()}"
 
 
 def source_digest(markdown: str) -> str:

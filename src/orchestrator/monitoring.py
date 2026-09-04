@@ -843,7 +843,7 @@ class MonitoringMixin:
 
         Three guards, in the order that makes the common case free:
 
-        * ``playbooks.v2_storage_enabled`` is false by default, so on a stock
+        * ``playbooks.enabled`` is false by default, so on a stock
           install this returns before touching the clock;
         * the sweep runs at most once per
           ``playbooks.v2_retention_sweep_interval_seconds`` (default an
@@ -859,7 +859,7 @@ class MonitoringMixin:
         that raises does not retry every 5 s for an hour.
         """
         playbooks = self.config.playbooks
-        if not getattr(playbooks, "v2_storage_enabled", False):
+        if not getattr(playbooks, "enabled", False):
             return
         now = time.time()
         interval = max(int(getattr(playbooks, "v2_retention_sweep_interval_seconds", 3600)), 1)

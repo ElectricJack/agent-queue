@@ -49,11 +49,11 @@ def _digest(path: Path) -> str:
 
 async def _check_artifact_integrity(ctx: DoctorContext) -> CheckResult:
     playbooks = getattr(ctx.config, "playbooks", None)
-    if playbooks is None or not getattr(playbooks, "v2_storage_enabled", False):
+    if playbooks is None or not getattr(playbooks, "enabled", False):
         return CheckResult(
             id=CHECK_ID,
             severity=Severity.INFO,
-            detail="playbooks.v2_storage_enabled is false; V2 artifact storage is inert",
+            detail="playbooks.enabled is false; V2 artifact storage is inert",
         )
     db = ctx.db
     if db is None or not hasattr(db, "list_playbook_activations"):
@@ -152,11 +152,11 @@ async def _lookups(ctx: DoctorContext):
 
 async def _check_activation_stale(ctx: DoctorContext) -> CheckResult:
     playbooks = getattr(ctx.config, "playbooks", None)
-    if playbooks is None or not getattr(playbooks, "v2_storage_enabled", False):
+    if playbooks is None or not getattr(playbooks, "enabled", False):
         return CheckResult(
             id=STALE_CHECK_ID,
             severity=Severity.INFO,
-            detail="playbooks.v2_storage_enabled is false; V2 artifact storage is inert",
+            detail="playbooks.enabled is false; V2 artifact storage is inert",
         )
     db = ctx.db
     if db is None or not hasattr(db, "list_playbook_activations"):

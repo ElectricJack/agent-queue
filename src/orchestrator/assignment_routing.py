@@ -12,7 +12,6 @@ from collections import defaultdict
 from collections.abc import Sequence
 
 from sqlalchemy import and_, literal, or_, select
-from sqlalchemy.exc import IntegrityError
 
 from src.agents.routing import resolve_profile
 from src.assignment_routing import (
@@ -23,7 +22,6 @@ from src.assignment_routing import (
     assignment_option_payload,
     options_hash,
     resolve_effective_route,
-    select_assignment_playbook,
 )
 from src.database.tables import (
     gates as gates_table,
@@ -39,7 +37,7 @@ from src.models import (
     TaskAssignmentRoute,
     TaskStatus,
 )
-from src.playbooks.runner import PlaybookRunner, _parse_json_from_text
+from src.playbooks.expressions import parse_json_from_text
 from src.sessions.spec import _infer_provider_from_harness
 
 logger = logging.getLogger(__name__)
@@ -82,7 +80,7 @@ def validate_assignment_response(
 ) -> list[AssignmentDecision]:
     """Validate the exact model contract before any decision is persisted."""
 
-    parsed = _parse_json_from_text(response)
+    parsed = parse_json_from_text(response)
     if not isinstance(parsed, dict) or set(parsed) != {"decisions"}:
         raise AssignmentRoutingValidationError("response must contain only a decisions array")
     raw = parsed.get("decisions")
@@ -383,39 +381,14 @@ class AssignmentRoutingCoordinator:
     ) -> str:
         value = {
             "project_id": project.id,
-            "playbook_id": playbook.id,
-            "playbook_version": playbook.version,
+            "playbook_id": getattr(playbook, "playbook_id", None) or getattr(playbook, "id", ""),
+            "playbook_version": getattr(playbook, "version", None),
             "artifact_sha256": artifact_sha256,
             "tasks": sorted((task.id, assignment_input_hash(task)) for task in tasks),
             "options_hash": catalog_hash,
         }
         encoded = json.dumps(value, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(encoded.encode()).hexdigest()[:24]
-
-    async def _attempt_event_id(self, playbook_id: str, batch_key: str):
-        attempt = 0
-        while True:
-            event_id = f"assignment:{batch_key}:{attempt}"
-            existing = await self.db.get_playbook_run_by_event(playbook_id, event_id)
-            if existing is None:
-                return event_id, None
-            if existing.status in {"failed", "timed_out", "cancelled"}:
-                attempt += 1
-                continue
-            return event_id, existing
-
-    @staticmethod
-    def _existing_response(run) -> str | None:
-        if run.status != "completed":
-            return None
-        try:
-            messages = json.loads(run.conversation_history or "[]")
-        except (TypeError, json.JSONDecodeError):
-            return None
-        for message in reversed(messages):
-            if message.get("role") == "assistant" and isinstance(message.get("content"), str):
-                return message["content"]
-        return None
 
     def _note_failure(self, batch_key: str, error: str, tasks: Sequence[Task]) -> None:
         count = self._retry.get(batch_key, (0, 0.0, ""))[0] + 1
@@ -426,50 +399,41 @@ class AssignmentRoutingCoordinator:
             self._task_retry[task.id] = (retry_at, error)
         logger.warning("assignment routing batch %s failed: %s", batch_key, error)
 
-    async def _route_batch(self, project, tasks, options, catalog_hash):
-        manager = self.owner.playbook_manager
-        playbook = select_assignment_playbook(manager, project)
-        from src.playbooks.services import DatabaseActivationSource, v2_engine_enabled
+    async def _assignment_artifact(self, project):
+        from src.assignment_routing import DEFAULT_ASSIGNMENT_PLAYBOOK_ID
+        from src.playbooks.services import DatabaseActivationSource
 
-        use_v2 = v2_engine_enabled(getattr(self.owner, "config", None))
-        if not use_v2:
-            from src.playbooks.cutover import v1_admission_closed
-
-            if v1_admission_closed(getattr(self.owner, "config", None)):
-                # Package 7 §3.4.  Assignment routing dispatches a *new* V1 run
-                # per batch, so a closed admission has to stop it here; the
-                # batch is simply left unrouted and retried once the fleet is
-                # on V2.
-                logger.info(
-                    "v1 admission closed — refusing assignment routing batch for project %s",
-                    project.id,
-                )
-                return {}
-        artifact_ref = None
-        if use_v2:
-            artifact_ref = await DatabaseActivationSource(self.db).artifact_for(
-                playbook.id, scope_identifier=project.id
+        playbook_id = project.assignment_playbook_id or DEFAULT_ASSIGNMENT_PLAYBOOK_ID
+        ref = await DatabaseActivationSource(self.db).artifact_for(
+            playbook_id, scope_identifier=project.id
+        )
+        if ref is None:
+            raise AssignmentPlaybookError(
+                f"assignment playbook '{playbook_id}' has no ready V2 activation"
             )
+        return ref
+
+    async def _route_batch(self, project, tasks, options, catalog_hash):
+        try:
+            artifact_ref = await self._assignment_artifact(project)
+        except AssignmentPlaybookError as exc:
+            logger.warning("assignment routing unavailable for project %s: %s", project.id, exc)
+            return {}
         batch_key = self._batch_key(
-            project,
-            playbook,
-            tasks,
-            catalog_hash,
-            artifact_sha256=(artifact_ref.artifact_sha256 if artifact_ref else None),
+            project, artifact_ref, tasks, catalog_hash,
+            artifact_sha256=artifact_ref.artifact_sha256,
         )
         retry = self._retry.get(batch_key)
         if retry and retry[1] > time.time():
             return {}
-        cached_v2 = self._v2_cache.get(batch_key) if use_v2 else None
-        event_id, existing = await self._attempt_event_id(playbook.id, batch_key)
-        response = cached_v2[1] if cached_v2 else self._existing_response(existing) if existing else None
-        run_id = cached_v2[0] if cached_v2 else existing.run_id if existing else None
-        if existing is not None and response is None:
-            return {}
-        if existing is None and cached_v2 is None:
+        cached = self._v2_cache.get(batch_key)
+        run_id = cached[0] if cached else None
+        response = cached[1] if cached else None
+        if cached is None:
             event = {
                 "type": "assignment.route.requested",
-                "event_id": event_id,
+                "_event_type": "assignment.route.requested",
+                "event_id": f"assignment:{batch_key}",
                 "project_id": project.id,
                 "tasks": [
                     {**assignment_input(task), "input_hash": assignment_input_hash(task)}
@@ -481,105 +445,55 @@ class AssignmentRoutingCoordinator:
             }
             self._running_task_ids.update(task.id for task in tasks)
             try:
-                if use_v2:
-                    if artifact_ref is None:
-                        self._note_failure(batch_key, "assignment artifact unavailable", tasks)
-                        return {}
-                    from src.commands.principal import ExecutionPrincipal
-                    from src.playbooks.services import build_v2_engine
+                from src.commands.principal import ExecutionPrincipal
+                from src.playbooks.services import build_v2_engine
 
-                    handler = getattr(self.owner, "_command_handler", None)
-                    if handler is None:
-                        self._note_failure(batch_key, "command handler unavailable", tasks)
-                        return {}
-                    engine = build_v2_engine(
-                        config=self.owner.config,
-                        db=self.db,
-                        handler=handler,
-                        llm=getattr(self.owner, "llm", None),
-                        bus=getattr(self.owner, "bus", None),
+                handler = getattr(self.owner, "_command_handler", None)
+                if handler is None:
+                    self._note_failure(batch_key, "command handler unavailable", tasks)
+                    return {}
+                engine = build_v2_engine(
+                    config=self.owner.config, db=self.db, handler=handler,
+                    llm=getattr(self.owner, "llm", None),
+                    bus=getattr(self.owner, "bus", None),
+                )
+                artifact = engine.services.artifact_store.load(artifact_ref.artifact_sha256)
+                if artifact.purpose != "assignment_routing":
+                    self._note_failure(batch_key, "artifact is not assignment routing", tasks)
+                    return {}
+                rule = next((
+                    candidate for candidate in artifact.rules
+                    if engine._trigger_matches(candidate, "assignment.route.requested", event)
+                ), None)
+                if rule is None:
+                    self._note_failure(batch_key, "assignment rule unavailable", tasks)
+                    return {}
+                result = await engine.run_rule(
+                    artifact_ref, rule.id, event,
+                    ExecutionPrincipal.service("assignment-routing"),
+                    project_task=False,
+                )
+                run_id = result.run_id
+                if result.lifecycle.value != "completed" or result.result_value is None:
+                    self._note_failure(
+                        batch_key,
+                        result.snapshot.error if result.snapshot else "assignment playbook failed",
+                        tasks,
                     )
-                    artifact = engine.services.artifact_store.load(
-                        artifact_ref.artifact_sha256
-                    )
-                    rule = next(
-                        (
-                            candidate
-                            for candidate in artifact.rules
-                            if engine._trigger_matches(
-                                candidate, "assignment.route.requested", event
-                            )
-                        ),
-                        None,
-                    )
-                    if rule is None:
-                        self._note_failure(batch_key, "assignment rule unavailable", tasks)
-                        return {}
-                    result = await engine.run_rule(
-                        artifact_ref,
-                        rule.id,
-                        event,
-                        ExecutionPrincipal.service("assignment-routing"),
-                        project_task=False,
-                    )
-                    run_id = result.run_id
-                    if result.lifecycle.value != "completed" or result.result_value is None:
-                        self._note_failure(
-                            batch_key,
-                            result.snapshot.error if result.snapshot else "assignment playbook failed",
-                            tasks,
-                        )
-                        return {}
-                    response = (
-                        result.result_value
-                        if isinstance(result.result_value, str)
-                        else json.dumps(result.result_value, sort_keys=True)
-                    )
-                    self._v2_cache[batch_key] = (run_id, response)
-                else:
-                    runner = PlaybookRunner(
-                        graph=playbook.to_dict(),
-                        event=event,
-                        services=self.owner.playbook_services(),
-                        db=self.db,
-                        event_bus=getattr(self.owner, "bus", None),
-                        sync_task_projection=False,
-                        tool_overrides=[],
-                    )
-                    try:
-                        result = await runner.run()
-                    except IntegrityError:
-                        logger.info(
-                            "assignment batch %s lost the playbook-run insert race", batch_key
-                        )
-                        return {}
-                    run_id = runner.run_id
-                    if result.status != "completed" or not result.final_response:
-                        self._note_failure(
-                            batch_key, result.error or "assignment playbook failed", tasks
-                        )
-                        return {}
-                    response = result.final_response
+                    return {}
+                response = result.result_value if isinstance(result.result_value, str) else json.dumps(
+                    result.result_value, sort_keys=True
+                )
+                self._v2_cache[batch_key] = (run_id, response)
             finally:
                 self._running_task_ids.difference_update(task.id for task in tasks)
         try:
             decisions = validate_assignment_response(response or "", tasks, options)
         except AssignmentRoutingValidationError as exc:
-            # The graph completed, but its application-level output is not a
-            # valid assignment decision. Persist that terminal failure so the
-            # next reconciliation advances the event attempt ordinal instead
-            # of replaying this same completed response forever.
-            if run_id is not None:
-                await self.db.update_playbook_run(
-                    run_id,
-                    status="failed",
-                    completed_at=time.time(),
-                    error=f"invalid assignment response: {exc}",
-                )
             self._note_failure(batch_key, str(exc), tasks)
             return {}
         committed = await self._commit(
-            project, playbook, tasks, options, catalog_hash, decisions, run_id
+            project, artifact_ref, tasks, options, catalog_hash, decisions, run_id
         )
         if committed:
             self._retry.pop(batch_key, None)
@@ -588,13 +502,16 @@ class AssignmentRoutingCoordinator:
         return committed
 
     async def _commit(
-        self, project, playbook, original_tasks, options, catalog_hash, decisions, run_id
+        self, project, artifact_ref, original_tasks, options, catalog_hash, decisions, run_id
     ):
         current_project = await self.db.get_project(project.id)
         if current_project is None:
             return {}
-        current_playbook = select_assignment_playbook(self.owner.playbook_manager, current_project)
-        if current_playbook.id != playbook.id or current_playbook.version != playbook.version:
+        try:
+            current_ref = await self._assignment_artifact(current_project)
+        except AssignmentPlaybookError:
+            return {}
+        if current_ref.artifact_sha256 != artifact_ref.artifact_sha256:
             return {}
         current_options, current_profiles = await self._catalog(project.id)
         current_hash = _catalog_hash(project.id, current_options, current_profiles)
@@ -622,34 +539,26 @@ class AssignmentRoutingCoordinator:
                 return {}
             for decision in decisions:
                 task = current.get(decision.task_id)
-                # ``input_hash`` is the whole staleness test: an edit during
-                # the LLM call changes it, while a status flip or a note only
-                # moves ``updated_at`` and must not throw the decision away.
                 if (
-                    task is None
-                    or task.project_id != project.id
+                    task is None or task.project_id != project.id
                     or task.assigned_agent_id is not None
                     or task.status not in _ACTIVE_ROUTE_STATUSES
                     or (task.intelligence_class or "").strip()
                     or assignment_input_hash(task) != decision.input_hash
-                    or options_hash(
-                        task_assignment_options(task, current_options, current_profiles)
-                    ) != batch_options_hash
+                    or options_hash(task_assignment_options(task, current_options, current_profiles))
+                    != batch_options_hash
                 ):
                     continue
                 saved.append(TaskAssignmentRoute(
-                    task_id=task.id,
-                    project_id=task.project_id,
-                    input_hash=decision.input_hash,
-                    task_updated_at=task.updated_at,
+                    task_id=task.id, project_id=task.project_id,
+                    input_hash=decision.input_hash, task_updated_at=task.updated_at,
                     options_hash=current_hash,
                     intelligence_class=decision.intelligence_class,
                     provider=decision.provider,
-                    playbook_id=playbook.id,
-                    playbook_version=playbook.version,
+                    playbook_id=artifact_ref.playbook_id,
+                    playbook_version=artifact_ref.version,
                     playbook_run_id=run_id,
-                    reason=decision.reason,
-                    decided_at=time.time(),
+                    reason=decision.reason, decided_at=time.time(),
                 ))
             await self.db.upsert_task_assignment_routes(saved, conn=conn)
         result: dict[str, EffectiveAssignmentRoute] = {}
@@ -709,7 +618,7 @@ class AssignmentRoutingCoordinator:
                 if project is None:
                     continue
                 try:
-                    select_assignment_playbook(self.owner.playbook_manager, project)
+                    await self._assignment_artifact(project)
                 except AssignmentPlaybookError as exc:
                     logger.warning(
                         "assignment routing unavailable for project %s: %s",
@@ -849,7 +758,7 @@ class AssignmentRoutingCoordinator:
         try:
             if project is None:
                 raise AssignmentPlaybookError(f"project '{task.project_id}' is missing")
-            select_assignment_playbook(self.owner.playbook_manager, project)
+            await self._assignment_artifact(project)
             if not task_assignment_options(task, options, profiles):
                 raise AssignmentPlaybookError(
                     "no compatible intelligence class/provider options are configured"

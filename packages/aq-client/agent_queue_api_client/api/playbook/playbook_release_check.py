@@ -6,7 +6,6 @@ import httpx
 from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.playbook_release_check_request import PlaybookReleaseCheckRequest
-from ...models.playbook_release_check_response import PlaybookReleaseCheckResponse
 from ...models.playbook_release_check_response_422 import PlaybookReleaseCheckResponse422
 from ...types import Response
 
@@ -32,10 +31,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> PlaybookReleaseCheckResponse | PlaybookReleaseCheckResponse422 | None:
+) -> Any | PlaybookReleaseCheckResponse422 | None:
     if response.status_code == 200:
-        response_200 = PlaybookReleaseCheckResponse.from_dict(response.json())
-
+        response_200 = response.json()
         return response_200
 
     if response.status_code == 422:
@@ -51,7 +49,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[PlaybookReleaseCheckResponse | PlaybookReleaseCheckResponse422]:
+) -> Response[Any | PlaybookReleaseCheckResponse422]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -64,7 +62,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: PlaybookReleaseCheckRequest,
-) -> Response[PlaybookReleaseCheckResponse | PlaybookReleaseCheckResponse422]:
+) -> Response[Any | PlaybookReleaseCheckResponse422]:
     """Check that every reviewed V2 artifact still matches the command contracts it was compiled against.
     Compares the checked-in reviewed fixtures and every enabled activation against the live registry,
     and names each command whose execution fingerprint moved. Offline and read-only: no network, no LLM,
@@ -89,7 +87,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[PlaybookReleaseCheckResponse | PlaybookReleaseCheckResponse422]
+        Response[Any | PlaybookReleaseCheckResponse422]
     """
 
     kwargs = _get_kwargs(
@@ -107,7 +105,7 @@ def sync(
     *,
     client: AuthenticatedClient | Client,
     body: PlaybookReleaseCheckRequest,
-) -> PlaybookReleaseCheckResponse | PlaybookReleaseCheckResponse422 | None:
+) -> Any | PlaybookReleaseCheckResponse422 | None:
     """Check that every reviewed V2 artifact still matches the command contracts it was compiled against.
     Compares the checked-in reviewed fixtures and every enabled activation against the live registry,
     and names each command whose execution fingerprint moved. Offline and read-only: no network, no LLM,
@@ -132,7 +130,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        PlaybookReleaseCheckResponse | PlaybookReleaseCheckResponse422
+        Any | PlaybookReleaseCheckResponse422
     """
 
     return sync_detailed(
@@ -145,7 +143,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: PlaybookReleaseCheckRequest,
-) -> Response[PlaybookReleaseCheckResponse | PlaybookReleaseCheckResponse422]:
+) -> Response[Any | PlaybookReleaseCheckResponse422]:
     """Check that every reviewed V2 artifact still matches the command contracts it was compiled against.
     Compares the checked-in reviewed fixtures and every enabled activation against the live registry,
     and names each command whose execution fingerprint moved. Offline and read-only: no network, no LLM,
@@ -170,7 +168,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[PlaybookReleaseCheckResponse | PlaybookReleaseCheckResponse422]
+        Response[Any | PlaybookReleaseCheckResponse422]
     """
 
     kwargs = _get_kwargs(
@@ -186,7 +184,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient | Client,
     body: PlaybookReleaseCheckRequest,
-) -> PlaybookReleaseCheckResponse | PlaybookReleaseCheckResponse422 | None:
+) -> Any | PlaybookReleaseCheckResponse422 | None:
     """Check that every reviewed V2 artifact still matches the command contracts it was compiled against.
     Compares the checked-in reviewed fixtures and every enabled activation against the live registry,
     and names each command whose execution fingerprint moved. Offline and read-only: no network, no LLM,
@@ -211,7 +209,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        PlaybookReleaseCheckResponse | PlaybookReleaseCheckResponse422
+        Any | PlaybookReleaseCheckResponse422
     """
 
     return (

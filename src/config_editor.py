@@ -61,18 +61,9 @@ FLAG_NOTES: dict[str, str] = {
         "Data is preserved. See docs/specs/design/feature-pauses.md."
     ),
     "playbooks.enabled": (
-        "Temporary — overhaul pause. When false PlaybookManager, TimerService, "
-        "the resume handlers and workflow recovery are not started. "
-        "playbook_runs rows and compiled JSON are preserved. "
+        "When false the V2 playbook runtime, TimerService, resume handlers, "
+        "and workflow recovery are not started. V2 artifacts and run data are preserved. "
         "See docs/specs/design/feature-pauses.md."
-    ),
-    "playbooks.v2_storage_enabled": (
-        "Playbook V2 storage housekeeping. When false the hourly artifact "
-        "retention sweep and the playbooks.artifact_integrity doctor check do "
-        "nothing; the V2 tables, artifact files and repositories stay fully "
-        "usable either way, so turning it off retains data rather than "
-        "hiding it. Owned by Playbook V2 Package 3 and removed in Package 7 — "
-        "see docs/superpowers/plans/2026-09-01-playbook-v2-durable-state-storage.md §12.4."
     ),
 }
 

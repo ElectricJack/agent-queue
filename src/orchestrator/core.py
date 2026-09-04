@@ -118,8 +118,6 @@ from src.orchestrator.pools import PoolsMixin
 from src.orchestrator.layout_step import LayoutStepMixin
 from src.orchestrator.triage import TriageMixin
 
-from src.playbooks.conditions import eval_pipeline_when as _eval_pipeline_when
-from src.playbooks.run_task import sync_playbook_run_task
 
 logger = logging.getLogger(__name__)
 
@@ -301,9 +299,7 @@ class Orchestrator(
             retention_days=config.llm_logging.retention_days,
         )
         self._last_log_cleanup: float = 0.0
-        # Playbook V2 retention sweep (durable-state child plan §12.2) —
-        # at most once per playbooks.v2_retention_sweep_interval_seconds,
-        # and a no-op entirely while playbooks.v2_storage_enabled is false.
+        # Playbook V2 retention sweep, interval-limited by configuration.
         self._last_playbook_retention_sweep: float = 0.0
         self._last_worktree_reaper: float = 0.0
         self._last_auto_archive: float = 0.0
@@ -471,14 +467,7 @@ class Orchestrator(
         self.mcp_tool_catalog = McpToolCatalog()
         self.workspace_spec_watcher = None  # WorkspaceSpecWatcher | None (vault.md §4)
         self.timer_service = None  # TimerService | None — initialized in initialize()
-        # PlaybookManager | None — built in initialize() (or left None when
-        # ``playbooks.enabled=false``).  Declared here so the attribute always
-        # exists: ``select_assignment_playbook`` promises callers an
-        # ``AssignmentPlaybookError`` for an unavailable manager, and the
-        # direct ``self.owner.playbook_manager`` reads in
-        # src/orchestrator/assignment_routing.py raised ``AttributeError``
-        # instead whenever a cycle ran on an orchestrator that had not
-        # completed ``initialize()``.
+        # V2PlaybookRuntime | None — built in initialize().
         self.playbook_manager = None
         # Reference to the command handler, set by the bot after initialization.
         # Used to pass handler references to interactive Discord views (e.g.
@@ -546,11 +535,7 @@ class Orchestrator(
     def set_command_handler(self, handler: Any) -> None:
         """Store a reference to the command handler for interactive views.
 
-        Also forwards to ``playbook_manager``, which is constructed during
-        ``initialize()`` — before ``main.py`` sets the daemon-wide handler —
-        and would otherwise hold the ``None`` it captured there.  Without the
-        forward the vault watcher can never enqueue a compile task, so
-        playbook markdown edits never take effect.
+        The V2 runtime is constructed only after this handler is installed.
         """
         self._command_handler = handler
 
@@ -563,12 +548,6 @@ class Orchestrator(
         from src.commands.contracts.builtin import set_handler_provider
 
         set_handler_provider(lambda: self._command_handler)
-
-        playbook_manager = getattr(self, "playbook_manager", None)
-        if playbook_manager is not None and hasattr(
-            playbook_manager, "set_command_handler"
-        ):
-            playbook_manager.set_command_handler(handler)
 
         plugin_registry = getattr(self, "plugin_registry", None)
         if plugin_registry is not None:
@@ -846,417 +825,6 @@ class Orchestrator(
         if project.default_profile_id:
             return project.default_profile_id
         return await self._backfill_default_profile_id(project)
-
-    async def _on_playbook_trigger(self, playbook: Any, event_data: dict) -> None:
-        """PlaybookManager trigger dispatch — launch a run for a matched event.
-
-        Registered as ``playbook_manager.on_trigger`` at startup.  The
-        manager has already applied cooldown + concurrency checks before
-        calling us, so we just build the runtime context (PlaybookServices,
-        event bus) and fire a PlaybookRunner.  The run is intentionally
-        fire-and-forget — the event dispatch path must not block waiting for
-        an LLM-driven graph walk.
-        """
-        try:
-            from src.playbooks.services import build_v2_engine, v2_engine_enabled
-
-            if v2_engine_enabled(getattr(self, "config", None)):
-                from src.commands.principal import ExecutionPrincipal
-
-                handler = self._command_handler
-                if handler is None:
-                    logger.error(
-                        "V2 playbook '%s' cannot run — no command handler wired",
-                        playbook.id,
-                    )
-                    return
-                engine = build_v2_engine(
-                    config=self.config,
-                    db=self.db,
-                    handler=handler,
-                    llm=self.llm,
-                    bus=self.bus,
-                )
-
-                # Stamp the event's arrival before the fire-and-forget hop so
-                # the run's snapshot carries it: Package 7 §3.5 measure 6
-                # (dispatch latency) reads ``started_at - event._received_at``
-                # from durable rows, because an in-memory timer would not
-                # survive a restart inside the 72 h observation window.  A
-                # copy, so a replayed event sees its own arrival.
-                if "_received_at" not in event_data:
-                    event_data = {**event_data, "_received_at": time.time()}
-
-                # The manager admitted exactly this playbook (shadowing,
-                # cooldown, concurrency).  Constrain the engine to it: an
-                # unfiltered dispatch would start every scope-matching
-                # activation, including siblings the manager just rejected.
-                async def _run_v2() -> None:
-                    try:
-                        await engine.dispatch_event(
-                            event_data,
-                            ExecutionPrincipal.service("playbook-dispatch"),
-                            playbook_ids={playbook.id},
-                        )
-                    except Exception:
-                        logger.exception(
-                            "V2 playbook dispatch failed for event=%s",
-                            event_data.get("type") or event_data.get("_event_type"),
-                        )
-
-                asyncio.create_task(
-                    _run_v2(),
-                    name=f"playbook-v2:{playbook.id}:{event_data.get('type', 'trigger')}",
-                )
-                return
-
-            # Package 7 §3.4: admission is read per dispatch, below the
-            # runtime branch and above every V1 import.  Closing admission
-            # stops *new* V1 runs without touching the paused ones already in
-            # flight -- stranding those would make a later ``drained: true``
-            # retroactively false.
-            from src.playbooks.cutover import v1_admission_closed
-
-            if v1_admission_closed(getattr(self, "config", None)):
-                logger.info(
-                    "v1 admission closed — refusing new run for playbook '%s'",
-                    playbook.id,
-                )
-                return
-
-            from src.playbooks.runner import PlaybookRunner
-            from src.models import PlaybookRun as PlaybookRunModel
-
-            graph = playbook.to_dict()
-
-            # -- Event-level dedup via event_id (dv2-p1 Task 10) --
-            # The EventBus stamps every event with a stable event_id before
-            # dispatch.  If we have already started a run for this
-            # (playbook_id, event_id) pair the UNIQUE partial index would
-            # reject a duplicate insert anyway, but checking first lets us
-            # log a clear INFO message and skip the whole dispatch path.
-            event_id = event_data.get("event_id") if isinstance(event_data, dict) else None
-            if event_id and self.db:
-                existing = await self.db.get_playbook_run_by_event(playbook.id, event_id)
-                if existing is not None:
-                    logger.info(
-                        "Playbook '%s' event_id=%s already recorded (run=%s) — skipping",
-                        playbook.id,
-                        event_id,
-                        existing.run_id,
-                    )
-                    return
-
-            # Pipeline playbooks route to the deterministic PipelineRunner
-            # — no supervisor/LLM needed, action nodes dispatch directly
-            # via CommandHandler.execute().
-            if graph.get("kind") == "pipeline":
-                from src.playbooks.pipeline_runner import PipelineRunner
-
-                handler = self._command_handler
-                if handler is None:
-                    logger.error(
-                        "Pipeline playbook '%s' cannot run — no command handler wired",
-                        playbook.id,
-                    )
-                    return
-                project_id = event_data.get("project_id")
-
-                # Hydrate event.task for pipeline rules that reference task
-                # fields (e.g. ``{{event.task.branch_name}}``).  Pipelines
-                # receive the slim bus payload; fetch the full task row once
-                # so all nodes can reference any task attribute without an
-                # extra DB call inside the graph.
-                hydrated_event = dict(event_data)
-                if self.db and hydrated_event.get("task_id") and "task" not in hydrated_event:
-                    try:
-                        task_row = await self.db.get_task(str(hydrated_event["task_id"]))
-                        if task_row is not None:
-                            from dataclasses import asdict
-                            try:
-                                hydrated_event["task"] = asdict(task_row)
-                            except Exception:
-                                hydrated_event["task"] = vars(task_row) if hasattr(task_row, "__dict__") else {}
-                    except Exception:
-                        logger.debug(
-                            "Pipeline '%s': could not hydrate event.task for task_id=%s",
-                            playbook.id,
-                            hydrated_event.get("task_id"),
-                            exc_info=True,
-                        )
-                # A task the pipeline itself created as a review (``review:task:``
-                # / ``branch-review:`` dedup key) is a review whatever the emitter
-                # said: the close path flags ``review_task`` too, but the rules'
-                # ``truthy: false`` guard passes on a missing key, so an emitter
-                # that omits it (older daemon code, container settlement, a
-                # hand-written event) would review the review again — and so on.
-                task_dict = hydrated_event.get("task")
-                if isinstance(task_dict, dict):
-                    flag_review_task_event(hydrated_event, task_dict.get("dedup_key"))
-
-                # Multi-rule pipelines store a trigger → list of rule metas
-                # mapping in ``pipeline_rules``.  When present, we dispatch
-                # every rule whose ``when`` guard passes, sequentially, each
-                # against a graph clone that pins the rule's entry node.
-                #
-                # ``pipeline_run_graphs`` holds the (graph, rule_id) pairs to
-                # walk.  Single-graph pipelines produce a single (graph, None)
-                # pair matching the legacy behaviour.
-                pipeline_run_graphs: list[tuple[dict, str | None]] = []
-                pipeline_rules = graph.get("pipeline_rules") or {}
-                if pipeline_rules:
-                    firing_trigger = (
-                        hydrated_event.get("_event_type")
-                        or hydrated_event.get("event_type")
-                        or hydrated_event.get("type")
-                    )
-                    if firing_trigger and firing_trigger in pipeline_rules:
-                        rule_metas = pipeline_rules[firing_trigger]
-                        # Normalize legacy scalar/dict shapes to a list.
-                        if isinstance(rule_metas, (str, dict)):
-                            rule_metas = [rule_metas]
-                        import copy
-                        from src.playbooks.routing import (
-                            is_deprecated_default_assignment_entry,
-                        )
-
-                        for rm_idx, rule_meta in enumerate(rule_metas):
-                            if isinstance(rule_meta, str):
-                                rule_entry = rule_meta
-                                rule_when = None
-                            else:
-                                rule_entry = rule_meta.get("entry", "")
-                                rule_when = rule_meta.get("when")
-
-                            if is_deprecated_default_assignment_entry(
-                                playbook, rule_entry
-                            ):
-                                logger.info(
-                                    "Pipeline '%s': ignoring superseded assignment rule '%s'",
-                                    playbook.id,
-                                    rule_entry,
-                                )
-                                continue
-
-                            if rule_when and not _eval_pipeline_when(
-                                rule_when, hydrated_event
-                            ):
-                                logger.debug(
-                                    "Pipeline '%s' rule[%d] on '%s': "
-                                    "when-guard skipped dispatch",
-                                    playbook.id,
-                                    rm_idx,
-                                    firing_trigger,
-                                )
-                                continue
-
-                            g_copy = copy.deepcopy(graph)
-                            for nid, node in g_copy["nodes"].items():
-                                node["entry"] = nid == rule_entry
-                            pipeline_run_graphs.append((g_copy, rule_entry))
-                        if not pipeline_run_graphs:
-                            # Every rule's when-guard rejected — nothing to do.
-                            return
-                    else:
-                        logger.warning(
-                            "Pipeline '%s': multi-rule graph received trigger '%s' "
-                            "with no matching rule (available: %s) — skipping",
-                            playbook.id,
-                            firing_trigger,
-                            sorted(pipeline_rules.keys()),
-                        )
-                        return
-                else:
-                    pipeline_run_graphs.append((graph, None))
-
-                # Build a runner per matching rule (single-graph pipelines
-                # yield exactly one runner). Idempotency remains (playbook,
-                # event) — one run row covers all rules dispatched by the
-                # event; failure of any rule fails the whole run.
-                runners = [
-                    PipelineRunner(
-                        graph=g,
-                        event=hydrated_event,
-                        handler=handler,
-                        db=self.db,
-                    )
-                    for g, _entry in pipeline_run_graphs
-                ]
-                primary_runner = runners[0]
-                for pipeline_runner in runners:
-                    pipeline_runner.run_id = primary_runner.run_id
-
-                # Create a run row now so the UNIQUE constraint provides
-                # idempotency for pipeline runs (Task 9 deferred this).
-                if self.db:
-                    import json as _json
-                    pipeline_db_run = PlaybookRunModel(
-                        run_id=primary_runner.run_id,
-                        playbook_id=playbook.id,
-                        playbook_version=getattr(playbook, "version", 1),
-                        trigger_event=_json.dumps(event_data),
-                        status="running",
-                        started_at=time.time(),
-                        pinned_graph=_json.dumps(graph),
-                        event_id=event_id,
-                    )
-                    try:
-                        await self.db.create_playbook_run(pipeline_db_run)
-                    except sqlalchemy.exc.IntegrityError:
-                        logger.info(
-                            "Pipeline playbook '%s' event_id=%s already recorded — skipping",
-                            playbook.id,
-                            event_id,
-                        )
-                        return
-                    except Exception:
-                        logger.exception(
-                            "Pipeline playbook '%s': failed to create run row (run=%s) — skipping dispatch",
-                            playbook.id,
-                            primary_runner.run_id,
-                        )
-                        return
-
-                async def _run_pipeline() -> None:
-                    with CorrelationContext(run_id=primary_runner.run_id):
-                        status, error = "completed", None
-                        await sync_playbook_run_task(
-                            handler,
-                            project_id=project_id,
-                            playbook_id=playbook.id,
-                            run_id=primary_runner.run_id,
-                            status="running",
-                        )
-                        try:
-                            for r in runners:
-                                result = await r.run()
-                                if result.status != "completed":
-                                    status = result.status
-                                    error = result.error
-                                    break
-                        except Exception as exc:
-                            status, error = "failed", str(exc)
-                            logger.exception(
-                                "Pipeline playbook '%s' run failed (trigger event=%s)",
-                                playbook.id,
-                                event_data.get("type") or event_data.get("_event_type"),
-                            )
-                        if self.db:
-                            try:
-                                await self.db.update_playbook_run(
-                                    primary_runner.run_id,
-                                    status=status,
-                                    completed_at=time.time(),
-                                    error=error,
-                                )
-                            except Exception:
-                                logger.exception(
-                                    "Failed to record pipeline run outcome (run=%s)",
-                                    primary_runner.run_id,
-                                )
-                        await sync_playbook_run_task(
-                            handler,
-                            project_id=project_id,
-                            playbook_id=playbook.id,
-                            run_id=primary_runner.run_id,
-                            status=status,
-                        )
-
-                asyncio.create_task(
-                    _run_pipeline(),
-                    name=f"pipeline:{playbook.id}:{event_data.get('type', 'trigger')}",
-                )
-                logger.info(
-                    "Dispatched pipeline playbook '%s' for trigger event (project=%s)",
-                    playbook.id,
-                    project_id or "(none)",
-                )
-                return
-
-            try:
-                services = self.playbook_services()
-            except RuntimeError as exc:
-                logger.error("Playbook trigger for '%s': %s — skipping", playbook.id, exc)
-                return
-            if not services.llm.is_configured():
-                logger.error(
-                    "Playbook trigger for '%s': LLM not configured (config.llm) — skipping",
-                    playbook.id,
-                )
-                return
-
-            project_id = event_data.get("project_id")
-
-            runner = PlaybookRunner(
-                graph=graph,
-                event=event_data,
-                services=services,
-                db=self.db,
-                event_bus=self.bus,
-            )
-
-            async def _run() -> None:
-                with CorrelationContext(run_id=runner.run_id):
-                    try:
-                        await runner.run()
-                    except Exception:
-                        logger.exception(
-                            "Playbook '%s' run failed (trigger event=%s)",
-                            playbook.id,
-                            event_data.get("type") or event_data.get("_event_type"),
-                        )
-
-            # Detach so the EventBus dispatch loop isn't blocked on the run.
-            asyncio.create_task(
-                _run(), name=f"playbook:{playbook.id}:{event_data.get('type', 'trigger')}"
-            )
-            logger.info(
-                "Dispatched playbook '%s' for trigger event (project=%s)",
-                playbook.id,
-                project_id or "(none)",
-            )
-        except Exception:
-            logger.exception(
-                "Failed to dispatch playbook '%s' trigger",
-                getattr(playbook, "id", "?"),
-            )
-
-    def pause(self) -> None:
-        """Pause scheduling — no new tasks are assigned, but monitoring continues.
-
-        When paused, ``run_one_cycle`` still runs gate sweeps, dependency
-        promotion, stuck-task detection, playbooks, and archival — only the
-        scheduler step (``_schedule``) is skipped.  In-flight agent work
-        continues unaffected; this only prevents *new* assignments.
-        """
-        self._paused = True
-
-    def resume(self) -> None:
-        """Resume scheduling after a pause.  New assignments start on the next cycle."""
-        self._paused = False
-
-    # ------------------------------------------------------------------
-    # Legacy callback setters (deprecated)
-    # ------------------------------------------------------------------
-    # These are no-ops kept for backward compatibility with transports
-    # that still call them during startup.  All
-    # notification delivery now goes through the EventBus via
-    # _emit_notify().  Remove once all transports migrate to event
-    # bus handlers.
-
-    def set_notify_callback(self, callback: Any) -> None:  # noqa: ARG002
-        """Deprecated — notifications now go through the EventBus."""
-        self._notify = callback
-
-    def set_create_thread_callback(self, callback: Any) -> None:  # noqa: ARG002
-        """Deprecated — thread management now goes through the EventBus."""
-        self._create_thread = callback
-
-    def set_get_thread_url_callback(self, callback: Any) -> None:  # noqa: ARG002
-        """Deprecated — thread URL lookup moved to DiscordNotificationHandler."""
-
-    def set_edit_thread_root_callback(self, callback: Any) -> None:  # noqa: ARG002
-        """Deprecated — thread root editing now goes through the EventBus."""
 
     async def skip_task(self, task_id: str) -> tuple[str | None, list[Task]]:
         """Skip a BLOCKED or FAILED task to unblock its dependency chain.
@@ -1830,91 +1398,25 @@ class Orchestrator(
         # V1 memory/*.md watcher handlers removed (roadmap 8.6).
         # Memory file watching is now handled by MemoryPlugin.
 
-        # ------------------------------------------------------------------
-        # Playbook subsystem (paused by ``playbooks.enabled=false``).
-        #
-        # Everything in this block is *not constructed* while paused --
-        # PlaybookManager, the timer service, both resume handlers and the
-        # orphan-workflow recovery pass.  Compiled JSON under
-        # ``{data_dir}/compiled/`` and every ``playbook_runs`` row are left
-        # exactly as they are: paused means frozen, never deleted.
-        # See docs/specs/implementation/feature-pauses.md §4 (P1-P8, P11).
-        # ------------------------------------------------------------------
+        # Playbooks V2 is the only runtime.  When the subsystem is enabled,
+        # ready immutable activations are subscribed directly to the event bus;
+        # there is no legacy compiler, mutable registry, or runtime selector.
         if self.config.playbooks.enabled:
-            # Register playbook .md watcher handlers (playbooks spec §17).
-            # Detects changes to playbook files across all vault scopes so they
-            # can be recompiled into executable graphs.  The PlaybookManager
-            # handles compilation, versioning, and error recovery (keeping the
-            # previous compiled version active on failure — roadmap 5.1.7).
-            from src.playbooks.handler import register_playbook_handlers
-            from src.playbooks.manager import PlaybookManager
-
-            # Post Phase 6 the compiler is deterministic (pipeline-only) and
-            # ordinary playbooks compile via the compiler-as-agent task, so
-            # PlaybookManager no longer needs a chat provider or a token cap.
-            self.playbook_manager = PlaybookManager(
-                config=self.config,
-                event_bus=self.bus,
-                data_dir=self.config.data_dir,
-                command_handler=self._command_handler,
-            )
-            # Routing admission executes synchronously inside task-creation
-            # transactions. Prime its V2 activation view now so that path can
-            # load immutable artifacts without opening a second connection.
-            from src.playbooks.routing import refresh_routing_activation_snapshot
-
-            await refresh_routing_activation_snapshot(self.playbook_manager, self.db)
-            # Restore previously compiled playbooks from disk so version numbers
-            # continue from where they left off and source-hash change detection
-            # can skip recompilation of unchanged files (roadmap 5.1.5).
-            await self.playbook_manager.load_from_disk()
-
-            vault_root = os.path.join(self.config.data_dir, "vault")
-
-            # Prune orphans synchronously — this is a fast file-scan with no LLM
-            # calls, and we want orphan compiled JSONs out of ``_active`` before
-            # trigger dispatch wires up.
-            try:
-                await self.playbook_manager.prune_orphan_compilations(vault_root)
-            except Exception:
-                logger.warning("Orphan compiled-playbook prune failed", exc_info=True)
-
-            # Reconcile vault playbooks with the compiled registry: compile any
-            # ``.md`` that's present on disk but not yet in the active registry.
-            # Runs as a background task because each uncompiled playbook costs
-            # ~30s of LLM latency; blocking startup on a fresh vault full of
-            # defaults would delay profile sync, Discord bot init, and the HTTP
-            # server by many minutes.  Tasks that need a specific playbook
-            # should wait for its compile event or rely on the vault-watcher
-            # create-event path.
-            async def _reconcile_in_background() -> None:
-                try:
-                    await self.playbook_manager.reconcile_compilations(vault_root)
-                except Exception:
-                    logger.warning("Playbook compilation reconcile failed", exc_info=True)
-
-            # Keep a handle: a bare create_task can be garbage-collected
-            # mid-flight, and shutdown must be able to cancel the compile
-            # (LLM calls + DB writes) so it can't race the DB close.
-            self._playbook_reconcile_task = asyncio.create_task(_reconcile_in_background())
-
-            # Wire trigger dispatch: when a playbook's trigger event fires on
-            # the bus, create a PlaybookRunner and execute the graph.  Without
-            # this, events fire but playbooks never auto-run.
-            self.playbook_manager.on_trigger = self._on_playbook_trigger
-            subscribed = self.playbook_manager.subscribe_to_events()
-            logger.info("Subscribed to %d playbook trigger event(s)", subscribed)
-
-            register_playbook_handlers(
-                self.vault_watcher,
-                playbook_manager=self.playbook_manager,
-            )
-
-            # Timer service (playbooks spec §7, roadmap 5.3.7) — emits synthetic
-            # ``timer.*`` events for playbooks with periodic triggers.  Scans the
-            # playbook manager for ``timer.{interval}`` triggers and only tracks
-            # intervals that have at least one active subscriber.
+            from src.playbooks.runtime import V2PlaybookRuntime
             from src.timer_service import TimerService
+
+            if self._command_handler is None:
+                raise RuntimeError("Playbooks enabled before command handler was wired")
+            self.playbook_manager = V2PlaybookRuntime(
+                config=self.config,
+                db=self.db,
+                handler=self._command_handler,
+                llm=self.llm,
+                bus=self.bus,
+            )
+            await self.playbook_manager.refresh()
+            subscribed = self.playbook_manager.subscribe_to_events()
+            logger.info("Subscribed Playbooks V2 to %d active trigger(s)", subscribed)
 
             self.timer_service = TimerService(
                 event_bus=self.bus,
@@ -1923,80 +1425,29 @@ class Orchestrator(
             )
             self.timer_service.start()
 
-            # Playbook resume handler (roadmap 5.4.3) — subscribes to
-            # ``human.review.completed`` events and resumes paused playbook
-            # runs from their saved conversation state.  External systems
-            # (Discord buttons, API endpoints) fire the event; this handler
-            # validates, creates a Supervisor, and delegates to
-            # PlaybookRunner.resume().
             from src.playbooks.resume_handler import PlaybookResumeHandler
-
             self.playbook_resume_handler = PlaybookResumeHandler(
                 db=self.db,
                 event_bus=self.bus,
                 orchestrator=self,
-                playbook_manager=self.playbook_manager,
                 config=self.config,
             )
             self.playbook_resume_handler.subscribe()
 
-            # Workflow stage resume handler (Roadmap 7.5.5) — subscribes to
-            # ``workflow.stage.completed`` events and automatically resumes
-            # coordination playbook runs that are paused waiting for stage
-            # completion.  This enables long-running playbooks that span
-            # multiple workflow stages with event-triggered resumption.
             from src.workflow_stage_resume_handler import WorkflowStageResumeHandler
-
             self.workflow_stage_resume_handler = WorkflowStageResumeHandler(
                 db=self.db,
                 event_bus=self.bus,
                 orchestrator=self,
-                playbook_manager=self.playbook_manager,
                 config=self.config,
             )
             self.workflow_stage_resume_handler.subscribe()
-
-            # Orphan workflow recovery (Roadmap 7.5.6) — detect and recover
-            # workflows whose coordination playbook died (crashed, failed,
-            # timed out).  Tasks continue independently; this module handles
-            # re-emitting missed events and alerting operators.
-            from src.orphan_workflow_recovery import OrphanWorkflowRecovery
-
-            self.orphan_workflow_recovery = OrphanWorkflowRecovery(
-                db=self.db,
-                event_bus=self.bus,
-            )
-            recovery_summary = await self.orphan_workflow_recovery.recover_on_startup()
-            if recovery_summary.get("checked"):
-                logger.info(
-                    "Orphan workflow recovery: %s",
-                    {k: v for k, v in recovery_summary.items() if k != "details"},
-                )
-
         else:
-            # Paused: leave every playbook attribute as ``None`` so the
-            # ``getattr``/``if x:`` guards at the call sites (shutdown(),
-            # run_one_cycle(), src/commands/playbook_commands.py) see a
-            # falsy value rather than a missing attribute.
-            #
-            # NOTE for future maintainers: TimerService is the *sole*
-            # producer of ``timer.*``/``cron.*`` bus events and its timer
-            # map comes exclusively from ``PlaybookManager.get_all_triggers()``.
-            # While playbooks are paused nothing emits those events.  A new
-            # periodic consumer must use plugin ``@cron`` (which stays ON via
-            # ``PluginRegistry.tick_cron()``) or a hardcoded cascade step --
-            # not a ``timer.*`` subscription.
             self.playbook_manager = None
             self.timer_service = None
             self.playbook_resume_handler = None
             self.workflow_stage_resume_handler = None
-            self.orphan_workflow_recovery = None
-            logger.info(
-                "Playbooks subsystem PAUSED (playbooks.enabled=false) — "
-                "PlaybookManager/TimerService/resume handlers/workflow recovery "
-                "not started; playbook_runs and compiled JSON preserved. "
-                "See docs/specs/design/feature-pauses.md"
-            )
+            logger.info("Playbooks V2 paused (playbooks.enabled=false)")
 
         # Register override file watcher handlers (memory-scoping spec §5).
         # Detects changes to per-project agent-type override files so they
@@ -2676,13 +2127,6 @@ class Orchestrator(
         to finish before closing it.
         """
         await self.wait_for_running_tasks(timeout=10)
-        reconcile_task = getattr(self, "_playbook_reconcile_task", None)
-        if reconcile_task is not None and not reconcile_task.done():
-            reconcile_task.cancel()
-            try:
-                await reconcile_task
-            except (asyncio.CancelledError, Exception):
-                pass
         if self.vault_watcher:
             try:
                 await self.vault_watcher.stop()
@@ -2692,6 +2136,8 @@ class Orchestrator(
             await self._config_watcher.stop()
         if self.timer_service:
             self.timer_service.stop()
+        if self.playbook_manager:
+            await self.playbook_manager.shutdown()
         if hasattr(self, "playbook_resume_handler") and self.playbook_resume_handler:
             self.playbook_resume_handler.shutdown()
         if hasattr(self, "workflow_stage_resume_handler") and self.workflow_stage_resume_handler:

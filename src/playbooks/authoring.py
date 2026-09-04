@@ -14,8 +14,36 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping
 
-from src.playbooks.compiler import PlaybookCompiler
+import yaml
+
 from src.playbooks.definition import SourceRef, truncate_excerpt
+
+
+def _parse_frontmatter(content: str) -> tuple[dict[str, Any], str]:
+    if not content.startswith("---"):
+        return {}, content
+    parts = content.split("---", 2)
+    if len(parts) < 3:
+        return {}, content
+    try:
+        return yaml.safe_load(parts[1]) or {}, parts[2]
+    except yaml.YAMLError:
+        return {}, content
+
+
+def _validate_frontmatter(frontmatter: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    if not frontmatter:
+        return ["Missing YAML frontmatter (file must start with '---')"]
+    if not frontmatter.get("id"):
+        errors.append("Frontmatter missing required field: 'id'")
+    triggers = frontmatter.get("triggers")
+    if not isinstance(triggers, list) or not triggers:
+        errors.append("Frontmatter 'triggers' must be a non-empty list")
+    if not frontmatter.get("scope"):
+        errors.append("Frontmatter missing required field: 'scope'")
+    return errors
+
 
 _BACKTICK = re.compile(r"`([^`\n]{1,128})`")
 _FENCE = re.compile(r"^\s*(`{3,}|~{3,}).*$")
@@ -60,8 +88,8 @@ class PlaybookSource:
             raw = path.read_text(encoding="utf-8")
         except OSError as exc:
             return SourceError(path, (str(exc),))
-        frontmatter, body = PlaybookCompiler._parse_frontmatter(raw)
-        errors = PlaybookCompiler._validate_frontmatter(frontmatter)
+        frontmatter, body = _parse_frontmatter(raw)
+        errors = _validate_frontmatter(frontmatter)
         if errors:
             return SourceError(path, tuple(errors))
         try:

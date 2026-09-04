@@ -521,7 +521,7 @@ async def test_artifact_integrity_doctor_check_reports_missing_and_mutated_files
     )
 
     ctx = DoctorContext(
-        config=SimpleNamespace(playbooks=PlaybooksConfig(v2_storage_enabled=True)), db=db
+        config=SimpleNamespace(playbooks=PlaybooksConfig(enabled=True)), db=db
     )
     assert (await _check_artifact_integrity(ctx)).severity is Severity.OK
 
@@ -895,7 +895,7 @@ class _OverriddenProfiles:
     """
 
     def __init__(self, overrides):
-        from src.playbooks.migration import shipped_profile_lookup
+        from src.playbooks.profiles import shipped_profile_lookup
 
         self._shipped = shipped_profile_lookup()
         self._overrides = overrides
@@ -1196,7 +1196,7 @@ def _stale_ctx(db, tmp_path=None, *, enabled=True, profiles=None):
 
     handler = SimpleNamespace(_v2_lookups=_v2_lookups)
     return DoctorContext(
-        config=SimpleNamespace(playbooks=PlaybooksConfig(v2_storage_enabled=enabled)),
+        config=SimpleNamespace(playbooks=PlaybooksConfig(enabled=enabled)),
         db=db,
         handler=handler,
     )
@@ -1263,7 +1263,7 @@ def _v2_handler(db, lookups, *, v2_api=True, v2_storage=True):
 
             self.db = db
             self.config = SimpleNamespace(
-                playbooks=PlaybooksConfig(v2_api=v2_api, v2_storage_enabled=v2_storage)
+                playbooks=PlaybooksConfig(enabled=(v2_api and v2_storage))
             )
 
         async def _v2_lookups(self):
@@ -1274,7 +1274,6 @@ def _v2_handler(db, lookups, *, v2_api=True, v2_storage=True):
 
 @pytest.mark.asyncio
 async def test_activation_health_command_surfaces_a_stale_capability_profile(db, tmp_path):
-    from src.commands.playbook_v2_commands import V2_STORAGE_UNAVAILABLE_ERROR
     from src.profiles.capabilities import CapabilityPolicy
     from tests.playbook_v2_helpers import StubContracts, StubProfiles, stub_policies
 
@@ -1297,14 +1296,10 @@ async def test_activation_health_command_surfaces_a_stale_capability_profile(db,
     assert reason["code"] == "profile_capabilities_changed"
     assert reason["subject"] == "worker"
 
-    # Filters still narrow the same rows, and the seam error is what a build
-    # without V2 storage keeps reporting.
+    # Filters still narrow the same rows.
     assert (await handler._cmd_playbook_activation_health({"health": "ready"}))["count"] == 0
     assert (await handler._cmd_playbook_activation_health({"playbook_id": "other"}))["count"] == 0
     assert (await handler._cmd_playbook_activation_health({"scope": "project"}))["count"] == 0
-    assert await _v2_handler(db, lookups, v2_storage=False)._cmd_playbook_activation_health(
-        {}
-    ) == {"error": V2_STORAGE_UNAVAILABLE_ERROR}
 
 
 @pytest.mark.asyncio
@@ -1573,10 +1568,6 @@ async def test_artifacts_command_reports_no_active_hash_before_first_activation(
 
 @pytest.mark.asyncio
 async def test_artifacts_command_honours_its_gates_and_arguments(db, tmp_path):
-    from src.commands.playbook_v2_commands import (
-        V2_API_DISABLED_ERROR,
-        V2_STORAGE_UNAVAILABLE_ERROR,
-    )
     from tests.playbook_v2_helpers import StubContracts, StubProfiles
 
     lookups = (StubContracts(), StubProfiles(), None)
@@ -1589,9 +1580,3 @@ async def test_artifacts_command_honours_its_gates_and_arguments(db, tmp_path):
     assert await handler._cmd_playbook_artifacts({"playbook_id": "p", "limit": "many"}) == {
         "error": "limit must be an integer"
     }
-    assert await _v2_handler(db, lookups, v2_api=False)._cmd_playbook_artifacts(
-        {"playbook_id": "p"}
-    ) == {"error": V2_API_DISABLED_ERROR}
-    assert await _v2_handler(db, lookups, v2_storage=False)._cmd_playbook_artifacts(
-        {"playbook_id": "p"}
-    ) == {"error": V2_STORAGE_UNAVAILABLE_ERROR}

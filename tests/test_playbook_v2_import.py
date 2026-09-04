@@ -24,7 +24,7 @@ from src.commands.playbook_v2_commands import (
 )
 from src.database import Database
 from src.playbooks.artifact_store import ArtifactStore
-from src.playbooks.migration import shipped_profile_lookup
+from src.playbooks.profiles import shipped_profile_lookup
 from src.playbooks.validation import RegisteredEventLookup, RegistryContractLookup
 from src.profiles.capabilities import CapabilityPolicy
 from src.tools.definitions import _ALL_TOOL_DEFINITIONS, _TOOL_CATEGORIES
@@ -37,8 +37,7 @@ PLAYBOOK_IDS = (
     "default-pipeline",
     "default-assignment-routing",
     "memory-consolidation",
-    "coding-reflection",
-    "pr-merge-sweep",
+        "pr-merge-sweep",
 )
 
 
@@ -67,9 +66,7 @@ class _Handler(PlaybookV2CommandsMixin):
             vault_root=str(tmp_path / "vault"),
             compiled_root=str(tmp_path / "compiled"),
             playbooks=SimpleNamespace(
-                v2_api=True,
-                v2_activation_writes=True,
-                v2_storage_enabled=True,
+                enabled=True,
                 v2_max_artifact_bytes=1_048_576,
             ),
         )
@@ -176,7 +173,7 @@ async def test_import_refuses_a_bundle_file_symlinked_outside_the_vault(db, tmp_
 async def test_import_does_not_treat_review_decision_as_core_policy(db, tmp_path):
     handler = _Handler(tmp_path, db)
     relative = _copy_bundle(tmp_path)
-    review_path = tmp_path / "vault" / relative / "review.md"
+    review_path = tmp_path / "vault" / relative / "manifest.md"
     review, body = _review_frontmatter(review_path)
     review["decision"] = "rejected"
     _write_review(review_path, review, body)
@@ -193,14 +190,14 @@ async def test_import_refuses_duplicate_review_frontmatter_keys(db, tmp_path):
     """Duplicate metadata keys are rejected even when they are not policy gates."""
     handler = _Handler(tmp_path, db)
     relative = _copy_bundle(tmp_path)
-    review_path = tmp_path / "vault" / relative / "review.md"
+    review_path = tmp_path / "vault" / relative / "manifest.md"
     text = review_path.read_text(encoding="utf-8")
-    review_path.write_text(text.replace("---\n", "---\ndecision: rejected\n", 1))
+    review_path.write_text(text.replace("---\n", "---\nplaybook_id: duplicate\n", 1))
 
     result = await _import(handler, relative)
 
     assert result["success"] is False
-    assert "duplicate review key 'decision'" in result["error"]
+    assert "duplicate review key 'playbook_id'" in result["error"]
     assert await db.list_playbook_artifacts("default-pipeline") == []
 
 
@@ -211,7 +208,7 @@ async def test_import_refuses_review_metadata_that_does_not_match_bytes(
 ):
     handler = _Handler(tmp_path, db)
     relative = _copy_bundle(tmp_path)
-    review_path = tmp_path / "vault" / relative / "review.md"
+    review_path = tmp_path / "vault" / relative / "manifest.md"
     review, body = _review_frontmatter(review_path)
     review[mismatch] = {
         "artifact_sha256": "sha256:" + "0" * 64,
@@ -237,9 +234,9 @@ async def test_import_refuses_noncanonical_artifact_bytes(db, tmp_path):
     artifact_path.write_bytes(raw)
     sha = "sha256:" + hashlib.sha256(raw).hexdigest()
     (directory / "artifact.sha256").write_text(sha + "\n", encoding="utf-8")
-    review, body = _review_frontmatter(directory / "review.md")
+    review, body = _review_frontmatter(directory / "manifest.md")
     review["artifact_sha256"] = sha
-    _write_review(directory / "review.md", review, body)
+    _write_review(directory / "manifest.md", review, body)
 
     result = await _import(handler, relative)
 
@@ -398,7 +395,7 @@ async def test_command_refuses_a_non_elevated_principal_even_with_capability(db,
 
     assert result == {
         "success": False,
-        "error": "out of scope: playbook_v2_import requires an operator",
+        "error": "out of scope: playbook_v2_import requires elevated capability scope",
     }
     assert await db.list_playbook_artifacts("default-pipeline") == []
 
