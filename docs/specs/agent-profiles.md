@@ -143,6 +143,17 @@ an explicitly supplied `claude_dangerously_skip_permissions: false` removes the
 legacy Claude alias too; otherwise the old value would immediately re-enable
 the same mode.
 
+`edit_profile` recognizes a modern `## Capabilities` profile as an
+operator-authored document. It patches requested fields in their native places:
+name and description in frontmatter, Config values in `## Config`,
+`allowed_tools` in `Capabilities.harness_tools`, server names in `## MCP
+Servers`, install data in `## Install`, and the combined prompt in its Role,
+Rules, and Reflection sections. All untouched metadata, Config keys,
+Capabilities namespaces, and authored rationale remain unchanged. This prevents
+an edit from migrating a current profile back to the legacy `## Tools` shape.
+Legacy and DB-only profiles continue to use the renderer that creates a complete
+vault document.
+
 These are security-sensitive opt-ins. `--full-auto` removes routine Codex
 approval prompts while retaining its workspace sandbox.
 `--dangerously-skip-permissions` removes Claude's permission checks and does not

@@ -487,6 +487,102 @@ class TestCommandVaultWrite:
         assert profile.allowed_tools == ["Read", "Write"]
         assert profile.description == "Updated description"
 
+    @pytest.mark.parametrize(
+        ("updates", "expected_config", "expected_description", "expected_harness_tools"),
+        [
+            ({"harness": "codex"}, {"harness": "codex"}, None, None),
+            (
+                {"harness": "codex", "codex_full_auto": True},
+                {"harness": "codex", "codex_full_auto": True},
+                None,
+                None,
+            ),
+            (
+                {"harness": "claude", "claude_dangerously_skip_permissions": True},
+                {"harness": "claude", "claude_dangerously_skip_permissions": True},
+                None,
+                None,
+            ),
+            ({"description": "Updated modern description"}, {}, "Updated modern description", None),
+            (
+                {"harness": "codex", "allowed_tools": ["Read", "Bash"]},
+                {"harness": "codex"},
+                None,
+                ["Read", "Bash"],
+            ),
+        ],
+    )
+    async def test_edit_modern_profile_preserves_unrelated_authored_sections(
+        self, handler, updates, expected_config, expected_description, expected_harness_tools
+    ):
+        """Modern profiles retain their schema and rationale on a managed edit."""
+        vault_path = handler._vault_profile_path("modern")
+        os.makedirs(os.path.dirname(vault_path), exist_ok=True)
+        original = """---
+id: modern
+name: Modern Worker
+tags: [shipped, modern]
+description: Keeps the current profile schema
+---
+
+# Modern Worker
+
+## Config
+This rationale must remain next to the operational settings.
+```json
+{
+  "harness": "claude",
+  "lifecycle": "pool",
+  "needs_workspace": true,
+  "read_only": false,
+  "default_class": "standard-medium"
+}
+```
+
+## Capabilities
+This is intentionally not the legacy Tools section.
+```json
+{
+  "harness_tools": ["Read"],
+  "aq_commands": [],
+  "plugin_tools": ["mcp__github__create_issue"]
+}
+```
+
+## MCP Servers
+```json
+["agent-queue", "github"]
+```
+
+## Local rationale
+Keep this operator note exactly as authored.
+"""
+        with open(vault_path, "w") as f:
+            f.write(original)
+
+        result = await handler.execute("edit_profile", {"profile_id": "modern", **updates})
+        assert result["updated"] == "modern"
+
+        with open(vault_path) as f:
+            edited = f.read()
+        parsed = parse_profile(edited)
+        assert parsed.is_valid
+        for key, value in expected_config.items():
+            assert parsed.config[key] == value
+        if expected_description is not None:
+            assert parsed.frontmatter.extra["description"] == expected_description
+        if expected_harness_tools is not None:
+            assert parsed.capabilities is not None
+            assert parsed.capabilities["harness_tools"] == expected_harness_tools
+        assert parsed.config["lifecycle"] == "pool"
+        assert parsed.config["needs_workspace"] is True
+        assert parsed.config["read_only"] is False
+        assert parsed.frontmatter.tags == ["shipped", "modern"]
+        assert "## Capabilities\nThis is intentionally not the legacy Tools section." in edited
+        assert "## MCP Servers\n```json\n[\"agent-queue\", \"github\"]\n```" in edited
+        assert "## Local rationale\nKeep this operator note exactly as authored." in edited
+        assert "This rationale must remain next to the operational settings." in edited
+
     async def test_delete_removes_vault_file(self, handler):
         """delete_profile should remove the vault markdown file."""
         await handler.execute(
