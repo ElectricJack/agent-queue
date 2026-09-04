@@ -355,13 +355,43 @@ def lower_assignment(source: PlaybookSource) -> tuple[Mapping[str, Any], list[Di
                 "source": source_ref,
                 "profile_id": profile_id,
                 "prompt": {"type": "literal", "value": source.body.strip()},
-                "output_schema": {"type": "object", "additionalProperties": True},
+                "inputs": {
+                    "tasks": {"type": "event_ref", "path": "tasks"},
+                    "options": {"type": "event_ref", "path": "options"},
+                    "options_hash": {"type": "event_ref", "path": "options_hash"},
+                    "catalog_hash": {"type": "event_ref", "path": "catalog_hash"},
+                },
+                "output_schema": {
+                    "type": "object",
+                    "properties": {
+                        "decisions": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "task_id": {"type": "string"},
+                                    "input_hash": {"type": "string"},
+                                    "intelligence_class": {"type": "string"},
+                                    "provider": {"type": ["string", "null"]},
+                                    "reason": {"type": "string", "minLength": 1, "maxLength": 400},
+                                },
+                                "required": [
+                                    "task_id", "input_hash", "intelligence_class", "reason"
+                                ],
+                                "additionalProperties": False,
+                            },
+                        }
+                    },
+                    "required": ["decisions"],
+                    "additionalProperties": False,
+                },
                 "budget": {
                     "max_calls": 1,
                     "max_output_tokens": max_tokens,
                     "max_total_tokens": max_tokens,
                     "timeout_seconds": 300,
                 },
+                "save_result_as": "routing_result",
                 "transitions": {"completed": done, "runtime_error": done},
             },
             done: {

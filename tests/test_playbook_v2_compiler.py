@@ -248,6 +248,23 @@ def test_default_assignment_lowers_to_one_ai_node():
         "step_types": step_types,
     } == expected
 
+    choose = body["steps"]["assignment-route--choose"]
+    assert choose["inputs"] == {
+        "tasks": {"type": "event_ref", "path": "tasks"},
+        "options": {"type": "event_ref", "path": "options"},
+        "options_hash": {"type": "event_ref", "path": "options_hash"},
+        "catalog_hash": {"type": "event_ref", "path": "catalog_hash"},
+    }
+    assert choose["save_result_as"] == "routing_result"
+    schema = choose["output_schema"]
+    assert schema["required"] == ["decisions"]
+    assert schema["additionalProperties"] is False
+    decision = schema["properties"]["decisions"]["items"]
+    assert decision["required"] == [
+        "task_id", "input_hash", "intelligence_class", "reason"
+    ]
+    assert decision["additionalProperties"] is False
+
 
 def test_non_loop_output_reference_lowers_to_binding_ref():
     source = PlaybookSource.load(

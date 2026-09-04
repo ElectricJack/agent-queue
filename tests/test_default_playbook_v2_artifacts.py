@@ -346,6 +346,20 @@ def test_pipeline_rule_set_unchanged() -> None:
     assert not rule_ids & SUPERSEDED_RULE_IDS
 
 
+def test_assignment_router_has_a_typed_input_and_result_contract() -> None:
+    definition = _artifact("default-assignment-routing")
+    step = definition.steps["assignment-route--choose"]
+    assert _inputs(step) == {
+        "tasks": {"type": "event_ref", "path": "tasks"},
+        "options": {"type": "event_ref", "path": "options"},
+        "options_hash": {"type": "event_ref", "path": "options_hash"},
+        "catalog_hash": {"type": "event_ref", "path": "catalog_hash"},
+    }
+    assert step.save_result_as == "routing_result"
+    assert step.output_schema["required"] == ["decisions"]
+    assert step.output_schema["additionalProperties"] is False
+
+
 def test_review_dedup_key_matches_doctor() -> None:
     """The prose rewrite must not silently disarm `integration.unreviewed_prs`."""
     from src.doctor.integration_checks import _review_dedup_key
