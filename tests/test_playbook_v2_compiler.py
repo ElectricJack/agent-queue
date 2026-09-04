@@ -264,6 +264,10 @@ def test_default_assignment_lowers_to_one_ai_node():
         "task_id", "input_hash", "intelligence_class", "reason"
     ]
     assert decision["additionalProperties"] is False
+    assert body["steps"]["assignment-route--done"]["result"] == {
+        "type": "binding_ref",
+        "binding": "routing_result",
+    }
 
 
 def test_non_loop_output_reference_lowers_to_binding_ref():

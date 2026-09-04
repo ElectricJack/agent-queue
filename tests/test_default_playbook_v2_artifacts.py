@@ -358,6 +358,11 @@ def test_assignment_router_has_a_typed_input_and_result_contract() -> None:
     assert step.save_result_as == "routing_result"
     assert step.output_schema["required"] == ["decisions"]
     assert step.output_schema["additionalProperties"] is False
+    terminal = definition.steps["assignment-route--done"]
+    assert terminal.model_dump(mode="json", exclude_none=True)["result"] == {
+        "type": "binding_ref",
+        "binding": "routing_result",
+    }
 
 
 def test_review_dedup_key_matches_doctor() -> None:

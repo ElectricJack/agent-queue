@@ -400,6 +400,7 @@ def lower_assignment(source: PlaybookSource) -> tuple[Mapping[str, Any], list[Di
                 "title": "Assignment routing complete",
                 "source": source_ref,
                 "outcome": "completed",
+                "result": {"type": "binding_ref", "binding": "routing_result"},
             },
         },
     }, []
