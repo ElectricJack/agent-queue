@@ -128,9 +128,7 @@ class GitCommandsMixin:
             try:
                 response.update(await self._record_pr_base(project, pr_url, cwd))
             except Exception:
-                logger.warning(
-                    "Could not record the base branch for %s", pr_url, exc_info=True
-                )
+                logger.warning("Could not record the base branch for %s", pr_url, exc_info=True)
         return response
 
     async def _check_ci_before_merge(self, cwd: str, pr_url: str, *, force: bool) -> dict | None:
@@ -179,10 +177,32 @@ class GitCommandsMixin:
             "forced": False,
             "message": "",
         }
-        if verdict.is_green:
+
+        # The second question: did those checks run against the base as it
+        # is *now*?  A green head that is behind its base is the #390/#391
+        # shape — each PR green alone, the combination untested.  This is
+        # GitHub's "require branches to be up to date" applied here, where
+        # it can be turned on before the ruleset flag (which would refuse
+        # every fleet merge until pr_merge could recover from it).
+        freshness = None
+        if getattr(self.config.integration, "merge_require_up_to_date", True):
+            try:
+                comparison = await self.orchestrator.git.apr_behind_base(cwd, pr_url)
+            except Exception:
+                logger.warning("Could not compare %s against its base", pr_url, exc_info=True)
+                comparison = None
+            freshness = ci_gate.classify_base(comparison)
+            ci["base"] = freshness.as_dict()
+
+        problems: list[str] = []
+        if not verdict.is_green:
+            problems.append(f"CI is not green ({verdict.state}): {verdict.summary()}")
+        if freshness is not None and not freshness.is_current:
+            problems.append(f"head is {freshness.summary()} ({freshness.state})")
+        if not problems:
             return ci
 
-        detail = f"CI is not green for {pr_url} ({verdict.state}): {verdict.summary()}"
+        detail = f"{pr_url}: " + "; ".join(problems)
         if policy != ci_gate.MERGE_CI_POLICY_REQUIRED:
             ci["message"] = f"{detail} — merged anyway (integration.merge_ci_policy: {policy})"
             logger.warning("%s", ci["message"])
@@ -193,9 +213,22 @@ class GitCommandsMixin:
             logger.warning("%s", ci["message"])
             return ci
         ci["blocked"] = True
+        remedies = ["fix the failing checks", "wait for the run to finish"]
+        if freshness is not None and not freshness.is_current:
+            parsed = ci_gate.parse_pr_url(pr_url)
+            if parsed is not None:
+                owner, repo, number = parsed
+                remedies.append(
+                    "update the branch so its checks re-run against the current base "
+                    f"(gh api -X PUT repos/{owner}/{repo}/pulls/{number}/update-branch)"
+                )
+            else:
+                remedies.append("update the branch (PUT .../pulls/<n>/update-branch)")
+        remedies.append("pass force=true")
         ci["message"] = (
             f"{detail}. Refusing to merge under integration.merge_ci_policy: required. "
-            "Fix the failing checks, wait for the run to finish, or pass force=true."
+            + ", ".join(remedies[:-1])
+            + f", or {remedies[-1]}."
         )
         logger.warning("%s", ci["message"])
         return ci

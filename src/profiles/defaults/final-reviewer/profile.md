@@ -107,5 +107,14 @@ into this branch has already approved. Your job:
   means you merged something CI had already failed, and that belongs in
   your close summary. Do not reach for `force` to get past a refusal
   unless you have read the failing run and can say why it is unrelated.
+- Green is not enough on its own: the `ci` block also carries `base`
+  (`ref`, `behind_by`, `state`). `stale` means the head's checks ran
+  against a base that has since moved, so the merged result is a
+  combination nothing has tested — that is how #390 + #391 turned `main`
+  red while each was green. Under `required` a stale base refuses the
+  merge; the remedy in the error is to update the branch
+  (`gh api -X PUT repos/<owner>/<repo>/pulls/<n>/update-branch`), wait for
+  its checks to re-run, and merge again. Under `warn` it merges and the
+  `stale` verdict belongs in your close summary.
 - Never edit code yourself. If the branch needs fixes, reject via
   `reopen_with_feedback` on the worker tasks.

@@ -4289,8 +4289,8 @@
         "tags": [
           "git"
         ],
-        "summary": "Merge a GitHub pull request via ``gh pr merge``.  Only callable by profiles that whitelist ``pr_merge`` in ``allowed_tools`` (final-reviewer only in the dv2-phase2 configuration).  Returns the merged SHA on success (best-effort \u2014 callers who need the authoritative SHA should query the branch head after this command returns).  The PR's status-check rollup is consulted first according to ``integration.merge_ci_policy``; the verdict comes back in the ``ci`` block, and under the ``required`` policy a non-green rollup refuses the merge.",
-        "description": "Merge a GitHub pull request via ``gh pr merge``.  Only callable by profiles that whitelist ``pr_merge`` in ``allowed_tools`` (final-reviewer only in the dv2-phase2 configuration).  Returns the merged SHA on success (best-effort \u2014 callers who need the authoritative SHA should query the branch head after this command returns).  The PR's status-check rollup is consulted first according to ``integration.merge_ci_policy``; the verdict comes back in the ``ci`` block, and under the ``required`` policy a non-green rollup refuses the merge.",
+        "summary": "Merge a GitHub pull request via ``gh pr merge``.  Only callable by profiles that whitelist ``pr_merge`` in ``allowed_tools`` (final-reviewer only in the dv2-phase2 configuration).  Returns the merged SHA on success (best-effort \u2014 callers who need the authoritative SHA should query the branch head after this command returns).  The PR's status-check rollup is consulted first according to ``integration.merge_ci_policy``; the verdict comes back in the ``ci`` block, and under the ``required`` policy a non-green rollup refuses the merge.  The same block's ``base`` says whether the head is up to date with its base (``current`` / ``stale`` / ``unknown``): a green head behind its base passed against a base that has since moved, and under ``required`` that refuses too until the branch is updated and its checks re-run (``integration.merge_require_up_to_date``).",
+        "description": "Merge a GitHub pull request via ``gh pr merge``.  Only callable by profiles that whitelist ``pr_merge`` in ``allowed_tools`` (final-reviewer only in the dv2-phase2 configuration).  Returns the merged SHA on success (best-effort \u2014 callers who need the authoritative SHA should query the branch head after this command returns).  The PR's status-check rollup is consulted first according to ``integration.merge_ci_policy``; the verdict comes back in the ``ci`` block, and under the ``required`` policy a non-green rollup refuses the merge.  The same block's ``base`` says whether the head is up to date with its base (``current`` / ``stale`` / ``unknown``): a green head behind its base passed against a base that has since moved, and under ``required`` that refuses too until the branch is updated and its checks re-run (``integration.merge_require_up_to_date``).",
         "operationId": "pr_merge",
         "requestBody": {
           "content": {
@@ -33853,6 +33853,34 @@
         "title": "PoolStatusRow",
         "description": "One (project, profile) worker-pool row \u2014 swarm-work-model \u00a711."
       },
+      "PrMergeBaseFreshness": {
+        "properties": {
+          "ref": {
+            "type": "string",
+            "title": "Ref",
+            "default": ""
+          },
+          "behind_by": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Behind By"
+          },
+          "state": {
+            "type": "string",
+            "title": "State",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "PrMergeBaseFreshness",
+        "description": "Whether the PR head contains its base branch's tip.\n\nGitHub's \"Require branches to be up to date before merging\", asked on\nthe fleet's own merge path.  A green rollup only says the head passed\nagainst the base *as it was when the run started*; ``stale`` means the\nbase has moved since and the merged result is a combination nothing\nhas tested (PRs #390 + #391, 2026-09-03)."
+      },
       "PrMergeCiVerdict": {
         "properties": {
           "policy": {
@@ -33893,6 +33921,16 @@
             "type": "array",
             "title": "Missing",
             "default": []
+          },
+          "base": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PrMergeBaseFreshness"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "blocked": {
             "type": "boolean",
@@ -33935,7 +33973,7 @@
           "force": {
             "type": "boolean",
             "title": "Force",
-            "description": "Merge even when ``integration.merge_ci_policy: required`` would refuse because the PR's checks are red, still running, or unreadable.  For a human who has looked at the failure and judged it unrelated \u2014 the override is recorded in the result and the log.",
+            "description": "Merge even when ``integration.merge_ci_policy: required`` would refuse because the PR's checks are red, still running, or unreadable, or because the head is behind its base.  For a human who has looked at the failure and judged it unrelated \u2014 the override is recorded in the result and the log.",
             "default": false
           }
         },

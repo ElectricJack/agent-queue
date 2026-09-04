@@ -511,12 +511,13 @@ override → project policy `projects.integration_mode` → this).
 | `default_mode` | `str` | `"pull_request"` | Effective integration mode for tasks that inherit all the way down the chain. `"pull_request"`: the worker pushes its branch and opens a PR; the task completes unmerged and the default-pipeline playbook's review policy owns the merge. `"direct"`: the completion pipeline merges the task branch into the default branch on completion — set this only for deployments that explicitly run without a review policy. |
 | `merge_ci_policy` | `str` | `"warn"` | What `pr_merge` does when the PR's status-check rollup is not green. `"off"`: never asks (pre-2026-09-03 behaviour). `"warn"`: asks, merges regardless, and returns the verdict in the result's `ci` block and the daemon log. `"required"`: refuses to merge anything that is not green, including a rollup that cannot be read (fail closed). |
 | `merge_required_checks` | `list[str]` | `[]` | Check names that must be green, e.g. `["Tests (default)"]`. Empty means every check in the rollup — the strict reading. A required name the rollup never mentions is treated as not-yet-reported, which blocks under `required`. A bare string is accepted as a one-element list. |
+| `merge_require_up_to_date` | `bool` | `true` | Whether a PR head that is *behind* its base counts as not green — GitHub's "Require branches to be up to date before merging", applied on the fleet's own merge path. A green rollup only proves the head passed against the base as it was when the run started; PRs #390 and #391 were each green on their own base and their back-to-back merge put a `main` together that no run had tested. Under `warn` this only adds a `base` block (`ref`, `behind_by`, `state`: `current` / `stale` / `unknown`) to the result; under `required` a stale or unreadable base refuses the merge until the branch is updated and its checks re-run. The trade-off is more CI re-runs on a busy queue. |
 
 Validation (`IntegrationConfig.validate`): `default_mode` must be one of
 `INTEGRATION_MODES` (`direct`, `pull_request`); `merge_ci_policy` must be
 one of `MERGE_CI_POLICIES` (`off`, `warn`, `required`, defined in
 `src/git/ci_gate.py`); `merge_required_checks` must be a list of non-empty
-strings.
+strings; `merge_require_up_to_date` is coerced to a boolean.
 
 `merge_ci_policy` exists because GitHub was never asked the question: `main`
 carries no required status check, so `gh pr merge` merged 29 of the last 30

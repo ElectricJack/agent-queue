@@ -2976,6 +2976,76 @@ class GitManager:
             return None
         return rollup
 
+    async def apr_behind_base(self, checkout_path: str, pr_url: str) -> tuple[str, int] | None:
+        """``(base_ref, behind_by)`` for a PR head, or ``None`` if unknown.
+
+        ``behind_by`` is the number of commits on the PR's base branch that
+        its head does not contain — GitHub's compare endpoint
+        (``repos/{owner}/{repo}/compare/{base}...{head}``), which is the
+        same question the "Require branches to be up to date before
+        merging" ruleset flag asks.  ``0`` means the head's CI ran against
+        the base as it is now; anything else means the checks passed
+        against a base that has since moved and the merge result is a
+        combination nothing has tested (PRs #390 + #391).  Judging it is
+        :func:`src.git.ci_gate.classify_base`'s job.
+
+        ``None`` is a first-class answer (no ``gh``, no auth, no network,
+        a URL that names no repository, malformed JSON) and callers must
+        not read it as up to date.
+        """
+        from src.git.ci_gate import parse_pr_url
+
+        parsed = parse_pr_url(pr_url)
+        if parsed is None:
+            return None
+        owner, repo, _number = parsed
+        try:
+            result = await self._arun_subprocess(
+                ["gh", "pr", "view", pr_url, "--json", "baseRefName,headRefOid"],
+                cwd=checkout_path,
+                timeout=self._GIT_TIMEOUT,
+            )
+        except Exception:
+            return None
+        if result.returncode != 0:
+            return None
+        try:
+            data = json.loads(result.stdout)
+        except (ValueError, TypeError):
+            return None
+        if not isinstance(data, dict):
+            return None
+        base = str(data.get("baseRefName") or "").strip()
+        head = str(data.get("headRefOid") or "").strip()
+        if not base or not head:
+            return None
+        try:
+            base = _validate_ref(base, field="base branch")
+        except GitError:
+            return None
+        if not re.fullmatch(r"[0-9a-fA-F]{7,40}", head):
+            return None
+        try:
+            result = await self._arun_subprocess(
+                ["gh", "api", f"repos/{owner}/{repo}/compare/{base}...{head}"],
+                cwd=checkout_path,
+                timeout=self._GIT_TIMEOUT,
+            )
+        except Exception:
+            return None
+        if result.returncode != 0:
+            return None
+        try:
+            data = json.loads(result.stdout)
+        except (ValueError, TypeError):
+            return None
+        if not isinstance(data, dict):
+            return None
+        behind = data.get("behind_by")
+        if isinstance(behind, bool) or not isinstance(behind, int) or behind < 0:
+            return None
+        return base, behind
+
     async def arev_parse(self, checkout_path: str, ref: str) -> str | None:
         """Return the SHA for ``ref`` in ``checkout_path``, or None.
 

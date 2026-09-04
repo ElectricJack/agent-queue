@@ -1523,6 +1523,18 @@ class IntegrationConfig:
     #: is advisory.
     merge_required_checks: list[str] = field(default_factory=list)
 
+    #: Whether a PR head that is *behind* its base counts as not green.
+    #: GitHub's "Require branches to be up to date before merging",
+    #: applied on the fleet's own merge path.  A green rollup only proves
+    #: the head passed against the base as it was when the run started:
+    #: PRs #390 and #391 were each green on their own base and their
+    #: back-to-back merge put a ``main`` together that no run had tested.
+    #: Under ``warn`` this only adds a ``base`` block to the verdict; under
+    #: ``required`` a stale (or unreadable) base refuses the merge until the
+    #: branch is updated and its checks re-run.  The cost is more CI
+    #: re-runs on a busy queue, which is why it is a separate knob.
+    merge_require_up_to_date: bool = True
+
     def validate(self) -> list[ConfigError]:
         from src.git.ci_gate import MERGE_CI_POLICIES
         from src.models import INTEGRATION_MODES
@@ -3045,6 +3057,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             merge_required_checks=(
                 list(raw_checks) if isinstance(raw_checks, list) else [raw_checks]
             ),
+            merge_require_up_to_date=bool(integ.get("merge_require_up_to_date", True)),
         )
 
     if "swarm" in raw and isinstance(raw["swarm"], dict):
