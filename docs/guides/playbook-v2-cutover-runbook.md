@@ -9,6 +9,19 @@ Operator guide for the commands that move a fleet off the V1 playbook runtime.
 >
 > Design: [`docs/superpowers/plans/2026-09-01-playbook-v2-cutover-cleanup.md`](../superpowers/plans/2026-09-01-playbook-v2-cutover-cleanup.md).
 
+## Staged project-playbook inventory
+
+Project playbooks can still be live V1 inputs while their V2 candidate is being
+reviewed. Do not replace those vault files merely to make inventory green.
+
+| Playbook | Scope | Staged evidence | Approval / deployment state |
+|---|---|---|---|
+| `pr-merge-sweep` | `project:agent-queue` | `tests/fixtures/playbooks/v2/pr-merge-sweep/` | Pending a human operator's review. Its live V1 source remains at `projects/agent-queue/playbooks/pr-merge-sweep.md` until V1 admission is closed; import inactive artifact first, then replace the source and activate V2 in the same controlled switch. |
+
+An artifact in this table with a pending review is not a readiness exception.
+It cannot be activated, and it must remain visible to the operator rather than
+being represented as an approved fixture.
+
 ## Why a drain needs commands at all
 
 Two facts about V1 decide the whole shape of this procedure.
