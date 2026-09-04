@@ -1,0 +1,14 @@
+{
+  "artifact_sha256": "sha256:8b1c7bec5aee1aa4d864d75e203a581a2f8289cbe6a5847b442c545e515d2525",
+  "coverage": [
+    {
+      "event_type": "timer.30m",
+      "guard": "absent",
+      "project_id": "agent-queue",
+      "result": "identical commands, arguments, binding, and terminal transitions"
+    }
+  ],
+  "legacy_source": "legacy-v1.md",
+  "limit": "A single unconditional timer rule has one reachable guard outcome; project scope is asserted independently from the path-derived V1 scope.",
+  "method": "lower_pipeline(legacy-v1.md) compared field-for-field to artifact.json, excluding presentation-only source references."
+}
