@@ -40,6 +40,7 @@ from src.models import (
     WorkspaceMode,
 )
 from src.orchestrator import Orchestrator
+from tests.git_mock_helpers import stub_repo_root_identity
 
 
 # ---------------------------------------------------------------------------
@@ -276,7 +277,7 @@ class TestTwoAgentsAcquireBranchIsolated:
         mock_git.avalidate_checkout = AsyncMock(return_value=True)
         mock_git.ahas_remote = AsyncMock(return_value=True)
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
-        mock_git._arun = AsyncMock(return_value="")
+        stub_repo_root_identity(mock_git)
         mock_git.aget_git_path = AsyncMock(
             side_effect=lambda checkout, path: os.path.join(checkout, ".git", path)
         )
@@ -766,7 +767,7 @@ class TestThreeOrMoreAgentsConcurrent:
         mock_git.avalidate_checkout = AsyncMock(return_value=True)
         mock_git.ahas_remote = AsyncMock(return_value=True)
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
-        mock_git._arun = AsyncMock(return_value="")
+        stub_repo_root_identity(mock_git)
         mock_git.aget_git_path = AsyncMock(
             side_effect=lambda checkout, path: os.path.join(checkout, ".git", path)
         )
@@ -1229,7 +1230,7 @@ class TestGitMutexRegistration:
         mock_git.avalidate_checkout = AsyncMock(return_value=True)
         mock_git.ahas_remote = AsyncMock(return_value=True)
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
-        mock_git._arun = AsyncMock(return_value="")
+        stub_repo_root_identity(mock_git)
         mock_git.aget_git_path = AsyncMock(
             side_effect=lambda checkout, path: os.path.join(checkout, ".git", path)
         )
@@ -1294,7 +1295,7 @@ class TestGitMutexRegistration:
         mock_git.avalidate_checkout = AsyncMock(return_value=True)
         mock_git.ahas_remote = AsyncMock(return_value=True)
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
-        mock_git._arun = AsyncMock(return_value="")
+        stub_repo_root_identity(mock_git)
         mock_git.aget_git_path = AsyncMock(
             side_effect=lambda checkout, path: os.path.join(checkout, ".git", path)
         )
