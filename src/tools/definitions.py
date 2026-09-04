@@ -144,6 +144,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     # playbook V2 review-only compiler -- Package 2
     "playbook_v2_validate": "playbook",
     "playbook_v2_propose": "playbook",
+    "playbook_v2_import": "playbook",
     "playbook_v2_shadow_compile": "playbook",
     # playbook V1->V2 migration readiness -- Package 6
     "playbook_migration_inventory": "playbook",
@@ -5365,6 +5366,30 @@ _ALL_TOOL_DEFINITIONS = [
                 },
             },
             "required": ["playbook_id", "semantic_body_path"],
+        },
+    },
+    {
+        "name": "playbook_v2_import",
+        "description": (
+            "Import one approved Playbook V2 review bundle from inside the vault. "
+            "Validates the exact canonical artifact and source bytes against the "
+            "recorded review metadata and the daemon's live command, profile, and "
+            "event registries, then stores the content-addressed artifact and its "
+            "database reference atomically. Operator-only. Never activates the "
+            "artifact; use playbook_activate separately with the returned full hash."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": (
+                        "Vault-relative or absolute path to a reviewed bundle directory "
+                        "containing artifact.json, artifact.sha256, source.md, and review.md."
+                    ),
+                }
+            },
+            "required": ["path"],
         },
     },
     {

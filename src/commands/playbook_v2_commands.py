@@ -35,6 +35,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+import yaml
 from pydantic import ValidationError
 
 from src.commands.principal import SERVER_OWNED_ARG_KEYS
@@ -44,7 +45,10 @@ from src.playbooks.definition import (
     DuplicateJsonKey,
     PlaybookDefinition,
     artifact_sha256,
+    canonical_bytes,
     load_definition_json,
+    referenced_profile_ids,
+    source_digest,
 )
 from src.playbooks.pipeline_lowering import shadow_compile
 from src.playbooks.proposal import DuplicateSemanticKey, load_semantic_body_json, propose
@@ -213,6 +217,11 @@ PLAYBOOK_V2_COMPILER_COMMANDS: frozenset[str] = frozenset(
 #: the inactive candidates an operator diffs before activating one.
 PLAYBOOK_V2_ARTIFACT_COMMANDS: frozenset[str] = frozenset({"playbook_artifacts"})
 
+#: Operator adoption is a write, but not activation.  It stays separate from
+#: the Package 2 compiler set so a playbook-compiler task can validate and
+#: propose without gaining authority to persist reviewed bytes.
+PLAYBOOK_V2_IMPORT_COMMANDS: frozenset[str] = frozenset({"playbook_v2_import"})
+
 V2_COMPILER_DISABLED_ERROR = "playbook v2 compiler is disabled"
 
 #: Activation scopes, matching ``ActivationStateDTO.scope``.
@@ -316,6 +325,26 @@ def _command_error(message: str, *, field: str | None = None) -> dict[str, Any]:
     }
 
 
+class _UniqueReviewLoader(yaml.SafeLoader):
+    """YAML loader that refuses ambiguous duplicate review keys."""
+
+
+def _construct_unique_review_mapping(loader, node, deep=False):
+    mapping = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if key in mapping:
+            raise ValueError(f"duplicate review key {key!r}")
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+_UniqueReviewLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+    _construct_unique_review_mapping,
+)
+
+
 class PlaybookV2CommandsMixin:
     """Playbook V2 semantic-graph command methods mixed into CommandHandler."""
 
@@ -388,6 +417,24 @@ class PlaybookV2CommandsMixin:
             return None, f"{field} must be inside vault root {root}"
         if not resolved.is_file():
             return None, f"file not found: {resolved}"
+        return resolved, None
+
+    def _v2_resolve_vault_directory(
+        self, raw: Any, field: str
+    ) -> tuple[Path | None, str | None]:
+        if not isinstance(raw, str) or not raw.strip():
+            return None, f"{field} is required"
+        root = self._v2_vault_root()
+        candidate = Path(raw)
+        if not candidate.is_absolute():
+            candidate = root / candidate
+        try:
+            resolved = candidate.resolve()
+            resolved.relative_to(root)
+        except (OSError, ValueError):
+            return None, f"{field} must be inside vault root {root}"
+        if not resolved.is_dir():
+            return None, f"directory not found: {resolved}"
         return resolved, None
 
     async def _v2_lookups(self):
@@ -528,6 +575,248 @@ class PlaybookV2CommandsMixin:
                 if proposal.artifact
                 else None
             ),
+        }
+
+    async def _cmd_playbook_v2_import(self, args: dict) -> dict:
+        """Persist one operator-reviewed V2 artifact bundle without activation.
+
+        ``path`` names a directory inside the configured vault containing the
+        Package 6 reviewed-fixture layout: ``artifact.json``,
+        ``artifact.sha256``, ``source.md`` and ``review.md``.  The review must
+        say ``decision: approved`` and bind the exact playbook, artifact,
+        source and command-contract fingerprints.  The artifact is parsed
+        strictly, must already be canonical, and is revalidated against the
+        daemon's live command, profile and event registries before any write.
+
+        The command writes the immutable content-addressed file and artifact
+        row under one per-hash critical section.  If the row write fails, a
+        file created by this attempt is removed before the lock is released.
+        No activation row is read or written.
+
+        Args:
+            path: Vault-relative or absolute path to the reviewed bundle
+                directory.
+        """
+        from src.commands.principal import PrincipalKind, current_principal
+
+        principal = current_principal()
+        if principal is not None and not (
+            principal.kind is PrincipalKind.LOCAL or principal.elevated
+        ):
+            return {
+                "success": False,
+                "error": "out of scope: playbook_v2_import requires an operator",
+            }
+        if not self._v2_api_enabled():
+            return {"success": False, "error": V2_API_DISABLED_ERROR}
+        if not self._v2_activation_writes_enabled():
+            return {
+                "success": False,
+                "error": (
+                    "playbook v2 artifact import is disabled "
+                    "(playbooks.v2_activation_writes=false)"
+                ),
+            }
+        if not self._v2_storage_ready(
+            "artifact_hash_lock",
+            "get_playbook_artifact_row",
+            "upsert_playbook_artifact",
+        ):
+            return {"success": False, **self._v2_storage_unavailable()}
+
+        directory, error = self._v2_resolve_vault_directory(args.get("path"), "path")
+        if error:
+            return {"success": False, "error": error}
+        assert directory is not None
+
+        required: dict[str, Path] = {}
+        missing: list[str] = []
+        vault_root = self._v2_vault_root()
+        for name in ("artifact.json", "artifact.sha256", "source.md", "review.md"):
+            try:
+                resolved = (directory / name).resolve()
+                resolved.relative_to(vault_root)
+            except (OSError, ValueError):
+                return {
+                    "success": False,
+                    "error": f"{name} must be inside vault root {vault_root}",
+                }
+            if not resolved.is_file():
+                missing.append(name)
+            required[name] = resolved
+        if missing:
+            return {
+                "success": False,
+                "error": f"reviewed artifact bundle is incomplete; missing {', '.join(missing)}",
+            }
+
+        try:
+            artifact_bytes = required["artifact.json"].read_bytes()
+            definition = load_definition_json(artifact_bytes.decode("utf-8"))
+        except (OSError, UnicodeDecodeError, ValueError, ValidationError, json.JSONDecodeError) as exc:
+            return {"success": False, "error": f"invalid reviewed artifact: {exc}"}
+        if canonical_bytes(definition) != artifact_bytes:
+            return {
+                "success": False,
+                "error": "artifact.json is not canonical PlaybookDefinition bytes",
+            }
+
+        actual_sha = "sha256:" + hashlib.sha256(artifact_bytes).hexdigest()
+        try:
+            sha_lines = required["artifact.sha256"].read_text(encoding="utf-8").splitlines()
+        except OSError as exc:
+            return {"success": False, "error": f"artifact.sha256 is unreadable: {exc}"}
+        if len(sha_lines) != 1 or sha_lines[0].strip() != sha_lines[0]:
+            return {
+                "success": False,
+                "error": "artifact.sha256 must contain exactly one full digest with no whitespace",
+            }
+        recorded_sha = sha_lines[0]
+        invalid = _validate_sha(recorded_sha, "artifact_sha256")
+        if invalid:
+            return {"success": False, "error": invalid}
+        if recorded_sha != actual_sha:
+            return {
+                "success": False,
+                "error": "artifact_sha256 does not match artifact.json bytes",
+            }
+
+        try:
+            review_text = required["review.md"].read_text(encoding="utf-8")
+            if not review_text.startswith("---\n"):
+                raise ValueError("review.md has no YAML frontmatter")
+            end = review_text.find("\n---\n", 4)
+            if end < 0:
+                raise ValueError("review.md has no closing YAML frontmatter marker")
+            review = yaml.load(review_text[4:end], Loader=_UniqueReviewLoader)
+            if not isinstance(review, dict):
+                raise ValueError("review.md frontmatter is not a mapping")
+        except (OSError, ValueError, yaml.YAMLError) as exc:
+            return {"success": False, "error": f"review evidence is invalid: {exc}"}
+
+        if review.get("decision") != "approved":
+            return {
+                "success": False,
+                "error": "review.md must record decision: approved",
+            }
+        if not isinstance(review.get("reviewed_by"), str) or not review["reviewed_by"].strip():
+            return {"success": False, "error": "review.md reviewed_by is required"}
+        if not isinstance(review.get("reviewed_at"), str) or not review["reviewed_at"].strip():
+            return {"success": False, "error": "review.md reviewed_at is required"}
+
+        expected = {
+            "playbook_id": definition.id,
+            "artifact_sha256": actual_sha,
+            "source_sha256": definition.source_hash,
+            "contract_fingerprint": definition.contract_fingerprint(),
+        }
+        for field, value in expected.items():
+            if review.get(field) != value:
+                return {
+                    "success": False,
+                    "error": f"review.md {field} does not match the reviewed artifact",
+                }
+        if directory.name != definition.id:
+            return {
+                "success": False,
+                "error": "reviewed bundle directory name does not match playbook_id",
+            }
+        reviewed_profiles = review.get("profiles_referenced")
+        if not isinstance(reviewed_profiles, list) or sorted(reviewed_profiles) != list(
+            referenced_profile_ids(definition)
+        ):
+            return {
+                "success": False,
+                "error": "review.md profiles_referenced does not match the reviewed artifact",
+            }
+        try:
+            source_text = required["source.md"].read_text(encoding="utf-8")
+        except OSError as exc:
+            return {"success": False, "error": f"source.md is unreadable: {exc}"}
+        if source_digest(source_text) != definition.source_hash:
+            return {
+                "success": False,
+                "error": "source_sha256 does not match source.md bytes",
+            }
+
+        contracts, profiles, events = await self._v2_lookups()
+        diagnostics = validate_definition(
+            definition,
+            inventory=None,
+            contracts=contracts,
+            profiles=profiles,
+            events=events,
+        )
+        diagnostic_rows = [_diagnostic_dict(diagnostic) for diagnostic in diagnostics]
+        if any(diagnostic.severity in {"error", "question"} for diagnostic in diagnostics):
+            return {
+                "success": False,
+                "error": "reviewed artifact does not validate against the live registries",
+                "diagnostics": diagnostic_rows,
+            }
+
+        from src.playbooks.activation import profile_fingerprint
+
+        aggregate_profile_fingerprint = profile_fingerprint(
+            dict(definition.compiled_against.profiles)
+        )
+        scope, scope_identifier = self._v2_scope(definition)
+        store = self._v2_engine().services.artifact_store
+        validation = json.dumps(
+            {
+                "errors": [],
+                "diagnostics": diagnostic_rows,
+                "reviewed_by": review["reviewed_by"].strip(),
+                "reviewed_at": review["reviewed_at"].strip(),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        try:
+            async with self.db.artifact_hash_lock([actual_sha]) as conn:
+                existing_row = await self.db.get_playbook_artifact_row(actual_sha, conn=conn)
+                file_existed = store.exists(actual_sha)
+                try:
+                    ref = store.put(
+                        definition,
+                        source_digest=definition.source_hash,
+                        contract_fingerprint=definition.contract_fingerprint(),
+                        profile_fingerprint=aggregate_profile_fingerprint,
+                        compiler_build=definition.compiler_build or "unknown",
+                        version=definition.version,
+                    )
+                    await self.db.upsert_playbook_artifact(
+                        ref,
+                        scope=scope,
+                        scope_identifier=scope_identifier,
+                        profile_fingerprint=aggregate_profile_fingerprint,
+                        path=store.path_for(ref.artifact_sha256),
+                        size_bytes=len(artifact_bytes),
+                        validation=validation,
+                        conn=conn,
+                    )
+                except BaseException:
+                    if existing_row is None and not file_existed:
+                        store.delete(actual_sha)
+                    raise
+        except Exception as exc:  # noqa: BLE001 - operator-facing storage failure
+            logger.warning("could not import reviewed V2 artifact %s", actual_sha, exc_info=True)
+            return {"success": False, "error": f"reviewed artifact import failed: {exc}"}
+
+        return {
+            "success": True,
+            "playbook_id": definition.id,
+            "artifact_sha256": ref.artifact_sha256,
+            "scope": scope,
+            "scope_identifier": scope_identifier or None,
+            "schema_version": definition.schema_version,
+            "version": definition.version,
+            "source_sha256": definition.source_hash,
+            "contract_fingerprint": definition.contract_fingerprint(),
+            "reviewed_by": review["reviewed_by"].strip(),
+            "reviewed_at": review["reviewed_at"].strip(),
+            "activated": False,
+            "diagnostics": diagnostic_rows,
         }
 
     async def _cmd_playbook_v2_shadow_compile(self, args: dict) -> dict:
