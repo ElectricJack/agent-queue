@@ -214,15 +214,35 @@ class ScriptedAdapter:
     One recording surface for the whole package: "the adapter was not called"
     and "these two outcomes took different edges" are both assertions about
     :attr:`calls`, so no test needs to build its own spy.
+
+    Results come from two places.  :attr:`queue` is one FIFO shared by every
+    command, which is the right script when the test controls the call order
+    (one rule, or a sequential loop).  :meth:`script` queues results *per
+    command name* and is consulted first; use it whenever the engine may
+    invoke two commands concurrently — ``dispatch_event`` gathers one
+    ``run_rule`` per matching rule, and against a real database each rule
+    suspends on I/O before it reaches the adapter, so which command asks
+    first is whichever connection answers first.  A shared FIFO would then
+    hand a rule its sibling's result and route it to a ``failed`` terminal
+    with no error, which is exactly the intermittent CI failure of
+    ``test_a_dispatch_persists_one_run_and_its_receipts_per_rule[postgres]``.
     """
 
     def __init__(self, results: Sequence[Any] = (), *, preview: Sequence[Any] = ()) -> None:
         self.queue = list(results)
         self.preview_queue = list(preview)
+        self.scripts: dict[str, list[Any]] = {}
         self.calls: list[tuple[str, Any, Any]] = []
         self.preview_calls: list[tuple[str, Any, Any]] = []
 
+    def script(self, name: str, *results: Any) -> None:
+        """Queue *results* for command *name* alone, ahead of the shared FIFO."""
+        self.scripts.setdefault(name, []).extend(results)
+
     def _next(self, name: str, queue: list[Any], args: Any, principal: Any) -> Any:
+        named = self.scripts.get(name)
+        if named and queue is self.queue:
+            queue = named
         if not queue:
             raise AssertionError(f"{name} was called more times than the script allows")
         scripted = queue.pop(0)
