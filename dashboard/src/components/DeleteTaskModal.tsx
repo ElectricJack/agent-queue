@@ -22,7 +22,7 @@ export default function DeleteTaskModal({ open, onClose, task }: Props) {
   const onConfirm = async () => {
     setFatal(null);
     try {
-      await del.mutateAsync({ task_id: task.id });
+      await del.mutateAsync({ task_id: task.id, cascade: true });
       onClose();
     } catch (err) {
       setFatal(err instanceof Error ? err.message : String(err));
@@ -47,7 +47,8 @@ export default function DeleteTaskModal({ open, onClose, task }: Props) {
         ) : (
           <>
             <p className="text-sm text-gray-300">
-              Delete <strong>{task.title}</strong>? This cannot be undone.
+              Delete <strong>{task.title}</strong>? Any descendant tasks will also be deleted.
+              This cannot be undone.
             </p>
             {fatal && (
               <div className="flex items-start gap-2 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">
@@ -71,7 +72,7 @@ export default function DeleteTaskModal({ open, onClose, task }: Props) {
               disabled={del.isPending}
               className="rounded-md bg-red-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-red-500 disabled:cursor-not-allowed disabled:bg-gray-700"
             >
-              {del.isPending ? "Deleting..." : "Delete"}
+              {del.isPending ? "Deleting..." : "Delete task and descendants"}
             </button>
           )}
         </div>

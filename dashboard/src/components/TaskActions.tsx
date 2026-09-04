@@ -74,7 +74,7 @@ export default function TaskActions({ task, returnTo, onDeleted, onOpenTerminal 
       provideInput.mutate({ task_id: task.id, input: textInput }, { onSuccess: closeModal });
     } else if (modal === "delete") {
       deleteTask.mutate(
-        { task_id: task.id },
+        { task_id: task.id, cascade: true },
         { onSuccess: () => {
           closeModal();
           onDeleted?.();
@@ -218,8 +218,13 @@ export default function TaskActions({ task, returnTo, onDeleted, onOpenTerminal 
       <Modal open={modal === "delete"} onClose={closeModal} title="Delete Task">
         <div className="space-y-4">
           <p className="text-sm text-gray-300">
-            Are you sure you want to delete <strong>{task.title}</strong>? This cannot be undone.
+            Delete <strong>{task.title}</strong> and any descendant tasks? This cannot be undone.
           </p>
+          {deleteTask.isError && (
+            <p role="alert" className="text-sm text-red-300">
+              Could not delete task. {deleteTask.error.message}
+            </p>
+          )}
           <div className="flex justify-end gap-2">
             <button
               onClick={closeModal}
@@ -232,7 +237,7 @@ export default function TaskActions({ task, returnTo, onDeleted, onOpenTerminal 
               disabled={isPending}
               className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-500 disabled:opacity-50"
             >
-              {isPending ? "Deleting..." : "Delete"}
+              {isPending ? "Deleting..." : "Delete task and descendants"}
             </button>
           </div>
         </div>

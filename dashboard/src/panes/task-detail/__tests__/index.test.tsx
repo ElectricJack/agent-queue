@@ -15,6 +15,7 @@ const mockUseResolveGate = vi.fn();
 const mockUseTaskAttachments = vi.fn();
 const mockUseUploadTaskAttachment = vi.fn();
 const mockUseDeleteTaskAttachment = vi.fn();
+const mockUseDeleteTask = vi.fn();
 
 vi.mock("../../../api/hooks", async () => {
   const actual = await vi.importActual<typeof import("../../../api/hooks")>(
@@ -28,6 +29,7 @@ vi.mock("../../../api/hooks", async () => {
     useTaskAttachments: (...args: unknown[]) => mockUseTaskAttachments(...args),
     useUploadTaskAttachment: (...args: unknown[]) => mockUseUploadTaskAttachment(...args),
     useDeleteTaskAttachment: (...args: unknown[]) => mockUseDeleteTaskAttachment(...args),
+    useDeleteTask: (...args: unknown[]) => mockUseDeleteTask(...args),
   };
 });
 
@@ -102,6 +104,7 @@ beforeEach(() => {
   mockUseTaskAttachments.mockReset();
   mockUseUploadTaskAttachment.mockReset();
   mockUseDeleteTaskAttachment.mockReset();
+  mockUseDeleteTask.mockReset();
   mockOpen.mockReset();
   mockClose.mockReset();
   mockNavigate.mockReset();
@@ -110,6 +113,7 @@ beforeEach(() => {
   mockUseTaskAttachments.mockReturnValue({ data: { success: true, attachments: [] } });
   mockUseUploadTaskAttachment.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
   mockUseDeleteTaskAttachment.mockReturnValue({ mutate: vi.fn(), isPending: false });
+  mockUseDeleteTask.mockReturnValue({ mutate: vi.fn(), isPending: false });
 });
 
 describe("TaskDetailPane — screenshot attachments", () => {
@@ -426,6 +430,39 @@ describe("TaskDetailPane — toolbar and shortcuts", () => {
       bindings.find((b: { key: string }) => b.key === "c").onFire();
     });
     expect(screen.getByText(/cannot be undone/i)).toBeInTheDocument();
+  });
+
+  it("deletes the task subtree after confirmation", () => {
+    const mutate = vi.fn();
+    mockUseDeleteTask.mockReturnValue({ mutate, isPending: false });
+    mockUseTask.mockReturnValue({ data: fixtureTask, isLoading: false, isError: false });
+    const setShortcuts = vi.fn();
+    renderWithRouter(<TaskDetailPane {...noopProps()} setShortcuts={setShortcuts} />);
+    const bindings = setShortcuts.mock.calls[setShortcuts.mock.calls.length - 1]?.[0];
+    act(() => bindings.find((b: { key: string }) => b.key === "c").onFire());
+    screen.getByRole("button", { name: "Delete task and descendants" }).click();
+    expect(mutate).toHaveBeenCalledWith(
+      { task_id: "t1", cascade: true },
+      expect.objectContaining({ onSuccess: expect.any(Function) }),
+    );
+  });
+
+  it("shows a cascade deletion failure in the confirmation dialog", () => {
+    mockUseDeleteTask.mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+      isError: true,
+      error: new Error("A descendant still has a live session"),
+    });
+    mockUseTask.mockReturnValue({ data: fixtureTask, isLoading: false, isError: false });
+    const setShortcuts = vi.fn();
+    renderWithRouter(<TaskDetailPane {...noopProps()} setShortcuts={setShortcuts} />);
+    const bindings = setShortcuts.mock.calls[setShortcuts.mock.calls.length - 1]?.[0];
+    act(() => bindings.find((b: { key: string }) => b.key === "c").onFire());
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "A descendant still has a live session",
+    );
   });
 
   it(". shortcut opens the more-actions dropdown", () => {

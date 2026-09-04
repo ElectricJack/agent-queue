@@ -465,8 +465,13 @@ export default function TaskDetailPane({
       <Modal open={modal === "close"} onClose={() => setModal(null)} title="Delete Task">
         <div className="space-y-4">
           <p className="text-sm text-gray-300">
-            Are you sure you want to delete <strong>{task?.title}</strong>? This cannot be undone.
+            Delete <strong>{task?.title}</strong> and any descendant tasks? This cannot be undone.
           </p>
+          {deleteTask.isError && (
+            <p role="alert" className="text-sm text-red-300">
+              Could not delete task. {deleteTask.error.message}
+            </p>
+          )}
           <div className="flex justify-end gap-2">
             <button
               onClick={() => setModal(null)}
@@ -476,12 +481,15 @@ export default function TaskDetailPane({
             </button>
             <button
               onClick={() =>
-                deleteTask.mutate({ task_id: args.taskId }, { onSuccess: () => setModal(null) })
+                deleteTask.mutate(
+                  { task_id: args.taskId, cascade: true },
+                  { onSuccess: () => setModal(null) },
+                )
               }
               disabled={deleteTask.isPending}
               className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-500 disabled:opacity-50"
             >
-              {deleteTask.isPending ? "Deleting..." : "Delete"}
+              {deleteTask.isPending ? "Deleting..." : "Delete task and descendants"}
             </button>
           </div>
         </div>

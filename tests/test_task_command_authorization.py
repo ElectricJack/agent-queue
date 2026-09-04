@@ -147,6 +147,7 @@ async def test_delete_task_cascade_refuses_live_descendant_session_without_parti
 
     assert result["success"] is False
     assert result["code"] == "hierarchy.live_descendants"
+    assert "live descendant" in result["error"]
     assert result["sessions"] == [{"session_id": "s-live", "task_id": "child"}]
 
     # Nothing was deleted — the refusal is all-or-nothing.

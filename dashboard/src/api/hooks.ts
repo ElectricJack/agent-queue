@@ -94,6 +94,7 @@ import type {
   AddWorkspaceRequest,
   CreateMcpServerRequest,
   CreateTaskRequest,
+  DeleteTaskRequest,
   EditProfileRequest,
   EditIntelligenceClassRequest,
   IntelligenceClassModel,
@@ -749,7 +750,7 @@ export function useEditTask() {
 export function useDeleteTask() {
   const cb = useTaskMutationCallbacks();
   return useMutation({
-    mutationFn: async (input: { task_id: string }) =>
+    mutationFn: async (input: DeleteTaskRequest) =>
       (await deleteTask({ body: input, throwOnError: true })).data,
     ...cb,
   });

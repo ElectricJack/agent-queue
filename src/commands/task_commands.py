@@ -3074,6 +3074,10 @@ class TaskCommandsMixin:
                 return {
                     "success": False,
                     "code": "hierarchy.live_descendants",
+                    "error": (
+                        f"Cannot delete task '{task_id}': "
+                        f"{len(live)} live descendant session(s) must stop first"
+                    ),
                     "sessions": [{"session_id": s, "task_id": t} for s, t in live],
                 }
             # Post-commit, same sequencing as delete_task's own single-

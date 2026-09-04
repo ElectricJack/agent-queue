@@ -21,7 +21,12 @@ vi.mock("../../api/hooks", () => {
     useSkipTask: mutation,
     useReopenWithFeedback: mutation,
     useProvideInput: mutation,
-    useDeleteTask: () => ({ mutate: mockDelete, isPending: false }),
+    useDeleteTask: () => ({
+      mutate: mockDelete,
+      isPending: false,
+      isError: true,
+      error: new Error("A descendant still has a live session"),
+    }),
   };
 });
 
@@ -33,6 +38,16 @@ const task = {
 } as never;
 
 describe("TaskActions deletion", () => {
+  it("shows a cascade deletion failure in the confirmation dialog", async () => {
+    render(<TaskActions task={task} />);
+
+    await userEvent.click(screen.getByRole("button", { name: "Delete" }));
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "A descendant still has a live session",
+    );
+  });
+
   it("closes a pane and does not create a duplicate navigation entry when returnTo is current", async () => {
     const onDeleted = vi.fn();
     mockNavigate.mockReset();
@@ -48,10 +63,14 @@ describe("TaskActions deletion", () => {
 
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: "Delete" }));
-    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Delete" }));
+    await user.click(
+      within(screen.getByRole("dialog")).getByRole("button", {
+        name: "Delete task and descendants",
+      }),
+    );
 
     expect(mockDelete).toHaveBeenCalledWith(
-      { task_id: "task/with space" },
+      { task_id: "task/with space", cascade: true },
       expect.objectContaining({ onSuccess: expect.any(Function) }),
     );
     expect(onDeleted).toHaveBeenCalledOnce();
