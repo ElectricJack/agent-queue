@@ -2410,8 +2410,7 @@ _ALL_TOOL_DEFINITIONS = [
             "Returns per-status counts (pending, accepted, dismissed, "
             "auto_executed, suppressed), accept_rate, dismiss_rate, and "
             "suppression_count_by_gate (one entry per gate that fired: "
-            "confidence, dedup, in_flight_active_task, dismiss_cooldown). "
-            "Use this to tune the gate thresholds in chat_analyzer config."
+            "confidence, dedup, in_flight_active_task, dismiss_cooldown)."
         ),
         "input_schema": {
             "type": "object",

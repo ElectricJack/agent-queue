@@ -30,10 +30,6 @@ NON_DEFAULT_VALUES = {
     ("playbooks", "v2_pending_event_on_overflow"): "reject_new",
     ("playbooks", "v2_pending_event_replay_on_activation"): "automatic",
     ("playbooks", "v1_admission"): "closed",
-    # Confidences are probabilities: ``+ 0.5`` leaves [0, 1] and would be
-    # withdrawn as unvalidatable rather than exercising the loader.
-    ("chat_analyzer", "min_confidence"): 0.42,
-    ("chat_analyzer", "in_flight_min_confidence"): 0.91,
     # ``"ollama-probe"`` is not one of the five accepted providers, and the
     # probe sets ``enabled: true``, which is when that check applies.
     ("memory", "embedding_provider"): "openai",
@@ -42,9 +38,10 @@ NON_DEFAULT_VALUES = {
 # Sections that do not read every field they declare.
 #
 # Empty, and meant to stay that way.  steady-ridge-97 fixed ``playbooks``;
-# grand-glacier-97 closed the remaining six (``chat_analyzer`` and ``streams``
-# were read from no YAML key at all; ``logging``, ``monitoring``, ``memory``
-# and ``metrics`` read a subset) by deriving the loader's keyword list from
+# grand-glacier-97 closed the remaining six (``chat_analyzer`` -- since
+# deleted as dead by prime-torrent-81 -- and ``streams`` were read from no
+# YAML key at all; ``logging``, ``monitoring``, ``memory`` and ``metrics``
+# read a subset) by deriving the loader's keyword list from
 # ``dataclasses.fields()`` instead of hand-writing it.  An entry belongs here
 # only with a comment saying why that field is deliberately not operator-
 # settable; the comparison below is exact in both directions, so a new gap
@@ -190,11 +187,14 @@ def test_config_section_loader_gaps_match_the_recorded_registry(tmp_path):
     assert observed == KNOWN_LOADER_GAPS
 
 
-def test_chat_analyzer_and_streams_sections_load_from_yaml(tmp_path):
-    """The two sections ``load_config`` read from no YAML key at all.
+def test_streams_section_loads_from_yaml(tmp_path):
+    """One of the two sections ``load_config`` read from no YAML key at all.
 
-    Before grand-glacier-97 neither had an ``if "<section>" in raw`` branch,
-    so every field stayed at its code default no matter what was written.
+    Before grand-glacier-97 neither ``streams`` nor ``chat_analyzer`` had an
+    ``if "<section>" in raw`` branch, so every field stayed at its code
+    default no matter what was written.  ``chat_analyzer`` has since been
+    deleted outright (prime-torrent-81); ``streams`` is the half that had a
+    consumer, so it is the half this guards.
     """
     path = tmp_path / "config.yaml"
     path.write_text(
@@ -202,11 +202,6 @@ def test_chat_analyzer_and_streams_sections_load_from_yaml(tmp_path):
             {
                 "database_path": str(tmp_path / "test.db"),
                 "discord": {"bot_token": "t", "guild_id": "1"},
-                "chat_analyzer": {
-                    "min_confidence": 0.25,
-                    "in_flight_min_confidence": 0.95,
-                    "dismiss_cooldown_seconds": 0,
-                },
                 "streams": {
                     "buffer_max_lines": 100,
                     "buffer_max_bytes": 4096,
@@ -220,9 +215,6 @@ def test_chat_analyzer_and_streams_sections_load_from_yaml(tmp_path):
     )
     config = load_config(str(path))
 
-    assert config.chat_analyzer.min_confidence == 0.25
-    assert config.chat_analyzer.in_flight_min_confidence == 0.95
-    assert config.chat_analyzer.dismiss_cooldown_seconds == 0
     assert config.streams.buffer_max_lines == 100
     assert config.streams.buffer_max_bytes == 4096
     assert config.streams.retention_seconds == 30
