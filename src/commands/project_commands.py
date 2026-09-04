@@ -6,6 +6,7 @@ from dataclasses import replace
 import logging
 import os
 
+from src.git.manager import GitError
 from src.models import (
     Project,
     ProjectStatus,
@@ -382,7 +383,10 @@ class ProjectCommandsMixin:
         """Set (or change) a project's default branch.
 
         If the branch does not exist on the remote yet, it is created by
-        pushing the current HEAD of the old default branch to the new name.
+        pushing the tip of the old default branch (or, when that was never
+        pushed, the workspace ``HEAD``) to the new name.  Both are daemon
+        pushes under the exact-OID contract in ``docs/specs/git.md``: the
+        source is resolved once and that object id is what reaches origin.
         """
         pid = args["project_id"]
         project = await self.db.get_project(pid)
@@ -413,19 +417,37 @@ class ProjectCommandsMixin:
                     )
                 except Exception:
                     # Branch does not exist on the remote — create it from
-                    # the current default branch (or HEAD).
+                    # the current default branch (or HEAD).  No local branch
+                    # is created: the exact-OID push updates
+                    # ``origin/<branch>`` itself, which is what every reader
+                    # of the default branch consults.
+                    old_remote = f"refs/remotes/origin/{old_branch}"
                     try:
                         await git._arun(
-                            ["branch", branch, f"origin/{old_branch}"],
+                            ["rev-parse", "--verify", f"{old_remote}^{{commit}}"],
                             cwd=ws_path,
                         )
                     except Exception:
-                        # If old default branch ref doesn't exist, branch from HEAD
-                        await git._arun(["branch", branch, "HEAD"], cwd=ws_path)
-                    await git._arun(
-                        ["push", "-u", "origin", branch],
-                        cwd=ws_path,
-                    )
+                        # The recorded default was never pushed, so the
+                        # workspace HEAD is the only source — and nothing on
+                        # origin has vetted that tree.  A root delivery gates
+                        # every tracked path for daemon bookkeeping before
+                        # pushing the same resolved OID.
+                        try:
+                            await git.apush_validated_delivery(ws_path, None, "HEAD", branch)
+                        except GitError as exc:
+                            if str(exc).startswith("reserved delivery paths:"):
+                                return {
+                                    "error": (
+                                        f"refusing to create {branch} from the workspace "
+                                        f"HEAD: {exc}"
+                                    )
+                                }
+                            raise
+                    else:
+                        # The content is already on origin; pushing the
+                        # remote-tracking ref's exact OID is the whole delivery.
+                        await git.apush_validated_ref(ws_path, old_remote, branch)
                     branch_created = True
             except Exception as exc:
                 logger.warning(

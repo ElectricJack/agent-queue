@@ -290,6 +290,95 @@ class TestPushEventPayload:
 
 
 # ===========================================================================
+# (b') the delivery pushes emit the same commit_range shape as apush_branch
+# ===========================================================================
+
+
+class TestDeliveryPushEventCommitRange:
+    """``apush_validated_delivery`` and ``apush_head_to`` emit ``git.push`` with
+    the same ``commit_range`` shape as :meth:`apush_branch`: the tip alone on a
+    first push, ``<remote-before>..<tip>`` once the remote branch exists."""
+
+    @pytest.mark.asyncio
+    async def test_validated_delivery_first_push_is_the_tip(self, clone, mgr, bus):
+        received: list[dict] = []
+        bus.subscribe("git.push", lambda data: received.append(data))
+
+        _git(["switch", "-c", "task/deliver-first"], cwd=clone)
+        tip = _commit_file(clone, "d.txt", "1", "deliver")
+
+        await mgr.apush_validated_delivery(
+            clone,
+            "origin/main",
+            "task/deliver-first",
+            "task/deliver-first",
+            event_bus=bus,
+            project_id="proj-deliver",
+        )
+
+        assert len(received) == 1
+        evt = received[0]
+        assert evt["branch"] == "task/deliver-first"
+        assert evt["remote"] == "origin"
+        assert evt["commit_range"] == tip
+        assert evt["project_id"] == "proj-deliver"
+
+    @pytest.mark.asyncio
+    async def test_validated_delivery_subsequent_push_is_before_dot_dot_tip(self, clone, mgr, bus):
+        received: list[dict] = []
+        bus.subscribe("git.push", lambda data: received.append(data))
+
+        _git(["switch", "-c", "task/deliver-range"], cwd=clone)
+        _commit_file(clone, "one.txt", "1", "first")
+        await mgr.apush_validated_delivery(
+            clone, "origin/main", "task/deliver-range", "task/deliver-range"
+        )
+        remote_before = _git(["rev-parse", "origin/task/deliver-range"], cwd=clone)
+
+        tip = _commit_file(clone, "two.txt", "2", "second")
+        await mgr.apush_validated_delivery(
+            clone,
+            "origin/main",
+            "task/deliver-range",
+            "task/deliver-range",
+            event_bus=bus,
+            project_id="proj-deliver",
+        )
+
+        assert len(received) == 1
+        assert received[0]["commit_range"] == f"{remote_before}..{tip}"
+        assert remote_before != tip
+
+    @pytest.mark.asyncio
+    async def test_head_to_first_push_is_the_tip(self, clone, mgr, bus):
+        received: list[dict] = []
+        bus.subscribe("git.push", lambda data: received.append(data))
+
+        tip = _commit_file(clone, "h.txt", "1", "head push")
+        _git(["switch", "--detach", tip], cwd=clone)
+
+        await mgr.apush_head_to(clone, "wip/head-first", event_bus=bus, project_id="p")
+
+        assert len(received) == 1
+        assert received[0]["commit_range"] == tip
+
+    @pytest.mark.asyncio
+    async def test_head_to_subsequent_push_is_before_dot_dot_tip(self, clone, mgr, bus):
+        received: list[dict] = []
+        bus.subscribe("git.push", lambda data: received.append(data))
+
+        first = _commit_file(clone, "h1.txt", "1", "first")
+        await mgr.apush_head_to(clone, "wip/head-range")
+        assert _git(["rev-parse", "origin/wip/head-range"], cwd=clone) == first
+
+        tip = _commit_file(clone, "h2.txt", "2", "second")
+        await mgr.apush_head_to(clone, "wip/head-range", event_bus=bus, project_id="p")
+
+        assert len(received) == 1
+        assert received[0]["commit_range"] == f"{first}..{tip}"
+
+
+# ===========================================================================
 # (c) acreate_pr() emits git.pr.created with correct payload
 # ===========================================================================
 

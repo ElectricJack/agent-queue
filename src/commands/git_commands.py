@@ -111,7 +111,7 @@ class GitCommandsMixin:
             pr_url,
             method=method,
             expected_head_oid=identity.head_oid,
-            expected_base_oid=identity.base_oid,
+            expected_base_ref=identity.base_ref,
         )
         response = {
             "success": result["success"],

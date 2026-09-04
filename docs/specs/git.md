@@ -282,19 +282,50 @@ integration, no-work acceptance, or PR acceptance, the orchestrator diffs the de
 from its merge-base with `origin/<default>` (or the local default when no
 remote exists) and rejects changed `.aq/**`, `.aq-worktree.json`, or
 `.codex/**` paths. A reserved path merely tracked and unchanged on the base is
-not rejected. Git errors are unknown—not clean—and stop delivery. No-code and
-`skip_verification` shortcuts cannot bypass this invariant.
+not rejected. The diff runs with `--no-renames` so a rename is reported as a
+deletion of its source and an addition of its destination: moving
+`.aq/claim.json` to an ordinary path is a deletion of daemon state and is
+rejected, whatever `diff.renames` the repository configures. The PR-files
+guard asks GitHub for `previous_filename` alongside `filename` for the same
+reason, so a renamed or copied file is checked under both names. Git errors
+are unknown—not clean—and stop delivery. No-code and `skip_verification`
+shortcuts cannot bypass this invariant.
+
 ### Immutable PR merge and exact-tip push guard
 
-`aq pr merge` first resolves the PR's base/head names and object IDs, inspects
-the complete paginated PR-files (merge-base) diff, and resolves the identity a
-second time. Any unreadable or malformed identity/diff, changed identity, or
-changed `.aq/**`, `.aq-worktree.json`, or `.codex/**` path fails closed.
+`aq pr merge` first resolves the PR's base/head names, object IDs and
+GitHub's own changed-file count in one snapshot, inspects the complete
+paginated PR-files (merge-base) diff, and resolves the identity a second
+time. Any unreadable or malformed identity/diff, changed identity, or changed
+`.aq/**`, `.aq-worktree.json`, or `.codex/**` path fails closed. GitHub's
+"List pull request files" endpoint returns at most 3000 entries and its
+pagination stops there silently, so the listing is trusted only when it is
+exactly as long as the PR's changed-file count and that count is below 3000;
+a PR at or above the cap, or whose listing disagrees with its count, is
+refused because a reserved path could hide in the unlisted tail. The count
+and the listing are compared entry for entry — a renamed or copied file is
+one entry carrying both its `filename` and its `previous_filename` — and an
+entry the guard cannot decode is refused rather than skipped.
 The eventual `gh pr merge` carries `--match-head-commit <head-oid>` and also
-checks the expected base/head pair immediately before invoking `gh`; a changed
-PR can therefore never turn a review of one head into a merge of another.
-`force=true` may waive only `integration.merge_ci_policy`; it cannot waive
-identity or path safety.
+checks the expected head OID and base branch name immediately before invoking
+`gh`; a changed PR can therefore never turn a review of one head into a merge
+of another, and a PR retargeted onto a different branch after validation is
+refused. `force=true` may waive only `integration.merge_ci_policy`; it cannot
+waive identity or path safety.
+
+The PR identity that is pinned is `(repository, number, base branch, head
+branch, head OID)`. The base branch's *tip* is read and recorded but never
+compared: it moves on every push to the default branch, so under concurrent
+delivery it routinely differs between two reads seconds apart for reasons
+unrelated to the PR. Nothing the merge relies on depends on it — the PR-files
+diff is a merge-base diff, so base movement does not change what the PR
+introduces, and `gh pr merge` merges into the current base tip regardless.
+Pinning it made `pr_merge` refuse with "PR identity changed" whenever another
+agent's PR landed first, with nothing in the error to tell the final-reviewer
+that the PR itself was untouched (exit gate stark-impact-60.6, M4). The two
+refusals that remain name what moved: `head moved from <oid> to <oid>` and
+`retargeted from <branch> to <branch>`; neither is retryable without a fresh
+review of the PR as it now stands.
 
 Every daemon push resolves its source ref immediately beforehand and sends an
 object-ID refspec (`<oid>:refs/heads/<branch>`), rather than a mutable local
@@ -317,6 +348,34 @@ The daemon-only delivery primitive. It resolves `source_ref` once, uses that
 OID as the delivery-diff tip against `base_ref`, rejects reserved paths, then
 pushes the identical OID. Callers that have just merged or rebased must use it
 instead of separate diff and push calls.
+
+`base_ref=None` is a **root delivery**: the target branch has no base on
+origin, so there is no merge-base to diff from and nothing on origin has vetted
+the tree. The reserved gate then covers every tracked path in the tip
+(`areserved_paths_in_tree`), because a reserved path that a normal delivery
+would excuse as "unchanged on the base" is here being published for the first
+time.
+
+### `areserved_paths_in_diff(checkout_path, base_ref, tip_ref)` / `areserved_paths_in_tree(checkout_path, rev)`
+
+The two reserved-path gates behind `apush_validated_delivery`. The diff form
+lists daemon-owned paths (`.aq/**`, `.aq-worktree.json`, `.codex/**`) changed
+between `merge-base(base_ref, tip_ref)` and `tip_ref`; the tree form lists
+every daemon-owned path tracked anywhere in `rev`. Both propagate Git failures
+rather than returning an empty list, so callers fail closed.
+
+### Operator-initiated pushes
+
+`set_default_branch` is the one operator command that pushes. When the new
+default branch is missing on origin it is created from `refs/remotes/origin/
+<old-default>` via `apush_validated_ref` (the content is already on origin, so
+the exact-OID push is the whole delivery), or — when the recorded default was
+never pushed — from the workspace `HEAD` via a root delivery
+(`apush_validated_delivery(..., base_ref=None, "HEAD", ...)`). A reserved path in
+that tree refuses the switch with an error and leaves the recorded default
+unchanged. No local branch is created: the exact-OID push updates
+`origin/<branch>` itself, which is what every reader of the default branch
+consults. There is no raw `git push -u origin <name>` anywhere in the daemon.
 
 ### `push_branch(checkout_path, branch_name, *, force_with_lease=False)`
 

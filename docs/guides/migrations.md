@@ -63,9 +63,13 @@ aq doctor --check db.alembic_orphan --fix    # run that revision's own downgrade
 
 The check searches every `refs/remotes` and `refs/heads` for the migration
 file that declares the unknown revision, so the answer is a branch name and a
-path rather than a bare hex id. `--fix` borrows that file into
-`migrations/versions/` for exactly one `alembic downgrade` and removes it
-again, leaving the database at the orphan's parent. Stamping past an orphan
+path rather than a bare hex id. `--fix` borrows that file into a private
+temporary directory that Alembic reads alongside `migrations/versions/` (via
+`version_locations`) for exactly one `alembic downgrade`, leaving the database
+at the orphan's parent. It never writes into the checkout: a borrowed file
+that appears in and vanishes from the real `versions/` makes any concurrent
+Alembic scan (a second shell, a pytest-xdist worker) fail with `Can't find
+Python file`. Stamping past an orphan
 whose file cannot be found anywhere is a second, separate opt-in
 (`AQ_DOCTOR_ALEMBIC_STAMP=1`), because it leaves whatever DDL the orphan
 applied in place.

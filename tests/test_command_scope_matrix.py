@@ -27,7 +27,7 @@ import time
 import pytest
 
 from src.api.auth import RequestScope
-from src.api.scope import AGENT_COMMAND_SET, check_command_scope
+from src.api.scope import _TASK_ID_UNPINNED, AGENT_COMMAND_SET, check_command_scope
 from src.models import Project, SessionRecord, Task
 from src.tools.definitions import _ALL_TOOL_DEFINITIONS
 
@@ -108,7 +108,7 @@ def test_agent_command_set_definition_coverage_and_id_bearing_derivation():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("command", sorted(AGENT_COMMAND_SET))
+@pytest.mark.parametrize("command", sorted(AGENT_COMMAND_SET - _TASK_ID_UNPINNED))
 def test_omitted_ids_are_injected_from_the_session_scope(command):
     """(b) An omitted ID is filled from the token, never a daemon-side default."""
     scope = _session_scope()
@@ -119,12 +119,40 @@ def test_omitted_ids_are_injected_from_the_session_scope(command):
     assert args == {"task_id": "t1", "project_id": "p1", "session_id": "s1"}
 
 
+def test_the_task_id_pin_is_lifted_for_exactly_the_commands_that_name_another_task():
+    """``reparent_task`` moves a worker filing, never the held task (§12).
+
+    The exemption is server-owned and deliberately tiny: any name entering it
+    must be a command whose ``task_id`` is by construction *not* the held task
+    and that authorises that task against the held one itself.
+    """
+    assert _TASK_ID_UNPINNED == {"reparent_task"}
+    assert _TASK_ID_UNPINNED <= AGENT_COMMAND_SET
+
+
+@pytest.mark.parametrize("command", sorted(_TASK_ID_UNPINNED))
+def test_unpinned_commands_keep_the_named_task_and_still_inject_the_rest(command):
+    scope = _session_scope()
+    args: dict = {"task_id": "t2"}
+
+    assert check_command_scope(command, args, scope) is None
+
+    assert args == {"task_id": "t2", "project_id": "p1", "session_id": "s1"}
+
+
 @pytest.mark.parametrize("command", sorted(AGENT_COMMAND_SET))
 @pytest.mark.parametrize(
     ("key", "foreign"), [("task_id", "t2"), ("project_id", "p2"), ("session_id", "s2")]
 )
 def test_foreign_ids_are_rejected_for_every_agent_command(command, key, foreign):
-    """(d) A mismatching ID is refused whichever of the triple it is."""
+    """(d) A mismatching ID is refused whichever of the triple it is.
+
+    The one carve-out is ``task_id`` on the commands in ``_TASK_ID_UNPINNED``,
+    whose ``task_id`` names a task other than the held one by design; their
+    ``project_id`` / ``session_id`` are pinned like everyone else's.
+    """
+    if key == "task_id" and command in _TASK_ID_UNPINNED:
+        pytest.skip("task_id names the moved task, not the held one; pinned in-handler")
     scope = _session_scope()
     args = {key: foreign}
 

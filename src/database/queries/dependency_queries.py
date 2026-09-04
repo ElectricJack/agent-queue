@@ -151,6 +151,26 @@ class DependencyQueryMixin:
             )
             return {r[0] for r in result.fetchall()}
 
+    async def discovered_from_origins(self, task_id: str, *, conn) -> list[str]:
+        """Targets of *task_id*'s ``discovered-from`` edges, on the caller's *conn*.
+
+        The provenance a worker filing carries back to the work that
+        surfaced it (swarm-work-model §12); read inside the caller's
+        transaction so a scope decision built on it holds under the same
+        locks it was derived from.
+        """
+        result = await conn.execute(
+            select(task_dependencies.c.depends_on_task_id)
+            .where(
+                and_(
+                    task_dependencies.c.task_id == task_id,
+                    task_dependencies.c.dep_type == DepType.DISCOVERED_FROM.value,
+                )
+            )
+            .order_by(task_dependencies.c.depends_on_task_id.asc())
+        )
+        return [r[0] for r in result.fetchall()]
+
     async def get_typed_dependencies(self, task_id: str) -> list[tuple[str, str]]:
         """Return ``(depends_on_task_id, dep_type)`` for every outgoing edge."""
         async with self._engine.begin() as conn:

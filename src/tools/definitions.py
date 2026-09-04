@@ -1185,7 +1185,15 @@ _ALL_TOOL_DEFINITIONS = [
                 },
                 "deliverables": {
                     "type": "array",
-                    "description": "Plan-derived implementation contract checked before a passing close.",
+                    "description": (
+                        "Plan-derived implementation contract checked before a passing close. "
+                        "Target shapes: file -> a path under the worktree; test -> a test module "
+                        "path, or the command line that runs the suites (met by a matching recorded "
+                        "--test); command -> a command line (met by a matching recorded "
+                        "--command/--test; '<placeholder>' matches any arguments) or a single "
+                        "identifier found in the repo; flag/registration -> an identifier found in "
+                        "the repo."
+                    ),
                     "items": {
                         "type": "object",
                         "properties": {
@@ -5202,7 +5210,15 @@ _ALL_TOOL_DEFINITIONS = [
                             },
                             "deliverables": {
                                 "type": "array",
-                                "description": "Plan-derived implementation contract for this proposed task.",
+                                "description": (
+                                    "Plan-derived implementation contract for this proposed task. "
+                                    "Target shapes: file -> a path under the worktree; test -> a test module "
+                                    "path, or the command line that runs the suites (met by a matching recorded "
+                                    "--test); command -> a command line (met by a matching recorded "
+                                    "--command/--test; '<placeholder>' matches any arguments) or a single "
+                                    "identifier found in the repo; flag/registration -> an identifier found in "
+                                    "the repo."
+                                ),
                                 "items": {
                                     "type": "object",
                                     "properties": {

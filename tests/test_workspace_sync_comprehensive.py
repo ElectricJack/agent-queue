@@ -279,7 +279,13 @@ class TestConcurrentPushRaceConditions:
 
         def mock_run(args, cwd=None):
             calls.append(args)
-            if args[:3] == ["push", "origin", "main"]:
+            if args[:2] == ["rev-parse", "--verify"]:
+                return "a" * 40
+            if args[0] == "merge-base":
+                return "b" * 40
+            if args[0] == "diff":
+                return ""
+            if args[0] == "push":
                 push_count[0] += 1
                 if push_count[0] == 1:
                     raise GitError("rejected: non-fast-forward")
