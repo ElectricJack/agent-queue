@@ -285,27 +285,40 @@ remote exists) and rejects changed `.aq/**`, `.aq-worktree.json`, or
 not rejected. The diff runs with `--no-renames` so a rename is reported as a
 deletion of its source and an addition of its destination: moving
 `.aq/claim.json` to an ordinary path is a deletion of daemon state and is
-rejected, whatever `diff.renames` the repository configures. The PR-files
-guard asks GitHub for `previous_filename` alongside `filename` for the same
-reason, so a renamed or copied file is checked under both names. Git errors
-are unknown—not clean—and stop delivery. No-code and `skip_verification`
-shortcuts cannot bypass this invariant.
+rejected, whatever `diff.renames` the repository configures. The PR delivery
+diff (below) is the same `--no-renames` name-only diff, so it too checks a
+renamed reserved path under its reserved name. Git errors are unknown—not
+clean—and stop delivery. No-code and `skip_verification` shortcuts cannot
+bypass this invariant.
 
 ### Immutable PR merge and exact-tip push guard
 
 `aq pr merge` first resolves the PR's base/head names, object IDs and
-GitHub's own changed-file count in one snapshot, inspects the complete
-paginated PR-files (merge-base) diff, and resolves the identity a second
-time. Any unreadable or malformed identity/diff, changed identity, or changed
-`.aq/**`, `.aq-worktree.json`, or `.codex/**` path fails closed. GitHub's
-"List pull request files" endpoint returns at most 3000 entries and its
-pagination stops there silently, so the listing is trusted only when it is
-exactly as long as the PR's changed-file count and that count is below 3000;
-a PR at or above the cap, or whose listing disagrees with its count, is
-refused because a reserved path could hide in the unlisted tail. The count
-and the listing are compared entry for entry — a renamed or copied file is
-one entry carrying both its `filename` and its `previous_filename` — and an
-entry the guard cannot decode is refused rather than skipped.
+GitHub's own changed-file count in one snapshot, derives the delivery diff
+from those pinned OIDs, and resolves the identity a second time. Any
+unreadable or malformed identity/diff, changed identity, or changed `.aq/**`,
+`.aq-worktree.json`, or `.codex/**` path fails closed.
+
+The delivery diff is never taken from GitHub's "List pull request files"
+endpoint: that listing is addressed by PR *number*, so a head force-pushed
+A → B → A while the paginated listing ran was inspected as B's diff yet merged
+as A — both identity reads saw A, and when B changed as many files as A the
+pinned count agreed too (gate stark-impact-60.10, M2). Instead `head_oid` and
+`base_oid` are fetched *by OID* — content-addressed, so the fetch yields
+exactly those commits or fails — into a daemon-owned bare repository under
+`<data_dir>/pr-diff-cache/<host>/<owner>/<repo>.git` (created on first use;
+`--filter=blob:none`, so only commits and trees are ever downloaded and the
+first fetch of a repository is a few megabytes), both objects are proven
+present with `rev-parse --verify`, and the diff is
+`git diff-tree -r --no-renames --name-only -z <merge-base(base_oid, head_oid)> <head_oid>`.
+That is the same merge-base diff GitHub lists, with no 3000-entry cap and no
+reliance on the changed-file count. `pr_merge` runs in the daemon data dir,
+which is not a checkout — that is why the PR is not fetched into a project
+clone's `origin` — and the fetch authenticates through `gh auth
+git-credential`, the login `gh api` already needs, so no git credential helper
+of the operator's is required or consulted. Fetches into one cache are
+serialized within the daemon. A repository name whose components are `.` or
+`..` is an incomplete identity (it would escape the cache).
 The eventual `gh pr merge` carries `--match-head-commit <head-oid>` and also
 checks the expected head OID and base branch name immediately before invoking
 `gh`; a changed PR can therefore never turn a review of one head into a merge
@@ -317,9 +330,10 @@ The PR identity that is pinned is `(repository, number, base branch, head
 branch, head OID)`. The base branch's *tip* is read and recorded but never
 compared: it moves on every push to the default branch, so under concurrent
 delivery it routinely differs between two reads seconds apart for reasons
-unrelated to the PR. Nothing the merge relies on depends on it — the PR-files
-diff is a merge-base diff, so base movement does not change what the PR
-introduces, and `gh pr merge` merges into the current base tip regardless.
+unrelated to the PR. Nothing the merge relies on depends on it — the delivery
+diff runs from the merge-base of that tip and the head, so base movement does
+not change what the PR introduces, and `gh pr merge` merges into the current
+base tip regardless.
 Pinning it made `pr_merge` refuse with "PR identity changed" whenever another
 agent's PR landed first, with nothing in the error to tell the final-reviewer
 that the PR itself was untouched (exit gate stark-impact-60.6, M4). The two

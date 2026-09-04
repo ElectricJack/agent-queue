@@ -92,11 +92,12 @@ class PullRequestIdentity:
     of the base branch at the moment of the read, so it moves on every push
     to the default branch — with several agents delivering concurrently it
     differs between two reads seconds apart for reasons that have nothing to
-    do with this PR.  Nothing the merge relies on depends on it: the PR-files
-    diff inspected before merging is GitHub's merge-base diff, and
-    ``gh pr merge`` merges into whatever the base tip is at that moment.  The
-    base *branch name* is pinned, because a PR retargeted onto another branch
-    lands its commits somewhere the review never looked at.
+    do with this PR.  Nothing the merge relies on depends on it: the delivery
+    diff inspected before merging runs from the merge-base of that tip and
+    the head, which base movement does not change, and ``gh pr merge``
+    merges into whatever the base tip is at that moment.  The base *branch
+    name* is pinned, because a PR retargeted onto another branch lands its
+    commits somewhere the review never looked at.
     """
 
     repository: str
@@ -106,11 +107,17 @@ class PullRequestIdentity:
     head_ref: str
     head_oid: str
     #: GitHub's own count of files the PR changes, read in the same snapshot
-    #: as the OIDs.  It counts entries of the PR-files listing (a rename or
-    #: copy is one entry with two names), and the listing is only trusted
-    #: when it has exactly this many entries and is below
-    #: :data:`_PR_FILES_API_CAP`.
+    #: as the OIDs.  It is pinned as one more fact that must agree between
+    #: the two identity reads; the delivery diff itself is derived from the
+    #: OIDs and does not depend on it.
     changed_files: int
+    #: The host the PR URL names; where the repository is fetched from.
+    host: str = "github.com"
+
+    @property
+    def clone_url(self) -> str:
+        """The HTTPS URL ``git fetch`` reads the pinned commits from."""
+        return f"https://{self.host}/{self.repository}.git"
 
     @property
     def pin(self) -> tuple[str, int, str, str, str, int]:
@@ -131,25 +138,6 @@ class PullRequestIdentity:
         )
 
 
-@dataclass(frozen=True)
-class PullRequestFile:
-    """One entry of GitHub's PR-files listing.
-
-    A renamed or copied file is reported under its new ``filename`` with the
-    old name in ``previous_filename``; the reserved-path guard checks both.
-    """
-
-    filename: str
-    previous_filename: str | None = None
-
-    @property
-    def paths(self) -> tuple[str, ...]:
-        """Every name this entry touches: the destination and, for a rename or copy, the source."""
-        if self.previous_filename is None:
-            return (self.filename,)
-        return (self.filename, self.previous_filename)
-
-
 # ---------------------------------------------------------------------------
 # Refname validation — trust rule R4 (docs/specs/design/trust-and-ops.md §2.4)
 # ---------------------------------------------------------------------------
@@ -168,19 +156,16 @@ _PR_URL_RE = re.compile(
     r"^https://(?P<host>[A-Za-z0-9.-]+)/(?P<owner>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+)"
     r"/pull/(?P<number>[1-9][0-9]*)/?(?:[?#].*)?$"
 )
-#: GitHub's "List pull request files" endpoint documents "Responses include a
-#: maximum of 3000 files"; pagination simply stops there, so a listing that
-#: long may be a truncated prefix of the real diff.
-_PR_FILES_API_CAP = 3000
 
 
 def _pr_changed_file_count(data: dict) -> int:
     """GitHub's changed-file count from the REST ``pulls/{n}`` snapshot, or raise.
 
-    The count comes from the same response as the OIDs, so it belongs to the
-    exact base/head pair the PR-files listing is later checked against, and
-    it counts that listing's entries: a renamed or copied file is one entry
-    carrying two names.  Only the REST spelling ``changed_files`` is read —
+    The count comes from the same response as the OIDs, so it is one more
+    fact of that snapshot the second identity read must agree with.  A head
+    that moved and came back with a different number of changed files is
+    caught here even before the OIDs are compared.  Only the REST spelling
+    ``changed_files`` is read —
     the identity never comes from ``gh pr view --json`` (whose field is
     ``changedFiles``), so accepting it would only widen the guard.  Anything
     but a non-negative integer (``bool`` is an ``int`` subclass and is not a
@@ -306,6 +291,16 @@ class GitManager:
     # on large repos so we allow a generous window, but never infinite.
     _GIT_TIMEOUT = 120
 
+    # The first fetch into a PR delivery-diff cache pulls a repository's
+    # whole commit and tree history (no blobs); every later one is
+    # incremental.  Ten minutes covers a large repository once.
+    _PR_DIFF_FETCH_TIMEOUT = 600
+
+    #: Directory, under the directory ``pr_merge`` runs in, holding one
+    #: blob-less bare repository per ``<host>/<owner>/<repo>`` from which PR
+    #: delivery diffs are derived.
+    PR_DIFF_CACHE_DIRNAME = "pr-diff-cache"
+
     # Git subcommands that modify shared repository state (pack files,
     # object store) and must be serialized when multiple worktrees share
     # the same underlying repository.  ``pull`` includes an implicit
@@ -317,6 +312,10 @@ class GitManager:
         # across branch-isolated worktrees.  When set, ``_arun`` acquires
         # the returned lock before executing serialized subcommands.
         self._lock_provider: Callable[[str], asyncio.Lock | None] | None = None
+        # One lock per PR delivery-diff cache (see ``_apr_delivery_diff``),
+        # so two merges of PRs in the same repository never fetch into the
+        # same bare cache at once.
+        self._pr_diff_cache_locks: dict[str, asyncio.Lock] = {}
 
     def set_lock_provider(
         self,
@@ -2736,8 +2735,8 @@ class GitManager:
         the REST resource has carried ``base.sha``, ``head.sha`` and
         ``base.repo.full_name`` for years.  Host, owner, repo and number come
         from the URL, so no checkout is needed to resolve them, and the
-        repository and OIDs come from one response so the subsequent
-        PR-files query can be tied to an immutable snapshot.
+        repository and OIDs come from one response so the delivery diff can
+        be derived from an immutable snapshot.
         """
         url = _PR_URL_RE.fullmatch(pr_url.strip())
         if url is None:
@@ -2768,6 +2767,9 @@ class GitManager:
             resource_number != int(number)
             or not isinstance(repository, str)
             or not _REPOSITORY_RE.fullmatch(repository)
+            # ``owner/repo`` becomes two path components of the delivery-diff
+            # cache; ``.`` and ``..`` are valid to the regex but not names.
+            or any(part in (".", "..") for part in repository.split("/"))
             or not isinstance(base_ref, str)
             or not isinstance(head_ref, str)
             or not _OID_RE.fullmatch(base_oid)
@@ -2782,106 +2784,119 @@ class GitManager:
             head_ref=head_ref,
             head_oid=head_oid,
             changed_files=changed_files,
+            host=host,
         )
 
-    # jq program for the PR-files endpoint: one JSON object per entry, with
-    # the destination ``filename`` and, for a rename or copy, the source
-    # ``previous_filename`` (``null`` otherwise).  Emitting an object per
-    # entry keeps the entry count — what GitHub's ``changed_files`` counts —
-    # distinct from the number of names, while still surfacing the source so
-    # a rename out of ``.aq/`` cannot read as a clean addition.  gh prints
-    # non-scalar jq results as JSON, one value per result.
-    _PR_FILES_JQ = ".[] | {filename, previous_filename}"
+    def _pr_diff_cache_lock(self, cache: str) -> asyncio.Lock:
+        """The lock serializing fetches into the delivery-diff cache at ``cache``."""
+        lock = self._pr_diff_cache_locks.get(cache)
+        if lock is None:
+            lock = self._pr_diff_cache_locks[cache] = asyncio.Lock()
+        return lock
 
-    @staticmethod
-    def _parse_pr_files(stdout: str) -> list[PullRequestFile]:
-        """Decode the concatenated JSON objects gh prints for :data:`_PR_FILES_JQ`.
+    async def _apr_delivery_diff(self, cache_root: str, identity: PullRequestIdentity) -> str:
+        """NUL-delimited paths PR ``identity`` changes, derived from its pinned OIDs.
 
-        Any value that is not an object with a non-empty string ``filename``
-        and a null or non-empty string ``previous_filename`` fails closed:
-        an entry the guard cannot read is an entry it cannot clear.
+        GitHub's PR-files listing is addressed by PR *number*, so a head
+        force-pushed A -> B -> A while a paginated listing runs is inspected
+        as B's diff yet merged as A: both identity reads see A, and when B
+        changes as many files as A the pinned count agrees too.  This
+        derives the diff from the OIDs themselves instead.  ``head_oid`` and
+        ``base_oid`` are fetched *by OID* — content-addressed, so the fetch
+        either yields exactly those commits or fails — into a daemon-owned
+        bare repository under ``cache_root`` (one per host and repository,
+        created on first use, blobs never fetched: ``--filter=blob:none``
+        and a name-only tree diff need none), and the diff is
+        ``git diff-tree --no-renames --name-only`` from
+        ``merge-base(base_oid, head_oid)`` to ``head_oid`` — the same
+        merge-base diff GitHub lists, with no 3000-entry cap and no reliance
+        on the changed-file count.  ``--no-renames`` reports a rename as a
+        deletion plus an addition, so a reserved path is listed under its
+        reserved name whichever way it moved.
+
+        ``cache_root`` is the directory ``pr_merge`` runs ``gh`` in; it is
+        not a checkout, which is why the PR cannot simply be fetched into
+        ``origin``.  The fetch authenticates through ``gh auth
+        git-credential`` — the same login ``gh api`` already needs — so the
+        operator's own git credential helpers are neither required nor
+        consulted.  Every failure fails closed: an error from git here is an
+        unknown diff, never a clean one.
         """
-        decoder = json.JSONDecoder()
-        entries: list[PullRequestFile] = []
-        text = stdout or ""
-        position = 0
-        length = len(text)
-        while True:
-            while position < length and text[position].isspace():
-                position += 1
-            if position >= length:
-                break
-            try:
-                value, position = decoder.raw_decode(text, position)
-            except ValueError as exc:
-                raise GitError("could not inspect PR delivery diff: malformed PR-files entry") from exc
-            if not isinstance(value, dict):
-                raise GitError("could not inspect PR delivery diff: malformed PR-files entry")
-            filename = value.get("filename")
-            previous = value.get("previous_filename")
-            if not isinstance(filename, str) or not filename:
-                raise GitError("could not inspect PR delivery diff: malformed PR-files entry")
-            if previous is not None and (not isinstance(previous, str) or not previous):
-                raise GitError("could not inspect PR delivery diff: malformed PR-files entry")
-            entries.append(PullRequestFile(filename=filename, previous_filename=previous))
-        return entries
-
-    async def _apr_changed_files(
-        self, checkout_path: str, identity: PullRequestIdentity
-    ) -> list[PullRequestFile]:
-        """Return every entry of GitHub's paginated merge-base PR diff.
-
-        Rename and copy sources (``previous_filename``) travel with their
-        destinations so a reserved path leaving the tree is visible.  A copy
-        source is unchanged by the copy itself, so listing it is
-        conservative: the guard fails closed rather than trusting the status.
-        """
-        endpoint = f"repos/{identity.repository}/pulls/{identity.number}/files"
+        owner, repo = identity.repository.split("/")
+        cache = str(
+            Path(cache_root) / self.PR_DIFF_CACHE_DIRNAME / identity.host / owner / f"{repo}.git"
+        )
         try:
-            result = await self._arun_subprocess(
-                ["gh", "api", "--paginate", endpoint, "--jq", self._PR_FILES_JQ],
-                cwd=checkout_path,
-                timeout=self._GIT_TIMEOUT,
-            )
-        except Exception as exc:
+            async with self._pr_diff_cache_lock(cache):
+                await self._arun(["init", "--bare", "--quiet", cache])
+                await self._arun(
+                    [
+                        "-c",
+                        "credential.helper=",
+                        "-c",
+                        "credential.helper=!gh auth git-credential",
+                        "fetch",
+                        "--quiet",
+                        "--no-tags",
+                        "--filter=blob:none",
+                        identity.clone_url,
+                        identity.head_oid,
+                        identity.base_oid,
+                    ],
+                    cwd=cache,
+                    timeout=self._PR_DIFF_FETCH_TIMEOUT,
+                )
+                # A fetch that returned without delivering the exact commits
+                # (not our ref, a stale cache, an interrupted pack) cannot be
+                # diffed; prove both objects are present before trusting it.
+                for oid in (identity.head_oid, identity.base_oid):
+                    await self._arun(
+                        ["rev-parse", "--verify", "--quiet", f"{oid}^{{commit}}"], cwd=cache
+                    )
+                merge_base = await self._arun(
+                    ["merge-base", identity.base_oid, identity.head_oid], cwd=cache
+                )
+                if not _OID_RE.fullmatch(merge_base):
+                    raise GitError(f"git merge-base returned no single commit: {merge_base!r}")
+                return await self._arun(
+                    [
+                        "diff-tree",
+                        "-r",
+                        "--no-renames",
+                        "--name-only",
+                        "-z",
+                        merge_base,
+                        identity.head_oid,
+                    ],
+                    cwd=cache,
+                )
+        except GitError as exc:
             raise GitError(f"could not inspect PR delivery diff: {exc}") from exc
-        if result.returncode != 0:
-            raise GitError(f"could not inspect PR delivery diff: {result.stderr.strip()}")
-        return self._parse_pr_files(result.stdout)
 
     async def avalidate_pr_for_merge(
         self, checkout_path: str, pr_url: str
     ) -> PullRequestIdentity:
         """Fail closed unless a PR identity and its reserved-path diff are stable.
 
-        The REST PR-files endpoint is GitHub's merge-base PR diff and supports
-        pagination, but only up to :data:`_PR_FILES_API_CAP` entries, after
-        which it silently stops.  The listing is therefore trusted only when
-        it has exactly as many entries as the PR's own changed-file count and
-        that count is below the cap; otherwise a reserved path could hide in
-        the unlisted tail.  Completeness is judged on entries because that is
-        what GitHub counts — a rename is one entry — while the reserved-path
-        check then inspects every name an entry carries.  Re-reading the
-        identity after that potentially long query proves the inspected diff
-        still belongs to the precise head, target branch and changed-file
-        count.  The base branch's tip is not compared: it advances with every
-        concurrent delivery and does not change a merge-base diff (see
+        The identity — repository, number, branch names, OIDs and GitHub's
+        changed-file count — is read in one snapshot; the delivery diff is
+        then derived from the pinned OIDs (:meth:`_apr_delivery_diff`), so
+        the diff inspected is by construction the diff of the head that will
+        be merged, whatever the PR's mutable head does meanwhile.  Re-reading
+        the identity afterwards additionally proves the pinned head, target
+        branch and count are still the PR's, so the merge that follows (with
+        ``--match-head-commit``) is a merge of what was inspected.  The base
+        branch's tip is not compared: it advances with every concurrent
+        delivery and does not change a merge-base diff (see
         :attr:`PullRequestIdentity.pin`).
+
+        ``checkout_path`` is where ``gh`` runs and where the delivery-diff
+        cache lives (``pr_merge`` passes the daemon data dir); it need not be
+        a checkout.
         """
         identity = await self.aget_pr_identity(checkout_path, pr_url)
-        files = await self._apr_changed_files(checkout_path, identity)
-        if identity.changed_files >= _PR_FILES_API_CAP or len(files) >= _PR_FILES_API_CAP:
-            raise GitError(
-                f"PR changes {identity.changed_files} files but GitHub lists at most "
-                f"{_PR_FILES_API_CAP}; the reserved-path check cannot be complete"
-            )
-        if len(files) != identity.changed_files:
-            raise GitError(
-                f"PR delivery diff is incomplete: GitHub listed {len(files)} of "
-                f"{identity.changed_files} changed files"
-            )
-        paths = [path for entry in files for path in entry.paths]
-        reserved = self._daemon_bookkeeping_paths("\0".join(paths))
+        changed = await self._apr_delivery_diff(checkout_path, identity)
+        reserved = self._daemon_bookkeeping_paths(changed)
         if reserved:
             raise GitError(
                 "PR changes reserved daemon bookkeeping paths: " + ", ".join(sorted(reserved))
