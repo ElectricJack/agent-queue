@@ -13,6 +13,8 @@ from unittest.mock import AsyncMock, call
 
 import pytest
 from src.git.manager import GitManager, GitError
+from src.models import PhaseResult
+from src.orchestrator.git_ops import GitOpsMixin
 
 
 def _git(args: list[str], cwd: str) -> str:
@@ -228,9 +230,34 @@ class TestAsyncFindOpenPr:
         monkeypatch.setattr(
             mgr,
             "_arun_subprocess",
-            AsyncMock(return_value=SimpleNamespace(returncode=128, stdout="", stderr="broken")),
+            AsyncMock(
+                return_value=SimpleNamespace(returncode=128, stdout="", stderr="broken")
+            ),
         )
         assert await mgr.abranch_exists(clone, "missing") is None
+
+    @pytest.mark.asyncio
+    async def test_exact_ref_exists_distinguishes_local_remote_and_missing(self, mgr, clone):
+        assert await mgr.aref_exists(clone, "refs/heads/main") is True
+        assert await mgr.aref_exists(clone, "refs/remotes/origin/main") is True
+        assert await mgr.aref_exists(clone, "refs/heads/missing") is False
+
+    @pytest.mark.asyncio
+    async def test_strict_boolean_probes_preserve_unknown(self, mgr, monkeypatch):
+        monkeypatch.setattr(
+            mgr,
+            "_arun_subprocess",
+            AsyncMock(
+                return_value=SimpleNamespace(returncode=128, stdout="", stderr="broken")
+            ),
+        )
+        assert await mgr.ahas_remote("/repo", strict=True) is None
+        assert await mgr.ais_ancestor("/repo", "topic", "main", strict=True) is None
+
+    @pytest.mark.asyncio
+    async def test_strict_current_branch_preserves_unknown(self, mgr, monkeypatch):
+        monkeypatch.setattr(mgr, "_arun", AsyncMock(side_effect=GitError("broken")))
+        assert await mgr.aget_current_branch("/repo", strict=True) is None
 
 
 class TestAsyncGetStatus:
@@ -258,97 +285,15 @@ class TestAsyncCreateBranch:
 
 class TestAsyncCommitAll:
     @pytest.mark.asyncio
-    async def test_clean_tree_does_not_invoke_hooks(self, clone, mgr):
+    async def test_uses_native_pre_commit_hook_once(self, clone, mgr):
         repo = pathlib.Path(clone)
+        (repo / "work.txt").write_text("real work\n")
         hook = repo / ".git" / "hooks" / "pre-commit"
-        hook.write_text("#!/bin/sh\necho invoked > hook-ran\n")
-        hook.chmod(0o755)
-
-        assert await mgr.acommit_all(clone, "nothing") is False
-        assert not (repo / "hook-ran").exists()
-
-    @pytest.mark.asyncio
-    async def test_native_hooks_run_once_and_cannot_commit_reserved_staging(self, clone, mgr):
-        repo = pathlib.Path(clone)
-        (repo / "work.txt").write_text("real work\n")
-        reserved = repo / ".aq" / "claim.json"
-        reserved.parent.mkdir()
-        reserved.write_text("daemon state\n")
-        pre_commit = repo / ".git" / "hooks" / "pre-commit"
-        pre_commit.write_text(
-            "#!/bin/sh\necho pre-commit >> hook.log\ngit add -f .aq/claim.json\n"
-        )
-        pre_commit.chmod(0o755)
-        commit_msg = repo / ".git" / "hooks" / "commit-msg"
-        commit_msg.write_text("#!/bin/sh\necho commit-msg >> hook.log\n")
-        commit_msg.chmod(0o755)
-
-        assert await mgr.acommit_all(clone, "task work", exclude_plans=False)
-
-        assert (repo / "hook.log").read_text().splitlines() == ["pre-commit", "commit-msg"]
-        assert _git(["show", "--pretty=", "--name-only", "HEAD"], cwd=clone) == "work.txt"
-        assert _git(["diff", "--cached", "--name-only"], cwd=clone) == ""
-
-    @pytest.mark.asyncio
-    async def test_commit_msg_rejection_aborts_commit_after_invocation(self, clone, mgr):
-        repo = pathlib.Path(clone)
-        before = _git(["rev-parse", "HEAD"], cwd=clone)
-        (repo / "work.txt").write_text("real work\n")
-        commit_msg = repo / ".git" / "hooks" / "commit-msg"
-        commit_msg.write_text("#!/bin/sh\necho rejected >> hook.log\nexit 19\n")
-        commit_msg.chmod(0o755)
-
-        with pytest.raises(GitError):
-            await mgr.acommit_all(clone, "task work", exclude_plans=False)
-
-        assert (repo / "hook.log").read_text().splitlines() == ["rejected"]
-        assert _git(["rev-parse", "HEAD"], cwd=clone) == before
-
-    @pytest.mark.asyncio
-    async def test_failing_pre_commit_cleans_reserved_staging_only(self, clone, mgr):
-        repo = pathlib.Path(clone)
-        (repo / "work.txt").write_text("real work\n")
-        reserved = repo / ".aq" / "claim.json"
-        reserved.parent.mkdir()
-        reserved.write_text("daemon state\n")
-        pre_commit = repo / ".git" / "hooks" / "pre-commit"
-        pre_commit.write_text("#!/bin/sh\ngit add -f .aq/claim.json\nexit 23\n")
-        pre_commit.chmod(0o755)
-
-        with pytest.raises(GitError):
-            await mgr.acommit_all(clone, "task work", exclude_plans=False)
-
-        assert _git(["diff", "--cached", "--name-only"], cwd=clone) == "work.txt"
-        assert reserved.read_text() == "daemon state\n"
-
-    @pytest.mark.asyncio
-    async def test_no_verify_disables_every_commit_hook(self, clone, mgr):
-        repo = pathlib.Path(clone)
-        (repo / "work.txt").write_text("real work\n")
-        for name in ("pre-commit", "prepare-commit-msg", "commit-msg", "post-commit"):
-            hook = repo / ".git" / "hooks" / name
-            hook.write_text(f"#!/bin/sh\necho {name} >> hook.log\n")
-            hook.chmod(0o755)
-
-        assert await mgr.acommit_all(
-            clone, "auto remediation", exclude_plans=False, no_verify=True
-        )
-        assert not (repo / "hook.log").exists()
-
-    @pytest.mark.asyncio
-    async def test_pre_commit_hook_cannot_stage_daemon_state(self, clone, mgr):
-        """The async final commit cannot include state staged by a hook."""
-        reserved = pathlib.Path(clone, ".aq/claim.json")
-        reserved.parent.mkdir(parents=True)
-        reserved.write_text("daemon state\n")
-        pathlib.Path(clone, "work.txt").write_text("real work\n")
-        hook = pathlib.Path(clone, ".git", "hooks", "pre-commit")
-        hook.write_text("#!/bin/sh\ngit add -f .aq/claim.json\n")
+        hook.write_text("#!/bin/sh\necho invoked >> hook-ran\n")
         hook.chmod(0o755)
 
         assert await mgr.acommit_all(clone, "task work", exclude_plans=False)
-        assert _git(["show", "--pretty=", "--name-only", "HEAD"], cwd=clone) == "work.txt"
-        assert _git(["ls-files", "--others", "--exclude-standard"], cwd=clone) == ".aq/claim.json"
+        assert (repo / "hook-ran").read_text().splitlines() == ["invoked"]
 
     @pytest.mark.asyncio
     async def test_commit_with_changes(self, clone, mgr):
@@ -360,88 +305,6 @@ class TestAsyncCommitAll:
     async def test_no_changes(self, clone, mgr):
         committed = await mgr.acommit_all(clone, "nothing")
         assert committed is False
-
-    @pytest.mark.asyncio
-    async def test_auto_remediation_never_commits_reserved_daemon_paths(self, clone, mgr):
-        """Reserved bookkeeping stays unstaged even when it is already tracked."""
-        reserved_paths = (".aq/claim.json", ".aq-worktree.json", ".codex/hooks.json")
-        for path in reserved_paths:
-            target = pathlib.Path(clone, path)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text("before\n")
-        _git(["add", *reserved_paths], cwd=clone)
-        _git(["commit", "-m", "tracked daemon paths"], cwd=clone)
-
-        for path in reserved_paths:
-            pathlib.Path(clone, path).write_text("after\n")
-        _git(["add", *reserved_paths], cwd=clone)
-        pathlib.Path(clone, "work.txt").write_text("real work\n")
-
-        assert await mgr.acommit_all(clone, "auto remediation", exclude_plans=False)
-        committed_paths = _git(["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"], cwd=clone)
-        assert committed_paths.splitlines() == ["work.txt"]
-        assert set(_git(["diff", "--name-only"], cwd=clone).splitlines()) == set(reserved_paths)
-
-    @pytest.mark.asyncio
-    async def test_omits_pre_staged_daemon_paths_in_unborn_repo(self, tmp_path, mgr):
-        """Async commit-all cannot include bookkeeping in an initial commit."""
-        repo = tmp_path / "unborn"
-        _git(["init", "--initial-branch=main", str(repo)], cwd=str(tmp_path))
-        _git(["config", "user.name", "Test"], cwd=str(repo))
-        _git(["config", "user.email", "t@t.com"], cwd=str(repo))
-
-        reserved_paths = (".aq/claim.json", ".aq-worktree.json", ".codex/hooks.json")
-        for path in reserved_paths:
-            target = repo / path
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text("daemon state\n")
-        _git(["add", *reserved_paths], cwd=str(repo))
-        (repo / "work.txt").write_text("real work\n")
-
-        assert await mgr.acommit_all(str(repo), "initial task work", exclude_plans=False)
-        committed_paths = _git(["show", "--pretty=", "--name-only", "HEAD"], cwd=str(repo))
-        assert committed_paths.splitlines() == ["work.txt"]
-        assert set(_git(["ls-files", "--others", "--exclude-standard"], cwd=str(repo)).splitlines()) == set(
-            reserved_paths
-        )
-
-    @pytest.mark.asyncio
-    async def test_refuses_commit_when_reserved_path_remains_cached(self, clone, mgr, monkeypatch):
-        """Async commit-all aborts if daemon state remains staged."""
-        reserved_path = ".aq-worktree.json"
-        pathlib.Path(clone, reserved_path).write_text("daemon state\n")
-        _git(["add", reserved_path], cwd=clone)
-        pathlib.Path(clone, "work.txt").write_text("real work\n")
-
-        original_arun = mgr._arun
-
-        async def leave_reserved_path_cached(args, **kwargs):
-            if args[:3] == ["reset", "HEAD", "--"]:
-                return ""
-            return await original_arun(args, **kwargs)
-
-        monkeypatch.setattr(mgr, "_arun", leave_reserved_path_cached)
-
-        with pytest.raises(GitError, match="reserved daemon bookkeeping"):
-            await mgr.acommit_all(clone, "task work", exclude_plans=False)
-
-    @pytest.mark.asyncio
-    async def test_propagates_reserved_path_unstage_failure(self, clone, mgr, monkeypatch):
-        """Async commit-all does not suppress a real unstage failure."""
-        pathlib.Path(clone, ".aq-worktree.json").write_text("daemon state\n")
-        pathlib.Path(clone, "work.txt").write_text("real work\n")
-
-        original_arun = mgr._arun
-
-        async def fail_reserved_path_unstage(args, **kwargs):
-            if args[:3] == ["reset", "HEAD", "--"]:
-                raise GitError("synthetic reset failure")
-            return await original_arun(args, **kwargs)
-
-        monkeypatch.setattr(mgr, "_arun", fail_reserved_path_unstage)
-
-        with pytest.raises(GitError, match="synthetic reset failure"):
-            await mgr.acommit_all(clone, "task work", exclude_plans=False)
 
     @pytest.mark.asyncio
     async def test_emits_git_commit_event(self, clone, mgr):
@@ -541,7 +404,7 @@ class TestAsyncCommitAll:
 
 class TestAsyncReservedDeliveryDiff:
     @pytest.mark.asyncio
-    async def test_reports_forced_add_and_changed_previously_tracked_paths(self, clone, mgr):
+    async def test_reports_task_changes_to_reserved_paths(self, clone, mgr):
         repo = pathlib.Path(clone)
         tracked = repo / ".codex" / "settings.json"
         tracked.parent.mkdir()
@@ -562,7 +425,7 @@ class TestAsyncReservedDeliveryDiff:
         ]
 
     @pytest.mark.asyncio
-    async def test_ignores_reserved_path_tracked_but_unchanged_from_base(self, clone, mgr):
+    async def test_ignores_reserved_path_unchanged_from_base(self, clone, mgr):
         repo = pathlib.Path(clone)
         tracked = repo / ".codex" / "settings.json"
         tracked.parent.mkdir()
@@ -813,6 +676,78 @@ class TestBranchSourceIsNotShadowedByASameNamedTag:
         with pytest.raises(GitError, match="refs/heads/release/only-a-tag"):
             await mgr.apush_validated_ref(clone, "release/only-a-tag", "release/only-a-tag")
         assert "release/only-a-tag" not in _git(["branch", "-r"], cwd=clone)
+
+    @pytest.mark.asyncio
+    async def test_delivery_resolver_inspects_exact_branch_and_base_refs(self, clone, mgr):
+        """Same-named tags cannot turn a one-commit branch into apparent no-work."""
+        _git(["switch", "-c", "task/shadowed"], cwd=clone)
+        branch_tip = _commit_file(clone, "work.txt", "real work", "branch work")
+        _git(["tag", "task/shadowed", branch_tip], cwd=clone)
+        _git(["tag", "main", branch_tip], cwd=clone)
+        _git(["tag", "origin/main", branch_tip], cwd=clone)
+        _git(["switch", "main"], cwd=clone)
+
+        ops = GitOpsMixin()
+        ops.git = mgr
+        ctx = SimpleNamespace(
+            workspace_path=clone,
+            default_branch="main",
+            delivery_branch=None,
+            task=SimpleNamespace(branch_name="task/shadowed"),
+        )
+
+        resolution = await ops._resolve_task_delivery(
+            ctx, current_branch="main", has_remote=True
+        )
+
+        assert resolution.error is None
+        assert resolution.no_work is False
+        assert resolution.delivery_branch == "task/shadowed"
+        assert resolution.delivery_ref == "refs/heads/task/shadowed"
+        assert resolution.checked_refs == (
+            "refs/heads/main",
+            "refs/heads/task/shadowed",
+        )
+        assert await mgr.arev_parse(clone, resolution.delivery_ref) == branch_tip
+
+    @pytest.mark.asyncio
+    async def test_skip_verification_inspects_reserved_paths_on_exact_current_ref(
+        self, clone, mgr
+    ):
+        """A safe same-named tag cannot hide reserved paths on the branch."""
+        main_tip = _git(["rev-parse", "refs/heads/main"], cwd=clone)
+        _git(["switch", "-c", "task/shadowed"], cwd=clone)
+        pathlib.Path(clone, ".aq").mkdir()
+        _commit_file(clone, ".aq/claim.json", "reserved", "reserved work")
+        _git(["tag", "task/shadowed", main_tip], cwd=clone)
+
+        ops = GitOpsMixin()
+        ops.git = mgr
+        ops._task_uses_git = AsyncMock(return_value=True)
+        inspect = AsyncMock(wraps=mgr.areserved_paths_in_diff)
+        mgr.areserved_paths_in_diff = inspect
+        ctx = SimpleNamespace(
+            workspace_path=clone,
+            default_branch="main",
+            delivery_branch=None,
+            output=SimpleNamespace(exit_code=0),
+            agent=SimpleNamespace(id="agent-1"),
+            task=SimpleNamespace(
+                id="task-1",
+                project_id="project-1",
+                branch_name="task/shadowed",
+                skip_verification=True,
+            ),
+            verification_issues=[],
+        )
+
+        assert await ops._phase_verify(ctx) is PhaseResult.STOP
+        assert "reserved daemon" in ctx.verification_issues[0].lower()
+        inspect.assert_awaited_once_with(
+            clone,
+            "refs/remotes/origin/main",
+            "refs/heads/task/shadowed",
+        )
 
     @pytest.mark.asyncio
     async def test_head_oid_and_revision_expressions_keep_bare_resolution(self, clone, mgr):
@@ -1669,6 +1604,33 @@ class TestAfindOpenPr:
             ],
         )
         assert await mgr.afind_open_pr(clone, "aq/t-1") == "https://gh/org/repo/pull/43"
+
+    @pytest.mark.asyncio
+    async def test_exact_head_ref_ignores_a_same_named_tag(self, clone, mgr, monkeypatch):
+        _git(["switch", "-c", "aq/t-shadowed"], cwd=clone)
+        branch_tip = _commit_file(clone, "work.txt", "done", "work")
+        _git(["switch", "--detach", "refs/remotes/origin/main"], cwd=clone)
+        tag_tip = _commit_file(clone, "decoy.txt", "decoy", "decoy")
+        _git(["tag", "aq/t-shadowed", tag_tip], cwd=clone)
+
+        self._fake_gh(
+            mgr,
+            monkeypatch,
+            prs=[
+                {
+                    "url": "https://gh/org/repo/pull/47",
+                    "headRefName": "delivery",
+                    "headRefOid": branch_tip,
+                }
+            ],
+        )
+
+        assert await mgr.afind_open_pr(
+            clone,
+            "aq/t-shadowed",
+            head_ref="refs/heads/aq/t-shadowed",
+            include_workspace_head=False,
+        ) == "https://gh/org/repo/pull/47"
 
     @pytest.mark.asyncio
     async def test_open_prs_at_other_commits_are_not_accepted(

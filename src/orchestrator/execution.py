@@ -1273,10 +1273,12 @@ class ExecutionMixin:
         # ``pr_url`` for ``event.task.pr_url`` to read as truthy.
         if new_status == TaskStatus.COMPLETED:
             try:
-                # ``no_code`` is the same verdict git verification used a
-                # moment ago (``_task_produces_no_code``: ``read_only``
-                # profile or ``--work-outcome no-op``).  The review rules in
-                # default-pipeline.md guard on it: a reviewer's own task
+                # ``no_code`` requires both explicit no-code intent and the
+                # central strict Git no-work proof. Direct delivery can make
+                # an already-merged branch look empty, so proof alone is not
+                # an outcome classification. The review rules in
+                # default-pipeline.md guard on it:
+                # a reviewer's own task
                 # carries a ``branch_name`` like any other session task (the
                 # slot is checked out on ``aq/<id>``), so without this flag
                 # every finished review spawned a review *of the review*, and
@@ -1286,37 +1288,22 @@ class ExecutionMixin:
                 # still fires the review, so this only ever narrows.
                 #
                 # ``review_task`` is the structural half of the same guard.
-                # ``no_code`` is only as good as the reviewer profile's
-                # ``read_only`` flag: an operator who hands the reviewer
-                # Write/Edit tools (``read_only: false``) turns it off and the
-                # recursion is back (task sound-horizon-77.18.2).  So
-                # ``is_review_completion`` ORs two signals no profile edit can
-                # reach: the ``review:task:`` / ``branch-review:`` dedup key
-                # this pipeline stamps on every review it creates, and the
-                # ``reviewer`` / ``final-reviewer`` profile id.  The second
-                # exists because the first is only the *shipped* pipeline's
-                # mark — a project routing reviews through its own pipeline
-                # keys the rows however it likes, and with a non-read-only
-                # reviewer that left every guard blind and the chain grew
-                # again (task solid-beacon-50).
+                # ``is_review_completion`` independently ORs two structural
+                # signals no Git verdict or profile edit can reach: the
+                # ``review:task:`` / ``branch-review:`` dedup key this
+                # pipeline stamps and the reviewer profile ids.
                 #
                 # ``_on_playbook_trigger`` derives the dedup-key signal from
                 # the task row too, so an emitter that predates this flag
                 # cannot reopen the recursion (task prime-cascade-64).
-                # ``ctx.branch_no_commits`` is the final layer: the
-                # branch itself carried no commits ahead of its base when the
-                # completion pipeline asked, so there is literally nothing for
-                # a reviewer to read (task bright-forge-78).  It catches what
-                # the structural signals cannot — a renamed reviewer profile
-                # used by a custom pipeline, or an ordinary worker that closed
-                # ``pass`` having committed nothing.
-                no_code = await self._task_produces_no_code(ctx) or ctx.branch_no_commits
                 await self._emit_task_event(
                     "task.completed",
                     task,
                     agent_id=task.assigned_agent_id,
                     agent_type=task.profile_id,
-                    no_code=no_code,
+                    no_code=(
+                        ctx.no_work_proven and await self._task_produces_no_code(ctx)
+                    ),
                     review_task=is_review_completion(task.dedup_key, task.profile_id),
                 )
             except Exception:

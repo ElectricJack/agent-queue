@@ -69,12 +69,12 @@ class AdoptReport:
 
     * ``adopted`` — workspace ids for slots whose row + directory + sentinel
       all check out on boot.
-    * ``repaired`` — workspace ids for bases whose exact Git-resolved
-      ``info/exclude`` block was missing or drifted and is now verified.
+    * ``repaired`` — workspace ids for bases whose ``.git/info/exclude``
+      block was missing or drifted and has now been rewritten.
     * ``pruned`` — worktree paths (or "prune" sentinel) that had a stale
       ``.git/worktrees`` registration and were pruned.
-    * ``exclude_failures`` — bases whose exact managed exclude path could not
-      be installed and verified; their slots are not reported as adopted.
+    * ``exclude_failures`` — bases whose exact Git-resolved exclude path
+      could not be installed and verified; their slots are not adopted.
     """
 
     adopted: list[str] = field(default_factory=list)
@@ -87,11 +87,11 @@ logger = logging.getLogger(__name__)
 #: Directory (relative to the base repo) that holds every slot.
 SLOTS_DIRNAME = Path(".aq") / "worktrees"
 
-#: Marker block written to Git's resolved ``info/exclude`` (design §2.4).
+#: Marker block written to ``<base>/.git/info/exclude`` (design §2.4).
 EXCLUDE_BEGIN = "# >>> agent-queue managed — do not edit between markers >>>"
 EXCLUDE_END = "# <<< agent-queue managed <<<"
 #: Design §2.4 specifies ``/.aq/``.  The sentinel is listed alongside it:
-#: Git's ``info/exclude`` lives in the *common* dir and is therefore shared by
+#: ``.git/info/exclude`` lives in the *common* dir and is therefore shared by
 #: every worktree of the repository, so one line here keeps ``git status``
 #: clean in every slot.  Without it the sentinel shows up as untracked in each
 #: slot and gets swept into the salvage patch.
@@ -160,6 +160,20 @@ def _read_pointer_file(path: Path, key: str) -> Path | None:
     if not target.is_absolute():
         target = (path.parent / target).resolve()
     return target
+
+
+async def resolve_managed_exclude_path(git, checkout_path: str | Path) -> Path:
+    """Validate a repository-root checkout and resolve its exact exclude path."""
+    checkout = Path(checkout_path)
+    if not await git.avalidate_checkout(str(checkout)):
+        raise GitError(f"cannot install managed excludes: {checkout} is not a checkout")
+    repo_root = await git._arun(["rev-parse", "--show-toplevel"], cwd=str(checkout))
+    if Path(repo_root).resolve() != checkout.resolve():
+        raise GitError(
+            "Git workspace handoff requires the repository root: "
+            f"configured {checkout}, repository root {repo_root}"
+        )
+    return Path(await git.aget_git_path(str(checkout), "info/exclude"))
 
 #: Branch prefix every task branch carries.  Fixed — no title slug — so the
 #: branch is derivable from the task id alone (design §3.2).
@@ -238,23 +252,8 @@ class WorktreeSlotManager:
         failures raise, so callers can never confuse an unprotected checkout
         with an already-protected one.
         """
-        exclude_path = await self.git.aget_git_path(str(checkout_path), "info/exclude")
+        exclude_path = await resolve_managed_exclude_path(self.git, checkout_path)
         return self.ensure_git_exclude_path(exclude_path)
-
-    @staticmethod
-    def git_exclude_is_current_path(exclude_path: str | Path) -> bool:
-        """Return whether *exclude_path* contains the exact managed block."""
-        exclude = Path(exclude_path)
-        if not exclude.exists():
-            return False
-        with exclude.open(encoding="utf-8", errors="surrogateescape", newline="") as f:
-            existing = f.read()
-        start = existing.find(_EXCLUDE_BEGIN_ASCII)
-        end = existing.find(_EXCLUDE_END_ASCII)
-        if start == -1 or end == -1 or end <= start:
-            return False
-        current = existing[start : end + len(_EXCLUDE_END_ASCII)]
-        return current.strip() == EXCLUDE_BLOCK.strip()
 
     @staticmethod
     def resolve_exclude_path(base_path: str | Path) -> Path:
@@ -279,18 +278,30 @@ class WorktreeSlotManager:
         return cls.resolve_exclude_path(base_path).with_name(_EXCLUDE_LOCK_NAME)
 
     @staticmethod
-    def ensure_git_exclude_path(exclude_path: str | Path) -> bool:
-        """Atomically maintain the managed block at an exact Git-resolved path.
-
-        The read-modify-write is serialised across threads and processes.  I/O
-        or verification failures raise so callers cannot mistake an
-        unprotected checkout for an already-current one.
-        """
+    def git_exclude_is_current_path(exclude_path: str | Path) -> bool:
+        """Return whether an exact exclude path contains the managed block."""
         exclude = Path(exclude_path)
-        info_dir = exclude.parent
-        info_dir.mkdir(parents=True, exist_ok=True)
-        with _exclude_lock(info_dir / _EXCLUDE_LOCK_NAME):
-            return WorktreeSlotManager._ensure_git_exclude_locked(exclude)
+        if not exclude.exists():
+            return False
+        with exclude.open(encoding="utf-8", errors="surrogateescape", newline="") as f:
+            existing = f.read()
+        start = existing.find(_EXCLUDE_BEGIN_ASCII)
+        end = existing.find(_EXCLUDE_END_ASCII)
+        if start == -1 or end == -1 or end <= start:
+            return False
+        current = existing[start : end + len(_EXCLUDE_END_ASCII)]
+        return current.strip() == EXCLUDE_BLOCK.strip()
+
+    @classmethod
+    def ensure_git_exclude_path(cls, exclude_path: str | Path) -> bool:
+        """Write and verify the managed block at an exact Git-resolved path."""
+        exclude = Path(exclude_path)
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        with _exclude_lock(exclude.parent / _EXCLUDE_LOCK_NAME):
+            changed = cls._ensure_git_exclude_locked(exclude)
+        if not cls.git_exclude_is_current_path(exclude):
+            raise OSError(f"managed Git exclude block could not be verified at {exclude}")
+        return changed
 
     @staticmethod
     def _ensure_git_exclude_locked(exclude: Path) -> bool:
@@ -1409,12 +1420,11 @@ class WorktreeSlotManager:
         """Boot-time adoption.  Design §6, spec §6.4.
 
         Cross-checks ``git worktree list --porcelain`` in each base of the
-        project against slot rows and their sentinels; resolves, repairs, and
-        verifies the exact Git exclude path; runs ``git worktree prune`` for
-        stale registrations; and re-registers rows for intact directories.
-        A base whose exclude cannot be verified is not adopted.  This method
-        does **not** delete slot directories or branches — the whole point of
-        adoption is that the directory is durable state.
+        project against slot rows and their sentinels; repairs the exclude
+        block; runs ``git worktree prune`` for stale registrations; and
+        re-registers rows for intact directories.  Does **not** delete slot
+        directories or branches — the whole point of adoption is that the
+        directory is durable state.
         """
         report = AdoptReport()
 
@@ -1424,6 +1434,14 @@ class WorktreeSlotManager:
         slots = [ws for ws in workspaces if ws.is_slot]
 
         for base in bases:
+            try:
+                kind = await self.db.resolve_workspace_kind(
+                    project.id, base.kind_id or "project-repo"
+                )
+            except Exception:
+                kind = None
+            if kind is not None and not kind.is_git_repo:
+                continue
             base_path = base.workspace_path
             if not Path(base_path).is_dir():
                 continue

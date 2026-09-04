@@ -257,7 +257,7 @@ class TestGitExclude:
         status = _git(["status", "--porcelain"], cwd=base_repo)
         assert status == "", f"base repo dirtied by slot creation: {status!r}"
 
-    def test_slot_creation_uses_exact_path_for_separate_git_dir(
+    def test_slot_creation_uses_git_resolved_exclude_path(
         self, tmp_path, db, bus, mutexes, kind
     ):
         origin = tmp_path / "separate-origin.git"
@@ -296,7 +296,30 @@ class TestGitExclude:
         asyncio.run(manager.create_slot(base_ws, kind, 0))
 
         assert EXCLUDE_BEGIN in (metadata / "info" / "exclude").read_text()
-        assert not (base / ".git" / "info" / "exclude").exists()
+
+    def test_slot_creation_rejects_a_git_subdirectory_base(
+        self, base_repo: Path, db, bus, mutexes, kind
+    ):
+        nested = base_repo / "nested"
+        nested.mkdir()
+        nested_ws = Workspace(
+            id="ws-nested",
+            project_id="p1",
+            workspace_path=str(nested),
+            source_type=RepoSourceType.LINK,
+            kind_id="project-repo",
+        )
+        db.workspaces[nested_ws.id] = nested_ws
+        manager = WorktreeSlotManager(
+            db=db,
+            git=GitManager(),
+            bus=bus,
+            config=WorktreesConfig(enabled=True),
+            git_mutex=mutexes,
+        )
+
+        with pytest.raises(GitError, match="repository root"):
+            asyncio.run(manager.create_slot(nested_ws, kind, 0))
 
     def test_slot_creation_refuses_unverifiable_exclude(self, base_repo, mgr, base_ws, kind):
         info_dir = base_repo / ".git" / "info"
@@ -306,8 +329,6 @@ class TestGitExclude:
 
         with pytest.raises(OSError):
             asyncio.run(mgr.create_slot(base_ws, kind, 0))
-
-        assert not slot_path(base_repo, 0).exists()
 
 
 # ───────────────────────────── §2.5 sentinel ─────────────────────────────

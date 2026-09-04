@@ -68,11 +68,8 @@ import json
 import logging
 import os
 import re
-import shlex
 import subprocess
-import tempfile
 from collections.abc import Callable
-from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -1125,19 +1122,6 @@ class GitManager:
         except GitError:
             return ""
 
-    def get_git_path(self, checkout_path: str, path: str) -> str:
-        """Resolve a Git-internal *path* to an absolute filesystem path."""
-        try:
-            return self._run(
-                ["rev-parse", "--path-format=absolute", "--git-path", path],
-                cwd=checkout_path,
-            )
-        except GitError:
-            git_path = self._run(["rev-parse", "--git-path", path], cwd=checkout_path)
-            return git_path if os.path.isabs(git_path) else os.path.abspath(
-                os.path.join(checkout_path, git_path)
-            )
-
     def get_changed_files(self, checkout_path: str, base_branch: str = "main") -> list[str]:
         try:
             output = self._run(["diff", "--name-only", base_branch], cwd=checkout_path)
@@ -1154,16 +1138,6 @@ class GitManager:
         ".claude/plans/",
         "plan.md",
     ]
-    # Daemon-owned runtime state must never become task work, even when a
-    # repository already tracks one of these paths and ignore rules cannot
-    # suppress its staged change.
-    _DAEMON_BOOKKEEPING_EXCLUDES = [".aq/", ".aq-worktree.json", ".codex/"]
-    _DAEMON_BOOKKEEPING_ADD_EXCLUDES = [
-        ":(exclude).aq/**",
-        ":(exclude).aq-worktree.json",
-        ":(exclude).codex/**",
-    ]
-    _COMMIT_HOOKS = ("pre-commit", "prepare-commit-msg", "commit-msg", "post-commit")
 
     @classmethod
     def _daemon_bookkeeping_paths(cls, cached_output: str) -> list[str]:
@@ -1179,79 +1153,6 @@ class GitManager:
             )
         ]
 
-    def _unstage_daemon_bookkeeping(self, checkout_path: str) -> None:
-        """Clear any daemon bookkeeping a caller staged before commit_all."""
-        self._run(
-            ["reset", "HEAD", "--", *self._DAEMON_BOOKKEEPING_EXCLUDES],
-            cwd=checkout_path,
-        )
-
-    def _refuse_cached_daemon_bookkeeping(self, checkout_path: str) -> None:
-        """Abort before commit if daemon-owned state remains in the index."""
-        cached = self._run(
-            ["diff", "--cached", "--name-only", "-z", "--"], cwd=checkout_path
-        )
-        paths = self._daemon_bookkeeping_paths(cached)
-        if paths:
-            raise GitError(
-                "refusing to commit reserved daemon bookkeeping paths: " + ", ".join(paths)
-            )
-
-    async def _aunstage_daemon_bookkeeping(self, checkout_path: str) -> None:
-        """Async counterpart to :meth:`_unstage_daemon_bookkeeping`."""
-        await self._arun(
-            ["reset", "HEAD", "--", *self._DAEMON_BOOKKEEPING_EXCLUDES],
-            cwd=checkout_path,
-        )
-
-    async def _arefuse_cached_daemon_bookkeeping(self, checkout_path: str) -> None:
-        """Async counterpart to :meth:`_refuse_cached_daemon_bookkeeping`."""
-        cached = await self._arun(
-            ["diff", "--cached", "--name-only", "-z", "--"], cwd=checkout_path
-        )
-        paths = self._daemon_bookkeeping_paths(cached)
-        if paths:
-            raise GitError(
-                "refusing to commit reserved daemon bookkeeping paths: " + ", ".join(paths)
-            )
-
-    @classmethod
-    @contextmanager
-    def _commit_hooks_overlay(cls, hooks_path: str, *, no_verify: bool):
-        """Yield a temporary hooks path that seals reserved index entries.
-
-        ``git commit`` still drives its normal hook lifecycle.  Each installed
-        user hook is delegated exactly once, and the wrappers for hooks that
-        run before the commit is finalized restore daemon-owned paths in the
-        index to ``HEAD`` before returning to Git.  An empty overlay makes
-        ``no_verify=True`` genuinely hook-free, including hook types that
-        Git's own ``--no-verify`` flag does not suppress.
-        """
-        original_dir = Path(hooks_path)
-        with tempfile.TemporaryDirectory(prefix="aq-commit-hooks-") as temp_dir:
-            overlay = Path(temp_dir)
-            if not no_verify:
-                for hook_name in cls._COMMIT_HOOKS:
-                    original = original_dir / hook_name
-                    if hook_name != "pre-commit" and not os.access(original, os.X_OK):
-                        continue
-                    delegate = ""
-                    if os.access(original, os.X_OK):
-                        delegate = f"{shlex.quote(str(original))} \"$@\" || status=$?\n"
-                    wrapper = (
-                        "#!/bin/sh\n"
-                        "status=0\n"
-                        f"{delegate}"
-                        "git reset -q HEAD -- .aq/ .aq-worktree.json .codex/\n"
-                        "cleanup_status=$?\n"
-                        'if test "$status" -ne 0; then exit "$status"; fi\n'
-                        'exit "$cleanup_status"\n'
-                    )
-                    target = overlay / hook_name
-                    target.write_text(wrapper, encoding="utf-8")
-                    target.chmod(0o700)
-            yield str(overlay)
-
     def commit_all(
         self,
         checkout_path: str,
@@ -1260,15 +1161,13 @@ class GitManager:
         exclude_plans: bool = True,
         no_verify: bool = False,
     ) -> bool:
-        """Stage task changes and commit, returning whether a commit was made.
+        """Stage all changes and commit. Returns True if a commit was made, False if nothing to commit.
 
-        Uses add-all-then-check-staged pattern, while excluding daemon-owned
-        bookkeeping from the initial add and clearing any such paths that
-        were already staged.  ``git diff --cached --quiet`` then checks
-        whether anything is actually staged.  This avoids the race condition
-        of checking status before staging.  ``False`` means no legitimate
-        staged task change remained after sanitization; excluded daemon or
-        plan paths may still be modified in the working tree.
+        Uses add-all-then-check-staged pattern: ``git add -A`` stages
+        everything (including untracked files the agent created), then
+        ``git diff --cached --quiet`` checks whether anything is actually
+        staged.  This avoids the race condition of checking status before
+        staging.
 
         Plan files (``.claude/plan.md``, ``plan.md``, ``.claude/plans/``)
         are automatically unstaged to prevent them from being committed to
@@ -1277,18 +1176,11 @@ class GitManager:
         should pass ``exclude_plans=False`` to ensure all changes are
         committed.
 
-        Pass ``no_verify=True`` to skip all commit hooks.
-        This is intended for system-level auto-remediation commits where hook
-        failures would prevent workspace cleanup. Otherwise ``git commit``
-        runs the repository's native commit hook lifecycle exactly once; a
-        temporary hooks overlay removes daemon-owned paths after each hook
-        before Git can finalize the commit.
+        Pass ``no_verify=True`` to skip pre-commit hooks (``--no-verify``).
+        This is intended for system-level auto-remediation commits where
+        hook failures would prevent workspace cleanup.
         """
-        self._unstage_daemon_bookkeeping(checkout_path)
-        self._run(
-            ["add", "-A", "--", ".", *self._DAEMON_BOOKKEEPING_ADD_EXCLUDES],
-            cwd=checkout_path,
-        )
+        self._run(["add", "-A"], cwd=checkout_path)
         # Unstage plan files so they never reach target repo history.
         if exclude_plans:
             for pattern in self._PLAN_FILE_EXCLUDES:
@@ -1296,7 +1188,6 @@ class GitManager:
                     self._run(["reset", "HEAD", "--", pattern], cwd=checkout_path)
                 except GitError:
                     pass  # Not staged or doesn't exist — fine
-        self._refuse_cached_daemon_bookkeeping(checkout_path)
         # git diff --cached --quiet exits 1 if there are staged changes
         result = subprocess.run(
             ["git", "diff", "--cached", "--quiet"],
@@ -1307,18 +1198,10 @@ class GitManager:
         )
         if result.returncode == 0:
             return False  # Nothing to commit
-        if result.returncode != 1:
-            raise GitError(f"git diff --cached --quiet failed: {result.stderr.strip()}")
-        hooks_path = self.get_git_path(checkout_path, "hooks")
-        with self._commit_hooks_overlay(hooks_path, no_verify=no_verify) as overlay:
-            commit_args = ["-c", f"core.hooksPath={overlay}", "commit", "-m", message]
-            if no_verify:
-                commit_args.insert(-2, "--no-verify")
-            try:
-                self._run(commit_args, cwd=checkout_path)
-            finally:
-                self._unstage_daemon_bookkeeping(checkout_path)
-                self._refuse_cached_daemon_bookkeeping(checkout_path)
+        commit_args = ["commit", "-m", message]
+        if no_verify:
+            commit_args.append("--no-verify")
+        self._run(commit_args, cwd=checkout_path)
         return True
 
     def create_pr(
@@ -1628,12 +1511,19 @@ class GitManager:
         except GitError:
             return False
 
-    async def ahas_remote(self, checkout_path: str, remote: str = "origin") -> bool:
+    async def ahas_remote(
+        self, checkout_path: str, remote: str = "origin", *, strict: bool = False
+    ) -> bool | None:
+        """Return whether *remote* exists, or ``None`` on probe failure in strict mode."""
         try:
-            await self._arun(["remote", "get-url", remote], cwd=checkout_path)
-            return True
-        except GitError:
-            return False
+            result = await self._arun_subprocess(
+                ["git", "remote"], cwd=checkout_path, timeout=self._GIT_TIMEOUT
+            )
+        except Exception:
+            return None if strict else False
+        if result.returncode != 0:
+            return None if strict else False
+        return remote in (result.stdout or "").splitlines()
 
     async def aget_remote_url(self, checkout_path: str, remote: str = "origin") -> str | None:
         """Return the URL for *remote*, or ``None`` if no remote is configured."""
@@ -2322,11 +2212,9 @@ class GitManager:
         ``exclude_plans=False`` for system-level operations that need
         to commit all changes including plan files.
 
-        Pass ``no_verify=True`` to skip all commit hooks.
-        This is intended for system-level auto-remediation commits where hook
-        failures would prevent workspace cleanup. Otherwise ``git commit``
-        runs the repository's native commit hook lifecycle exactly once while
-        daemon-owned paths are removed after every hook boundary.
+        Pass ``no_verify=True`` to skip pre-commit hooks (``--no-verify``).
+        This is intended for system-level auto-remediation commits where
+        hook failures would prevent workspace cleanup.
 
         When *event_bus* is provided, a ``git.commit`` event is emitted
         after a successful commit with the commit hash, branch, changed
@@ -2336,21 +2224,16 @@ class GitManager:
         and therefore untrusted, but it only ever reaches git as the value of
         the ``-m`` flag in an argv list — never interpolated into a shell
         string and never in a position git could read as an option.  The
-        ``["reset", "HEAD", "--", path]`` call below is the template for
+        ``["reset", "HEAD", "--", pattern]`` call below is the template for
         pathspec arguments.  See ``docs/specs/design/trust-and-ops.md`` §2.4.
         """
-        await self._aunstage_daemon_bookkeeping(checkout_path)
-        await self._arun(
-            ["add", "-A", "--", ".", *self._DAEMON_BOOKKEEPING_ADD_EXCLUDES],
-            cwd=checkout_path,
-        )
+        await self._arun(["add", "-A"], cwd=checkout_path)
         if exclude_plans:
             for pattern in self._PLAN_FILE_EXCLUDES:
                 try:
                     await self._arun(["reset", "HEAD", "--", pattern], cwd=checkout_path)
                 except GitError:
                     pass
-        await self._arefuse_cached_daemon_bookkeeping(checkout_path)
         result = await self._arun_subprocess(
             ["git", "diff", "--cached", "--quiet"],
             cwd=checkout_path,
@@ -2358,18 +2241,10 @@ class GitManager:
         )
         if result.returncode == 0:
             return False
-        if result.returncode != 1:
-            raise GitError(f"git diff --cached --quiet failed: {result.stderr.strip()}")
-        hooks_path = await self.aget_git_path(checkout_path, "hooks")
-        with self._commit_hooks_overlay(hooks_path, no_verify=no_verify) as overlay:
-            commit_args = ["-c", f"core.hooksPath={overlay}", "commit", "-m", message]
-            if no_verify:
-                commit_args.insert(-2, "--no-verify")
-            try:
-                await self._arun(commit_args, cwd=checkout_path)
-            finally:
-                await self._aunstage_daemon_bookkeeping(checkout_path)
-                await self._arefuse_cached_daemon_bookkeeping(checkout_path)
+        commit_args = ["commit", "-m", message]
+        if no_verify:
+            commit_args.append("--no-verify")
+        await self._arun(commit_args, cwd=checkout_path)
 
         # Emit git.commit event on success
         if event_bus is not None:
@@ -2526,7 +2401,11 @@ class GitManager:
         if expected_head_oid is not None:
             expected_head_oid = expected_head_oid.lower()
             if not _OID_RE.fullmatch(expected_head_oid):
-                return {"success": False, "sha": None, "error": "invalid expected PR head OID"}
+                return {
+                    "success": False,
+                    "sha": None,
+                    "error": "invalid expected PR head OID",
+                }
         try:
             current = await self.avalidate_pr_for_merge(checkout_path, pr_url)
         except GitError as exc:
@@ -3138,6 +3017,17 @@ class GitManager:
         )
         return sorted(self._daemon_bookkeeping_paths(changed))
 
+    async def areserved_paths_in_index(self, checkout_path: str) -> list[str]:
+        """Return daemon-owned paths currently staged in *checkout_path*.
+
+        Git errors propagate because task-close auto-remediation uses this as
+        a fail-closed guard immediately after staging.
+        """
+        cached = await self._arun(
+            ["diff", "--cached", "--name-only", "-z", "--"], cwd=checkout_path
+        )
+        return sorted(self._daemon_bookkeeping_paths(cached))
+
     async def areserved_paths_in_tree(self, checkout_path: str, rev: str) -> list[str]:
         """Return daemon-owned paths tracked anywhere in *rev*'s tree.
 
@@ -3154,11 +3044,14 @@ class GitManager:
         )
         return sorted(self._daemon_bookkeeping_paths(listed))
 
-    async def aget_current_branch(self, checkout_path: str) -> str:
+    async def aget_current_branch(
+        self, checkout_path: str, *, strict: bool = False
+    ) -> str | None:
+        """Return the checked-out branch, or ``None`` on failure in strict mode."""
         try:
             return await self._arun(["rev-parse", "--abbrev-ref", "HEAD"], cwd=checkout_path)
         except GitError:
-            return ""
+            return None if strict else ""
 
     async def ahas_uncommitted_changes(
         self, checkout_path: str, *, strict: bool = False
@@ -3298,6 +3191,7 @@ class GitManager:
         checkout_path: str,
         branch_name: str,
         *,
+        head_ref: str | None = None,
         include_workspace_head: bool = True,
     ) -> str | None:
         """Return an open or merged PR URL delivering *branch_name*, or ``None``.
@@ -3314,6 +3208,8 @@ class GitManager:
 
         A merged pull request is evidence that the branch's work has already
         shipped. Closed-but-unmerged PRs deliberately remain a failure.
+        ``head_ref`` supplies the exact local or remote-tracking ref whose tip
+        must match, while ``branch_name`` remains the GitHub branch identity.
         Best-effort throughout: any gh/git failure returns ``None``.
         """
         if include_workspace_head:
@@ -3321,7 +3217,7 @@ class GitManager:
             if url:
                 return url
 
-        refs = [branch_name]
+        refs = [_validate_rev(head_ref, field="PR head") if head_ref else branch_name]
         if include_workspace_head:
             refs.append("HEAD")
         tips = {sha for ref in refs if (sha := await self.arev_parse(checkout_path, ref))}
@@ -3420,16 +3316,29 @@ class GitManager:
         checkout_path: str,
         ancestor: str,
         descendant: str,
-    ) -> bool:
-        """Return whether *ancestor* is reachable from *descendant*."""
+        *,
+        strict: bool = False,
+    ) -> bool | None:
+        """Return reachability, or ``None`` on a probe error in strict mode."""
         try:
-            await self._arun(
-                ["merge-base", "--is-ancestor", _validate_ref(ancestor), _validate_rev(descendant)],
+            result = await self._arun_subprocess(
+                [
+                    "git",
+                    "merge-base",
+                    "--is-ancestor",
+                    _validate_ref(ancestor),
+                    _validate_rev(descendant),
+                ],
                 cwd=checkout_path,
+                timeout=self._GIT_TIMEOUT,
             )
+        except Exception:
+            return None if strict else False
+        if result.returncode == 0:
             return True
-        except GitError:
+        if result.returncode == 1:
             return False
+        return None if strict else False
 
     async def acount_commits_ahead(
         self,
@@ -3459,19 +3368,28 @@ class GitManager:
         """Return whether *branch* exists locally or in ``origin``, else ``None`` on error."""
         branch = _validate_ref(branch, field="branch")
         for ref in (f"refs/heads/{branch}", f"refs/remotes/origin/{branch}"):
-            try:
-                result = await self._arun_subprocess(
-                    ["git", "show-ref", "--verify", "--quiet", ref],
-                    cwd=checkout_path,
-                    timeout=self._GIT_TIMEOUT,
-                )
-            except Exception:
-                return None
-            if result.returncode == 0:
+            exists = await self.aref_exists(checkout_path, ref)
+            if exists is True:
                 return True
-            if result.returncode != 1:
+            if exists is None:
                 return None
         return False
+
+    async def aref_exists(self, checkout_path: str, ref: str) -> bool | None:
+        """Return whether an exact Git ref exists, or ``None`` on probe failure."""
+        try:
+            result = await self._arun_subprocess(
+                ["git", "show-ref", "--verify", "--quiet", _validate_rev(ref)],
+                cwd=checkout_path,
+                timeout=self._GIT_TIMEOUT,
+            )
+        except Exception:
+            return None
+        if result.returncode == 0:
+            return True
+        if result.returncode == 1:
+            return False
+        return None
 
     async def ahas_non_plan_changes(
         self,
