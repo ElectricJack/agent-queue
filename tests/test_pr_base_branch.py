@@ -23,6 +23,7 @@ import pytest
 from src.commands.handler import CommandHandler
 from src.config import AppConfig, DiscordConfig
 from src.database import Database
+from src.git.manager import GitError, PullRequestIdentity
 from src.models import (
     AgentProfile,
     Project,
@@ -37,6 +38,17 @@ from tests.pg_dsn import ensure_worker_postgres_dsn
 POSTGRES_DSN = ensure_worker_postgres_dsn()
 
 PR = "https://github.com/o/r/pull/288"
+#: What ``avalidate_pr_for_merge`` resolves ``PR`` to.  ``_cmd_pr_merge``
+#: pins the merge to these OIDs, so they have to be well-formed.
+PR_IDENTITY = PullRequestIdentity(
+    repository="o/r",
+    number=288,
+    base_ref="feature/pkg4-core",
+    base_oid="a" * 40,
+    head_ref="task/c5",
+    head_oid="b" * 40,
+    changed_files=1,
+)
 
 
 @pytest.fixture(params=["sqlite", "postgres"])
@@ -66,6 +78,10 @@ async def orch(request, tmp_path):
     o = Orchestrator(cfg)
     o.db = db
     o.git = MagicMock()
+    # ``pr_merge`` resolves the immutable PR identity before it merges and
+    # fails closed when it cannot; a bare MagicMock is not awaitable, so the
+    # merge under test would never be reached.
+    o.git.avalidate_pr_for_merge = AsyncMock(return_value=PR_IDENTITY)
     o.bus = MagicMock()
     o.bus.emit = AsyncMock()
     o.command_handler = CommandHandler(o, cfg)
@@ -168,6 +184,23 @@ async def test_a_failed_merge_records_nothing(orch):
     )
 
     assert result["success"] is False
+    assert await orch.db.get_task_meta("t1", "pr_base") is None
+
+
+async def test_identity_validation_failure_fails_closed_before_merging(orch):
+    """A PR whose base/head pair cannot be validated is never merged."""
+    await _task_with_pr(orch.db)
+    orch.git.avalidate_pr_for_merge = AsyncMock(side_effect=GitError("head moved"))
+    orch.git.amerge_pr = AsyncMock()
+    orch.git.apr_base_ref = AsyncMock(return_value="main")
+
+    result = await orch.command_handler.execute(
+        "pr_merge", {"project_id": "p1", "pr_url": PR}
+    )
+
+    assert result["success"] is False
+    assert result["error"] == "Could not validate immutable PR delivery: head moved"
+    orch.git.amerge_pr.assert_not_awaited()
     assert await orch.db.get_task_meta("t1", "pr_base") is None
 
 

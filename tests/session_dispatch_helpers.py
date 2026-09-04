@@ -77,6 +77,12 @@ async def make_session_orch(tmp_path) -> Orchestrator:
     orch.session_spec_builder._intelligence_classes = dict(SESSION_CLASSES)
     # Branch setup is not what these suites assert on.
     orch.git = AsyncMock()
+    # ``_prepare_workspace`` writes the managed excludes at whatever path this
+    # returns.  Left as a bare AsyncMock it answers with a MagicMock, and the
+    # write lands in a stray ``AsyncMock/`` directory under the CWD.
+    orch.git.aget_git_path = AsyncMock(
+        side_effect=lambda cwd, path: os.path.join(cwd, ".git", path)
+    )
     orch.harness_registry.upsert(
         Harness(
             id="claude",

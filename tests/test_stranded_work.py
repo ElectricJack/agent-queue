@@ -91,6 +91,24 @@ async def test_detached_head_is_rescued_too(clone, origin, git):
     assert _git(["rev-parse", "refs/heads/aq/task-2"], cwd=origin) == sha
 
 
+async def test_rescue_is_not_delivery_and_preserves_daemon_owned_paths(clone, origin, git):
+    """Recovery saves the complete commit; delivery validation happens elsewhere."""
+    _git(["checkout", "-b", "aq/task-rescue"], cwd=clone)
+    reserved = pathlib.Path(clone, ".aq-worktree.json")
+    reserved.write_text('{"workspace": "recovery evidence"}\n')
+    _git(["add", "-f", ".aq-worktree.json"], cwd=clone)
+    _git(["commit", "-m", "preserve recovery evidence"], cwd=clone)
+    sha = _git(["rev-parse", "HEAD"], cwd=clone)
+
+    result = await preserve_unpushed_work(git, clone, "task-rescue")
+
+    assert result.status == "pushed"
+    assert _git(["rev-parse", "refs/heads/aq/task-rescue"], cwd=origin) == sha
+    assert _git(["show", "aq/task-rescue:.aq-worktree.json"], cwd=origin) == (
+        '{"workspace": "recovery evidence"}'
+    )
+
+
 async def test_branch_pushed_under_another_name_counts_as_safe(clone, git):
     """Commits already on *some* remote branch are not stranded."""
     _git(["checkout", "-b", "feature/x"], cwd=clone)
