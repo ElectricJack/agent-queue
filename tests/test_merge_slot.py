@@ -743,15 +743,15 @@ class TestPhaseIntegrateLeaseGuardedPush:
 
             o.git._arun = spy_arun
 
-            # Also spy on apush_branch to catch the branch push.
+            # Also spy on apush_validated_delivery to catch the branch push.
             push_branch_calls: list[str] = []
-            orig_push = o.git.apush_branch
+            orig_push = o.git.apush_validated_delivery
 
             async def spy_push(*args, **kw):
-                push_branch_calls.append(args[1] if len(args) > 1 else kw.get("branch"))
+                push_branch_calls.append(args[3] if len(args) > 3 else kw.get("branch"))
                 return await orig_push(*args, **kw)
 
-            o.git.apush_branch = spy_push
+            o.git.apush_validated_delivery = spy_push
 
             ws = await o.db.get_workspace_for_task(task.id)
             ctx = _make_pipeline_ctx(task, agent, slot, ws.id)
@@ -874,9 +874,9 @@ class TestPhaseIntegratePushFailureRecordsReason:
             async def boom(*a, **kw):
                 raise RuntimeError("simulated push failure")
 
-            # The integrate phase pushes through ``apush_validated_delivery``,
-            # whose final step is this exact-OID push.
-            o.git.apush_validated_ref = boom
+            # The task-branch push goes through the delivery guard, which
+            # resolves the tip, inspects it, and pushes that exact OID.
+            o.git.apush_validated_delivery = boom
 
             ws = await o.db.get_workspace_for_task(task.id)
             ctx = _make_pipeline_ctx(task, agent, slot, ws.id)
@@ -904,18 +904,18 @@ class TestPhaseIntegratePushFailureRecordsReason:
             _git(["commit", "-m", "work"], cwd=slot)
 
             # Let the task-branch push succeed normally, but make _arun
-            # raise a non-GitError when pushing the default branch ("main")
-            # so we exercise the broadened except-Exception path in the
-            # default-branch push block.  ``apush_validated_ref`` pushes an
-            # exact OID as ``<oid>:refs/heads/<branch>``.
+            # raise a non-GitError when pushing the default branch so we
+            # exercise the broadened except-Exception path in the
+            # default-branch push block.  Both pushes are now object-ID
+            # refspecs (``<sha>:refs/heads/<branch>``), so match the
+            # destination ref rather than the bare branch name.
             orig_arun = o.git._arun
             default_refspec_suffix = ":refs/heads/main"
 
             async def arun_boom(args, cwd=None, **kw):
-                if (
-                    args
-                    and args[0] == "push"
-                    and any(str(a).endswith(default_refspec_suffix) for a in args)
+                if args and args[0] == "push" and any(
+                    isinstance(a, str) and a.endswith(default_refspec_suffix)
+                    for a in args
                 ):
                     raise RuntimeError("simulated network failure on default push")
                 return await orig_arun(args, cwd=cwd, **kw)

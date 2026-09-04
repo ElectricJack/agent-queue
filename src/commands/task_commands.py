@@ -89,10 +89,6 @@ def _normalize_label_list(raw) -> list[str]:
 
 
 _DELIVERABLE_KINDS = frozenset({"file", "test", "command", "flag", "registration"})
-# Kinds whose target is resolved as a path under the worktree at close time
-# (``src.deliverables._is_met``). Anything that is not a single repo-relative
-# file path can never evaluate true, so it is refused when declared.
-_PATH_DELIVERABLE_KINDS = frozenset({"file", "test"})
 
 
 def _path_target_error(target: str) -> str | None:
@@ -115,10 +111,9 @@ def normalize_deliverables(raw) -> tuple[list[dict[str, str]], str | None]:
     ``id``/``kind``/``target`` shape works for direct, batch, and graph task
     creation without coupling those surfaces to each other.
 
-    A ``file`` or ``test`` target must be one repo-relative file path: the
-    close-time check resolves it under the worktree, so a whole ``aq test ...``
-    command as the target would be unsatisfiable and force a false
-    ``--deliverable-unmet`` waiver on a delivered item.
+    A ``file`` target must be one repo-relative file path. A ``test`` target
+    may instead be a command line (which close-time evidence matches against
+    ``--test``), but a path-shaped test target must also be repo-relative.
     """
     if raw is None:
         return [], None
@@ -142,11 +137,16 @@ def normalize_deliverables(raw) -> tuple[list[dict[str, str]], str | None]:
             )
         if not target:
             return [], f"deliverables[{index}].target is required"
-        if kind in _PATH_DELIVERABLE_KINDS and (why := _path_target_error(target)):
+        path_only = kind == "file" or (kind == "test" and not any(ch.isspace() for ch in target))
+        if path_only and (why := _path_target_error(target)):
+            shape = (
+                "one repo-relative file path"
+                if kind == "file"
+                else "one repo-relative file path or a test command line"
+            )
             return [], (
-                f"deliverables[{index}].target {why}; a [{kind}] target must be one "
-                "repo-relative file path such as 'tests/test_x.py' (declare one item "
-                "per path and record the run with --test at close)"
+                f"deliverables[{index}].target {why}; a [{kind}] target must be {shape} "
+                "such as 'tests/test_x.py'"
             )
         seen.add(item_id)
         result.append({"id": item_id, "kind": kind, "target": target})
@@ -195,6 +195,10 @@ def _check_capability_escalation(parent, child) -> str:
 #: a race to a concurrent reparent reads exactly like one that never had the
 #: scope to begin with.
 _DISCOVERED_FROM_SCOPE_ERROR = "discovered_from must be the held task or one of its descendants"
+_REPARENT_SCOPE_ERROR = (
+    "a worker may only reparent an unclaimed task it filed from the task it holds "
+    "(created by a session, under the held task or discovered-from it)"
+)
 _PARENT_SCOPE_ERROR = (
     "parent must be the held task, one of its descendants, or the held task's own parent"
 )
@@ -1002,7 +1006,21 @@ class TaskCommandsMixin:
         return {"success": True, **progress}
 
     async def _cmd_reparent_task(self, args: dict) -> dict:
-        """Move a task under another container, or to root.  Backs ``aq task reparent``."""
+        """Move a task under another container, or to root.  Backs ``aq task reparent``.
+
+        On the worker surface (a non-elevated session scope) the command is
+        the *repair* half of worker filing (swarm-work-model §12): a worker
+        that parented a finding under the task it holds — which then blocks
+        its own close with ``hierarchy.open_children`` — moves it beside
+        itself or to the project root instead of re-filing a duplicate. The
+        worker may move only a task it filed (``created_by_kind='session'``)
+        whose provenance leads back to the held task, that nobody has
+        claimed yet, and only to a parent the filing path would have
+        accepted: the held task, one of its descendants, its immediate
+        parent, or root. A root move attaches the routing gate a root
+        filing is born with. All of it is decided under the same locks the
+        filing path takes, so a concurrent hierarchy move cannot widen it.
+        """
         task_id = args.get("task_id")
         if not task_id:
             return {"error": "task_id is required"}
@@ -1013,9 +1031,70 @@ class TaskCommandsMixin:
             return {"error": f"Task '{task_id}' not found"}
         new_parent = None if args.get("root") else args["parent_id"]
         old_parent = task.parent_task_id
+        gate_id: str | None = None
+        scope = self._current_scope or {}
+        worker = scope.get("kind") == "session" and not scope.get("elevated")
+        held_id: str | None = None
+        if worker:
+            filing_session = await self.db.get_session(scope.get("session_id") or "")
+            if filing_session is None:
+                return {"success": False, "error": "no session in scope"}
+            if not filing_session.task_id:
+                return {
+                    "success": False,
+                    "code": "idle_session_cannot_file",
+                    "error": "idle sessions cannot reparent work; claim a task first",
+                }
+            held_id = filing_session.task_id
+            if task.project_id != filing_session.project_id:
+                return {
+                    "success": False,
+                    "code": "hierarchy.reparent_out_of_scope",
+                    "error": _REPARENT_SCOPE_ERROR,
+                }
         try:
-            async with self.db._engine.begin() as conn:
+            async with self.db.immediate() as conn:
+                provenance: str | None = None
+                if worker and held_id is not None:
+                    refusal, provenance = await self._worker_reparent_refusal(
+                        conn, held_id=held_id, task_id=task_id, new_parent=new_parent
+                    )
+                    if refusal is not None:
+                        return refusal
                 result = await self.db.set_parent(task_id, new_parent, conn=conn)
+                if provenance is not None and provenance != new_parent:
+                    # The filing's only provenance was the parent-child edge
+                    # it just lost (a filing under the held task writes no
+                    # separate ``discovered-from``, §12). Keep the edge back
+                    # to the work that surfaced it so placement and
+                    # provenance never disagree — and so a later move is
+                    # still recognisably this worker's filing.
+                    result.flipped |= (
+                        await self.db.add_dependency(
+                            task_id,
+                            provenance,
+                            DepType.DISCOVERED_FROM.value,
+                            description=f"filed under {provenance}, moved by its filer",
+                            conn=conn,
+                        )
+                        or set()
+                    )
+                if worker and new_parent is None:
+                    # A root filing is born with a routing gate (§12) so it
+                    # never runs before triage; a filing moved to root gets
+                    # the same, unless it already carries an open one.
+                    gate_id, _created, gate_flipped = await self.db._create_gate_on(
+                        conn,
+                        task.project_id,
+                        "routing",
+                        f"Route: {task.title}",
+                        question="",
+                        await_id=None,
+                        timeout_at=None,
+                        waiter_task_ids=[task_id],
+                        caller_owns_conn=True,
+                    )
+                    result.flipped |= gate_flipped
         except HierarchyError as exc:
             return {"error": f"hierarchy.{exc.code}: {exc.detail}", "code": f"hierarchy.{exc.code}"}
         await self.db.log_blocked_flips(result.flipped)
@@ -1034,12 +1113,74 @@ class TaskCommandsMixin:
                 e,
                 exc_info=True,
             )
-        return {
+        out = {
             "success": True,
             "task_id": task_id,
             "old_parent": old_parent,
             "new_parent": new_parent,
         }
+        if gate_id is not None:
+            out["gate_id"] = gate_id
+        return out
+
+    async def _worker_reparent_refusal(
+        self, conn, *, held_id: str, task_id: str, new_parent: str | None
+    ) -> tuple[dict | None, str | None]:
+        """Decide a worker reparent under the filing locks.
+
+        Returns ``(refusal, provenance)``: ``refusal`` is the error dict when
+        the move leaves the filing scope (``None`` when allowed), and
+        ``provenance`` is the held-subtree parent the task is about to lose
+        as its *only* provenance — the caller re-records it as a
+        ``discovered-from`` edge — or ``None`` when a ``discovered-from``
+        edge into the held subtree already exists.
+
+        Runs inside the caller's ``immediate()`` transaction, after
+        ``lock_filing_scope`` has taken the project hierarchy lock and the
+        rows the decision depends on, mirroring ``_create_worker_filed_task``.
+        """
+        locked = await self.db.lock_filing_scope(
+            conn, [held_id, task_id] + ([new_parent] if new_parent else [])
+        )
+        if held_id not in locked:
+            return {
+                "success": False,
+                "code": "hierarchy.reparent_out_of_scope",
+                "error": f"held task '{held_id}' no longer exists",
+            }, None
+        if task_id not in locked:
+            return {"error": f"Task '{task_id}' not found", "code": "hierarchy.not_found"}, None
+        held_parent_id = locked[held_id]
+        allowed = {held_id} | set(await self.db.subtree_ids(held_id, conn=conn))
+        moved = await self.db.get_task(task_id)
+        origins = set(await self.db.discovered_from_origins(task_id, conn=conn)) & allowed
+        current_parent = locked[task_id]
+        worker_filed = (
+            moved is not None
+            and moved.created_by_kind == "session"
+            and (current_parent in allowed or bool(origins))
+        )
+        claimed = moved is None or moved.status in (
+            TaskStatus.IN_PROGRESS,
+            TaskStatus.COMPLETED,
+            TaskStatus.FAILED,
+        ) or moved.assigned_agent_id is not None
+        if not worker_filed or claimed or task_id == held_id:
+            return {
+                "success": False,
+                "code": "hierarchy.reparent_out_of_scope",
+                "error": _REPARENT_SCOPE_ERROR,
+            }, None
+        if new_parent is not None and new_parent not in (
+            allowed | ({held_parent_id} if held_parent_id else set())
+        ):
+            return {
+                "success": False,
+                "code": "hierarchy.parent_out_of_scope",
+                "error": _PARENT_SCOPE_ERROR,
+            }, None
+        provenance = None if origins else current_parent
+        return None, provenance
 
     async def _create_worker_filed_task(
         self,

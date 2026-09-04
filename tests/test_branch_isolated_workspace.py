@@ -40,6 +40,7 @@ from src.models import (
     WorkspaceMode,
 )
 from src.orchestrator import Orchestrator
+from tests.git_mock_helpers import stub_repo_root_identity
 
 
 # ---------------------------------------------------------------------------
@@ -276,12 +277,15 @@ class TestTwoAgentsAcquireBranchIsolated:
         mock_git.avalidate_checkout = AsyncMock(return_value=True)
         mock_git.ahas_remote = AsyncMock(return_value=True)
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
-        mock_git._arun = AsyncMock(return_value="")
+        stub_repo_root_identity(mock_git)
         mock_git.aget_git_path = AsyncMock(
             side_effect=lambda checkout, path: os.path.join(checkout, ".git", path)
         )
         mock_git.aforce_clean_workspace = AsyncMock(return_value=True)
         mock_git.make_branch_name = GitManager.make_branch_name
+        mock_git.aget_git_path = AsyncMock(
+            return_value=os.path.join(clone, ".git", "info", "exclude")
+        )
         mock_git.slugify = GitManager.slugify
         mock_git.acreate_worktree = AsyncMock()
         mock_git.aremove_worktree = AsyncMock()
@@ -763,12 +767,15 @@ class TestThreeOrMoreAgentsConcurrent:
         mock_git.avalidate_checkout = AsyncMock(return_value=True)
         mock_git.ahas_remote = AsyncMock(return_value=True)
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
-        mock_git._arun = AsyncMock(return_value="")
+        stub_repo_root_identity(mock_git)
         mock_git.aget_git_path = AsyncMock(
             side_effect=lambda checkout, path: os.path.join(checkout, ".git", path)
         )
         mock_git.aforce_clean_workspace = AsyncMock(return_value=True)
         mock_git.make_branch_name = GitManager.make_branch_name
+        mock_git.aget_git_path = AsyncMock(
+            return_value=os.path.join(clone, ".git", "info", "exclude")
+        )
         mock_git.slugify = GitManager.slugify
         mock_git.acreate_worktree = AsyncMock()
         mock_git.aremove_worktree = AsyncMock()
@@ -1223,12 +1230,15 @@ class TestGitMutexRegistration:
         mock_git.avalidate_checkout = AsyncMock(return_value=True)
         mock_git.ahas_remote = AsyncMock(return_value=True)
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
-        mock_git._arun = AsyncMock(return_value="")
+        stub_repo_root_identity(mock_git)
         mock_git.aget_git_path = AsyncMock(
             side_effect=lambda checkout, path: os.path.join(checkout, ".git", path)
         )
         mock_git.aforce_clean_workspace = AsyncMock(return_value=True)
         mock_git.make_branch_name = GitManager.make_branch_name
+        mock_git.aget_git_path = AsyncMock(
+            return_value=os.path.join(clone, ".git", "info", "exclude")
+        )
         mock_git.set_lock_provider = MagicMock()
         # ``_prepare_workspace`` installs the managed ``info/exclude``
         # block and fails closed when Git's path for it cannot be
@@ -1285,12 +1295,15 @@ class TestGitMutexRegistration:
         mock_git.avalidate_checkout = AsyncMock(return_value=True)
         mock_git.ahas_remote = AsyncMock(return_value=True)
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
-        mock_git._arun = AsyncMock(return_value="")
+        stub_repo_root_identity(mock_git)
         mock_git.aget_git_path = AsyncMock(
             side_effect=lambda checkout, path: os.path.join(checkout, ".git", path)
         )
         mock_git.aforce_clean_workspace = AsyncMock(return_value=True)
         mock_git.make_branch_name = GitManager.make_branch_name
+        mock_git.aget_git_path = AsyncMock(
+            return_value=os.path.join(clone, ".git", "info", "exclude")
+        )
         mock_git.set_lock_provider = MagicMock()
         # ``_prepare_workspace`` installs the managed ``info/exclude``
         # block and fails closed when Git's path for it cannot be

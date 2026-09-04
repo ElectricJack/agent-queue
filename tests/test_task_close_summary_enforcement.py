@@ -463,63 +463,49 @@ async def test_close_records_an_explicit_reason_for_an_unmet_deliverable(handler
 
 
 @pytest.mark.asyncio
-async def test_create_rejects_a_test_deliverable_whose_target_is_a_command(handler, db):
-    """A [test] item is checked as a path at close, so a command-shaped target is never met."""
-    await db.create_project(Project(id="p", name="P"))
-    result = await handler.execute(
-        "create_task",
-        {
-            "project_id": "p",
-            "title": "t",
-            "deliverables": [
-                {
-                    "id": "compat-tests",
-                    "kind": "test",
-                    "target": "aq test tests/test_a.py tests/test_b.py",
-                }
-            ],
-        },
-    )
-
-    assert "created" not in result
-    assert "one repo-relative file path" in result["error"]
-
-
-@pytest.mark.asyncio
-async def test_worker_who_recorded_the_declared_test_command_closes_pass_without_waiving(
+async def test_close_accepts_test_and_command_deliverables_declared_as_shell_commands(
     handler, db
 ):
-    """The declared shape (one path per item) is satisfiable by recording the run command."""
+    """A test suite declared as its ``aq test`` command line and a lint step
+    declared as ``ruff check <changed files>`` are met by the recorded
+    ``--test`` / ``--command`` values (regression for azure-current-84)."""
     await db.create_project(Project(id="p", name="P"))
+    suite = "aq test tests/test_deliverables.py tests/test_task_close_summary_enforcement.py"
     created = await handler.execute(
         "create_task",
         {
             "project_id": "p",
             "title": "t",
             "deliverables": [
-                {"id": "close-tests", "kind": "test", "target": "tests/test_deliverables.py"},
-                {
-                    "id": "enforcement-tests",
-                    "kind": "test",
-                    "target": "tests/test_task_close_summary_enforcement.py",
-                },
+                {"id": "focused-suite", "kind": "test", "target": suite},
+                {"id": "ruff", "kind": "command", "target": "ruff check <changed files>"},
             ],
         },
     )
     tid = created["created"]
     await db.transition_task(tid, TaskStatus.IN_PROGRESS, context="test")
 
+    refused = await handler.execute(
+        "task_close", {"task_id": tid, "outcome": "pass", "tests": [suite]}
+    )
+    assert refused["success"] is False
+    assert refused["code"] == "deliverables.unmet"
+    assert [item["id"] for item in refused["unmet_deliverables"]] == ["ruff"]
+
     result = await handler.execute(
         "task_close",
         {
             "task_id": tid,
             "outcome": "pass",
-            "tests": [
-                "aq test tests/test_deliverables.py tests/test_task_close_summary_enforcement.py"
-            ],
+            "tests": [suite],
+            "commands": ["ruff check src/deliverables.py"],
         },
     )
 
     assert result["success"] is True, result
     completion = await db.get_task_completion(tid)
-    assert [item["met"] for item in completion.deliverables] == [True, True]
+    assert completion is not None
+    assert [(item["id"], item["met"]) for item in completion.deliverables] == [
+        ("focused-suite", True),
+        ("ruff", True),
+    ]

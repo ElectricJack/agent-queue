@@ -37,6 +37,10 @@ class CreateTaskRequest:
             have access to when working on this task. These are typically paths to Discord attachment images that were
             downloaded locally. The agent will be told to read these files using the Read tool.
         deliverables (list[Any] | None | Unset): Plan-derived implementation contract checked before a passing close.
+            Target shapes: file -> a path under the worktree; test -> a test module path, or the command line that runs the
+            suites (met by a matching recorded --test); command -> a command line (met by a matching recorded
+            --command/--test; '<placeholder>' matches any arguments) or a single identifier found in the repo;
+            flag/registration -> an identifier found in the repo.
         skip_verification (bool | Unset): If true, skip git verification on task completion. Use for
             investigation/research tasks that don't produce code changes requiring git cleanup. Default: False.
         affinity_agent_id (None | str | Unset): Preferred agent ID for context continuity. The scheduler will prefer

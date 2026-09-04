@@ -231,7 +231,7 @@ Removes a linked worktree.
 - If that fails (e.g. the worktree has untracked or modified files), retries with `git worktree remove --force <worktree_path>`.
 - Raises `GitError` only if the force removal also fails.
 
-### `get_git_path(checkout_path, path)`
+### `aget_git_path(checkout_path, path)`
 
 Resolves a Git-internal path such as `info/exclude` or `hooks` to its exact
 absolute filesystem location. It first runs
@@ -241,12 +241,15 @@ Git versions. Callers must use this API instead of assuming
 `<checkout>/.git/<path>`: that assumption is false for separate Git dirs and
 linked worktrees.
 
-Every workspace handoff—new slot, resumed slot, adopted slot, exclusive task
-workspace, and pool session—installs and verifies the managed `info/exclude`
-block through this resolved path. `False` from the block writer means the
-exact block was already correct; resolution, write, read-back, or verification
-failures raise and abort or roll back the handoff. `workspace doctor` reports
-an unverifiable exact path separately from a missing/drifted block.
+Every Git workspace handoff—new, resumed, adopted, legacy worktree, exclusive
+task workspace, and pool session—installs and verifies the managed
+`info/exclude` block through this resolved path. Explicit non-Git workspace
+kinds bypass Git setup. A configured Git workspace must be the repository root;
+linked paths into a repository subdirectory are rejected because the managed
+patterns are root-relative. Resolution, write, read-back, or verification
+failures abort or roll back the handoff. `workspace doctor` checks Git bases
+even when worktree slots are disabled and reports an unverifiable exact path
+separately from a missing/drifted block.
 
 ---
 
@@ -254,52 +257,68 @@ an unverifiable exact path separately from a missing/drifted block.
 
 ### `commit_all(checkout_path, message, *, exclude_plans=True, no_verify=False)`
 
-Stages task changes and creates a commit. Daemon-owned `.aq/`, `.aq-worktree.json`,
-and `.codex/` paths are excluded and rejected. Returns `True` if a commit was
-made. `False` means no legitimate staged task change remains after sanitizing
-the index; excluded daemon or plan paths may still be modified in the working
-tree. Async counterpart: `acommit_all`.
+Stages all changes and creates a commit. Returns `True` if a commit was made,
+`False` if nothing remains staged. Async counterpart: `acommit_all`.
 
-1. Clears any pre-staged daemon bookkeeping, then runs `git add -A` with
-   exclude pathspecs for `.aq/`, `.aq-worktree.json`, and `.codex/`.
+1. Runs `git add -A`.
 2. **Unstages plan files** — iterates over `_PLAN_FILE_EXCLUDES` (`.claude/plan.md`, `.claude/plans/`, `plan.md`) and runs `git reset HEAD -- <pattern>` for each. Errors are silently ignored (pattern may not be staged or may not exist). This prevents plan files from being committed to target repos.
-3. Refuses to proceed if any reserved path remains cached, then runs
-   `git diff --cached --quiet` directly via `subprocess.run` (sync) or
-   `_arun_subprocess` (async). If no legitimate change remains, returns
-   `False` before any hook is invoked.
-4. Otherwise invokes one normal `git commit`. With `no_verify=False`, Git
-   drives its native `pre-commit`, `prepare-commit-msg`, `commit-msg`, and
-   `post-commit` lifecycle exactly once. A temporary hooks overlay delegates
-   each installed executable hook once and restores only the reserved index
-   entries to `HEAD` after every hook boundary, preventing a hook from adding
-   daemon state to the actual commit.
-5. A `finally` cleanup repeats that reserved-only index restoration and
-   verification on success or failure. Legitimate staged changes and all
-   working-tree content are preserved when a hook rejects the commit.
-6. With `no_verify=True`, an empty hooks overlay plus Git's `--no-verify`
-   makes auto-remediation fully hook-free, including hooks Git does not
-   suppress with `--no-verify` alone.
-7. Returns `True` after a successful commit; raises `GitError` on commit or
-   reserved-index cleanup failure.
+3. Runs `git diff --cached --quiet` directly via `subprocess.run` (sync) or
+   `_arun_subprocess` (async). If no change remains, returns `False`.
+4. Otherwise invokes normal `git commit -m <message>`. Git owns its native hook
+   lifecycle. `no_verify=True` adds Git's ordinary `--no-verify` flag.
+5. Returns `True` after a successful commit and raises `GitError` on failure.
+
+Task-close auto-remediation adds one scoped safety check: after staging, it
+inspects the cached paths and refuses the auto-commit if `.aq/**`,
+`.aq-worktree.json`, or `.codex/**` is present. This does not alter the public
+`commit_all` hook or staging contract.
 
 ### Reserved delivery diff gate
 
-Commit-time sealing prevents new daemon state from entering commits made by
-`commit_all`, but it cannot repair task branches that already contain a
-forced-added or previously tracked reserved path. Before any automatic merge,
-push, integration, or PR acceptance, the orchestrator diffs the delivery tip
+Managed excludes and the scoped remediation check protect newly staged work,
+but cannot repair task branches that already contain a forced-added or
+previously tracked reserved path. Before any automatic merge, push,
+integration, no-work acceptance, or PR acceptance, the orchestrator diffs the delivery tip
 from its merge-base with `origin/<default>` (or the local default when no
 remote exists) and rejects changed `.aq/**`, `.aq-worktree.json`, or
 `.codex/**` paths. A reserved path merely tracked and unchanged on the base is
-not rejected. Git errors are unknown—not clean—and stop delivery. No-code and
-`skip_verification` shortcuts cannot bypass this invariant.
+not rejected. The diff runs with `--no-renames` so a rename is reported as a
+deletion of its source and an addition of its destination: moving
+`.aq/claim.json` to an ordinary path is a deletion of daemon state and is
+rejected, whatever `diff.renames` the repository configures. The PR delivery
+diff (below) is the same `--no-renames` name-only diff, so it too checks a
+renamed reserved path under its reserved name. Git errors are unknown—not
+clean—and stop delivery. No-code and `skip_verification` shortcuts cannot
+bypass this invariant.
 
 ### Immutable PR merge and exact-tip push guard
 
-`aq pr merge` first resolves the PR's base/head names and object IDs, inspects
-the complete paginated PR-files (merge-base) diff, and resolves the identity a
-second time. Any unreadable or malformed identity/diff, changed identity, or
-changed `.aq/**`, `.aq-worktree.json`, or `.codex/**` path fails closed.
+`aq pr merge` first resolves the PR's base/head names, object IDs and
+GitHub's own changed-file count in one snapshot, derives the delivery diff
+from those pinned OIDs, and resolves the identity a second time. Any
+unreadable or malformed identity/diff, changed identity, or changed `.aq/**`,
+`.aq-worktree.json`, or `.codex/**` path fails closed.
+
+The delivery diff is never taken from GitHub's "List pull request files"
+endpoint: that listing is addressed by PR *number*, so a head force-pushed
+A → B → A while the paginated listing ran was inspected as B's diff yet merged
+as A — both identity reads saw A, and when B changed as many files as A the
+pinned count agreed too (gate stark-impact-60.10, M2). Instead `head_oid` and
+`base_oid` are fetched *by OID* — content-addressed, so the fetch yields
+exactly those commits or fails — into a daemon-owned bare repository under
+`<data_dir>/pr-diff-cache/<host>/<owner>/<repo>.git` (created on first use;
+`--filter=blob:none`, so only commits and trees are ever downloaded and the
+first fetch of a repository is a few megabytes), both objects are proven
+present with `rev-parse --verify`, and the diff is
+`git diff-tree -r --no-renames --name-only -z <merge-base(base_oid, head_oid)> <head_oid>`.
+That is the same merge-base diff GitHub lists, with no 3000-entry cap and no
+reliance on the changed-file count. `pr_merge` runs in the daemon data dir,
+which is not a checkout — that is why the PR is not fetched into a project
+clone's `origin` — and the fetch authenticates through `gh auth
+git-credential`, the login `gh api` already needs, so no git credential helper
+of the operator's is required or consulted. Fetches into one cache are
+serialized within the daemon. A repository name whose components are `.` or
+`..` is an incomplete identity (it would escape the cache).
 The eventual `gh pr merge` carries `--match-head-commit <head-oid>` and also
 checks the expected head OID and base branch name immediately before invoking
 `gh`; a changed PR can therefore never turn a review of one head into a merge
@@ -311,9 +330,10 @@ The PR identity that is pinned is `(repository, number, base branch, head
 branch, head OID)`. The base branch's *tip* is read and recorded but never
 compared: it moves on every push to the default branch, so under concurrent
 delivery it routinely differs between two reads seconds apart for reasons
-unrelated to the PR. Nothing the merge relies on depends on it — the PR-files
-diff is a merge-base diff, so base movement does not change what the PR
-introduces, and `gh pr merge` merges into the current base tip regardless.
+unrelated to the PR. Nothing the merge relies on depends on it — the delivery
+diff runs from the merge-base of that tip and the head, so base movement does
+not change what the PR introduces, and `gh pr merge` merges into the current
+base tip regardless.
 Pinning it made `pr_merge` refuse with "PR identity changed" whenever another
 agent's PR landed first, with nothing in the error to tell the final-reviewer
 that the PR itself was untouched (exit gate stark-impact-60.6, M4). The two
@@ -678,7 +698,6 @@ Every public method on `GitManager` has an async counterpart prefixed with `a`. 
 | `remove_worktree` | `aremove_worktree` |
 | `init_repo` | `ainit_repo` |
 | `get_diff` | `aget_diff` |
-| `get_git_path` | `aget_git_path` |
 | `get_changed_files` | `aget_changed_files` |
 | `commit_all` | `acommit_all` |
 | `create_pr` | `acreate_pr` |
@@ -754,15 +773,14 @@ from a reasonably recent version of the codebase.
 
 **Maintained by:** `prepare_for_task` (fetch + pull/reset on default branch).
 
-### P4. Sealed Commit and Delivery
+### P4. Scoped Auto-Remediation and Delivery Guard
 
-When auto-remediation commits task work, `commit_all` uses an
-add-all-then-check-staged pattern, native hooks, and reserved-only cleanup at
-every hook boundary. The delivery gate separately inspects already-committed
-changes before merge, push, integration, or PR acceptance. Together these
-prevent daemon bookkeeping from entering delivered project history.
+Task-close auto-remediation aborts before committing if its staged set contains
+a reserved daemon path. The delivery gate separately inspects already-committed
+changes before merge, push, integration, no-work acceptance, or PR acceptance.
+Ordinary `commit_all` and `acommit_all` retain Git's native hook lifecycle.
 
-**Maintained by:** `commit_all`, `acommit_all`, and the orchestrator's delivery
+**Maintained by:** task-close remediation and the orchestrator's delivery
 verification/integration phases.
 
 ### P5. Graceful Degradation on Git Errors

@@ -68,11 +68,8 @@ import json
 import logging
 import os
 import re
-import shlex
 import subprocess
-import tempfile
 from collections.abc import Callable
-from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -95,11 +92,12 @@ class PullRequestIdentity:
     of the base branch at the moment of the read, so it moves on every push
     to the default branch — with several agents delivering concurrently it
     differs between two reads seconds apart for reasons that have nothing to
-    do with this PR.  Nothing the merge relies on depends on it: the PR-files
-    diff inspected before merging is GitHub's merge-base diff, and
-    ``gh pr merge`` merges into whatever the base tip is at that moment.  The
-    base *branch name* is pinned, because a PR retargeted onto another branch
-    lands its commits somewhere the review never looked at.
+    do with this PR.  Nothing the merge relies on depends on it: the delivery
+    diff inspected before merging runs from the merge-base of that tip and
+    the head, which base movement does not change, and ``gh pr merge``
+    merges into whatever the base tip is at that moment.  The base *branch
+    name* is pinned, because a PR retargeted onto another branch lands its
+    commits somewhere the review never looked at.
     """
 
     repository: str
@@ -108,11 +106,36 @@ class PullRequestIdentity:
     base_oid: str
     head_ref: str
     head_oid: str
+    #: GitHub's own count of files the PR changes, read in the same snapshot
+    #: as the OIDs.  It is pinned as one more fact that must agree between
+    #: the two identity reads; the delivery diff itself is derived from the
+    #: OIDs and does not depend on it.
+    changed_files: int
+    #: The GitHub host serving this PR, preserved for the pinned-OID fetch.
+    host: str = "github.com"
 
     @property
-    def pin(self) -> tuple[str, int, str, str, str]:
-        """The facts that fix *what* a review of this PR reviewed."""
-        return (self.repository, self.number, self.base_ref, self.head_ref, self.head_oid)
+    def clone_url(self) -> str:
+        """The HTTPS URL ``git fetch`` reads the pinned commits from."""
+        return f"https://{self.host}/{self.repository}.git"
+
+    @property
+    def pin(self) -> tuple[str, int, str, str, str, int]:
+        """The facts that fix *what* a review of this PR reviewed.
+
+        The changed-file count belongs here: it is a property of the head
+        being merged, and a count that differs between the two identity
+        snapshots means the listing inspected in between may not be the
+        PR's diff any more.
+        """
+        return (
+            self.repository,
+            self.number,
+            self.base_ref,
+            self.head_ref,
+            self.head_oid,
+            self.changed_files,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -133,6 +156,25 @@ _PR_URL_RE = re.compile(
     r"^https://(?P<host>[A-Za-z0-9.-]+)/(?P<owner>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+)"
     r"/pull/(?P<number>[1-9][0-9]*)/?(?:[?#].*)?$"
 )
+
+
+def _pr_changed_file_count(data: dict) -> int:
+    """GitHub's changed-file count from the REST ``pulls/{n}`` snapshot, or raise.
+
+    The count comes from the same response as the OIDs, so it is one more
+    fact of that snapshot the second identity read must agree with.  A head
+    that moved and came back with a different number of changed files is
+    caught here even before the OIDs are compared.  Only the REST spelling
+    ``changed_files`` is read —
+    the identity never comes from ``gh pr view --json`` (whose field is
+    ``changedFiles``), so accepting it would only widen the guard.  Anything
+    but a non-negative integer (``bool`` is an ``int`` subclass and is not a
+    count) is an incomplete identity and fails closed.
+    """
+    count = data.get("changed_files")
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        raise GitError("could not resolve complete PR identity")
+    return count
 
 
 def _validate_ref(name: str, *, field: str = "branch") -> str:
@@ -249,6 +291,16 @@ class GitManager:
     # on large repos so we allow a generous window, but never infinite.
     _GIT_TIMEOUT = 120
 
+    # The first fetch into a PR delivery-diff cache pulls a repository's
+    # whole commit and tree history (no blobs); every later one is
+    # incremental.  Ten minutes covers a large repository once.
+    _PR_DIFF_FETCH_TIMEOUT = 600
+
+    #: Directory, under the directory ``pr_merge`` runs in, holding one
+    #: blob-less bare repository per ``<host>/<owner>/<repo>`` from which PR
+    #: delivery diffs are derived.
+    PR_DIFF_CACHE_DIRNAME = "pr-diff-cache"
+
     # Git subcommands that modify shared repository state (pack files,
     # object store) and must be serialized when multiple worktrees share
     # the same underlying repository.  ``pull`` includes an implicit
@@ -260,6 +312,10 @@ class GitManager:
         # across branch-isolated worktrees.  When set, ``_arun`` acquires
         # the returned lock before executing serialized subcommands.
         self._lock_provider: Callable[[str], asyncio.Lock | None] | None = None
+        # One lock per PR delivery-diff cache (see ``_apr_delivery_diff``),
+        # so two merges of PRs in the same repository never fetch into the
+        # same bare cache at once.
+        self._pr_diff_cache_locks: dict[str, asyncio.Lock] = {}
 
     def set_lock_provider(
         self,
@@ -649,12 +705,20 @@ class GitManager:
         #    if a previous mid-chain sync already pushed + rebased, so fall
         #    back to --force-with-lease which is safe for agent-owned branches.
         try:
-            self._run(["push", "origin", branch_name], cwd=checkout_path)
+            self.push_validated_delivery(
+                checkout_path,
+                f"origin/{default_branch}",
+                branch_name,
+                branch_name,
+            )
         except GitError:
             try:
-                self._run(
-                    ["push", "--force-with-lease", "origin", branch_name],
-                    cwd=checkout_path,
+                self.push_validated_delivery(
+                    checkout_path,
+                    f"origin/{default_branch}",
+                    branch_name,
+                    branch_name,
+                    force_with_lease=True,
                 )
             except GitError:
                 pass  # Push failed — continue with rebase anyway
@@ -678,9 +742,12 @@ class GitManager:
 
         # 4. Force-push the rebased branch so remote matches local.
         try:
-            self._run(
-                ["push", "--force-with-lease", "origin", branch_name],
-                cwd=checkout_path,
+            self.push_validated_delivery(
+                checkout_path,
+                f"origin/{default_branch}",
+                "HEAD",
+                branch_name,
+                force_with_lease=True,
             )
         except GitError:
             pass  # Rebased locally but push failed — next subtask will try
@@ -711,7 +778,7 @@ class GitManager:
         *,
         force_with_lease: bool = False,
     ) -> None:
-        """Push a local branch to the ``origin`` remote.
+        """Safely publish a local branch relative to the repository default.
 
         When *force_with_lease* is ``True``, uses ``--force-with-lease`` so the
         push is safe for retries: if the branch was already pushed in a
@@ -719,17 +786,108 @@ class GitManager:
         succeed as long as no *other* user pushed to the same branch in the
         meantime.  This resolves **Gap G5** for PR branch pushes.
 
-        Plain push (default) is used for the ``sync_and_merge`` flow where
-        only the default branch is pushed and force-push is never appropriate.
+        The source is resolved once (a plain branch name as
+        ``refs/heads/<name>``, so a same-named tag can neither shadow nor
+        block it) and its merge-base diff is checked for daemon-owned paths
+        before the exact object ID is pushed. This keeps the retained
+        synchronous API safe for task-delivery use.
         """
-        _validate_ref(branch_name)
-        # An explicit refs/heads/ source: a bare name is looked up in git's
-        # ref order, where a same-named tag shadows (or, on push, collides
-        # with) the branch.
-        args = ["push", "origin", f"refs/heads/{branch_name}:refs/heads/{branch_name}"]
+        default_branch = self.get_default_branch(checkout_path)
+        self.push_validated_delivery(
+            checkout_path,
+            f"origin/{default_branch}",
+            branch_name,
+            branch_name,
+            force_with_lease=force_with_lease,
+        )
+
+    def _resolve_delivery_tip(self, checkout_path: str, source: str) -> str:
+        """Synchronous twin of :meth:`_aresolve_delivery_tip`.
+
+        A plain branch name is resolved as ``refs/heads/<name>`` so a
+        same-named tag cannot shadow it (see :func:`_delivery_source_rev`);
+        a missing branch fails closed rather than falling back to whatever
+        else carries the name.
+        """
+        rev = _delivery_source_rev(source)
+        try:
+            tip = self._run(["rev-parse", "--verify", rev], cwd=checkout_path).strip()
+        except GitError as e:
+            raise GitError(f"could not resolve delivery source {rev}: {e}") from e
+        if not _OID_RE.fullmatch(tip.lower()):
+            raise GitError(f"could not resolve immutable delivery tip for {source}")
+        return tip
+
+    def push_validated_delivery(
+        self,
+        checkout_path: str,
+        base_ref: str,
+        source_ref: str,
+        branch: str,
+        *,
+        force_with_lease: bool = False,
+    ) -> str:
+        """Synchronously resolve once, validate, and push an exact delivery OID.
+
+        The synchronous twin of :meth:`apush_validated_delivery` for the
+        retained sync delivery paths (:meth:`push_branch`,
+        :meth:`mid_chain_sync`, :meth:`sync_and_merge`).  ``force_with_lease``
+        only changes how the remote ref may move; it cannot bypass the
+        reserved-path check.
+        """
+        source_ref = _validate_rev(source_ref, field="delivery source")
+        base_ref = _validate_rev(base_ref, field="delivery base")
+        branch = _validate_ref(branch)
+        tip = self._resolve_delivery_tip(checkout_path, source_ref)
+        paths = self.reserved_paths_in_diff(checkout_path, base_ref, tip)
+        if paths:
+            raise GitError("reserved delivery paths: " + ", ".join(paths))
+        self._push_oid(
+            checkout_path,
+            tip,
+            branch,
+            force_with_lease=force_with_lease,
+        )
+        return tip
+
+    def _push_oid(
+        self,
+        checkout_path: str,
+        tip: str,
+        branch: str,
+        *,
+        force_with_lease: bool = False,
+    ) -> None:
+        """Synchronously push an OID without consulting a mutable ref."""
+        if not _OID_RE.fullmatch(tip.lower()):
+            raise GitError("invalid immutable push tip")
+        branch = _validate_ref(branch)
+        args = ["push", "origin", f"{tip}:refs/heads/{branch}"]
         if force_with_lease:
             args.insert(2, "--force-with-lease")
         self._run(args, cwd=checkout_path)
+
+    def reserved_paths_in_diff(
+        self,
+        checkout_path: str,
+        base_ref: str,
+        tip_ref: str,
+    ) -> list[str]:
+        """Synchronously return daemon-owned paths changed by a delivery tip.
+
+        The synchronous twin of :meth:`areserved_paths_in_diff`: the
+        comparison starts at the merge-base and runs with ``--no-renames`` so
+        a rename lists both its source and its destination. Git failures
+        propagate — this is a fail-closed delivery gate.
+        """
+        base_ref = _validate_rev(base_ref, field="delivery base")
+        tip_ref = _validate_rev(tip_ref, field="delivery tip")
+        merge_base = self._run(["merge-base", base_ref, tip_ref], cwd=checkout_path)
+        changed = self._run(
+            ["diff", "--no-renames", "--name-only", "-z", merge_base, tip_ref, "--"],
+            cwd=checkout_path,
+        )
+        return sorted(self._daemon_bookkeeping_paths(changed))
 
     def rebase_onto(
         self,
@@ -871,9 +1029,16 @@ class GitManager:
         # 4. Push with retry
         for attempt in range(max_retries + 1):
             try:
-                self._run(["push", "origin", default_branch], cwd=checkout_path)
+                self.push_validated_delivery(
+                    checkout_path,
+                    f"origin/{default_branch}",
+                    default_branch,
+                    default_branch,
+                )
                 return (True, "")
             except GitError as e:
+                if str(e).startswith("reserved delivery paths:"):
+                    return (False, f"delivery_guard_failed: {e}")
                 if attempt < max_retries:
                     # Re-pull (rebase) to incorporate whatever was pushed
                     # in the meantime, then retry the push.
@@ -956,19 +1121,6 @@ class GitManager:
         except GitError:
             return ""
 
-    def get_git_path(self, checkout_path: str, path: str) -> str:
-        """Resolve a Git-internal *path* to an absolute filesystem path."""
-        try:
-            return self._run(
-                ["rev-parse", "--path-format=absolute", "--git-path", path],
-                cwd=checkout_path,
-            )
-        except GitError:
-            git_path = self._run(["rev-parse", "--git-path", path], cwd=checkout_path)
-            return git_path if os.path.isabs(git_path) else os.path.abspath(
-                os.path.join(checkout_path, git_path)
-            )
-
     def get_changed_files(self, checkout_path: str, base_branch: str = "main") -> list[str]:
         try:
             output = self._run(["diff", "--name-only", base_branch], cwd=checkout_path)
@@ -985,16 +1137,6 @@ class GitManager:
         ".claude/plans/",
         "plan.md",
     ]
-    # Daemon-owned runtime state must never become task work, even when a
-    # repository already tracks one of these paths and ignore rules cannot
-    # suppress its staged change.
-    _DAEMON_BOOKKEEPING_EXCLUDES = [".aq/", ".aq-worktree.json", ".codex/"]
-    _DAEMON_BOOKKEEPING_ADD_EXCLUDES = [
-        ":(exclude).aq/**",
-        ":(exclude).aq-worktree.json",
-        ":(exclude).codex/**",
-    ]
-    _COMMIT_HOOKS = ("pre-commit", "prepare-commit-msg", "commit-msg", "post-commit")
 
     @classmethod
     def _daemon_bookkeeping_paths(cls, cached_output: str) -> list[str]:
@@ -1010,79 +1152,6 @@ class GitManager:
             )
         ]
 
-    def _unstage_daemon_bookkeeping(self, checkout_path: str) -> None:
-        """Clear any daemon bookkeeping a caller staged before commit_all."""
-        self._run(
-            ["reset", "HEAD", "--", *self._DAEMON_BOOKKEEPING_EXCLUDES],
-            cwd=checkout_path,
-        )
-
-    def _refuse_cached_daemon_bookkeeping(self, checkout_path: str) -> None:
-        """Abort before commit if daemon-owned state remains in the index."""
-        cached = self._run(
-            ["diff", "--cached", "--name-only", "-z", "--"], cwd=checkout_path
-        )
-        paths = self._daemon_bookkeeping_paths(cached)
-        if paths:
-            raise GitError(
-                "refusing to commit reserved daemon bookkeeping paths: " + ", ".join(paths)
-            )
-
-    async def _aunstage_daemon_bookkeeping(self, checkout_path: str) -> None:
-        """Async counterpart to :meth:`_unstage_daemon_bookkeeping`."""
-        await self._arun(
-            ["reset", "HEAD", "--", *self._DAEMON_BOOKKEEPING_EXCLUDES],
-            cwd=checkout_path,
-        )
-
-    async def _arefuse_cached_daemon_bookkeeping(self, checkout_path: str) -> None:
-        """Async counterpart to :meth:`_refuse_cached_daemon_bookkeeping`."""
-        cached = await self._arun(
-            ["diff", "--cached", "--name-only", "-z", "--"], cwd=checkout_path
-        )
-        paths = self._daemon_bookkeeping_paths(cached)
-        if paths:
-            raise GitError(
-                "refusing to commit reserved daemon bookkeeping paths: " + ", ".join(paths)
-            )
-
-    @classmethod
-    @contextmanager
-    def _commit_hooks_overlay(cls, hooks_path: str, *, no_verify: bool):
-        """Yield a temporary hooks path that seals reserved index entries.
-
-        ``git commit`` still drives its normal hook lifecycle.  Each installed
-        user hook is delegated exactly once, and the wrappers for hooks that
-        run before the commit is finalized restore daemon-owned paths in the
-        index to ``HEAD`` before returning to Git.  An empty overlay makes
-        ``no_verify=True`` genuinely hook-free, including hook types that
-        Git's own ``--no-verify`` flag does not suppress.
-        """
-        original_dir = Path(hooks_path)
-        with tempfile.TemporaryDirectory(prefix="aq-commit-hooks-") as temp_dir:
-            overlay = Path(temp_dir)
-            if not no_verify:
-                for hook_name in cls._COMMIT_HOOKS:
-                    original = original_dir / hook_name
-                    if hook_name != "pre-commit" and not os.access(original, os.X_OK):
-                        continue
-                    delegate = ""
-                    if os.access(original, os.X_OK):
-                        delegate = f"{shlex.quote(str(original))} \"$@\" || status=$?\n"
-                    wrapper = (
-                        "#!/bin/sh\n"
-                        "status=0\n"
-                        f"{delegate}"
-                        "git reset -q HEAD -- .aq/ .aq-worktree.json .codex/\n"
-                        "cleanup_status=$?\n"
-                        'if test "$status" -ne 0; then exit "$status"; fi\n'
-                        'exit "$cleanup_status"\n'
-                    )
-                    target = overlay / hook_name
-                    target.write_text(wrapper, encoding="utf-8")
-                    target.chmod(0o700)
-            yield str(overlay)
-
     def commit_all(
         self,
         checkout_path: str,
@@ -1091,15 +1160,13 @@ class GitManager:
         exclude_plans: bool = True,
         no_verify: bool = False,
     ) -> bool:
-        """Stage task changes and commit, returning whether a commit was made.
+        """Stage all changes and commit. Returns True if a commit was made, False if nothing to commit.
 
-        Uses add-all-then-check-staged pattern, while excluding daemon-owned
-        bookkeeping from the initial add and clearing any such paths that
-        were already staged.  ``git diff --cached --quiet`` then checks
-        whether anything is actually staged.  This avoids the race condition
-        of checking status before staging.  ``False`` means no legitimate
-        staged task change remained after sanitization; excluded daemon or
-        plan paths may still be modified in the working tree.
+        Uses add-all-then-check-staged pattern: ``git add -A`` stages
+        everything (including untracked files the agent created), then
+        ``git diff --cached --quiet`` checks whether anything is actually
+        staged.  This avoids the race condition of checking status before
+        staging.
 
         Plan files (``.claude/plan.md``, ``plan.md``, ``.claude/plans/``)
         are automatically unstaged to prevent them from being committed to
@@ -1108,18 +1175,11 @@ class GitManager:
         should pass ``exclude_plans=False`` to ensure all changes are
         committed.
 
-        Pass ``no_verify=True`` to skip all commit hooks.
-        This is intended for system-level auto-remediation commits where hook
-        failures would prevent workspace cleanup. Otherwise ``git commit``
-        runs the repository's native commit hook lifecycle exactly once; a
-        temporary hooks overlay removes daemon-owned paths after each hook
-        before Git can finalize the commit.
+        Pass ``no_verify=True`` to skip pre-commit hooks (``--no-verify``).
+        This is intended for system-level auto-remediation commits where
+        hook failures would prevent workspace cleanup.
         """
-        self._unstage_daemon_bookkeeping(checkout_path)
-        self._run(
-            ["add", "-A", "--", ".", *self._DAEMON_BOOKKEEPING_ADD_EXCLUDES],
-            cwd=checkout_path,
-        )
+        self._run(["add", "-A"], cwd=checkout_path)
         # Unstage plan files so they never reach target repo history.
         if exclude_plans:
             for pattern in self._PLAN_FILE_EXCLUDES:
@@ -1127,7 +1187,6 @@ class GitManager:
                     self._run(["reset", "HEAD", "--", pattern], cwd=checkout_path)
                 except GitError:
                     pass  # Not staged or doesn't exist — fine
-        self._refuse_cached_daemon_bookkeeping(checkout_path)
         # git diff --cached --quiet exits 1 if there are staged changes
         result = subprocess.run(
             ["git", "diff", "--cached", "--quiet"],
@@ -1138,18 +1197,10 @@ class GitManager:
         )
         if result.returncode == 0:
             return False  # Nothing to commit
-        if result.returncode != 1:
-            raise GitError(f"git diff --cached --quiet failed: {result.stderr.strip()}")
-        hooks_path = self.get_git_path(checkout_path, "hooks")
-        with self._commit_hooks_overlay(hooks_path, no_verify=no_verify) as overlay:
-            commit_args = ["-c", f"core.hooksPath={overlay}", "commit", "-m", message]
-            if no_verify:
-                commit_args.insert(-2, "--no-verify")
-            try:
-                self._run(commit_args, cwd=checkout_path)
-            finally:
-                self._unstage_daemon_bookkeeping(checkout_path)
-                self._refuse_cached_daemon_bookkeeping(checkout_path)
+        commit_args = ["commit", "-m", message]
+        if no_verify:
+            commit_args.append("--no-verify")
+        self._run(commit_args, cwd=checkout_path)
         return True
 
     def create_pr(
@@ -1459,12 +1510,19 @@ class GitManager:
         except GitError:
             return False
 
-    async def ahas_remote(self, checkout_path: str, remote: str = "origin") -> bool:
+    async def ahas_remote(
+        self, checkout_path: str, remote: str = "origin", *, strict: bool = False
+    ) -> bool | None:
+        """Return whether *remote* exists, or ``None`` on probe failure in strict mode."""
         try:
-            await self._arun(["remote", "get-url", remote], cwd=checkout_path)
-            return True
-        except GitError:
-            return False
+            result = await self._arun_subprocess(
+                ["git", "remote"], cwd=checkout_path, timeout=self._GIT_TIMEOUT
+            )
+        except Exception:
+            return None if strict else False
+        if result.returncode != 0:
+            return None if strict else False
+        return remote in (result.stdout or "").splitlines()
 
     async def aget_remote_url(self, checkout_path: str, remote: str = "origin") -> str | None:
         """Return the URL for *remote*, or ``None`` if no remote is configured."""
@@ -1604,11 +1662,20 @@ class GitManager:
         _validate_ref(branch_name)
         _validate_ref(default_branch, field="default branch")
         try:
-            await self.apush_validated_ref(checkout_path, branch_name, branch_name)
+            await self.apush_validated_delivery(
+                checkout_path,
+                f"origin/{default_branch}",
+                branch_name,
+                branch_name,
+            )
         except GitError:
             try:
-                await self.apush_validated_ref(
-                    checkout_path, branch_name, branch_name, force_with_lease=True
+                await self.apush_validated_delivery(
+                    checkout_path,
+                    f"origin/{default_branch}",
+                    branch_name,
+                    branch_name,
+                    force_with_lease=True,
                 )
             except GitError:
                 pass
@@ -1658,6 +1725,12 @@ class GitManager:
         event_bus: EventBus | None = None,
         project_id: str | None = None,
     ) -> None:
+        """Push a named branch for an explicit, non-delivery Git command.
+
+        This primitive pins the branch to an object ID but intentionally does
+        not apply the daemon delivery-path policy. Automatic task delivery
+        must use :meth:`apush_validated_delivery` with its target base.
+        """
         _validate_ref(branch_name)
         remote_ref_before = await self._aremote_ref_before_push(
             checkout_path, branch_name, event_bus=event_bus
@@ -2138,11 +2211,9 @@ class GitManager:
         ``exclude_plans=False`` for system-level operations that need
         to commit all changes including plan files.
 
-        Pass ``no_verify=True`` to skip all commit hooks.
-        This is intended for system-level auto-remediation commits where hook
-        failures would prevent workspace cleanup. Otherwise ``git commit``
-        runs the repository's native commit hook lifecycle exactly once while
-        daemon-owned paths are removed after every hook boundary.
+        Pass ``no_verify=True`` to skip pre-commit hooks (``--no-verify``).
+        This is intended for system-level auto-remediation commits where
+        hook failures would prevent workspace cleanup.
 
         When *event_bus* is provided, a ``git.commit`` event is emitted
         after a successful commit with the commit hash, branch, changed
@@ -2152,21 +2223,16 @@ class GitManager:
         and therefore untrusted, but it only ever reaches git as the value of
         the ``-m`` flag in an argv list — never interpolated into a shell
         string and never in a position git could read as an option.  The
-        ``["reset", "HEAD", "--", path]`` call below is the template for
+        ``["reset", "HEAD", "--", pattern]`` call below is the template for
         pathspec arguments.  See ``docs/specs/design/trust-and-ops.md`` §2.4.
         """
-        await self._aunstage_daemon_bookkeeping(checkout_path)
-        await self._arun(
-            ["add", "-A", "--", ".", *self._DAEMON_BOOKKEEPING_ADD_EXCLUDES],
-            cwd=checkout_path,
-        )
+        await self._arun(["add", "-A"], cwd=checkout_path)
         if exclude_plans:
             for pattern in self._PLAN_FILE_EXCLUDES:
                 try:
                     await self._arun(["reset", "HEAD", "--", pattern], cwd=checkout_path)
                 except GitError:
                     pass
-        await self._arefuse_cached_daemon_bookkeeping(checkout_path)
         result = await self._arun_subprocess(
             ["git", "diff", "--cached", "--quiet"],
             cwd=checkout_path,
@@ -2174,18 +2240,10 @@ class GitManager:
         )
         if result.returncode == 0:
             return False
-        if result.returncode != 1:
-            raise GitError(f"git diff --cached --quiet failed: {result.stderr.strip()}")
-        hooks_path = await self.aget_git_path(checkout_path, "hooks")
-        with self._commit_hooks_overlay(hooks_path, no_verify=no_verify) as overlay:
-            commit_args = ["-c", f"core.hooksPath={overlay}", "commit", "-m", message]
-            if no_verify:
-                commit_args.insert(-2, "--no-verify")
-            try:
-                await self._arun(commit_args, cwd=checkout_path)
-            finally:
-                await self._aunstage_daemon_bookkeeping(checkout_path)
-                await self._arefuse_cached_daemon_bookkeeping(checkout_path)
+        commit_args = ["commit", "-m", message]
+        if no_verify:
+            commit_args.append("--no-verify")
+        await self._arun(commit_args, cwd=checkout_path)
 
         # Emit git.commit event on success
         if event_bus is not None:
@@ -2342,7 +2400,11 @@ class GitManager:
         if expected_head_oid is not None:
             expected_head_oid = expected_head_oid.lower()
             if not _OID_RE.fullmatch(expected_head_oid):
-                return {"success": False, "sha": None, "error": "invalid expected PR head OID"}
+                return {
+                    "success": False,
+                    "sha": None,
+                    "error": "invalid expected PR head OID",
+                }
         try:
             current = await self.avalidate_pr_for_merge(checkout_path, pr_url)
         except GitError as exc:
@@ -2457,6 +2519,11 @@ class GitManager:
         worktree is routinely left in.  Never forced: a rejected push means
         the remote branch has commits this HEAD does not, and the caller
         picks a different name rather than overwriting them.
+
+        This is a non-delivery recovery primitive: stranded-work preservation
+        must save the complete commit even when it contains daemon-owned
+        paths. Automatic task delivery must use
+        :meth:`apush_validated_delivery` instead.
         """
         remote_ref_before = await self._aremote_ref_before_push(
             checkout_path, branch, event_bus=event_bus
@@ -2501,15 +2568,37 @@ class GitManager:
         A merge/rebase hook or another local process may move a named ref after
         its content has been guarded. The object-ID refspec makes Git deliver
         precisely the validated object rather than resolving the name again.
+
+        This low-level helper does not enforce reserved-path policy. Automatic
+        task delivery must use :meth:`apush_validated_delivery`.
         """
         source_ref = _validate_rev(source_ref, field="push source")
         branch = _validate_ref(branch)
         tip = await self._aresolve_delivery_tip(checkout_path, source_ref)
+        await self._apush_oid(
+            checkout_path,
+            tip,
+            branch,
+            force_with_lease=force_with_lease,
+        )
+        return tip
+
+    async def _apush_oid(
+        self,
+        checkout_path: str,
+        tip: str,
+        branch: str,
+        *,
+        force_with_lease: bool = False,
+    ) -> None:
+        """Push an already-resolved commit without consulting a mutable ref."""
+        if not _OID_RE.fullmatch(tip.lower()):
+            raise GitError("invalid immutable push tip")
+        branch = _validate_ref(branch)
         args = ["push", "origin", f"{tip}:refs/heads/{branch}"]
         if force_with_lease:
             args.insert(2, "--force-with-lease")
         await self._arun(args, cwd=checkout_path)
-        return tip
 
     async def apush_validated_delivery(
         self,
@@ -2548,18 +2637,21 @@ class GitManager:
         remote_ref_before = await self._aremote_ref_before_push(
             checkout_path, branch, event_bus=event_bus
         )
-        pushed = await self.apush_validated_ref(
-            checkout_path, tip, branch, force_with_lease=force_with_lease
+        await self._apush_oid(
+            checkout_path,
+            tip,
+            branch,
+            force_with_lease=force_with_lease,
         )
         await self._aemit_push_event(
             checkout_path,
             branch,
             remote_ref_before,
-            pushed,
+            tip,
             event_bus=event_bus,
             project_id=project_id,
         )
-        return pushed
+        return tip
 
     async def alist_prs(
         self,
@@ -2643,8 +2735,8 @@ class GitManager:
         the REST resource has carried ``base.sha``, ``head.sha`` and
         ``base.repo.full_name`` for years.  Host, owner, repo and number come
         from the URL, so no checkout is needed to resolve them, and the
-        repository and OIDs come from one response so the subsequent
-        PR-files query can be tied to an immutable snapshot.
+        repository and OIDs come from one response so the delivery diff can
+        be derived from an immutable snapshot.
         """
         url = _PR_URL_RE.fullmatch(pr_url.strip())
         if url is None:
@@ -2668,12 +2760,16 @@ class GitManager:
             head_ref = data["head"]["ref"]
             base_oid = data["base"]["sha"].lower()
             head_oid = data["head"]["sha"].lower()
+            changed_files = _pr_changed_file_count(data)
         except (KeyError, TypeError, ValueError, AttributeError) as exc:
             raise GitError("could not resolve complete PR identity") from exc
         if (
             resource_number != int(number)
             or not isinstance(repository, str)
             or not _REPOSITORY_RE.fullmatch(repository)
+            # ``owner/repo`` becomes two path components of the delivery-diff
+            # cache; ``.`` and ``..`` are valid to the regex but not names.
+            or any(part in (".", "..") for part in repository.split("/"))
             or not isinstance(base_ref, str)
             or not isinstance(head_ref, str)
             or not _OID_RE.fullmatch(base_oid)
@@ -2687,40 +2783,120 @@ class GitManager:
             base_oid=base_oid,
             head_ref=head_ref,
             head_oid=head_oid,
+            changed_files=changed_files,
+            host=host,
         )
 
-    async def _apr_changed_paths(
-        self, checkout_path: str, identity: PullRequestIdentity
-    ) -> list[str]:
-        """Return every PR-file path from GitHub's paginated merge-base diff."""
-        endpoint = f"repos/{identity.repository}/pulls/{identity.number}/files"
+    def _pr_diff_cache_lock(self, cache: str) -> asyncio.Lock:
+        """The lock serializing fetches into the delivery-diff cache at ``cache``."""
+        lock = self._pr_diff_cache_locks.get(cache)
+        if lock is None:
+            lock = self._pr_diff_cache_locks[cache] = asyncio.Lock()
+        return lock
+
+    async def _apr_delivery_diff(self, cache_root: str, identity: PullRequestIdentity) -> str:
+        """NUL-delimited paths PR ``identity`` changes, derived from its pinned OIDs.
+
+        GitHub's PR-files listing is addressed by PR *number*, so a head
+        force-pushed A -> B -> A while a paginated listing runs is inspected
+        as B's diff yet merged as A: both identity reads see A, and when B
+        changes as many files as A the pinned count agrees too.  This
+        derives the diff from the OIDs themselves instead.  ``head_oid`` and
+        ``base_oid`` are fetched *by OID* — content-addressed, so the fetch
+        either yields exactly those commits or fails — into a daemon-owned
+        bare repository under ``cache_root`` (one per host and repository,
+        created on first use, blobs never fetched: ``--filter=blob:none``
+        and a name-only tree diff need none), and the diff is
+        ``git diff-tree --no-renames --name-only`` from
+        ``merge-base(base_oid, head_oid)`` to ``head_oid`` — the same
+        merge-base diff GitHub lists, with no 3000-entry cap and no reliance
+        on the changed-file count.  ``--no-renames`` reports a rename as a
+        deletion plus an addition, so a reserved path is listed under its
+        reserved name whichever way it moved.
+
+        ``cache_root`` is the directory ``pr_merge`` runs ``gh`` in; it is
+        not a checkout, which is why the PR cannot simply be fetched into
+        ``origin``.  The fetch authenticates through ``gh auth
+        git-credential`` — the same login ``gh api`` already needs — so the
+        operator's own git credential helpers are neither required nor
+        consulted.  Every failure fails closed: an error from git here is an
+        unknown diff, never a clean one.
+        """
+        owner, repo = identity.repository.split("/")
+        cache = str(
+            Path(cache_root) / self.PR_DIFF_CACHE_DIRNAME / identity.host / owner / f"{repo}.git"
+        )
         try:
-            result = await self._arun_subprocess(
-                ["gh", "api", "--paginate", endpoint, "--jq", ".[].filename"],
-                cwd=checkout_path,
-                timeout=self._GIT_TIMEOUT,
-            )
-        except Exception as exc:
+            async with self._pr_diff_cache_lock(cache):
+                await self._arun(["init", "--bare", "--quiet", cache])
+                await self._arun(
+                    [
+                        "-c",
+                        "credential.helper=",
+                        "-c",
+                        "credential.helper=!gh auth git-credential",
+                        "fetch",
+                        "--quiet",
+                        "--no-tags",
+                        "--filter=blob:none",
+                        identity.clone_url,
+                        identity.head_oid,
+                        identity.base_oid,
+                    ],
+                    cwd=cache,
+                    timeout=self._PR_DIFF_FETCH_TIMEOUT,
+                )
+                # A fetch that returned without delivering the exact commits
+                # (not our ref, a stale cache, an interrupted pack) cannot be
+                # diffed; prove both objects are present before trusting it.
+                for oid in (identity.head_oid, identity.base_oid):
+                    await self._arun(
+                        ["rev-parse", "--verify", "--quiet", f"{oid}^{{commit}}"], cwd=cache
+                    )
+                merge_base = await self._arun(
+                    ["merge-base", identity.base_oid, identity.head_oid], cwd=cache
+                )
+                if not _OID_RE.fullmatch(merge_base):
+                    raise GitError(f"git merge-base returned no single commit: {merge_base!r}")
+                return await self._arun(
+                    [
+                        "diff-tree",
+                        "-r",
+                        "--no-renames",
+                        "--name-only",
+                        "-z",
+                        merge_base,
+                        identity.head_oid,
+                    ],
+                    cwd=cache,
+                )
+        except GitError as exc:
             raise GitError(f"could not inspect PR delivery diff: {exc}") from exc
-        if result.returncode != 0:
-            raise GitError(f"could not inspect PR delivery diff: {result.stderr.strip()}")
-        return [path for path in (result.stdout or "").splitlines() if path]
 
     async def avalidate_pr_for_merge(
         self, checkout_path: str, pr_url: str
     ) -> PullRequestIdentity:
         """Fail closed unless a PR identity and its reserved-path diff are stable.
 
-        The REST PR-files endpoint is GitHub's merge-base PR diff and supports
-        pagination. Re-reading the identity after that potentially long query
-        proves the inspected diff still belongs to the precise head and target
-        branch.  The base branch's tip is not compared: it advances with every
-        concurrent delivery and does not change a merge-base diff (see
+        The identity — repository, number, branch names, OIDs and GitHub's
+        changed-file count — is read in one snapshot; the delivery diff is
+        then derived from the pinned OIDs (:meth:`_apr_delivery_diff`), so
+        the diff inspected is by construction the diff of the head that will
+        be merged, whatever the PR's mutable head does meanwhile.  Re-reading
+        the identity afterwards additionally proves the pinned head, target
+        branch and count are still the PR's, so the merge that follows (with
+        ``--match-head-commit``) is a merge of what was inspected.  The base
+        branch's tip is not compared: it advances with every concurrent
+        delivery and does not change a merge-base diff (see
         :attr:`PullRequestIdentity.pin`).
+
+        ``checkout_path`` is where ``gh`` runs and where the delivery-diff
+        cache lives (``pr_merge`` passes the daemon data dir); it need not be
+        a checkout.
         """
         identity = await self.aget_pr_identity(checkout_path, pr_url)
-        paths = await self._apr_changed_paths(checkout_path, identity)
-        reserved = self._daemon_bookkeeping_paths("\0".join(paths))
+        changed = await self._apr_delivery_diff(checkout_path, identity)
+        reserved = self._daemon_bookkeeping_paths(changed)
         if reserved:
             raise GitError(
                 "PR changes reserved daemon bookkeeping paths: " + ", ".join(sorted(reserved))
@@ -2835,9 +3011,15 @@ class GitManager:
 
         The comparison starts at the merge-base so an unchanged reserved
         path already tracked by the target branch is harmless, while an
-        addition, deletion, or modification made by task commits is caught.
-        Unlike preview helpers, Git failures propagate: callers use this as
-        a fail-closed delivery gate before merge, push, or PR acceptance.
+        addition, deletion, modification, or rename made by task commits is
+        caught. Rename detection is disabled (``--no-renames``, overriding
+        any ``diff.renames`` setting) because git would otherwise report
+        ``git mv .aq/claim.json moved.json`` as the single path
+        ``moved.json`` and hide that a daemon-owned file was deleted; with
+        detection off both the source and the destination of a rename are
+        listed. Unlike preview helpers, Git failures propagate: callers use
+        this as a fail-closed delivery gate before merge, push, or PR
+        acceptance.
         """
         base_ref = _validate_rev(base_ref, field="delivery base")
         tip_ref = _validate_rev(tip_ref, field="delivery tip")
@@ -2845,10 +3027,21 @@ class GitManager:
             ["merge-base", base_ref, tip_ref], cwd=checkout_path
         )
         changed = await self._arun(
-            ["diff", "--name-only", "-z", merge_base, tip_ref, "--"],
+            ["diff", "--no-renames", "--name-only", "-z", merge_base, tip_ref, "--"],
             cwd=checkout_path,
         )
         return sorted(self._daemon_bookkeeping_paths(changed))
+
+    async def areserved_paths_in_index(self, checkout_path: str) -> list[str]:
+        """Return daemon-owned paths currently staged in *checkout_path*.
+
+        Git errors propagate because task-close auto-remediation uses this as
+        a fail-closed guard immediately after staging.
+        """
+        cached = await self._arun(
+            ["diff", "--cached", "--name-only", "-z", "--"], cwd=checkout_path
+        )
+        return sorted(self._daemon_bookkeeping_paths(cached))
 
     async def areserved_paths_in_tree(self, checkout_path: str, rev: str) -> list[str]:
         """Return daemon-owned paths tracked anywhere in *rev*'s tree.
@@ -2866,11 +3059,14 @@ class GitManager:
         )
         return sorted(self._daemon_bookkeeping_paths(listed))
 
-    async def aget_current_branch(self, checkout_path: str) -> str:
+    async def aget_current_branch(
+        self, checkout_path: str, *, strict: bool = False
+    ) -> str | None:
+        """Return the checked-out branch, or ``None`` on failure in strict mode."""
         try:
             return await self._arun(["rev-parse", "--abbrev-ref", "HEAD"], cwd=checkout_path)
         except GitError:
-            return ""
+            return None if strict else ""
 
     async def ahas_uncommitted_changes(
         self, checkout_path: str, *, strict: bool = False
@@ -3010,6 +3206,7 @@ class GitManager:
         checkout_path: str,
         branch_name: str,
         *,
+        head_ref: str | None = None,
         include_workspace_head: bool = True,
     ) -> str | None:
         """Return an open or merged PR URL delivering *branch_name*, or ``None``.
@@ -3026,6 +3223,8 @@ class GitManager:
 
         A merged pull request is evidence that the branch's work has already
         shipped. Closed-but-unmerged PRs deliberately remain a failure.
+        ``head_ref`` supplies the exact local or remote-tracking ref whose tip
+        must match, while ``branch_name`` remains the GitHub branch identity.
         Best-effort throughout: any gh/git failure returns ``None``.
         """
         if include_workspace_head:
@@ -3033,7 +3232,7 @@ class GitManager:
             if url:
                 return url
 
-        refs = [branch_name]
+        refs = [_validate_rev(head_ref, field="PR head") if head_ref else branch_name]
         if include_workspace_head:
             refs.append("HEAD")
         tips = {sha for ref in refs if (sha := await self.arev_parse(checkout_path, ref))}
@@ -3132,16 +3331,29 @@ class GitManager:
         checkout_path: str,
         ancestor: str,
         descendant: str,
-    ) -> bool:
-        """Return whether *ancestor* is reachable from *descendant*."""
+        *,
+        strict: bool = False,
+    ) -> bool | None:
+        """Return reachability, or ``None`` on a probe error in strict mode."""
         try:
-            await self._arun(
-                ["merge-base", "--is-ancestor", _validate_ref(ancestor), _validate_rev(descendant)],
+            result = await self._arun_subprocess(
+                [
+                    "git",
+                    "merge-base",
+                    "--is-ancestor",
+                    _validate_ref(ancestor),
+                    _validate_rev(descendant),
+                ],
                 cwd=checkout_path,
+                timeout=self._GIT_TIMEOUT,
             )
+        except Exception:
+            return None if strict else False
+        if result.returncode == 0:
             return True
-        except GitError:
+        if result.returncode == 1:
             return False
+        return None if strict else False
 
     async def acount_commits_ahead(
         self,
@@ -3171,19 +3383,28 @@ class GitManager:
         """Return whether *branch* exists locally or in ``origin``, else ``None`` on error."""
         branch = _validate_ref(branch, field="branch")
         for ref in (f"refs/heads/{branch}", f"refs/remotes/origin/{branch}"):
-            try:
-                result = await self._arun_subprocess(
-                    ["git", "show-ref", "--verify", "--quiet", ref],
-                    cwd=checkout_path,
-                    timeout=self._GIT_TIMEOUT,
-                )
-            except Exception:
-                return None
-            if result.returncode == 0:
+            exists = await self.aref_exists(checkout_path, ref)
+            if exists is True:
                 return True
-            if result.returncode != 1:
+            if exists is None:
                 return None
         return False
+
+    async def aref_exists(self, checkout_path: str, ref: str) -> bool | None:
+        """Return whether an exact Git ref exists, or ``None`` on probe failure."""
+        try:
+            result = await self._arun_subprocess(
+                ["git", "show-ref", "--verify", "--quiet", _validate_rev(ref)],
+                cwd=checkout_path,
+                timeout=self._GIT_TIMEOUT,
+            )
+        except Exception:
+            return None
+        if result.returncode == 0:
+            return True
+        if result.returncode == 1:
+            return False
+        return None
 
     async def ahas_non_plan_changes(
         self,

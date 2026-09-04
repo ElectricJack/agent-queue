@@ -244,9 +244,48 @@ class MigrationInventory:
     generated_at: float
     contract_fingerprint: str
     entries: tuple[InventoryEntry, ...]
+    #: Evidence the inventory could not read, one ``{"source", "error"}`` each.
+    #: Non-empty means the report is incomplete: entries were classified
+    #: against evidence that was never collected, so an empty
+    #: :meth:`blocking` says nothing about whether the fleet can cut over.
+    evidence_errors: tuple[Mapping[str, str], ...] = ()
 
     def by_disposition(self, disposition: PlaybookDisposition) -> tuple[InventoryEntry, ...]:
         return tuple(e for e in self.entries if e.disposition == disposition)
+
+    def unread_sources(self) -> tuple[str, ...]:
+        """The evidence sources that failed, de-duplicated, in report order."""
+        seen: dict[str, None] = {}
+        for row in self.evidence_errors:
+            seen.setdefault(str(row.get("source") or "unknown"), None)
+        return tuple(seen)
+
+    @property
+    def evidence_complete(self) -> bool:
+        """Whether every evidence source this report classifies against was read."""
+        return not self.evidence_errors
+
+    def blocking_reasons(self) -> tuple[str, ...]:
+        """Why this inventory cannot be read as a clean fleet.
+
+        One reason per unread evidence source, worded as
+        :func:`build_cutover_report` words its own.  A caller that treats an
+        empty :meth:`blocking` as "ready to migrate" has to reconcile these
+        first: absence of evidence from a source that could not be read is not
+        evidence of readiness.
+        """
+        rendered = [
+            (
+                str(row.get("source") or "unknown"),
+                str(row.get("error") or "unavailable"),
+            )
+            for row in self.evidence_errors
+        ]
+        return tuple(
+            f"evidence source {source!r} could not be read ({error}); entries were "
+            "classified against evidence that was never collected"
+            for source, error in rendered
+        )
 
     def blocking(self) -> tuple[InventoryEntry, ...]:
         """Entries that block cutover: everything not ``ready``, minus disabled.
@@ -272,6 +311,9 @@ class MigrationInventory:
             "counts": self.counts(),
             "blocking": len(self.blocking()),
             "pending_events_total": sum(e.pending_events for e in self.entries),
+            "evidence_complete": self.evidence_complete,
+            "evidence_errors": [dict(row) for row in self.evidence_errors],
+            "blocking_reasons": list(self.blocking_reasons()),
             "entries": [entry.to_dict() for entry in self.entries],
         }
 
@@ -681,12 +723,35 @@ def _normalise_frontmatter_scope(value: Any) -> tuple[str, str | None] | None:
 # ---------------------------------------------------------------------------
 
 
-async def _safe_call(obj: Any, name: str, *, default: Any, **kwargs: Any) -> Any:
+def _unread_source(source: str, exc: BaseException) -> dict[str, str]:
+    """One evidence source the inventory could not read.
+
+    The same ``{"source", "error"}`` shape :func:`build_cutover_report` takes,
+    so an unread source reads identically wherever it surfaces.
+    """
+    return {"source": source, "error": f"{type(exc).__name__}: {exc}"}
+
+
+async def _safe_call(
+    obj: Any,
+    name: str,
+    *,
+    default: Any,
+    errors: list[dict[str, str]] | None = None,
+    source: str | None = None,
+    **kwargs: Any,
+) -> Any:
     """Call an optional repository method, degrading to ``default``.
 
     The inventory is a reporting surface: a repository that is absent, that
     raises, or that a test replaced with a narrower double must degrade the
     report, never abort it.
+
+    Degrading is not the same as reporting nothing went wrong.  A repository
+    that *raises* is recorded in *errors* under *source* so the caller can tell
+    "this fleet has no activations" apart from "this fleet's activations could
+    not be read"; an absent repository or a missing method is the documented
+    optional path and stays silent.
     """
     if obj is None:
         return default
@@ -697,13 +762,17 @@ async def _safe_call(obj: Any, name: str, *, default: Any, **kwargs: Any) -> Any
         result = method(**kwargs)
         if hasattr(result, "__await__"):
             result = await result
-    except Exception:  # pragma: no cover - defensive; logged for the operator
+    except Exception as exc:
         logger.warning("migration inventory: %s.%s failed", type(obj).__name__, name, exc_info=True)
+        if errors is not None:
+            errors.append(_unread_source(source or name, exc))
         return default
     return default if result is None else result
 
 
-async def _activation_rows(activation_repo: Any) -> list[Any]:
+async def _activation_rows(
+    activation_repo: Any, *, errors: list[dict[str, str]] | None = None
+) -> list[Any]:
     """Activation rows carrying their artifact's identity columns.
 
     An activation row on its own names an artifact hash and nothing else, so
@@ -712,12 +781,33 @@ async def _activation_rows(activation_repo: Any) -> list[Any]:
     evidence to compare.  The joined read supplies it; a repository that
     predates the join (or a narrower test double) still degrades to the
     unjoined rows rather than to no report at all.
+
+    A joined read that fails but whose unjoined fallback succeeds is that
+    documented degradation and is not recorded.  Only losing *both* reads
+    leaves the activation evidence genuinely unread, and that is what lands in
+    *errors*.
     """
+    joined_errors: list[dict[str, str]] = []
     rows = await _safe_call(
-        activation_repo, "list_playbook_activations_with_artifacts", default=None
+        activation_repo,
+        "list_playbook_activations_with_artifacts",
+        default=None,
+        errors=joined_errors,
+        source="activations",
     )
     if rows is None:
-        rows = await _safe_call(activation_repo, "list_playbook_activations", default=[])
+        fallback_errors: list[dict[str, str]] = []
+        rows = await _safe_call(
+            activation_repo,
+            "list_playbook_activations",
+            default=None,
+            errors=fallback_errors,
+            source="activations",
+        )
+        if rows is None:
+            if errors is not None:
+                errors.extend(fallback_errors or joined_errors)
+            rows = []
     return list(rows)
 
 
@@ -1066,7 +1156,12 @@ async def build_inventory(
         fingerprint and the current fingerprints of each artifact's commands.
     activation_repo, ack_repo, pending_repo:
         Optional read-only repositories.  ``None`` (or a repository that
-        raises) degrades the corresponding fields rather than the whole report.
+        raises) degrades the corresponding fields rather than the whole report
+        — but a repository that *raises* also records the source it could not
+        read on :attr:`MigrationInventory.evidence_errors`.  Otherwise a
+        database that cannot be queried is indistinguishable from a fleet with
+        no activations, no acknowledgements and no pending events, and the
+        report reads as a clean, migratable fleet nobody looked at.
     db:
         Accepted and unused.  Present so callers can hand the inventory the
         same database handle every other command takes, and so the read-only
@@ -1081,20 +1176,28 @@ async def build_inventory(
         key = scan.playbook_id or _fallback_id(scan.vault_rel_path)
         by_id.setdefault(key, []).append(scan)
 
+    # Every read below can fail, and a failure that renders as an empty result
+    # would let this report classify the fleet against evidence nobody
+    # collected.  Each one is recorded instead and carried on the inventory.
+    evidence_errors: list[dict[str, str]] = []
+
     compiled: dict[str, Any] = {}
     if store is not None:
         try:
             for _scope, _identifier, playbook in store.list_all():
                 compiled[str(getattr(playbook, "id", ""))] = playbook
-        except Exception:  # pragma: no cover - defensive
+        except Exception as exc:
             logger.warning("migration inventory: compiled store scan failed", exc_info=True)
+            evidence_errors.append(_unread_source("v1_store", exc))
 
-    activation_rows = await _activation_rows(activation_repo)
+    activation_rows = await _activation_rows(activation_repo, errors=evidence_errors)
     activations = {
         _activation_key(row): row for row in activation_rows if isinstance(row, Mapping)
     }
 
-    ack_rows = await _safe_call(ack_repo, "list_acks", default=[])
+    ack_rows = await _safe_call(
+        ack_repo, "list_acks", default=[], errors=evidence_errors, source="migration_acks"
+    )
     acks = {
         (
             str(row.get("playbook_id") or ""),
@@ -1105,7 +1208,13 @@ async def build_inventory(
         if isinstance(row, Mapping)
     }
 
-    pending_rows = await _safe_call(pending_repo, "list_pending_events", default=[])
+    pending_rows = await _safe_call(
+        pending_repo,
+        "list_pending_events",
+        default=[],
+        errors=evidence_errors,
+        source="pending_events",
+    )
     pending: dict[str, int] = {}
     for row in pending_rows:
         if isinstance(row, Mapping):
@@ -1116,8 +1225,9 @@ async def build_inventory(
     if contract_registry is not None:
         try:
             fingerprint = str(contract_registry.registry_fingerprint())
-        except Exception:  # pragma: no cover - defensive
+        except Exception as exc:
             logger.warning("migration inventory: contract fingerprint unavailable", exc_info=True)
+            evidence_errors.append(_unread_source("contract_registry", exc))
 
     entries = [
         _classify(
@@ -1144,6 +1254,7 @@ async def build_inventory(
         generated_at=time.time() if now is None else now,
         contract_fingerprint=fingerprint,
         entries=tuple(entries),
+        evidence_errors=tuple(evidence_errors),
     )
 
 

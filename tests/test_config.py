@@ -268,3 +268,105 @@ def test_playbooks_config_accepts_a_zero_cancellation_grace():
 
     assert PlaybooksConfig(cancellation_grace_seconds=0).validate() == []
     assert PlaybooksConfig().cancellation_grace_seconds == 30
+
+
+def test_chat_analyzer_section_is_gone_from_appconfig_and_every_registry():
+    """prime-torrent-81: the section had three fields and no consumer.
+
+    ``ChatAnalyzerConfig`` declared ``min_confidence``,
+    ``in_flight_min_confidence`` and ``dismiss_cooldown_seconds`` for the
+    post-``observe()`` suggester gate stack.  The messaging-rework M0 strip
+    removed the suggester (see ``docs/specs/design/feature-pauses.md``), so
+    nothing read them; grand-glacier-97 made the keys *reachable* without
+    deciding their fate, and this task deleted them.
+
+    Deleting a dataclass is easy to do halfway: a stale name left in
+    ``HOT_RELOADABLE_SECTIONS``, ``config_section_names()`` or ``reload_non_critical``
+    would surface only later — as an ``AttributeError`` on the next hot
+    reload, or as a section the config editor still offers.  Assert every
+    registry at once.
+    """
+    import dataclasses
+
+    from src import config as config_module
+    from src.config import (
+        HOT_RELOADABLE_SECTIONS,
+        RESTART_REQUIRED_SECTIONS,
+        AppConfig,
+    )
+
+    assert not hasattr(config_module, "ChatAnalyzerConfig")
+    assert "chat_analyzer" not in {f.name for f in dataclasses.fields(AppConfig)}
+    assert "chat_analyzer" not in HOT_RELOADABLE_SECTIONS
+    assert "chat_analyzer" not in RESTART_REQUIRED_SECTIONS
+    assert "chat_analyzer" not in config_module.config_section_names()
+
+
+def test_a_leftover_chat_analyzer_block_still_loads(config_dir):
+    """Operator impact of the deletion is nil.
+
+    ``load_config`` ignores sections it does not recognise, so a config file
+    that still carries the retired block loads exactly like one that does
+    not — no error, no warning, and no attribute to read it back from.  This
+    is what makes the removal safe to ship without an operator migration.
+    """
+    config_file = config_dir / "config.yaml"
+    config_file.write_text(
+        yaml.dump(
+            {
+                "discord": {"bot_token": "t", "guild_id": "1"},
+                "database_path": str(config_dir / "test.db"),
+                "chat_analyzer": {
+                    "min_confidence": 0.25,
+                    "in_flight_min_confidence": 0.95,
+                    "dismiss_cooldown_seconds": 0,
+                },
+            }
+        )
+    )
+    config = load_config(str(config_file))
+
+    assert not hasattr(config, "chat_analyzer")
+    assert config.discord.bot_token == "t"
+    assert config.validate() == []
+
+
+def test_hot_reload_round_trip_does_not_touch_the_retired_section(config_dir):
+    """``reload_non_critical`` is where a half-finished deletion would bite.
+
+    ``diff_configs`` reads ``_SECTION_FIELDS`` with ``dict.get``, so a stale
+    entry there is merely inert.  ``reload_non_critical`` is not: it assigns
+    section by section (``updated.<name> = fresh.<name>``), so a leftover
+    ``updated.chat_analyzer = fresh.chat_analyzer`` raises ``AttributeError``
+    the first time an operator edits their config — at runtime, in the daemon,
+    not at import.  Drive a real reload over a file that still carries the
+    retired block.
+    """
+    config_file = config_dir / "config.yaml"
+    config_file.write_text(
+        yaml.dump(
+            {
+                "discord": {"bot_token": "t", "guild_id": "1"},
+                "database_path": str(config_dir / "test.db"),
+                "chat_analyzer": {"min_confidence": 0.25},
+                "scheduling": {"min_task_guarantee": 3},
+            }
+        )
+    )
+    config = load_config(str(config_file))
+    assert config.scheduling.min_task_guarantee == 3
+
+    config_file.write_text(
+        yaml.dump(
+            {
+                "discord": {"bot_token": "t", "guild_id": "1"},
+                "database_path": str(config_dir / "test.db"),
+                "chat_analyzer": {"min_confidence": 0.25},
+                "scheduling": {"min_task_guarantee": 9},
+            }
+        )
+    )
+    reloaded = config.reload_non_critical()
+
+    assert reloaded.scheduling.min_task_guarantee == 9
+    assert not hasattr(reloaded, "chat_analyzer")

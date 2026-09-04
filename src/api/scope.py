@@ -50,8 +50,20 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         "project_ready",
         "formula_list",
         "formula_show",
+        # A worker may move a task it filed (swarm-work-model §12): the
+        # command re-derives the held task from the session and admits only
+        # worker-filed tasks provenance-linked to it, moved to a parent the
+        # filing path itself would have accepted.
+        "reparent_task",
     }
 )
+
+#: Commands whose ``task_id`` names a task *other than* the held one, so the
+#: held-task pin below must not apply to it.  ``reparent_task`` moves a
+#: worker filing, which by construction is never the task the token holds;
+#: ``_cmd_reparent_task`` authorises the moved task against the held task.
+#: ``project_id`` and ``session_id`` stay pinned.
+_TASK_ID_UNPINNED: frozenset[str] = frozenset({"reparent_task"})
 
 
 def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | None:
@@ -125,6 +137,8 @@ def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | 
         ("project_id", scope.project_id),
         ("session_id", scope.session_id),
     ):
+        if key == "task_id" and command in _TASK_ID_UNPINNED:
+            continue
         value = args.get(key)
         if value is None:
             if expected is not None:

@@ -152,6 +152,7 @@ async def session_orch(tmp_path):
     # Branch setup is not what these tests assert on, and the workspaces
     # below are bare directories rather than real clones.
     o.git = AsyncMock()
+    o._ensure_control_files_excluded = AsyncMock(return_value=True)
     # ``_prepare_workspace`` resolves Git's exclude path and the verify phase
     # inspects the delivery diff.  A bare AsyncMock answers both with a mock:
     # truthy (read as a reserved-path finding) and, via ``__fspath__``, a
@@ -984,6 +985,9 @@ class TestPrepareWorkspaceCleanDefault:
         config.worktrees.enabled = False
         orch = Orchestrator(config, runtimes=MockAdapterFactory())
         await orch.initialize()
+        # These tests isolate branch preparation; managed-exclude handoff has
+        # dedicated real-repository coverage.
+        orch._ensure_control_files_excluded = AsyncMock(return_value=True)
 
         await orch.db.create_project(
             Project(
@@ -1172,10 +1176,16 @@ class TestPhaseVerifyNormalTask:
         mock_git.afind_open_pr = AsyncMock(return_value=None)
         mock_git.acount_commits_ahead = AsyncMock(return_value=1)
         mock_git._arun = AsyncMock(return_value="0")
+        mock_git.areserved_paths_in_index = AsyncMock(return_value=set())
+        mock_git.areserved_paths_in_diff = AsyncMock(return_value=set())
         mock_git.acommit_all = AsyncMock(return_value=True)
         mock_git.apush_validated_delivery = AsyncMock(return_value="a" * 40)
         mock_git.aabort_in_progress_operations = AsyncMock()
         mock_git.aforce_clean_workspace = AsyncMock(return_value=True)
+        # The delivery guard runs before every merge and push in
+        # ``_phase_verify`` and fails closed.  Unstubbed, a spec'd
+        # AsyncMock answers with a truthy MagicMock, which the guard
+        # reads as "this delivery changes reserved daemon paths".
         mock_git.areserved_paths_in_diff = AsyncMock(return_value=[])
         o.git = mock_git
 
@@ -1273,6 +1283,7 @@ class TestPhaseVerifyNormalTask:
 
         ws = await orch.db.get_workspace("ws-1")
         ctx = self._make_ctx(orch, task, ws.workspace_path)
+        orch.git.acount_commits_ahead = AsyncMock(return_value=0)
 
         result = await orch._phase_verify(ctx)
         assert result == PhaseResult.CONTINUE
@@ -1359,8 +1370,15 @@ class TestPhaseVerifyNormalTask:
         )
         await orch.db.create_task(task)
 
-        # First call returns True (initial check), second returns False (re-check after commit)
-        orch.git.ahas_uncommitted_changes = AsyncMock(side_effect=[True, False])
+        # Initial dirty status, then clean after commit and on strict re-check.
+        orch.git.ahas_uncommitted_changes = AsyncMock(
+            side_effect=[True, *([False] * 6)]
+        )
+        orch.git.acount_commits_ahead = AsyncMock(
+            side_effect=lambda _workspace, branch, _base: (
+                1 if branch == "main" else 0
+            )
+        )
 
         ws = await orch.db.get_workspace("ws-1")
         ctx = self._make_ctx(orch, task, ws.workspace_path)
@@ -1413,10 +1431,14 @@ class TestPhaseVerifyNormalTask:
         )
         await orch.db.create_task(task)
 
-        orch.git.ahas_uncommitted_changes = AsyncMock(return_value=True)
+        # Dirty through failed commit/stash, then clean after force-clean.
+        orch.git.ahas_uncommitted_changes = AsyncMock(
+            side_effect=[True, True, *([False] * 6)]
+        )
         orch.git.acommit_all = AsyncMock(side_effect=Exception("commit failed"))
         # Force-clean succeeds — workspace is clean after reset+clean
         orch.git.aforce_clean_workspace = AsyncMock(return_value=True)
+        orch.git.acount_commits_ahead = AsyncMock(return_value=0)
 
         ws = await orch.db.get_workspace("ws-1")
         ctx = self._make_ctx(orch, task, ws.workspace_path)
@@ -1445,8 +1467,10 @@ class TestPhaseVerifyNormalTask:
 
         # Agent left uncommitted changes on task branch
         orch.git.aget_current_branch = AsyncMock(return_value="feature-3c")
-        # First call True (initial), second False (after auto-commit)
-        orch.git.ahas_uncommitted_changes = AsyncMock(side_effect=[True, False])
+        # Initial dirty status, then clean after commit and on strict re-check.
+        orch.git.ahas_uncommitted_changes = AsyncMock(
+            side_effect=[True, *([False] * 6)]
+        )
 
         ws = await orch.db.get_workspace("ws-1")
         ctx = self._make_ctx(orch, task, ws.workspace_path)
@@ -1469,16 +1493,15 @@ class TestPhaseVerifyNormalTask:
             project_id="p-1",
             title="Test",
             description="test",
-            branch_name="feature-4",
+            branch_name="main",
             status=TaskStatus.IN_PROGRESS,
             integration_mode="direct",
         )
         await orch.db.create_task(task)
 
-        # Auto-push rev-list returns "3" (ahead), then scenario behind
-        # check returns "0", then scenario ahead check returns "0"
-        # (pushed successfully — mock won't change state but verification
-        # re-checks via _arun which we feed with subsequent values).
+        # Auto-push rev-list returns "3" (ahead), then the final behind and
+        # ahead checks return "0".  The mock push cannot update the refs, so
+        # these three values model the complete successful verification.
         orch.git._arun = AsyncMock(side_effect=["3", "0", "0"])
 
         ws = await orch.db.get_workspace("ws-1")
@@ -1486,11 +1509,16 @@ class TestPhaseVerifyNormalTask:
 
         result = await orch._phase_verify(ctx)
         assert result == PhaseResult.CONTINUE
+        orch.git.apush_validated_delivery.assert_awaited_once()
+        assert [call.args[0] for call in orch.git._arun.await_args_list] == [
+            ["rev-list", "refs/remotes/origin/main..HEAD", "--count"],
+            ["rev-list", "HEAD..refs/remotes/origin/main", "--count"],
+            ["rev-list", "refs/remotes/origin/main..HEAD", "--count"],
+        ]
         # The auto-push goes through the delivery guard, which inspects the
         # tip against origin/<default> before pushing that exact OID.
-        orch.git.apush_validated_delivery.assert_awaited_once()
         assert orch.git.apush_validated_delivery.await_args.args[1:] == (
-            "origin/main",
+            "refs/remotes/origin/main",
             "HEAD",
             "main",
         )
@@ -1505,7 +1533,7 @@ class TestPhaseVerifyNormalTask:
             project_id="p-1",
             title="Test",
             description="test",
-            branch_name="feature-4b",
+            branch_name="main",
             status=TaskStatus.IN_PROGRESS,
             integration_mode="direct",
         )
@@ -1514,9 +1542,7 @@ class TestPhaseVerifyNormalTask:
         # Auto-push rev-list returns "3" (ahead) — triggers push
         # Push fails, so scenario behind check gets "0", ahead check gets "3"
         orch.git._arun = AsyncMock(side_effect=["3", "0", "3"])
-        orch.git.apush_validated_delivery = AsyncMock(
-            side_effect=Exception("push failed")
-        )
+        orch.git.apush_validated_delivery = AsyncMock(side_effect=Exception("push failed"))
 
         ws = await orch.db.get_workspace("ws-1")
         ctx = self._make_ctx(orch, task, ws.workspace_path)
@@ -1563,10 +1589,16 @@ class TestPhaseVerifyApprovalTask:
         # Default: the task branch carries work, so the PR gate applies.
         mock_git.acount_commits_ahead = AsyncMock(return_value=1)
         mock_git._arun = AsyncMock(return_value="0")
+        mock_git.areserved_paths_in_index = AsyncMock(return_value=set())
+        mock_git.areserved_paths_in_diff = AsyncMock(return_value=set())
         mock_git.acommit_all = AsyncMock(return_value=True)
         mock_git.apush_validated_delivery = AsyncMock(return_value="a" * 40)
         mock_git.aabort_in_progress_operations = AsyncMock()
         mock_git.aforce_clean_workspace = AsyncMock(return_value=True)
+        # The delivery guard runs before every merge and push in
+        # ``_phase_verify`` and fails closed.  Unstubbed, a spec'd
+        # AsyncMock answers with a truthy MagicMock, which the guard
+        # reads as "this delivery changes reserved daemon paths".
         mock_git.areserved_paths_in_diff = AsyncMock(return_value=[])
         o.git = mock_git
 
@@ -1781,10 +1813,16 @@ class TestPhaseVerifyIntermediateSubtask:
         mock_git.afind_open_pr = AsyncMock(return_value=None)
         mock_git.acount_commits_ahead = AsyncMock(return_value=1)
         mock_git._arun = AsyncMock(return_value="0")
+        mock_git.areserved_paths_in_index = AsyncMock(return_value=set())
+        mock_git.areserved_paths_in_diff = AsyncMock(return_value=set())
         mock_git.acommit_all = AsyncMock(return_value=True)
         mock_git.apush_validated_delivery = AsyncMock(return_value="a" * 40)
         mock_git.aabort_in_progress_operations = AsyncMock()
         mock_git.aforce_clean_workspace = AsyncMock(return_value=True)
+        # The delivery guard runs before every merge and push in
+        # ``_phase_verify`` and fails closed.  Unstubbed, a spec'd
+        # AsyncMock answers with a truthy MagicMock, which the guard
+        # reads as "this delivery changes reserved daemon paths".
         mock_git.areserved_paths_in_diff = AsyncMock(return_value=[])
         o.git = mock_git
 
@@ -1823,8 +1861,10 @@ class TestPhaseVerifyIntermediateSubtask:
         orch, sub1 = pipeline_orch
         from src.models import PhaseResult
 
-        # First call returns True (initial check), second returns False (re-check after commit)
-        orch.git.ahas_uncommitted_changes = AsyncMock(side_effect=[True, False])
+        # Initial dirty status, then clean after commit and on strict re-check.
+        orch.git.ahas_uncommitted_changes = AsyncMock(
+            side_effect=[True, *([False] * 6)]
+        )
 
         ws = await orch.db.get_workspace("ws-1")
         ctx = self._make_ctx(orch, sub1, ws.workspace_path)
@@ -2073,8 +2113,14 @@ class TestCompletionPipelineVerify:
         # integrated into origin/main": no PR is expected and ctx.pr_url
         # stays None.
         mock_git.ais_ancestor = AsyncMock(return_value=True)
-        mock_git.acount_commits_ahead = AsyncMock(return_value=1)
+        mock_git.acount_commits_ahead = AsyncMock(
+            side_effect=lambda _workspace, branch, _base: (
+                0 if branch == "refs/heads/main" else 1
+            )
+        )
         mock_git._arun = AsyncMock(return_value="0")
+        mock_git.areserved_paths_in_index = AsyncMock(return_value=set())
+        mock_git.areserved_paths_in_diff = AsyncMock(return_value=set())
         mock_git.ahas_non_plan_changes = AsyncMock(return_value=False)
         # The delivery guard runs before every merge and push in
         # ``_phase_verify`` and fails closed.  Unstubbed, a spec'd

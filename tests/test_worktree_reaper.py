@@ -336,6 +336,63 @@ class TestPruneBranches:
 
 
 class TestAdoptExisting:
+    async def test_skips_explicit_non_git_base(self, tmp_path):
+        o = await _orch(tmp_path)
+        try:
+            await o.db.create_project(Project(id="p1", name="alpha"))
+            await o.db.upsert_workspace_kind(
+                WorkspaceKind(
+                    project_id="p1",
+                    id="notes",
+                    is_git_repo=False,
+                    lockable=True,
+                    writable=True,
+                    mode="exclusive-clone",
+                    default_lock_mode="exclusive",
+                )
+            )
+            notes = tmp_path / "notes"
+            notes.mkdir()
+            await o.db.create_workspace(
+                Workspace(
+                    id="ws-notes",
+                    project_id="p1",
+                    workspace_path=str(notes),
+                    source_type=RepoSourceType.LINK,
+                    kind_id="notes",
+                )
+            )
+            project = await o.db.get_project("p1")
+
+            report = await o._worktree_slots().adopt_existing(project)
+
+            assert report.exclude_failures == []
+            assert report.repaired == []
+        finally:
+            await o.shutdown()
+
+    async def test_rejects_git_subdirectory_base(self, tmp_path, base_repo):
+        nested = base_repo / "nested"
+        nested.mkdir()
+        o = await _orch(tmp_path)
+        try:
+            await _seed(o, nested)
+            project = await o.db.get_project("p1")
+
+            report = await o._worktree_slots().adopt_existing(project)
+
+            assert report.repaired == []
+            assert report.adopted == []
+            assert report.exclude_failures == [
+                {
+                    "workspace_id": "ws-base",
+                    "path": str(nested),
+                    "error": "managed exclude could not be installed",
+                }
+            ]
+        finally:
+            await o.shutdown()
+
     async def test_repairs_missing_exclude_block(self, tmp_path, base_repo):
         o = await _orch(tmp_path)
         try:

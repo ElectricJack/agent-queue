@@ -780,6 +780,7 @@ class SessionCommandsMixin:
             task.deliverables,
             root=Path(work_dir) if work_dir else Path.cwd(),
             tests=_string_list(args.get("tests")),
+            commands=_string_list(args.get("commands")),
         )
         unmet = [item for item in deliverable_results if not item["met"]]
         for item in unmet:
@@ -809,7 +810,8 @@ class SessionCommandsMixin:
                     "code": "hierarchy.open_children",
                     "error": (
                         f"task {task_id} has {len(open_children)} open child(ren); close them "
-                        "first or pass abandon_children=true"
+                        "first, move findings you filed aside with `aq task reparent` "
+                        "(--parent-id <container> or --root), or pass abandon_children=true"
                     ),
                     "open_children": open_children,
                 }

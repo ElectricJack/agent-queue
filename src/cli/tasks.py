@@ -223,8 +223,8 @@ def _create_task_graph(
     "deliverables",
     multiple=True,
     help=(
-        "Plan item JSON with id, kind, and target; repeatable. A file/test target is one "
-        "repo-relative file path (one item per path), not a command."
+        "Plan item JSON with id, kind, and target; repeatable. A file target is one "
+        "repo-relative path; a test target is a path or test command line."
     ),
 )
 @click.pass_context

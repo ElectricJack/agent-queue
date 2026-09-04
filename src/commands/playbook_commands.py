@@ -467,7 +467,7 @@ class PlaybookCommandsMixin:
         timeout_graph = None
         if db_run.pinned_graph:
             timeout_graph = json.loads(db_run.pinned_graph)
-        elif hasattr(self.orchestrator, "playbook_manager"):
+        elif getattr(self.orchestrator, "playbook_manager", None):
             pb = self.orchestrator.playbook_manager._active.get(db_run.playbook_id)
             if pb:
                 timeout_graph = pb.to_dict() if hasattr(pb, "to_dict") else pb.__dict__
@@ -559,7 +559,7 @@ class PlaybookCommandsMixin:
         graph = None
         if db_run.pinned_graph:
             graph = json.loads(db_run.pinned_graph)
-        elif hasattr(self.orchestrator, "playbook_manager"):
+        elif getattr(self.orchestrator, "playbook_manager", None):
             pb = self.orchestrator.playbook_manager._active.get(db_run.playbook_id)
             if pb:
                 graph = pb.to_dict() if hasattr(pb, "to_dict") else pb.__dict__
@@ -1942,7 +1942,7 @@ class PlaybookCommandsMixin:
             graph = None
             if db_run.pinned_graph:
                 graph = json.loads(db_run.pinned_graph)
-            elif hasattr(self.orchestrator, "playbook_manager"):
+            elif getattr(self.orchestrator, "playbook_manager", None):
                 pb = self.orchestrator.playbook_manager._active.get(db_run.playbook_id)
                 if pb:
                     graph = pb.to_dict() if hasattr(pb, "to_dict") else pb.__dict__

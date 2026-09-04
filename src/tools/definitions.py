@@ -1185,7 +1185,15 @@ _ALL_TOOL_DEFINITIONS = [
                 },
                 "deliverables": {
                     "type": "array",
-                    "description": "Plan-derived implementation contract checked before a passing close. A file/test target is one repo-relative file path (one item per path); command/flag/registration targets are grep'd for in repo text.",
+                    "description": (
+                        "Plan-derived implementation contract checked before a passing close. "
+                        "Target shapes: file -> a path under the worktree; test -> a test module "
+                        "path, or the command line that runs the suites (met by a matching recorded "
+                        "--test); command -> a command line (met by a matching recorded "
+                        "--command/--test; '<placeholder>' matches any arguments) or a single "
+                        "identifier found in the repo; flag/registration -> an identifier found in "
+                        "the repo."
+                    ),
                     "items": {
                         "type": "object",
                         "properties": {
@@ -2402,8 +2410,7 @@ _ALL_TOOL_DEFINITIONS = [
             "Returns per-status counts (pending, accepted, dismissed, "
             "auto_executed, suppressed), accept_rate, dismiss_rate, and "
             "suppression_count_by_gate (one entry per gate that fired: "
-            "confidence, dedup, in_flight_active_task, dismiss_cooldown). "
-            "Use this to tune the gate thresholds in chat_analyzer config."
+            "confidence, dedup, in_flight_active_task, dismiss_cooldown)."
         ),
         "input_schema": {
             "type": "object",
@@ -5202,7 +5209,15 @@ _ALL_TOOL_DEFINITIONS = [
                             },
                             "deliverables": {
                                 "type": "array",
-                                "description": "Plan-derived implementation contract for this proposed task. A file/test target is one repo-relative file path (one item per path); command/flag/registration targets are grep'd for in repo text.",
+                                "description": (
+                                    "Plan-derived implementation contract for this proposed task. "
+                                    "Target shapes: file -> a path under the worktree; test -> a test module "
+                                    "path, or the command line that runs the suites (met by a matching recorded "
+                                    "--test); command -> a command line (met by a matching recorded "
+                                    "--command/--test; '<placeholder>' matches any arguments) or a single "
+                                    "identifier found in the repo; flag/registration -> an identifier found in "
+                                    "the repo."
+                                ),
                                 "items": {
                                     "type": "object",
                                     "properties": {

@@ -299,11 +299,8 @@ async def test_read_only_close_does_not_review_the_review(
 ):
     """A finished reviewer task must not spawn a review of itself.
 
-    Reviewer tasks run on a slot checked out on their own ``aq/<id>`` branch,
-    so ``event.task.branch_name`` is truthy for them exactly as it is for a
-    worker.  Before the ``no_code`` guard, every reviewer close therefore
-    matched ``per-task-review`` and spawned "Review: Review: ..." — three
-    levels deep on the live queue within two hours of the emit landing.
+    Reviewer tasks run on an ordinary slot and raw ``read_only`` metadata is
+    not Git proof. The structural ``review_task`` flag prevents recursion.
     """
     orch = await orchestrator_factory()
     h = orch.command_handler
@@ -325,7 +322,8 @@ async def test_read_only_close_does_not_review_the_review(
 
     completed = _emitted(orch.bus, "task.completed")
     assert len(completed) == 1, "a reviewer's close is still a completion"
-    assert completed[0]["no_code"] is True
+    assert completed[0]["no_code"] is False
+    assert completed[0]["review_task"] is True
 
     await engine.dispatch("task.completed", completed[0], event_id="review-closed")
 
@@ -336,16 +334,18 @@ async def test_read_only_close_does_not_review_the_review(
 
 @pytest.mark.asyncio
 async def test_no_op_close_is_flagged_no_code(orchestrator_factory, pipeline_engine_factory):
-    """``--work-outcome no-op`` is the agent's own word that nothing shipped.
-
-    Same verdict git verification uses to skip the PR gate — so the review
-    rules skip too, instead of sending a reviewer to look at an empty branch.
-    """
+    """A no-op event is suppressed only after the Git proof succeeds."""
     orch = await orchestrator_factory()
     h = orch.command_handler
     await _seed(h)
     await h.db.upsert_profile(AgentProfile(id="reviewer", name="Reviewer", read_only=True))
     engine = pipeline_engine_factory(handler=h)
+
+    async def _proved_no_work_pipeline(ctx):
+        ctx.no_work_proven = True
+        return (getattr(ctx.task, "pr_url", None) or "", True)
+
+    orch._run_completion_pipeline = _proved_no_work_pipeline
 
     task_id = (
         await h.execute(
@@ -371,10 +371,7 @@ async def test_review_task_close_is_never_reviewed_even_if_profile_writes(
 ):
     """The recursion guard must not depend on the reviewer profile's flags.
 
-    ``no_code`` comes from ``profile.read_only``; an operator who hands the
-    reviewer Write/Edit tools (``read_only: false``) silently disarmed it and
-    the queue filled with "Review: Review: ..." again (task
-    sound-horizon-77.18.2).  A task the pipeline itself created as a review —
+    A task the pipeline itself created as a review —
     recognisable by its ``review:task:`` / ``branch-review:`` dedup key — is
     flagged ``review_task`` on ``task.completed`` regardless of profile, and
     both review rules stand down on it.
@@ -487,18 +484,14 @@ async def test_worker_close_is_not_flagged_review_task(orchestrator_factory):
 
 
 @pytest.mark.asyncio
-async def test_empty_branch_close_is_flagged_no_code(
+async def test_shipped_direct_delivery_is_not_flagged_no_code_after_topology_is_empty(
     orchestrator_factory, pipeline_engine_factory
 ):
-    """A branch that ends with no commits is not worth reviewing.
+    """A shipped direct task stays reviewable after merge/push/branch deletion.
 
-    The completion pipeline settles that question before integration can
-    merge the branch away and leaves the verdict on the context
-    (``_branch_left_no_commits``); the close path folds it into ``no_code``.
-    It is the guard that survives what the other two cannot: this worker has
-    a writing profile and no review dedup key, so ``read_only`` and
-    ``review_task`` both read False — and there is still nothing to review
-    (task bright-forge-78).
+    Direct delivery can make the final topology indistinguishable from an
+    untouched branch.  The proof bit alone therefore cannot classify a task
+    as no-code when the agent explicitly reported shipped work.
     """
     orch = await orchestrator_factory()
     h = orch.command_handler
@@ -508,7 +501,7 @@ async def test_empty_branch_close_is_flagged_no_code(
     engine = pipeline_engine_factory(handler=h)
 
     async def _empty_branch_pipeline(ctx):
-        ctx.branch_no_commits = True
+        ctx.no_work_proven = True
         return (getattr(ctx.task, "pr_url", None) or "", True)
 
     orch._run_completion_pipeline = _empty_branch_pipeline
@@ -524,18 +517,16 @@ async def test_empty_branch_close_is_flagged_no_code(
         branch_name=f"aq/{task_id}",
         pr_url="https://github.com/o/r/pull/9",
     )
-    await _close_pass(h, task_id)
+    await _close_pass(h, task_id, work_outcome="shipped")
 
     completed = _emitted(orch.bus, "task.completed")
     assert len(completed) == 1
-    assert completed[0]["no_code"] is True
+    assert completed[0]["no_code"] is False
     assert completed[0]["review_task"] is False, "not a pipeline-created review"
 
-    await engine.dispatch("task.completed", completed[0], event_id="empty-branch")
+    await engine.dispatch("task.completed", completed[0], event_id="shipped-direct")
 
-    assert await _review_rows(h, task_id) == [], "reviewed a branch with an empty diff"
-    tasks = await h.db.list_tasks(project_id="p")
-    assert [t for t in tasks if t.profile_id == "final-reviewer"] == []
+    assert await _review_rows(h, task_id), "shipped work was suppressed after delivery"
 
 
 @pytest.mark.asyncio
@@ -569,6 +560,54 @@ async def test_branch_with_commits_close_is_still_reviewed(
     await engine.dispatch("task.completed", completed[0], event_id="with-commits")
 
     assert await _review_rows(h, task_id), "per-task-review no longer fires"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("profile_id", "work_outcome"),
+    [("worker", "no-op"), ("auditor", "shipped")],
+)
+async def test_no_code_intent_with_delivered_work_is_still_reviewed(
+    orchestrator_factory,
+    pipeline_engine_factory,
+    profile_id,
+    work_outcome,
+):
+    """Intent metadata cannot suppress review after Git found delivered work."""
+    orch = await orchestrator_factory()
+    h = orch.command_handler
+    await _seed(h)
+    if profile_id == "auditor":
+        await h.db.upsert_profile(
+            AgentProfile(id="auditor", name="Auditor", read_only=True)
+        )
+    await h.db.upsert_profile(AgentProfile(id="reviewer", name="Reviewer"))
+    await h.db.upsert_profile(AgentProfile(id="final-reviewer", name="Final"))
+    engine = pipeline_engine_factory(handler=h)
+
+    async def _delivered_pipeline(ctx):
+        ctx.no_work_proven = False
+        return (getattr(ctx.task, "pr_url", None) or "", True)
+
+    orch._run_completion_pipeline = _delivered_pipeline
+    task_id = (
+        await h.execute(
+            "create_task",
+            {"project_id": "p", "title": "Delivered", "profile_id": profile_id},
+        )
+    )["created"]
+    await h.db.update_task(
+        task_id,
+        branch_name=f"aq/{task_id}",
+        pr_url="https://github.com/o/r/pull/11",
+    )
+
+    await _close_pass(h, task_id, work_outcome=work_outcome)
+
+    completed = _emitted(orch.bus, "task.completed")
+    assert completed[0]["no_code"] is False
+    await engine.dispatch("task.completed", completed[0], event_id=f"intent-{profile_id}")
+    assert await _review_rows(h, task_id), "proof-backed work was not reviewed"
 
 
 @pytest.mark.asyncio

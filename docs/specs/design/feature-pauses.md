@@ -242,8 +242,10 @@ the existing timeout sweep and resume handlers pick them up unchanged.
 - **Exception — the chat analyzer.** The messaging-rework M0 strip removed the chat-observer
   *production* path outright (the Discord bot no longer constructs `ChatObserver`), rather
   than pausing it. `src/chat_observer.py`, `Supervisor.observe()`, `ObservationConfig`,
-  `ChatAnalyzerConfig`, the `chat_analyzer_suggestions` table and its query methods all
-  survive intact — no data or code was deleted — but they now have no producer. Consequently
+  the `chat_analyzer_suggestions` table and its query methods all survive intact — no data
+  was deleted — but they now have no producer. (`ChatAnalyzerConfig` did too until
+  prime-torrent-81 deleted it: its three thresholds gated the post-`observe()` suggester,
+  which is the half that was *not* kept, so no code could ever read them.) Consequently
   `supervisor.observation.enabled` (§6) is currently **inert**: flipping it has zero runtime
   effect either way. Re-enabling the analyzer requires re-wiring a producer, not just the
   flag.

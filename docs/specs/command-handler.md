@@ -975,7 +975,7 @@ Stages all changes and creates a commit.
     "project_id": <str>,
     "repo_id": <str>,
     "status": "nothing_to_commit",
-    "message": "No changes to commit",
+    "message": "No eligible changes to commit",
 }
 ```
 
@@ -1173,7 +1173,7 @@ Stage all changes and commit in a repository.
 
 **Returns on success (nothing to commit):**
 ```python
-{"repo_id": <str>, "committed": False, "message": "Nothing to commit — working tree clean"}
+{"repo_id": <str>, "committed": False, "message": "No eligible changes to commit"}
 ```
 
 **Errors:**

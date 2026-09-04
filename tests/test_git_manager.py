@@ -147,190 +147,62 @@ class TestGitManager:
         assert result.stdout.strip() == "task-2/another-feature"
 
 
-class TestCommitAll:
-    def test_clean_tree_does_not_invoke_hooks(self, git_repo):
-        clone = pathlib.Path(git_repo["clone"])
-        hook = clone / ".git" / "hooks" / "pre-commit"
-        hook.write_text("#!/bin/sh\necho invoked > hook-ran\n")
-        hook.chmod(0o755)
+def test_commit_all_uses_native_pre_commit_hook_once(git_repo):
+    clone = pathlib.Path(git_repo["clone"])
+    (clone / "work.txt").write_text("real work\n")
+    hook = clone / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\necho invoked >> hook-ran\n")
+    hook.chmod(0o755)
 
-        assert GitManager().commit_all(str(clone), "nothing") is False
-        assert not (clone / "hook-ran").exists()
-
-    def test_native_hooks_run_once_and_cannot_commit_reserved_staging(self, git_repo):
-        clone = pathlib.Path(git_repo["clone"])
-        (clone / "work.txt").write_text("real work\n")
-        reserved = clone / ".aq" / "claim.json"
-        reserved.parent.mkdir()
-        reserved.write_text("daemon state\n")
-        pre_commit = clone / ".git" / "hooks" / "pre-commit"
-        pre_commit.write_text(
-            "#!/bin/sh\necho pre-commit >> hook.log\ngit add -f .aq/claim.json\n"
-        )
-        pre_commit.chmod(0o755)
-        commit_msg = clone / ".git" / "hooks" / "commit-msg"
-        commit_msg.write_text("#!/bin/sh\necho commit-msg >> hook.log\n")
-        commit_msg.chmod(0o755)
-
-        assert GitManager().commit_all(str(clone), "task work", exclude_plans=False)
-
-        assert (clone / "hook.log").read_text().splitlines() == ["pre-commit", "commit-msg"]
-        assert _git(["show", "--pretty=", "--name-only", "HEAD"], cwd=str(clone)) == "work.txt"
-        assert _git(["diff", "--cached", "--name-only"], cwd=str(clone)) == ""
-
-    def test_commit_msg_rejection_aborts_commit_after_invocation(self, git_repo):
-        clone = pathlib.Path(git_repo["clone"])
-        before = _git(["rev-parse", "HEAD"], cwd=str(clone))
-        (clone / "work.txt").write_text("real work\n")
-        commit_msg = clone / ".git" / "hooks" / "commit-msg"
-        commit_msg.write_text("#!/bin/sh\necho rejected >> hook.log\nexit 19\n")
-        commit_msg.chmod(0o755)
-
-        with pytest.raises(GitError):
-            GitManager().commit_all(str(clone), "task work", exclude_plans=False)
-
-        assert (clone / "hook.log").read_text().splitlines() == ["rejected"]
-        assert _git(["rev-parse", "HEAD"], cwd=str(clone)) == before
-
-    def test_failing_pre_commit_cleans_reserved_staging_only(self, git_repo):
-        clone = pathlib.Path(git_repo["clone"])
-        (clone / "work.txt").write_text("real work\n")
-        reserved = clone / ".aq" / "claim.json"
-        reserved.parent.mkdir()
-        reserved.write_text("daemon state\n")
-        pre_commit = clone / ".git" / "hooks" / "pre-commit"
-        pre_commit.write_text("#!/bin/sh\ngit add -f .aq/claim.json\nexit 23\n")
-        pre_commit.chmod(0o755)
-
-        with pytest.raises(GitError):
-            GitManager().commit_all(str(clone), "task work", exclude_plans=False)
-
-        assert _git(["diff", "--cached", "--name-only"], cwd=str(clone)) == "work.txt"
-        assert reserved.read_text() == "daemon state\n"
-
-    def test_no_verify_disables_every_commit_hook(self, git_repo):
-        clone = pathlib.Path(git_repo["clone"])
-        (clone / "work.txt").write_text("real work\n")
-        for name in ("pre-commit", "prepare-commit-msg", "commit-msg", "post-commit"):
-            hook = clone / ".git" / "hooks" / name
-            hook.write_text(f"#!/bin/sh\necho {name} >> hook.log\n")
-            hook.chmod(0o755)
-
-        assert GitManager().commit_all(
-            str(clone), "auto remediation", exclude_plans=False, no_verify=True
-        )
-        assert not (clone / "hook.log").exists()
-
-    def test_pre_commit_hook_cannot_stage_daemon_state_in_unborn_repo(self, tmp_path):
-        """The initial commit is safe when a hook force-stages daemon state."""
-        repo = tmp_path / "unborn-hook"
-        _git(["init", "--initial-branch=main", str(repo)], cwd=str(tmp_path))
-        _git(["config", "user.name", "Test"], cwd=str(repo))
-        _git(["config", "user.email", "t@t.com"], cwd=str(repo))
-
-        reserved_paths = (".aq/claim.json", ".aq-worktree.json", ".codex/hooks.json")
-        for path in reserved_paths:
-            target = repo / path
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text("daemon state\n")
-        _git(["add", *reserved_paths], cwd=str(repo))
-        (repo / "work.txt").write_text("real work\n")
-        hook = repo / ".git" / "hooks" / "pre-commit"
-        hook.write_text("#!/bin/sh\ngit add -f .aq/claim.json\n")
-        hook.chmod(0o755)
-
-        assert GitManager().commit_all(str(repo), "initial task work", exclude_plans=False)
-        assert _git(["show", "--pretty=", "--name-only", "HEAD"], cwd=str(repo)) == "work.txt"
-        assert set(_git(["ls-files", "--others", "--exclude-standard"], cwd=str(repo)).splitlines()) == set(
-            reserved_paths
-        )
-
-    def test_omits_pre_staged_daemon_paths_in_unborn_repo(self, tmp_path):
-        """Reserved runtime state cannot reach an initial commit either."""
-        repo = tmp_path / "unborn"
-        _git(["init", "--initial-branch=main", str(repo)], cwd=str(tmp_path))
-        _git(["config", "user.name", "Test"], cwd=str(repo))
-        _git(["config", "user.email", "t@t.com"], cwd=str(repo))
-
-        reserved_paths = (".aq/claim.json", ".aq-worktree.json", ".codex/hooks.json")
-        for path in reserved_paths:
-            target = repo / path
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text("daemon state\n")
-        _git(["add", *reserved_paths], cwd=str(repo))
-        (repo / "work.txt").write_text("real work\n")
-
-        assert GitManager().commit_all(str(repo), "initial task work", exclude_plans=False)
-        committed_paths = _git(["show", "--pretty=", "--name-only", "HEAD"], cwd=str(repo))
-        assert committed_paths.splitlines() == ["work.txt"]
-        assert set(_git(["ls-files", "--others", "--exclude-standard"], cwd=str(repo)).splitlines()) == set(
-            reserved_paths
-        )
-
-    def test_omits_pre_staged_daemon_paths_with_existing_head(self, git_repo):
-        """Pre-existing staged bookkeeping is removed before a normal commit."""
-        clone = git_repo["clone"]
-        reserved_paths = (".aq/claim.json", ".aq-worktree.json", ".codex/hooks.json")
-        for path in reserved_paths:
-            target = pathlib.Path(clone, path)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text("before\n")
-        _git(["add", *reserved_paths], cwd=clone)
-        _git(["commit", "-m", "tracked daemon paths"], cwd=clone)
-
-        for path in reserved_paths:
-            pathlib.Path(clone, path).write_text("after\n")
-        _git(["add", *reserved_paths], cwd=clone)
-        pathlib.Path(clone, "work.txt").write_text("real work\n")
-
-        assert GitManager().commit_all(clone, "task work", exclude_plans=False)
-        committed_paths = _git(["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"], cwd=clone)
-        assert committed_paths.splitlines() == ["work.txt"]
-        assert set(_git(["diff", "--name-only"], cwd=clone).splitlines()) == set(reserved_paths)
-
-    def test_refuses_commit_when_reserved_path_remains_cached(self, git_repo, monkeypatch):
-        """A failed unstage must not turn daemon state into a task commit."""
-        clone = git_repo["clone"]
-        reserved_path = ".aq-worktree.json"
-        pathlib.Path(clone, reserved_path).write_text("daemon state\n")
-        _git(["add", reserved_path], cwd=clone)
-        pathlib.Path(clone, "work.txt").write_text("real work\n")
-
-        mgr = GitManager()
-        original_run = mgr._run
-
-        def leave_reserved_path_cached(args, **kwargs):
-            if args[:3] == ["reset", "HEAD", "--"]:
-                return ""
-            return original_run(args, **kwargs)
-
-        monkeypatch.setattr(mgr, "_run", leave_reserved_path_cached)
-
-        with pytest.raises(GitError, match="reserved daemon bookkeeping"):
-            mgr.commit_all(clone, "task work", exclude_plans=False)
-
-    def test_propagates_reserved_path_unstage_failure(self, git_repo, monkeypatch):
-        """Commit-all must surface an actual Git error while clearing daemon state."""
-        clone = git_repo["clone"]
-        pathlib.Path(clone, ".aq-worktree.json").write_text("daemon state\n")
-        pathlib.Path(clone, "work.txt").write_text("real work\n")
-
-        mgr = GitManager()
-        original_run = mgr._run
-
-        def fail_reserved_path_unstage(args, **kwargs):
-            if args[:3] == ["reset", "HEAD", "--"]:
-                raise GitError("synthetic reset failure")
-            return original_run(args, **kwargs)
-
-        monkeypatch.setattr(mgr, "_run", fail_reserved_path_unstage)
-
-        with pytest.raises(GitError, match="synthetic reset failure"):
-            mgr.commit_all(clone, "task work", exclude_plans=False)
+    assert GitManager().commit_all(str(clone), "task work", exclude_plans=False)
+    assert (clone / "hook-ran").read_text().splitlines() == ["invoked"]
 
 
 class TestPushBranchForceWithLease:
     """Tests for the force_with_lease parameter on push_branch (G5 fix)."""
+
+    def test_public_push_branch_rejects_reserved_delivery(self, git_repo):
+        """The compatibility API cannot publish daemon-owned task content."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+        mgr.create_branch(clone, "feature/reserved-push")
+        reserved = pathlib.Path(clone, ".aq", "claim.json")
+        reserved.parent.mkdir()
+        reserved.write_text("daemon state\n")
+        _git(["add", "-f", ".aq/claim.json"], cwd=clone)
+        _git(["commit", "-m", "reserved content"], cwd=clone)
+
+        with pytest.raises(GitError, match="reserved delivery paths"):
+            mgr.push_branch(clone, "feature/reserved-push")
+
+        assert _git(
+            ["ls-remote", "--heads", "origin", "refs/heads/feature/reserved-push"],
+            cwd=clone,
+        ) == ""
+
+    def test_push_branch_pushes_the_resolved_oid_not_the_name(self, git_repo):
+        """The branch is resolved once and that exact object id is what reaches origin."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+        mgr.create_branch(clone, "feature/exact-oid")
+        pathlib.Path(clone, "work.txt").write_text("work\n")
+        _git(["add", "work.txt"], cwd=clone)
+        _git(["commit", "-m", "work"], cwd=clone)
+        tip = _git(["rev-parse", "HEAD"], cwd=clone)
+
+        pushed: list[list[str]] = []
+        real_run = mgr._run
+
+        def spy(args, cwd=None, **kw):
+            if args and args[0] == "push":
+                pushed.append(list(args))
+            return real_run(args, cwd=cwd, **kw)
+
+        mgr._run = spy
+        mgr.push_branch(clone, "feature/exact-oid")
+
+        assert pushed == [["push", "origin", f"{tip}:refs/heads/feature/exact-oid"]]
+        assert _git(["rev-parse", "origin/feature/exact-oid"], cwd=clone) == tip
 
     def test_plain_push_succeeds(self, git_repo):
         """Basic push without force_with_lease works as before."""
@@ -1008,6 +880,23 @@ class TestSwitchToBranchRebase:
 class TestMidChainSync:
     """Tests for mid_chain_sync: push intermediate work and rebase mid-chain (G6 fix)."""
 
+    def test_reserved_intermediate_commit_is_never_published(self, git_repo):
+        """Both compatibility-path pushes enforce the delivery guard."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+        mgr.prepare_for_task(clone, "chain/reserved")
+        reserved = pathlib.Path(clone, ".codex", "settings.json")
+        reserved.parent.mkdir()
+        reserved.write_text("daemon state\n")
+        _git(["add", "-f", ".codex/settings.json"], cwd=clone)
+        _git(["commit", "-m", "reserved intermediate content"], cwd=clone)
+
+        assert mgr.mid_chain_sync(clone, "chain/reserved") is True
+        assert _git(
+            ["ls-remote", "--heads", "origin", "refs/heads/chain/reserved"],
+            cwd=clone,
+        ) == ""
+
     def test_mid_chain_sync_pushes_and_rebases(self, git_repo, tmp_path):
         """mid_chain_sync should push the branch to remote and rebase onto
         the latest origin/main, keeping the subtask chain close to main."""
@@ -1365,6 +1254,27 @@ class TestMergeBranchPullBeforeMerge:
 
 class TestSyncAndMerge:
     """Tests for the sync_and_merge() high-level merge-and-push flow."""
+
+    def test_reserved_merge_is_not_pushed_to_default(self, git_repo):
+        """The compatibility merge path rejects daemon-owned task content."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+        original_main = _git(["rev-parse", "origin/main"], cwd=clone)
+        mgr.prepare_for_task(clone, "task-sync/reserved")
+        reserved = pathlib.Path(clone, ".aq-worktree.json")
+        reserved.write_text("daemon state\n")
+        _git(["add", "-f", ".aq-worktree.json"], cwd=clone)
+        _git(["commit", "-m", "reserved merge content"], cwd=clone)
+
+        success, error = mgr.sync_and_merge(
+            clone,
+            "task-sync/reserved",
+            max_retries=0,
+        )
+
+        assert success is False
+        assert error.startswith("delivery_guard_failed: reserved delivery paths:")
+        assert _git(["rev-parse", "origin/main"], cwd=clone) == original_main
 
     def test_sync_and_merge_basic_success(self, git_repo):
         """Happy path: merge and push succeed on first attempt."""

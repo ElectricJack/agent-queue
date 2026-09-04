@@ -333,7 +333,7 @@ class TestCommitChanges:
 
         assert "error" not in result
         assert result["status"] == "nothing_to_commit"
-        assert "No changes" in result["message"]
+        assert result["message"] == "No eligible changes to commit"
 
     async def test_missing_message(self, handler, project_with_repo):
         project_id, _, _ = project_with_repo
@@ -1011,6 +1011,21 @@ class TestActiveProjectFallback:
         mock_git.acommit_all.assert_called_once()
         call_args = mock_git.acommit_all.call_args
         assert call_args[0] == (checkout_path, "feat: inferred commit")
+
+    async def test_git_commit_reports_no_eligible_changes(
+        self, handler, mock_git, project_with_repo
+    ):
+        project_id, _, _ = project_with_repo
+        mock_git.acommit_all.return_value = False
+        handler.set_active_project(project_id)
+
+        result = await handler.execute("git_commit", {"message": "empty"})
+
+        assert result == {
+            "project_id": project_id,
+            "committed": False,
+            "message": "No eligible changes to commit",
+        }
 
     async def test_git_pull_infers_active_project(self, handler, mock_git, project_with_repo):
         """git_pull should work without repo_id when active project is set."""

@@ -108,6 +108,15 @@ async def orch(db, tmp_path):
     o.agent_questions.db = db
     o.transcript_watcher.db = db
     o.git = MagicMock()
+    # Pool launch installs the managed git excludes before it hands a checkout
+    # to a session (src/orchestrator/pools.py::_launch_pool_session), which
+    # reaches for the real GitManager; tmp_path holds no checkout.  Same stub
+    # as tests/test_pool_reconciler.py's ``orch`` fixture.
+    o._ensure_control_files_excluded = AsyncMock(return_value=True)
+    # MessageDeliveryEngine was built in __init__ against the constructor's
+    # (uninitialized) db, like the reconcilers above; the cascade's delivery
+    # pass runs every cycle.
+    o.message_delivery._db = db
     o.bus.emit = AsyncMock()
     o.harness_registry.upsert(
         Harness(

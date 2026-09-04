@@ -127,7 +127,14 @@ def listed(count: int = 1) -> CommandResult:
 @pytest.mark.asyncio
 async def test_a_dispatch_persists_one_run_and_its_receipts_per_rule(db):
     engine, adapter, _ref, _bus = await build(db)
-    adapter.queue.extend([ok(), listed()])
+    # ``dispatch_event`` gathers the two rules concurrently and each one
+    # suspends on real database I/O before it reaches the adapter, so the
+    # order in which ``ensure_task`` and ``list_tasks`` are invoked is
+    # whichever connection answers first.  Script the results by command
+    # name; a shared FIFO handed the review rule the ``listed`` result on a
+    # loaded CI box and it walked to ``review-failed``.
+    adapter.script("ensure_task", ok())
+    adapter.script("list_tasks", listed())
     result = await engine.dispatch_event(event("task-completed-code"), TRUSTED_LOCAL)
     assert len(result.run_ids) == 2
     for run_id in result.run_ids:
@@ -249,7 +256,8 @@ async def test_a_replayed_event_is_refused_by_the_database_index(db):
     """§2.5 item 9 — the deterministic ``dispatch_id`` turns a replay into a
     unique-index collision, which is stronger than a pre-read."""
     engine, adapter, _ref, _bus = await build(db)
-    adapter.queue.extend([ok(), listed()])
+    adapter.script("ensure_task", ok())
+    adapter.script("list_tasks", listed())
     first = await engine.dispatch_event(event("task-completed-code"), TRUSTED_LOCAL)
     second = await engine.dispatch_event(event("task-completed-code"), TRUSTED_LOCAL)
     assert second.run_ids == first.run_ids
@@ -310,7 +318,8 @@ async def test_same_dispatch_and_rule_id_create_one_run_per_playbook(db):
 async def test_two_concurrent_dispatches_of_one_event_still_create_two_runs(db):
     """The fence, not the pre-read: both dispatches race the same index."""
     engine, adapter, _ref, _bus = await build(db)
-    adapter.queue.extend([ok(), listed(), ok(), listed()])
+    adapter.script("ensure_task", ok(), ok())
+    adapter.script("list_tasks", listed(), listed())
     await asyncio.gather(
         engine.dispatch_event(event("task-completed-code"), TRUSTED_LOCAL),
         engine.dispatch_event(event("task-completed-code"), TRUSTED_LOCAL),
