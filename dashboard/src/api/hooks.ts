@@ -47,7 +47,6 @@ import {
   removeWorkspace,
   reopenWithFeedback,
   restartTask,
-  playbookGraphView,
   playbookV2Graph,
   resumePlaybook,
   runPlaybook,
@@ -114,7 +113,6 @@ import type {
   ListMcpToolCatalogResponse,
   ListPlaybookRunsResponse,
   ListPlaybooksResponse,
-  PlaybookGraphViewResponse,
   PlaybookV2GraphResponse,
   ListProfilesResponse2 as ListProfilesResponse,
   ListProjectsResponse2 as ListProjectsResponse,
@@ -822,33 +820,6 @@ export function usePlaybookSource(playbookId: string) {
   });
 }
 
-/** Query key for one playbook's compiled graph view. */
-export const playbookGraphKey = (playbookId: string) => ["playbook-graph", playbookId] as const;
-
-/** The compiled definition of a playbook, for the Graph tab.
- *
- *  Run overlays, history, health metrics and live current-node state are
- *  explicitly disabled: this view describes the active compiled definition
- *  only (design spec §4). */
-export function usePlaybookGraph(playbookId?: string) {
-  return useQuery({
-    queryKey: playbookGraphKey(playbookId ?? ""),
-    queryFn: async () =>
-      (await playbookGraphView({
-        body: {
-          playbook_id: playbookId!,
-          direction: "TD",
-          show_prompts: true,
-          include_live_state: false,
-          include_metrics: false,
-          include_history: false,
-        },
-        throwOnError: true,
-      })).data as PlaybookGraphViewResponse,
-    enabled: !!playbookId,
-  });
-}
-
 /** Query key for one playbook artifact's semantic graph.
  *
  *  The artifact hash is part of the key because an artifact is immutable: two
@@ -864,7 +835,7 @@ export interface PlaybookV2GraphOptions {
   eventType?: string;
 }
 
-/** The semantic graph of one playbook artifact, for the Semantic graph tab.
+/** The semantic graph of one playbook artifact, for the Graph tab.
  *
  *  Deliberately not polled: an artifact is immutable, so the only thing that
  *  can change is which one is active, and that changes through a mutation this

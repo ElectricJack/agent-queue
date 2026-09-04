@@ -1,18 +1,18 @@
 import type { ComponentType, MouseEvent, ReactNode } from "react";
 import type { Edge, Node } from "@xyflow/react";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import PlaybookDetail from "../PlaybookDetail";
-import type { PlaybookGraphNodeData } from "../playbook-graph/types";
-import { REVIEW_PROMPT, graph, layout } from "../playbook-graph/__tests__/fixtures";
 import { graph as semanticGraph } from "../playbook-graph-v2/__tests__/fixtures";
 
+type FlowNodeData = Record<string, unknown>;
+
 interface FlowProps {
-  nodes: Node<PlaybookGraphNodeData>[];
+  nodes: Node<FlowNodeData>[];
   edges: Edge[];
-  nodeTypes: Record<string, ComponentType<{ id: string; data: PlaybookGraphNodeData; selected: boolean }>>;
+  nodeTypes: Record<string, ComponentType<{ id: string; data: FlowNodeData; selected: boolean }>>;
   children: ReactNode;
   onPaneClick?: (event: MouseEvent) => void;
 }
@@ -37,7 +37,6 @@ vi.mock("@xyflow/react", () => ({
 }));
 
 const state = vi.hoisted(() => ({
-  graph: {} as Record<string, unknown>,
   semanticGraph: {} as Record<string, unknown>,
   activationHealth: {} as Record<string, unknown>,
 }));
@@ -53,7 +52,6 @@ vi.mock("../../api/hooks", () => ({
   usePlaybookRuns: () => ({ data: [], isLoading: false }),
   useUpdatePlaybookSource: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useDeletePlaybook: () => ({ mutateAsync: vi.fn(), isPending: false }),
-  usePlaybookGraph: () => ({ ...state.graph, refetch: vi.fn() }),
   usePlaybookV2Graph: () => ({ ...state.semanticGraph, refetch: vi.fn() }),
   usePlaybookActivationHealth: () => state.activationHealth,
   usePlaybookArtifacts: () => ({ data: { artifacts: [] } }),
@@ -75,12 +73,6 @@ function page() {
 }
 
 beforeEach(() => {
-  state.graph = {
-    data: { success: true, playbook: { id: "review-flow" }, graph, layout, legend: {} },
-    isPending: false,
-    isError: false,
-    error: null,
-  };
   state.semanticGraph = { data: semanticGraph, isPending: false, isError: false, error: null };
   state.activationHealth = {
     data: { activations: [semanticGraph.activation] },
@@ -90,58 +82,38 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("PlaybookDetail tabs", () => {
-  it("exposes Source, Graph, Semantic graph and Runs and no Compiled tab", () => {
+  it("exposes the V2 Graph tab without legacy graph tabs", () => {
     render(page());
     expect(screen.getByRole("button", { name: "Source" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Graph" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Semantic graph" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Runs" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Semantic graph" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Compiled" })).not.toBeInTheDocument();
   });
 
-  it("hides the Semantic graph tab until an activation exists", () => {
-    state.activationHealth = { data: { activations: [] }, isPending: false };
-    render(page());
-    expect(screen.queryByRole("button", { name: "Semantic graph" })).not.toBeInTheDocument();
-  });
-
-  it("renders the artifact graph on the Semantic graph tab and leaves the V1 tab intact", async () => {
+  it("renders the V2 artifact graph on the Graph tab", async () => {
     const user = userEvent.setup();
     render(page());
 
-    await user.click(screen.getByRole("button", { name: "Semantic graph" }));
+    await user.click(screen.getByRole("button", { name: "Graph" }));
     expect(screen.getByRole("region", { name: "Playbook semantic graph" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Inspect step Ensure a review task/ })).toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Playbook graph" })).not.toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "Graph" }));
-    expect(screen.getByRole("region", { name: "Playbook graph" })).toBeInTheDocument();
-    expect(screen.queryByRole("region", { name: "Playbook semantic graph" })).not.toBeInTheDocument();
   });
 
   it("no longer renders the playbook-summary JSON block anywhere", async () => {
     const user = userEvent.setup();
     render(page());
-    for (const tab of ["Source", "Graph", "Semantic graph", "Runs"]) {
+    for (const tab of ["Source", "Graph", "Runs"]) {
       await user.click(screen.getByRole("button", { name: tab }));
       expect(screen.queryByText(/"scope_identifier"|"running_count"/)).not.toBeInTheDocument();
       expect(screen.queryByText(/Compiled metadata from the active registry/)).not.toBeInTheDocument();
     }
   });
 
-  it("renders the compiled graph and its inspector on the Graph tab", async () => {
-    const user = userEvent.setup();
-    render(page());
-    await user.click(screen.getByRole("button", { name: "Graph" }));
-    expect(screen.getByRole("region", { name: "Playbook graph" })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Inspect node review" }));
-    const inspector = screen.getByRole("complementary", { name: "Node inspector" });
-    expect(within(inspector).getByText(REVIEW_PROMPT, { collapseWhitespace: false }).textContent).toBe(REVIEW_PROMPT);
-  });
-
   it("keeps Source and Runs usable when the graph endpoint fails", async () => {
     const user = userEvent.setup();
-    state.graph = { data: undefined, isPending: false, isError: true, error: new Error("not compiled") };
+    state.semanticGraph = { data: undefined, isPending: false, isError: true, error: new Error("not compiled") };
     render(page());
 
     await user.click(screen.getByRole("button", { name: "Graph" }));

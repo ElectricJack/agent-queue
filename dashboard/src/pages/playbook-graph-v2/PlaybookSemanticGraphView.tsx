@@ -30,7 +30,7 @@ export interface PlaybookSemanticGraphViewProps {
   overlay?: RunOverlayInput;
 }
 
-/** Semantic graph tab body: event scope, canvas, inspector and diagnostics.
+/** V2 Graph tab body: event scope, canvas, inspector and diagnostics.
  *
  *  Owns the selected step, the selected event scope and the Advanced toggle.
  *  Advanced is deliberately held here rather than in the inspector, so an
