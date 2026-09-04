@@ -10,7 +10,9 @@ about it.
 from __future__ import annotations
 
 import importlib
+import os
 import sqlite3
+from pathlib import Path
 
 import pytest
 
@@ -240,6 +242,60 @@ class TestFix:
         assert not list((db_checks_module._VERSIONS_DIR).glob("_orphan_*.py")), (
             "the borrowed revision file must not be left behind"
         )
+
+    async def test_fix_never_writes_into_the_checkouts_versions_directory(
+        self, ctx, tmp_path, monkeypatch
+    ):
+        """The borrowed file must live in a private directory, not the repo.
+
+        Writing it into the real ``migrations/versions/`` and unlinking it
+        afterwards mutates state every concurrent Alembic scan reads: a
+        pytest-xdist worker (or an operator's second shell) that enumerates
+        the directory during that window sees the file appear and vanish
+        mid-scan and fails with ``Can't find Python file``.  The fix has to
+        point Alembic at a temp dir *in addition to* the checkout's versions
+        instead.
+        """
+        from alembic import command
+
+        db_path = tmp_path / "aq.db"
+        head = (await _check().run(ctx)).data["heads"][0]
+        _stamp(db_path, ORPHAN)
+        source = _synthetic_revision(ORPHAN, head)
+        monkeypatch.setattr(
+            db_checks_module, "find_revision_source", _fixed_source("refs/x", "migrations/v.py")
+        )
+        monkeypatch.setattr(db_checks_module, "_revision_file_text", _fixed_text(source))
+
+        versions_dir = db_checks_module._VERSIONS_DIR
+        pycache = versions_dir / "__pycache__"
+        pycache.mkdir(exist_ok=True)
+        sentinel = pycache / "_doctor_sentinel.pyc"
+        sentinel.write_bytes(b"")
+        seen: dict[str, object] = {}
+
+        def _observe(cfg, target, **_kwargs):
+            seen["versions_written"] = sorted(p.name for p in versions_dir.glob("_orphan_*.py"))
+            seen["locations"] = cfg.get_main_option("version_locations")
+            seen["target"] = target
+            _stamp(db_path, target)  # what the real downgrade() would leave behind
+
+        monkeypatch.setattr(command, "downgrade", _observe)
+        try:
+            result = await apply_fix(_check(), ctx)
+            assert result.severity is Severity.OK, result.detail
+            assert seen["target"] == head
+            assert seen["versions_written"] == [], "borrowed file was written into the checkout"
+            locations = [Path(part) for part in str(seen["locations"]).split(os.pathsep) if part]
+            assert versions_dir.resolve() in [loc.resolve() for loc in locations], (
+                "Alembic must still see the checkout's own revisions"
+            )
+            borrowed = [loc for loc in locations if loc.resolve() != versions_dir.resolve()]
+            assert len(borrowed) == 1, seen["locations"]
+            assert not borrowed[0].exists(), "the private directory must be cleaned up"
+            assert sentinel.exists(), "the checkout's __pycache__ must not be deleted"
+        finally:
+            sentinel.unlink(missing_ok=True)
 
     @pytest.mark.migration
     async def test_the_stamp_opt_in_restores_a_bootable_database(self, ctx, tmp_path, monkeypatch):
