@@ -66,12 +66,12 @@ def sync_detailed(
     """Aggregated metrics for chat-analyzer suggestion outcomes. Returns per-status counts (pending,
     accepted, dismissed, auto_executed, suppressed), accept_rate, dismiss_rate, and
     suppression_count_by_gate (one entry per gate that fired: confidence, dedup, in_flight_active_task,
-    dismiss_cooldown). Use this to tune the gate thresholds in chat_analyzer config.
+    dismiss_cooldown).
 
      Aggregated metrics for chat-analyzer suggestion outcomes. Returns per-status counts (pending,
     accepted, dismissed, auto_executed, suppressed), accept_rate, dismiss_rate, and
     suppression_count_by_gate (one entry per gate that fired: confidence, dedup, in_flight_active_task,
-    dismiss_cooldown). Use this to tune the gate thresholds in chat_analyzer config.
+    dismiss_cooldown).
 
     Args:
         body (GetChatAnalyzerMetricsRequest):
@@ -103,12 +103,12 @@ def sync(
     """Aggregated metrics for chat-analyzer suggestion outcomes. Returns per-status counts (pending,
     accepted, dismissed, auto_executed, suppressed), accept_rate, dismiss_rate, and
     suppression_count_by_gate (one entry per gate that fired: confidence, dedup, in_flight_active_task,
-    dismiss_cooldown). Use this to tune the gate thresholds in chat_analyzer config.
+    dismiss_cooldown).
 
      Aggregated metrics for chat-analyzer suggestion outcomes. Returns per-status counts (pending,
     accepted, dismissed, auto_executed, suppressed), accept_rate, dismiss_rate, and
     suppression_count_by_gate (one entry per gate that fired: confidence, dedup, in_flight_active_task,
-    dismiss_cooldown). Use this to tune the gate thresholds in chat_analyzer config.
+    dismiss_cooldown).
 
     Args:
         body (GetChatAnalyzerMetricsRequest):
@@ -135,12 +135,12 @@ async def asyncio_detailed(
     """Aggregated metrics for chat-analyzer suggestion outcomes. Returns per-status counts (pending,
     accepted, dismissed, auto_executed, suppressed), accept_rate, dismiss_rate, and
     suppression_count_by_gate (one entry per gate that fired: confidence, dedup, in_flight_active_task,
-    dismiss_cooldown). Use this to tune the gate thresholds in chat_analyzer config.
+    dismiss_cooldown).
 
      Aggregated metrics for chat-analyzer suggestion outcomes. Returns per-status counts (pending,
     accepted, dismissed, auto_executed, suppressed), accept_rate, dismiss_rate, and
     suppression_count_by_gate (one entry per gate that fired: confidence, dedup, in_flight_active_task,
-    dismiss_cooldown). Use this to tune the gate thresholds in chat_analyzer config.
+    dismiss_cooldown).
 
     Args:
         body (GetChatAnalyzerMetricsRequest):
@@ -170,12 +170,12 @@ async def asyncio(
     """Aggregated metrics for chat-analyzer suggestion outcomes. Returns per-status counts (pending,
     accepted, dismissed, auto_executed, suppressed), accept_rate, dismiss_rate, and
     suppression_count_by_gate (one entry per gate that fired: confidence, dedup, in_flight_active_task,
-    dismiss_cooldown). Use this to tune the gate thresholds in chat_analyzer config.
+    dismiss_cooldown).
 
      Aggregated metrics for chat-analyzer suggestion outcomes. Returns per-status counts (pending,
     accepted, dismissed, auto_executed, suppressed), accept_rate, dismiss_rate, and
     suppression_count_by_gate (one entry per gate that fired: confidence, dedup, in_flight_active_task,
-    dismiss_cooldown). Use this to tune the gate thresholds in chat_analyzer config.
+    dismiss_cooldown).
 
     Args:
         body (GetChatAnalyzerMetricsRequest):
