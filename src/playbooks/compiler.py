@@ -239,10 +239,18 @@ class PlaybookCompiler:
             errors.append("Frontmatter missing required field: 'scope'")
         else:
             scope = frontmatter["scope"]
-            if scope not in ("system", "project") and not scope.startswith("agent-type:"):
+            valid_scope = (
+                isinstance(scope, str)
+                and (
+                    scope in ("system", "project")
+                    or (scope.startswith("agent-type:") and bool(scope.removeprefix("agent-type:")))
+                    or (scope.startswith("project:") and bool(scope.removeprefix("project:")))
+                )
+            )
+            if not valid_scope:
                 errors.append(
-                    f"Frontmatter 'scope' must be 'system', 'project', or "
-                    f"'agent-type:{{type}}', got: '{scope}'"
+                    f"Frontmatter 'scope' must be 'system', 'project', 'project:{{id}}', "
+                    f"or 'agent-type:{{type}}', got: '{scope}'"
                 )
 
         if "enabled" in frontmatter:

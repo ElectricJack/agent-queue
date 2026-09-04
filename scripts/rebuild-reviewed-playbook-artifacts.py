@@ -41,6 +41,7 @@ import re
 import sys
 from collections.abc import Mapping
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -54,7 +55,9 @@ from src.playbooks.proposal import propose  # noqa: E402
 from src.playbooks.validation import (  # noqa: E402
     RegisteredEventLookup,
     RegistryContractLookup,
+    VaultProfileLookup,
 )
+from src.profiles.parser import parse_profile, parsed_profile_to_agent_profile  # noqa: E402
 
 FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "playbooks" / "v2"
 FROZEN_V1 = REPO_ROOT / "tests" / "fixtures" / "playbooks" / "v1"
@@ -65,6 +68,14 @@ SHIPPED = {
     "memory-consolidation": "src/prompts/default_playbooks/memory-consolidation.md",
     "coding-reflection": "src/prompts/default_agent_type_playbooks/claude-opus/reflection.md",
 }
+
+# Project playbooks stay in their live V1 vault path until an operator closes
+# V1 admission.  Their reviewed V2 candidates are staged beside the other
+# fixture evidence rather than copied over the running source.
+STAGED = {
+    "pr-merge-sweep": "tests/fixtures/playbooks/v2/pr-merge-sweep/source.md",
+}
+SOURCES = {**SHIPPED, **STAGED}
 
 #: Which numbered prose item authorises which lowered step (§5.3 review record).
 #: A terminal step is authorised by the "Failure handling, uniformly" section,
@@ -92,6 +103,12 @@ PIPELINE_STEP_PROSE: Mapping[str, tuple[str, int | None]] = {
 }
 
 _TERMINAL_HEADING = "## Failure handling, uniformly"
+
+PR_MERGE_SWEEP_STEP_PROSE: Mapping[str, tuple[str, int | None]] = {
+    "sweep-open-prs--ensure_sweep_task": ("sweep-open-prs", 1),
+    "sweep-open-prs--route_sweep_task": ("sweep-open-prs", 2),
+    "sweep-open-prs--done": ("sweep-open-prs", None),
+}
 
 
 class ProseIndex:
@@ -153,7 +170,7 @@ def _remap_pipeline_refs(body: dict[str, Any], index: ProseIndex) -> dict[str, A
     return body
 
 
-def profile_lookup() -> Any:
+def profile_lookup(playbook_id: str | None = None) -> Any:
     """Resolve profiles from ``src/profiles/defaults/``, the shipped set.
 
     Production resolves profiles from the database (``_v2_lookups``); a fixture
@@ -162,7 +179,14 @@ def profile_lookup() -> Any:
     ``src.playbooks.migration`` so the release check that later *holds* the
     fixture to those profiles resolves them the same way this build did.
     """
-    return shipped_profile_lookup()
+    if playbook_id != "pr-merge-sweep":
+        return shipped_profile_lookup()
+    profile_path = FIXTURE_ROOT / "pr-merge-sweep" / "pr-merger-profile.md"
+    parsed = parse_profile(profile_path.read_text(encoding="utf-8"))
+    if not parsed.is_valid:
+        raise ValueError(f"staged profile {profile_path} does not parse: {parsed.errors}")
+    fields = parsed_profile_to_agent_profile(parsed)
+    return VaultProfileLookup({fields["id"]: SimpleNamespace(**fields)})
 
 
 def _load(rel_path: str) -> PlaybookSource:
@@ -187,6 +211,21 @@ def semantic_body(playbook_id: str, source: PlaybookSource) -> dict[str, Any]:
         if diagnostics:
             raise SystemExit(f"{playbook_id}: {diagnostics}")
         return json.loads(json.dumps(body))
+    if playbook_id == "pr-merge-sweep":
+        frozen = FIXTURE_ROOT / "pr-merge-sweep" / "legacy-v1.md"
+        loaded = PlaybookSource.load(frozen, vault_root=frozen.parent)
+        assert isinstance(loaded, PlaybookSource)
+        body, diagnostics = lower_pipeline(loaded, contracts=RegistryContractLookup())
+        if diagnostics:
+            raise SystemExit(f"frozen V1 graph no longer lowers cleanly: {diagnostics}")
+        remapped = json.loads(json.dumps(body))
+        index = ProseIndex(source, source.vault_path)
+        for rule in remapped["rules"]:
+            rule["source"] = index.rule_ref(rule["id"])
+        for step_id, step in remapped["steps"].items():
+            rule_id, ordinal = PR_MERGE_SWEEP_STEP_PROSE[step_id]
+            step["source"] = index.step_ref(rule_id, ordinal)
+        return remapped
     if playbook_id == "memory-consolidation":
         return _memory_consolidation_body(source)
     if playbook_id == "coding-reflection":
@@ -353,7 +392,7 @@ def _coding_reflection_body(source: PlaybookSource) -> dict[str, Any]:
 
 def build(playbook_id: str) -> dict[str, Any]:
     """Compile one shipped source and report what a reviewer would see."""
-    rel_path = SHIPPED[playbook_id]
+    rel_path = SOURCES[playbook_id]
     source = _load(rel_path)
     body = semantic_body(playbook_id, source)
     if not body:
@@ -376,7 +415,7 @@ def build(playbook_id: str) -> dict[str, Any]:
         source,
         body,
         contracts=RegistryContractLookup(),
-        profiles=profile_lookup(),
+        profiles=profile_lookup(playbook_id),
         events=RegisteredEventLookup(),
         version=1,
         enforce_inventory=True,
@@ -427,7 +466,7 @@ def main() -> int:
     args = parser.parse_args()
 
     drift = 0
-    for playbook_id in args.ids or list(SHIPPED):
+    for playbook_id in args.ids or list(SOURCES):
         print(f"{playbook_id}:")
         result = build(playbook_id)
         directory = FIXTURE_ROOT / playbook_id
