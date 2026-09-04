@@ -929,7 +929,11 @@ class GitOpsMixin:
             # fixable on the assigned branch; a later close will resolve its
             # committed tip before any PR is accepted.
             pr_delivery_branch = ctx.delivery_branch or task.branch_name or current_branch
-        merge_branch = delivery_ref if delivery_ref != default_branch else None
+        merge_branch = (
+            delivery_ref
+            if resolution and resolution.delivery_branch != default_branch
+            else None
+        )
         if pr_mode and not pr_delivery_branch and not delivery_guard_blocked:
             failures.append(("Could not determine the task delivery branch.", False))
 

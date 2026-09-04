@@ -1459,10 +1459,9 @@ class TestPhaseVerifyNormalTask:
         )
         await orch.db.create_task(task)
 
-        # Auto-push rev-list returns "3" (ahead), then scenario behind
-        # check returns "0", then scenario ahead check returns "0"
-        # (pushed successfully — mock won't change state but verification
-        # re-checks via _arun which we feed with subsequent values).
+        # Auto-push rev-list returns "3" (ahead), then the final behind and
+        # ahead checks return "0".  The mock push cannot update the refs, so
+        # these three values model the complete successful verification.
         orch.git._arun = AsyncMock(side_effect=["3", "0", "0"])
 
         ws = await orch.db.get_workspace("ws-1")
@@ -1471,6 +1470,11 @@ class TestPhaseVerifyNormalTask:
         result = await orch._phase_verify(ctx)
         assert result == PhaseResult.CONTINUE
         orch.git.apush_validated_delivery.assert_awaited_once()
+        assert [call.args[0] for call in orch.git._arun.await_args_list] == [
+            ["rev-list", "refs/remotes/origin/main..HEAD", "--count"],
+            ["rev-list", "HEAD..refs/remotes/origin/main", "--count"],
+            ["rev-list", "refs/remotes/origin/main..HEAD", "--count"],
+        ]
 
     async def test_fails_when_ahead_and_auto_push_fails(self, pipeline_orch):
         """Falls back to failure when auto-push raises an exception."""
@@ -2054,7 +2058,7 @@ class TestCompletionPipelineVerify:
         mock_git.ais_ancestor = AsyncMock(return_value=True)
         mock_git.acount_commits_ahead = AsyncMock(
             side_effect=lambda _workspace, branch, _base: (
-                0 if branch == "main" else 1
+                0 if branch == "refs/heads/main" else 1
             )
         )
         mock_git._arun = AsyncMock(return_value="0")
