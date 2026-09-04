@@ -28,6 +28,13 @@ function keyData() {
 }
 
 describe("StepNodeCard", () => {
+  it("leaves the card available as the node drag surface", () => {
+    card(ensureReviewTask);
+    expect(screen.getByRole("button", { name: /Inspect step Ensure a review task/ })).not.toHaveClass(
+      "nodrag",
+    );
+  });
+
   it("renders the compact contract for a command step", () => {
     card(ensureReviewTask);
     // The authored title names this use of ``ensure_task``; the contract still

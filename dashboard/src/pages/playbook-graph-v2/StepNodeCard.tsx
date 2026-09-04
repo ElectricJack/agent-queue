@@ -64,7 +64,7 @@ export function StepNodeCard({ data, selected = false }: CardProps) {
       data-step-kind={node.step_kind}
       {...(runState ? { "data-run-state": runState, "data-visit-count": String(visits) } : {})}
       style={{ width: NODE_WIDTH, height: NODE_HEIGHT }}
-      className={`nodrag nopan flex cursor-pointer flex-col gap-1 overflow-hidden rounded-md border p-2 text-left text-xs shadow ${tone} ${runClass} ${selected ? "outline outline-2 outline-white" : ""} focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-300`}
+      className={`nopan flex cursor-grab flex-col gap-1 overflow-hidden rounded-md border p-2 text-left text-xs shadow active:cursor-grabbing ${tone} ${runClass} ${selected ? "outline outline-2 outline-white" : ""} focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-300`}
       onClick={(event) => {
         event.stopPropagation();
         onSelect?.(node.id);
